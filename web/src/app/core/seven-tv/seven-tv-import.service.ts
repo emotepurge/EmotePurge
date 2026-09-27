@@ -1,7 +1,7 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Service, Signal, computed, inject, linkedSignal, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { catchError, map, of, retry, throwError, timeout, timer } from 'rxjs';
+import { catchError, map, of, retry, switchMap, throwError, timeout, timer } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import { EmoteAdminService } from '../emotes/emote-admin.service';
@@ -28,6 +28,7 @@ import {
 } from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
+import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
@@ -85,12 +86,6 @@ const UPDATE_EMOTE_ALIAS_MUTATION = `
   }
 `;
 
-/** Time budget for the one re-read after a run with an unanswered step — the same 20 s the delete
- *  run's live alias read allows (`mass-delete-panel.ts`, `LIVE_ALIAS_READ_TIMEOUT_MS`). The re-read
- *  follows a transport loss, exactly when a request is likely to hang, and every report of the run
- *  waits for it; a read that runs out settles the run like a failed read. */
-const SETTLE_READ_TIMEOUT_MS = 20_000;
-
 /** `extensions.status` of a GraphQL rejection for a name that is already taken in the set — on
  *  `addEmote` and on `updateEmoteAlias` alike. */
 const NAME_TAKEN_GQL_STATUS = 409;
@@ -126,7 +121,9 @@ function abortsForMissingPrivileges(failure: {
  *
  *  `errorMessage` is the text to *display*. For a row that ends with an import-specific reason —
  *  `import.errors.nameTakenNow`, `import.errors.removedButNotAdded` or `import.errors.unknownOutcome`
- *  — the settled result replaces it with that translated reason and keeps the text the engine had
+ *  — the run's `result` replaces it with that translated reason (a row the engine left `failed`
+ *  already in the settling snapshot, one cleared up from `unknown` once the run is settled) and
+ *  keeps the text the engine had
  *  in `sevenTvErrorMessage` (7TV's raw GraphQL message, or the engine's transport text). Every other
  *  row keeps the engine's `errorMessage` untouched and has no `sevenTvErrorMessage`. A protocol
  *  that wants 7TV's own words therefore writes `sevenTvErrorMessage ?? errorMessage`. */
@@ -144,7 +141,8 @@ export interface ImportRunResult extends RunResult {
  * `'pending'` from the start of a run until its outcome is final; `'settled'` once it is. A run
  * whose snapshot has no `unknown` row settles the moment the engine completes; one with an
  * `unknown` row stays `pending` until the one live re-read of the target set has cleared up what
- * it can (`SevenTvImportService.onRunComplete`). Nothing is reported to our Api before `'settled'`.
+ * it can (`SevenTvImportService.onRunComplete`) — after a user's cancel, that read itself only goes
+ * out once `CANCEL_SETTLE_GRACE_MS` has passed. Nothing is reported to our Api before `'settled'`.
  * Set in lockstep with the run's `phase` since #256 — `settleRun` moves it to `'settled'` in the
  * same `update()` call that moves the phase to `reporting`, not derived from the phase after the
  * fact — and kept as its own field because the dock, the usage-stats page and #254 read it.
@@ -189,8 +187,9 @@ export interface ImportRunInfo extends RunRecordBase {
   origin: ImportOrigin;
   /** The plan this run executes, one queue row per plan row, keyed by the source 7TV id. */
   plan: TransferPlan;
-  /** See `ImportSettlement`. `result` is the engine's snapshot while `'pending'`, the settled
-   *  outcome once `'settled'`. */
+  /** See `ImportSettlement`. `result` is the engine's snapshot while `'pending'` — with every
+   *  `failed` row already carrying its final reason (Plan-284 Festlegung 9), `unknown` rows as the
+   *  engine left them — and the settled outcome once `'settled'`. */
   settlement: ImportSettlement;
   /** Replace rows whose REMOVE 7TV confirmed — directly, or through the re-read — whatever the
    *  row's final status. Exactly the rows the removal report names. `0` while the run is in
@@ -294,8 +293,8 @@ export class SevenTvImportService {
    *  specs drive the dock through it; production code only writes through the lifecycle. */
   readonly run = this.lifecycle.shown;
 
-  /** True while any run of this service re-reads its unknown rows or waits for a report — shown or
-   *  not (#256, contract P1). */
+  /** True while any run of this service re-reads its unknown rows — the cancel grace ahead of that
+   *  read included — or waits for a report, shown or not (#256, contract P1). */
   readonly isSettling = this.lifecycle.isSettling;
 
   /** True while any run whose plan deletes (a `replace` row) is not closed — running, re-reading or
@@ -401,6 +400,13 @@ export class SevenTvImportService {
   readonly targetCheckBlockReason = signal<TargetCheckBlockReason | null>(null);
 
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  /** `true` only for the synchronous span of this service's own `cancel()`: `engine.cancel()` calls
+   *  `onRunComplete` synchronously (`finish()`), and nothing else ever cancels this engine — an
+   *  `abortOn` abort ends the run through the engine's own completion, not through `cancel()` — so
+   *  `onRunComplete` reading `true` here means "this run ended because the user cancelled it"
+   *  (Plan-275 Festlegung 5, Plan-284 Festlegung 1). Per run by construction, no engine field. */
+  private cancelInProgress = false;
 
   /** The plan rows of the shown run by queue key — what `items` attaches to the engine's rows. */
   private readonly transferRowsByKey = computed(() => indexPlanRows(this.run()?.plan ?? null));
@@ -523,8 +529,17 @@ export class SevenTvImportService {
     }
   }
 
+  /** Stops the run. On a plan that deletes (a `replace` row), a step still in flight ends its row
+   *  `unknown` (`transportLossIsUnknown`), and the run's re-read then waits
+   *  `CANCEL_SETTLE_GRACE_MS` first — see `onRunComplete`. On an add-only plan the same row ends
+   *  `cancelled` and nothing is re-read. */
   cancel(): void {
-    this.engine.cancel();
+    this.cancelInProgress = true;
+    try {
+      this.engine.cancel();
+    } finally {
+      this.cancelInProgress = false;
+    }
   }
 
   /** Clears what the dock shows — and only that (#256, Plan-256 Festlegung 3). The shown run goes
@@ -650,18 +665,31 @@ export class SevenTvImportService {
    * always on the run's own record, whether or not the dock still shows it (#256: there is no early
    * return for a run that is no longer shown; its confirmed changes are reported all the same).
    *
+   * What the record publishes at once is the snapshot with every `failed` row already given its
+   * final, import-specific reason (`settleRunResult` without a read): that reason never depends on
+   * the read, so a `failed` row reads the same while the run is `settling` as once it is `closed`,
+   * and the dock's alert region announces it only once (Plan-284 Festlegung 9). `unknown` rows are
+   * left as they are until the read. This is still the unsettled snapshot — `settlement` stays
+   * `'pending'` and nothing is reported before `settleRun`.
+   *
    * Without an `unknown` row the snapshot settles at once and the run goes straight to `reporting`
    * (or `closed`). With one, the run is `settling` while the target set is read live once
-   * (tokenless, 7TV's global bucket) and each `unknown` row is cleared up on a *copy* of the
-   * snapshot's rows (`settleUnknownRow`). A read that fails, runs out of time
-   * (`SETTLE_READ_TIMEOUT_MS`) or comes back `complete: false` leaves those rows `unknown` — the
-   * result settles all the same.
+   * (tokenless, 7TV's global bucket): after `CANCEL_SETTLE_GRACE_MS` when the run ended through this
+   * service's own `cancel()` (Plan-284 Festlegung 2 — 7TV may still be finishing the aborted
+   * step), at once after a plain transport loss (a 5xx, no answer at all). The wait runs inside
+   * `settling`, with phase and snapshot already published. Each `unknown` row is then cleared up on
+   * a *copy* of the snapshot's rows (`settleUnknownRow`). A read that fails, runs out of
+   * `SET_ENTRIES_READ_TIMEOUT_MS` or comes back `complete: false` leaves those rows `unknown` — the
+   * result settles all the same: every path ends in `settleRun` (Plan-275 Festlegung 19, P6). The
+   * engine's snapshot waits in this closure, not on the engine or the record: the engine's queue may
+   * belong to a newer run by then, and the record already carries the normalized copy.
    *
    * A run `reset()` detached while it was in flight has left its queue on the engine until now,
    * because `finish()` builds this very result from it; nothing shows that queue any more, so it
    * is cleared here.
    */
   private onRunComplete(runId: string, context: ImportRunContext, result: RunResult): void {
+    const afterCancel = this.cancelInProgress;
     const snapshot: ImportRunResult = {
       ...result,
       items: result.items.map((item) => ({
@@ -669,11 +697,13 @@ export class SevenTvImportService {
         transfer: transferRowOf(context.rowsByKey, item.key),
       })),
     };
-    const hasUnknown = snapshot.items.some((item) => item.status === 'unknown');
+    const translate = (key: string): string => this.translocoService.translate(key);
+    const published = settleRunResult(snapshot, context, null, translate);
+    const hasUnknown = published.items.some((item) => item.status === 'unknown');
     const pending = this.lifecycle.update(runId, (run) => ({
       ...run,
-      result: snapshot,
-      ...outcomeCounts(snapshot),
+      result: published,
+      ...outcomeCounts(published),
       phase: hasUnknown ? 'settling' : run.phase,
     }));
     if (!this.lifecycle.isShown(runId)) {
@@ -685,30 +715,30 @@ export class SevenTvImportService {
     }
 
     if (!hasUnknown) {
-      this.settleRun(runId, context, null);
+      this.settleRun(runId, context, snapshot, null);
       return;
     }
 
-    loadSevenTvSetEntries(this.httpClient, pending.targetSetId)
-      .pipe(
-        timeout(SETTLE_READ_TIMEOUT_MS),
-        catchError(() => of(null)),
-      )
-      .subscribe((entries) => this.settleRun(runId, context, entries));
+    const read = loadSevenTvSetEntries(this.httpClient, pending.targetSetId).pipe(
+      timeout(SET_ENTRIES_READ_TIMEOUT_MS),
+      catchError(() => of(null)),
+    );
+    (afterCancel ? timer(CANCEL_SETTLE_GRACE_MS).pipe(switchMap(() => read)) : read).subscribe(
+      (entries) => this.settleRun(runId, context, snapshot, entries),
+    );
   }
 
-  /** Publishes the settled outcome on the run's record and opens its reports in the same step, so
-   *  the record goes from `settling`/`running` to `reporting` — or straight to `closed` when there
-   *  is nothing to report — without a moment in which it looks closed with a report still to come. */
+  /** Publishes the settled outcome of `snapshot` — the engine's own, un-normalized one, so no
+   *  `failed` row is given its reason twice — on the run's record and opens its reports in the same
+   *  step, so the record goes from `settling`/`running` to `reporting` — or straight to `closed`
+   *  when there is nothing to report — without a moment in which it looks closed with a report
+   *  still to come. */
   private settleRun(
     runId: string,
     context: ImportRunContext,
+    snapshot: ImportRunResult,
     entries: SevenTvSetEntries | null,
   ): void {
-    const snapshot = this.lifecycle.get(runId)?.result ?? null;
-    if (snapshot === null) {
-      return;
-    }
     const translate = (key: string): string => this.translocoService.translate(key);
     const result = settleRunResult(snapshot, context, entries, translate);
     const reportsImported = importedKeysOf(result).length > 0;
@@ -1071,7 +1101,12 @@ function outcomeCounts(result: ImportRunResult): {
  * The settled outcome of a run: every `unknown` row cleared up against `entries` where the read
  * allows it, every `failed` row given its import-specific reason, `doneKeys` recomputed. Works on
  * copies; the snapshot stays as it was. `entries` is `null` when there was no read (nothing was
- * `unknown`) or the read failed; an incomplete read counts as none.
+ * `unknown`, or `onRunComplete` publishes the settling snapshot ahead of the read) or the read
+ * failed; an incomplete read counts as none. A `failed` row's reason depends on `context` alone,
+ * never on `entries` — which is what lets the settling snapshot carry it already (Plan-284
+ * Festlegung 9). Always called on the engine's own snapshot, never on an already normalized one:
+ * `withReason` moves the displayed text into `sevenTvErrorMessage`, so a second pass would bury 7TV's
+ * own words under the translated reason.
  */
 function settleRunResult(
   snapshot: ImportRunResult,

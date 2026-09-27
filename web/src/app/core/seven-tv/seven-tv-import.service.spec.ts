@@ -1,4 +1,4 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpRequest, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
@@ -10,6 +10,7 @@ import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { REPORT_TIMEOUT_MS } from './seven-tv-delete.service';
 import { SevenTvImportService } from './seven-tv-import.service';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
+import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import { TransferPlan, TransferRow } from './transfer-plan';
 
@@ -132,6 +133,15 @@ function adoptRow(source: ImportRow, currentAlias: string): TransferRow {
 
 function gqlRejection(message: string, status: number) {
   return { errors: [{ message, extensions: { code: 'BAD_REQUEST', status } }] };
+}
+
+/** The tokenless settle re-read of the target set, told apart from a mutation on the same endpoint
+ *  by its query. */
+function isSetRead(request: HttpRequest<unknown>): boolean {
+  return (
+    request.url === GQL_ENDPOINT &&
+    (request.body as { query: string }).query.includes('emotes(page: $page, perPage: $perPage)')
+  );
 }
 
 /** One page of the tokenless set read (`loadSevenTvSetEntries`) holding exactly `entries`. */
@@ -1736,6 +1746,255 @@ describe('SevenTvImportService', () => {
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       expect(service.destructiveOpen()).toBe(false);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+  });
+
+  // Plan-284 (#284): after the user's own cancel(), the settle re-read waits CANCEL_SETTLE_GRACE_MS
+  // first, inside `settling` — 7TV may still be applying the step that was in flight. A plain
+  // transport loss reads at once, as before. Every branch still ends in the settle (P6).
+  describe('cancel grace before the settle re-read (Plan-284)', () => {
+    /** Starts a one-row replace, lets its REMOVE be confirmed and cancels while its ADD is out. */
+    function cancelReplaceWithAddInFlight(): void {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
+      answerNext({}); // REMOVE confirmed
+      const add = nextMutation();
+      expect(add.request.body.variables).toMatchObject({ emoteId: 'src-x', alias: 'Kappa' });
+      service.cancel();
+      expect(add.cancelled).toBe(true);
+    }
+
+    /** Lets the cancel's grace period run out and returns the one re-read it then sends. */
+    function readAfterGrace() {
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+      return httpMock.expectOne(isSetRead);
+    }
+
+    function drainReplaceReports(importedIds: string[] | null): void {
+      if (importedIds === null) {
+        httpMock.expectNone(SYNC_IMPORTED_B);
+      } else {
+        const imported = httpMock.expectOne(SYNC_IMPORTED_B);
+        expect(imported.request.body.sevenTvEmoteIds).toEqual(importedIds);
+        imported.flush(null, { status: 204, statusText: 'OK' });
+      }
+      const removal = httpMock.expectOne(SYNC_DELETED_B);
+      expect(removal.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      removal.flush(deletedAnswer());
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    }
+
+    it('settles an ADD cancelled in flight: settling, no read before the grace period, then one read that confirms it', () => {
+      cancelReplaceWithAddInFlight();
+
+      expect(service.isRunning()).toBe(false);
+      expect(service.run()).toMatchObject({ phase: 'settling', settlement: 'pending' });
+      expect(service.run()?.result?.items[0]).toMatchObject({
+        status: 'unknown',
+        completedSteps: 1,
+        failedStep: 1,
+      });
+      expect(service.isSettling()).toBe(true);
+      expect(service.destructiveOpen()).toBe(true);
+
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS - 1);
+      httpMock.expectNone(isSetRead);
+      httpMock.expectNone(SYNC_IMPORTED_B);
+      httpMock.expectNone(SYNC_DELETED_B);
+      expect(service.run()?.phase).toBe('settling');
+
+      vi.advanceTimersByTime(1);
+      const read = httpMock.expectOne(isSetRead);
+      expect(read.request.headers.has('Authorization')).toBe(false);
+      expect(read.request.body.variables.id).toBe('set-b');
+      read.flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
+
+      expect(service.run()).toMatchObject({ settlement: 'settled', unknownCount: 0 });
+      expect(service.run()?.result?.items[0]).toMatchObject({
+        status: 'done',
+        completedSteps: 2,
+        failedStep: null,
+      });
+      drainReplaceReports(['src-x']);
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    it('settles an ADD cancelled in flight that 7TV never applied with the gap reason, after the grace period', () => {
+      cancelReplaceWithAddInFlight();
+
+      readAfterGrace().flush(setEntriesPage([]));
+
+      const [row] = service.run()?.result?.items ?? [];
+      expect(row).toMatchObject({ status: 'failed', completedSteps: 1, failedStep: 1 });
+      expect(row.errorMessage).toBe('Entfernt, aber nicht hinzugefügt.');
+      drainReplaceReports(null);
+    });
+
+    it('settles a REMOVE cancelled in flight whose target is gone as a gap and reports the removal', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
+      const remove = nextMutation();
+      expect(remove.request.body.variables).toMatchObject({ emoteId: 'tgt-x' });
+      service.cancel();
+      expect(remove.cancelled).toBe(true);
+
+      expect(service.run()?.phase).toBe('settling');
+      expect(service.run()?.result?.items[0]).toMatchObject({ status: 'unknown', failedStep: 0 });
+      expect(service.run()?.unknownRemovalCount).toBe(1);
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS - 1);
+      httpMock.expectNone(isSetRead);
+
+      vi.advanceTimersByTime(1);
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: 'other', alias: 'Other' }]));
+
+      const [row] = service.run()?.result?.items ?? [];
+      expect(row).toMatchObject({ status: 'failed', completedSteps: 1, failedStep: 1 });
+      expect(row.errorMessage).toBe('Entfernt, aber nicht hinzugefügt.');
+      expect(service.run()).toMatchObject({ removedCount: 1, unknownRemovalCount: 0 });
+      drainReplaceReports(null);
+    });
+
+    it('leaves the row unknown when the read after the grace period fails, and still settles and reports', () => {
+      cancelReplaceWithAddInFlight();
+
+      readAfterGrace().error(new ProgressEvent('error'));
+
+      expect(service.run()).toMatchObject({ settlement: 'settled', unknownCount: 1 });
+      expect(service.run()?.result?.items[0].status).toBe('unknown');
+      drainReplaceReports(null);
+    });
+
+    it('gives the read after the grace period SET_ENTRIES_READ_TIMEOUT_MS, then settles without it', () => {
+      cancelReplaceWithAddInFlight();
+      const read = readAfterGrace();
+
+      vi.advanceTimersByTime(SET_ENTRIES_READ_TIMEOUT_MS - 1);
+      expect(service.run()?.settlement).toBe('pending');
+      vi.advanceTimersByTime(1);
+
+      expect(read.cancelled).toBe(true);
+      expect(service.run()).toMatchObject({ settlement: 'settled', unknownCount: 1 });
+      drainReplaceReports(null);
+    });
+
+    it('reads at once, without a grace period, after a 5xx the user did not cancel', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
+      answerNext({});
+      nextMutation().flush('boom', { status: 503, statusText: 'Unavailable' });
+
+      // Well inside the grace period — and the read is already out.
+      expect(RUN_DELAY_MS).toBeLessThan(CANCEL_SETTLE_GRACE_MS);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
+
+      drainReplaceReports(['src-x']);
+    });
+
+    // Plan-284 Festlegung 1: the flag lives only for the synchronous span of `cancel()` — a later
+    // run that ends on a plain transport loss must read at once, not inherit an earlier grace.
+    it('does not carry a cancelled run’s grace period over to a later run that ends on a transport loss', () => {
+      cancelReplaceWithAddInFlight();
+      readAfterGrace().flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
+      drainReplaceReports(['src-x']);
+
+      service.startImport(TARGET_C, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_Y, 'tgt-y')] });
+      answerNext({});
+      nextMutation().flush('boom', { status: 502, statusText: 'Bad Gateway' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: 'src-y', alias: 'Pog' }]));
+      httpMock.expectOne(SYNC_IMPORTED_C).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne('/api/seventv/emote-sets/set-c/sync-deleted').flush(deletedAnswer());
+      httpMock.expectOne(RESYNC_C).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('also waits out the grace period when a cancel between rows ends a run with an older transport loss', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
+      });
+      answerNext({});
+      nextMutation().flush('boom', { status: 500, statusText: 'Server Error' });
+      service.cancel(); // in the pacing pause before the add row: nothing in flight
+
+      expect(service.run()?.result?.items.map((item) => item.status)).toEqual([
+        'unknown',
+        'cancelled',
+      ]);
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS - 1);
+      httpMock.expectNone(isSetRead);
+
+      vi.advanceTimersByTime(1);
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
+      drainReplaceReports(['src-x']);
+    });
+
+    // Plan-275 Festlegung 19 / P6: reset() during the grace period only drops the display — the
+    // timer, the read, the settle and both reports all still run on the run's own record.
+    it('reset() during the grace period detaches the display; the run still reads, settles and reports', () => {
+      cancelReplaceWithAddInFlight();
+
+      service.reset();
+
+      expect(service.run()).toBeNull();
+      expect(service.queue()).toEqual([]);
+      expect(service.isSettling()).toBe(true);
+      expect(service.destructiveOpen()).toBe(true);
+
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS - 1);
+      httpMock.expectNone(isSetRead);
+      readAfterGraceRemainder().flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
+
+      drainReplaceReports(['src-x']);
+      expect(service.run()).toBeNull();
+      expect(service.isSettling()).toBe(false);
+      expect(service.destructiveOpen()).toBe(false);
+
+      function readAfterGraceRemainder() {
+        vi.advanceTimersByTime(1);
+        return httpMock.expectOne(isSetRead);
+      }
+    });
+
+    // Plan-284 Festlegung 9: a `failed` row's reason does not hang on the read, so the settling
+    // snapshot already carries it — its text is the same while settling and once closed, and 7TV's
+    // own words stay in `sevenTvErrorMessage` rather than being overwritten by a second pass.
+    it('publishes a failed row with its final reason already in the settling snapshot, unchanged once closed', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
+      });
+      answerNext({}); // the replace row's REMOVE
+      answerNext(gqlRejection('BAD_REQUEST this emote has a conflicting name', 409)); // its ADD
+      const add = nextMutation(); // the add row's ADD, in flight
+      service.cancel();
+      expect(add.cancelled).toBe(true);
+
+      expect(service.run()?.phase).toBe('settling');
+      const [failedWhileSettling, unknownWhileSettling] = service.items();
+      expect(failedWhileSettling).toMatchObject({
+        status: 'failed',
+        completedSteps: 1,
+        failedStep: 1,
+        errorMessage: 'Entfernt, aber nicht hinzugefügt.',
+        sevenTvErrorMessage: 'BAD_REQUEST this emote has a conflicting name',
+      });
+      // The unclear row is left exactly as the engine ended it until the read.
+      expect(unknownWhileSettling.status).toBe('unknown');
+      expect(unknownWhileSettling.sevenTvErrorMessage).toBeUndefined();
+
+      readAfterGrace().flush(
+        setEntriesPage([
+          { id: 'src-y', alias: 'Pog' },
+          { id: 'other', alias: 'Other' },
+        ]),
+      );
+
+      expect(service.run()?.settlement).toBe('settled');
+      const [failedOnceSettled, clearedUp] = service.items();
+      expect(failedOnceSettled.errorMessage).toBe(failedWhileSettling.errorMessage);
+      expect(failedOnceSettled.sevenTvErrorMessage).toBe(failedWhileSettling.sevenTvErrorMessage);
+      expect(clearedUp.status).toBe('done');
+      drainReplaceReports(['src-y']);
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.items()[0].errorMessage).toBe('Entfernt, aber nicht hinzugefügt.');
     });
   });
 

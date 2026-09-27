@@ -10,6 +10,62 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-27 — Import and undo wait the cancel grace before their settle read, and their docks hold back summary and unclear rows while settling
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-import.service.ts` (+ spec) — `cancel` (cancel
+flag), `onRunComplete` (grace wait, `SET_ENTRIES_READ_TIMEOUT_MS`, the settling snapshot published
+with its final `failed` reasons), `settleRun` (settles the engine's own snapshot), `settleRunResult`
+doc, `SETTLE_READ_TIMEOUT_MS` removed, `ImportRunItem`/`ImportSettlement`/`ImportRunInfo.settlement`/
+`isSettling` docs · `web/src/app/core/seven-tv/seven-tv-run-settlement.ts`
+(`SET_ENTRIES_READ_TIMEOUT_MS` and `CANCEL_SETTLE_GRACE_MS` docs only).
+
+Issues #284 and #286 (Plan-284-286 Festlegungen 1–9). The 2026-09-27 #275 entry gave delete and
+restore a grace period before their settle read and left import and undo behind: a user who
+cancelled an import-replace or an undo with a request in flight got a read that went out at once,
+often before 7TV had finished applying the aborted step — so "unchanged ⇒ it did not happen" could
+overtake a mutation that was landing right then. And while an import or undo run was `settling`,
+its dock already showed the summary and the unclear rows of a snapshot that was about to change.
+
+**The same grace, the same flag, only before the settle read.** Import and undo now hold a private
+cancel flag for the synchronous span of `engine.cancel()` inside their own `cancel()`, exactly the
+delete's pattern; `onRunComplete` reads it first. Only when it was set *and* the run has an
+`unknown` row does the settle read wait `CANCEL_SETTLE_GRACE_MS` (3 s) — inside `settling`, with
+phase and snapshot already published. After a plain transport loss (a 5xx, no answer) the read goes
+out at once as before. The undo's recheck read in front of each `REMOVE` never waits: it is a gate
+before a mutation, not a settlement after the run. Every branch still ends in `settleRun` (timer →
+read with timeout → `null` on failure → settle; Plan-275 P6), and `reset()` during the wait only
+drops the display. Both services drop their own settle-read constants
+(`SETTLE_READ_TIMEOUT_MS`, `UNDO_SETTLE_READ_TIMEOUT_MS`) for the shared
+`SET_ENTRIES_READ_TIMEOUT_MS` (20 s, unchanged); `RECHECK_READ_TIMEOUT_MS` stays on its own.
+
+**`result` is still the published snapshot — only the display is gated.** Unlike the delete and the
+restore, import and undo keep publishing their snapshot with `phase: 'settling'` (`items()`,
+`settleRun`, the protocol gates and the usage-stats page's `watchRunSettle` rely on it). What
+changes is what their docks show from it: while a run is `settling`, the import and undo docks bind
+`RunProgressPanel.settling` like delete and restore, so the summary block, its actions and the
+`unknown` rows stay hidden, and the not-active notice is neither shown nor announced until the run
+is `settled`. Progress, counters, `failed` rows and "finishing…" stay. So that a visible `failed`
+row does not change its text between `settling` and `closed`, the snapshot published for `settling`
+already carries every `failed` row's final reason — that reason never depends on the read (import:
+`withFailureReason` over the recorded GraphQL status; undo: over its rejected keys). The settle
+itself still starts from the engine's own snapshot, so no row is given its reason twice.
+
+**Unchanged.** The clarification tables (`settleUnknownRow`, `settleUnknownRemove`/`settleUnknownAdd`)
+— in particular #275's "only ever confirms" does *not* carry over to them. Reports, resync,
+lifecycle, arbiter and engine. The add-only import stays the exception (`transportLossIsUnknown` only
+for a plan that deletes): a cancel in flight there is `cancelled`, without a settle — #290.
+
+**Costs.** After a cancel, the unload guard's worst case after the last click grows by the 3 s
+grace: import from about 116 s to about **119 s** (its two reports run in parallel), undo from about
+212 s to about **215 s** (`sync-deleted`, then `sync-restored`).
+
+**What this revises** (texts stay as they are): the #275 entry's "Unlike the import and the undo,
+which publish their snapshot while re-reading" still holds for the data, no longer for the display;
+its "until #284" and "Import and undo keep their own read timeouts" are done — for the add-only
+import, moved to #290. The 2026-09-23 #230 entry's "the dock already shows the engine's live
+snapshot" no longer holds for a settling run. The 2026-09-26 run-bound entry is the context both
+build on.
+
 ### 2026-09-27 — Delete and restore runs settle a lost answer by one re-read that only ever confirms — a cancel mid-request is `unknown`, never `cancelled`
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-delete.service.ts` (+ spec) — `REMOVE_OPERATION`
