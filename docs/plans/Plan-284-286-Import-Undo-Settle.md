@@ -170,3 +170,4 @@ rebased.
 2. **Undo-E2E** bewusst weggelassen; wer es will, ergänzt T4 um den Undo-Abbruch nach demselben Muster.
 3. **§2.5 nennt „all three docks"**, obwohl das Undo-Dock der vierte ist — T3 korrigiert das beim
    Nachziehen mit, ohne weitere Umformulierung.
+4. **Negative Klärung in Import/Undo** (Codex-Plan-Review, Finding 1, high): Ein Read, der den alten Stand zeigt, macht die Zeile weiter `failed`, obwohl 7TV die Mutation nach einem 5xx/504 oder Status 0 noch anwenden kann. Nutzerentscheidung 2026-09-27: eigenes Issue #291, nicht Teil dieses PRs; die Klärtabellen bleiben hier unverändert.
