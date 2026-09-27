@@ -171,8 +171,8 @@ export class RestoreConfirmDialog {
 
   /** #255: the "up to N" family once the open-time check could not verify the count — never mixed
    *  with the plain family, so a translator can never see one language's title claim certainty the
-   *  other one hedges. */
-  /** #275: with nothing left to add (every row was an unclear one the check could not vouch for),
+   *  other one hedges.
+   *  #275: with nothing left to add (every row was an unclear one the check could not vouch for),
    *  neither family fits — "up to 0 emotes" is no question — so the title says so plainly. */
   protected readonly titleKey =
     this.data.addCount === 0
