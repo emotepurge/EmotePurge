@@ -10,6 +10,179 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-27 — Delete and restore runs settle a lost answer by one re-read that only ever confirms — a cancel mid-request is `unknown`, never `cancelled`
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-delete.service.ts` (+ spec) — `REMOVE_OPERATION`
+sets `transportLossIsUnknown`, `DeleteRunInfo` (`settling`, `result` stays `null` until settled),
+`queue` as a `linkedSignal` projection, `cancel`, `onRunComplete`, new `settleRun`,
+`fallbackResync` for an unknown-only run, `isSettling`/`destructiveOpen`/`lastRun` docs ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (+ spec) — `addOperation` sets
+`transportLossIsUnknown`, `RestoreRunInfo` (`settling`, `result` stays `null` until settled), `queue`
+as a `linkedSignal` projection, `cancel`, `onRunComplete`, new `settleRun`, `triggerResync` called
+directly for an unknown-only run, `toRestoreQueue`'s new `defaultNameByKey`,
+`isSettling`/`destructiveOpen` docs ·
+`web/src/app/core/seven-tv/seven-tv-run-settlement.ts` (`SET_ENTRIES_READ_TIMEOUT_MS`,
+`CANCEL_SETTLE_GRACE_MS`, `settleDeleteResult`, `settleRestoreResult`, `unknownCount`) ·
+`web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts` (`RunPhase` doc only) ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`transportLossIsUnknown` doc only) ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` (reader list in the doc only) ·
+`web/src/app/core/seven-tv/seven-tv-run-arbiter.spec.ts` (a restore's cancel-in-flight case updated
+to settle, like the delete's).
+
+Issue #275 (Plan-275 Festlegungen 1, 2, 5, 6, 8, 10–13, 19, 20). Until now a delete whose `REMOVE` was
+still in flight when the user clicked "Cancel" ended that row `cancelled` — "nothing happened" in
+the dock and in the protocol — although the request had usually reached 7TV and taken the emote out
+of the set; a lost answer (no response, a 5xx) ended it `failed`, which says the same. Both are
+claims the client cannot back.
+
+**The row is `unknown`, and the run re-reads once before it reports.** Both the delete's and the
+restore's operations now set the engine's `transportLossIsUnknown`: no answer, any 5xx, and a
+`cancel()` that aborts a request in flight end the row
+`unknown`; a 4xx and a GraphQL rejection stay `failed`, and a cancel between two rows or during a
+rate-limit pause stays `cancelled`, since nothing was in flight. A run that ends with at least one
+`unknown` row is `settling` while the target set is read once, tokenless, with a
+`SET_ENTRIES_READ_TIMEOUT_MS` (20 s) budget — no retry, no second read. Only after a cancel through
+the service's own `cancel()` does the read first wait `CANCEL_SETTLE_GRACE_MS` (3 s): 7TV is still
+finishing the aborted request, and an immediate read would mostly see the old state. After a plain
+transport loss there is nothing to wait for — a 5xx arrives once 7TV is done, a dropped connection
+has no moment to aim at. The wait only raises how often the read can confirm; it never decides
+anything. A cancel between rows in a run that already has an older transport-loss row waits as well
+— harmless, not worth a distinction. The run knows it was cancelled from a flag its own `cancel()`
+holds for the synchronous span of `engine.cancel()` (which calls `onRunComplete` synchronously), not
+from a new engine field.
+
+**The read only ever confirms.** A row becomes `done` exactly when a complete read shows the wanted
+effect (delete: the id has no entry left in the set, under any alias or none). Every other finding
+stays `unknown` — "the id is still there", a failed or timed-out read, `complete: false`. A read can
+prove that a mutation landed; it cannot prove that one still in flight, or whose answer was lost,
+did not — and "still there" is also what a third party re-adding the id after our `REMOVE` looks
+like (Codex, adversarial review 2026-09-27). "The id is gone" can equally be a third party's doing;
+indistinguishable, and the set *is* without the id either way — the import accepts the same. For the
+restore the wanted effect is the mirror image (Festlegung 8): the row's alias sitting on this id: for
+a `null`-alias row (only ever from a transfer-run file) either `aliaslessIds` or, checked before any
+stale name the file itself recorded, the read's own live default name for that id.
+
+**Published and reported only once settled.** Unlike the import and the undo, which publish their
+snapshot while re-reading, the delete keeps `result` `null` through `settling` and writes the settled
+outcome, `phase: 'reporting'` and the report state in one lifecycle update. So `lastRun`, the
+protocol download and the usage-stats page's `watchRunSettle` see exactly one result, never a
+snapshot whose rows are about to change. The dock still shows rows meanwhile: `queue` is now a
+projection — the shown run's settled `result.items` once it has one, the engine's queue otherwise —
+kept a `linkedSignal` so specs can still `set` it. `sync-deleted` names the settled `doneKeys`, so
+`retrySyncReport` is right automatically; a row still `unknown` is never reported. The restore's
+`result` is held back the same way until the settle writes it; `sync-restored` names the settled
+`doneKeys`.
+
+**What an `unknown` row that stays pulls after it.** With nothing to report (no row ended `done`),
+the run closes at once and the client resyncs `expectedChannelName` itself through the existing N1
+fallback — never for a non-active or untracked set, which has no channel of ours showing it. With a
+report, nothing more: the backend resyncs every channel that holds the set, the active one included,
+and that heals the unclear row as well; should the report fail for good, the N1 fallback resync
+stands in exactly as before. Resyncing on top of a report would only run into the per-channel
+cooldown both share. The delete dock's own reload for the unknown-only case is a later step of this
+plan. The restore runs this same D6 (a) resync through its existing `triggerResync` rather than a
+silent fallback — visible in its dock through `resyncTrigger`, and, like the delete, only ever for
+the active target.
+
+**Lifecycle and arbiter are untouched** — `settling` has existed since the 2026-09-26 run-bound
+entry; `isSettling` and the arbiter's `settling` claim pick it up on their own, so no other run can
+start while the read is out. `reset()` during `settling` only detaches the display: the record
+settles, reports and closes on its own, and a report that then fails shows the run again with its
+retry, as for any detached run. A channel switch still only resets a `closed` run.
+
+**What this revises.** Plan-256 Festlegung 5 and the 2026-09-26 run-bound entry's "Neither ever
+sees settling: a delete/restore run has no re-read" no longer hold (both texts stay as they are).
+For the restore, it also lifts the #230 rule that a run without a deleting row keeps a lost answer
+`failed` (2026-09-23, "A lost answer is `unknown`, not `failed`, for a run that deletes") — the
+restore service now sets the flag too; the add-only *import* remains the deliberate exception until
+#284, which also brings the grace period to import and undo. Import and undo keep
+their own read timeouts (`SETTLE_READ_TIMEOUT_MS`, `UNDO_SETTLE_READ_TIMEOUT_MS`), same value.
+
+**Costs and a known gap.** The delete's unload guard still holds until `closed`, `settling`
+included; its worst case after the last click grows from about 96 s to about 119 s (3 s grace + 20 s
+read + three 30 s report attempts with their 2 s and 4 s pauses). An HTTP 200 without `errors`, or
+with an empty body, is still `done` without any read (#285) — only a body that is not JSON reaches
+the engine's error path.
+
+### 2026-09-27 — The purge-run protocol carries `unknown` rows — format version 3, restorable alongside `done`, fail-closed when the live check cannot vouch
+
+**Betrifft:** `web/src/app/shared/export/purge-run-export.ts` (+ spec) — `PURGE_RUN_FORMAT_VERSION`
+2 → 3, `PurgeRunMeta.counts.unknown`, new optional `RestoreRow.uncertain`,
+`parsePurgeRunProtocol` reading `formatVersion` `1`/`2`/`3` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` (+ spec) — new optional
+`RestoreFilterRow.uncertain`, new `uncertainDropped` on `RestoreAlreadyPresentFilterResult` (and so
+on `RestoreConfirmPreview`/`restoreConfirmPreviewUnavailable`) ·
+`web/src/app/shared/seven-tv/restore-confirm-dialog.ts` (+ spec) — new
+`RestoreConfirmDialogData.uncertainDropped`, its notice, executor disabled at `addCount === 0`
+(described by that notice, own title, no slot projection) ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `mass-delete-panel.ts` (+ specs) — `unknown` rows
+offered with the marker, no "everything already there" shortcut while `uncertainDropped > 0` ·
+`web/public/i18n/{de,en}.json` (`restore.confirm.uncertainDropped`,
+`restore.confirm.nothingToRestore`).
+
+Issue #275 (plan Festlegungen 15–17). A delete or restore run whose request was still in flight
+when the user cancelled it, or whose 7TV answer was lost in transport, no longer ends the row
+`cancelled`/`failed` outright: it settles instead to `unknown` — a row status delete/restore never
+used before — that only one re-read after the run, never a retry, never a second guess, can clear.
+That read only ever confirms positively: it either shows the wanted effect (delete: the id is gone
+from the set; restore: the alias or, for an alias-less entry, the default name is there), in which
+case the row becomes `done`, or it stays `unknown` for good. A read can prove a mutation landed; it
+can never prove one that is still in flight, or whose answer never arrived, *did not* land — so
+every other outcome of the read, including "still there" or "still missing", is treated exactly
+like no read at all (Codex finding, 2026-09-27 adversarial review). The two run services that
+actually produce `unknown` rows this way, and the restore-file entry points that offer them back for
+restore, are later tasks of this same plan; this entry gives the protocol and the restore contract
+they are all built against.
+
+`meta.counts` gains `unknown`, summing with `succeeded`/`failed`/`cancelled` to `requested` exactly
+as before. The row itself carries `status: 'unknown'` like any other terminal status — no special
+casing was needed in `buildPurgeRunProtocol`, since `RunItemStatus` (`seven-tv-run-engine.ts`)
+already had the value. `PURGE_RUN_FORMAT_VERSION` bumps 2 → 3 for the same reason it bumped 1 → 2
+for K5 (2026-09-22, below): a reader written for the older row shape must refuse the newer one
+rather than parse it silently short. Concretely, a v2 `parsePurgeRunProtocol` only ever looked for
+`status === 'done'`; fed a v3 file, it would drop every `unknown` row without a trace instead of
+offering it for restore — quietly fewer restorable rows than the file actually recorded, discovered
+only by whoever later expected the rest to still be there. `parsePurgeRunProtocol` keeps accepting
+`1` and `2` alongside `3`, so no file already on someone's disk from before either change stops
+being readable; a v3 file opened in a tab still running a v2 reader is refused as `wrongVersion` —
+the same intended refusal K5 already established, not a new gap. CSV export gains no new column:
+the protocol's restorability has only ever lived in the JSON round-trip.
+
+The parser's restorable rows are no longer raw protocol rows — `status`/`errorMessage` are the paper
+trail's own business, not the restore flow's — but plain `RestoreRow`s. A `done` row comes back
+exactly as before; an `unknown` row comes back with a new optional marker, `uncertain: true`. The
+marker exists because the delete behind an `unknown` row may never have reached 7TV at all: the
+`REMOVE` could still be in flight, or its answer could be the one that was lost — either way, the
+emote can still be sitting in the set under its old alias. Restoring such a row without checking
+would run its `ADD` blind: at best 7TV refuses the colliding alias (a burnt ticket, a red row); at
+worst, if the emote sits under a different alias by the time the file is used, a second entry of the
+same id that no rollback removes — 7TV's `addEmote` mutation does not dedupe by emote id, it only
+rejects a colliding alias string (the #149 hole, `already-present-filter.ts:31-35`, `:127-131`). A
+`done` row carries neither risk: 7TV's own answer, or the settling re-read, confirmed the id gone,
+which is exactly why it is free to keep the filter's ordinary fail-open behaviour.
+
+That is why `uncertain` rows are held to a stricter rule than `done` ones, and that rule lives only
+in the already-present filter (`already-present-filter.ts`) — never in either restore entry point
+that hands rows to it: a purge-run file read through the file step, and a finished delete run's own
+restore offer in the mass-delete dock, both pass `uncertain` rows on alongside `done` ones
+unchanged. The filter drops an `uncertain` row outright whenever its own live re-read of the target
+set fails or comes back incomplete, and counts how many it dropped so the confirmation dialog can
+say so; a `done` row keeps its existing fail-open behaviour on the very same failure, and the
+confirm-time fallback (`fallOnOpenTime`) is untouched either way. When the re-read *does* complete,
+an `uncertain` row is judged exactly like any other: if its id turns up under a different alias than
+the row itself names, the row is dropped as already present (rule 2 — one id never gets a second
+`ADD`, no matter which alias is in the file); if it turns up only under aliases the row itself
+already lists, its present aliases are skipped and only the missing ones restored (rule 3). The
+window between that filter read and the eventual `ADD` stays open on purpose — a third party could
+still add the id in between, the same residual race every restore row already carries, not a new one
+this marker introduces. Neither restore call site (`restore-flow.ts`, `mass-delete-panel.ts`) grows
+a branch of its own for any of this beyond one: neither takes its "everything already there"
+shortcut while `uncertainDropped > 0` (that notice would be untrue for the dropped rows) — the rule
+itself sits inside the one filter. The confirm-time re-check applies the same rule, and only a
+confirm-time read that *fails* falls back to the open-time rows; one that succeeds but comes back
+incomplete drops an `uncertain` row the dialog already showed, silently, after the user confirmed.
+That is accepted on purpose: it can only ever send less, never a blind `ADD`.
+
 ### 2026-09-27 — The N2 member-list reload also fires on a confirmed-but-not-done row for import and undo
 
 **Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle` gains an

@@ -15,17 +15,28 @@ import { readEnvelope } from './read-envelope';
  * The purge-run protocol's own row-shape version — deliberately **not** a bump of
  * `EXPORT_FORMAT_VERSION` (`export-envelope.ts`), which every envelope `kind` shares and
  * `import-source-parser.ts` pins its own, unrelated reads to `1` for; bumping it would have
- * version-gated exports this row-shape change never touched. Bumped here instead (spec #200, K5
- * finding C) because the *row* shape genuinely changed with K5 — `emoteId` went from always a Guid
- * to `string | null`, and every row gained `aliases: string[]` — and a reader that predates that
- * change must refuse a file in the new shape rather than parse it silently short: unaware of
- * either field, it would drop every `emoteId: null` row outright and, for a restored duplicate
- * cell, only re-add one of its two aliases — no error, just fewer restores than the file actually
- * recorded, discovered only by whoever later expected the rest to still be there.
- * `parsePurgeRunProtocol` keeps accepting `1` alongside this version, so no file already on
- * someone's disk from before this change stops being readable.
+ * version-gated exports this row-shape change never touched.
+ *
+ * Bumped twice now, both times for the same reason: a reader written for an older row shape must
+ * refuse a file in a newer shape rather than parse it silently short.
+ *
+ * `1 → 2` (spec #200, K5 finding C, 2026-09-22): the *row* shape changed — `emoteId` went from
+ * always a Guid to `string | null`, and every row gained `aliases: string[]` — and a reader that
+ * predates that change must refuse the new shape: unaware of either field, it would drop every
+ * `emoteId: null` row outright and, for a restored duplicate cell, only re-add one of its two
+ * aliases — no error, just fewer restores than the file actually recorded, discovered only by
+ * whoever later expected the rest to still be there.
+ *
+ * `2 → 3` (#275, 2026-09-27, s. `docs/DECISIONS.md`): a row can now carry `status: 'unknown'` — a
+ * delete whose request was still in flight when the user cancelled it, or whose answer was lost in
+ * transport, settles to `unknown` rather than `cancelled`/`failed` unless one re-read afterwards
+ * positively confirms it. A v2 reader's `parsePurgeRunProtocol` only ever looked for
+ * `status === 'done'`; fed a v3 file, it would silently drop every `unknown` row instead of
+ * offering it for restore — the exact silent-short failure this version field exists to prevent.
+ * `parsePurgeRunProtocol` keeps accepting `1` and `2` alongside this version, so no file already on
+ * someone's disk from before either change stops being readable.
  */
-export const PURGE_RUN_FORMAT_VERSION = 2;
+export const PURGE_RUN_FORMAT_VERSION = 3;
 
 export interface PurgeRunRow {
   /** Local `Emote.Id`, or `null` for a set-view row that never had one (spec #200, 7.2). Kept for
@@ -60,6 +71,18 @@ export interface RestoreRow {
   /** The emote's 7TV default name when the source file knows it (only a transfer-run file does),
    *  shown for the queue row of an entry without an alias. */
   defaultName?: string | null;
+  /**
+   * Set (to `true`) when this row's own outcome was never positively confirmed — a purge-run row
+   * whose delete ended `unknown` after #275's one settling re-read (source file only; absent, not
+   * `false`, on every `done` row). Never set on a row a transfer-run/transfer-undo file produces —
+   * not because those predate `unknown` outcomes, but because their own restore parsers already
+   * select what they offer through a per-step `confirmed` flag
+   * (`TransferRunRemovedTarget.confirmed`/`removedSource.confirmed`), independent of a row's final
+   * status, so they have no use for this coarser, row-level marker. A restoring caller must treat
+   * `uncertain` fail-closed: offered alongside `done` rows, but dropped unless the live check that
+   * precedes the actual `ADD` can vouch for it fully (`already-present-filter.ts`).
+   */
+  uncertain?: true;
 }
 
 export interface PurgeRunMeta {
@@ -67,7 +90,15 @@ export interface PurgeRunMeta {
   /** ISO timestamps of the run itself. */
   startedAt: string;
   finishedAt: string;
-  counts: { requested: number; succeeded: number; failed: number; cancelled: number };
+  /** Always sums to `requested`. `unknown` since #275 (format version 3): rows a delete left unable
+   *  to confirm, even after its one settling re-read — s. `docs/DECISIONS.md`. */
+  counts: {
+    requested: number;
+    succeeded: number;
+    failed: number;
+    cancelled: number;
+    unknown: number;
+  };
 }
 
 export type PurgeRunProtocol = ExportEnvelope<PurgeRunRow, PurgeRunMeta>;
@@ -97,6 +128,7 @@ export function buildPurgeRunProtocol(input: {
         succeeded: statuses.filter((status) => status === 'done').length,
         failed: statuses.filter((status) => status === 'failed').length,
         cancelled: statuses.filter((status) => status === 'cancelled').length,
+        unknown: statuses.filter((status) => status === 'unknown').length,
       },
     },
     rows: input.items.map((item) => ({
@@ -159,7 +191,7 @@ export interface RestoreFileTarget {
 export type ProtocolParseResult =
   | {
       ok: true;
-      rows: PurgeRunRow[];
+      rows: RestoreRow[];
       meta: PurgeRunMeta;
       channelName: string;
       target: RestoreFileTarget;
@@ -174,15 +206,29 @@ export type ProtocolParseResult =
  * stopped being active (after a set switch) is the normal case, not a mistake. Whether the caller
  * may write to that set is the file step's own target check (`resolveEditableSet`), not this
  * parser's. A protocol without `meta.emoteSetId` is `wrongKind` — every protocol this app wrote
- * carries one, and there is deliberately no fallback that would guess a set (F1). Returns only rows
- * with `status: 'done'`: a failed delete means the emote never left the set, and re-adding it would
- * at best be a no-op, at worst an alias collision.
+ * carries one, and there is deliberately no fallback that would guess a set (F1). Returns rows with
+ * `status: 'done'` **or**, since format version 3 (#275), `status: 'unknown'` — a failed or
+ * cancelled delete means the emote never left the set, and re-adding it would at best have 7TV
+ * refuse the colliding alias (a burnt ticket, a red row), at worst — if the emote sits under a
+ * different alias by the time the file is used — add a second entry of the same id that no rollback
+ * removes, so those stay out. An `unknown` row is never *itself* proof the restore would land
+ * cleanly (the settling re-read that produced it only ever confirms positively, never clears an
+ * emote as gone) — it comes back as a plain `RestoreRow` marked `uncertain: true`; a
+ * `done` row comes back without the marker. Whether an `uncertain` row actually gets offered, and
+ * fail-closed if the live check at restore time cannot vouch for it, is the restore entry points'
+ * job (`already-present-filter.ts`), not this parser's — it only carries the marker through.
  *
  * Reads every protocol this app has ever written (spec #200, AK 69): `emoteId` as a Guid (before
  * K5), `null` (a row without a local emote), or missing; `aliases` present, or missing — an older
  * file, whose one alias is its `name`. The returned rows are normalised to today's shape. Accepts
- * `formatVersion` `1` (every file written before K5) and `PURGE_RUN_FORMAT_VERSION` (today's row
- * shape) — anything else is refused rather than parsed short (see that constant's doc).
+ * `formatVersion` `1` (every file written before K5), `2` (K5's row shape, before #275) and
+ * `PURGE_RUN_FORMAT_VERSION` (today's row shape, `unknown` rows included) — anything else is
+ * refused rather than parsed short (see that constant's doc).
+ *
+ * `meta` (and with it `meta.counts`) is passed through unvalidated beyond `emoteSetId` above — a
+ * v1 or v2 file has no `counts.unknown` at all, so it comes back `undefined` at runtime despite the
+ * field's non-optional type; nothing here reads it, and every file this app itself has ever written
+ * carries every other `counts` field, which is why only this one is affected.
  */
 export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
   const read = readEnvelope(text);
@@ -200,7 +246,11 @@ export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
     const foreign = envelope.kind ? FOREIGN_KIND_ERROR_KEYS[envelope.kind] : undefined;
     return { ok: false, errorKey: foreign ?? 'restore.import.errors.wrongKind' };
   }
-  if (envelope.formatVersion !== 1 && envelope.formatVersion !== PURGE_RUN_FORMAT_VERSION) {
+  if (
+    envelope.formatVersion !== 1 &&
+    envelope.formatVersion !== 2 &&
+    envelope.formatVersion !== PURGE_RUN_FORMAT_VERSION
+  ) {
     return { ok: false, errorKey: 'restore.import.errors.wrongVersion' };
   }
   // The envelope's channel is carried through for the caller's own use, never compared — but it
@@ -216,9 +266,21 @@ export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
     return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
   }
 
-  const restorable = (envelope.rows as unknown[]).flatMap((row) => {
+  // Reads the row in its full on-disk shape first (status included) so the `done`/`unknown` check
+  // below has something to check, then narrows to the RestoreRow shape a restore actually needs —
+  // `status`/`errorMessage` are the paper trail's business, not the restore flow's.
+  const restorable = (envelope.rows as unknown[]).flatMap((row): RestoreRow[] => {
     const parsed = readProtocolRow(row);
-    return parsed && parsed.status === 'done' ? [parsed] : [];
+    if (!parsed || (parsed.status !== 'done' && parsed.status !== 'unknown')) {
+      return [];
+    }
+    const restoreRow: RestoreRow = {
+      emoteId: parsed.emoteId,
+      sevenTvEmoteId: parsed.sevenTvEmoteId,
+      name: parsed.name,
+      aliases: parsed.aliases,
+    };
+    return [parsed.status === 'unknown' ? { ...restoreRow, uncertain: true } : restoreRow];
   });
   if (restorable.length === 0) {
     return { ok: false, errorKey: 'restore.import.errors.noRestorableRows' };

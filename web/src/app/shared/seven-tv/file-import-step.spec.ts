@@ -110,8 +110,6 @@ const PURGE_RESTORE_ROWS = [
     sevenTvEmoteId: '7tv-1',
     name: 'PogU',
     aliases: ['PogU'],
-    status: 'done',
-    errorMessage: null,
   },
 ];
 

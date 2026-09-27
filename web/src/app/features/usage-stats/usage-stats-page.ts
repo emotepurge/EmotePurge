@@ -1510,12 +1510,16 @@ export class UsageStatsPage {
   );
 
   /**
-   * A delete run of this page is still writing, or its closing bookkeeping call (`sync-deleted`) is
+   * A delete run of this page is still writing, its `unknown` rows are being read back once more
+   * (`settling`, #275, Plan-275 Festlegung 14), or its closing bookkeeping call (`sync-deleted`) is
    * still out — `onDeleted` edits the rows on screen once that call answers, so the set on screen
    * must not change until then. Locks the set dropdown with a visible reason.
    */
   protected readonly deleteRunActive = computed(
-    () => this.deleteService.isRunning() || this.deleteService.syncReport() === 'pending',
+    () =>
+      this.deleteService.isRunning() ||
+      this.deleteService.run()?.phase === 'settling' ||
+      this.deleteService.syncReport() === 'pending',
   );
 
   /**

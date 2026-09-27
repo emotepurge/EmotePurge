@@ -96,11 +96,22 @@ export interface RestoreFilterRow {
   sevenTvEmoteId: string;
   name: string;
   aliases?: readonly (string | null)[];
+  /** Set (to `true`) on a row whose own delete was never positively confirmed — a purge-run row
+   *  that ended `unknown` (`RestoreRow.uncertain`, format version 3), or an `unknown` row of a
+   *  finished delete run in the dock. Absent on every other row. `filterAlreadyPresentForRestore`
+   *  treats such a row fail-closed: it is only ever kept by a read that succeeded *and* saw the whole
+   *  set (see there, and `uncertainDropped`). */
+  uncertain?: true;
 }
 
 /** `filterAlreadyPresentForRestore`'s result: the shared filter outcome plus the aliases dropped
- *  because another emote now holds their name (rule 4). Every alias of the input is accounted for
- *  exactly once — sent (`rows`), `skipped` or `skippedNameTaken`. */
+ *  because another emote now holds their name (rule 4), and the `uncertain` rows dropped because the
+ *  read could not vouch for them. Every alias of the input is accounted for exactly once — sent
+ *  (`rows`), `skipped`, `skippedNameTaken`, or part of a row counted in `uncertainDropped`.
+ *
+ *  Unlike the id-only check's `rows`, this one's `rows` is not a plain copy of the input when
+ *  `available` is `false`: every `done` row still passes through unfiltered (fail-open), but every
+ *  `uncertain` row is left out (fail-closed) — see `uncertainDropped`. */
 export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilterResult<T> {
   /** How many aliases were dropped because a *different* id holds that name in the target set.
    *  Kept apart from `skipped` ("already present"): the entry is not back, it cannot come back under
@@ -117,6 +128,13 @@ export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilt
    *  hedges on `available: false`. Always `false` when `available` is `false`: a failed fetch saw
    *  nothing at all, complete or otherwise. */
   complete: boolean;
+  /** How many `uncertain` input rows were dropped because the read could not vouch for them — it
+   *  failed (`available: false`, the caller's own timeout via `restoreConfirmPreviewUnavailable`
+   *  included) or stopped short of the whole set (`complete: false`). Counts **rows**, not aliases:
+   *  it says how many emotes were not offered at all, which is what the restore confirmation tells
+   *  the user (`RestoreConfirmDialogData.uncertainDropped`). Always `0` when the read succeeded and
+   *  was complete — such a row then goes through rules 1–4 like any other. */
+  uncertainDropped: number;
 }
 
 /**
@@ -153,7 +171,24 @@ export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilt
  * (`RestoreConfirmDialogData.addCount`) and the run's own queue is one row per `ADD`
  * (`${sevenTvEmoteId}#${alias}`), so what the run shows plus both counts adds up to the number the
  * dialog named. For every single-alias row — nearly all of them — the two units are the same thing.
- * Fails open exactly like `filterAlreadyPresent` (see there).
+ * Fails open exactly like `filterAlreadyPresent` (see there) — for every row **except** an
+ * `uncertain` one, which fails closed (below).
+ *
+ * **`uncertain` rows fail closed** (#275, plan Festlegung 16): a row whose own delete was never
+ * positively confirmed may still be in the set, under its own alias or another one. A complete read
+ * settles that through rules 2 and 3 exactly as for any other row — no special rule — but without
+ * one nobody can tell a missing emote from one the delete never removed, and a blind `ADD` of the
+ * latter enters it a second time under another name (the #149 hole). So whenever the read fails
+ * (`available: false`) or is incomplete (`complete: false`), every `uncertain` row is left out of
+ * `rows` whole and counted in `uncertainDropped` instead of `skipped`; `done` rows are unaffected
+ * (their delete *is* confirmed — the id was provably gone from the set — so they keep the ordinary
+ * fail-open behaviour). This rule lives here and only here: both restore entry points take it from
+ * this result, and branch on it only as far as not taking their "everything already there"
+ * shortcut while `uncertainDropped > 0` — including the confirm-time `fallOnOpenTime` fallback,
+ * which reuses open-time rows this same rule already passed. That fallback covers only a
+ * confirm-time read that *failed*: one that succeeds but comes back incomplete drops an `uncertain`
+ * row the dialog already showed, silently, after the user confirmed. Accepted on purpose — it can
+ * only ever send less, never a blind `ADD` (operator decision 2026-09-27).
  *
  * `complete: false` from the read (the 10-page runaway guard, or a `totalCount` mismatch — K5 fix
  * round, see `seven-tv-set-entries.ts`) is deliberately **not** treated as a reason to fail open
@@ -164,7 +199,10 @@ export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilt
  * re-adds than discarding that signal outright would produce. This only widens the existing,
  * already-accepted gap (a window remains, always has, between any read — complete or not — and each
  * individual `addEmote` call); it does not create a new one. Restore only ever fails open
- * (available: false, nothing filtered) on an actual fetch/GraphQL error.
+ * (available: false, nothing filtered) on an actual fetch/GraphQL error. The one exception, in both
+ * directions, is an `uncertain` row: an incomplete read drops it (above) rather than filtering it
+ * against what it saw — a partial read that does not list its id proves nothing about it — and a
+ * failed read drops it rather than passing it through.
  *
  * The read's own `complete` flag is still passed through on the result (#255 P2, Codex review),
  * separately from this filtering decision — a caller that turns `rows`/`skipped` into an
@@ -180,11 +218,16 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
 ): Observable<RestoreAlreadyPresentFilterResult<T>> {
   return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
     map(({ aliasesById, aliaslessIds, complete }) => {
+      // Fail-closed for `uncertain` rows (see the doc above): only a complete read may vouch for
+      // them; a complete one runs them through rules 1–4 like every other row.
+      const { vouched, uncertainDropped } = complete
+        ? { vouched: rows, uncertainDropped: 0 }
+        : withoutUncertain(rows);
       const heldNames = new Set([...aliasesById.values()].flat());
       const kept: T[] = [];
       let skipped = 0;
       let skippedNameTaken = 0;
-      for (const row of rows) {
+      for (const row of vouched) {
         const rowAliases: readonly (string | null)[] =
           row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
         const missing = missingAliases(row.sevenTvEmoteId, rowAliases, aliasesById, aliaslessIds);
@@ -199,11 +242,19 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
           kept.push({ ...row, aliases: free });
         }
       }
-      return { rows: kept, skipped, skippedNameTaken, available: true, complete };
+      return { rows: kept, skipped, skippedNameTaken, uncertainDropped, available: true, complete };
     }),
-    catchError(() =>
-      of({ rows: [...rows], skipped: 0, skippedNameTaken: 0, available: false, complete: false }),
-    ),
+    catchError(() => {
+      const { vouched, uncertainDropped } = withoutUncertain(rows);
+      return of({
+        rows: vouched,
+        skipped: 0,
+        skippedNameTaken: 0,
+        uncertainDropped,
+        available: false,
+        complete: false,
+      });
+    }),
   );
 }
 
@@ -269,9 +320,10 @@ export interface RestoreConfirmPreview<
   T extends RestoreFilterRow,
 > extends RestoreAlreadyPresentFilterResult<T> {
   /** Display names for the confirmation's name-preview list — one per surviving row, in the same
-   *  order `filterAlreadyPresentForRestore` returned them. Unfiltered (every input row's name) when
-   *  `available` is `false`: a failed check fails open, so nothing was actually dropped from `rows`
-   *  either, only the *reason* to trust that count differs (see `countIsUpperBound` on
+   *  order `filterAlreadyPresentForRestore` returned them. Unfiltered (every input row's name, minus
+   *  the `uncertain` rows counted in `uncertainDropped`) when `available` is `false`: a failed check
+   *  fails open for every other row, so nothing else was actually dropped from `rows` either, only
+   *  the *reason* to trust that count differs (see `countIsUpperBound` on
    *  `RestoreConfirmDialogData`). Still filtered, and still worth showing, when `complete` is
    *  `false`: a truncated read only ever widens `rows` (an id it never saw counts as missing), never
    *  narrows it — see `filterAlreadyPresentForRestore`'s doc on why that stays fail-*open*, not a
@@ -331,26 +383,40 @@ export function loadRestoreConfirmPreview<T extends RestoreFilterRow>(
 export const RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS = 20_000;
 
 /** The same "could not verify" shape `loadRestoreConfirmPreview`'s own failed fetch produces
- *  (`available: false`, every row passed through unfiltered) — for a caller whose own wrapping
+ *  (`available: false`, every `done` row passed through unfiltered, every `uncertain` row dropped
+ *  and counted in `uncertainDropped`) — for a caller whose own wrapping
  *  `timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS)` fires before the read itself does (#255 P2a). A
  *  `timeout` error surfaces *outside* `loadRestoreConfirmPreview`/`filterAlreadyPresentForRestore`,
  *  so their own internal `catchError` never sees it and never gets a chance to build this shape —
  *  a caller applying its own timeout on top has to build it itself, from exactly the rows it sent.
- *  Never reduces `rows` to nothing on its own (unlike a genuine filtered answer): a caller that
- *  reaches for this always still has a confirmation to open, hedged as an upper bound
- *  (`RestoreConfirmDialogData.countIsUpperBound`), never the "everything already there" shortcut. */
+ *  A caller that reaches for this always still has a confirmation to open, hedged as an upper bound
+ *  (`RestoreConfirmDialogData.countIsUpperBound`), never the "everything already there" shortcut —
+ *  even when every row was `uncertain` and `rows` ends up empty (`available` is `false` either way,
+ *  and the confirmation then names `uncertainDropped` with nothing left to confirm). */
 export function restoreConfirmPreviewUnavailable<T extends RestoreFilterRow>(
   rows: readonly T[],
 ): RestoreConfirmPreview<T> {
+  const { vouched, uncertainDropped } = withoutUncertain(rows);
   return {
-    rows: [...rows],
+    rows: vouched,
     skipped: 0,
     skippedNameTaken: 0,
+    uncertainDropped,
     available: false,
     complete: false,
-    names: rows.map((row) => row.name),
-    addCount: restoreAddCount(rows),
+    names: vouched.map((row) => row.name),
+    addCount: restoreAddCount(vouched),
   };
+}
+
+/** `rows` minus every `uncertain` one, plus how many that was — the fail-closed half of
+ *  `filterAlreadyPresentForRestore` for a read that failed or stopped short (see its doc). Always a
+ *  fresh array, never `rows` itself. */
+function withoutUncertain<T extends RestoreFilterRow>(
+  rows: readonly T[],
+): { vouched: T[]; uncertainDropped: number } {
+  const vouched = rows.filter((row) => row.uncertain !== true);
+  return { vouched, uncertainDropped: rows.length - vouched.length };
 }
 
 /** How many `ADD`s `rows` will send — one per alias, a `null` alias (an entry without one) included,

@@ -58,7 +58,13 @@ describe('buildPurgeRunProtocol', () => {
     expect(proto.kind).toBe('purge-run');
     expect(proto.channelName).toBe('sensitron');
     expect(proto.meta.emoteSetId).toBe('set-1');
-    expect(proto.meta.counts).toEqual({ requested: 3, succeeded: 1, failed: 1, cancelled: 1 });
+    expect(proto.meta.counts).toEqual({
+      requested: 3,
+      succeeded: 1,
+      failed: 1,
+      cancelled: 1,
+      unknown: 0,
+    });
     expect(proto.rows).toHaveLength(3);
     expect(proto.rows[1].errorMessage).toBe('boom');
   });
@@ -67,12 +73,32 @@ describe('buildPurgeRunProtocol', () => {
     expect(purgeRunJson(protocol())).not.toMatch(/token|authorization|bearer/i);
   });
 
-  // #200 K5 finding C: the row shape changed with K5 (nullable emoteId, aliases), so this kind
-  // stamps its own version rather than the shared envelope default — a reader that predates the
-  // change must refuse a file in the new shape, not parse it silently short.
+  // #200 K5 finding C, then #275: the row shape changed with K5 (nullable emoteId, aliases) and
+  // again with #275 (status can be 'unknown'), so this kind stamps its own version rather than the
+  // shared envelope default — a reader that predates a change must refuse a file in the new shape,
+  // not parse it silently short.
   it('stamps its own formatVersion, independent of the shared envelope default', () => {
     expect(protocol().formatVersion).toBe(PURGE_RUN_FORMAT_VERSION);
-    expect(PURGE_RUN_FORMAT_VERSION).toBe(2);
+    expect(PURGE_RUN_FORMAT_VERSION).toBe(3);
+  });
+
+  // #275: an `unknown` row (a delete/restore the settling re-read never confirmed) is counted
+  // alongside the other terminal statuses, and the sum still equals `requested`.
+  it('counts unknown rows, summing to requested', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      items: [ITEMS[0], { ...ITEMS[1], status: 'unknown' }, { ...ITEMS[2], status: 'unknown' }],
+    });
+    expect(proto.meta.counts).toEqual({
+      requested: 3,
+      succeeded: 1,
+      failed: 0,
+      cancelled: 0,
+      unknown: 2,
+    });
   });
 
   // Spec #200, F3/AK 68: a row without a local emote is written, never dropped — a missing row
@@ -148,6 +174,71 @@ describe('parsePurgeRunProtocol', () => {
     }
   });
 
+  // #275: a v3 file's `done` and `unknown` rows both come back restorable — `failed` and
+  // `cancelled` stay out exactly as before. Only the `unknown` row carries the `uncertain` marker.
+  it('returns done and unknown rows, marking only the unknown ones uncertain', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      items: [
+        ITEMS[0], // done
+        ITEMS[1], // failed
+        ITEMS[2], // cancelled
+        {
+          key: 'i4',
+          emoteId: 'i4',
+          sevenTvEmoteId: '7tv-4',
+          name: 'Clap',
+          status: 'unknown',
+          completedSteps: 1,
+          failedStep: 0,
+        },
+      ],
+    });
+    const result = parsePurgeRunProtocol(purgeRunJson(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // toStrictEqual, not toEqual: the done row must have no `uncertain` key at all, not merely an
+      // undefined one — toEqual would let either past.
+      expect(result.rows).toStrictEqual([
+        { emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+        {
+          emoteId: 'i4',
+          sevenTvEmoteId: '7tv-4',
+          name: 'Clap',
+          aliases: ['Clap'],
+          uncertain: true,
+        },
+      ]);
+    }
+  });
+
+  // #275: a run that settled with nothing but unknown rows still produces a restorable file.
+  it('accepts a protocol whose only restorable rows are unknown', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      items: [{ ...ITEMS[0], status: 'unknown' }],
+    });
+    const result = parsePurgeRunProtocol(purgeRunJson(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
+        {
+          emoteId: 'i1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'PogU',
+          aliases: ['PogU'],
+          uncertain: true,
+        },
+      ]);
+    }
+  });
+
   it('rejects non-JSON', () => {
     expect(parsePurgeRunProtocol('nope{')).toEqual({
       ok: false,
@@ -194,16 +285,19 @@ describe('parsePurgeRunProtocol', () => {
     });
   });
 
-  it('rejects an unknown format version', () => {
-    const future = purgeRunJson(protocol()).replace(
-      `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
-      '"formatVersion": 99',
-    );
-    expect(parsePurgeRunProtocol(future)).toEqual({
-      ok: false,
-      errorKey: 'restore.import.errors.wrongVersion',
-    });
-  });
+  it.each([99, PURGE_RUN_FORMAT_VERSION + 1])(
+    'rejects an unknown format version (%i)',
+    (version) => {
+      const future = purgeRunJson(protocol()).replace(
+        `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+        `"formatVersion": ${version}`,
+      );
+      expect(parsePurgeRunProtocol(future)).toEqual({
+        ok: false,
+        errorKey: 'restore.import.errors.wrongVersion',
+      });
+    },
+  );
 
   // #200 K5 finding C: a file written before K5 carried formatVersion 1 in today's row shape's
   // absence (a Guid emoteId, no aliases) — it must keep reading, not just the current version.
@@ -216,9 +310,18 @@ describe('parsePurgeRunProtocol', () => {
     expect(result.ok).toBe(true);
   });
 
-  it("accepts formatVersion 2, today's row shape", () => {
-    const result = parsePurgeRunProtocol(purgeRunJson(protocol()));
+  it("accepts formatVersion 2, K5's row shape (before #275), and reads its rows back exactly", () => {
+    const v2 = purgeRunJson(protocol()).replace(
+      `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+      '"formatVersion": 2',
+    );
+    const result = parsePurgeRunProtocol(v2);
     expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
+        { emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      ]);
+    }
   });
 
   // #253 (spec 6.1, E1/E15): the file names its own target — the parser no longer holds it against
@@ -305,14 +408,12 @@ describe('parsePurgeRunProtocol', () => {
     const result = parsePurgeRunProtocol(purgeRunJson(proto));
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.rows).toEqual([
+      expect(result.rows).toStrictEqual([
         {
           emoteId: null,
           sevenTvEmoteId: '7tv-live',
           name: 'LiveOnly',
           aliases: ['LiveOnly', 'LiveTwo'],
-          status: 'done',
-          errorMessage: null,
         },
       ]);
     }
@@ -328,14 +429,34 @@ describe('parsePurgeRunProtocol', () => {
     const result = parsePurgeRunProtocol(JSON.stringify(old));
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.rows).toEqual([
+      expect(result.rows).toStrictEqual([
         {
           emoteId: 'i1',
           sevenTvEmoteId: '7tv-1',
           name: 'PogU',
           aliases: ['PogU'],
-          status: 'done',
-          errorMessage: null,
+        },
+      ]);
+    }
+  });
+
+  // #200 K5 finding C, combined: a genuine v1 file has formatVersion 1 *and* the v1 row shape
+  // (Guid emoteId, no aliases field) together — the two tests above each vary only one of them.
+  it('accepts formatVersion 1 combined with the v1 row shape (Guid emoteId, no aliases)', () => {
+    const v1 = JSON.parse(purgeRunJson(protocol()));
+    v1.formatVersion = 1;
+    for (const row of v1.rows) {
+      delete row.aliases;
+    }
+    const result = parsePurgeRunProtocol(JSON.stringify(v1));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
+        {
+          emoteId: 'i1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'PogU',
+          aliases: ['PogU'],
         },
       ]);
     }

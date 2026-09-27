@@ -36,6 +36,14 @@ const DE_TRANSLATIONS = {
     capacityWarningUpTo:
       'Das könnte die Kapazität überschreiten — 7TV würde überzählige Emotes dann ablehnen.',
     historyNote: 'Die Nutzungshistorie bleibt unverändert.',
+    confirm: {
+      nothingToRestore: 'Nichts wiederherzustellen',
+      uncertainDropped: {
+        one: '{{ count }} unklares Emote wird nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob es noch im Set ist.',
+        other:
+          '{{ count }} unklare Emotes werden nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob sie noch im Set sind.',
+      },
+    },
   },
 };
 
@@ -53,6 +61,7 @@ interface RenderOptions {
   ownerDisplayName?: string;
   trackedChannelName?: string | null;
   foreignToView?: boolean;
+  uncertainDropped?: number;
 }
 
 interface Harness {
@@ -61,6 +70,8 @@ interface Harness {
   detect(): void;
   text(): string;
   button(label: string): HTMLButtonElement;
+  /** The rendered notices, as the `role="status"`/`role="alert"` regions a screen reader meets. */
+  notices(): string[];
 }
 
 describe('RestoreConfirmDialog', () => {
@@ -114,6 +125,7 @@ describe('RestoreConfirmDialog', () => {
       trackedChannelName:
         options.trackedChannelName === undefined ? 'somechannel' : options.trackedChannelName,
       foreignToView: options.foreignToView ?? false,
+      uncertainDropped: options.uncertainDropped ?? 0,
     };
 
     const fixture = TestBed.createComponent(RestoreConfirmDialog);
@@ -129,6 +141,10 @@ describe('RestoreConfirmDialog', () => {
       slots,
       detect: () => fixture.detectChanges(),
       text: () => host.textContent ?? '',
+      notices: () =>
+        Array.from(host.querySelectorAll('[role="status"], [role="alert"]')).map(
+          (notice) => notice.textContent?.trim() ?? '',
+        ),
       button: (label) => {
         const found = buttons().find((button) => button.textContent?.trim() === label);
         if (!found) {
@@ -240,6 +256,82 @@ describe('RestoreConfirmDialog', () => {
     it('shows no foreign-to-view hint for the host-selected set itself', () => {
       const dialog = render({ foreignToView: false });
       expect(dialog.text()).not.toContain('Diese Ansicht zeigt von diesem Lauf nichts.');
+    });
+  });
+
+  // #275 (plan Festlegung 17): unclear rows the open-time check could not vouch for are left out,
+  // and the dialog says how many — the one extra notice this run gets. It may open with nothing
+  // left to confirm; then there is nothing to execute either.
+  describe('unclear rows left out (#275)', () => {
+    const ONE_DROPPED =
+      '1 unklares Emote wird nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob es noch im Set ist.';
+
+    it('announces how many unclear rows were not offered, as a status notice', () => {
+      const dialog = render({ uncertainDropped: 1 });
+
+      expect(dialog.notices()).toContain(ONE_DROPPED);
+    });
+
+    it('uses the plural notice for several unclear rows', () => {
+      const dialog = render({ uncertainDropped: 3 });
+
+      expect(dialog.text()).toContain('3 unklare Emotes werden nicht wiederhergestellt');
+    });
+
+    it('shows no such notice when none were left out', () => {
+      const dialog = render({ uncertainDropped: 0 });
+
+      expect(dialog.text()).not.toContain('nicht wiederhergestellt');
+    });
+
+    it('disables the executor when nothing is left to add, but still lets the user cancel', () => {
+      const dialog = render({ names: [], addCount: 0, uncertainDropped: 2 });
+
+      expect(dialog.button(CONFIRM).disabled).toBe(true);
+      expect(dialog.button(CANCEL).disabled).toBe(false);
+      dialog.button(CANCEL).click();
+      expect(closed).toEqual([false]);
+    });
+
+    // UI-Designsprache §7: a disabled executor names its reason as linked text — here the one
+    // notice that already says it, pointed at rather than repeated.
+    it('describes the disabled executor by the notice that says why', () => {
+      const dialog = render({ names: [], addCount: 0, uncertainDropped: 1 });
+
+      const reasonId = dialog.button(CONFIRM).getAttribute('aria-describedby');
+      expect(reasonId).not.toBeNull();
+      const reason = (dialog.fixture.nativeElement as HTMLElement).querySelector(`#${reasonId}`);
+      expect(reason?.textContent?.trim()).toBe(ONE_DROPPED);
+    });
+
+    it('keeps the executor enabled, and undescribed, while at least one ADD is left', () => {
+      const dialog = render({ names: ['PogU'], addCount: 1, uncertainDropped: 2 });
+
+      expect(dialog.button(CONFIRM).disabled).toBe(false);
+      expect(dialog.button(CONFIRM).hasAttribute('aria-describedby')).toBe(false);
+    });
+
+    it('says there is nothing to restore instead of counting zero emotes, even as an upper bound', () => {
+      const dialog = render({
+        names: [],
+        addCount: 0,
+        uncertainDropped: 1,
+        countIsUpperBound: true,
+      });
+
+      expect(dialog.text()).toContain('Nichts wiederherzustellen');
+      expect(dialog.text()).not.toContain('0 Emotes');
+    });
+
+    it('projects no slots when nothing is left to add', () => {
+      const dialog = render({
+        names: [],
+        addCount: 0,
+        uncertainDropped: 1,
+        slots: { occupied: 3, capacity: 100 },
+      });
+
+      expect(dialog.text()).not.toContain('Slots belegt');
     });
   });
 

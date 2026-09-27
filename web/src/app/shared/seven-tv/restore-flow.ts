@@ -21,6 +21,7 @@ import {
   RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS,
   RestoreConfirmPreview,
   restoreConfirmPreviewUnavailable,
+  RestoreFilterRow,
 } from './already-present-filter';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
 import { loadRestoreSlotPreview, RestoreSlotPreview } from './restore-slot-preview';
@@ -106,6 +107,10 @@ export interface RestoreFlowDeps {
   destroyRef: DestroyRef;
 }
 
+/** One row as both duplicate checks of `startRestoreFlow` see it: the queue row the run needs,
+ *  plus the `uncertain` marker only the checks read (`RestoreFilterRow.uncertain`). */
+type RestoreFlowRow = RestoreQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
+
 /**
  * Confirms and starts one restore run: 7TV token → confirmation with a live slot preview → run.
  *
@@ -139,12 +144,16 @@ export function startRestoreFlow(
     // alias, so a #74 duplicate comes back under both of its names, and a `null` alias as an
     // `ADD` without one. `defaultName` names that aliasless queue row. Built once, up here: both
     // the open-time preview below and the confirm-time run start from the same rows.
-    const emotes: RestoreQueueEmote[] = rows.map((row) => ({
+    // `uncertain` (#275: a purge-run row whose delete ended `unknown`) rides along for the two
+    // duplicate checks below, which drop such a row whenever their read cannot vouch for it — the
+    // rule lives in `filterAlreadyPresentForRestore`, not here. The run itself never reads it.
+    const emotes: RestoreFlowRow[] = rows.map((row) => ({
       emoteId: row.emoteId ?? undefined,
       sevenTvEmoteId: row.sevenTvEmoteId,
       name: row.name,
       aliases: row.aliases,
       defaultName: row.defaultName,
+      ...(row.uncertain ? { uncertain: true as const } : {}),
     }));
 
     // Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter"): the duplicate/
@@ -181,8 +190,10 @@ export function startRestoreFlow(
         error: () => handlePreview(restoreConfirmPreviewUnavailable(emotes)),
       });
 
-    function handlePreview(preview: RestoreConfirmPreview<RestoreQueueEmote>): void {
-      if (preview.available && preview.rows.length === 0) {
+    function handlePreview(preview: RestoreConfirmPreview<RestoreFlowRow>): void {
+      // #275: not when unclear rows were left out — "everything already there" would be untrue
+      // for them; the confirmation opens instead and says how many were not offered.
+      if (preview.available && preview.rows.length === 0 && preview.uncertainDropped === 0) {
         // Nothing survives the filter — every row is already back (or its alias is taken) and
         // there is nothing left to confirm. A dialog with zero names and a button that could only
         // ever restore nothing would ask a question with no real answer; the existing "everything
@@ -222,7 +233,11 @@ export function startRestoreFlow(
       // A5) — same fork `loadImportTarget` also uses. Unrelated to the duplicate check above: this
       // one reads occupied/capacity counts, never entries.
       const slots = signal<RestoreSlotPreview>(null);
-      loadRestoreSlotPreview(deps, target).subscribe((slotPreview) => slots.set(slotPreview));
+      // #275: a confirmation with nothing left to add (every row an unclear one the check could not
+      // vouch for) projects nothing, so it spends no 7TV read on a projection either.
+      if (preview.addCount > 0) {
+        loadRestoreSlotPreview(deps, target).subscribe((slotPreview) => slots.set(slotPreview));
+      }
 
       const data: RestoreConfirmDialogData = {
         names: preview.names,
@@ -243,6 +258,7 @@ export function startRestoreFlow(
         // Spec E21: a different set of the page's own channel, and a page with no selected set at
         // all, both count as foreign — never a channel comparison.
         foreignToView: target.emoteSetId !== target.hostSelectedSetId,
+        uncertainDropped: preview.uncertainDropped,
       };
       openRestoreConfirmDialog(deps.dialog, data).closed.subscribe((confirmed) => {
         if (!confirmed) {

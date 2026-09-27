@@ -28,6 +28,7 @@ import {
   SevenTvRunArbiter,
   SevenTvRunClaim,
 } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { unknownCount } from '../../core/seven-tv/seven-tv-run-settlement';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
@@ -53,6 +54,7 @@ import {
   RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS,
   RestoreConfirmPreview,
   restoreConfirmPreviewUnavailable,
+  RestoreFilterRow,
 } from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
 import { ResolvedRestoreTarget, restoreStartTarget } from './restore-flow';
@@ -121,6 +123,21 @@ const LIVE_ALIAS_READ_TIMEOUT_MS = 20_000;
 /** Outcome of the live alias read `openConfirmDialog` starts for an active-set delete: the entries,
  *  or the translation key of the reason the delete is blocked. */
 type LiveAliasRead = { entries: SevenTvSetEntries } | { blockedReasonKey: string };
+
+/** One row the restore entry hands both duplicate checks: the queue row the run needs, plus the
+ *  `uncertain` marker (#275) set from an `unknown` delete row — only the checks read it
+ *  (`RestoreFilterRow.uncertain`), the run never does. */
+type RestoreCandidate = DeleteQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
+
+/** The finished delete run's rows the restore entry offers (#275, plan Festlegung 16): every `done`
+ *  row — the emote provably left the set — and every `unknown` row, whose delete may or may not
+ *  have landed; both with or without a local emote, since the restore is keyed by the 7TV id.
+ *  `failed`/`cancelled` rows never left the set and stay out. Whether an `unknown` row is actually
+ *  sent is the duplicate checks' call (`filterAlreadyPresentForRestore`, fail-closed), not this
+ *  function's. */
+function restorableItems(items: readonly RunQueueItem[]): RunQueueItem[] {
+  return items.filter((item) => item.status === 'done' || item.status === 'unknown');
+}
 
 /** A confirmed delete, or a restore this panel's own button tried to start, that did not run, and
  *  why — shown until the next attempt. `leadKey` says what happened, `reasonKey` why. Shared by
@@ -252,6 +269,7 @@ export interface DeletableEmote {
         <app-run-progress-panel
           [items]="deleteService.queue()"
           [isRunning]="deleteService.isRunning()"
+          [settling]="deleteService.run()?.phase === 'settling'"
           [dismissible]="deleteService.run()?.phase === 'closed'"
           [syncReport]="deleteService.syncReport()"
           [syncReportReason]="deleteService.syncReportReason()"
@@ -265,7 +283,20 @@ export interface DeletableEmote {
               <button type="button" appButton="neutral" (click)="openProtocolExport()">
                 {{ 'massDelete.summary.downloadProtocol' | transloco }}
               </button>
-              @if (run.result.doneKeys.length > 0 && arbiter.activeRun() === null) {
+              @if (unknownRowCount() > 0) {
+                <!-- #275: the settled run still has rows 7TV's answer never clarified — the backend
+                     resync this run already triggered (a report's own, or the client fallback for a
+                     run with nothing to report) heals them without another click, but the admin
+                     needs telling to go check the set directly, and that a restore from the protocol
+                     below still offers these rows back in case the resync finds them still gone. -->
+                <span class="text-xs text-fg-muted">
+                  {{ unknownRowsKey() | transloco: { count: unknownRowCount() } }}
+                </span>
+                <span class="text-xs text-fg-muted">
+                  {{ unknownInProtocolKey() | transloco }}
+                </span>
+              }
+              @if (restoreOffered() && arbiter.activeRun() === null) {
                 <!-- The two-tier *shape* of the destructive convention, not its colour: outline
                      triggers, the dialog's primary-solid executes — restore is constructive.
                      Disabled while restoreConfirmPending() (#255 P2a): the target check and the
@@ -506,6 +537,33 @@ export class MassDeletePanel {
   /** Live slot view for the restore-confirm dialog, loaded when that dialog opens. */
   private readonly restoreSlots = signal<RestoreSlotPreview>(null);
 
+  /** Whether the finished run has anything the restore entry could offer — a `done` or, since
+   *  #275, an `unknown` row (`restorableItems`). An `unknown`-only run shows the entry too, even
+   *  though its `doneKeys` are empty. */
+  protected readonly restoreOffered = computed(() => {
+    const run = this.deleteService.lastRun();
+    return run !== null && restorableItems(run.result.items).length > 0;
+  });
+
+  /** How many of the settled run's rows 7TV's answer never clarified (#275) — `0` before the run has
+   *  settled (`lastRun()` is `null` while running or settling), same source `restoreOffered` reads. */
+  protected readonly unknownRowCount = computed(() => {
+    const run = this.deleteService.lastRun();
+    return run === null ? 0 : unknownCount(run.result.items);
+  });
+
+  protected readonly unknownRowsKey = computed(() =>
+    pluralKey(this.unknownRowCount(), 'massDelete.summary.unknownRows'),
+  );
+
+  /** Delete-only companion line to `unknownRowsKey` (Plan-275 Festlegung 18): the restore entry
+   *  right below already offers these very rows back from the protocol, in case the resync the
+   *  settle triggered still finds them gone. Restore's own summary has no such second line — a
+   *  restore's protocol is not itself restorable. */
+  protected readonly unknownInProtocolKey = computed(() =>
+    pluralKey(this.unknownRowCount(), 'massDelete.summary.unknownInProtocol'),
+  );
+
   constructor() {
     this.destroyRef.onDestroy(() => (this.destroyed = true));
 
@@ -525,8 +583,28 @@ export class MassDeletePanel {
         return;
       }
 
-      // 'idle' also covers a run in which nothing succeeded — there is nothing to report either way.
-      if (notifiedForThisRun || report === 'idle' || report === 'pending') {
+      if (notifiedForThisRun) {
+        return;
+      }
+
+      // 'idle' also covers a run in which nothing succeeded — usually nothing to report either way,
+      // except the nothing-but-unknown case (#275, Festlegung 13 (a)): every remaining row stayed
+      // `unknown`, none `done`, so `settleRun` never sends a sync-deleted call and `syncReport` stays
+      // `idle` for good — the service asks the backend for a resync of the active set instead. What
+      // this reload mainly does is clear the host's selection, so the rows this run may or may not
+      // have deleted do not stay marked as if nothing had happened. Its refetch will usually still
+      // see the state from before that resync, which runs asynchronously: the new state reaches the
+      // page through `channel.synced` once the resync is done, like any other sync.
+      if (report === 'idle') {
+        const run = this.deleteService.lastRun();
+        if (run !== null && unknownCount(run.result.items) > 0) {
+          notifiedForThisRun = true;
+          this.reloadRequested.emit();
+        }
+        return;
+      }
+
+      if (report === 'pending') {
         return;
       }
 
@@ -665,9 +743,9 @@ export class MassDeletePanel {
     if (!run || this.arbiter.activeRun() !== null) {
       return;
     }
-    // Every done row, with or without a local emote — the restore is keyed by the 7TV id.
-    const doneItems = run.result.items.filter((item) => item.status === 'done');
-    if (doneItems.length === 0) {
+    // Every done and unknown row (#275), with or without a local emote — see `restorableItems`.
+    const restoreItems = restorableItems(run.result.items);
+    if (restoreItems.length === 0) {
       return;
     }
     // #256 P3-3 (Plan-256 review): the delete service is a root singleton, so its finished run can
@@ -742,13 +820,13 @@ export class MassDeletePanel {
             openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
               if (saved) {
                 this.restoreConfirmPending.set(true);
-                this.openRestoreConfirmDialog(target, doneItems);
+                this.openRestoreConfirmDialog(target, restoreItems);
               }
             });
             return;
           }
           handedOff = true;
-          this.openRestoreConfirmDialog(target, doneItems);
+          this.openRestoreConfirmDialog(target, restoreItems);
         },
         // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
         // allowed" (F3) — the same distinction `openConfirmDialog`'s own pre-check makes.
@@ -767,13 +845,16 @@ export class MassDeletePanel {
    *  (it only locks while the run is still writing). */
   private openRestoreConfirmDialog(
     target: ResolvedRestoreTarget,
-    doneItems: readonly RunQueueItem[],
+    restoreItems: readonly RunQueueItem[],
   ): void {
-    const emotes: DeleteQueueEmote[] = doneItems.map((item) => ({
+    // #275: an `unknown` row carries the `uncertain` marker into both duplicate checks, which drop
+    // it whenever their read cannot vouch for it — the rule lives in the filter, not here.
+    const emotes: RestoreCandidate[] = restoreItems.map((item) => ({
       emoteId: item.emoteId,
       sevenTvEmoteId: item.sevenTvEmoteId,
       name: item.name,
       aliases: item.aliases,
+      ...(item.status === 'unknown' ? { uncertain: true as const } : {}),
     }));
 
     // Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter") — same open-time
@@ -812,7 +893,7 @@ export class MassDeletePanel {
   }
 
   /** `emotes` is always the full, unfiltered list `openRestoreConfirmDialog` built from
-   *  `doneItems` — never `preview.rows` — because the confirm-time re-check below (`closed`'s
+   *  `restoreItems` — never `preview.rows` — because the confirm-time re-check below (`closed`'s
    *  handler) has to run against the *complete* row set again, fresh, not against this open-time
    *  answer's already-filtered subset (see the comment on that re-check). Its *result*, though, is
    *  clipped back down to `preview.rows` before it ever reaches `startRestore` (#255 P1, Codex
@@ -820,10 +901,12 @@ export class MassDeletePanel {
    *  querying `preview.rows` directly, is the fix. */
   private handleRestoreConfirmPreview(
     target: ResolvedRestoreTarget,
-    emotes: readonly DeleteQueueEmote[],
-    preview: RestoreConfirmPreview<DeleteQueueEmote>,
+    emotes: readonly RestoreCandidate[],
+    preview: RestoreConfirmPreview<RestoreCandidate>,
   ): void {
-    if (preview.available && preview.rows.length === 0) {
+    // #275: not when unclear rows were left out — "everything already there" would be untrue for
+    // them; the confirmation opens instead and says how many were not offered.
+    if (preview.available && preview.rows.length === 0 && preview.uncertainDropped === 0) {
       // Nothing survives the filter — same "everything already there" shortcut `startRestoreFlow`
       // takes, reusing the existing notice instead of a dialog that could only ever show zero
       // names.
@@ -862,10 +945,13 @@ export class MassDeletePanel {
     // Unrelated to the duplicate check above: this one reads occupied/capacity counts, never
     // entries.
     this.restoreSlots.set(null);
-    loadRestoreSlotPreview(
-      { emoteAdminService: this.emoteAdminService, emoteSetService: this.emoteSetService },
-      target,
-    ).subscribe((slotPreview) => this.restoreSlots.set(slotPreview));
+    // #275: nothing left to add projects nothing — no slot read either (same as `restore-flow.ts`).
+    if (preview.addCount > 0) {
+      loadRestoreSlotPreview(
+        { emoteAdminService: this.emoteAdminService, emoteSetService: this.emoteSetService },
+        target,
+      ).subscribe((slotPreview) => this.restoreSlots.set(slotPreview));
+    }
 
     const data: RestoreConfirmDialogData = {
       names: preview.names,
@@ -884,6 +970,7 @@ export class MassDeletePanel {
       // Spec E21: the run's set against the page's *selected* set — a different set of the same
       // channel, and a page with no selection, both count as foreign.
       foreignToView: target.emoteSetId !== target.hostSelectedSetId,
+      uncertainDropped: preview.uncertainDropped,
     };
     openRestoreConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
       if (!confirmed) {

@@ -22,7 +22,7 @@ import {
 } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
-import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
+import { RunItemStatus, RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import {
   SevenTvRunArbiter,
   SevenTvRunClaim,
@@ -96,6 +96,16 @@ const DE_TRANSLATIONS = {
     settling: 'Wird abgeschlossen…',
     summary: {
       counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+      unknownRows: {
+        one: 'Bei {{ count }} Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+        other:
+          'Bei {{ count }} Emotes ist unklar, ob 7TV sie gelöscht hat — bitte das Set bei 7TV prüfen.',
+      },
+      unknownInProtocol: {
+        one: 'Im Protokoll steht es als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.',
+        other:
+          'Im Protokoll stehen sie als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt sie zurück, falls sie fehlen.',
+      },
     },
   },
   // Real text (matches public/i18n/de.json), unlike the other abort-notice families in this fixture
@@ -690,6 +700,25 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     };
   }
 
+  /** A settled result with the given rows, `doneKeys` derived from them as `settleDeleteResult`
+   *  does — for the #275 cases, whose rows are not all `done`. */
+  function settledResult(rows: [key: string, status: RunItemStatus][]): RunResult {
+    return {
+      doneKeys: rows.filter(([, status]) => status === 'done').map(([key]) => key),
+      items: rows.map(([key, status]) => ({
+        key,
+        emoteId: `guid-${key}`,
+        sevenTvEmoteId: key,
+        name: key,
+        status,
+        completedSteps: status === 'done' ? 1 : 0,
+        failedStep: status === 'failed' || status === 'unknown' ? 0 : null,
+      })),
+      startedAt: 0,
+      finishedAt: 1,
+    };
+  }
+
   beforeEach(async () => {
     isRunning = signal(false);
     syncReport = signal<SyncReportState>('idle');
@@ -803,6 +832,227 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
 
     expect(deleted).toEqual([]);
+    expect(reloads).toEqual([]);
+  });
+
+  // #275, Festlegung 13 (a): a run that settled with nothing but `unknown` rows never sends a
+  // sync-deleted call at all — `settleRun` only reports confirmed `doneKeys`, and there are none —
+  // so `syncReport` stays `idle` for good on this run. The service resyncs the active set on its
+  // own instead, but that resync is invisible to this page until something refetches it: without
+  // this branch the effect's own "'idle' means nothing to report either way" comment above would
+  // make it (wrongly) skip this case forever.
+  it('asks the host to reload once for a run that settled with nothing but unknown rows', () => {
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    // syncReport stays 'idle' — never sent, doneKeys is empty.
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: {
+        doneKeys: [],
+        items: [
+          {
+            key: 'e1',
+            emoteId: 'guid-e1',
+            sevenTvEmoteId: 'e1',
+            name: 'e1',
+            status: 'unknown',
+            completedSteps: 0,
+            failedStep: 0,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([]);
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('does not reload a second time when the still-idle run settles again with the same result', () => {
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+    const result = {
+      doneKeys: [],
+      items: [
+        {
+          key: 'e1',
+          emoteId: 'guid-e1',
+          sevenTvEmoteId: 'e1',
+          name: 'e1',
+          status: 'unknown' as const,
+          completedSteps: 0,
+          failedStep: 0,
+        },
+      ],
+      startedAt: 0,
+      finishedAt: 1,
+    };
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+
+    // The effect running again over the same, still-idle run must not re-fire the latch — a fresh
+    // record with the same content re-runs it, as any later write to the shown run would.
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: { ...result } });
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('re-arms the nothing-but-unknown reload for the next run, once a new run started in between', () => {
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: settledResult([['e1', 'unknown']]),
+    });
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+
+    isRunning.set(true);
+    lastRun.set(null);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: settledResult([['e2', 'unknown']]),
+    });
+    fixture.detectChanges();
+
+    expect(reloads).toHaveLength(2);
+  });
+
+  // #275, Festlegung 13 (b): a run that settled with `done` rows next to unclear ones is reported
+  // like any other — the report's own outcome decides, the unclear rows add nothing of their own.
+  it('emits deleted exactly once and no reload when a run with unclear and done rows reports successfully', () => {
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('pending');
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: settledResult([
+        ['e1', 'done'],
+        ['e2', 'unknown'],
+      ]),
+    });
+    fixture.detectChanges();
+    expect(deleted).toEqual([]);
+    expect(reloads).toEqual([]);
+
+    syncReport.set('succeeded');
+    fixture.detectChanges();
+    // A later write to the same, already-reported run must not emit a second time.
+    const shown = lastRun();
+    lastRun.set(shown === null ? null : { ...shown });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([['e1']]);
+    expect(reloads).toEqual([]);
+  });
+
+  it('asks for exactly one reload and emits no deleted when a run with unclear and done rows fails to report', () => {
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('pending');
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: settledResult([
+        ['e1', 'done'],
+        ['e2', 'unknown'],
+      ]),
+    });
+    fixture.detectChanges();
+
+    syncReport.set('failed');
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([]);
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('does not reload for a settled run whose rows were all cancelled', () => {
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: settledResult([
+        ['e1', 'cancelled'],
+        ['e2', 'cancelled'],
+      ]),
+    });
+    fixture.detectChanges();
+
+    expect(reloads).toEqual([]);
+  });
+
+  it('does not reload for a settled run whose only remaining rows are failed/cancelled, never unknown', () => {
+    // Same 'idle' report as the nothing-but-unknown case, but nothing here can ever clarify — this
+    // pins that the new branch does not fire indiscriminately for every idle-report settle.
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: {
+        doneKeys: [],
+        items: [
+          {
+            key: 'e1',
+            emoteId: 'guid-e1',
+            sevenTvEmoteId: 'e1',
+            name: 'e1',
+            status: 'failed',
+            completedSteps: 0,
+            failedStep: 0,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+    fixture.detectChanges();
+
     expect(reloads).toEqual([]);
   });
 
@@ -999,6 +1249,198 @@ describe('MassDeletePanel — Schließen-Gate (#256)', () => {
     fixture.detectChanges();
 
     expect(closeButton()).toBeDefined();
+  });
+});
+
+/**
+ * #275 T4: the settled run's rows 7TV's answer never clarified get their own summary line, read
+ * from the settled `lastRun().result`, never from the live `queue()`. While the run is still
+ * `settling`, `queue()` is the pre-settle snapshot (`seven-tv-delete.service.ts`, Plan-275
+ * Festlegung 11), and a row it still marks `unknown` can flip to `done` once the settle's one
+ * confirming re-read answers — so the dock keeps the bar and the failed rows as they were, but holds
+ * back the summary and the unknown rows until then (review of T4).
+ */
+describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let queue: WritableSignal<RunQueueItem[]>;
+  let run: WritableSignal<DeleteRunInfo | null>;
+  let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+
+  function unknownItem(key: string): RunQueueItem {
+    return {
+      key,
+      emoteId: `guid-${key}`,
+      sevenTvEmoteId: key,
+      name: key,
+      status: 'unknown',
+      completedSteps: 0,
+      failedStep: 0,
+    };
+  }
+
+  function doneItem(key: string): RunQueueItem {
+    return {
+      key,
+      emoteId: `guid-${key}`,
+      sevenTvEmoteId: key,
+      name: key,
+      status: 'done',
+      completedSteps: 1,
+      failedStep: null,
+    };
+  }
+
+  function failedItem(key: string): RunQueueItem {
+    return {
+      key,
+      emoteId: `guid-${key}`,
+      sevenTvEmoteId: key,
+      name: key,
+      status: 'failed',
+      completedSteps: 0,
+      failedStep: 0,
+      errorMessage: 'HTTP 500',
+    };
+  }
+
+  function progressValue(): string | null {
+    return fixture.nativeElement
+      .querySelector('[role="progressbar"]')
+      .getAttribute('aria-valuenow');
+  }
+
+  /** The names of the rows in the failure list's alert region, in order. */
+  function alertRowNames(): string[] {
+    return Array.from(fixture.nativeElement.querySelectorAll('[role="alert"] li'), (row: Element) =>
+      (row.textContent ?? '').split(':')[0].trim(),
+    );
+  }
+
+  function baseRun(overrides: Partial<DeleteRunInfo>): DeleteRunInfo {
+    return {
+      runId: 'delete-1',
+      phase: 'reporting',
+      destructive: true,
+      channelName: 'somechannel',
+      expectedChannelName: 'somechannel',
+      setId: 'set-1',
+      result: null,
+      syncReport: 'idle',
+      syncReportReason: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    queue = signal<RunQueueItem[]>([]);
+    run = signal<DeleteRunInfo | null>(null);
+    lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: panelProviders({
+        deleteService: fakeDeleteService({ isRunning: signal(false), queue, run, lastRun }),
+      }),
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  it('shows the unknownRows and unknownInProtocol lines once the settled run has one unclear row', () => {
+    const items = [doneItem('e1'), unknownItem('e2')];
+    const result: RunResult = { doneKeys: ['e1'], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain(
+      'Bei 1 Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+    );
+    expect(text).toContain(
+      'Im Protokoll steht es als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.',
+    );
+  });
+
+  it('shows neither line once every row in the settled run is done', () => {
+    const items = [doneItem('e1')];
+    const result: RunResult = { doneKeys: ['e1'], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).not.toContain('ist unklar');
+  });
+
+  it('uses the plural wording for both lines once the settled run has more than one unclear row', () => {
+    const items = [unknownItem('e1'), unknownItem('e2')];
+    const result: RunResult = { doneKeys: [], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain(
+      'Bei 2 Emotes ist unklar, ob 7TV sie gelöscht hat — bitte das Set bei 7TV prüfen.',
+    );
+    expect(text).toContain(
+      'Im Protokoll stehen sie als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt sie zurück, falls sie fehlen.',
+    );
+  });
+
+  it('keeps the progress and the failed row while settling, but holds back the summary and the unclear row', () => {
+    queue.set([doneItem('e1'), unknownItem('e2'), failedItem('e3')]);
+    run.set(baseRun({ phase: 'settling', result: null }));
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain('Wird abgeschlossen…');
+    expect(text).toContain('3 / 3 verarbeitet');
+    expect(progressValue()).toBe('3');
+    expect(alertRowNames()).toEqual(['e3']);
+    expect(text).not.toContain('gelöscht ·');
+    expect(text).not.toContain('ist unklar');
+  });
+
+  it('shows the summary and the still unclear row once the run moves from settling to closed', () => {
+    queue.set([doneItem('e1'), unknownItem('e2'), unknownItem('e4'), failedItem('e3')]);
+    run.set(baseRun({ phase: 'settling', result: null }));
+    fixture.detectChanges();
+    const regionBefore = fixture.nativeElement.querySelector('[role="alert"]');
+    expect(alertRowNames()).toEqual(['e3']);
+
+    // The re-read cleared `e4` up; `e2` stayed unclear.
+    const items = [doneItem('e1'), unknownItem('e2'), doneItem('e4'), failedItem('e3')];
+    const result: RunResult = { doneKeys: ['e1', 'e4'], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain('2 gelöscht · 1 fehlgeschlagen · 0 abgebrochen');
+    expect(text).toContain(
+      'Bei 1 Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+    );
+    expect(progressValue()).toBe('4');
+    expect(alertRowNames()).toEqual(['e2', 'e3']);
+    // Same live region throughout: the failed row is not announced a second time.
+    expect(fixture.nativeElement.querySelector('[role="alert"]')).toBe(regionBefore);
   });
 });
 
@@ -3323,6 +3765,253 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
       reasonKey: 'sevenTvRun.notStarted.running',
       reasonParams: { kind: 'die Übertragung' },
     });
+  });
+});
+
+// #275 (plan Festlegungen 16, 17): the dock's restore entry offers a finished run's `unknown` rows
+// alongside its `done` ones, marked `uncertain`; the duplicate checks drop them whenever their read
+// cannot vouch for them, and the confirmation says how many. Same real-pre-check setup as the
+// restore-confirm-path block above, but each test shapes its own finished run.
+describe('MassDeletePanel — unclear rows of a finished delete run are offered for restore, fail-closed (#275)', () => {
+  const RUN_CHANNEL = 'runchannel';
+  const GQL = 'https://7tv.io/v4/gql';
+
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let startRestore: ReturnType<typeof vi.fn>;
+  let dialogOpen: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+  let getSetStatus: ReturnType<typeof vi.fn>;
+
+  function item(
+    sevenTvEmoteId: string,
+    name: string,
+    status: RunQueueItem['status'],
+  ): RunQueueItem {
+    return {
+      key: sevenTvEmoteId,
+      emoteId: `e-${sevenTvEmoteId}`,
+      sevenTvEmoteId,
+      name,
+      status,
+      completedSteps: status === 'done' ? 1 : 0,
+      failedStep: status === 'failed' || status === 'unknown' ? 0 : null,
+    };
+  }
+
+  const DONE = item('7tv-1', 'PogU', 'done');
+  const UNKNOWN = item('7tv-2', 'KEKW', 'unknown');
+
+  /** Mounts the panel over a finished run of `items` — also shown as the dock's queue, so the
+   *  run-progress panel (and with it the restore entry) is on screen. */
+  async function mount(items: RunQueueItem[]): Promise<void> {
+    startRestore = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    dialogOpen = vi.fn().mockReturnValue({ closed });
+    getSetStatus = vi.fn().mockReturnValue(of({ occupiedSlots: 1, capacity: 100 }));
+    const lastRun = signal({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      result: {
+        doneKeys: items.filter((entry) => entry.status === 'done').map((entry) => entry.key),
+        items,
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    const providers = panelProviders({
+      deleteService: fakeDeleteService({ lastRun, queue: signal(items) }),
+      restoreService: { ...fakeRestoreService(), startRestore } as unknown as RestoreServiceFake,
+      dialogOpen,
+      emoteAdminService: { getSetStatus } as unknown as Partial<EmoteAdminService>,
+      emoteSetService: null,
+    });
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('activeSetId', 'set-1');
+    fixture.componentRef.setInput('channelName', RUN_CHANNEL);
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  }
+
+  /** Clicks the restore entry and answers its target pre-check, leaving the open-time duplicate
+   *  check's read for the test to answer. */
+  function openRestore(): void {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush(targetsResponse('set-1', RUN_CHANNEL));
+  }
+
+  /** A single, last page of `entries`; `truncated` makes 7TV's `totalCount` promise one more
+   *  entry than it delivers — a read that succeeds with `complete: false`. */
+  function entriesPage(entries: { id: string; alias: string }[], truncated = false) {
+    return {
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: entries.length + (truncated ? 1 : 0),
+              pageCount: 1,
+              items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function confirmData(): RestoreConfirmDialogData {
+    return dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData;
+  }
+
+  function sentIds(): string[] {
+    return (startRestore.mock.calls[0][1] as { sevenTvEmoteId: string }[]).map(
+      (row) => row.sevenTvEmoteId,
+    );
+  }
+
+  function restoreEntry(): HTMLButtonElement | undefined {
+    return Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'restore.button',
+    );
+  }
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  it('shows the restore entry for a run whose only restorable row is unknown', async () => {
+    await mount([UNKNOWN, item('7tv-3', 'Sadge', 'failed')]);
+
+    expect(restoreEntry()).toBeDefined();
+  });
+
+  it('shows no restore entry for a run with only failed and cancelled rows', async () => {
+    await mount([item('7tv-3', 'Sadge', 'failed'), item('7tv-4', 'Clap', 'cancelled')]);
+
+    expect(restoreEntry()).toBeUndefined();
+  });
+
+  it('offers the unknown row alongside the done one once a complete read vouches for both', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    expect(confirmData().names).toEqual(['PogU', 'KEKW']);
+    expect(confirmData().uncertainDropped).toBe(0);
+  });
+
+  it('marks the unknown row uncertain, so an incomplete open-time read leaves it out and the confirmation counts it', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(confirmData().names).toEqual(['PogU']);
+    expect(confirmData().addCount).toBe(1);
+    expect(confirmData().uncertainDropped).toBe(1);
+  });
+
+  it('keeps a done row fail-open next to a dropped unknown one when the open-time read fails', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+
+    expect(confirmData().names).toEqual(['PogU']);
+    expect(confirmData().uncertainDropped).toBe(1);
+    expect(confirmData().countIsUpperBound).toBe(true);
+  });
+
+  it('opens the confirmation with nothing to add, not the "everything already there" shortcut, when every restorable row was unknown and the read fails', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData().addCount).toBe(0);
+    expect(confirmData().uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('opens the confirmation with nothing to add when every restorable row was unknown and the read is incomplete', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData().addCount).toBe(0);
+    expect(confirmData().uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('spends no slot read on a confirmation with nothing to add', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(getSetStatus).not.toHaveBeenCalled();
+  });
+
+  // Plan Festlegung 16, unchanged fallback: a confirm-time read that *fails* reuses the open-time
+  // rows, which already include the unknown row a complete open-time read vouched for.
+  it('keeps an unknown row the open-time read vouched for when only the confirm-time read fails', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    closed.next(true);
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+
+    expect(sentIds()).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  // Accepted on purpose (operator decision 2026-09-27): a confirm-time read that succeeds but is
+  // incomplete does not fall back — the unknown row the dialog showed is dropped silently, the
+  // done row still goes. It can only ever send less, never a blind ADD.
+  it('drops an unknown row the dialog showed when the confirm-time read succeeds but is incomplete, still sending the done row', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    expect(confirmData().names).toEqual(['PogU', 'KEKW']);
+
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(sentIds()).toEqual(['7tv-1']);
+    expect(startRestore.mock.calls[0][3]).toBe(true);
+  });
+
+  // No special rule once the read is complete: the unknown row's emote is still in the set (its
+  // delete never landed), so it is "already present" like any other and the shortcut is taken.
+  it('takes the "everything already there" shortcut when a complete read finds the unknown row still present', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).toHaveBeenCalledWith(expect.anything(), [], 1, true, 0);
   });
 });
 
