@@ -174,9 +174,9 @@ export interface RunOperation {
    * no reason to weigh) and does not stop the run; `progress` counts it as finished, and it is not
    * among the done keys of the `RunResult`. A `cancel()` that aborts a step's request in flight
    * ends that row `unknown` too, for the same reason. Omitted means `false`: a lost answer then
-   * stays `failed`, and a cancelled request in flight `cancelled`. Set by the delete (#275), the
-   * undo and an import whose plan deletes; an add-only import deliberately does without (#284).
-   * The engine only marks such a row — clearing it up by a re-read of the set is the owning
+   * stays `failed`, and a cancelled request in flight `cancelled`. Set by the delete and the restore
+   * (#275), the undo and an import whose plan deletes; an add-only import deliberately does without
+   * (#284). The engine only marks such a row — clearing it up by a re-read of the set is the owning
    * service's job.
    */
   readonly transportLossIsUnknown?: boolean;

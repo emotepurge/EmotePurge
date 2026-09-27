@@ -110,9 +110,10 @@ function fetchEmoteSetEntriesPage(
  *
  * Asks **7TV itself**, not our database or our Api's preview route: its readers (the pre-run checks
  * in `already-present-filter.ts`, the delete run's alias read in `mass-delete-panel.ts`, and the
- * re-read after a run with an unanswered step in `seven-tv-import.service.ts` and
- * `seven-tv-delete.service.ts`) all need the set as it stands at the moment of the write, and all
- * run *because* the user just asked for a write — our own mirror can lag exactly there (see
+ * re-read after a run with an unanswered step in `seven-tv-import.service.ts`,
+ * `seven-tv-delete.service.ts` and `seven-tv-restore.service.ts`) all need the set as it stands at
+ * the moment of the write, and all run *because* the user just asked for a write — our own mirror
+ * can lag exactly there (see
  * `filterAlreadyPresent`'s doc). It also draws on 7TV's *global* rate-limit bucket, not our Api's
  * shared `ForeignEmoteLookup` limiter, so a delete right after a few set switches is not refused by
  * our own budget.

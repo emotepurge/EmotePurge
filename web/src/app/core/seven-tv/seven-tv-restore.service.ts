@@ -1,7 +1,7 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable, inject, linkedSignal, signal, WritableSignal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { map, retry, throwError, timer } from 'rxjs';
+import { catchError, map, of, retry, switchMap, throwError, timeout, timer } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import {
@@ -12,9 +12,22 @@ import {
 } from './seven-tv-delete.service';
 import { SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
-import { RunOperation, RunQueueEmote, RunResult, SevenTvRunEngine } from './seven-tv-run-engine';
+import {
+  RunOperation,
+  RunQueueEmote,
+  RunQueueItem,
+  RunResult,
+  SevenTvRunEngine,
+} from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
+import {
+  CANCEL_SETTLE_GRACE_MS,
+  SET_ENTRIES_READ_TIMEOUT_MS,
+  settleRestoreResult,
+  unknownCount,
+} from './seven-tv-run-settlement';
+import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
   SyncReportOutcome,
@@ -46,7 +59,13 @@ const ADD_EMOTE_MUTATION = `
 
 /** The `ADD` of one restore run. The alias each queue row sends is looked up by its key in
  *  `aliasByKey` (built together with the queue by `toRestoreQueue`, so every key is in it) rather
- *  than read from the row's `name`, which for an entry without an alias is only its display name. */
+ *  than read from the row's `name`, which for an entry without an alias is only its display name.
+ *  `transportLossIsUnknown` (#275, Plan-275 Festlegung 1, mirroring `REMOVE_OPERATION`): an `ADD`
+ *  whose answer never came out of 7TV's GraphQL layer — no answer, a 5xx, or a `cancel()` that
+ *  aborted it in flight — may still have landed, so its row ends `unknown` rather than
+ *  `failed`/`cancelled` and is cleared up by the run's one re-read
+ *  (`SevenTvRestoreService.onRunComplete`). A 4xx and a GraphQL rejection stay `failed`, a cancel
+ *  between two rows or in a rate-limit pause stays `cancelled`. */
 function addOperation(aliasByKey: ReadonlyMap<string, string | null>): RunOperation {
   return {
     label: 'restore',
@@ -58,6 +77,7 @@ function addOperation(aliasByKey: ReadonlyMap<string, string | null>): RunOperat
         alias: aliasByKey.get(emote.key),
       },
     }),
+    transportLossIsUnknown: true,
   };
 }
 
@@ -115,12 +135,16 @@ export interface RestoreStartTarget {
 
 /**
  * One restore run, from the moment it starts to the moment its closing report reaches an end state
- * (#256, `SevenTvRunLifecycle`): `running → reporting → closed` on its own record — a restore never
- * re-reads, so it never sees `settling`. `runId` is the identity a late answer or a manual retry
- * finds it by; the record is replaced by a new object on every change, never mutated (see the
- * identical note on `DeleteRunInfo` in `seven-tv-delete.service.ts` and on `ImportRunInfo` in
- * `seven-tv-import.service.ts`). `destructive` is always `false`: a restore only ever `ADD`s, so it
- * never arms the tab's unload guard (Plan-256 Festlegung 6).
+ * (#256, `SevenTvRunLifecycle`): `running → (settling →) reporting → closed` on its own record. A
+ * run that ends with at least one `unknown` row — an `ADD` whose answer was lost or that a cancel
+ * aborted in flight — is `settling` while the target set is re-read once (#275, Plan-275 Festlegung
+ * 2, mirroring the delete); a run without one goes straight to `reporting`/`closed` as before.
+ * `runId` is the identity a late answer or a manual retry finds it by; the record is replaced by a
+ * new object on every change, never mutated (see the identical note on `DeleteRunInfo` in
+ * `seven-tv-delete.service.ts` and on `ImportRunInfo` in `seven-tv-import.service.ts`).
+ * `destructive` is always `false`: a restore only ever `ADD`s, so it never arms the tab's unload
+ * guard (Plan-256 Festlegung 6) — not even while `settling` (Plan-275: restore stays non-destructive
+ * and gets no guard, unlike the delete).
  */
 export interface RestoreRunInfo extends RunRecordBase {
   /** The set the run re-adds into, frozen when it starts (spec #200, 7.2, AK 71) — the report and
@@ -137,7 +161,11 @@ export interface RestoreRunInfo extends RunRecordBase {
   setName: string;
   /** Display only (the dock's target line): the tracked channel or the owner's display name. */
   ownerOrChannelLabel: string;
-  /** `null` while the run is in flight; set once the engine reports the run complete. */
+  /** `null` while the run is in flight **and while it is `settling`**; set once, to the settled
+   *  outcome, in the same update that moves the run to `reporting` (Plan-275 Festlegung 10) — so
+   *  every reader (`run()`, `RestoreProgressSection`'s summary, a later protocol download) only
+   *  ever sees the one final result, never an interim snapshot with rows the re-read is about to
+   *  clear up. */
   result: RunResult | null;
   /** This run's `sync-restored` report — `SevenTvRestoreService.syncReport` projects it for the
    *  shown run. */
@@ -168,19 +196,24 @@ export interface RestoreRunInfo extends RunRecordBase {
  * AK 36); the cooldown (F15) absorbs a duplicate against a resync the backend or an earlier run
  * already triggered.
  *
- * Every run completes run-bound (#256, `SevenTvRunLifecycle`): `running → reporting → closed` on
- * its own record, whether or not the dock still shows it. `reset()` and a newer run only change
- * what is shown. `isSettling` and `destructiveOpen` look across every open run of this service —
- * `destructiveOpen` is always `false` here, since a restore never removes anything.
+ * Every run completes run-bound (#256, `SevenTvRunLifecycle`): `running → (settling →) reporting →
+ * closed` on its own record, whether or not the dock still shows it — `settling` since #275, for a
+ * run that ends with an `ADD` whose answer was lost or that a cancel aborted in flight: the run
+ * re-reads the target set once, positive-only (Plan-275 N1), before it publishes and reports (see
+ * `onRunComplete`/`settleRun`, mirroring `SevenTvDeleteService`). `reset()` and a newer run only
+ * change what is shown. `isSettling` and `destructiveOpen` look across every open run of this
+ * service — `destructiveOpen` is always `false` here, since a restore never removes anything, not
+ * even while `settling`.
  */
 @Injectable({ providedIn: 'root' })
 export class SevenTvRestoreService {
   private readonly channelService = inject(ChannelService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
+  private readonly httpClient = inject(HttpClient);
 
   /** Own engine instance — see the identical note in SevenTvDeleteService. */
   private readonly engine = new SevenTvRunEngine(
-    inject(HttpClient),
+    this.httpClient,
     inject(SevenTvTokenService),
     inject(TranslocoService),
   );
@@ -196,18 +229,29 @@ export class SevenTvRestoreService {
    *  drive the dock through it; production code only writes through the lifecycle. */
   readonly run: WritableSignal<RestoreRunInfo | null> = this.lifecycle.shown;
 
-  readonly queue = this.engine.queue;
+  /** The rows to show (Plan-275 Festlegung 11): the shown run's settled `result.items` once it has
+   *  one, the engine's queue otherwise — live while a run is in flight, and the engine's own
+   *  snapshot (its `unknown` rows included) while the shown run is `settling`. After the settle
+   *  this is *that* run's outcome, with every row the re-read confirmed shown `done`. A
+   *  `linkedSignal` rather than a `computed`, so specs can still drive a dock through
+   *  `queue.set(...)` (Plan-256 Festlegung 14, `restore-progress-section.spec.ts`); production code
+   *  never writes it. */
+  readonly queue = linkedSignal<RunQueueItem[]>(
+    () => this.run()?.result?.items ?? this.engine.queue(),
+  );
   readonly isRunning = this.engine.isRunning;
   readonly rateLimitPauseSeconds = this.engine.rateLimitPauseSeconds;
   readonly progress = this.engine.progress;
 
-  /** True while any run of this service reports — shown or not (#256, contract P1). A restore never
-   *  re-reads, so this is exactly "reporting", never "settling". */
+  /** True while any run of this service re-reads its `unknown` rows or reports — shown or not
+   *  (#256, contract P1; #275 for `settling`). The arbiter counts both as busy, so no other run can
+   *  start until the re-read has settled and the report reached an end state. */
   readonly isSettling = this.lifecycle.isSettling;
 
-  /** Always `false`: no restore row is destructive (#256, contract P3; Plan-256 Festlegung 6). Kept
-   *  as a real projection of the lifecycle, not a literal, so the contract holds even if that ever
-   *  changes. */
+  /** Always `false`: no restore row is destructive (#256, contract P3; Plan-256 Festlegung 6) — not
+   *  even during a `settling` re-read (#275): the read only ever confirms, it removes nothing, so
+   *  restore stays without an unload guard through every phase. Kept as a real projection of the
+   *  lifecycle, not a literal, so the contract holds even if that ever changes. */
   readonly destructiveOpen = this.lifecycle.destructiveOpen;
 
   /** State of the shown run's closing sync-restored call — same contract as the delete's
@@ -281,6 +325,10 @@ export class SevenTvRestoreService {
 
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
+  /** `true` only for the synchronous span of this service's own `cancel()` — see the identical
+   *  field and reasoning on `SevenTvDeleteService`. Per run by construction, no engine field. */
+  private cancelInProgress = false;
+
   constructor() {
     // The one run-service → arbiter edge (#256, contract P4): the arbiter derives "busy" and the
     // tab's unload guard from these three signals; it does not know this service otherwise.
@@ -330,7 +378,7 @@ export class SevenTvRestoreService {
       syncReportReason: null,
       resyncTrigger: 'idle',
     };
-    const { queue, aliasByKey } = toRestoreQueue(emotes);
+    const { queue, aliasByKey, defaultNameByKey } = toRestoreQueue(emotes);
     // Opened *before* the engine is asked to start — see the identical note in
     // SevenTvDeleteService.startDelete (#256 review finding: a synchronous `onComplete` must always
     // find its record already registered).
@@ -339,7 +387,10 @@ export class SevenTvRestoreService {
       target.setId,
       queue,
       addOperation(aliasByKey),
-      (result) => this.onRunComplete(runId, result),
+      // aliasByKey/defaultNameByKey travel in this closure (Plan-275 Festlegung 8), not on the run
+      // record: `onRunComplete`'s settle needs exactly the same per-key maps `addOperation` sent its
+      // `ADD`s with.
+      (result) => this.onRunComplete(runId, result, aliasByKey, defaultNameByKey),
     );
     if (!engineStarted) {
       // Refused (already running, empty list, no token) — leave the counts above (an all-skipped
@@ -349,8 +400,15 @@ export class SevenTvRestoreService {
     }
   }
 
+  /** Stops the run. An `ADD` still in flight ends its row `unknown` (`addOperation`), and the run's
+   *  re-read then waits `CANCEL_SETTLE_GRACE_MS` first — see `onRunComplete`. */
   cancel(): void {
-    this.engine.cancel();
+    this.cancelInProgress = true;
+    try {
+      this.engine.cancel();
+    } finally {
+      this.cancelInProgress = false;
+    }
   }
 
   reset(): void {
@@ -407,26 +465,93 @@ export class SevenTvRestoreService {
     this.reportRestored(current.runId, current.result);
   }
 
-  /** Turns the engine's snapshot into the run's outcome, always on the run's own record (#256:
-   *  there is no early return for a run that is no longer shown; its confirmed adds are reported
-   *  all the same). `phase` and `syncReport` move together in one update so the lifecycle's
-   *  auto-close guard never sees a `reporting` record whose report has not been marked `pending`
-   *  yet — a run with nothing to report goes straight to `closed`. */
-  private onRunComplete(runId: string, result: RunResult): void {
+  /**
+   * Turns the engine's snapshot into the run's outcome, always on the run's own record (#256:
+   * there is no early return for a run that is no longer shown; its confirmed adds are reported all
+   * the same). Mirrors `SevenTvDeleteService.onRunComplete` (#275, Plan-275 Festlegung 3 T3):
+   *
+   * Without an `unknown` row the snapshot settles at once, exactly as before #275. With one, the
+   * run is `settling` (Festlegung 2) and its `result` stays `null` (Festlegung 10) while the target
+   * set (`run.targetSetId`) is read once, tokenless (Festlegung 6): after `CANCEL_SETTLE_GRACE_MS`
+   * when the run ended through this service's own `cancel()` (Festlegung 5 — 7TV may still be
+   * finishing the aborted `ADD`), at once after a plain transport loss. A read that fails, runs out
+   * of `SET_ENTRIES_READ_TIMEOUT_MS` or comes back incomplete is `null`; every path ends in
+   * `settleRun`, so the run always leaves `settling` (Festlegung 19, P6).
+   *
+   * `aliasByKey`/`defaultNameByKey` are the same per-run maps `startRestore` built for
+   * `addOperation` — carried in this closure (Festlegung 8), not on the engine or the record, since
+   * the engine's queue may belong to a newer run by the time the read answers.
+   *
+   * A run `reset()` detached while in flight has left its queue on the engine until now, because
+   * `finish()` builds this very result from it; nothing shows that queue any more, so it is cleared
+   * here.
+   */
+  private onRunComplete(
+    runId: string,
+    result: RunResult,
+    aliasByKey: ReadonlyMap<string, string | null>,
+    defaultNameByKey: ReadonlyMap<string, string | null>,
+  ): void {
+    const afterCancel = this.cancelInProgress;
+    const hasUnknown = unknownCount(result.items) > 0;
+    const settling = hasUnknown
+      ? this.lifecycle.update(runId, (run) => ({ ...run, phase: 'settling' }))
+      : null;
+    if (!this.lifecycle.isShown(runId)) {
+      this.engine.reset();
+    }
+
+    if (!hasUnknown) {
+      this.settleRun(runId, result, null, aliasByKey, defaultNameByKey);
+      return;
+    }
+    if (settling === null) {
+      // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
+      return;
+    }
+
+    const read = loadSevenTvSetEntries(this.httpClient, settling.targetSetId).pipe(
+      timeout(SET_ENTRIES_READ_TIMEOUT_MS),
+      catchError(() => of(null)),
+    );
+    (afterCancel ? timer(CANCEL_SETTLE_GRACE_MS).pipe(switchMap(() => read)) : read).subscribe(
+      (entries) => this.settleRun(runId, result, entries, aliasByKey, defaultNameByKey),
+    );
+  }
+
+  /**
+   * Clears the snapshot's `unknown` rows up against `entries` — positive only (Plan-275 N1,
+   * `settleRestoreResult`): a row whose alias (or, for an aliasless entry, its fallback default
+   * name) the read shows on this id becomes `done`, every other row stays as it was — and publishes
+   * that outcome. `result`, `phase: 'reporting'` and the report state move together in one update,
+   * so the lifecycle's auto-close guard never sees a `reporting` record whose report has not been
+   * marked `pending` yet: a run with nothing to report goes straight to `closed`.
+   *
+   * The report names the settled `doneKeys` only; a row still `unknown` is never reported
+   * (Festlegung 12). What becomes of such a row (Festlegung 13, D6): next to a report, nothing more
+   * — the backend resyncs every channel that holds the set, the active one included, and that heals
+   * the row; should the report fail for good, `resyncAfterReport`'s N1 fallback stands in for it.
+   * Without a report, the active set's channel is resynced directly through `triggerResync`, the
+   * same helper and dock line `resyncAfterReport`'s own N1 fallback uses — never for a non-active or
+   * untracked target (`expectedChannelName === null`).
+   */
+  private settleRun(
+    runId: string,
+    snapshot: RunResult,
+    entries: SevenTvSetEntries | null,
+    aliasByKey: ReadonlyMap<string, string | null>,
+    defaultNameByKey: ReadonlyMap<string, string | null>,
+  ): void {
+    const result = settleRestoreResult(snapshot, entries, aliasByKey, defaultNameByKey);
     const reportsRestored = result.doneKeys.length > 0;
-    const updated = this.lifecycle.update(runId, (run) => ({
+    const settled = this.lifecycle.update(runId, (run) => ({
       ...run,
       result,
       phase: 'reporting',
       syncReport: reportsRestored ? 'pending' : run.syncReport,
       syncReportReason: reportsRestored ? null : run.syncReportReason,
     }));
-    if (!this.lifecycle.isShown(runId)) {
-      // A run `reset()` detached while in flight has left its queue on the engine until now,
-      // because `finish()` builds this very result from it; nothing shows that queue any more.
-      this.engine.reset();
-    }
-    if (updated === null) {
+    if (settled === null) {
       // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
       return;
     }
@@ -437,10 +562,12 @@ export class SevenTvRestoreService {
       // because a superseded, already-`closed` run can be pruned from the lifecycle's map by the
       // time its resync answers — the resync itself is still owed to 7TV's state regardless
       // (see `resyncAfterReport`'s own doc).
-      const expectedChannelName = updated.expectedChannelName;
+      const expectedChannelName = settled.expectedChannelName;
       this.reportRestored(runId, result, (resyncTriggered) =>
         this.resyncAfterReport(runId, expectedChannelName, resyncTriggered),
       );
+    } else if (unknownCount(result.items) > 0 && settled.expectedChannelName !== null) {
+      this.triggerResync(runId, settled.expectedChannelName);
     }
   }
 
@@ -564,6 +691,10 @@ export class SevenTvRestoreService {
     // `'idle'`.
   }
 
+  /** Called from two places: `resyncAfterReport`'s N1 fallback (a report that failed for good), and
+   *  `settleRun`'s D6 (a) (Plan-275 Festlegung 13) for a run settled with `unknown` rows and nothing
+   *  to report at all — there is no report whose backend resync would heal those rows, so this asks
+   *  for it directly. Both callers gate on `expectedChannelName !== null` before calling this. */
   private triggerResync(runId: string, channelName: string): void {
     this.patchRun(runId, { resyncTrigger: 'pending' });
     this.channelService.resync(channelName).subscribe({
@@ -640,9 +771,14 @@ export class SevenTvRestoreService {
 function toRestoreQueue(emotes: readonly RestoreQueueEmote[]): {
   queue: RunQueueEmote[];
   aliasByKey: Map<string, string | null>;
+  /** `emote.defaultName ?? null` per key, from the same emotes and the same key (Plan-275
+   *  Festlegung 8) — the settle's fallback for a `null`-alias row when the live read has nothing
+   *  under `defaultNameById` for that id. */
+  defaultNameByKey: Map<string, string | null>;
 } {
   const rows = new Map<string, RunQueueEmote>();
   const aliasByKey = new Map<string, string | null>();
+  const defaultNameByKey = new Map<string, string | null>();
   for (const emote of emotes) {
     const aliases = emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
     for (const alias of aliases) {
@@ -655,10 +791,11 @@ function toRestoreQueue(emotes: readonly RestoreQueueEmote[]): {
           name: alias ?? (emote.defaultName || emote.sevenTvEmoteId),
         });
         aliasByKey.set(key, alias);
+        defaultNameByKey.set(key, emote.defaultName ?? null);
       }
     }
   }
-  return { queue: [...rows.values()], aliasByKey };
+  return { queue: [...rows.values()], aliasByKey, defaultNameByKey };
 }
 
 /** Whether `channelName` is among the channels a report's answer says the backend resynced —

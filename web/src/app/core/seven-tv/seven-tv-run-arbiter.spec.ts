@@ -447,6 +447,19 @@ describe('SevenTvRunArbiter with the real run services', () => {
 
     restoreService.cancel();
 
+    // #275 (mirroring the delete): the ADD was in flight, so its row is `unknown` and the run
+    // settles by one re-read after the cancel's grace period — busy until then. The read fails
+    // here, the row stays `unknown`, nothing is reported, and the run closes; the resync request
+    // is fire-and-forget.
+    expect(arbiter.activeClaim()).toEqual({ kind: 'restore', phase: 'settling' });
+    vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+    httpMock
+      .expectOne((request) => (request.body as { query: string }).query.includes('emotes(page'))
+      .error(new ProgressEvent('error'));
+    httpMock
+      .expectOne('/api/channels/sensitron/resync')
+      .flush(null, { status: 202, statusText: 'Accepted' });
+
     expect(arbiter.activeRun()).toBeNull();
   });
 

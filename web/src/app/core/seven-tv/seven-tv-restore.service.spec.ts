@@ -1,4 +1,4 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpRequest, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
@@ -12,6 +12,7 @@ import {
   SevenTvDeleteService,
 } from './seven-tv-delete.service';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
+import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
 import { SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
 import {
   RestoreRunInfo,
@@ -78,6 +79,10 @@ function restoredAnswer(
 const EMOTES: DeleteQueueEmote[] = [
   { emoteId: 'internal-1', sevenTvEmoteId: '7tv-1', name: 'PogU' },
   { emoteId: 'internal-2', sevenTvEmoteId: '7tv-2', name: 'KEKW' },
+];
+const THREE_EMOTES: DeleteQueueEmote[] = [
+  ...EMOTES,
+  { emoteId: 'internal-3', sevenTvEmoteId: '7tv-3', name: 'OMEGALUL' },
 ];
 
 // #256 P3-1 (Plan-256 review): a closed run's own record — never goes through the engine, so it
@@ -1355,6 +1360,506 @@ describe('SevenTvRestoreService', () => {
         unresolvedChannel: null,
         resyncTriggered: ['sensitron'],
       });
+    });
+  });
+
+  // #275 (Plan-275 Festlegungen 1, 2, 5, 6, 8, 10–13, 19, 21; mirrors the delete's own "#275
+  // settling an unknown REMOVE" block): an `ADD` whose answer was lost, or that a cancel aborted in
+  // flight, ends its row `unknown`; the run is then `settling` while the target set is read once,
+  // the read only ever confirms (alias/default name present ⇒ `done`), and only the settled outcome
+  // is published and reported.
+  describe('#275 settling an unknown ADD', () => {
+    const isAdd = (request: HttpRequest<unknown>) =>
+      request.url === GQL_ENDPOINT &&
+      (request.body as { query: string }).query.includes('addEmote(');
+    const isSetRead = (request: HttpRequest<unknown>) =>
+      request.url === GQL_ENDPOINT &&
+      (request.body as { query: string }).query.includes('emotes(page: $page, perPage: $perPage)');
+
+    /** One page of the tokenless set read (`loadSevenTvSetEntries`) holding exactly `entries`. */
+    function setEntriesPage(entries: { id: string; alias: string | null; defaultName?: string }[]) {
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: entries.length,
+                pageCount: 1,
+                items: entries.map((entry) => ({
+                  alias: entry.alias,
+                  emote: { id: entry.id, defaultName: entry.defaultName },
+                })),
+              },
+            },
+          },
+        },
+      };
+    }
+
+    /** Starts a one-row run (EMOTES[0], key `7tv-1#PogU`) and cancels it while its ADD is in
+     *  flight. */
+    function cancelOneRowInFlight(overrides: Parameters<typeof target>[0] = {}) {
+      service.startRestore(target(overrides), [EMOTES[0]]);
+      const add = httpMock.expectOne(isAdd);
+      service.cancel();
+      expect(add.cancelled).toBe(true);
+    }
+
+    /** Lets the cancel's grace period run out and returns the one re-read it then sends. */
+    function readAfterGrace() {
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+      return httpMock.expectOne(isSetRead);
+    }
+
+    /** A first report that failed for good is followed by the client's fallback resync of the
+     *  expected channel (addendum N1) — flushed here where a case is about something else. */
+    function flushFallbackResync() {
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+    }
+
+    it('settles an ADD cancelled in flight: settling, no read before the grace period, then one read that confirms, then the report', () => {
+      cancelOneRowInFlight();
+
+      expect(service.isRunning()).toBe(false);
+      expect(service.run()?.phase).toBe('settling');
+      expect(service.isSettling()).toBe(true);
+      // Restore is never destructive — not even while settling (Plan-275: no guard for restore).
+      expect(service.destructiveOpen()).toBe(false);
+      // Festlegung 10: nothing is published before the settle.
+      expect(service.run()?.result).toBeNull();
+      // Festlegung 11: the dock shows the engine's own snapshot meanwhile.
+      expect(service.queue().map((item) => item.status)).toEqual(['unknown']);
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS - 1);
+      httpMock.expectNone(isSetRead);
+      vi.advanceTimersByTime(1);
+      const read = httpMock.expectOne(isSetRead);
+      expect(read.request.headers.has('Authorization')).toBe(false);
+      expect(read.request.body.variables.id).toBe('set-1');
+      read.flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+      expect(service.run()?.phase).toBe('reporting');
+      expect(service.queue()[0]).toMatchObject({ key: '7tv-1#PogU', status: 'done' });
+      expect(service.run()?.result?.doneKeys).toEqual(['7tv-1#PogU']);
+      const syncReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(syncReq.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: 'sensitron',
+      });
+      syncReq.flush(restoredAnswer());
+
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.syncReport()).toBe('succeeded');
+      expect(service.isSettling()).toBe(false);
+      httpMock.expectNone((request) => request.url.endsWith('/resync'));
+    });
+
+    it('leaves the row unknown when the read shows the id only under a foreign alias, reports nothing and resyncs the active set', () => {
+      cancelOneRowInFlight();
+
+      // Under a different alias than the one restored — still not a confirmation, never a guess.
+      readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'SomeoneElse' }]));
+
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.run()?.result?.items[0].status).toBe('unknown');
+      expect(service.run()?.result?.doneKeys).toEqual([]);
+      expect(service.syncReport()).toBe('idle');
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('leaves the row unknown when the id is missing from the set entirely, reports nothing and resyncs the active set', () => {
+      cancelOneRowInFlight();
+
+      readAfterGrace().flush(setEntriesPage([]));
+
+      expect(service.run()?.result?.items[0].status).toBe('unknown');
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('sends no resync for an unknown-only run whose target is not the active set', () => {
+      cancelOneRowInFlight({ active: false });
+
+      readAfterGrace().flush(setEntriesPage([]));
+
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.run()?.result?.items[0].status).toBe('unknown');
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+      httpMock.expectNone((request) => request.url.endsWith('/resync'));
+    });
+
+    it('sends no resync for an unknown-only run on an untracked target', () => {
+      cancelOneRowInFlight({ untracked: true });
+
+      readAfterGrace().flush(setEntriesPage([]));
+
+      expect(service.run()?.result?.items[0].status).toBe('unknown');
+      httpMock.expectNone((request) => request.url.endsWith('/resync'));
+    });
+
+    it.each([
+      [
+        'a failed read',
+        (read: ReturnType<HttpTestingController['expectOne']>) =>
+          read.error(new ProgressEvent('error')),
+      ],
+      [
+        'a GraphQL-level rejection of the read',
+        (read: ReturnType<HttpTestingController['expectOne']>) =>
+          read.flush({ errors: [{ message: 'unavailable' }] }),
+      ],
+      [
+        'an incomplete read',
+        (read: ReturnType<HttpTestingController['expectOne']>) => {
+          // The id is not on this page — but the read only vouches for part of the set.
+          const partial = setEntriesPage([]);
+          partial.data.emoteSets.emoteSet.emotes.totalCount = 7;
+          read.flush(partial);
+        },
+      ],
+    ])('treats %s like no read at all: the row stays unknown, D6 resync', (_label, answer) => {
+      cancelOneRowInFlight();
+
+      answer(readAfterGrace());
+
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.run()?.result?.items[0].status).toBe('unknown');
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('gives a read that never answers SET_ENTRIES_READ_TIMEOUT_MS, then settles without it', () => {
+      cancelOneRowInFlight();
+      const read = readAfterGrace();
+
+      vi.advanceTimersByTime(SET_ENTRIES_READ_TIMEOUT_MS - 1);
+      expect(service.run()?.phase).toBe('settling');
+      vi.advanceTimersByTime(1);
+
+      expect(read.cancelled).toBe(true);
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.run()?.result?.items[0].status).toBe('unknown');
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it.each([
+      [
+        'an HTTP 503',
+        (add: ReturnType<HttpTestingController['expectOne']>) =>
+          add.flush('boom', { status: 503, statusText: 'Unavailable' }),
+      ],
+      [
+        'no answer at all (status 0)',
+        (add: ReturnType<HttpTestingController['expectOne']>) =>
+          add.error(new ProgressEvent('error')),
+      ],
+    ])(
+      'makes %s mid-run unknown, keeps the run going and reads right after it without a grace period',
+      (_label, answer) => {
+        service.startRestore(target(), THREE_EMOTES);
+        httpMock.expectOne(isAdd).flush({});
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        answer(httpMock.expectOne(isAdd));
+        expect(service.queue()[1].status).toBe('unknown');
+        expect(service.isRunning()).toBe(true);
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        httpMock.expectOne(isAdd).flush({});
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+
+        expect(service.run()?.phase).toBe('settling');
+        // No grace period after a plain transport loss: the read is already out. Confirms exactly
+        // the row that was lost — restore needs positive evidence, unlike the delete's "gone".
+        httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+
+        // One report after the settle, with the union in queue order.
+        const syncReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+        expect(syncReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1', '7tv-2', '7tv-3']);
+        syncReq.flush(restoredAnswer());
+        httpMock.expectNone((request) => request.url.endsWith('/resync'));
+      },
+    );
+
+    it('reports only the confirmed rows of a mixed run and leaves the rest to the report’s backend resync — no client resync', () => {
+      service.startRestore(target(), THREE_EMOTES);
+      httpMock.expectOne(isAdd).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(isAdd).flush('boom', { status: 502, statusText: 'Bad Gateway' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(isAdd).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      // Nothing confirms the lost row's alias (KEKW) — it stays unknown.
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([]));
+
+      expect(service.run()?.result?.items.map((item) => item.status)).toEqual([
+        'done',
+        'unknown',
+        'done',
+      ]);
+      const syncReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(syncReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1', '7tv-3']);
+      syncReq.flush(restoredAnswer({ reportedCount: 2, resyncTriggered: ['sensitron'] }));
+
+      expect(service.run()?.phase).toBe('closed');
+      httpMock.expectNone((request) => request.url.endsWith('/resync'));
+    });
+
+    it('resyncs exactly once when a mixed run’s report fails for good', () => {
+      service.startRestore(target(), THREE_EMOTES);
+      httpMock.expectOne(isAdd).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(isAdd).flush('boom', { status: 502, statusText: 'Bad Gateway' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(isAdd).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+
+      // A 403 is final — no automatic retry, straight to the N1 fallback.
+      httpMock
+        .expectOne(SYNC_RESTORED_ENDPOINT)
+        .flush(null, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.syncReport()).toBe('failed');
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+      vi.advanceTimersByTime(10_000);
+      httpMock.expectNone((request) => request.url.endsWith('/resync'));
+    });
+
+    it('settles a cancel in flight after already confirmed rows into one report, not two', () => {
+      service.startRestore(target(), EMOTES);
+      httpMock.expectOne(isAdd).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(isAdd);
+      service.cancel();
+
+      expect(service.queue().map((item) => item.status)).toEqual(['done', 'unknown']);
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT); // the confirmed row waits for the settle as well
+
+      // Nothing confirms KEKW — the second row stays unknown, only the first is reported.
+      readAfterGrace().flush(setEntriesPage([]));
+
+      const syncReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(syncReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+      syncReq.flush(restoredAnswer());
+    });
+
+    it('also waits out the grace period when a cancel between rows ends a run with an older transport loss', () => {
+      service.startRestore(target(), EMOTES);
+      httpMock.expectOne(isAdd).flush('boom', { status: 500, statusText: 'Server Error' });
+      service.cancel(); // between rows: nothing in flight
+
+      expect(service.queue().map((item) => item.status)).toEqual(['unknown', 'cancelled']);
+      httpMock.expectNone(isSetRead);
+
+      readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+      expect(httpMock.expectOne(SYNC_RESTORED_ENDPOINT).request.body.sevenTvEmoteIds).toEqual([
+        '7tv-1',
+      ]);
+    });
+
+    // Aliasless entries only ever come from a transfer-run protocol file (Spec #254 F5): 7TV names
+    // an aliasless ADD after the emote's current default name.
+    describe('a null-alias row from a transfer-run source', () => {
+      function startNullAliasRow(defaultName: string | undefined = 'PogDefault') {
+        service.startRestore(target(), [
+          { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: [null], defaultName },
+        ]);
+        const add = httpMock.expectOne(isAdd);
+        expect(add.request.body.variables.alias).toBeNull();
+        service.cancel();
+      }
+
+      it('confirms it done via aliaslessIds once the read shows the id sitting aliasless', () => {
+        startNullAliasRow();
+
+        readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: null }]));
+
+        expect(service.run()?.result?.items[0].status).toBe('done');
+        const syncReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+        expect(syncReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+        syncReq.flush(restoredAnswer());
+      });
+
+      it('confirms it done via the live default name when 7TV named it instead of leaving it aliasless', () => {
+        startNullAliasRow();
+
+        readAfterGrace().flush(
+          setEntriesPage([{ id: '7tv-1', alias: 'PogDefault', defaultName: 'PogDefault' }]),
+        );
+
+        expect(service.run()?.result?.items[0].status).toBe('done');
+        httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+      });
+
+      it('stays unknown when neither aliasless nor the (file-recorded) default name shows up in the read', () => {
+        startNullAliasRow();
+
+        readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'SomeoneElsesAlias' }]));
+
+        expect(service.run()?.result?.items[0].status).toBe('unknown');
+        httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+        httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+      });
+    });
+
+    it('keeps the settled result referentially stable across the later report patches', () => {
+      cancelOneRowInFlight();
+      expect(service.run()?.result).toBeNull();
+
+      readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+      const settled = service.run()?.result;
+      expect(settled).toBeDefined();
+
+      httpMock
+        .expectOne(SYNC_RESTORED_ENDPOINT)
+        .flush(null, { status: 401, statusText: 'Unauthorized' });
+      flushFallbackResync();
+      expect(service.run()?.result).toBe(settled);
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      // The retry reads the settled doneKeys — the row the re-read confirmed is in it.
+      expect(retryReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+      retryReq.flush(restoredAnswer());
+      expect(service.run()?.result).toBe(settled);
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('refuses a manual retry while the run is still settling', () => {
+      cancelOneRowInFlight();
+
+      service.retrySyncReport();
+
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+      readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+    });
+
+    // Festlegung 19: reset() while settling only drops the display; the record settles, reports and
+    // closes on its own, and a report that then fails shows the run again with its retry.
+    it('reset() while settling detaches the display; the run still settles, reports, and a failed report comes back with its retry', () => {
+      cancelOneRowInFlight();
+
+      service.reset();
+
+      expect(service.run()).toBeNull();
+      expect(service.queue()).toEqual([]);
+      expect(service.isSettling()).toBe(true);
+
+      readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+      expect(service.run()).toBeNull(); // settled on its own record, still not shown
+      const syncReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(syncReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+      syncReq.flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.syncReport()).toBe('failed');
+      expect(service.queue().map((item) => item.status)).toEqual(['done']);
+
+      service.retrySyncReport();
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('resetIfChannelChanged() leaves a settling run shown', () => {
+      cancelOneRowInFlight();
+
+      service.resetIfChannelChanged('other-channel');
+
+      expect(service.run()?.phase).toBe('settling');
+      readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+    });
+
+    // Festlegung 5: the cancel flag lives only for the synchronous span of `cancel()` — a later run
+    // that ends on a plain transport loss must read at once, not inherit an earlier run's grace.
+    it('does not carry a cancelled run’s grace period over to a later run that ends on a transport loss', () => {
+      cancelOneRowInFlight();
+      readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+      expect(service.run()?.phase).toBe('closed');
+
+      service.startRestore(target({ setId: 'set-2' }), [EMOTES[1]]);
+      httpMock.expectOne(isAdd).flush('boom', { status: 503, statusText: 'Unavailable' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      // Already out — no grace period for this run.
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+      expect(httpMock.expectOne(SYNC_RESTORED_SET_2).request.body.sevenTvEmoteIds).toEqual([
+        '7tv-2',
+      ]);
+    });
+
+    // The settle works on the run's own record by runId: a newer run shown in the meantime keeps
+    // the dock, and the superseded run still settles and reports on its own.
+    it('settles and reports a detached run by its runId without touching a newer run shown meanwhile', () => {
+      cancelOneRowInFlight();
+      const runA = service.run()?.runId;
+      service.reset();
+
+      service.startRestore(target({ setId: 'set-2' }), [EMOTES[1]]);
+      const runB = service.run()?.runId;
+      expect(runB).not.toBe(runA);
+      const addB = httpMock.expectOne(isAdd);
+
+      const readA = readAfterGrace();
+      expect(readA.request.body.variables.id).toBe('set-1');
+      readA.flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+      // B stays on the dock, with its own live queue.
+      expect(service.run()?.runId).toBe(runB);
+      expect(service.run()?.phase).toBe('running');
+      expect(service.queue().map((item) => [item.key, item.status])).toEqual([
+        ['7tv-2#KEKW', 'in-progress'],
+      ]);
+      // A reports all the same, for its own set and id.
+      const syncA = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(syncA.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+      syncA.flush(restoredAnswer());
+      expect(service.run()?.runId).toBe(runB);
+
+      addB.flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(SYNC_RESTORED_SET_2).flush(restoredAnswer());
+      expect(service.run()?.result?.doneKeys).toEqual(['7tv-2#KEKW']);
+    });
+
+    it('keeps the arbiter busy through settling and reporting, destructiveOpen staying false throughout', () => {
+      const arbiter = TestBed.inject(SevenTvRunArbiter);
+      cancelOneRowInFlight();
+
+      expect(arbiter.activeClaim()).toEqual({ kind: 'restore', phase: 'settling' });
+      expect(arbiter.destructiveOpen()).toBe(false);
+
+      const read = readAfterGrace();
+      expect(arbiter.activeClaim()).toEqual({ kind: 'restore', phase: 'settling' });
+      read.flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+      // Confirmed done, so the report goes out — reporting counts as settling for the arbiter too.
+      expect(arbiter.activeRun()).toBe('restore');
+      expect(arbiter.destructiveOpen()).toBe(false);
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+
+      expect(arbiter.activeClaim()).toBeNull();
+      expect(arbiter.destructiveOpen()).toBe(false);
+    });
+
+    it('keeps the arbiter busy through settling even for an unknown-only run, freeing up as soon as it closes', () => {
+      const arbiter = TestBed.inject(SevenTvRunArbiter);
+      cancelOneRowInFlight();
+
+      const read = readAfterGrace();
+      read.flush(setEntriesPage([]));
+
+      // Nothing to report — the run closes at once (D6 (a)); the resync it fires off is
+      // fire-and-forget from the arbiter's point of view.
+      expect(arbiter.activeRun()).toBeNull();
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
     });
   });
 });

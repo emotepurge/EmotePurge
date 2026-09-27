@@ -16,11 +16,18 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 sets `transportLossIsUnknown`, `DeleteRunInfo` (`settling`, `result` stays `null` until settled),
 `queue` as a `linkedSignal` projection, `cancel`, `onRunComplete`, new `settleRun`,
 `fallbackResync` for an unknown-only run, `isSettling`/`destructiveOpen`/`lastRun` docs ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (+ spec) — `addOperation` sets
+`transportLossIsUnknown`, `RestoreRunInfo` (`settling`, `result` stays `null` until settled), `queue`
+as a `linkedSignal` projection, `cancel`, `onRunComplete`, new `settleRun`, `triggerResync` called
+directly for an unknown-only run, `toRestoreQueue`'s new `defaultNameByKey`,
+`isSettling`/`destructiveOpen` docs ·
 `web/src/app/core/seven-tv/seven-tv-run-settlement.ts` (`SET_ENTRIES_READ_TIMEOUT_MS`,
-`CANCEL_SETTLE_GRACE_MS`, `settleDeleteResult`, `unknownCount`) ·
+`CANCEL_SETTLE_GRACE_MS`, `settleDeleteResult`, `settleRestoreResult`, `unknownCount`) ·
 `web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts` (`RunPhase` doc only) ·
 `web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`transportLossIsUnknown` doc only) ·
-`web/src/app/core/seven-tv/seven-tv-set-entries.ts` (reader list in the doc only).
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` (reader list in the doc only) ·
+`web/src/app/core/seven-tv/seven-tv-run-arbiter.spec.ts` (a restore's cancel-in-flight case updated
+to settle, like the delete's).
 
 Issue #275 (Plan-275 Festlegungen 1, 2, 5, 6, 10–13, 19, 20). Until now a delete whose `REMOVE` was
 still in flight when the user clicked "Cancel" ended that row `cancelled` — "nothing happened" in
@@ -28,9 +35,9 @@ the dock and in the protocol — although the request had usually reached 7TV an
 of the set; a lost answer (no response, a 5xx) ended it `failed`, which says the same. Both are
 claims the client cannot back.
 
-**The row is `unknown`, and the run re-reads once before it reports.** The delete's operation now
-sets the engine's `transportLossIsUnknown` (the restore's `addOperation` follows in the next step of
-the same plan): no answer, any 5xx, and a `cancel()` that aborts a request in flight end the row
+**The row is `unknown`, and the run re-reads once before it reports.** Both the delete's and the
+restore's operations now set the engine's `transportLossIsUnknown`: no answer, any 5xx, and a
+`cancel()` that aborts a request in flight end the row
 `unknown`; a 4xx and a GraphQL rejection stay `failed`, and a cancel between two rows or during a
 rate-limit pause stays `cancelled`, since nothing was in flight. A run that ends with at least one
 `unknown` row is `settling` while the target set is read once, tokenless, with a
@@ -79,9 +86,9 @@ retry, as for any detached run. A channel switch still only resets a `closed` ru
 **What this revises.** Plan-256 Festlegung 5 and the 2026-09-26 run-bound entry's "Neither ever
 sees settling: a delete/restore run has no re-read" no longer hold (both texts stay as they are).
 For the restore, it also lifts the #230 rule that a run without a deleting row keeps a lost answer
-`failed` (2026-09-23, "A lost answer is `unknown`, not `failed`, for a run that deletes") — once the
-restore service sets the flag in the next step; the add-only *import* remains the deliberate
-exception until #284, which also brings the grace period to import and undo. Import and undo keep
+`failed` (2026-09-23, "A lost answer is `unknown`, not `failed`, for a run that deletes") — the
+restore service now sets the flag too; the add-only *import* remains the deliberate exception until
+#284, which also brings the grace period to import and undo. Import and undo keep
 their own read timeouts (`SETTLE_READ_TIMEOUT_MS`, `UNDO_SETTLE_READ_TIMEOUT_MS`), same value.
 
 **Costs and a known gap.** The delete's unload guard still holds until `closed`, `settling`
