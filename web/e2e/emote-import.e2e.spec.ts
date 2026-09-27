@@ -2712,6 +2712,465 @@ test.describe('running import: the settling window', () => {
     await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
     await expect.poll(() => unloadPrevented(page)).toBe(false);
   });
+
+  /**
+   * #275: a delete or restore run cancelled while its one mutation is out marks that row `unknown`,
+   * waits `CANCEL_SETTLE_GRACE_MS` (3 s) inside `settling`, reads the set once and turns the row
+   * `done` only when that read positively shows the mutation took effect (Plan-275 N1) — otherwise
+   * it stays `unknown`, is never reported, and the active set gets a client resync instead (D6 (a)).
+   *
+   * Both directions are driven by one in-test 7TV set (`mockSevenTvSetState`): "arrived" applies the
+   * held mutation to that set the moment it comes in and only withholds the answer, "never arrived"
+   * withholds it without touching the set — so the settle read answers from what 7TV would hold in
+   * either case. The grace is skipped with `page.clock.runFor(3_000)`; the settle read itself is held
+   * where the test needs the `settling` window open.
+   */
+  test.describe('delete/restore: a cancelled request is settled (#275)', () => {
+    const restoreDock = (page: Page) => page.locator('app-restore-progress-section');
+
+    /** The page's own active set (`set-1`) as 7TV holds it: the three cells of SOURCE_EMOTES. */
+    const LIVE_SET: readonly LiveSetEntry[] = [
+      { id: '7tv-1', aliases: ['CatJAM'] },
+      { id: '7tv-2', aliases: ['KEKW'] },
+      { id: '7tv-3', aliases: ['Pog'] },
+    ];
+
+    /**
+     * A stateful 7TV behind `https://7tv.io/v4/gql`: every set read answers the set as it stands,
+     * every mutation not held changes it and answers. The first mutation of `held.kind` is held
+     * instead — applied on arrival when `held.reaches7tv`, left out entirely otherwise — and its
+     * answer never comes: the page cancels the request itself, and `dropHeld` then only discards
+     * what is left of it (the request is gone by then, so the abort may throw — swallowed).
+     * `afterHeld` is what tells a settle read apart from the reads before the run.
+     */
+    async function mockSevenTvSetState(
+      page: Page,
+      initial: readonly LiveSetEntry[],
+      held: { kind: 'removeEmote' | 'addEmote'; reaches7tv: boolean },
+    ): Promise<{
+      heldArrived: Promise<void>;
+      afterHeld: () => boolean;
+      dropHeld: () => void;
+    }> {
+      const state = new Map<string, (string | null)[]>(
+        initial.map((entry) => [entry.id, [...entry.aliases]]),
+      );
+      const apply = (request: SevenTvGqlRequest): void => {
+        const id = String(request.variables['emoteId']);
+        if (sevenTvGqlRequestKind(request) === 'removeEmote') {
+          state.delete(id);
+        } else {
+          state.set(id, [...(state.get(id) ?? []), request.variables['alias'] as string]);
+        }
+      };
+      await mockSevenTvGql(page, (request) => {
+        const kind = sevenTvGqlRequestKind(request);
+        switch (kind) {
+          case 'setRead':
+            return sevenTvSetReadPayload([...state].map(([id, aliases]) => ({ id, aliases })));
+          case 'removeEmote':
+          case 'addEmote': {
+            apply(request);
+            const id = request.variables['emoteId'];
+            return {
+              data: {
+                emoteSets: {
+                  emoteSet: kind === 'addEmote' ? { addEmote: { id } } : { removeEmote: { id } },
+                },
+              },
+            };
+          }
+          default:
+            throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+        }
+      });
+
+      let arrive!: () => void;
+      const heldArrived = new Promise<void>((resolve) => {
+        arrive = resolve;
+      });
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let holding = false;
+      await page.route('https://7tv.io/v4/gql', async (route) => {
+        const request = route.request().postDataJSON() as SevenTvGqlRequest;
+        if (holding || sevenTvGqlRequestKind(request) !== held.kind) {
+          await route.fallback();
+          return;
+        }
+        holding = true;
+        if (held.reaches7tv) {
+          apply(request);
+        }
+        arrive();
+        await released;
+        await route.abort().catch(() => undefined);
+      });
+      return { heldArrived, afterHeld: () => holding, dropHeld: release };
+    }
+
+    /** The workspace of SOURCE_CHANNEL with its active `set-1` editable and the delete's own
+     *  pre-checks answered — shared by every case, delete or restore, since both run in `set-1`. */
+    async function mockSourceWorkspace(page: Page): Promise<void> {
+      await mockAuthMe(page, AUTH_USER);
+      await mockWorkerHealth(page);
+      await installLiveStub(page);
+      await mockMyChannels(page, [
+        { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+      ]);
+      await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+      await mockTargetPicker(page);
+      await mockSetWarning(page, SOURCE_CHANNEL);
+      await mockChannelScopedResync(page, SOURCE_CHANNEL);
+    }
+
+    /** Every client-side `POST /api/channels/{c}/resync`, recorded as its URL path. */
+    function recordResyncPosts(page: Page): string[] {
+      const posts: string[] = [];
+      page.on('request', (request) => {
+        if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/resync')) {
+          posts.push(new URL(request.url()).pathname);
+        }
+      });
+      return posts;
+    }
+
+    /** Starts a one-row delete of CatJAM and cancels it while its REMOVE is held. */
+    async function cancelDeleteMidRequest(
+      page: Page,
+      heldRemove: { heldArrived: Promise<void> },
+    ): Promise<void> {
+      await gotoUsageStats(page, SOURCE_CHANNEL);
+      await cell(page, 'CatJAM').click();
+      await page.getByRole('button', { name: 'Löschen (1)' }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+
+      await heldRemove.heldArrived;
+      await deleteDock(page).getByRole('button', { name: 'Abbrechen' }).click();
+    }
+
+    /** A `purge-run` protocol in format version 3 for `set-1`, one row per entry. */
+    function purgeRunV3File(rows: { id: string; name: string; status: 'done' | 'unknown' }[]): {
+      name: string;
+      mimeType: string;
+      buffer: Buffer;
+    } {
+      const count = (status: 'done' | 'unknown') =>
+        rows.filter((row) => row.status === status).length;
+      return {
+        name: 'emotepurge_sensitron_purge_2026-09-27-1200.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(
+          JSON.stringify({
+            source: 'emotepurge',
+            kind: 'purge-run',
+            formatVersion: 3,
+            exportedAt: '2026-09-27T12:05:00Z',
+            channelName: SOURCE_CHANNEL,
+            withheld: [],
+            meta: {
+              emoteSetId: 'set-1',
+              startedAt: '2026-09-27T12:00:00Z',
+              finishedAt: '2026-09-27T12:01:00Z',
+              counts: {
+                requested: rows.length,
+                succeeded: count('done'),
+                failed: 0,
+                cancelled: 0,
+                unknown: count('unknown'),
+              },
+            },
+            rows: rows.map((row) => ({
+              emoteId: null,
+              sevenTvEmoteId: row.id,
+              name: row.name,
+              aliases: [row.name],
+              status: row.status,
+              errorMessage: null,
+            })),
+          }),
+          'utf-8',
+        ),
+      };
+    }
+
+    test('a delete cancelled after its REMOVE reached 7TV settles green: the re-read confirms it, sync-deleted names the id, and the guard holds until that report answers', async ({
+      page,
+    }) => {
+      await mockSourceWorkspace(page);
+      const syncDeletedBodies = await mockSyncDeletedInSet(page, 'set-1');
+      const heldRemove = await mockSevenTvSetState(page, LIVE_SET, {
+        kind: 'removeEmote',
+        reaches7tv: true,
+      });
+      const reRead = await holdRoute(
+        page,
+        'https://7tv.io/v4/gql',
+        (request) =>
+          heldRemove.afterHeld() &&
+          sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
+      );
+      const deletedReport = await holdRoute(page, '**/api/seventv/emote-sets/set-1/sync-deleted');
+      await page.clock.install();
+
+      await cancelDeleteMidRequest(page, heldRemove);
+      heldRemove.dropHeld();
+
+      // Settling: no count yet, no unclear row listed, the tab guarded.
+      await expect(deleteDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+      await expect(deleteDock(page).getByText(/gelöscht · .* fehlgeschlagen/)).toHaveCount(0);
+      await expect(deleteDock(page).getByText(/Unklar, ob gelöscht/)).toHaveCount(0);
+      await expect.poll(() => unloadPrevented(page)).toBe(true);
+
+      // The grace, then the one re-read — the REMOVE did land, so CatJAM is gone from it.
+      await page.clock.runFor(3_000);
+      await reRead.arrived;
+      await expect(deleteDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+      reRead.release();
+
+      await deletedReport.arrived;
+      await expect(deleteDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+      expect(await unloadPrevented(page)).toBe(true);
+      deletedReport.release();
+
+      await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+      await expect(
+        deleteDock(page).getByText('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen'),
+      ).toBeVisible();
+      await expect(deleteDock(page).getByText(/Unklar, ob gelöscht/)).toHaveCount(0);
+      await expect(deleteDock(page).getByText(/ist unklar, ob 7TV/)).toHaveCount(0);
+      expect(syncDeletedBodies).toEqual([
+        { sevenTvEmoteIds: ['7tv-1'], expectedChannelName: SOURCE_CHANNEL },
+      ]);
+      await expect.poll(() => unloadPrevented(page)).toBe(false);
+      await expect(cell(page, 'CatJAM')).toHaveCount(0);
+      await expect(cell(page, 'KEKW')).toBeVisible();
+    });
+
+    test('a delete cancelled before its REMOVE reached 7TV stays unclear: no sync-deleted, a resync of the channel, and the protocol carries the row as unknown in format version 3', async ({
+      page,
+    }) => {
+      await mockSourceWorkspace(page);
+      const syncDeletedBodies = await mockSyncDeletedInSet(page, 'set-1');
+      const resyncPosts = recordResyncPosts(page);
+      const heldRemove = await mockSevenTvSetState(page, LIVE_SET, {
+        kind: 'removeEmote',
+        reaches7tv: false,
+      });
+      const reRead = await holdRoute(
+        page,
+        'https://7tv.io/v4/gql',
+        (request) =>
+          heldRemove.afterHeld() &&
+          sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
+      );
+      await page.clock.install();
+
+      await cancelDeleteMidRequest(page, heldRemove);
+      heldRemove.dropHeld();
+
+      await expect(deleteDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+      await page.clock.runFor(3_000);
+      await reRead.arrived;
+      reRead.release();
+
+      // The re-read still shows CatJAM: nothing to confirm, so the row stays unclear — said in the
+      // row itself and twice in the summary — and nothing is reported.
+      await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+      await expect(
+        deleteDock(page).getByText('0 gelöscht · 0 fehlgeschlagen · 0 abgebrochen'),
+      ).toBeVisible();
+      await expect(deleteDock(page).getByText(/^CatJAM: Unklar, ob gelöscht/)).toBeVisible();
+      await expect(
+        deleteDock(page).getByText(
+          'Bei 1 Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+        ),
+      ).toBeVisible();
+      await expect(
+        deleteDock(page).getByText(
+          'Im Protokoll steht es als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.',
+        ),
+      ).toBeVisible();
+      await expect.poll(() => resyncPosts).toEqual([`/api/channels/${SOURCE_CHANNEL}/resync`]);
+      expect(syncDeletedBodies).toEqual([]);
+      await expect.poll(() => unloadPrevented(page)).toBe(false);
+      await expect(cell(page, 'CatJAM')).toBeVisible();
+
+      const downloadPromise = page.waitForEvent('download');
+      await deleteDock(page).getByRole('button', { name: 'Protokoll herunterladen' }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Exportieren' }).click();
+      const download = await downloadPromise;
+      const protocol = JSON.parse(readFileSync((await download.path())!, 'utf-8')) as {
+        formatVersion: number;
+        meta: { counts: Record<string, number> };
+        rows: { sevenTvEmoteId: string; status: string }[];
+      };
+      expect(protocol.formatVersion).toBe(3);
+      expect(protocol.meta.counts).toMatchObject({ requested: 1, succeeded: 0, unknown: 1 });
+      expect(protocol.rows).toMatchObject([{ sevenTvEmoteId: '7tv-1', status: 'unknown' }]);
+    });
+
+    test('a delete cancelled after its REMOVE reached 7TV stays unclear when the re-read fails: no sync-deleted, a resync of the channel', async ({
+      page,
+    }) => {
+      await mockSourceWorkspace(page);
+      const syncDeletedBodies = await mockSyncDeletedInSet(page, 'set-1');
+      const resyncPosts = recordResyncPosts(page);
+      const heldRemove = await mockSevenTvSetState(page, LIVE_SET, {
+        kind: 'removeEmote',
+        reaches7tv: true,
+      });
+      // The settle re-read dies in transport; the reads before the run pass through.
+      await page.route('https://7tv.io/v4/gql', async (route) => {
+        const request = route.request().postDataJSON() as SevenTvGqlRequest;
+        if (heldRemove.afterHeld() && sevenTvGqlRequestKind(request) === 'setRead') {
+          await route.abort();
+          return;
+        }
+        await route.fallback();
+      });
+      await page.clock.install();
+
+      await cancelDeleteMidRequest(page, heldRemove);
+      heldRemove.dropHeld();
+
+      await expect(deleteDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+      await page.clock.runFor(3_000);
+
+      // The REMOVE did land, but nothing could confirm it: unclear, unreported, resynced.
+      await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+      await expect(deleteDock(page).getByText(/^CatJAM: Unklar, ob gelöscht/)).toBeVisible();
+      await expect(
+        deleteDock(page).getByText(
+          'Bei 1 Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+        ),
+      ).toBeVisible();
+      await expect(
+        deleteDock(page).getByText(
+          'Im Protokoll steht es als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.',
+        ),
+      ).toBeVisible();
+      await expect.poll(() => resyncPosts).toEqual([`/api/channels/${SOURCE_CHANNEL}/resync`]);
+      expect(syncDeletedBodies).toEqual([]);
+      await expect.poll(() => unloadPrevented(page)).toBe(false);
+    });
+
+    test('a restore from a protocol file cancelled after its ADD reached 7TV settles green without ever guarding the tab, and sync-restored names the id', async ({
+      page,
+    }) => {
+      await mockSourceWorkspace(page);
+      const syncRestoredBodies = await mockSyncRestoredInSet(page, 'set-1', {
+        channels: [{ channelName: SOURCE_CHANNEL }],
+        resyncTriggered: [SOURCE_CHANNEL],
+      });
+      const heldAdd = await mockSevenTvSetState(page, LIVE_SET, {
+        kind: 'addEmote',
+        reaches7tv: true,
+      });
+      const reRead = await holdRoute(
+        page,
+        'https://7tv.io/v4/gql',
+        (request) =>
+          heldAdd.afterHeld() &&
+          sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
+      );
+      await page.clock.install();
+
+      await gotoUsageStats(page, SOURCE_CHANNEL);
+      const fileInput = await openFileImportDialog(page);
+      await fileInput.setInputFiles(
+        purgeRunV3File([{ id: '7tv-spooky', name: 'Spooky', status: 'done' }]),
+      );
+      const confirm = page.getByRole('dialog');
+      await expect(confirm.locator('#app-dialog-title')).toHaveText(
+        '1 Emote wieder zum Set hinzufügen?',
+      );
+      await confirm.getByRole('button', { name: 'Wiederherstellen' }).click();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+
+      await heldAdd.heldArrived;
+      await restoreDock(page).getByRole('button', { name: 'Abbrechen' }).click();
+      heldAdd.dropHeld();
+
+      await page.clock.runFor(3_000);
+      await reRead.arrived;
+      // Settling — and a restore is not destructive: the tab is never guarded.
+      await expect(restoreDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+      expect(await unloadPrevented(page)).toBe(false);
+      reRead.release();
+
+      await expect(restoreDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+      await expect(
+        restoreDock(page).getByText('1 wiederhergestellt · 0 fehlgeschlagen · 0 abgebrochen'),
+      ).toBeVisible();
+      await expect(restoreDock(page).getByText(/Unklar, ob wiederhergestellt/)).toHaveCount(0);
+      await expect(restoreDock(page).getByText(/ist unklar, ob 7TV/)).toHaveCount(0);
+      await expect
+        .poll(() => syncRestoredBodies)
+        .toEqual([{ sevenTvEmoteIds: ['7tv-spooky'], expectedChannelName: SOURCE_CHANNEL }]);
+      expect(await unloadPrevented(page)).toBe(false);
+    });
+
+    test('a protocol file with a done and an unknown row, whose live check fails, offers only the done row and says one unclear emote was left out', async ({
+      page,
+    }) => {
+      await mockSourceWorkspace(page);
+      await page.addInitScript(() => {
+        window.sessionStorage.setItem('ep_7tv_write_token', 'e2e-fake-write-token');
+      });
+      // The open-time duplicate check cannot read the set.
+      await page.route('https://7tv.io/v4/gql', (route) => route.abort());
+
+      await gotoUsageStats(page, SOURCE_CHANNEL);
+      const fileInput = await openFileImportDialog(page);
+      await fileInput.setInputFiles(
+        purgeRunV3File([
+          { id: '7tv-spooky', name: 'Spooky', status: 'done' },
+          { id: '7tv-ghost', name: 'Ghost', status: 'unknown' },
+        ]),
+      );
+
+      const confirm = page.getByRole('dialog');
+      await expect(confirm.locator('#app-dialog-title')).toHaveText(
+        'Bis zu 1 Emote wieder zum Set hinzufügen?',
+      );
+      await expect(
+        confirm.getByText(
+          '1 unklares Emote wird nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob es noch im Set ist.',
+        ),
+      ).toBeVisible();
+      await expect(confirm.getByRole('listitem')).toHaveText(['Spooky']);
+      await expect(confirm.getByRole('button', { name: 'Wiederherstellen' })).toBeEnabled();
+    });
+
+    test('a protocol file with only an unknown row, whose live check fails, still opens the confirmation — with nothing to restore and the executor locked', async ({
+      page,
+    }) => {
+      await mockSourceWorkspace(page);
+      await page.addInitScript(() => {
+        window.sessionStorage.setItem('ep_7tv_write_token', 'e2e-fake-write-token');
+      });
+      await page.route('https://7tv.io/v4/gql', (route) => route.abort());
+
+      await gotoUsageStats(page, SOURCE_CHANNEL);
+      const fileInput = await openFileImportDialog(page);
+      await fileInput.setInputFiles(
+        purgeRunV3File([{ id: '7tv-ghost', name: 'Ghost', status: 'unknown' }]),
+      );
+
+      const confirm = page.getByRole('dialog');
+      await expect(confirm.locator('#app-dialog-title')).toHaveText('Nichts wiederherzustellen');
+      await expect(
+        confirm.getByText(
+          '1 unklares Emote wird nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob es noch im Set ist.',
+        ),
+      ).toBeVisible();
+      await expect(confirm.getByRole('button', { name: 'Wiederherstellen' })).toBeDisabled();
+    });
+  });
 });
 
 /**
