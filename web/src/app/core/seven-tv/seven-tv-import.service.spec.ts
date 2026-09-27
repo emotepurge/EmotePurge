@@ -187,13 +187,16 @@ describe('SevenTvImportService', () => {
   });
 
   // Cleanup runs even when `verify()` throws: otherwise one red case leaves fake timers and mocks
-  // behind and drags unrelated cases after it down with it.
+  // behind and drags unrelated cases after it down with it. `resetTestingModule()` belongs in here
+  // too: the runner's own global TestBed reset is a later after-hook that a rethrow from `verify()`
+  // skips, and every following `configureTestingModule()` then throws "already instantiated".
   afterEach(() => {
     try {
       httpMock.verify();
     } finally {
       vi.useRealTimers();
       vi.restoreAllMocks();
+      TestBed.resetTestingModule();
     }
   });
 
