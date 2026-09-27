@@ -10,6 +10,57 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-27 — The purge-run protocol carries `unknown` rows — format version 3, restorable alongside `done`, fail-closed when the live check cannot vouch
+
+**Betrifft:** `web/src/app/shared/export/purge-run-export.ts` (+ spec) — `PURGE_RUN_FORMAT_VERSION`
+2 → 3, `PurgeRunMeta.counts.unknown`, new optional `RestoreRow.uncertain`,
+`parsePurgeRunProtocol` reading `formatVersion` `1`/`2`/`3`.
+
+Issue #275 (plan Festlegungen 15–17). A delete or restore run whose request was still in flight
+when the user cancelled it, or whose 7TV answer was lost in transport, no longer ends the row
+`cancelled`/`failed` outright: it settles to a new row status, `unknown`, that only one re-read
+after the run — never a retry, never a second guess — can clear. That read only ever confirms
+positively: it either shows the wanted effect (delete: the id is gone from the set; restore: the
+alias or, for an alias-less entry, the default name is there), in which case the row becomes
+`done`, or it stays `unknown` for good. A read can prove a mutation landed; it can never prove one
+that is still in flight, or whose answer never arrived, *did not* land — so every other outcome of
+the read, including "still there" or "still missing", is treated exactly like no read at all
+(Codex finding, 2026-09-27 adversarial review). The two run services that actually produce
+`unknown` rows this way, and the restore-file entry points that offer them back for restore, are
+later tasks of this same plan; this entry gives the protocol and the restore contract they are all
+built against.
+
+`meta.counts` gains `unknown`, summing with `succeeded`/`failed`/`cancelled` to `requested` exactly
+as before. The row itself carries `status: 'unknown'` like any other terminal status — no special
+casing was needed in `buildPurgeRunProtocol`, since `RunItemStatus` (`seven-tv-run-engine.ts`)
+already had the value. `PURGE_RUN_FORMAT_VERSION` bumps 2 → 3 for the same reason it bumped 1 → 2
+for K5 (2026-09-22, below): a reader written for the older row shape must refuse the newer one
+rather than parse it silently short. Concretely, a v2 `parsePurgeRunProtocol` only ever looked for
+`status === 'done'`; fed a v3 file, it would drop every `unknown` row without a trace instead of
+offering it for restore — quietly fewer restorable rows than the file actually recorded, discovered
+only by whoever later expected the rest to still be there. `parsePurgeRunProtocol` keeps accepting
+`1` and `2` alongside `3`, so no file already on someone's disk from before either change stops
+being readable; a v3 file opened in a tab still running a v2 reader is refused as `wrongVersion` —
+the same intended refusal K5 already established, not a new gap. CSV export gains no new column:
+the protocol's restorability has only ever lived in the JSON round-trip.
+
+The parser's restorable rows are no longer raw protocol rows — `status`/`errorMessage` are the
+paper trail's own business, not the restore flow's — but plain `RestoreRow`s. A `done` row comes
+back exactly as before; an `unknown` row comes back with a new optional marker, `uncertain: true`.
+The marker is not itself permission to restore: an outcome of `unknown` never *disproves* that the
+emote already made it back into the set by the time someone acts on the file (a restore's own `ADD`
+can land after the read that reported it uncertain, and 7TV's own eventual consistency does not
+help either way), so a positive re-read at restore time is still required before an `uncertain` row
+is actually restored. Both restore entry points that can see such rows — a purge-run file read
+through the file step, and a finished delete run's own restore offer in the mass-delete dock — pass
+`uncertain` rows on alongside `done` ones; the already-present filter is where the rule actually
+lives (`already-present-filter.ts`, s. the entry this plan adds there): it drops an `uncertain` row
+unless its own live re-read completes fully and finds the row's outcome positively confirmed, and
+counts how many it dropped so the confirmation dialog can say so. A `done` row keeps behaving
+exactly as before (fail-open on a failed live check) — only `uncertain` rows answer to the stricter,
+fail-closed rule, and only inside that one filter; neither restore call site
+(`restore-flow.ts`, `mass-delete-panel.ts`) grows a branch of its own for it.
+
 ### 2026-09-26 — Run-protocol exports default to JSON, the re-importable format
 
 **Betrifft:** `web/src/app/shared/export/export-dialog.ts` (new constant
