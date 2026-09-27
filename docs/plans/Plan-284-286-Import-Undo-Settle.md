@@ -48,6 +48,7 @@ und der Announcer spricht keinen Hinweis, den das Dock nicht zeigt.
 | 5 | **Dock (E1):** `import-progress-section.ts` und `undo-progress-section.ts` binden `[settling]` an `run.phase === 'settling'` (Muster `restore-progress-section.ts:92`). Damit blendet `RunProgressPanel` den Summenblock samt `run-actions` aus (`run-progress-panel.ts:110`) und `unknown`-Zeilen aus der Alert-Liste (`:213-217`); Balken, Zähler, `failed`-Zeilen, „Wird abgeschlossen…" bleiben. Betrifft u. a. `unknownRows`/`unknownRecordedIn`/`removedCount` (Import `:160-173`), `counters()` (Undo `:115-119`), Resync- und NotActive-Hinweise. | E1; #286 | T3 |
 | 6 | **Announcer-Gate:** `notActiveNoticeParams` (`dock-outcome-announcer.ts:104-116`) liefert `null`, solange `run.settlement !== 'settled'` — heute gated es auf `result === null`, was für den Import während `settling` nicht greift. Wirkt auf den gesprochenen (`:286-291`) und den sichtbaren Hinweis (gemeinsame Helfer), die damit nie auseinanderlaufen (§4.5). Andere Announcer-Zeilen sind unberührt (`resyncTrigger` entsteht erst nach dem Settle, `undoSkippedNotice` hängt nicht am Settle). | E1; UI-Designsprache §4.5 | T3 |
 | 7 | **Doku-Kommentare mitziehen** (englisch, im selben Commit): `onRunComplete`-/`cancel()`-Doku beider Dienste, `isSettling`/`destructiveOpen` wo sie Dauer nennen, `RunProgressPanel.settling` (`:183-190`, „`false` … for a host without such a phase (import, undo)" entfällt). | Regel 3, Sprache | T1, T2, T3 |
+| 9 | **Endgültige `failed`-Gründe schon im Settling-Snapshot** (Codex-Plan-Review, Finding 2): Die Gründe für `failed`-Zeilen (Import `withFailureReason` über `gqlStatusByKey`, Undo `withFailureReason` über `rejectedKeys`) hängen nicht am Read. Beide Dienste veröffentlichen mit `phase: 'settling'` deshalb den Snapshot, auf den diese Normalisierung schon angewendet ist (Import: `settleRunResult` mit `entries = null`, Undo sinngemäß). Eine sichtbare `failed`-Zeile ändert ihren Text damit zwischen `settling` und `closed` nicht mehr, und die Alert-Region sagt sie nur einmal an. `unknown`-Zeilen bleiben unangetastet (die blendet Festlegung 5 aus). Das ist kein Zurückhalten von `result` (E1), und die Klärtabellen ändern sich nicht. | Codex F2; E1 | T1, T2 |
 | 8 | **Worst-Case des Guards nach dem letzten Klick** (nur nach Abbruch, +3 s): Import ≈ 116 → **≈ 119 s** (Reports parallel), Undo ≈ 212 → **≈ 215 s** (`sync-deleted`, dann `sync-restored`, `:752-796`). Steht im DECISIONS-Eintrag und in §2.5. | Analyse | T1, T2, T3 |
 
 ---
@@ -67,6 +68,7 @@ und der Announcer spricht keinen Hinweis, den das Dock nicht zeigt.
 | `reset()` während der Wartezeit | Anzeige weg; Timer, Read, Settle, Reports laufen | T1/T2 Unit |
 | Add-only-Import, Abbruch in der Luft | `cancelled`, kein Settle (E3) | Bestands-Specs Arbiter `:475`, `:654` |
 | Dock während `settling`, Snapshot hat `done`-Adds in nicht-aktives Set | kein NotActive-Hinweis sichtbar **und** keiner gesprochen; nach Settle beide | T3 Unit |
+| Gemischter Lauf: Replace-ADD `failed` nach bestätigtem REMOVE plus eine `unknown`-Zeile | Die `failed`-Zeile zeigt schon während `settling` den Lücken-Grund, nach `closed` denselben Text; sie wird nur einmal angesagt | T1/T2 Unit (Dienst), T3 Unit (Section) |
 | Protokoll-Download / Reports / Seiten-Reload während `settling` | unverändert gegated auf `settlement === 'settled'` | Bestands-Specs |
 
 ---
@@ -102,21 +104,21 @@ Worktree-Parallelität.
 
 ### T1 — Import-Dienst: Merker, Wartezeit, Konstante, DECISIONS-Eintrag
 **Dateien:** `core/seven-tv/seven-tv-import.service.ts` (+ `.spec.ts`), `seven-tv-run-settlement.ts`
-(nur Doku), `docs/DECISIONS.md` (neuer Eintrag). **Festlegungen:** 1–4, 7, 8.
+(nur Doku), `docs/DECISIONS.md` (neuer Eintrag). **Festlegungen:** 1–4, 7, 8, 9.
 **Akzeptanzfälle (Unit, Fake-Timer):** Replace, Abbruch mit ADD in der Luft ⇒ `settling`, kein Read
 bei `GRACE − 1`, genau einer bei `GRACE`; Read zeigt Quelle unter Alias ⇒ `done`, `sync-imported`
 nennt die Id · Abbruch mit REMOVE in der Luft, Ziel weg ⇒ Lücke, `sync-deleted` · Abbruch, Read
 scheitert ⇒ `unknown` bleibt · 5xx ohne Abbruch ⇒ Read ohne Wartezeit · `reset()` während der
-Wartezeit ⇒ Settle und Reports laufen · Bestands-Specs byte-gleich grün.
+Wartezeit ⇒ Settle und Reports laufen · gemischter Lauf (Festlegung 9): die `failed`-Zeile trägt im Settling-Snapshot schon ihren endgültigen Grund · Bestands-Specs byte-gleich grün.
 **Abhängigkeiten:** keine.
 
 ### T2 — Undo-Dienst: dasselbe, nur für den Settle-Read
 **Dateien:** `core/seven-tv/seven-tv-undo.service.ts` (+ `.spec.ts`), `docs/DECISIONS.md`
-(`Betrifft:`). **Festlegungen:** 1–4, 7, 8.
+(`Betrifft:`). **Festlegungen:** 1–4, 7, 8, 9.
 **Akzeptanzfälle:** Bestandsfall `:768-783` wartet jetzt `GRACE` vor dem Read · kein Read bei
 `GRACE − 1` · Abbruch mit ADD in der Luft (nach bestätigtem REMOVE) ⇒ Wartezeit, dann Klärung nach
 E24 · Recheck-Read und `RECHECK_READ_TIMEOUT_MS`-Fall (`:706-712`) unverändert · Spec-Importe
-`:23, :26, :991` auf die gemeinsame Konstante · 5xx ohne Abbruch ⇒ sofort.
+`:23, :26, :991` auf die gemeinsame Konstante · 5xx ohne Abbruch ⇒ sofort · gemischter Lauf (Festlegung 9): `full`-Zeile `failed` nach REMOVE trägt im Settling-Snapshot schon `removedButNotRestored`/`cancelledMidRow`.
 **Abhängigkeiten:** T1.
 
 ### T3 — Dock und Announcer
@@ -126,7 +128,7 @@ E24 · Recheck-Read und `RECHECK_READ_TIMEOUT_MS`-Fall (`:706-712`) unverändert
 **Festlegungen:** 5, 6, 7, 8.
 **Akzeptanzfälle (Regel 12, Verhalten statt Vorlage):** je Section nach `restore-progress-section.spec.ts:512-545`:
 während `settling` Fortschritt und `failed`-Zeile da, Summe und `unknown`-Zeile nicht; nach `closed`
-beide da · Import-Sektionsspec: Fixture `runInfo()` (`:101-130`) liefert ohne Override `settling` —
+beide da; der Text der `failed`-Zeile ist in beiden Phasen derselbe (Festlegung 9) · Import-Sektionsspec: Fixture `runInfo()` (`:101-130`) liefert ohne Override `settling` —
 die Fälle `:351`, `:378`, `:521` (4×), `:553` erwarten aber einen abgeschlossenen Lauf; Fixture oder
 Fälle so korrigieren, dass sie sagen, was sie meinen · Announcer: während `settling` mit `done`-Add
 ins nicht-aktive Set kein `copiedNotActive`, nach `settled` ja.
