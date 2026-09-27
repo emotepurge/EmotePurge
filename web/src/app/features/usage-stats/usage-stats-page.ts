@@ -707,6 +707,8 @@ export class UsageStatsPage {
    * Also the mark a settled run of our own leaves for a non-active target set that is not the chosen
    * one (restore-per-set spec, addendum N2): the next load of exactly that set bypasses the cache,
    * and the next load of any other set — or a channel switch — drops the mark.
+   *
+   * A refused `reloadLiveMembers` puts back what it found rather than clearing it (#293).
    */
   private liveMembersRefreshFor: {
     readonly channelName: string;
@@ -2951,17 +2953,22 @@ export class UsageStatsPage {
   /**
    * A loud reload of the member list (spec 8.3: `channel.synced`, the refresh button) — asks the Api
    * to bypass its cache for exactly this request (`liveMembersRefreshFor`). A no-op while the active
-   * set is selected (no list is ever fetched there) or while a load is already in flight, in which
-   * case nothing is left marked for a later, unrelated request.
+   * set is selected (no list is ever fetched there) or while a load is already in flight.
+   *
+   * `reload()` also refuses in the gap between an earlier successful `reload()` and its loader actually
+   * running `stream`, so a refused call puts back the mark it found instead of clearing it (#293): an
+   * earlier call's still-unread mark survives, a mark `onOwnRunSettled` left for another set keeps its
+   * meaning, and once the in-flight load has consumed its flag nothing is left marked.
    */
   private reloadLiveMembers(): void {
     const emoteSetId = this.selectedEmoteSetId();
     if (emoteSetId === null || emoteSetId === this.activeEmoteSetId()) {
       return;
     }
+    const markedBefore = this.liveMembersRefreshFor;
     this.liveMembersRefreshFor = { channelName: this.channelName(), emoteSetId };
     if (!this.liveMembersResource.reload()) {
-      this.liveMembersRefreshFor = null;
+      this.liveMembersRefreshFor = markedBefore;
     }
   }
 
