@@ -65,6 +65,7 @@ import {
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
 import { REFUSED_START_FEEDBACK_MS } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
@@ -3649,9 +3650,24 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
   // --- addendum N2 (AK 37): a run's own settle reloads the chosen non-active set's member list ---
 
-  /** A finished run's engine result with `done` rows for the given keys. */
-  function runResult(doneKeys: string[]) {
-    return { doneKeys, items: [], startedAt: 0, finishedAt: 1 };
+  /** A finished run's engine result with `done` rows for the given keys, plus any other rows
+   *  (#279: a failed or unknown row that still confirmed a step) a case needs alongside them. */
+  function runResult(doneKeys: string[], items: RunQueueItem[] = []) {
+    return { doneKeys, items, startedAt: 0, finishedAt: 1 };
+  }
+
+  /** A non-done queue row for the #279 cases — defaults to a Replace row whose REMOVE confirmed
+   *  before its ADD failed (`completedSteps: 1, failedStep: 1`). */
+  function runItem(overrides: Partial<RunQueueItem> = {}): RunQueueItem {
+    return {
+      key: '7tv-z',
+      sevenTvEmoteId: '7tv-z',
+      name: 'Zeta',
+      status: 'failed',
+      completedSteps: 1,
+      failedStep: 1,
+      ...overrides,
+    };
   }
 
   /** Settles a restore run into `setId` the way `SevenTvRestoreService.onRunComplete` does. */
@@ -3674,14 +3690,14 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     TestBed.inject(SevenTvRestoreService).run.set(run);
   }
 
-  function settleImport(setId: string, doneKeys: string[]): void {
+  function settleImport(setId: string, doneKeys: string[], items: RunQueueItem[] = []): void {
     TestBed.inject(SevenTvImportService).run.set({
       runId: 'import-1',
       phase: 'reporting',
       destructive: false,
       targetSetId: setId,
       settlement: 'settled',
-      result: runResult(doneKeys),
+      result: runResult(doneKeys, items),
       syncReport: 'pending',
     } as unknown as ImportRunInfo);
   }
@@ -3696,14 +3712,14 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
   /** Settles an undo run into `setId` the way `SevenTvUndoService.settleRun` does — `doneKeys` with
    *  its `partial` rows, which are `done` for the engine. */
-  function settleUndo(setId: string, doneKeys: string[]): void {
+  function settleUndo(setId: string, doneKeys: string[], items: RunQueueItem[] = []): void {
     TestBed.inject(SevenTvUndoService).run.set({
       runId: 'undo-1',
       phase: 'reporting',
       destructive: true,
       targetSetId: setId,
       settlement: 'settled',
-      result: runResult(doneKeys),
+      result: runResult(doneKeys, items),
       removalReport: 'pending',
     } as unknown as UndoRunInfo);
   }
@@ -3884,6 +3900,68 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(request).toHaveLength(1);
     expect(request[0].request.params.get('refresh')).toBeNull();
   });
+
+  // #279: import and undo are multi-step per row, so a row can change the target set on 7TV
+  // without ever reaching `done` — the reload must not depend on `doneKeys` alone for these two.
+  it.each([
+    ['import', settleImport],
+    ['undo', settleUndo],
+  ] as const)(
+    'reloads a %s run’s non-active target when a row failed after a confirmed step, even without a done key',
+    async (_kind, settleRun) => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [],
+        members: memberList([member('7tv-x', 'PumpkinX')]),
+      });
+
+      settleRun('set-b', [], [runItem({ status: 'failed', completedSteps: 1, failedStep: 1 })]);
+      await settle();
+
+      const reloaded = liveListRequests();
+      expect(reloaded).toHaveLength(1);
+      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.params.get('refresh')).toBe('true');
+    },
+  );
+
+  it.each([
+    ['import', settleImport],
+    ['undo', settleUndo],
+  ] as const)(
+    'reloads a %s run’s non-active target when a row is still unknown after the re-read',
+    async (_kind, settleRun) => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [],
+        members: memberList([member('7tv-x', 'PumpkinX')]),
+      });
+
+      settleRun('set-b', [], [runItem({ status: 'unknown', completedSteps: 0, failedStep: 0 })]);
+      await settle();
+
+      expect(liveListRequests()).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ['import', settleImport],
+    ['undo', settleUndo],
+  ] as const)(
+    'sends nothing for a %s run whose rows never confirmed a step',
+    async (_kind, settleRun) => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [],
+        members: memberList([member('7tv-x', 'PumpkinX')]),
+      });
+
+      settleRun('set-b', [], [runItem({ status: 'failed', completedSteps: 0, failedStep: 0 })]);
+      await settle();
+
+      expect(liveListRequests()).toHaveLength(0);
+    },
+  );
 
   // --- T4.4: the caption matrix (8.4, AK 60) ----------------------------------------------------
 

@@ -10,6 +10,28 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-27 — The N2 member-list reload also fires on a confirmed-but-not-done row for import and undo
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle` gains an
+optional `shouldReload` predicate; new `mayHaveChangedTheSet`, used for the import and undo calls
+only) · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` (addendum N2 block).
+
+Issue #279, a gap the spec had already named
+(`docs/superpowers/specs/2026-09-25-replace-undo-254-design.md` §18 item 9). The N2 reload of a
+chosen non-active set's member list fired only when the settled run's `result.doneKeys` was
+non-empty. Delete and restore are single-step per row, so `done` and "changed the set on 7TV"
+coincide there. Import and undo are not: a Replace row whose REMOVE is confirmed but whose ADD then
+fails ends `failed` with `completedSteps: 1` and never reaches `done`, and the same is true of an
+undo gap (removed but not restored). Both leave the set changed on 7TV without a done key, so the
+list stayed stale. A row still `unknown` after the re-read may also have changed the set — nothing
+in the run can tell — so it now reloads too; the cost is one extra `GET` that shows the real state
+instead of a guess.
+
+The fix keeps `doneKeys.length > 0` as `watchRunSettle`'s default predicate (delete and restore keep
+calling it with no third argument) and adds `mayHaveChangedTheSet` as the predicate passed only from
+the import and undo calls: `doneKeys.length > 0 || items.some(item => item.completedSteps >= 1 ||
+item.status === 'unknown')`.
+
 ### 2026-09-26 — Run-protocol exports default to JSON, the re-importable format
 
 **Betrifft:** `web/src/app/shared/export/export-dialog.ts` (new constant
