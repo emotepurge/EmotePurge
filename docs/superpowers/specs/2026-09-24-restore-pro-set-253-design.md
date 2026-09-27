@@ -1444,6 +1444,14 @@ Mitgliederliste mit `refresh` neu.
   `reloadLiveMembers()` — den bestehenden lauten Reload mit `refresh: true`. Für das aktive Set
   bleibt der Weg `channel.synced` (5.4), für ein Set, das die Seite nicht zeigt, geschieht beim
   Settle nichts Sichtbares.
+
+  Nachtrag 2026-09-27: seit #279 (Import, Undo aus #254) und #287 (Delete, Restore) gilt als
+  Bedingung „Set womöglich verändert" (eine `done`-Zeile, eine Zeile mit mindestens einem
+  bestätigten Schritt oder eine nach dem Re-Read noch `unknown`e Zeile) statt
+  `doneKeys.length > 0`. Damit gilt der Grenzfall weiter unten („Lauf ohne erfolgreiche
+  Zeile: … kein Reload") nicht mehr uneingeschränkt: ein Lauf ohne `done`-Zeile, dessen
+  Zeile nach dem Re-Read `unknown` bleibt oder (Import, Undo) einen Schritt bestätigt hat,
+  lädt trotzdem neu.
 - **Festlegung (Vormerkung):** ist das Ziel-Set nicht-aktiv, aber gerade **nicht** gewählt — der
   Fall, den T12 tatsächlich beobachtet hat (Ansicht `test`, Ziel `tttt`, Wechsel 33 s später) —
   merkt sich die Seite die Ziel-Set-ID, und der **nächste** Ladevorgang der Mitgliederliste genau

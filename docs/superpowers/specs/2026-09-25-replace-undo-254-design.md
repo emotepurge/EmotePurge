@@ -1675,6 +1675,9 @@ Abschnitt sagt, wo er nicht mehr stimmt.
    Nachtrag 2026-09-27: #279 schließt die Lücke für Import und Undo — der Reload greift, sobald
    eine Zeile einen bestätigten Schritt hat oder nach dem Re-Read `unknown` bleibt; Delete und
    Restore bleiben bei `doneKeys`.
+
+   Nachtrag 2026-09-27: #287 zieht Delete und Restore nach — sie nutzen dieselbe Bedingung „Set
+   womöglich verändert" und bleiben nicht mehr bei `doneKeys`.
 10. **„Rückweg sichern gesperrt" (AK 28, 9.4).** Ohne Bestätigung gibt es keinen gesperrten Knopf
     „Rückweg sichern": die unbelegten `full`-Zeilen sind `skippedUnproven`, der Knopf fehlt, und
     „Starten" ist mit Grund gesperrt, solange keine Zeile laufen kann (17 K2).
