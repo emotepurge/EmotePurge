@@ -194,7 +194,7 @@ export interface RestoreRunInfo extends RunRecordBase {
  * `expectedChannelName`, since the backend never reached its own resync stage then (addendum N1,
  * AK 36); the cooldown (F15) absorbs a duplicate against a resync the backend or an earlier run
  * already triggered. A run that settles (#275) with `unknown` rows and *nothing at all* to report
- * — every row stayed `unknown` — triggers that same active-set resync itself, straight from
+ * — no row ended `done` — triggers that same active-set resync itself, straight from
  * `settleRun`, since there is then no report whose own backend resync would ever heal them (Plan-275
  * Festlegung 13 (a)).
  *
@@ -482,7 +482,7 @@ export class SevenTvRestoreService {
    * when the run ended through this service's own `cancel()` (Festlegung 5 — 7TV may still be
    * finishing the aborted `ADD`), at once after a plain transport loss. A read that fails or runs
    * out of `SET_ENTRIES_READ_TIMEOUT_MS` is `null`; an incomplete one confirms nothing
-   * (`settleRestoreResult`/`settleDeleteResult`). Every path ends in `settleRun`, so the run always
+   * (`settleRestoreResult`). Every path ends in `settleRun`, so the run always
    * leaves `settling` (Festlegung 19, P6).
    *
    * `aliasByKey`/`defaultNameByKey` are the same per-run maps `startRestore` built for

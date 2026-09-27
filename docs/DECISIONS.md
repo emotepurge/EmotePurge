@@ -70,7 +70,8 @@ snapshot whose rows are about to change. The dock still shows rows meanwhile: `q
 projection — the shown run's settled `result.items` once it has one, the engine's queue otherwise —
 kept a `linkedSignal` so specs can still `set` it. `sync-deleted` names the settled `doneKeys`, so
 `retrySyncReport` is right automatically; a row still `unknown` is never reported. The restore's
-`result` is held back the same way, until `sync-restored` is the one to send it.
+`result` is held back the same way until the settle writes it; `sync-restored` names the settled
+`doneKeys`.
 
 **What an `unknown` row that stays pulls after it.** With nothing to report (no row ended `done`),
 the run closes at once and the client resyncs `expectedChannelName` itself through the existing N1

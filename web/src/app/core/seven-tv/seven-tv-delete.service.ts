@@ -453,7 +453,7 @@ export class SevenTvDeleteService {
    * ended through this service's own `cancel()` (Festlegung 5 — 7TV may still be finishing the
    * aborted `REMOVE`), at once after a plain transport loss. A read that fails or runs out of
    * `SET_ENTRIES_READ_TIMEOUT_MS` is `null`; an incomplete one confirms nothing
-   * (`settleRestoreResult`/`settleDeleteResult`). Every path ends in `settleRun`, so the run always
+   * (`settleDeleteResult`). Every path ends in `settleRun`, so the run always
    * leaves `settling` (Festlegung 19, P6). The snapshot waits in this closure, not on the engine: the
    * engine's queue may belong to a newer run by then.
    *
