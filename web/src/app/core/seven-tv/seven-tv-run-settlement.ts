@@ -63,10 +63,9 @@ export function settleDeleteResult(
  * #254 F5): 7TV then gives the entry either no alias at all (`aliaslessIds`) or the emote's
  * *current* default name as its alias — checked first against the read's own live
  * `defaultNameById`, falling back to `defaultNameByKey`'s own record of that name at delete time
- * only when the live one is empty or unknown (Plan-275 Festlegung 8). A stale name recorded in the
- * file is not checked first: 7TV assigns the name it has *now*, so a live default name that no
- * longer matches the file's is itself evidence that something else changed the entry, not proof
- * that this row's own `ADD` failed. A sibling row of the very same run that separately re-adds this
+ * only when the live one is empty or unknown (Plan-275 Festlegung 8). An entry under the stale file
+ * name cannot come from this row's own `ADD`, since 7TV assigns the current default name — matching
+ * on it would confirm a foreign entry. A sibling row of the very same run that separately re-adds this
  * id under an alias equal to its current default name would be read as a false positive here — an
  * accepted gap, not guarded against, because it takes two rows of one run targeting the same id to
  * even raise the question. A row whose key is missing from `aliasByKey` stays `unknown` — fail

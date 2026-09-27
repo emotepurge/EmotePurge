@@ -231,7 +231,9 @@ describe('settleRestoreResult', () => {
 
   it('leaves the row unknown when its key is missing from aliasByKey entirely (fail closed against a wiring bug)', () => {
     const item = queueItem({ key: '7tv-1#PogU', sevenTvEmoteId: '7tv-1', status: 'unknown' });
-    const entries = setEntries({ aliasesById: new Map([['7tv-1', ['PogU']]]) });
+    // aliaslessIds alone would confirm this id via the null-alias path — without the `.has()` guard,
+    // a missing key is read as a null alias and this row would wrongly become `done`.
+    const entries = setEntries({ aliaslessIds: new Set(['7tv-1']) });
     const result = settleRestoreResult(runResult([item]), entries, new Map(), new Map());
 
     expect(result.items[0]).toBe(item);
