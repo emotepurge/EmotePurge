@@ -357,6 +357,33 @@ describe('RunProgressPanel', () => {
   // the pre-settle snapshot. The bar and the failed rows stay exactly as they were — a failed row
   // vanishing and coming back would be announced twice — while what the re-read can still change
   // (the counts, the host's run-actions, the unknown rows) waits for its answer.
+  // The failure list's live region exists before anything has failed, so the first failure is a
+  // row added to an already-present region, not a region appearing together with its text — most
+  // screen reader/browser pairings announce only the former (docs/UI-Designsprache.md §4.5).
+  describe('failure list live region', () => {
+    it('is mounted and non-atomic with no failures yet, and the first failure lands in that same region', () => {
+      const fixture = TestBed.createComponent(SettlingHostComponent);
+      const root: HTMLElement = fixture.nativeElement;
+      fixture.componentInstance.items.set([queueItem('a', 'done'), queueItem('b', 'pending')]);
+      fixture.detectChanges();
+
+      const regionBefore = root.querySelector('[role="alert"]');
+      expect(regionBefore).not.toBeNull();
+      expect(regionBefore?.getAttribute('aria-atomic')).toBe('false');
+      expect(root.querySelectorAll('[role="alert"] li')).toHaveLength(0);
+
+      fixture.componentInstance.items.set([
+        queueItem('a', 'done'),
+        { ...queueItem('b', 'failed'), errorMessage: 'HTTP 500' },
+      ]);
+      fixture.detectChanges();
+
+      const region = root.querySelector('[role="alert"]');
+      expect(region).toBe(regionBefore);
+      expect(region?.querySelector('li')?.textContent?.trim()).toBe('Emote-b: HTTP 500');
+    });
+  });
+
   describe('settling (#275)', () => {
     const failed: RunQueueItem = { ...queueItem('b', 'failed'), errorMessage: 'HTTP 500' };
 
