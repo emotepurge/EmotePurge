@@ -4,8 +4,9 @@ import { Signal, WritableSignal, computed, signal } from '@angular/core';
  * Where one 7TV run stands, from its first mutation to its last report (#256, contract P6 of the
  * #254 spec, 11.1):
  * - `running` — the engine works through the run's queue.
- * - `settling` — the engine is done, but rows it could not confirm are being re-read (import only;
- *   a run without a re-read skips this phase).
+ * - `settling` — the engine is done, but rows it could not confirm (`unknown`) are being re-read —
+ *   the import, the undo and, since #275, the delete; a run that ends without an `unknown` row
+ *   skips this phase.
  * - `reporting` — the outcome is final and at least one report to our Api has no end state yet.
  * - `closed` — every report the run opened has an end state (`succeeded | partial | failed`), or
  *   there was none to send. A resync is not a report and never holds a run open.

@@ -20,6 +20,7 @@ import {
   SevenTvRunParticipant,
 } from './seven-tv-run-arbiter';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
+import { CANCEL_SETTLE_GRACE_MS } from './seven-tv-run-settlement';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import { SevenTvUndoService, UndoRunTarget } from './seven-tv-undo.service';
 import { TransferPlan } from './transfer-plan';
@@ -423,6 +424,18 @@ describe('SevenTvRunArbiter with the real run services', () => {
     expect(arbiter.activeRun()).toBe('delete');
 
     deleteService.cancel();
+
+    // #275: the REMOVE was in flight, so its row is `unknown` and the run settles by one re-read
+    // after the cancel's grace period — busy until then. The read fails here, the row stays
+    // `unknown`, nothing is reported, and the run closes after the active set's resync request.
+    expect(arbiter.activeClaim()).toEqual({ kind: 'delete', phase: 'settling' });
+    vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+    httpMock
+      .expectOne((request) => (request.body as { query: string }).query.includes('emotes(page'))
+      .error(new ProgressEvent('error'));
+    httpMock
+      .expectOne('/api/channels/sensitron/resync')
+      .flush(null, { status: 202, statusText: 'Accepted' });
 
     expect(arbiter.activeRun()).toBeNull();
   });

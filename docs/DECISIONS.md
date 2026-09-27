@@ -10,6 +10,86 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-27 — Delete and restore runs settle a lost answer by one re-read that only ever confirms — a cancel mid-request is `unknown`, never `cancelled`
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-delete.service.ts` (+ spec) — `REMOVE_OPERATION`
+sets `transportLossIsUnknown`, `DeleteRunInfo` (`settling`, `result` stays `null` until settled),
+`queue` as a `linkedSignal` projection, `cancel`, `onRunComplete`, new `settleRun`,
+`fallbackResync` for an unknown-only run, `isSettling`/`destructiveOpen`/`lastRun` docs ·
+`web/src/app/core/seven-tv/seven-tv-run-settlement.ts` (`SET_ENTRIES_READ_TIMEOUT_MS`,
+`CANCEL_SETTLE_GRACE_MS`, `settleDeleteResult`, `unknownCount`) ·
+`web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts` (`RunPhase` doc only) ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`transportLossIsUnknown` doc only) ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` (reader list in the doc only).
+
+Issue #275 (Plan-275 Festlegungen 1, 2, 5, 6, 10–13, 19, 20). Until now a delete whose `REMOVE` was
+still in flight when the user clicked "Cancel" ended that row `cancelled` — "nothing happened" in
+the dock and in the protocol — although the request had usually reached 7TV and taken the emote out
+of the set; a lost answer (no response, a 5xx) ended it `failed`, which says the same. Both are
+claims the client cannot back.
+
+**The row is `unknown`, and the run re-reads once before it reports.** The delete's operation now
+sets the engine's `transportLossIsUnknown` (the restore's `addOperation` follows in the next step of
+the same plan): no answer, any 5xx, and a `cancel()` that aborts a request in flight end the row
+`unknown`; a 4xx and a GraphQL rejection stay `failed`, and a cancel between two rows or during a
+rate-limit pause stays `cancelled`, since nothing was in flight. A run that ends with at least one
+`unknown` row is `settling` while the target set is read once, tokenless, with a
+`SET_ENTRIES_READ_TIMEOUT_MS` (20 s) budget — no retry, no second read. Only after a cancel through
+the service's own `cancel()` does the read first wait `CANCEL_SETTLE_GRACE_MS` (3 s): 7TV is still
+finishing the aborted request, and an immediate read would mostly see the old state. After a plain
+transport loss there is nothing to wait for — a 5xx arrives once 7TV is done, a dropped connection
+has no moment to aim at. The wait only raises how often the read can confirm; it never decides
+anything. A cancel between rows in a run that already has an older transport-loss row waits as well
+— harmless, not worth a distinction. The run knows it was cancelled from a flag its own `cancel()`
+holds for the synchronous span of `engine.cancel()` (which calls `onRunComplete` synchronously), not
+from a new engine field.
+
+**The read only ever confirms.** A row becomes `done` exactly when a complete read shows the wanted
+effect (delete: the id has no entry left in the set, under any alias or none). Every other finding
+stays `unknown` — "the id is still there", a failed or timed-out read, `complete: false`. A read can
+prove that a mutation landed; it cannot prove that one still in flight, or whose answer was lost,
+did not — and "still there" is also what a third party re-adding the id after our `REMOVE` looks
+like (Codex, adversarial review 2026-09-27). "The id is gone" can equally be a third party's doing;
+indistinguishable, and the set *is* without the id either way — the import accepts the same.
+
+**Published and reported only once settled.** Unlike the import and the undo, which publish their
+snapshot while re-reading, the delete keeps `result` `null` through `settling` and writes the settled
+outcome, `phase: 'reporting'` and the report state in one lifecycle update. So `lastRun`, the
+protocol download and the usage-stats page's `watchRunSettle` see exactly one result, never a
+snapshot whose rows are about to change. The dock still shows rows meanwhile: `queue` is now a
+projection — the shown run's settled `result.items` once it has one, the engine's queue otherwise —
+kept a `linkedSignal` so specs can still `set` it. `sync-deleted` names the settled `doneKeys`, so
+`retrySyncReport` is right automatically; a row still `unknown` is never reported.
+
+**What an `unknown` row that stays pulls after it.** With nothing to report (every confirmed row
+was `unknown` and stayed so), the run closes at once and the client resyncs `expectedChannelName`
+itself through the existing N1 fallback — never for a non-active or untracked set, which has no
+channel of ours showing it. With a report, nothing more: the backend resyncs every channel that
+holds the set, the active one included, and that heals the unclear row as well; should the report
+fail for good, the N1 fallback resync stands in exactly as before. Resyncing on top of a report would
+only run into the per-channel cooldown both share. The delete dock's own reload for the
+unknown-only case is a later step of this plan.
+
+**Lifecycle and arbiter are untouched** — `settling` has existed since the 2026-09-26 run-bound
+entry; `isSettling` and the arbiter's `settling` claim pick it up on their own, so no other run can
+start while the read is out. `reset()` during `settling` only detaches the display: the record
+settles, reports and closes on its own, and a report that then fails shows the run again with its
+retry, as for any detached run. A channel switch still only resets a `closed` run.
+
+**What this revises.** Plan-256 Festlegung 5 and the 2026-09-26 run-bound entry's "Neither ever
+sees settling: a delete/restore run has no re-read" no longer hold (both texts stay as they are).
+For the restore, it also lifts the #230 rule that a run without a deleting row keeps a lost answer
+`failed` (2026-09-23, "A lost answer is `unknown`, not `failed`, for a run that deletes") — once the
+restore service sets the flag in the next step; the add-only *import* remains the deliberate
+exception until #284, which also brings the grace period to import and undo. Import and undo keep
+their own read timeouts (`SETTLE_READ_TIMEOUT_MS`, `UNDO_SETTLE_READ_TIMEOUT_MS`), same value.
+
+**Costs and a known gap.** The delete's unload guard still holds until `closed`, `settling`
+included; its worst case after the last click grows from about 96 s to about 119 s (3 s grace + 20 s
+read + three 30 s report attempts with their 2 s and 4 s pauses). An HTTP 200 without `errors`, or
+with an empty body, is still `done` without any read (#285) — only a body that is not JSON reaches
+the engine's error path.
+
 ### 2026-09-27 — The purge-run protocol carries `unknown` rows — format version 3, restorable alongside `done`, fail-closed when the live check cannot vouch
 
 **Betrifft:** `web/src/app/shared/export/purge-run-export.ts` (+ spec) — `PURGE_RUN_FORMAT_VERSION`

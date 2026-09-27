@@ -1,7 +1,18 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable, inject, linkedSignal, signal, WritableSignal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { MonoTypeOperatorFunction, Observable, map, retry, throwError, timeout, timer } from 'rxjs';
+import {
+  MonoTypeOperatorFunction,
+  Observable,
+  catchError,
+  map,
+  of,
+  retry,
+  switchMap,
+  throwError,
+  timeout,
+  timer,
+} from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
@@ -16,6 +27,13 @@ import {
 } from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
+import {
+  CANCEL_SETTLE_GRACE_MS,
+  SET_ENTRIES_READ_TIMEOUT_MS,
+  settleDeleteResult,
+  unknownCount,
+} from './seven-tv-run-settlement';
+import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
   SyncReportOutcome,
@@ -85,13 +103,20 @@ export const REMOVE_EMOTE_MUTATION = `
   }
 `;
 
-/** The one thing that makes this run a *delete* — everything else lives in the engine. */
+/** The one thing that makes this run a *delete* — everything else lives in the engine.
+ *  `transportLossIsUnknown` (#275, Plan-275 Festlegung 1): a `REMOVE` whose answer never came out
+ *  of 7TV's GraphQL layer — no answer, a 5xx, or a `cancel()` that aborted it in flight — may still
+ *  have taken the emote out of the set, so its row ends `unknown` rather than `failed`/`cancelled`
+ *  and is cleared up by the run's one re-read (`SevenTvDeleteService.onRunComplete`). A 4xx and a
+ *  GraphQL rejection stay `failed`, a cancel between two rows or in a rate-limit pause stays
+ *  `cancelled`. */
 const REMOVE_OPERATION: RunOperation = {
   label: 'mass delete',
   buildRequest: (setId, emote) => ({
     query: REMOVE_EMOTE_MUTATION,
     variables: { setId, emoteId: emote.sevenTvEmoteId },
   }),
+  transportLossIsUnknown: true,
 };
 
 /** The public input contract for a delete/restore run — deliberately its own interface, not an
@@ -114,12 +139,15 @@ export type DeleteQueueItem = RunQueueItem;
 
 /**
  * One delete run, from the moment it starts to the moment its closing report reaches an end state
- * (#256, `SevenTvRunLifecycle`): `running → reporting → closed` on its own record — a delete never
- * re-reads, so it never sees `settling`. `runId` is the identity a late answer or a manual retry
- * finds it by; the record is replaced by a new object on every change, never mutated. `destructive`
- * is always `true` (Plan-256 Festlegung 6): every delete row removes something from the set, so a
- * delete run arms the tab's unload guard from `startDelete` until `closed`, the same way an
- * import's `replace` plan does.
+ * (#256, `SevenTvRunLifecycle`): `running → (settling →) reporting → closed` on its own record. A
+ * run that ends with at least one `unknown` row — a `REMOVE` whose answer was lost or that a cancel
+ * aborted in flight — is `settling` while the set is re-read once (#275, Plan-275 Festlegung 2,
+ * lifting Plan-256 Festlegung 5); a run without one goes straight to `reporting`/`closed` as
+ * before. `runId` is the identity a late answer or a manual retry finds it by; the record is
+ * replaced by a new object on every change, never mutated. `destructive` is always `true` (Plan-256
+ * Festlegung 6): every delete row removes something from the set, so a delete run arms the tab's
+ * unload guard from `startDelete` until `closed` — `settling` included — the same way an import's
+ * `replace` plan does.
  */
 export interface DeleteRunInfo extends RunRecordBase {
   /** The channel of the page the run was started on — the purge protocol's envelope
@@ -134,7 +162,10 @@ export interface DeleteRunInfo extends RunRecordBase {
   /** The set the run removes from, frozen when it starts (spec #200, 7.2, AK 71): the first
    *  report and every retry name this set, whatever the page's set dropdown shows by then. */
   setId: string;
-  /** `null` while the run is in flight; set once the engine reports the run complete. */
+  /** `null` while the run is in flight **and while it is `settling`**; set once, to the settled
+   *  outcome, in the same update that moves the run to `reporting` (Plan-275 Festlegung 10) — so
+   *  every reader (`lastRun`, the protocol download, the page's `watchRunSettle`) only ever sees
+   *  the one final result, never an interim snapshot with rows the re-read is about to clear up. */
   result: RunResult | null;
   /** This run's `sync-deleted` report — `SevenTvDeleteService.syncReport` projects it for the
    *  shown run. */
@@ -147,11 +178,12 @@ export interface DeleteRunInfo extends RunRecordBase {
 export class SevenTvDeleteService {
   private readonly channelService = inject(ChannelService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
+  private readonly httpClient = inject(HttpClient);
 
   /** Own engine instance (not a shared singleton), so `isRunning` can never mean "the *other*
    *  service is busy". All pacing/backoff/token mechanics live there — see SevenTvRunEngine. */
   private readonly engine = new SevenTvRunEngine(
-    inject(HttpClient),
+    this.httpClient,
     inject(SevenTvTokenService),
     inject(TranslocoService),
   );
@@ -162,7 +194,6 @@ export class SevenTvDeleteService {
     (run) => run.syncReport === 'pending',
   );
 
-  readonly queue = this.engine.queue;
   readonly isRunning = this.engine.isRunning;
   readonly rateLimitPauseSeconds = this.engine.rateLimitPauseSeconds;
   readonly progress = this.engine.progress;
@@ -172,12 +203,26 @@ export class SevenTvDeleteService {
    *  specs drive the dock through it; production code only writes through the lifecycle. */
   readonly run: WritableSignal<DeleteRunInfo | null> = this.lifecycle.shown;
 
-  /** True while any run of this service reports — shown or not (#256, contract P1). A delete never
-   *  re-reads, so this is exactly "reporting", never "settling". */
+  /** The rows to show (Plan-275 Festlegung 11): the shown run's settled `result.items` once it has
+   *  one, the engine's queue otherwise — live while a run is in flight, and the engine's own
+   *  snapshot (its `unknown` rows included) while the shown run is `settling`. After the settle
+   *  this is *that* run's outcome, with every row the re-read confirmed shown `done`. A
+   *  `linkedSignal` rather than a `computed`, so specs can still drive a dock through
+   *  `queue.set(...)` (Plan-256 Festlegung 14); production code never writes it. */
+  readonly queue = linkedSignal<DeleteQueueItem[]>(
+    () => this.run()?.result?.items ?? this.engine.queue(),
+  );
+
+  /** True while any run of this service re-reads its `unknown` rows or reports — shown or not
+   *  (#256, contract P1; #275 for `settling`). The arbiter counts both as busy, so no other run can
+   *  start until the re-read has settled and the report reached an end state. */
   readonly isSettling = this.lifecycle.isSettling;
 
   /** True while any run of this service is not `closed` — every delete row is destructive (Plan-256
-   *  Festlegung 6), so this holds from `startDelete` to `closed`, shown or not (#256, contract P3).
+   *  Festlegung 6), so this holds from `startDelete` to `closed`, shown or not (#256, contract P3),
+   *  through a `settling` re-read too (Plan-275 Festlegung 20). Worst case after the last click:
+   *  `CANCEL_SETTLE_GRACE_MS` + `SET_ENTRIES_READ_TIMEOUT_MS` + three `REPORT_TIMEOUT_MS` attempts
+   *  with their 2 s and 4 s pauses ≈ 119 s.
    *  The arbiter's unload guard (the union over every run service) reads it: until the run
    *  closes, its report has not reached an end state, and closing the tab could lose it. */
   readonly destructiveOpen = this.lifecycle.destructiveOpen;
@@ -197,9 +242,10 @@ export class SevenTvDeleteService {
 
   /** The finished run, kept for the summary/protocol UI (A6) — unchanged shape for
    *  `mass-delete-panel.ts`/`usage-stats-page.ts` (#256 Naht 2.4). Projection of `run()`: `null`
-   *  while a run is in flight or nothing is shown, the frozen `{setId, channelName, result}` once
-   *  the shown run has a result — `result` keeps the identity `onRunComplete` gave it across every
-   *  later report patch, which is what `usage-stats-page.ts`'s `watchRunSettle` dedupes on. */
+   *  while a run is in flight, while it is `settling` or when nothing is shown, the frozen
+   *  `{setId, channelName, result}` once the shown run has its settled result — `result` keeps the
+   *  identity `settleRun` gave it across every later report patch, which is what
+   *  `usage-stats-page.ts`'s `watchRunSettle` dedupes on. */
   readonly lastRun = linkedSignal<{ setId: string; channelName: string; result: RunResult } | null>(
     () => {
       const shown = this.run();
@@ -231,6 +277,12 @@ export class SevenTvDeleteService {
   readonly confirmedRunPending = signal(false);
 
   private confirmedRunTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  /** `true` only for the synchronous span of this service's own `cancel()`: `engine.cancel()` calls
+   *  `onRunComplete` synchronously (`finish()`), and nothing else ever cancels this engine — so
+   *  `onRunComplete` reading `true` here means "this run ended because the user cancelled it"
+   *  (Plan-275 Festlegung 5). Per run by construction, no engine field. */
+  private cancelInProgress = false;
 
   constructor() {
     // The one run-service → arbiter edge (#256, contract P4): the arbiter derives "busy" and the
@@ -326,13 +378,21 @@ export class SevenTvDeleteService {
     }
   }
 
+  /** Stops the run. A `REMOVE` still in flight ends its row `unknown` (`REMOVE_OPERATION`), and
+   *  the run's re-read then waits `CANCEL_SETTLE_GRACE_MS` first — see `onRunComplete`. */
   cancel(): void {
-    this.engine.cancel();
+    this.cancelInProgress = true;
+    try {
+      this.engine.cancel();
+    } finally {
+      this.cancelInProgress = false;
+    }
   }
 
   /** Clears what the dock shows — and only that (#256, Plan-256 Festlegung 3). The shown run goes
    *  on on its own record: a run still in flight runs to its end (never cancelled here: a request
-   *  7TV may already have applied must still be reported), and its report goes out and is answered.
+   *  7TV may already have applied must still be reported), a re-read still out settles it (#275),
+   *  and its report goes out and is answered.
    *  The engine's queue belongs to a run in flight until `finish()` has built its result from it,
    *  so it is cleared then (`onRunComplete`), not here. */
   reset(): void {
@@ -382,32 +442,86 @@ export class SevenTvDeleteService {
     this.reportDeleted(current.runId, current.result.doneKeys);
   }
 
-  /** Turns the engine's snapshot into the run's outcome, always on the run's own record (#256:
-   *  there is no early return for a run that is no longer shown; its confirmed removals are
-   *  reported all the same). `phase` and `syncReport` move together in one update so the
-   *  lifecycle's auto-close guard never sees a `reporting` record whose report has not been marked
-   *  `pending` yet — a run with nothing to report goes straight to `closed`. */
+  /**
+   * Turns the engine's snapshot into the run's outcome, always on the run's own record (#256:
+   * there is no early return for a run that is no longer shown; its confirmed removals are
+   * reported all the same).
+   *
+   * Without an `unknown` row the snapshot settles at once, exactly as before #275. With one, the
+   * run is `settling` (Plan-275 Festlegung 2) and its `result` stays `null` (Festlegung 10) while
+   * the set is read once, tokenless (Festlegung 6): after `CANCEL_SETTLE_GRACE_MS` when the run
+   * ended through this service's own `cancel()` (Festlegung 5 — 7TV may still be finishing the
+   * aborted `REMOVE`), at once after a plain transport loss. A read that fails, runs out of
+   * `SET_ENTRIES_READ_TIMEOUT_MS` or comes back incomplete is `null`; every path ends in
+   * `settleRun`, so the run always leaves `settling` (Festlegung 19, P6). The snapshot waits in
+   * this closure, not on the engine: the engine's queue may belong to a newer run by then.
+   *
+   * A run `reset()` detached while in flight has left its queue on the engine until now, because
+   * `finish()` builds this very result from it; nothing shows that queue any more, so it is
+   * cleared here.
+   */
   private onRunComplete(runId: string, result: RunResult): void {
+    const afterCancel = this.cancelInProgress;
+    const hasUnknown = unknownCount(result.items) > 0;
+    const settling = hasUnknown
+      ? this.lifecycle.update(runId, (run) => ({ ...run, phase: 'settling' }))
+      : null;
+    if (!this.lifecycle.isShown(runId)) {
+      this.engine.reset();
+    }
+
+    if (!hasUnknown) {
+      this.settleRun(runId, result, null);
+      return;
+    }
+    if (settling === null) {
+      // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
+      return;
+    }
+
+    const read = loadSevenTvSetEntries(this.httpClient, settling.setId).pipe(
+      timeout(SET_ENTRIES_READ_TIMEOUT_MS),
+      catchError(() => of(null)),
+    );
+    (afterCancel ? timer(CANCEL_SETTLE_GRACE_MS).pipe(switchMap(() => read)) : read).subscribe(
+      (entries) => this.settleRun(runId, result, entries),
+    );
+  }
+
+  /**
+   * Clears the snapshot's `unknown` rows up against `entries` — positive only (Plan-275 N1,
+   * `settleDeleteResult`): a row whose id the read shows gone becomes `done`, every other row stays
+   * as it was — and publishes that outcome. `result`, `phase: 'reporting'` and the report state
+   * move together in one update, so the lifecycle's auto-close guard never sees a `reporting`
+   * record whose report has not been marked `pending` yet: a run with nothing to report goes
+   * straight to `closed`.
+   *
+   * The report names the settled `doneKeys` only; a row still `unknown` is never reported
+   * (Festlegung 12). What becomes of such a row (Festlegung 13, D6): next to a report, nothing
+   * more — the backend resyncs every channel that holds the set, the active one included, and
+   * that heals the row; should the report fail for good, the N1 fallback resync stands in for it.
+   * Without a report, `fallbackResync` asks for that resync directly, for `expectedChannelName`
+   * only.
+   */
+  private settleRun(runId: string, snapshot: RunResult, entries: SevenTvSetEntries | null): void {
+    const result = settleDeleteResult(snapshot, entries);
     const reportsDeleted = result.doneKeys.length > 0;
-    const updated = this.lifecycle.update(runId, (run) => ({
+    const settled = this.lifecycle.update(runId, (run) => ({
       ...run,
       result,
       phase: 'reporting',
       syncReport: reportsDeleted ? 'pending' : run.syncReport,
       syncReportReason: reportsDeleted ? null : run.syncReportReason,
     }));
-    if (!this.lifecycle.isShown(runId)) {
-      // A run `reset()` detached while in flight has left its queue on the engine until now,
-      // because `finish()` builds this very result from it; nothing shows that queue any more.
-      this.engine.reset();
-    }
-    if (updated === null) {
+    if (settled === null) {
       // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
       return;
     }
 
     if (reportsDeleted) {
-      this.reportDeleted(runId, result.doneKeys, () => this.fallbackResync(updated));
+      this.reportDeleted(runId, result.doneKeys, () => this.fallbackResync(settled));
+    } else if (unknownCount(result.items) > 0) {
+      this.fallbackResync(settled);
     }
   }
 
@@ -418,7 +532,7 @@ export class SevenTvDeleteService {
    *
    *  Patches the record to `syncReport: 'pending'` first (#256 P2, Plan-256-Robustheit review),
    *  the same way the import's `reportImported`/`reportRemoved` do — the first call after
-   *  `onRunComplete` finds it already `'pending'` (redundant but harmless), but a manual
+   *  `settleRun` finds it already `'pending'` (redundant but harmless), but a manual
    *  `retrySyncReport()` call needs exactly this: without it, the record stayed on its previous
    *  end state (e.g. `'failed'`) for the whole time the retry's request was out, so the retry
    *  button stayed visible for a second click (a parallel, redundant report) and, once `closed`,
@@ -483,7 +597,10 @@ export class SevenTvDeleteService {
   /** addendum N1, AK 36: a report that failed for good (any status, or a network error, after the
    *  retries) never reached the backend's resync stage, so nothing would pull the page's rows until
    *  the worker's periodic resync. The client stands in for it — for `expectedChannelName` only: a
-   *  non-active or untracked set has no channel the backend would have resynced either. No dock line
+   *  non-active or untracked set has no channel the backend would have resynced either. Since #275
+   *  (Plan-275 Festlegung 13 (a)) also called straight from `settleRun` for a run that settled with
+   *  `unknown` rows and nothing to report: there is no report whose backend resync would heal
+   *  those rows, so the client asks for it — the same channel rule, the same silence. No dock line
    *  (the delete never had one; the `syncFailed` notice is already up, and the visible effect is the
    *  resync's `channel.synced`), so its outcome — a 429 cooldown included — is deliberately
    *  swallowed. Runs for a superseded run too, like the restore's: it is owed to 7TV's state. */
