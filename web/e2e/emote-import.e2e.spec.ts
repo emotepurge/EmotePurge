@@ -1610,16 +1610,18 @@ test.describe('import dialog: animated emotes in the grid', () => {
     await page.locator('main header button').nth(2).click();
     await dialog.getByRole('button', { name: /^Aus einem Kanal/ }).click();
     await dialog.getByLabel('Kanalname').fill('handofblood');
-    // K3 review, P2-1 (revised for #278): parking the pointer only *after* the grid became visible
-    // still lost the race. The grid mounts on the very same layout pass that makes it visible, so
-    // Chromium's :hover recompute already ran — against whatever the last click left the cursor on —
-    // before this test's own move() reached the browser; under CDN interception each stubbed
-    // round-trip adds real time before the park lands, which is why it surfaced there first. Parking
-    // off the grid *before* the set even loads removes the race instead of narrowing it, but only
-    // holds if nothing afterwards moves the pointer again — and .click() on "Set laden" itself would
-    // put it right back on the button, wherever a future reflow leaves it. Triggering the load via
-    // keyboard (focus + Enter) instead of a click keeps the parked position untouched through the
-    // mount, so no cell can ever have a pointer over it when it first appears.
+    // K3 review, P2-1 (revised for #278): hovering the freshly mounted cell starts its 200 ms dwell
+    // timer as soon as the cell appears, and a park sent only after toBeVisible() resolves reaches
+    // the browser one test-to-browser round trip later. That round trip is normally well under the
+    // dwell and the park still wins — but under load, and amplified by CDN route interception, it
+    // could exceed the 200 ms and let the sprite swap fire first. Parking before the trigger removes
+    // the race instead of narrowing it, but only holds if nothing afterwards moves the pointer again
+    // — and .click() on "Set laden" itself would put it right back on the button, wherever a future
+    // reflow leaves it. Triggering the load via keyboard (focus + Enter) instead of a click keeps the
+    // parked position untouched through the mount, so no cell can ever have a pointer over it when it
+    // first appears. (0,0) sits on the dialog backdrop, outside the dialog: the pane keeps a margin
+    // from the viewport edge (`.cdk-overlay-pane.app-dialog-panel`, web/src/styles.css), and the
+    // backdrop has no hover handlers.
     await page.mouse.move(0, 0);
     await dialog.getByRole('button', { name: 'Set laden' }).press('Enter');
     const grid = dialog.getByRole('group', { name: 'Emote-Auswahl' });
