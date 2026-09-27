@@ -1610,17 +1610,20 @@ test.describe('import dialog: animated emotes in the grid', () => {
     await page.locator('main header button').nth(2).click();
     await dialog.getByRole('button', { name: /^Aus einem Kanal/ }).click();
     await dialog.getByLabel('Kanalname').fill('handofblood');
-    await dialog.getByRole('button', { name: 'Set laden' }).click();
+    // K3 review, P2-1 (revised for #278): parking the pointer only *after* the grid became visible
+    // still lost the race. The grid mounts on the very same layout pass that makes it visible, so
+    // Chromium's :hover recompute already ran — against whatever the last click left the cursor on —
+    // before this test's own move() reached the browser; under CDN interception each stubbed
+    // round-trip adds real time before the park lands, which is why it surfaced there first. Parking
+    // off the grid *before* the set even loads removes the race instead of narrowing it, but only
+    // holds if nothing afterwards moves the pointer again — and .click() on "Set laden" itself would
+    // put it right back on the button, wherever a future reflow leaves it. Triggering the load via
+    // keyboard (focus + Enter) instead of a click keeps the parked position untouched through the
+    // mount, so no cell can ever have a pointer over it when it first appears.
+    await page.mouse.move(0, 0);
+    await dialog.getByRole('button', { name: 'Set laden' }).press('Enter');
     const grid = dialog.getByRole('group', { name: 'Emote-Auswahl' });
     await expect(grid).toBeVisible();
-    // K3 review, P2-1: the always-visible source-set radiogroup moved the grid down from where it
-    // used to render, and "Set laden"'s own on-screen position — where .click() leaves the cursor —
-    // now happens to fall inside a cell's box once the grid mounts under it. Chromium recomputes
-    // :hover on layout changes even with no further pointer movement, so that stray leftover
-    // position played a real animation before any of this test's own explicit hovers ran. Parking
-    // the pointer off the grid entirely closes that gap for good, regardless of where a future
-    // reflow happens to leave "Set laden".
-    await page.mouse.move(0, 0);
 
     const viewport = dialog.locator('cdk-virtual-scroll-viewport');
     return {
