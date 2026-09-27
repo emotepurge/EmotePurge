@@ -18,17 +18,17 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 Issue #275 (plan Festlegungen 15–17). A delete or restore run whose request was still in flight
 when the user cancelled it, or whose 7TV answer was lost in transport, no longer ends the row
-`cancelled`/`failed` outright: it settles to a new row status, `unknown`, that only one re-read
-after the run — never a retry, never a second guess — can clear. That read only ever confirms
-positively: it either shows the wanted effect (delete: the id is gone from the set; restore: the
-alias or, for an alias-less entry, the default name is there), in which case the row becomes
-`done`, or it stays `unknown` for good. A read can prove a mutation landed; it can never prove one
-that is still in flight, or whose answer never arrived, *did not* land — so every other outcome of
-the read, including "still there" or "still missing", is treated exactly like no read at all
-(Codex finding, 2026-09-27 adversarial review). The two run services that actually produce
-`unknown` rows this way, and the restore-file entry points that offer them back for restore, are
-later tasks of this same plan; this entry gives the protocol and the restore contract they are all
-built against.
+`cancelled`/`failed` outright: it settles instead to `unknown` — a row status delete/restore never
+used before — that only one re-read after the run, never a retry, never a second guess, can clear.
+That read only ever confirms positively: it either shows the wanted effect (delete: the id is gone
+from the set; restore: the alias or, for an alias-less entry, the default name is there), in which
+case the row becomes `done`, or it stays `unknown` for good. A read can prove a mutation landed; it
+can never prove one that is still in flight, or whose answer never arrived, *did not* land — so
+every other outcome of the read, including "still there" or "still missing", is treated exactly
+like no read at all (Codex finding, 2026-09-27 adversarial review). The two run services that
+actually produce `unknown` rows this way, and the restore-file entry points that offer them back for
+restore, are later tasks of this same plan; this entry gives the protocol and the restore contract
+they are all built against.
 
 `meta.counts` gains `unknown`, summing with `succeeded`/`failed`/`cancelled` to `requested` exactly
 as before. The row itself carries `status: 'unknown'` like any other terminal status — no special
@@ -47,19 +47,28 @@ the protocol's restorability has only ever lived in the JSON round-trip.
 The parser's restorable rows are no longer raw protocol rows — `status`/`errorMessage` are the
 paper trail's own business, not the restore flow's — but plain `RestoreRow`s. A `done` row comes
 back exactly as before; an `unknown` row comes back with a new optional marker, `uncertain: true`.
-The marker is not itself permission to restore: an outcome of `unknown` never *disproves* that the
-emote already made it back into the set by the time someone acts on the file (a restore's own `ADD`
-can land after the read that reported it uncertain, and 7TV's own eventual consistency does not
-help either way), so a positive re-read at restore time is still required before an `uncertain` row
-is actually restored. Both restore entry points that can see such rows — a purge-run file read
-through the file step, and a finished delete run's own restore offer in the mass-delete dock — pass
-`uncertain` rows on alongside `done` ones; the already-present filter is where the rule actually
-lives (`already-present-filter.ts`, s. the entry this plan adds there): it drops an `uncertain` row
-unless its own live re-read completes fully and finds the row's outcome positively confirmed, and
-counts how many it dropped so the confirmation dialog can say so. A `done` row keeps behaving
-exactly as before (fail-open on a failed live check) — only `uncertain` rows answer to the stricter,
-fail-closed rule, and only inside that one filter; neither restore call site
-(`restore-flow.ts`, `mass-delete-panel.ts`) grows a branch of its own for it.
+The marker exists because the delete behind an `unknown` row may never have reached 7TV at all: the
+`REMOVE` could still be in flight, or its answer could be the one that was lost — either way, the
+emote can still be sitting in the set. Restoring such a row without checking would run its `ADD`
+blind, right next to an emote that was never actually removed — at best a no-op, at worst a second
+alias colliding with the one already there.
+
+That is why `uncertain` rows are held to a stricter rule than `done` ones, and that rule lives only
+in the already-present filter (`already-present-filter.ts`) — never in either restore entry point
+that hands rows to it: a purge-run file read through the file step, and a finished delete run's own
+restore offer in the mass-delete dock, both pass `uncertain` rows on alongside `done` ones
+unchanged. The filter drops an `uncertain` row outright whenever its own live re-read of the target
+set fails or comes back incomplete, and counts how many it dropped so the confirmation dialog can
+say so; a `done` row keeps its existing fail-open behaviour on the very same failure, and the
+confirm-time fallback (`fallOnOpenTime`) is untouched either way. When the re-read *does* complete,
+an `uncertain` row is judged exactly like any other: if its id turns up under a different alias than
+the row itself names, the row is dropped as already present (rule 2 — one id never gets a second
+`ADD`, no matter which alias is in the file); if it turns up only under an alias the row already
+lists, it is skipped the same way a repeated restore always is (rule 3). The window between that
+filter read and the eventual `ADD` stays open on purpose — a third party could still add the id in
+between, the same residual race every restore row already carries, not a new one this marker
+introduces. Neither restore call site (`restore-flow.ts`, `mass-delete-panel.ts`) grows a branch of
+its own for any of this; it all sits inside the one filter.
 
 ### 2026-09-26 — Run-protocol exports default to JSON, the re-importable format
 

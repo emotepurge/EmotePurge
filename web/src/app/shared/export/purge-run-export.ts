@@ -28,9 +28,9 @@ import { readEnvelope } from './read-envelope';
  * whoever later expected the rest to still be there.
  *
  * `2 → 3` (#275, 2026-09-27, s. `docs/DECISIONS.md`): a row can now carry `status: 'unknown'` — a
- * delete or restore whose request was still in flight when the user cancelled it, or whose answer
- * was lost in transport, settles to `unknown` rather than `cancelled`/`failed` unless one re-read
- * afterwards positively confirms it. A v2 reader's `parsePurgeRunProtocol` only ever looked for
+ * delete whose request was still in flight when the user cancelled it, or whose answer was lost in
+ * transport, settles to `unknown` rather than `cancelled`/`failed` unless one re-read afterwards
+ * positively confirms it. A v2 reader's `parsePurgeRunProtocol` only ever looked for
  * `status === 'done'`; fed a v3 file, it would silently drop every `unknown` row instead of
  * offering it for restore — the exact silent-short failure this version field exists to prevent.
  * `parsePurgeRunProtocol` keeps accepting `1` and `2` alongside this version, so no file already on
@@ -73,11 +73,14 @@ export interface RestoreRow {
   defaultName?: string | null;
   /**
    * Set (to `true`) when this row's own outcome was never positively confirmed — a purge-run row
-   * whose delete or restore ended `unknown` after #275's one settling re-read (source file only;
-   * absent, not `false`, on every `done` row and on every row a transfer-run/transfer-undo file
-   * produces, since those still predate `unknown` outcomes). A restoring caller must treat it
-   * fail-closed: offered alongside `done` rows, but dropped unless the live check that precedes the
-   * actual `ADD` can vouch for it fully (`already-present-filter.ts`).
+   * whose delete ended `unknown` after #275's one settling re-read (source file only; absent, not
+   * `false`, on every `done` row). Never set on a row a transfer-run/transfer-undo file produces —
+   * not because those predate `unknown` outcomes, but because their own restore parsers already
+   * select what they offer through a per-step `confirmed` flag
+   * (`TransferRunRemovedTarget.confirmed`/`removedSource.confirmed`), independent of a row's final
+   * status, so they have no use for this coarser, row-level marker. A restoring caller must treat
+   * `uncertain` fail-closed: offered alongside `done` rows, but dropped unless the live check that
+   * precedes the actual `ADD` can vouch for it fully (`already-present-filter.ts`).
    */
   uncertain?: true;
 }
@@ -87,8 +90,8 @@ export interface PurgeRunMeta {
   /** ISO timestamps of the run itself. */
   startedAt: string;
   finishedAt: string;
-  /** Always sums to `requested`. `unknown` since #275 (format version 3): rows a delete or restore
-   *  left unable to confirm, even after its one settling re-read — s. `docs/DECISIONS.md`. */
+  /** Always sums to `requested`. `unknown` since #275 (format version 3): rows a delete left unable
+   *  to confirm, even after its one settling re-read — s. `docs/DECISIONS.md`. */
   counts: {
     requested: number;
     succeeded: number;
@@ -219,6 +222,11 @@ export type ProtocolParseResult =
  * `formatVersion` `1` (every file written before K5), `2` (K5's row shape, before #275) and
  * `PURGE_RUN_FORMAT_VERSION` (today's row shape, `unknown` rows included) — anything else is
  * refused rather than parsed short (see that constant's doc).
+ *
+ * `meta` (and with it `meta.counts`) is passed through unvalidated beyond `emoteSetId` above — a
+ * v1 or v2 file has no `counts.unknown` at all, so it comes back `undefined` at runtime despite the
+ * field's non-optional type; nothing here reads it, and every file this app itself has ever written
+ * carries every other `counts` field, which is why only this one is affected.
  */
 export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
   const read = readEnvelope(text);

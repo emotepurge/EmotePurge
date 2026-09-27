@@ -200,7 +200,9 @@ describe('parsePurgeRunProtocol', () => {
     const result = parsePurgeRunProtocol(purgeRunJson(proto));
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.rows).toEqual([
+      // toStrictEqual, not toEqual: the done row must have no `uncertain` key at all, not merely an
+      // undefined one — toEqual would let either past.
+      expect(result.rows).toStrictEqual([
         { emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
         {
           emoteId: 'i4',
@@ -225,7 +227,7 @@ describe('parsePurgeRunProtocol', () => {
     const result = parsePurgeRunProtocol(purgeRunJson(proto));
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.rows).toEqual([
+      expect(result.rows).toStrictEqual([
         {
           emoteId: 'i1',
           sevenTvEmoteId: '7tv-1',
@@ -283,16 +285,19 @@ describe('parsePurgeRunProtocol', () => {
     });
   });
 
-  it('rejects an unknown format version', () => {
-    const future = purgeRunJson(protocol()).replace(
-      `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
-      '"formatVersion": 99',
-    );
-    expect(parsePurgeRunProtocol(future)).toEqual({
-      ok: false,
-      errorKey: 'restore.import.errors.wrongVersion',
-    });
-  });
+  it.each([99, PURGE_RUN_FORMAT_VERSION + 1])(
+    'rejects an unknown format version (%i)',
+    (version) => {
+      const future = purgeRunJson(protocol()).replace(
+        `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+        `"formatVersion": ${version}`,
+      );
+      expect(parsePurgeRunProtocol(future)).toEqual({
+        ok: false,
+        errorKey: 'restore.import.errors.wrongVersion',
+      });
+    },
+  );
 
   // #200 K5 finding C: a file written before K5 carried formatVersion 1 in today's row shape's
   // absence (a Guid emoteId, no aliases) — it must keep reading, not just the current version.
@@ -305,18 +310,18 @@ describe('parsePurgeRunProtocol', () => {
     expect(result.ok).toBe(true);
   });
 
-  it("accepts formatVersion 2, K5's row shape (before #275)", () => {
+  it("accepts formatVersion 2, K5's row shape (before #275), and reads its rows back exactly", () => {
     const v2 = purgeRunJson(protocol()).replace(
       `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
       '"formatVersion": 2',
     );
     const result = parsePurgeRunProtocol(v2);
     expect(result.ok).toBe(true);
-  });
-
-  it("accepts formatVersion 3, today's row shape (unknown rows included)", () => {
-    const result = parsePurgeRunProtocol(purgeRunJson(protocol()));
-    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
+        { emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      ]);
+    }
   });
 
   // #253 (spec 6.1, E1/E15): the file names its own target — the parser no longer holds it against
@@ -403,7 +408,7 @@ describe('parsePurgeRunProtocol', () => {
     const result = parsePurgeRunProtocol(purgeRunJson(proto));
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.rows).toEqual([
+      expect(result.rows).toStrictEqual([
         {
           emoteId: null,
           sevenTvEmoteId: '7tv-live',
@@ -424,7 +429,29 @@ describe('parsePurgeRunProtocol', () => {
     const result = parsePurgeRunProtocol(JSON.stringify(old));
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.rows).toEqual([
+      expect(result.rows).toStrictEqual([
+        {
+          emoteId: 'i1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'PogU',
+          aliases: ['PogU'],
+        },
+      ]);
+    }
+  });
+
+  // #200 K5 finding C, combined: a genuine v1 file has formatVersion 1 *and* the v1 row shape
+  // (Guid emoteId, no aliases field) together — the two tests above each vary only one of them.
+  it('accepts formatVersion 1 combined with the v1 row shape (Guid emoteId, no aliases)', () => {
+    const v1 = JSON.parse(purgeRunJson(protocol()));
+    v1.formatVersion = 1;
+    for (const row of v1.rows) {
+      delete row.aliases;
+    }
+    const result = parsePurgeRunProtocol(JSON.stringify(v1));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
         {
           emoteId: 'i1',
           sevenTvEmoteId: '7tv-1',
