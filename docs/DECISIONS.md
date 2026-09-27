@@ -32,7 +32,7 @@ calling it with no third argument) and adds `mayHaveChangedTheSet` as the predic
 the import and undo calls: `doneKeys.length > 0 || items.some(item => item.completedSteps >= 1 ||
 item.status === 'unknown')`. Once delete and restore can settle a row as `unknown` too (a parallel
 branch adds a cancel-to-unknown path for both), their calls should pass the same predicate — it
-reduces to `done || unknown` there — tracked as a follow-up, not done here.
+reduces to `done || unknown` there — tracked in #287, not done here.
 
 ### 2026-09-26 — Run-protocol exports default to JSON, the re-importable format
 
