@@ -95,18 +95,25 @@ export function undoSkippedNotice(state: {
 }
 
 /** The two settled-run notices below (`copiedNotActiveNotice`, `renamedNotActiveNotice`) share this
- *  gate: a *settled* (`result !== null`) run into a tracked, non-active set — the case
+ *  gate: a *settled* (`settlement === 'settled'`) run into a tracked, non-active set — the case
  *  `SevenTvImportService.onRunComplete`'s resync never fires for at all (there is nothing for
  *  `resyncTrigger` to become but 'idle'), so one of these two notices fills the gap that would
  *  otherwise leave the run's actual outcome unstated once it settles. Returns `null` for a run that
- *  is untracked, still active, still in flight, or fully failed (nothing to report either way —
- *  #255 P2-2 narrowed this from "any settled run" to "a settled run with something to show"). */
+ *  is untracked, still active, still in flight or still `settling`, or fully failed (nothing to
+ *  report either way — #255 P2-2 narrowed this from "any settled run" to "a settled run with
+ *  something to show").
+ *
+ *  The gate is the settlement, not `result`: the import publishes its snapshot as `result` while it
+ *  is still `settling` (Plan-284 E1), and an `unknown` row the re-read may still turn `done` — or
+ *  leave unclear — would otherwise decide the notice early. Held back here, it is held back for the
+ *  spoken and the shown notice alike (docs/UI-Designsprache.md §4.5), in step with the dock, whose
+ *  `RunProgressPanel` holds back its whole summary block while the run is `settling`. */
 function notActiveNoticeParams(
   run: ImportRunInfo | null,
 ): { channel: string; setName: string } | null {
   if (
     run === null ||
-    run.result === null ||
+    run.settlement !== 'settled' ||
     run.targetChannelName === null ||
     run.targetIsActiveSet
   ) {

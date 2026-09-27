@@ -44,6 +44,12 @@ import { RunProgressPanel } from './run-progress-panel';
  * Renders nothing until there is something to show (`isRunning()` or a non-empty `queue()`) — the
  * same "settled run stays visible" contract the mass-delete panel already has, so the post-run
  * summary and the resync notice remain readable after the last row finishes.
+ *
+ * While the run is `settling` (Plan-284 Festlegung 5) the panel holds back that summary — the
+ * counts, every line projected into `run-actions` below — and the `unknown` rows of its failure
+ * list: the rows are still the pre-settle snapshot then, and whatever is read off them could flip
+ * once the re-read answers. The bar, the progress text and the `failed` rows stay; those already
+ * carry their final reason (Festlegung 9), so they read the same once the run has settled.
  */
 @Component({
   selector: 'app-import-progress-section',
@@ -127,6 +133,7 @@ import { RunProgressPanel } from './run-progress-panel';
           <app-run-progress-panel
             [items]="importService.items()"
             [isRunning]="importService.isRunning()"
+            [settling]="run.phase === 'settling'"
             labelPrefix="import"
             [renamedCount]="importService.doneAdoptCount()"
             [syncReport]="importService.syncReport()"

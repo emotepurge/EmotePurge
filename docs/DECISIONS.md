@@ -22,7 +22,13 @@ published with its final `failed` reasons and `partial`), `settleRun` (settles t
 snapshot), `settleUndoResult` doc, `UNDO_SETTLE_READ_TIMEOUT_MS` removed, `RECHECK_READ_TIMEOUT_MS`
 doc (value and recheck unchanged), `UndoRunItem`/`UndoSettlement`/`UndoRunInfo.result`/
 `isSettling`/class docs · `web/src/app/core/seven-tv/seven-tv-run-settlement.ts`
-(`SET_ENTRIES_READ_TIMEOUT_MS` and `CANCEL_SETTLE_GRACE_MS` docs only).
+(`SET_ENTRIES_READ_TIMEOUT_MS` and `CANCEL_SETTLE_GRACE_MS` docs only) ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` (+ spec) and
+`web/src/app/shared/seven-tv/undo-progress-section.ts` (+ spec) — `[settling]` bound to
+`run.phase === 'settling'`, class docs · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts`
+(+ spec) — `notActiveNoticeParams` gated on `settlement === 'settled'` instead of `result !== null` ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` (`settling` doc only) ·
+`docs/UI-Designsprache.md` §2.5, §4.5.
 
 Issues #284 and #286 (Plan-284-286 Festlegungen 1–9). The 2026-09-27 #275 entry gave delete and
 restore a grace period before their settle read and left import and undo behind: a user who
@@ -48,10 +54,15 @@ restore, import and undo keep publishing their snapshot with `phase: 'settling'`
 protocol gates and the usage-stats page's `watchRunSettle` rely on it). What
 changes is what their docks show from it: while a run is `settling`, the import and undo docks bind
 `RunProgressPanel.settling` like delete and restore, so the summary block, its actions and the
-`unknown` rows stay hidden, and the not-active notice is neither shown nor announced until the run
-is `settled`. Progress, counters, `failed` rows and "finishing…" stay. So that a visible `failed`
-row does not change its text between `settling` and `closed`, the snapshot published for `settling`
-already carries every `failed` row's final reason — that reason never depends on the read (import:
+`unknown` rows stay hidden — with the block every line read off the rows: the import's removed and
+unclear counts, the undo's counter and skipped lines, the protocol, the report and resync lines —
+and the not-active notice is neither shown nor announced until the run is `settled`
+(`DockOutcomeAnnouncer` gates it on the settlement now, since `result` is already set while
+`settling`). The bar, the progress count, `failed` rows and "finishing…" stay. One gap this leaves,
+not closed here: while an undo settles, its skipped candidates are named nowhere — the transient
+notice gives way once the run stops running, as before, and the summary that names them is held
+back. So that a visible `failed` row does not change its text between `settling` and `closed`, the
+snapshot published for `settling` already carries every `failed` row's final reason — that reason never depends on the read (import:
 `withFailureReason` over the recorded GraphQL status; undo: over its rejected keys — and the
 undo's `partial`, which hangs on the row alone, likewise). The settle
 itself still starts from the engine's own snapshot, so no row is given its reason twice.

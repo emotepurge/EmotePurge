@@ -18,8 +18,10 @@ import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome'
 import { UndoSkippedRow } from '../../core/seven-tv/undo-plan';
 import {
   DockOutcomeAnnouncer,
+  copiedNotActiveNotice,
   hiddenByFilterNoticeKey,
   markedCountNoticeKey,
+  renamedNotActiveNotice,
   resyncNoticeKey,
 } from './dock-outcome-announcer';
 
@@ -424,6 +426,33 @@ describe('DockOutcomeAnnouncer', () => {
 
     expect(spoken()).toEqual([]);
   });
+
+  // Plan-284 Festlegung 6: while `settling` the import already publishes its snapshot as `result`
+  // (E1), and a `done` row there decided the notice early. It waits for the settle instead — spoken
+  // and shown alike, since the dock's notice reads the very same helper (§4.5).
+  it.each([
+    ['copied', 'add', copiedNotActiveNotice, 'kopiert'],
+    ['renamed', 'adoptSourceName', renamedNotActiveNotice, 'umbenannt'],
+  ] as const)(
+    'speaks and shows no %s-not-active notice while the run is settling, and both once it settled',
+    (_label, action, notice, verb) => {
+      const settled = nonActiveRun([doneItem(action)]);
+      const settling: ImportRunInfo = { ...settled, phase: 'settling', settlement: 'pending' };
+      importService.run.set(settling);
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual([]);
+      expect(notice(settling)).toBeNull();
+
+      importService.run.set(settled);
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual([
+        `In Set ‚wegwerf' ${verb} — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.`,
+      ]);
+      expect(notice(settled)).toEqual({ channel: 'zielkanal', setName: 'wegwerf' });
+    },
+  );
 
   it('adds a later outcome without replacing the node of one already standing', () => {
     restoreService.resyncTrigger.set('pending');
