@@ -183,6 +183,30 @@ confirm-time read that *fails* falls back to the open-time rows; one that succee
 incomplete drops an `uncertain` row the dialog already showed, silently, after the user confirmed.
 That is accepted on purpose: it can only ever send less, never a blind `ADD`.
 
+### 2026-09-27 — The N2 member-list reload also fires on a confirmed-but-not-done row for import and undo
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle` gains an
+optional `shouldReload` predicate; new `mayHaveChangedTheSet`, used for the import and undo calls
+only) · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` (addendum N2 block).
+
+Issue #279, a gap the spec had already named
+(`docs/superpowers/specs/2026-09-25-replace-undo-254-design.md` §18 item 9). The N2 reload of a
+chosen non-active set's member list fired only when the settled run's `result.doneKeys` was
+non-empty. Delete and restore are single-step per row and currently never settle a row as
+`unknown`, so `done` and "changed the set on 7TV" coincide there. Import and undo are not: a row
+with a confirmed step but not all of them (a Replace/full gap, or an addOnly row short of its ADDs)
+ends `failed` with `completedSteps >= 1` and never reaches `done`, leaving the set changed on 7TV
+without a done key, so the list stayed stale. A row still `unknown` after the re-read may also have
+changed the set — nothing in the run can tell — so it now reloads too; the cost is one extra `GET`
+that shows the real state instead of a guess.
+
+The fix keeps `doneKeys.length > 0` as `watchRunSettle`'s default predicate (delete and restore keep
+calling it with no third argument) and adds `mayHaveChangedTheSet` as the predicate passed only from
+the import and undo calls: `doneKeys.length > 0 || items.some(item => item.completedSteps >= 1 ||
+item.status === 'unknown')`. Once delete and restore can settle a row as `unknown` too (a parallel
+branch adds a cancel-to-unknown path for both), their calls should pass the same predicate — it
+reduces to `done || unknown` there — tracked in #287, not done here.
+
 ### 2026-09-26 — Run-protocol exports default to JSON, the re-importable format
 
 **Betrifft:** `web/src/app/shared/export/export-dialog.ts` (new constant
