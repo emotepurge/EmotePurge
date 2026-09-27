@@ -85,6 +85,49 @@ import, moved to #290. The 2026-09-23 #230 entry's "the dock already shows the e
 snapshot" no longer holds for a settling run. The 2026-09-26 run-bound entry is the context both
 build on.
 
+### 2026-09-27 — The wider N2 reload predicate now applies to delete and restore too
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle` loses its
+optional `shouldReload` predicate parameter and calls `mayHaveChangedTheSet` directly; the delete and
+restore calls no longer rely on a default; `mayHaveChangedTheSet`'s doc updated) ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` (addendum N2 block: `settleRestore` and
+`settleDelete` gain an `items` parameter, the two `unknown`/never-confirmed `it.each` cases extended
+to all four run kinds) ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (addendum) ·
+`docs/superpowers/specs/2026-09-25-replace-undo-254-design.md` (addendum).
+
+Issue #287, the gap the entry further below (2026-09-27, "The N2 member-list reload also fires on a
+confirmed-but-not-done row for import and undo", #279) left open on purpose: delete and restore were
+assumed single-step and never settling a row `unknown`, so `doneKeys.length > 0` stayed their
+predicate. The entry directly below this one (delete/restore settle a lost answer as `unknown`)
+removed that assumption — a cancel mid-request or a lost answer can now settle a delete or restore
+row `unknown` with an empty `doneKeys`, and the non-active target's member list stayed stale exactly
+as #279 first found for import and undo.
+
+The fix is the one the #279 entry already named (tracked in #287): delete and restore now also use
+`mayHaveChangedTheSet` (`doneKeys.length > 0 || items.some(item => item.completedSteps >= 1 ||
+item.status === 'unknown')`), which for a single-step run reduces to `done || unknown`, since a
+cancelled or plain-failed row never confirms a step. With all four callers on the same predicate,
+`watchRunSettle`'s optional third parameter and its `doneKeys.length > 0` default served no caller
+any more and were removed; the predicate now lives inside `watchRunSettle` itself.
+
+For the chosen non-active target, `MassDeletePanel` already requests a reload of its own for both
+run kinds, so this closes less than "restore had no reload path": (a) delete's panel path fires
+only after the settle (its `'idle'` branch waits for `lastRun()`, the others for a report end
+state) — for an unknown-only delete it lands in the same change-detection pass as the settle
+watcher's reload, and its `reloadLiveMembers()` is then a no-op; with a `done` row it adds the
+second `refresh=true` `GET` spec 253 already accepts (F7); (b) restore's panel path is gated only
+on the engine's `isRunning()`, which `finish()` clears before the grace and the re-read, so its
+`GET` can land before the re-read — after a cancel, possibly before the aborted 7TV mutation; the
+settle watcher's reload is the one that reads after it; (c) the panel mounts only in the desktop
+dock with a set selected (`@if (dockVisible() && !isCoarse())`), so on a coarse pointer the settle
+watcher is the only reload; (d) both panel paths (`deleted`/`reloadRequested` → `refresh()` →
+`reloadLiveMembers()`) reload only the selected set — a target that is neither active nor selected
+was never covered and now gets its `liveMembersRefreshFor` mark (`onOwnRunSettled`).
+
+No new e2e case: the existing cancel-as-unknown e2e cases (#275) all run in the active set, and a
+non-active variant would be a new, sizeable test for a path the unit specs already cover.
+
 ### 2026-09-27 — Delete and restore runs settle a lost answer by one re-read that only ever confirms — a cancel mid-request is `unknown`, never `cancelled`
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-delete.service.ts` (+ spec) — `REMOVE_OPERATION`

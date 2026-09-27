@@ -3729,7 +3729,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   }
 
   /** Settles a restore run into `setId` the way `SevenTvRestoreService.onRunComplete` does. */
-  function settleRestore(setId: string, doneKeys: string[]): void {
+  function settleRestore(setId: string, doneKeys: string[], items: RunQueueItem[] = []): void {
     const run: RestoreRunInfo = {
       runId: 'restore-1',
       phase: 'reporting',
@@ -3740,7 +3740,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       hostChannelName: 'a',
       setName: setId,
       ownerOrChannelLabel: 'a',
-      result: runResult(doneKeys),
+      result: runResult(doneKeys, items),
       syncReport: 'pending',
       syncReportReason: null,
       resyncTrigger: 'idle',
@@ -3760,11 +3760,11 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     } as unknown as ImportRunInfo);
   }
 
-  function settleDelete(setId: string, doneKeys: string[]): void {
+  function settleDelete(setId: string, doneKeys: string[], items: RunQueueItem[] = []): void {
     TestBed.inject(SevenTvDeleteService).lastRun.set({
       setId,
       channelName: 'a',
-      result: runResult(doneKeys),
+      result: runResult(doneKeys, items),
     });
   }
 
@@ -3863,7 +3863,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(liveListRequests()).toHaveLength(1);
   });
 
-  it('sends nothing for a run without a done row, or one into the active set', async () => {
+  it('sends nothing for a run without a row that may have changed the set, or one into the active set', async () => {
     await openView({
       emoteSetId: 'set-b',
       totals: [],
@@ -3984,6 +3984,8 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   );
 
   it.each([
+    ['restore', settleRestore],
+    ['delete', settleDelete],
     ['import', settleImport],
     ['undo', settleUndo],
   ] as const)(
@@ -3998,11 +4000,16 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       settleRun('set-b', [], [runItem({ status: 'unknown', completedSteps: 0, failedStep: 0 })]);
       await settle();
 
-      expect(liveListRequests()).toHaveLength(1);
+      const reloaded = liveListRequests();
+      expect(reloaded).toHaveLength(1);
+      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.params.get('refresh')).toBe('true');
     },
   );
 
   it.each([
+    ['restore', settleRestore],
+    ['delete', settleDelete],
     ['import', settleImport],
     ['undo', settleUndo],
   ] as const)(
