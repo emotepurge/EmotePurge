@@ -52,16 +52,23 @@ import { RunProgressPanel, RunProgressTally } from './run-progress-panel';
  * service's own locks, mirrored here rather than left to a silent refusal: never while a report is
  * pending (no banner then), never for a channel mismatch, and only for a settled run that confirmed
  * something to report.
+ *
+ * **While `settling`** (Plan-284 Festlegung 5) the panel holds back its whole summary block — the
+ * sentence, every counter and skipped line, the resync line, the protocol — and the `unknown` rows
+ * of its failure list: the rows are still the pre-settle snapshot then, and a counter read off them
+ * could flip once the re-read answers. The bar, the progress text and the `failed` rows stay; those
+ * already carry their final reason (Festlegung 9), so they read the same once the run has settled.
  */
 @Component({
   selector: 'app-undo-progress-section',
   imports: [Button, NoticeBanner, RunProgressPanel, TranslocoPipe],
   template: `
     <!-- The candidates the last start skipped, by reason (spec 4.7) — transient, and the only place
-         a start that ran nothing names them; also what keeps the dock mounted for that start. Once
-         the run that start began has stopped running, its summary names the same candidates and
-         this notice gives way (undoSkippedNotice). aria-hidden: the host page's permanently mounted
-         DockOutcomeAnnouncer speaks it (docs/UI-Designsprache.md §4.5). -->
+         a start that ran nothing names them; also what keeps the dock mounted for that start. The
+         notice gives way once the run that start began stops running (undoSkippedNotice); the
+         run's summary names the same candidates once the run has settled. aria-hidden: the host
+         page's permanently mounted DockOutcomeAnnouncer speaks it (docs/UI-Designsprache.md
+         §4.5). -->
     @for (line of skippedNotice(); track line.reason) {
       <p aria-hidden="true" class="text-sm text-fg-secondary">
         {{
@@ -88,6 +95,7 @@ import { RunProgressPanel, RunProgressTally } from './run-progress-panel';
         <app-run-progress-panel
           [items]="undoService.items()"
           [isRunning]="undoService.isRunning()"
+          [settling]="run.phase === 'settling'"
           labelPrefix="undo"
           [tally]="tally()"
           [syncReport]="removalReportShown()"

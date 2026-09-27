@@ -40,6 +40,7 @@ const DE_TRANSLATIONS = {
     progress: '{{ finished }} / {{ total }} kopiert',
     settling: 'Wird abgeschlossen…',
     deleteFailedFallback: 'Kopieren fehlgeschlagen',
+    unknownOutcome: 'Unklar, ob kopiert — bitte im Set nachsehen.',
     rateLimitPaused: '7TV-Rate-Limit erreicht.',
     syncFailedTitle: 'Rückmeldung fehlgeschlagen',
     syncFailed: 'Rückmeldung an EmotePurge fehlgeschlagen.',
@@ -100,7 +101,9 @@ const DE_TRANSLATIONS = {
 
 /** A settled fixture defaults to a closed run (every report answered) and a pending one to a
  *  settling run — the two pairings the service produces; a test that needs a settled run still
- *  reporting says `phase: 'reporting'` itself. */
+ *  reporting says `phase: 'reporting'` itself. A settling run holds back the whole summary block
+ *  (Plan-284 Festlegung 5), so a case about what a finished run shows says `settlement: 'settled'`;
+ *  one that sets `isRunning` leaves the default alone, the panel shows no summary mid-run anyway. */
 function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
   return {
     runId: 'import-1',
@@ -209,6 +212,13 @@ function doneItem(overrides: Partial<ImportRunItem> = {}): ImportRunItem {
     transfer: SOURCE_A_TRANSFER,
     ...overrides,
   };
+}
+
+/** The rows of the failure list's alert region, as their text — name and reason. */
+function alertRows(fixture: ComponentFixture<ImportProgressSection>): string[] {
+  return Array.from(fixture.nativeElement.querySelectorAll('[role="alert"] li'), (row: Element) =>
+    (row.textContent ?? '').trim(),
+  );
 }
 
 /** What the component's status regions would announce: their text minus aria-hidden descendants. */
@@ -329,6 +339,7 @@ describe('ImportProgressSection', () => {
       ]);
       importService.run.set(
         runInfo({
+          settlement: 'settled',
           targetChannelName: 'zielkanal',
           targetSetName: 'wegwerf',
           targetIsActiveSet: false,
@@ -353,6 +364,7 @@ describe('ImportProgressSection', () => {
       importService.queue.set([doneItem()]);
       importService.run.set(
         runInfo({
+          settlement: 'settled',
           targetChannelName: 'zielkanal',
           targetSetName: 'wegwerf',
           targetIsActiveSet: false,
@@ -393,6 +405,7 @@ describe('ImportProgressSection', () => {
       importService.queue.set([adoptItem]);
       importService.run.set(
         runInfo({
+          settlement: 'settled',
           targetChannelName: 'zielkanal',
           targetSetName: 'wegwerf',
           targetIsActiveSet: false,
@@ -421,6 +434,7 @@ describe('ImportProgressSection', () => {
       importService.queue.set([failedItem]);
       importService.run.set(
         runInfo({
+          settlement: 'settled',
           targetChannelName: 'zielkanal',
           targetSetName: 'wegwerf',
           targetIsActiveSet: false,
@@ -463,7 +477,7 @@ describe('ImportProgressSection', () => {
         failedStep: null,
       },
     ]);
-    importService.run.set(runInfo());
+    importService.run.set(runInfo({ settlement: 'settled' }));
 
     const fixture = render();
 
@@ -510,7 +524,7 @@ describe('ImportProgressSection', () => {
         failedStep: null,
       },
     ]);
-    importService.run.set(runInfo());
+    importService.run.set(runInfo({ settlement: 'settled' }));
     importService.resyncTrigger.set('idle');
 
     const fixture = render();
@@ -537,7 +551,7 @@ describe('ImportProgressSection', () => {
           failedStep: null,
         },
       ]);
-      importService.run.set(runInfo());
+      importService.run.set(runInfo({ settlement: 'settled' }));
       importService.resyncTrigger.set(trigger);
 
       const fixture = render();
@@ -562,7 +576,7 @@ describe('ImportProgressSection', () => {
         failedStep: 0,
       },
     ]);
-    importService.run.set(runInfo());
+    importService.run.set(runInfo({ settlement: 'settled' }));
     importService.abortedForPrivileges.set(false);
 
     const withoutBanner = render();
@@ -993,6 +1007,113 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(fixture.nativeElement.textContent).not.toContain('Entfernungs-Rückmeldung');
+    });
+  });
+
+  // Plan-284 Festlegung 5: the import publishes its snapshot while `settling` (E1) — every `failed`
+  // row already carries its final reason (Festlegung 9), but an `unknown` row may still flip once
+  // the re-read answers, and so may every count and line read off the rows. The dock holds those
+  // back until the run has settled, exactly as for delete and restore.
+  describe('while the run is settling', () => {
+    const gapReason = 'Ersetzen abgebrochen — das alte Emote ist schon entfernt.';
+
+    function settlingRows(clarified: 'unknown' | 'done'): ImportRunItem[] {
+      return [
+        doneItem(),
+        doneItem({ key: 'b', sevenTvEmoteId: '7tv-b', name: 'B', status: clarified }),
+        doneItem({
+          key: 'c',
+          sevenTvEmoteId: '7tv-c',
+          name: 'C',
+          status: 'failed',
+          failedStep: 1,
+          errorMessage: gapReason,
+        }),
+        doneItem({ key: 'd', sevenTvEmoteId: '7tv-d', name: 'D', status: 'unknown' }),
+      ];
+    }
+
+    function showSettling(): ComponentFixture<ImportProgressSection> {
+      const rows = settlingRows('unknown');
+      importService.isRunning.set(false);
+      importService.queue.set(rows);
+      importService.run.set(
+        runInfo({
+          settlement: 'pending',
+          phase: 'settling',
+          removedCount: 1,
+          unknownCount: 2,
+          unknownRemovalCount: 1,
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: ['7tv-a'], items: rows, startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      return render();
+    }
+
+    it('keeps the progress and the failed row, but holds back the summary and the unclear rows', () => {
+      const fixture = showSettling();
+      const text: string = fixture.nativeElement.textContent;
+
+      expect(text).toContain('Wird abgeschlossen…');
+      expect(text).toContain('4 / 4 kopiert');
+      expect(
+        fixture.nativeElement.querySelector('[role="progressbar"]').getAttribute('aria-valuenow'),
+      ).toBe('4');
+      expect(alertRows(fixture)).toEqual([`C: ${gapReason}`]);
+      // Everything the summary block carries: the counts, the host's count lines, the not-active
+      // notice, the protocol and the Close button.
+      expect(text).not.toContain('kopiert ·');
+      expect(text).not.toContain('aus dem Zielset entfernt');
+      expect(text).not.toContain('unklar, ob übernommen');
+      expect(text).not.toContain('unklar, ob entfernt');
+      expect(text).not.toContain('kopiert — es ist nicht das aktive Set');
+      expect(text).not.toContain('Protokoll');
+      expect(text).not.toContain('Schließen');
+    });
+
+    it('shows the summary and the still unclear row once the run moves from settling to closed, the failed row unchanged', () => {
+      const fixture = showSettling();
+      const regionBefore = fixture.nativeElement.querySelector('[role="alert"]');
+      const failedRowBefore = alertRows(fixture)[0];
+      expect(alertRows(fixture)).toEqual([`C: ${gapReason}`]);
+
+      // The re-read cleared `B` up as done; `D` stayed unclear.
+      const rows = settlingRows('done');
+      importService.queue.set(rows);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          phase: 'closed',
+          removedCount: 1,
+          unknownCount: 1,
+          unknownRemovalCount: 1,
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: ['7tv-a', '7tv-b'], items: rows, startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      fixture.detectChanges();
+
+      const text: string = fixture.nativeElement.textContent;
+      expect(text).toContain('2 kopiert · 1 fehlgeschlagen · 0 abgebrochen');
+      expect(text).toContain('1 Emote aus dem Zielset entfernt.');
+      expect(text).toContain('Bei 1 Zeile unklar, ob übernommen.');
+      expect(text).toContain(
+        'Bei 1 Ersetzung unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+      );
+      expect(text).toContain(
+        "In Set ‚wegwerf' kopiert — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
+      );
+      expect(alertRows(fixture)).toEqual([
+        `C: ${gapReason}`,
+        'D: Unklar, ob kopiert — bitte im Set nachsehen.',
+      ]);
+      // Festlegung 9: the failed row reads the same in both phases, in the same live region — it is
+      // not announced a second time.
+      expect(alertRows(fixture)[0]).toBe(failedRowBefore);
+      expect(fixture.nativeElement.querySelector('[role="alert"]')).toBe(regionBefore);
     });
   });
 });

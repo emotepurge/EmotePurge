@@ -510,6 +510,104 @@ describe('UndoProgressSection', () => {
     expect(text()).toContain('Das 7TV-Token hat im Zielset kein Schreibrecht');
   });
 
+  // Plan-284 Festlegung 5: the undo publishes its snapshot while `settling` (E1) — a `failed` row
+  // already carries its final reason and a `partial` row its status (Festlegung 9), but an
+  // `unknown` row may still flip once the re-read answers, and so may every counter read off the
+  // rows. The dock holds those back until the run has settled, exactly as for delete and restore.
+  describe('while the run is settling', () => {
+    // What the service gives a `full` row cancelled after its confirmed REMOVE.
+    const gapReason = de.undo.errors.cancelledMidRow;
+
+    function settlingRows(clarified: 'unknown' | 'done'): UndoRunItem[] {
+      return [
+        item('1'),
+        item('2', {
+          status: 'failed',
+          undoStatus: 'failed',
+          completedSteps: 1,
+          failedStep: 1,
+          errorMessage: gapReason,
+        }),
+        item('3', {
+          status: 'unknown',
+          undoStatus: 'unknown',
+          completedSteps: 0,
+          failedStep: 0,
+        }),
+        clarified === 'done'
+          ? item('4')
+          : item('4', {
+              status: 'unknown',
+              undoStatus: 'unknown',
+              completedSteps: 1,
+              failedStep: 1,
+            }),
+      ];
+    }
+
+    function alertRows(fixture: ComponentFixture<UndoProgressSection>): string[] {
+      return Array.from(
+        (fixture.nativeElement as HTMLElement).querySelectorAll('[role="alert"] li'),
+        (row) => (row.textContent ?? '').trim(),
+      );
+    }
+
+    it('keeps the progress and the failed row, but holds back the summary and the unclear rows', () => {
+      settle(settlingRows('unknown'), {
+        phase: 'settling',
+        settlement: 'pending',
+        skipped: [skippedRow('5', 'nothingToDo')],
+      });
+
+      const { fixture, text } = render();
+
+      expect(text()).toContain('Wird abgeschlossen');
+      expect(text()).toContain('4 / 4 verarbeitet');
+      expect(
+        (fixture.nativeElement as HTMLElement)
+          .querySelector('[role="progressbar"]')
+          ?.getAttribute('aria-valuenow'),
+      ).toBe('4');
+      expect(alertRows(fixture)).toEqual([`A2: ${gapReason}`]);
+      // Everything the summary block carries: the sentence, every counter, the skipped lines and
+      // the protocol.
+      expect(text()).not.toContain('zurückgenommen ·');
+      expect(text()).not.toMatch(/Quell-Emotes? wurden? entfernt\./);
+      expect(text()).not.toContain('wieder da');
+      expect(text()).not.toContain('ist unklar');
+      expect(text()).not.toContain('Lücke hinterlassen');
+      expect(text()).not.toContain('übersprungen');
+      expect(button(fixture, 'Ergebnisprotokoll herunterladen')).toBeUndefined();
+    });
+
+    it('shows the summary and the still unclear row once the run moves from settling to closed, the failed row unchanged', () => {
+      settle(settlingRows('unknown'), { phase: 'settling', settlement: 'pending' });
+      const { fixture, text } = render();
+      const regionBefore = (fixture.nativeElement as HTMLElement).querySelector('[role="alert"]');
+      const failedRowBefore = alertRows(fixture)[0];
+      expect(alertRows(fixture)).toEqual([`A2: ${gapReason}`]);
+
+      // The re-read cleared row 4 up as done; row 3 stayed unclear.
+      settle(settlingRows('done'), { phase: 'closed', settlement: 'settled' });
+      fixture.detectChanges();
+
+      expect(text()).toContain('2 zurückgenommen · 1 fehlgeschlagen · 0 abgebrochen');
+      expect(text()).toContain('Bei 1 Zeile ist unklar, ob 7TV sie übernommen hat');
+      expect(text()).toContain('nur die Rückweg-Datei der Rücknahme deckt sie ab');
+      expect(text()).toContain('1 Zeile hat eine Lücke hinterlassen');
+      expect(alertRows(fixture)).toEqual([
+        `A2: ${gapReason}`,
+        'A3: Unklar, ob zurückgenommen — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.',
+      ]);
+      // Festlegung 9: the failed row reads the same in both phases, in the same live region — it is
+      // not announced a second time.
+      expect(alertRows(fixture)[0]).toBe(failedRowBefore);
+      expect((fixture.nativeElement as HTMLElement).querySelector('[role="alert"]')).toBe(
+        regionBefore,
+      );
+    });
+  });
+
   describe('transient skipped notice', () => {
     it('shows the skipped candidates of a start that ran nothing, aria-hidden, without a run', () => {
       undo.noticeSkipped.set([skippedRow('1', 'nothingToDo'), skippedRow('2', 'nothingToDo')]);

@@ -2555,6 +2555,11 @@ test.describe('running import: the settling window', () => {
     await expect(importDock(page).getByRole('button', { name: 'Abbrechen' })).toHaveCount(0);
     await expect(copyButton(page)).toBeDisabled();
     await expect(importTrigger(page)).toBeDisabled();
+    // While the re-read is out the dock holds back what it would read off the rows: no count line,
+    // no unclear row and no unclear line in the summary — the row is not settled yet.
+    await expect(importDock(page).getByText(/kopiert · .* fehlgeschlagen/)).toHaveCount(0);
+    await expect(importDock(page).getByText(/Unklar, ob kopiert/)).toHaveCount(0);
+    await expect(importDock(page).getByText(/ist unklar, ob/)).toHaveCount(0);
 
     // The re-read answers; both reports go out and are held — still the same window.
     reRead.release();
@@ -2715,6 +2720,84 @@ test.describe('running import: the settling window', () => {
 });
 
 /**
+ * A stateful 7TV behind `https://7tv.io/v4/gql`: every set read answers the set as it stands,
+ * every mutation not held changes it and answers. The first mutation of `held.kind` is held
+ * instead — applied on arrival when `held.reaches7tv`, left out entirely otherwise — and its
+ * answer never comes: the page cancels the request itself, and `dropHeld` then only discards
+ * what is left of it (the request is gone by then, so the abort may throw — swallowed).
+ * `afterHeld` is what tells a settle read apart from the reads before the run. Aliased ADDs
+ * only: an aliasless ADD (legacy, transfer-run files) is not modelled — it would land here as an
+ * entry under the alias `undefined`.
+ */
+async function mockSevenTvSetState(
+  page: Page,
+  initial: readonly LiveSetEntry[],
+  held: { kind: 'removeEmote' | 'addEmote'; reaches7tv: boolean },
+): Promise<{
+  heldArrived: Promise<void>;
+  afterHeld: () => boolean;
+  dropHeld: () => void;
+}> {
+  const state = new Map<string, (string | null)[]>(
+    initial.map((entry) => [entry.id, [...entry.aliases]]),
+  );
+  const apply = (request: SevenTvGqlRequest): void => {
+    const id = String(request.variables['emoteId']);
+    if (sevenTvGqlRequestKind(request) === 'removeEmote') {
+      state.delete(id);
+    } else {
+      state.set(id, [...(state.get(id) ?? []), request.variables['alias'] as string]);
+    }
+  };
+  await mockSevenTvGql(page, (request) => {
+    const kind = sevenTvGqlRequestKind(request);
+    switch (kind) {
+      case 'setRead':
+        return sevenTvSetReadPayload([...state].map(([id, aliases]) => ({ id, aliases })));
+      case 'removeEmote':
+      case 'addEmote': {
+        apply(request);
+        const id = request.variables['emoteId'];
+        return {
+          data: {
+            emoteSets: {
+              emoteSet: kind === 'addEmote' ? { addEmote: { id } } : { removeEmote: { id } },
+            },
+          },
+        };
+      }
+      default:
+        throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+    }
+  });
+
+  let arrive!: () => void;
+  const heldArrived = new Promise<void>((resolve) => {
+    arrive = resolve;
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holding = false;
+  await page.route('https://7tv.io/v4/gql', async (route) => {
+    const request = route.request().postDataJSON() as SevenTvGqlRequest;
+    if (holding || sevenTvGqlRequestKind(request) !== held.kind) {
+      await route.fallback();
+      return;
+    }
+    holding = true;
+    if (held.reaches7tv) {
+      apply(request);
+    }
+    arrive();
+    await released;
+    await route.abort().catch(() => undefined);
+  });
+  return { heldArrived, afterHeld: () => holding, dropHeld: release };
+}
+
+/**
  * #275: a delete or restore run cancelled while its one mutation is out marks that row `unknown`,
  * waits `CANCEL_SETTLE_GRACE_MS` (3 s) inside `settling`, reads the set once and turns the row
  * `done` only when that read positively shows the mutation took effect (Plan-275 N1) — otherwise
@@ -2737,84 +2820,6 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
     { id: '7tv-2', aliases: ['KEKW'] },
     { id: '7tv-3', aliases: ['Pog'] },
   ];
-
-  /**
-   * A stateful 7TV behind `https://7tv.io/v4/gql`: every set read answers the set as it stands,
-   * every mutation not held changes it and answers. The first mutation of `held.kind` is held
-   * instead — applied on arrival when `held.reaches7tv`, left out entirely otherwise — and its
-   * answer never comes: the page cancels the request itself, and `dropHeld` then only discards
-   * what is left of it (the request is gone by then, so the abort may throw — swallowed).
-   * `afterHeld` is what tells a settle read apart from the reads before the run. Aliased ADDs
-   * only: an aliasless ADD (legacy, transfer-run files) is not modelled — it would land here as an
-   * entry under the alias `undefined`.
-   */
-  async function mockSevenTvSetState(
-    page: Page,
-    initial: readonly LiveSetEntry[],
-    held: { kind: 'removeEmote' | 'addEmote'; reaches7tv: boolean },
-  ): Promise<{
-    heldArrived: Promise<void>;
-    afterHeld: () => boolean;
-    dropHeld: () => void;
-  }> {
-    const state = new Map<string, (string | null)[]>(
-      initial.map((entry) => [entry.id, [...entry.aliases]]),
-    );
-    const apply = (request: SevenTvGqlRequest): void => {
-      const id = String(request.variables['emoteId']);
-      if (sevenTvGqlRequestKind(request) === 'removeEmote') {
-        state.delete(id);
-      } else {
-        state.set(id, [...(state.get(id) ?? []), request.variables['alias'] as string]);
-      }
-    };
-    await mockSevenTvGql(page, (request) => {
-      const kind = sevenTvGqlRequestKind(request);
-      switch (kind) {
-        case 'setRead':
-          return sevenTvSetReadPayload([...state].map(([id, aliases]) => ({ id, aliases })));
-        case 'removeEmote':
-        case 'addEmote': {
-          apply(request);
-          const id = request.variables['emoteId'];
-          return {
-            data: {
-              emoteSets: {
-                emoteSet: kind === 'addEmote' ? { addEmote: { id } } : { removeEmote: { id } },
-              },
-            },
-          };
-        }
-        default:
-          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
-      }
-    });
-
-    let arrive!: () => void;
-    const heldArrived = new Promise<void>((resolve) => {
-      arrive = resolve;
-    });
-    let release!: () => void;
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let holding = false;
-    await page.route('https://7tv.io/v4/gql', async (route) => {
-      const request = route.request().postDataJSON() as SevenTvGqlRequest;
-      if (holding || sevenTvGqlRequestKind(request) !== held.kind) {
-        await route.fallback();
-        return;
-      }
-      holding = true;
-      if (held.reaches7tv) {
-        apply(request);
-      }
-      arrive();
-      await released;
-      await route.abort().catch(() => undefined);
-    });
-    return { heldArrived, afterHeld: () => holding, dropHeld: release };
-  }
 
   /** The workspace of SOURCE_CHANNEL with its active `set-1` editable and the delete's own
    *  pre-checks answered — shared by every case, delete or restore, since both run in `set-1`. */
@@ -3270,6 +3275,133 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
       ).toBeVisible();
       await expect(confirm.getByRole('button', { name: 'Wiederherstellen' })).toBeDisabled();
     });
+  });
+});
+
+/**
+ * #284: an import run cancelled while its replace's ADD is out takes the same way as a cancelled
+ * delete or restore above — the row is `unknown`, the settle read waits `CANCEL_SETTLE_GRACE_MS`
+ * (3 s) inside `settling`, and while `settling` the dock shows "Wird abgeschlossen…" but neither
+ * its summary nor the unclear row. The ADD here "arrived" (`mockSevenTvSetState` applies it on
+ * arrival), so the settle read finds the source under the freed name and the row settles green.
+ *
+ * Unlike the #275 cases, the grace is measured, not skipped: the clock is paused before the cancel,
+ * so real time cannot count towards it, and it is advanced to 1 ms short of the grace (no read)
+ * and then onto it (the read). A paused clock also holds back the zoneless change detection, which
+ * runs on timers and animation frames — every assertion on the dock is preceded by a short
+ * `runFor` that lets it render.
+ */
+test.describe('import replace: a cancelled request is settled (#284)', () => {
+  const importDock = (page: Page) => page.locator('app-import-progress-section');
+
+  test('a replace cancelled after its ADD reached 7TV reads the target only once the grace has passed, holds back summary and unclear row until then, and settles green with both reports', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, [{ sevenTvEmoteId: 'target-a', name: 'CatJAM' }]);
+    const syncImportedBodies: Record<string, unknown>[] = [];
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`, async (route) => {
+      syncImportedBodies.push(route.request().postDataJSON() as Record<string, unknown>);
+      await route.fulfill({ status: 204 });
+    });
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'target-set');
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+
+    // The target holds its own CatJAM; the replace removes it (answered) and adds the source's
+    // CatJAM under that name (held, but applied — it reached 7TV, only its answer is lost).
+    const heldAdd = await mockSevenTvSetState(page, [{ id: 'target-a', aliases: ['CatJAM'] }], {
+      kind: 'addEmote',
+      reaches7tv: true,
+    });
+    const settleRead = await holdRoute(
+      page,
+      'https://7tv.io/v4/gql',
+      (request) =>
+        heldAdd.afterHeld() &&
+        sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
+    );
+    let settleReadSent = false;
+    void settleRead.arrived.then(() => {
+      settleReadSent = true;
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    const downloadPromise = page.waitForEvent('download');
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+    await downloadPromise;
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    // The ADD is out. From here on only runFor moves the clock, so the grace starts at the cancel.
+    await heldAdd.heldArrived;
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.pauseAt(now + 1_000);
+    await importDock(page).getByRole('button', { name: 'Abbrechen' }).click();
+    heldAdd.dropHeld();
+
+    // Settling: "Wird abgeschlossen…", but no count line, no unclear row, no unclear summary line.
+    await page.clock.runFor(100);
+    await expect(importDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+    await expect(importDock(page).getByText(/kopiert · .* fehlgeschlagen/)).toHaveCount(0);
+    await expect(importDock(page).getByText(/Unklar, ob kopiert/)).toHaveCount(0);
+    await expect(importDock(page).getByText(/ist unklar, ob/)).toHaveCount(0);
+    await expect.poll(() => unloadPrevented(page)).toBe(true);
+
+    // 1 ms short of the grace: no settle read yet. A fired timer still has to cross into a routed
+    // request before `settleReadSent` can see it — a beat of wall-clock time rules out a false
+    // negative, and the paused clock keeps that beat from counting towards the grace.
+    await page.clock.runFor(2_899);
+    await page.waitForTimeout(500);
+    expect(settleReadSent).toBe(false);
+
+    // The grace is up: the one settle read goes out, and is held — still settling.
+    await page.clock.runFor(1);
+    await settleRead.arrived;
+    await page.clock.runFor(100);
+    await expect(importDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+    await expect(importDock(page).getByText(/kopiert · .* fehlgeschlagen/)).toHaveCount(0);
+    await expect(importDock(page).getByText(/Unklar, ob kopiert/)).toHaveCount(0);
+
+    // The read finds the source under the freed name: the lost ADD did land, the row is green.
+    settleRead.release();
+    await page.clock.resume();
+    await expect(importDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+    await expect(
+      importDock(page).getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+    await expect(importDock(page).getByText(/Unklar, ob kopiert/)).toHaveCount(0);
+    await expect(importDock(page).getByText(/ist unklar, ob/)).toHaveCount(0);
+    expect(syncImportedBodies).toHaveLength(1);
+    expect(syncImportedBodies[0]?.['sevenTvEmoteIds']).toEqual(['7tv-1']);
+    expect(syncDeletedBodies).toEqual([
+      { sevenTvEmoteIds: ['target-a'], expectedChannelName: TARGET_CHANNEL },
+    ]);
+    await expect.poll(() => unloadPrevented(page)).toBe(false);
   });
 });
 

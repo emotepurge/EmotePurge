@@ -9,7 +9,17 @@ import {
   signal,
 } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { Observable, catchError, map, of, retry, throwError, timeout, timer } from 'rxjs';
+import {
+  Observable,
+  catchError,
+  map,
+  of,
+  retry,
+  switchMap,
+  throwError,
+  timeout,
+  timer,
+} from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import {
@@ -33,6 +43,7 @@ import {
 } from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
+import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
@@ -72,13 +83,11 @@ const ADD_EMOTE_MUTATION = `
 `;
 
 /** Time budget of the read before one REMOVE attempt (spec E19). `loadSevenTvSetEntries` has no
- *  deadline of its own and the engine gives a `beforeStep` hook none either — the same 20 s the
- *  import's re-read allows. A read that runs out is a read failure (fail-closed). */
+ *  deadline of its own and the engine gives a `beforeStep` hook none either — the same 20 s as the
+ *  settle re-read after a run (`SET_ENTRIES_READ_TIMEOUT_MS`), but deliberately its own constant:
+ *  this read is a gate in front of a mutation, not a settlement after the run (Plan-284
+ *  Festlegung 4). A read that runs out is a read failure (fail-closed). */
 export const RECHECK_READ_TIMEOUT_MS = 20_000;
-
-/** Time budget of the one re-read after a run with an unanswered step (spec 4.6) — the import's
- *  `SETTLE_READ_TIMEOUT_MS`. */
-export const UNDO_SETTLE_READ_TIMEOUT_MS = 20_000;
 
 /** After this many failed reads in a row, every remaining `full` row is skipped without another
  *  read (spec E19, 4.4 point 10a); `addOnly` rows keep running. */
@@ -142,9 +151,10 @@ export type UndoRunItemStatus = RunItemStatus | 'partial';
  * `partial` row is `done` there, which is the projection a `RunProgressPanel` counts, plan
  * Festlegung 5) plus the plan row it runs and what the run learned about it.
  *
- * `errorMessage` is the text to display; where the settled result replaces it with an undo reason
- * (`undo.errors.*`), the engine's own text moves to `sevenTvErrorMessage` — same convention as
- * `ImportRunItem`; a protocol writes `sevenTvErrorMessage ?? errorMessage`.
+ * `errorMessage` is the text to display; where the run's `result` replaces it with an undo reason
+ * (`undo.errors.*` — a row the engine left `failed` already in the settling snapshot, one cleared
+ * up from `unknown` once the run is settled), the engine's own text moves to `sevenTvErrorMessage`
+ * — same convention as `ImportRunItem`; a protocol writes `sevenTvErrorMessage ?? errorMessage`.
  */
 export interface UndoRunItem extends RunQueueItem {
   candidate: UndoCandidate;
@@ -172,9 +182,10 @@ export interface UndoRunResult extends RunResult {
   items: UndoRunItem[];
 }
 
-/** `'pending'` from the start until the outcome is final (the re-read of `unknown` rows included),
- *  `'settled'` once it is — nothing is reported before (spec 4.4 point 12). Moves in lockstep with
- *  the phase, like the import's. */
+/** `'pending'` from the start until the outcome is final (the re-read of `unknown` rows included,
+ *  and after a user's cancel the `CANCEL_SETTLE_GRACE_MS` ahead of it), `'settled'` once it is —
+ *  nothing is reported before (spec 4.4 point 12). Moves in lockstep with the phase, like the
+ *  import's. */
 export type UndoSettlement = 'pending' | 'settled';
 
 /**
@@ -205,7 +216,10 @@ export interface UndoRunInfo extends RunRecordBase {
   /** What the recheck before each `full` row's REMOVE found, by queue key (see `UndoRowRecheck`). */
   recheck: Readonly<Record<string, UndoRowRecheck>>;
   settlement: UndoSettlement;
-  /** `null` while the run is in flight; the engine's snapshot, then the settled outcome. */
+  /** `null` while the run is in flight; then the engine's snapshot while `settlement` is
+   *  `'pending'` — with every `failed` row already carrying its final reason (Plan-284
+   *  Festlegung 9), `unknown` rows as the engine left them — and the settled outcome once
+   *  `'settled'`. */
   result: UndoRunResult | null;
   /** `sync-deleted` — the source ids of every `full` row whose REMOVE 7TV confirmed. */
   removalReport: SyncReportState;
@@ -281,8 +295,8 @@ interface UndoRunContext {
  * - **A second origin lock** (spec 17 K2): without `acknowledgedUnproven`, a `full` row from an
  *   unproven (`planned`) file never becomes a queue row, whatever the caller handed in.
  * - **Settling after the run** (spec 4.4 point 12, 4.6): a run with an `unknown` row is re-read once
- *   and each such row cleared up by the operation of its step (E24); `partial` replaces `done` only
- *   (E23, F19).
+ *   — after the user's own `cancel()` only once `CANCEL_SETTLE_GRACE_MS` has passed — and each such
+ *   row cleared up by the operation of its step (E24); `partial` replaces `done` only (E23, F19).
  * - **Two reports, in order** (spec 4.5, F8): `sync-deleted` for every confirmed REMOVE, then
  *   `sync-restored` for every target with a confirmed ADD — no client resync on success (E16), the
  *   N1 fallback only when every report the run sent failed for good.
@@ -324,8 +338,8 @@ export class SevenTvUndoService {
   readonly isRunning = this.engine.isRunning;
   readonly rateLimitPauseSeconds = this.engine.rateLimitPauseSeconds;
 
-  /** True while any run of this service re-reads or waits for a report — shown or not (#256,
-   *  contract P1). */
+  /** True while any run of this service re-reads its unknown rows — the cancel grace ahead of that
+   *  read included — or waits for a report, shown or not (#256, contract P1). */
   readonly isSettling = this.lifecycle.isSettling;
 
   /** True while any run with a `full` row is not closed — running, re-reading or reporting, shown
@@ -403,6 +417,13 @@ export class SevenTvUndoService {
   readonly noticeSkipped = signal<readonly UndoSkippedRow[]>([]);
 
   private noticeTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  /** `true` only for the synchronous span of this service's own `cancel()`: `engine.cancel()` calls
+   *  `onRunComplete` synchronously (`finish()`), and nothing else ever cancels this engine — an
+   *  `abortOn` abort ends the run through the engine's own completion, not through `cancel()` — so
+   *  `onRunComplete` reading `true` here means "this run ended because the user cancelled it"
+   *  (Plan-275 Festlegung 5, Plan-284 Festlegung 1). Per run by construction, no engine field. */
+  private cancelInProgress = false;
 
   constructor() {
     // The one run-service → arbiter edge (#256, contract P4): the arbiter derives "busy" and the
@@ -505,9 +526,16 @@ export class SevenTvUndoService {
 
   /** Stops the run. A row whose request is in flight ends `unknown` (the operation asks for it,
    *  spec 4.4 point 11), a row stopped after its REMOVE `failed` with `cancelledMidRow`, the rest
-   *  `cancelled`; a row whose recheck read is still out ends `cancelled` — no request was sent. */
+   *  `cancelled`; a row whose recheck read is still out ends `cancelled` — no request was sent. A
+   *  run left with an `unknown` row then waits `CANCEL_SETTLE_GRACE_MS` before its settle re-read —
+   *  see `onRunComplete`; the recheck read never waits. */
   cancel(): void {
-    this.engine.cancel();
+    this.cancelInProgress = true;
+    try {
+      this.engine.cancel();
+    } finally {
+      this.cancelInProgress = false;
+    }
   }
 
   /** Clears what the dock shows — and only that (#256, spec 6.5, AK 39). The shown run goes on on
@@ -680,12 +708,29 @@ export class SevenTvUndoService {
 
   /**
    * Turns the engine's snapshot into the run's outcome, always on the run's own record — there is
-   * deliberately no early return for a run nobody shows any more (F20, AK 39). Without an
-   * `unknown` row the run settles at once; with one it is `settling` while the target set is read
-   * once (`UNDO_SETTLE_READ_TIMEOUT_MS`), and a read that fails, runs out or comes back incomplete
-   * leaves those rows `unknown`.
+   * deliberately no early return for a run nobody shows any more (F20, AK 39).
+   *
+   * What the record publishes at once is the snapshot with every `failed` row already given its
+   * final undo reason (`settleUndoResult` without a read — `removedButNotRestored` or
+   * `cancelledMidRow` from `rejectedKeys`, `partial` likewise): neither depends on the read, so a
+   * `failed` row reads the same while the run is `settling` as once it is `closed`, and the dock's
+   * alert region announces it only once (Plan-284 Festlegung 9). `unknown` rows are left as they
+   * are until the read. This is still the unsettled snapshot — `settlement` stays `'pending'` and
+   * nothing is reported before `settleRun`.
+   *
+   * Without an `unknown` row the run settles at once. With one it is `settling` while the target
+   * set is read once (tokenless): after `CANCEL_SETTLE_GRACE_MS` when the run ended through this
+   * service's own `cancel()` (Plan-284 Festlegung 2 — 7TV may still be finishing the aborted
+   * step), at once after a plain transport loss (a 5xx, no answer at all). The wait runs inside
+   * `settling`, with phase and snapshot already published; the recheck before a REMOVE never
+   * waits. A read that fails, runs out of `SET_ENTRIES_READ_TIMEOUT_MS` or comes back incomplete
+   * leaves those rows `unknown` — the run settles all the same: every path ends in `settleRun`
+   * (Plan-275 Festlegung 19, P6). The engine's snapshot waits in this closure, not on the engine
+   * or the record: the engine's queue may belong to a newer run by then, and the record already
+   * carries the normalized copy.
    */
   private onRunComplete(runId: string, context: UndoRunContext, result: RunResult): void {
+    const afterCancel = this.cancelInProgress;
     const current = this.lifecycle.get(runId);
     if (current === null) {
       // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
@@ -695,10 +740,12 @@ export class SevenTvUndoService {
       ...result,
       items: toUndoItems(result.items, current),
     };
-    const hasUnknown = snapshot.items.some((item) => item.status === 'unknown');
+    const translate = (key: string): string => this.translocoService.translate(key);
+    const published = settleUndoResult(snapshot, context.rejectedKeys, null, translate);
+    const hasUnknown = published.items.some((item) => item.status === 'unknown');
     this.lifecycle.update(runId, (run) => ({
       ...run,
-      result: snapshot,
+      result: published,
       phase: hasUnknown ? 'settling' : run.phase,
     }));
     if (!this.lifecycle.isShown(runId)) {
@@ -707,29 +754,28 @@ export class SevenTvUndoService {
     }
 
     if (!hasUnknown) {
-      this.settleRun(runId, context, null);
+      this.settleRun(runId, context, snapshot, null);
       return;
     }
-    loadSevenTvSetEntries(this.httpClient, current.targetSetId)
-      .pipe(
-        timeout(UNDO_SETTLE_READ_TIMEOUT_MS),
-        catchError(() => of(null)),
-      )
-      .subscribe((entries) => this.settleRun(runId, context, entries));
+    const read = loadSevenTvSetEntries(this.httpClient, current.targetSetId).pipe(
+      timeout(SET_ENTRIES_READ_TIMEOUT_MS),
+      catchError(() => of(null)),
+    );
+    (afterCancel ? timer(CANCEL_SETTLE_GRACE_MS).pipe(switchMap(() => read)) : read).subscribe(
+      (entries) => this.settleRun(runId, context, snapshot, entries),
+    );
   }
 
-  /** Publishes the settled outcome and opens both reports in the same update — the record goes to
-   *  `reporting` (or straight to `closed` with nothing to report) without a moment in which it
-   *  looks closed with a report still to come. */
+  /** Publishes the settled outcome of `snapshot` — the engine's own, un-normalized one, so no
+   *  `failed` row is given its reason twice — and opens both reports in the same update: the
+   *  record goes to `reporting` (or straight to `closed` with nothing to report) without a moment
+   *  in which it looks closed with a report still to come. */
   private settleRun(
     runId: string,
     context: UndoRunContext,
+    snapshot: UndoRunResult,
     entries: SevenTvSetEntries | null,
   ): void {
-    const snapshot = this.lifecycle.get(runId)?.result ?? null;
-    if (snapshot === null) {
-      return;
-    }
     const translate = (key: string): string => this.translocoService.translate(key);
     const result = settleUndoResult(snapshot, context.rejectedKeys, entries, translate);
     const removed = removedSourceIds(result.items);
@@ -1148,8 +1194,13 @@ function toUndoItem(
 /**
  * The settled outcome (spec 4.6): every `unknown` row cleared up against `entries` where the read
  * allows it, every `failed` row given its undo reason, `partial` set, `doneKeys` recomputed. Works
- * on copies. `entries` is `null` when nothing was `unknown` or the read failed; an incomplete read
- * counts as none.
+ * on copies. `entries` is `null` when there was no read (nothing was `unknown`, or `onRunComplete`
+ * publishes the settling snapshot ahead of the read) or the read failed; an incomplete read counts
+ * as none. A `failed` row's reason and `partial` depend on `rejectedKeys` and the row alone, never
+ * on `entries` — which is what lets the settling snapshot carry them already (Plan-284
+ * Festlegung 9). Always called on the engine's own snapshot, never on an already normalized one:
+ * `withReason` moves the displayed text into `sevenTvErrorMessage`, so a second pass would bury the
+ * engine's own words under the undo reason.
  */
 function settleUndoResult(
   snapshot: UndoRunResult,

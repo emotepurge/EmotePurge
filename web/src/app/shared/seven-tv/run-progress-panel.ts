@@ -180,13 +180,15 @@ export class RunProgressPanel {
    *  cancellation — counted from `items` it would hold the bar short and appear twice. `total` and
    *  the failure list keep reading `items`. */
   readonly tally = input<RunProgressTally | null>(null);
-  /** The run's engine work is over but its `unknown` rows are still being read back once (#275,
-   *  the delete's and the restore's `settling` phase). `items` then still holds the pre-settle
+  /** The run's engine work is over but its `unknown` rows are still being read back once — the
+   *  `settling` phase every run has (#275 for delete and restore, Plan-284 for import and undo);
+   *  each host binds it to `run.phase === 'settling'`. `items` then still holds the pre-settle
    *  snapshot, which keeps the bar and the progress text exactly where the run left them; what
    *  the re-read can still change is held back until it answers — the summary block (counts and
    *  the host's `run-actions`) and the `unknown` rows of the failure list. `failed` rows stay
-   *  listed: the re-read never touches them. `false` (the default) for a host without such a
-   *  phase (import, undo). */
+   *  listed: the re-read never touches them, and import and undo publish them with their final
+   *  reason already, so a row reads the same before and after. `false` (the default) outside
+   *  that phase. */
   readonly settling = input(false);
   readonly cancelled = output<void>();
   readonly dismissed = output<void>();

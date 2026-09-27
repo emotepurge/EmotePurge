@@ -2,23 +2,26 @@ import { RunQueueItem, RunResult } from './seven-tv-run-engine';
 import { SevenTvSetEntries } from './seven-tv-set-entries';
 
 /**
- * How long a delete or restore run's re-read of the target set may take before the row it was
- * meant to clear up is simply left `unknown` (#275) — same budget as the import's own re-read
- * (`SETTLE_READ_TIMEOUT_MS`, `seven-tv-import.service.ts`) and the undo's
- * (`UNDO_SETTLE_READ_TIMEOUT_MS`/`RECHECK_READ_TIMEOUT_MS`, `seven-tv-undo.service.ts`) — all three
- * are deliberately kept at the same value rather than merged into one shared constant: unifying
- * them belongs to #284, not to this plan (Plan-275 Festlegung 4).
+ * How long the settle re-read of the target set may take before the rows it was meant to clear up
+ * are simply left `unknown` (#275) — one budget shared by all four runs that settle: delete,
+ * restore, import (`seven-tv-import.service.ts`) and undo (`seven-tv-undo.service.ts`), which
+ * replaced their own equally long settle-read constants with this one (Plan-284 Festlegung 4).
+ * Deliberately *not* shared with the undo's `RECHECK_READ_TIMEOUT_MS`: that read is a gate in front
+ * of a mutation (fail-closed, E19), not a settlement after the run, and keeps its own constant even
+ * at the same value.
  */
 export const SET_ENTRIES_READ_TIMEOUT_MS = 20_000;
 
 /**
- * How long a delete or restore service waits, once its own `cancel()` synchronously finished the
- * run, before it reads the target set — giving 7TV time to finish processing the request that was
- * still in flight when the user clicked "Cancel". Not applied after a plain transport loss (a 5xx
- * or no answer at all): there 7TV has already finished with the request by the time the failure
- * reaches this app, or, for a dropped connection, there is no moment to wait *for* (Plan-275
- * Festlegung 5). Neither delay decides anything — it only raises how often the read can confirm the
- * row instead of leaving it `unknown`.
+ * How long a run service waits, once its own `cancel()` synchronously finished the run, before its
+ * settle re-read of the target set — giving 7TV time to finish processing the request that was
+ * still in flight when the user clicked "Cancel". Applied by all four settling runs (delete,
+ * restore, import, undo; Plan-275 Festlegung 5, Plan-284 Festlegung 2), and only ahead of the settle
+ * read: the undo's recheck before each `REMOVE` never waits. Not applied after a plain transport
+ * loss (a 5xx or no answer at all): there 7TV has already finished with the request by the time the
+ * failure reaches this app, or, for a dropped connection, there is no moment to wait *for*. Neither
+ * delay decides anything — it only raises how often the read can confirm the row instead of leaving
+ * it `unknown`.
  */
 export const CANCEL_SETTLE_GRACE_MS = 3_000;
 
