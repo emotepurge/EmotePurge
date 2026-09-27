@@ -3326,6 +3326,207 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   });
 });
 
+// #275 (plan Festlegungen 16, 17): the dock's restore entry offers a finished run's `unknown` rows
+// alongside its `done` ones, marked `uncertain`; the duplicate checks drop them whenever their read
+// cannot vouch for them, and the confirmation says how many. Same real-pre-check setup as the
+// restore-confirm-path block above, but each test shapes its own finished run.
+describe('MassDeletePanel — unclear rows of a finished delete run are offered for restore, fail-closed (#275)', () => {
+  const RUN_CHANNEL = 'runchannel';
+  const GQL = 'https://7tv.io/v4/gql';
+
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let startRestore: ReturnType<typeof vi.fn>;
+  let dialogOpen: ReturnType<typeof vi.fn>;
+
+  function item(
+    sevenTvEmoteId: string,
+    name: string,
+    status: RunQueueItem['status'],
+  ): RunQueueItem {
+    return {
+      key: sevenTvEmoteId,
+      emoteId: `e-${sevenTvEmoteId}`,
+      sevenTvEmoteId,
+      name,
+      status,
+      completedSteps: status === 'done' ? 1 : 0,
+      failedStep: status === 'failed' || status === 'unknown' ? 0 : null,
+    };
+  }
+
+  const DONE = item('7tv-1', 'PogU', 'done');
+  const UNKNOWN = item('7tv-2', 'KEKW', 'unknown');
+
+  /** Mounts the panel over a finished run of `items` — also shown as the dock's queue, so the
+   *  run-progress panel (and with it the restore entry) is on screen. */
+  async function mount(items: RunQueueItem[]): Promise<void> {
+    startRestore = vi.fn();
+    dialogOpen = vi.fn().mockReturnValue({ closed: new Subject<boolean | undefined>() });
+    const lastRun = signal({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      result: {
+        doneKeys: items.filter((entry) => entry.status === 'done').map((entry) => entry.key),
+        items,
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    const providers = panelProviders({
+      deleteService: fakeDeleteService({ lastRun, queue: signal(items) }),
+      restoreService: { ...fakeRestoreService(), startRestore } as unknown as RestoreServiceFake,
+      dialogOpen,
+      emoteAdminService: {
+        getSetStatus: vi.fn().mockReturnValue(of({ occupiedSlots: 1, capacity: 100 })),
+      } as unknown as Partial<EmoteAdminService>,
+      emoteSetService: null,
+    });
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('activeSetId', 'set-1');
+    fixture.componentRef.setInput('channelName', RUN_CHANNEL);
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  }
+
+  /** Clicks the restore entry and answers its target pre-check, leaving the open-time duplicate
+   *  check's read for the test to answer. */
+  function openRestore(): void {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush(targetsResponse('set-1', RUN_CHANNEL));
+  }
+
+  /** A single, last page of `entries`; `truncated` makes 7TV's `totalCount` promise one more
+   *  entry than it delivers — a read that succeeds with `complete: false`. */
+  function entriesPage(entries: { id: string; alias: string }[], truncated = false) {
+    return {
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: entries.length + (truncated ? 1 : 0),
+              pageCount: 1,
+              items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function confirmData(): RestoreConfirmDialogData {
+    return dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData;
+  }
+
+  function restoreEntry(): HTMLButtonElement | undefined {
+    return Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'restore.button',
+    );
+  }
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  it('shows the restore entry for a run whose only restorable row is unknown', async () => {
+    await mount([UNKNOWN, item('7tv-3', 'Sadge', 'failed')]);
+
+    expect(restoreEntry()).toBeDefined();
+  });
+
+  it('shows no restore entry for a run with only failed and cancelled rows', async () => {
+    await mount([item('7tv-3', 'Sadge', 'failed'), item('7tv-4', 'Clap', 'cancelled')]);
+
+    expect(restoreEntry()).toBeUndefined();
+  });
+
+  it('offers the unknown row alongside the done one once a complete read vouches for both', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    expect(confirmData().names).toEqual(['PogU', 'KEKW']);
+    expect(confirmData().uncertainDropped).toBe(0);
+  });
+
+  it('marks the unknown row uncertain, so an incomplete open-time read leaves it out and the confirmation counts it', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(confirmData().names).toEqual(['PogU']);
+    expect(confirmData().addCount).toBe(1);
+    expect(confirmData().uncertainDropped).toBe(1);
+  });
+
+  it('keeps a done row fail-open next to a dropped unknown one when the open-time read fails', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+
+    expect(confirmData().names).toEqual(['PogU']);
+    expect(confirmData().uncertainDropped).toBe(1);
+    expect(confirmData().countIsUpperBound).toBe(true);
+  });
+
+  it('opens the confirmation with nothing to add, not the "everything already there" shortcut, when every restorable row was unknown and the read fails', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData().addCount).toBe(0);
+    expect(confirmData().uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('opens the confirmation with nothing to add when every restorable row was unknown and the read is incomplete', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData().addCount).toBe(0);
+    expect(confirmData().uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // No special rule once the read is complete: the unknown row's emote is still in the set (its
+  // delete never landed), so it is "already present" like any other and the shortcut is taken.
+  it('takes the "everything already there" shortcut when a complete read finds the unknown row still present', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).toHaveBeenCalledWith(expect.anything(), [], 1, true, 0);
+  });
+});
+
 // #253, spec 4.6 point 20, AK 31: the shared pre-check now runs before the delete confirmation
 // itself opens, not only before the panel's own restore entry (the block above). Real
 // `SevenTvEmoteSetService` over `HttpTestingController` (`emoteSetService: null`, same reasoning as

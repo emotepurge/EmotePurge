@@ -14,7 +14,15 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `web/src/app/shared/export/purge-run-export.ts` (+ spec) — `PURGE_RUN_FORMAT_VERSION`
 2 → 3, `PurgeRunMeta.counts.unknown`, new optional `RestoreRow.uncertain`,
-`parsePurgeRunProtocol` reading `formatVersion` `1`/`2`/`3`.
+`parsePurgeRunProtocol` reading `formatVersion` `1`/`2`/`3` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` (+ spec) — new optional
+`RestoreFilterRow.uncertain`, new `uncertainDropped` on `RestoreAlreadyPresentFilterResult` (and so
+on `RestoreConfirmPreview`/`restoreConfirmPreviewUnavailable`) ·
+`web/src/app/shared/seven-tv/restore-confirm-dialog.ts` (+ spec) — new
+`RestoreConfirmDialogData.uncertainDropped`, its notice, executor disabled at `addCount === 0` ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `mass-delete-panel.ts` (+ specs) — `unknown` rows
+offered with the marker, no "everything already there" shortcut while `uncertainDropped > 0` ·
+`web/public/i18n/{de,en}.json` (`restore.confirm.uncertainDropped`).
 
 Issue #275 (plan Festlegungen 15–17). A delete or restore run whose request was still in flight
 when the user cancelled it, or whose 7TV answer was lost in transport, no longer ends the row

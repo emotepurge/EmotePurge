@@ -942,6 +942,12 @@
     "confirmSetNotActive": "Dieses Set ist gerade nicht aktiv.",
     "confirmForeignToView": "Diese Ansicht zeigt von diesem Lauf nichts.",
     "confirmExecute": "Wiederherstellen",
+    "confirm": {
+      "uncertainDropped": {
+        "one": "{{ count }} unklares Emote wurde nicht angeboten, weil 7TV gerade nicht prüfen konnte, ob es noch im Set ist.",
+        "other": "{{ count }} unklare Emotes wurden nicht angeboten, weil 7TV gerade nicht prüfen konnte, ob sie noch im Set sind."
+      }
+    },
     "capacityProjection": "Das Set hätte danach {{ projected }} von {{ capacity }} Slots belegt.",
     "capacityProjectionUpTo": "Das Set hätte danach bis zu {{ projected }} von {{ capacity }} Slots belegt.",
     "capacityWarning": "Das überschreitet die Kapazität — 7TV wird überzählige Emotes ablehnen.",

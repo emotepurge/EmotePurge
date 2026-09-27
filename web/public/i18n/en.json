@@ -942,6 +942,12 @@
     "confirmSetNotActive": "This set is not the active one right now.",
     "confirmForeignToView": "This view shows nothing from this run.",
     "confirmExecute": "Restore",
+    "confirm": {
+      "uncertainDropped": {
+        "one": "{{ count }} unclear emote was not offered because 7TV could not check right now whether it is still in the set.",
+        "other": "{{ count }} unclear emotes were not offered because 7TV could not check right now whether they are still in the set."
+      }
+    },
     "capacityProjection": "The set would then hold {{ projected }} of {{ capacity }} slots.",
     "capacityProjectionUpTo": "The set would then hold up to {{ projected }} of {{ capacity }} slots.",
     "capacityWarning": "That exceeds the capacity — 7TV will reject the surplus emotes.",

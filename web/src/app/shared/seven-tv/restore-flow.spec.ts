@@ -1097,3 +1097,145 @@ describe('startRestoreFlow', () => {
     );
   });
 });
+
+// #275 (plan Festlegungen 16, 17): a purge-run row whose delete ended `unknown` comes back from the
+// parser marked `uncertain`. The file door offers it alongside the `done` rows; the duplicate
+// checks drop it whenever their read cannot vouch for it (failed, timed out, incomplete), and the
+// confirmation says how many. The flow itself adds no branch beyond not taking the "everything
+// already there" shortcut while anything was dropped.
+describe('startRestoreFlow — unclear protocol rows (#275)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const doneRow: RestoreRow = {
+    emoteId: 'e1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'PogU',
+    aliases: ['PogU'],
+  };
+  const unclearRow: RestoreRow = {
+    emoteId: 'e2',
+    sevenTvEmoteId: '7tv-2',
+    name: 'KEKW',
+    aliases: ['KEKW'],
+    uncertain: true,
+  };
+
+  /** A single, last page whose `totalCount` promises one entry more than it delivers — a read that
+   *  succeeds with `complete: false`. */
+  function truncatedPage(ids: string[] = []) {
+    const page = emoteSetPage(ids);
+    page.data.emoteSets.emoteSet.emotes.totalCount = ids.length + 1;
+    return page;
+  }
+
+  function sentIds(startRestore: ReturnType<typeof vi.fn>): string[] {
+    return (startRestore.mock.calls[0][1] as { sevenTvEmoteId: string }[]).map(
+      (row) => row.sevenTvEmoteId,
+    );
+  }
+
+  it('offers an unclear row alongside a done one once a complete read vouches for both', () => {
+    const { deps, dialogOpen, startRestore } = setup();
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['PogU', 'KEKW']);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(0);
+
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    expect(sentIds(startRestore)).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  it('leaves the unclear row out of the confirmation and the run when both reads fail, keeping the done row fail-open', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValue(throwError(() => new Error('network error')));
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+
+    const data = confirmData(dialogOpen);
+    expect(data.names).toEqual(['PogU']);
+    expect(data.addCount).toBe(1);
+    expect(data.uncertainDropped).toBe(1);
+    expect(data.countIsUpperBound).toBe(true);
+
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    expect(sentIds(startRestore)).toEqual(['7tv-1']);
+    expect(startRestore.mock.calls[0][3]).toBe(false);
+  });
+
+  it('leaves the unclear row out when the open-time read is incomplete', () => {
+    const { deps, dialogOpen, httpPost } = setup();
+    httpPost.mockReturnValueOnce(of(truncatedPage()));
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['PogU']);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(1);
+  });
+
+  it('leaves the unclear row out when the open-time read hangs past its timeout', () => {
+    vi.useFakeTimers();
+    const { deps, dialogOpen, httpPost } = setup();
+    httpPost.mockReturnValueOnce(new Subject<ReturnType<typeof emoteSetPage>>());
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+    vi.advanceTimersByTime(20_000);
+
+    expect(confirmData(dialogOpen).names).toEqual(['PogU']);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(1);
+  });
+
+  it('opens the confirmation with nothing to add, not the "everything already there" shortcut, when every row was unclear and the read is incomplete', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(of(truncatedPage()));
+
+    startRestoreFlow(deps, target(), [unclearRow]);
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData(dialogOpen).addCount).toBe(0);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('opens the confirmation with nothing to add when every row was unclear and the read fails', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(throwError(() => new Error('network error')));
+
+    startRestoreFlow(deps, target(), [unclearRow]);
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData(dialogOpen).addCount).toBe(0);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // No special rule once the read is complete: an unclear row whose emote is still there is
+  // "already present" like any other, and the shortcut stays what it was.
+  it('still takes the "everything already there" shortcut when a complete read finds the unclear row present', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(of(emoteSetEntriesPage([{ id: '7tv-2', alias: 'KEKW' }])));
+
+    startRestoreFlow(deps, target(), [unclearRow]);
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).toHaveBeenCalledWith(expect.anything(), [], 1, true, 0);
+  });
+
+  // Plan Festlegung 16, unchanged fallback: the open-time read already vouched for the unclear
+  // row and the dialog counted it; a confirm-time read that then fails reuses those open-time rows
+  // as it always did (`fallOnOpenTime`) — no second rule for uncertain rows at confirm time.
+  it('keeps an unclear row the open-time read already vouched for when only the confirm-time read fails', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(of(emoteSetPage([])));
+    httpPost.mockReturnValueOnce(throwError(() => new Error('network error')));
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    expect(sentIds(startRestore)).toEqual(['7tv-1', '7tv-2']);
+  });
+});
