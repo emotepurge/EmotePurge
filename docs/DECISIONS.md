@@ -16,7 +16,12 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 flag), `onRunComplete` (grace wait, `SET_ENTRIES_READ_TIMEOUT_MS`, the settling snapshot published
 with its final `failed` reasons), `settleRun` (settles the engine's own snapshot), `settleRunResult`
 doc, `SETTLE_READ_TIMEOUT_MS` removed, `ImportRunItem`/`ImportSettlement`/`ImportRunInfo.settlement`/
-`isSettling` docs · `web/src/app/core/seven-tv/seven-tv-run-settlement.ts`
+`isSettling` docs · `web/src/app/core/seven-tv/seven-tv-undo.service.ts` (+ spec) — `cancel`
+(cancel flag), `onRunComplete` (grace wait, `SET_ENTRIES_READ_TIMEOUT_MS`, the settling snapshot
+published with its final `failed` reasons and `partial`), `settleRun` (settles the engine's own
+snapshot), `settleUndoResult` doc, `UNDO_SETTLE_READ_TIMEOUT_MS` removed, `RECHECK_READ_TIMEOUT_MS`
+doc (value and recheck unchanged), `UndoRunItem`/`UndoSettlement`/`UndoRunInfo.result`/
+`isSettling`/class docs · `web/src/app/core/seven-tv/seven-tv-run-settlement.ts`
 (`SET_ENTRIES_READ_TIMEOUT_MS` and `CANCEL_SETTLE_GRACE_MS` docs only).
 
 Issues #284 and #286 (Plan-284-286 Festlegungen 1–9). The 2026-09-27 #275 entry gave delete and
@@ -47,7 +52,8 @@ changes is what their docks show from it: while a run is `settling`, the import 
 is `settled`. Progress, counters, `failed` rows and "finishing…" stay. So that a visible `failed`
 row does not change its text between `settling` and `closed`, the snapshot published for `settling`
 already carries every `failed` row's final reason — that reason never depends on the read (import:
-`withFailureReason` over the recorded GraphQL status; undo: over its rejected keys). The settle
+`withFailureReason` over the recorded GraphQL status; undo: over its rejected keys — and the
+undo's `partial`, which hangs on the row alone, likewise). The settle
 itself still starts from the engine's own snapshot, so no row is given its reason twice.
 
 **Unchanged.** The clarification tables (`settleUnknownRow`, `settleUnknownRemove`/`settleUnknownAdd`)

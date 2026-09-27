@@ -17,13 +17,13 @@ import {
 } from './seven-tv-emote-set.model';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
+import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
 import { SevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
   RECHECK_READ_TIMEOUT_MS,
   SevenTvUndoService,
   UNDO_NOTICE_MS,
-  UNDO_SETTLE_READ_TIMEOUT_MS,
   UndoRunTarget,
 } from './seven-tv-undo.service';
 import { UndoCandidate, UndoSourceFileInfo } from './undo-candidate';
@@ -774,8 +774,21 @@ describe('SevenTvUndoService', () => {
       expect(remove.cancelled).toBe(true);
       expect(service.items()[0]).toMatchObject({ status: 'unknown', failedStep: 0 });
       expect(service.run()?.phase).toBe('settling');
+      // The re-read waits out the cancel's grace period first (Plan-284) — 7TV may still be
+      // applying the REMOVE — and nothing is reported meanwhile.
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS - 1);
+      httpMock.expectNone(isRead);
+      httpMock.expectNone(SYNC_DELETED);
+      expect(service.settlement()).toBe('pending');
+      vi.advanceTimersByTime(1);
       // The re-read finds the source gone: applied after all.
       expectRead().flush(readPage([]));
+      expect(service.items()[0]).toMatchObject({
+        status: 'failed',
+        completedSteps: 1,
+        failedStep: 1,
+        errorMessage: T.removedButNotRestored,
+      });
       expectReport(SYNC_DELETED, ['src-1']).flush(answer());
     });
 
@@ -794,6 +807,310 @@ describe('SevenTvUndoService', () => {
       expect(service.summary().gapCount).toBe(1);
       expectReport(SYNC_DELETED, ['src-1']).flush(answer());
       httpMock.expectNone(SYNC_RESTORED);
+    });
+  });
+
+  // Plan-284 (#284): after the user's own cancel(), the settle re-read waits CANCEL_SETTLE_GRACE_MS
+  // first, inside `settling` — 7TV may still be applying the step that was in flight. A plain
+  // transport loss reads at once, and the recheck before a REMOVE never waits. Every branch still
+  // ends in the settle (P6).
+  describe('cancel grace before the settle re-read (Plan-284)', () => {
+    /** A one-ADD full row: REMOVE confirmed, then cancelled while its ADD is out. */
+    function cancelWithAddInFlight(): void {
+      start([fullRow('1')]);
+      answerRead([{ id: 'src-1', alias: 'A1' }]);
+      expectRemove('src-1').flush({});
+      next();
+      const add = expectAdd('tgt-1', 'A1');
+      service.cancel();
+      expect(add.cancelled).toBe(true);
+    }
+
+    /** Lets the cancel's grace period run out — checking that nothing is read a moment before it
+     *  ends — and returns the one settle re-read it then sends. */
+    function readAfterGrace(): TestRequest {
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS - 1);
+      httpMock.expectNone(isRead);
+      vi.advanceTimersByTime(1);
+      return expectRead();
+    }
+
+    it('settles an ADD cancelled in flight after a confirmed REMOVE: settling, no read before the grace period, then one read that confirms it', () => {
+      cancelWithAddInFlight();
+
+      expect(service.isRunning()).toBe(false);
+      expect(service.run()).toMatchObject({ phase: 'settling', settlement: 'pending' });
+      expect(service.items()[0]).toMatchObject({
+        status: 'unknown',
+        completedSteps: 1,
+        failedStep: 1,
+      });
+      expect(service.isSettling()).toBe(true);
+      expect(service.destructiveOpen()).toBe(true);
+
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS - 1);
+      httpMock.expectNone(isRead);
+      httpMock.expectNone(SYNC_DELETED);
+      httpMock.expectNone(SYNC_RESTORED);
+      expect(service.run()?.phase).toBe('settling');
+
+      vi.advanceTimersByTime(1);
+      const read = expectRead();
+      expect(read.request.headers.has('Authorization')).toBe(false);
+      read.flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
+
+      expect(service.settlement()).toBe('settled');
+      expect(service.items()[0]).toMatchObject({
+        status: 'done',
+        completedSteps: 2,
+        failedStep: null,
+      });
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    it('settles an ADD cancelled in flight that 7TV never applied as a gap (E24), after the grace period', () => {
+      cancelWithAddInFlight();
+
+      readAfterGrace().flush(readPage([]));
+
+      expect(service.items()[0]).toMatchObject({
+        status: 'failed',
+        completedSteps: 1,
+        failedStep: 1,
+        errorMessage: T.removedButNotRestored,
+      });
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      httpMock.expectNone(SYNC_RESTORED);
+    });
+
+    it('leaves the row unknown when the read after the grace period fails, and still settles and reports', () => {
+      cancelWithAddInFlight();
+
+      readAfterGrace().error(new ProgressEvent('error'));
+
+      expect(service.settlement()).toBe('settled');
+      expect(service.items()[0]).toMatchObject({ status: 'unknown', completedSteps: 1 });
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      httpMock.expectNone(SYNC_RESTORED);
+      expect(service.isSettling()).toBe(false);
+    });
+
+    it('leaves the row unknown when the read after the grace period comes back incomplete, and still settles and reports', () => {
+      cancelWithAddInFlight();
+
+      // The target *is* back under its alias — but the read only vouches for part of the set.
+      readAfterGrace().flush(readPage([{ id: 'tgt-1', alias: 'A1' }], false));
+
+      expect(service.settlement()).toBe('settled');
+      expect(service.items()[0].status).toBe('unknown');
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      httpMock.expectNone(SYNC_RESTORED);
+    });
+
+    it('gives the read after the grace period SET_ENTRIES_READ_TIMEOUT_MS, then settles without it', () => {
+      cancelWithAddInFlight();
+      const read = readAfterGrace();
+
+      vi.advanceTimersByTime(SET_ENTRIES_READ_TIMEOUT_MS - 1);
+      expect(service.settlement()).toBe('pending');
+      vi.advanceTimersByTime(1);
+
+      expect(read.cancelled).toBe(true);
+      expect(service.settlement()).toBe('settled');
+      expect(service.items()[0].status).toBe('unknown');
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+    });
+
+    it('reads at once, without a grace period, after a 5xx the user did not cancel', () => {
+      start([fullRow('1')]);
+      answerRead([{ id: 'src-1', alias: 'A1' }]);
+      expectRemove('src-1').flush({});
+      next();
+      expectAdd('tgt-1', 'A1').flush('boom', { status: 503, statusText: 'Unavailable' });
+
+      // Well inside the grace period — and the read is already out.
+      expect(RUN_DELAY_MS).toBeLessThan(CANCEL_SETTLE_GRACE_MS);
+      next();
+      expectRead().flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
+
+      expect(service.items()[0].status).toBe('done');
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+    });
+
+    // Plan-284 Festlegung 1: an `abortOn` abort ends the run through the engine, not through this
+    // service's `cancel()` — so a run it stops with an older transport-loss row reads at once.
+    it('reads at once, without a grace period, when a privileges abort ends a run that has an unknown row', () => {
+      start([fullRow('1'), fullRow('2')]);
+      answerRead([{ id: 'src-1', alias: 'A1' }]);
+      expectRemove('src-1').flush({});
+      next();
+      expectAdd('tgt-1', 'A1').flush('boom', { status: 503, statusText: 'Unavailable' }); // lost
+      next();
+      answerRead([{ id: 'src-2', alias: 'A2' }]);
+      expectRemove('src-2').flush('no', { status: 401, statusText: 'Unauthorized' });
+
+      expect(service.abortedForPrivileges()).toBe(true);
+      expect(service.items().map((item) => item.status)).toEqual(['unknown', 'failed']);
+      // No timer advanced at all — the read is already out.
+      expectRead().flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
+
+      expect(service.items()[0].status).toBe('done');
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+    });
+
+    // Plan-284 Festlegung 1: the flag lives only for the synchronous span of `cancel()` — a later
+    // run that ends on a plain transport loss must read at once, not inherit an earlier grace.
+    it('does not carry a cancelled run’s grace period over to a later run that ends on a transport loss', () => {
+      cancelWithAddInFlight();
+      readAfterGrace().flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+
+      start([addOnlyRow('2')]);
+      expectAdd('tgt-2', 'A2').flush('boom', { status: 502, statusText: 'Bad Gateway' });
+      next();
+
+      expectRead().flush(readPage([{ id: 'tgt-2', alias: 'A2' }]));
+      expectReport(SYNC_RESTORED, ['tgt-2']).flush(answer());
+    });
+
+    it('also waits out the grace period when a cancel between rows ends a run with an older transport loss', () => {
+      start([fullRow('1'), addOnlyRow('2')]);
+      answerRead([{ id: 'src-1', alias: 'A1' }]);
+      expectRemove('src-1').flush({});
+      next();
+      expectAdd('tgt-1', 'A1').flush('boom', { status: 500, statusText: 'Server Error' });
+      httpMock.expectNone(isAdd);
+      service.cancel(); // in the pacing pause before the addOnly row: nothing in flight
+
+      expect(service.items().map((item) => item.status)).toEqual(['unknown', 'cancelled']);
+      readAfterGrace().flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
+
+      expect(service.items()[0].status).toBe('done');
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+    });
+
+    // Plan-275 Festlegung 19 / P6: reset() during the grace period only drops the display — the
+    // timer, the read, the settle and both reports all still run on the run's own record.
+    it('reset() during the grace period detaches the display; the run still reads, settles and reports', () => {
+      cancelWithAddInFlight();
+
+      service.reset();
+
+      expect(service.run()).toBeNull();
+      expect(service.queue()).toEqual([]);
+      expect(service.isSettling()).toBe(true);
+      expect(service.destructiveOpen()).toBe(true);
+
+      readAfterGrace().flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
+
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+      expect(service.run()).toBeNull();
+      expect(service.isSettling()).toBe(false);
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    // Plan-284 Festlegung 9: a `failed` row's reason does not hang on the read, so the settling
+    // snapshot already carries it — its text is the same while settling and once closed, and the
+    // engine's own words stay in `sevenTvErrorMessage` rather than being overwritten by a second
+    // pass.
+    it('publishes a row rejected after its REMOVE with removedButNotRestored already in the settling snapshot, unchanged once closed', () => {
+      start([fullRow('1'), fullRow('2')]);
+      runRejectedAfterRemove('1');
+      answerRead([{ id: 'src-2', alias: 'A2' }]);
+      const remove = expectRemove('src-2'); // in flight
+      service.cancel();
+      expect(remove.cancelled).toBe(true);
+
+      expect(service.run()?.phase).toBe('settling');
+      const [failedWhileSettling, unknownWhileSettling] = service.items();
+      expect(failedWhileSettling).toMatchObject({
+        status: 'failed',
+        completedSteps: 1,
+        failedStep: 1,
+        errorMessage: T.removedButNotRestored,
+        sevenTvErrorMessage: 'name taken',
+      });
+      // The unclear row is left exactly as the engine ended it until the read.
+      expect(unknownWhileSettling).toMatchObject({ status: 'unknown', failedStep: 0 });
+      expect(unknownWhileSettling.sevenTvErrorMessage).toBeUndefined();
+
+      readAfterGrace().flush(readPage([])); // src-2 gone: its REMOVE was applied
+
+      expect(service.settlement()).toBe('settled');
+      const [failedOnceSettled, clearedUp] = service.items();
+      expect(failedOnceSettled.errorMessage).toBe(failedWhileSettling.errorMessage);
+      expect(failedOnceSettled.sevenTvErrorMessage).toBe(failedWhileSettling.sevenTvErrorMessage);
+      expect(clearedUp).toMatchObject({ status: 'failed', completedSteps: 1 });
+      expectReport(SYNC_DELETED, ['src-1', 'src-2']).flush(answer());
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.items()[0]).toMatchObject({
+        errorMessage: T.removedButNotRestored,
+        sevenTvErrorMessage: 'name taken',
+      });
+
+      function runRejectedAfterRemove(n: string): void {
+        answerRead([{ id: `src-${n}`, alias: `A${n}` }]);
+        expectRemove(`src-${n}`).flush({});
+        next();
+        expectAdd(`tgt-${n}`, `A${n}`).flush(
+          gqlRejection('name taken', { code: 'CONFLICT', status: 409 }),
+        );
+        next();
+      }
+    });
+
+    it('publishes a row cancelled after its REMOVE with cancelledMidRow already in the settling snapshot, unchanged once closed', () => {
+      start([fullRow('1'), fullRow('2')]);
+      answerRead([{ id: 'src-1', alias: 'A1' }]);
+      expectRemove('src-1').flush({});
+      next();
+      expectAdd('tgt-1', 'A1').flush('boom', { status: 503, statusText: 'Unavailable' }); // lost
+      next();
+      answerRead([{ id: 'src-2', alias: 'A2' }]);
+      expectRemove('src-2').flush({});
+      service.cancel(); // after the second row's REMOVE, before its ADD: nothing in flight
+
+      expect(service.run()?.phase).toBe('settling');
+      const [unknownWhileSettling, failedWhileSettling] = service.items();
+      expect(unknownWhileSettling.status).toBe('unknown');
+      expect(failedWhileSettling).toMatchObject({
+        status: 'failed',
+        completedSteps: 1,
+        failedStep: 1,
+        errorMessage: T.cancelledMidRow,
+        sevenTvErrorMessage: DE_TRANSLATIONS.massDelete.errors.cancelledMidRow,
+      });
+
+      readAfterGrace().flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
+
+      expect(service.settlement()).toBe('settled');
+      const [clearedUp, failedOnceSettled] = service.items();
+      expect(clearedUp.status).toBe('done');
+      expect(failedOnceSettled.errorMessage).toBe(failedWhileSettling.errorMessage);
+      expect(failedOnceSettled.sevenTvErrorMessage).toBe(failedWhileSettling.sevenTvErrorMessage);
+      expectReport(SYNC_DELETED, ['src-1', 'src-2']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+    });
+
+    it('never waits before the recheck read of a REMOVE, not even right after a cancelled run', () => {
+      cancelWithAddInFlight();
+      readAfterGrace().flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+
+      start([fullRow('2')]);
+      // No timer advanced at all — the recheck read is already out.
+      runFull('2');
+      expectReport(SYNC_DELETED, ['src-2']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-2']).flush(answer());
     });
   });
 
@@ -988,7 +1305,7 @@ describe('SevenTvUndoService', () => {
       expect(service.isSettling()).toBe(true);
       expect(service.run()?.phase).toBe('settling');
 
-      vi.advanceTimersByTime(UNDO_SETTLE_READ_TIMEOUT_MS);
+      vi.advanceTimersByTime(SET_ENTRIES_READ_TIMEOUT_MS);
 
       expect(read.cancelled).toBe(true);
       expect(service.items()[0]).toMatchObject({ status: 'unknown', completedSteps: 1 });
