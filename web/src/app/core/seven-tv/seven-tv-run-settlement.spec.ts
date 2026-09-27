@@ -37,8 +37,12 @@ function setEntries(overrides: Partial<SevenTvSetEntries> = {}): SevenTvSetEntri
 }
 
 describe('settleDeleteResult', () => {
-  it('confirms an unknown row done when the read shows the id gone from the set', () => {
-    const item = queueItem({ key: '7tv-1', status: 'unknown' });
+  it('confirms an unknown row done when the read shows the id gone from the set, and clears its error', () => {
+    const item = queueItem({
+      key: '7tv-1',
+      status: 'unknown',
+      errorMessage: 'no answer within 20000 ms',
+    });
     const result = settleDeleteResult(runResult([item]), setEntries({ aliasesById: new Map() }));
 
     expect(result.items[0]).toMatchObject({
@@ -57,6 +61,17 @@ describe('settleDeleteResult', () => {
 
     expect(result.items[0].status).toBe('unknown');
     expect(result.doneKeys).toEqual([]);
+  });
+
+  // A #74 duplicate cell's one REMOVE takes both of its aliases at once — a read that finds only
+  // one of the two still there is exactly as inconclusive as finding both: the id is still in the
+  // set, whatever 7TV did or did not finish applying.
+  it("leaves the row unknown when only one of the id's two original aliases is still in the set", () => {
+    const item = queueItem({ key: '7tv-1', status: 'unknown' });
+    const entries = setEntries({ aliasesById: new Map([['7tv-1', ['A']]]) });
+    const result = settleDeleteResult(runResult([item]), entries);
+
+    expect(result.items[0].status).toBe('unknown');
   });
 
   it('leaves the row unknown when the id is still there under a different alias than before', () => {
@@ -98,12 +113,17 @@ describe('settleDeleteResult', () => {
     expect(result.items[0]).toBe(item);
   });
 
-  it('returns rows with any other status referentially unchanged', () => {
+  it('returns rows with any other status referentially unchanged, even when the read would confirm them if they were unknown', () => {
+    // aliasesById is empty, so every id here reads as "gone" — a settlement that forgot to gate on
+    // `status === 'unknown'` would flip every one of these to `done` instead of leaving them alone.
     const done = queueItem({ key: '7tv-1', status: 'done', completedSteps: 1, failedStep: null });
     const failed = queueItem({ key: '7tv-2', status: 'failed' });
     const cancelled = queueItem({ key: '7tv-3', status: 'cancelled' });
     const pending = queueItem({ key: '7tv-4', status: 'pending' });
-    const result = settleDeleteResult(runResult([done, failed, cancelled, pending]), setEntries());
+    const result = settleDeleteResult(
+      runResult([done, failed, cancelled, pending]),
+      setEntries({ aliasesById: new Map() }),
+    );
 
     expect(result.items[0]).toBe(done);
     expect(result.items[1]).toBe(failed);
@@ -129,21 +149,33 @@ describe('settleDeleteResult', () => {
     expect(result.doneKeys).toEqual(['7tv-1', '7tv-2']);
   });
 
-  it('never mutates the RunResult or the RunQueueItem array passed in', () => {
-    const item = queueItem({ key: '7tv-1', status: 'unknown' });
+  it('never mutates the RunResult or its RunQueueItem objects in place', () => {
+    const item = queueItem({
+      key: '7tv-1',
+      status: 'unknown',
+      errorMessage: 'no answer within 20000 ms',
+    });
     const original = runResult([item]);
-    const originalItemsSnapshot = [...original.items];
+    // A snapshot of the item's own fields, taken before the call — a copy that in-place mutation of
+    // `item` itself cannot reach, unlike a shallow copy of `original.items` (whose entries would
+    // still be the very same, and therefore still-mutated, objects).
+    const snapshotBeforeCall = structuredClone(item);
 
     settleDeleteResult(original, setEntries({ aliasesById: new Map() }));
 
-    expect(original.items).toEqual(originalItemsSnapshot);
-    expect(original.items[0].status).toBe('unknown');
+    expect(original.items[0]).toBe(item);
+    expect(original.items[0]).toEqual(snapshotBeforeCall);
   });
 });
 
 describe('settleRestoreResult', () => {
-  it('confirms an unknown row done when the read shows the restored alias on the id', () => {
-    const item = queueItem({ key: '7tv-1#PogU', sevenTvEmoteId: '7tv-1', status: 'unknown' });
+  it('confirms an unknown row done when the read shows the restored alias on the id, and clears its error', () => {
+    const item = queueItem({
+      key: '7tv-1#PogU',
+      sevenTvEmoteId: '7tv-1',
+      status: 'unknown',
+      errorMessage: 'no answer within 20000 ms',
+    });
     const aliasByKey = new Map([['7tv-1#PogU', 'PogU']]);
     const entries = setEntries({ aliasesById: new Map([['7tv-1', ['PogU']]]) });
     const result = settleRestoreResult(runResult([item]), entries, aliasByKey, new Map());
@@ -174,6 +206,37 @@ describe('settleRestoreResult', () => {
     expect(result.items[0].status).toBe('unknown');
   });
 
+  it('leaves a named row unknown when the id is there only as an aliasless entry', () => {
+    const item = queueItem({ key: '7tv-1#PogU', sevenTvEmoteId: '7tv-1', status: 'unknown' });
+    const aliasByKey = new Map([['7tv-1#PogU', 'PogU']]);
+    const entries = setEntries({
+      aliasesById: new Map([['7tv-1', []]]),
+      aliaslessIds: new Set(['7tv-1']),
+    });
+    const result = settleRestoreResult(runResult([item]), entries, aliasByKey, new Map());
+
+    expect(result.items[0].status).toBe('unknown');
+  });
+
+  // Alias matching is exact, never case-normalized — 7TV treats "pogu" and "PogU" as different
+  // aliases, so a read finding only the former is no confirmation of an `ADD` for the latter.
+  it('leaves a named row unknown when the set holds only a differently-cased alias', () => {
+    const item = queueItem({ key: '7tv-1#PogU', sevenTvEmoteId: '7tv-1', status: 'unknown' });
+    const aliasByKey = new Map([['7tv-1#PogU', 'PogU']]);
+    const entries = setEntries({ aliasesById: new Map([['7tv-1', ['pogu']]]) });
+    const result = settleRestoreResult(runResult([item]), entries, aliasByKey, new Map());
+
+    expect(result.items[0].status).toBe('unknown');
+  });
+
+  it('leaves the row unknown when its key is missing from aliasByKey entirely (fail closed against a wiring bug)', () => {
+    const item = queueItem({ key: '7tv-1#PogU', sevenTvEmoteId: '7tv-1', status: 'unknown' });
+    const entries = setEntries({ aliasesById: new Map([['7tv-1', ['PogU']]]) });
+    const result = settleRestoreResult(runResult([item]), entries, new Map(), new Map());
+
+    expect(result.items[0]).toBe(item);
+  });
+
   // A null alias only ever comes from a transfer-run protocol file (Spec #254 F5): the row restores
   // an entry that originally had no alias at all.
   it('confirms a null-alias row done when the read shows it landed aliasless', () => {
@@ -185,17 +248,7 @@ describe('settleRestoreResult', () => {
     expect(result.items[0].status).toBe('done');
   });
 
-  it("confirms a null-alias row done when the read shows the file's own recorded default name as its alias", () => {
-    const item = queueItem({ key: '7tv-1#', sevenTvEmoteId: '7tv-1', status: 'unknown' });
-    const aliasByKey = new Map<string, string | null>([['7tv-1#', null]]);
-    const defaultNameByKey = new Map([['7tv-1#', 'Pog']]);
-    const entries = setEntries({ aliasesById: new Map([['7tv-1', ['Pog']]]) });
-    const result = settleRestoreResult(runResult([item]), entries, aliasByKey, defaultNameByKey);
-
-    expect(result.items[0].status).toBe('done');
-  });
-
-  it("falls back to the read's own default name when the file recorded none for a null-alias row", () => {
+  it('confirms a null-alias row done from the live default name when the file recorded none', () => {
     const item = queueItem({ key: '7tv-1#', sevenTvEmoteId: '7tv-1', status: 'unknown' });
     const aliasByKey = new Map<string, string | null>([['7tv-1#', null]]);
     const entries = setEntries({
@@ -205,6 +258,60 @@ describe('settleRestoreResult', () => {
     const result = settleRestoreResult(runResult([item]), entries, aliasByKey, new Map());
 
     expect(result.items[0].status).toBe('done');
+  });
+
+  it("falls back to the file's own recorded default name when the live read has none for a null-alias row", () => {
+    const item = queueItem({ key: '7tv-1#', sevenTvEmoteId: '7tv-1', status: 'unknown' });
+    const aliasByKey = new Map<string, string | null>([['7tv-1#', null]]);
+    const defaultNameByKey = new Map([['7tv-1#', 'Pog']]);
+    // No entries.defaultNameById entry for '7tv-1' at all — the live read has nothing to say.
+    const entries = setEntries({ aliasesById: new Map([['7tv-1', ['Pog']]]) });
+    const result = settleRestoreResult(runResult([item]), entries, aliasByKey, defaultNameByKey);
+
+    expect(result.items[0].status).toBe('done');
+  });
+
+  it("falls back to the file's own recorded default name when the live one is an explicit empty string", () => {
+    const item = queueItem({ key: '7tv-1#', sevenTvEmoteId: '7tv-1', status: 'unknown' });
+    const aliasByKey = new Map<string, string | null>([['7tv-1#', null]]);
+    const defaultNameByKey = new Map([['7tv-1#', 'Pog']]);
+    const entries = setEntries({
+      aliasesById: new Map([['7tv-1', ['Pog']]]),
+      defaultNameById: new Map([['7tv-1', '']]),
+    });
+    const result = settleRestoreResult(runResult([item]), entries, aliasByKey, defaultNameByKey);
+
+    expect(result.items[0].status).toBe('done');
+  });
+
+  // The core of Plan-275's live-first ordering: 7TV names an aliasless ADD after the emote's
+  // *current* default name, so a stale name the file recorded at delete time must never win over a
+  // live name that disagrees with it.
+  it('prefers the live default name over a differing one recorded in the file', () => {
+    const item = queueItem({ key: '7tv-1#', sevenTvEmoteId: '7tv-1', status: 'unknown' });
+    const aliasByKey = new Map<string, string | null>([['7tv-1#', null]]);
+    const defaultNameByKey = new Map([['7tv-1#', 'OldName']]);
+    // Only the live name is actually in the set — matching on the file's stale name instead would
+    // wrongly leave this row unknown.
+    const entries = setEntries({
+      aliasesById: new Map([['7tv-1', ['NewName']]]),
+      defaultNameById: new Map([['7tv-1', 'NewName']]),
+    });
+    const result = settleRestoreResult(runResult([item]), entries, aliasByKey, defaultNameByKey);
+
+    expect(result.items[0].status).toBe('done');
+  });
+
+  it('leaves a null-alias row unknown when the known default name sits under no alias of the id', () => {
+    const item = queueItem({ key: '7tv-1#', sevenTvEmoteId: '7tv-1', status: 'unknown' });
+    const aliasByKey = new Map<string, string | null>([['7tv-1#', null]]);
+    const entries = setEntries({
+      aliasesById: new Map([['7tv-1', ['SomeoneElsesAlias']]]),
+      defaultNameById: new Map([['7tv-1', 'Pog']]),
+    });
+    const result = settleRestoreResult(runResult([item]), entries, aliasByKey, new Map());
+
+    expect(result.items[0].status).toBe('unknown');
   });
 
   it('leaves a null-alias row unknown when no default name is known from either source', () => {
@@ -236,20 +343,28 @@ describe('settleRestoreResult', () => {
     expect(result.items[0]).toBe(item);
   });
 
-  it('returns rows with any other status referentially unchanged', () => {
+  it('returns rows with any other status referentially unchanged, even when the read would confirm them if they were unknown', () => {
     const done = queueItem({
       key: '7tv-1#PogU',
+      sevenTvEmoteId: '7tv-1',
       status: 'done',
       completedSteps: 1,
       failedStep: null,
     });
-    const failed = queueItem({ key: '7tv-2#KEKW', status: 'failed' });
-    const result = settleRestoreResult(
-      runResult([done, failed]),
-      setEntries(),
-      new Map(),
-      new Map(),
-    );
+    const failed = queueItem({ key: '7tv-2#KEKW', sevenTvEmoteId: '7tv-2', status: 'failed' });
+    // Every alias below is present exactly where its row would need it to confirm — a settlement
+    // that forgot to gate on `status === 'unknown'` would flip `failed` to `done` here.
+    const aliasByKey = new Map([
+      ['7tv-1#PogU', 'PogU'],
+      ['7tv-2#KEKW', 'KEKW'],
+    ]);
+    const entries = setEntries({
+      aliasesById: new Map([
+        ['7tv-1', ['PogU']],
+        ['7tv-2', ['KEKW']],
+      ]),
+    });
+    const result = settleRestoreResult(runResult([done, failed]), entries, aliasByKey, new Map());
 
     expect(result.items[0]).toBe(done);
     expect(result.items[1]).toBe(failed);
@@ -294,15 +409,22 @@ describe('settleRestoreResult', () => {
     expect(result.doneKeys).toEqual(['7tv-1#PogU', '7tv-2#KEKW']);
   });
 
-  it('never mutates the RunResult passed in', () => {
-    const item = queueItem({ key: '7tv-1#PogU', sevenTvEmoteId: '7tv-1', status: 'unknown' });
+  it('never mutates the RunResult or its RunQueueItem objects in place', () => {
+    const item = queueItem({
+      key: '7tv-1#PogU',
+      sevenTvEmoteId: '7tv-1',
+      status: 'unknown',
+      errorMessage: 'no answer within 20000 ms',
+    });
     const original = runResult([item]);
+    const snapshotBeforeCall = structuredClone(item);
     const aliasByKey = new Map([['7tv-1#PogU', 'PogU']]);
     const entries = setEntries({ aliasesById: new Map([['7tv-1', ['PogU']]]) });
 
     settleRestoreResult(original, entries, aliasByKey, new Map());
 
-    expect(original.items[0].status).toBe('unknown');
+    expect(original.items[0]).toBe(item);
+    expect(original.items[0]).toEqual(snapshotBeforeCall);
   });
 });
 

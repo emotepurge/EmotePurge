@@ -60,11 +60,18 @@ export function settleDeleteResult(
  * with, keyed like every row by `RunQueueItem.key`) rather than from the row's display `name`,
  * which for an aliasless entry is only ever a label. `null` there means the row restores an entry
  * that had no alias (only ever true for a row that came from a transfer-run protocol file, Spec
- * #254 F5): 7TV then gives the entry either no alias at all (`aliaslessIds`) or the emote's default
- * name as its alias — checked against `defaultNameByKey`'s own record of that name at delete time
- * first, falling back to the read's own `defaultNameById` when that is empty or unknown (Plan-275
- * Festlegung 8). A row whose key is missing from `aliasByKey` is treated the same as a `null`
- * alias, though every caller is expected to supply one for every row it settles.
+ * #254 F5): 7TV then gives the entry either no alias at all (`aliaslessIds`) or the emote's
+ * *current* default name as its alias — checked first against the read's own live
+ * `defaultNameById`, falling back to `defaultNameByKey`'s own record of that name at delete time
+ * only when the live one is empty or unknown (Plan-275 Festlegung 8). A stale name recorded in the
+ * file is not checked first: 7TV assigns the name it has *now*, so a live default name that no
+ * longer matches the file's is itself evidence that something else changed the entry, not proof
+ * that this row's own `ADD` failed. A sibling row of the very same run that separately re-adds this
+ * id under an alias equal to its current default name would be read as a false positive here — an
+ * accepted gap, not guarded against, because it takes two rows of one run targeting the same id to
+ * even raise the question. A row whose key is missing from `aliasByKey` stays `unknown` — fail
+ * closed against a wiring bug that leaves a row without one, rather than guessed at as a `null`
+ * alias.
  *
  * `entries` is `null` under the same conditions as {@link settleDeleteResult}, with the same
  * effect: every `unknown` row is left untouched. Rows with any other status are always returned
@@ -113,6 +120,12 @@ function settleRestoreRow(
   aliasByKey: ReadonlyMap<string, string | null>,
   defaultNameByKey: ReadonlyMap<string, string | null>,
 ): RunQueueItem {
+  if (!aliasByKey.has(item.key)) {
+    // A row this run's own queue-building did not put a (possibly null) alias in for is a wiring
+    // bug the settlement itself cannot diagnose — fail closed rather than treat the gap as a `null`
+    // alias and go looking for a default name that was never meant to apply here.
+    return item;
+  }
   const alias = aliasByKey.get(item.key) ?? null;
   if (alias !== null) {
     return holdsAlias(entries, item.sevenTvEmoteId, alias) ? asDone(item) : item;
@@ -120,10 +133,15 @@ function settleRestoreRow(
   if (entries.aliaslessIds.has(item.sevenTvEmoteId)) {
     return asDone(item);
   }
+  // Live first: 7TV assigns an ADD without an alias the emote's *current* default name, so the
+  // read's own `defaultNameById` is what an unanswered ADD would actually show up under. The file's
+  // own record (`defaultNameByKey`, from a transfer-run protocol at delete time) is only a fallback
+  // for when the live read has nothing to say — never checked ahead of a live name that disagrees
+  // with it.
   const defaultName =
-    defaultNameByKey.get(item.key) || entries.defaultNameById.get(item.sevenTvEmoteId) || null;
+    entries.defaultNameById.get(item.sevenTvEmoteId) || defaultNameByKey.get(item.key) || null;
   if (defaultName === null) {
-    // Neither the file's own record nor the live read knows a default name for this id — nothing
+    // Neither the live read nor the file's own record knows a default name for this id — nothing
     // left to check the read against, so the row stays exactly as unclear as it was.
     return item;
   }
