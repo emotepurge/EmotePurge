@@ -58,14 +58,16 @@ changes is what their docks show from it: while a run is `settling`, the import 
 unclear counts, the undo's counter and skipped lines, the protocol, the report and resync lines —
 and the not-active notice is neither shown nor announced until the run is `settled`
 (`DockOutcomeAnnouncer` gates it on the settlement now, since `result` is already set while
-`settling`). The bar, the progress count, `failed` rows and "finishing…" stay. One gap this leaves,
-not closed here: while an undo settles, its skipped candidates are named nowhere — the transient
-notice gives way once the run stops running, as before, and the summary that names them is held
-back. So that a visible `failed` row does not change its text between `settling` and `closed`, the
-snapshot published for `settling` already carries every `failed` row's final reason — that reason never depends on the read (import:
-`withFailureReason` over the recorded GraphQL status; undo: over its rejected keys — and the
-undo's `partial`, which hangs on the row alone, likewise). The settle
-itself still starts from the engine's own snapshot, so no row is given its reason twice.
+`settling`). The bar, the progress count, `failed` rows and "finishing…" stay. Two gaps this leaves,
+not closed here (#294): while an undo settles, its skipped candidates are named nowhere — the
+notice gives way once the run stops running, as before, and the summary names the same candidates
+only once the run has settled; and the insufficient-privileges banner, which sits in the summary
+block too, waits for the settle as well. So that a visible `failed` row does not change its
+text between `settling` and `closed`, the snapshot published for `settling` already carries every
+`failed` row's final reason — that reason never depends on the read (import: `withFailureReason`
+over the recorded GraphQL status; undo: over its rejected keys — and the undo's `partial`, which
+hangs on the row alone, likewise). The settle itself still starts from the engine's own snapshot,
+so no row is given its reason twice.
 
 **Unchanged.** The clarification tables (`settleUnknownRow`, `settleUnknownRemove`/`settleUnknownAdd`)
 — in particular #275's "only ever confirms" does *not* carry over to them. Reports, resync,

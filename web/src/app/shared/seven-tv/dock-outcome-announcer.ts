@@ -69,9 +69,10 @@ export function undoSkippedLines(
  * nothing to say. Shared by `UndoProgressSection` (visible, aria-hidden) and this announcer (spoken),
  * so both follow the same gate.
  *
- * Silent once the run that call started has stopped running: from then on that run's settled
- * summary names the very same candidates under the same reasons (they are its `skipped`, the
- * array the notice was set from), and showing both would name each candidate twice. A call that
+ * Silent once the run that call started has stopped running; that run's summary names the very
+ * same candidates under the same reasons (they are its `skipped`, the array the notice was set
+ * from) once the run has settled — while it is `settling` neither is shown — and showing both
+ * would name each candidate twice. A call that
  * started nothing — everything skipped, or refused — leaves no run of its own, so the notice is the
  * only place those candidates are named and it stays for its whole window.
  */

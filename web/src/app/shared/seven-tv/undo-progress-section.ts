@@ -64,10 +64,11 @@ import { RunProgressPanel, RunProgressTally } from './run-progress-panel';
   imports: [Button, NoticeBanner, RunProgressPanel, TranslocoPipe],
   template: `
     <!-- The candidates the last start skipped, by reason (spec 4.7) — transient, and the only place
-         a start that ran nothing names them; also what keeps the dock mounted for that start. Once
-         the run that start began has stopped running, its summary names the same candidates and
-         this notice gives way (undoSkippedNotice). aria-hidden: the host page's permanently mounted
-         DockOutcomeAnnouncer speaks it (docs/UI-Designsprache.md §4.5). -->
+         a start that ran nothing names them; also what keeps the dock mounted for that start. The
+         notice gives way once the run that start began stops running (undoSkippedNotice); the
+         run's summary names the same candidates once the run has settled. aria-hidden: the host
+         page's permanently mounted DockOutcomeAnnouncer speaks it (docs/UI-Designsprache.md
+         §4.5). -->
     @for (line of skippedNotice(); track line.reason) {
       <p aria-hidden="true" class="text-sm text-fg-secondary">
         {{
