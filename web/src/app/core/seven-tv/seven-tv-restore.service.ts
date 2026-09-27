@@ -163,9 +163,8 @@ export interface RestoreRunInfo extends RunRecordBase {
   ownerOrChannelLabel: string;
   /** `null` while the run is in flight **and while it is `settling`**; set once, to the settled
    *  outcome, in the same update that moves the run to `reporting` (Plan-275 Festlegung 10) — so
-   *  every reader (`run()`, `RestoreProgressSection`'s summary, a later protocol download) only
-   *  ever sees the one final result, never an interim snapshot with rows the re-read is about to
-   *  clear up. */
+   *  every reader (`run()`, `RestoreProgressSection`'s summary) only ever sees the one final
+   *  result, never an interim snapshot with rows the re-read is about to clear up. */
   result: RunResult | null;
   /** This run's `sync-restored` report — `SevenTvRestoreService.syncReport` projects it for the
    *  shown run. */
@@ -194,7 +193,10 @@ export interface RestoreRunInfo extends RunRecordBase {
  * for good, and only for the active set, makes the client stand in with its own resync of
  * `expectedChannelName`, since the backend never reached its own resync stage then (addendum N1,
  * AK 36); the cooldown (F15) absorbs a duplicate against a resync the backend or an earlier run
- * already triggered.
+ * already triggered. A run that settles (#275) with `unknown` rows and *nothing at all* to report
+ * — every row stayed `unknown` — triggers that same active-set resync itself, straight from
+ * `settleRun`, since there is then no report whose own backend resync would ever heal them (Plan-275
+ * Festlegung 13 (a)).
  *
  * Every run completes run-bound (#256, `SevenTvRunLifecycle`): `running → (settling →) reporting →
  * closed` on its own record, whether or not the dock still shows it — `settling` since #275, for a
@@ -411,6 +413,10 @@ export class SevenTvRestoreService {
     }
   }
 
+  /** Clears what the dock shows — and only that (#256, Plan-256 Festlegung 3), same reasoning as the
+   *  delete service's counterpart. The shown run goes on on its own record: a run still in flight
+   *  runs to its end, a re-read still out settles it (#275), and its report goes out and is answered
+   *  — nothing here ever cancels any of that. */
   reset(): void {
     if (!this.engine.isRunning()) {
       this.engine.reset();
@@ -425,9 +431,9 @@ export class SevenTvRestoreService {
   /** Same page-follows-user reasoning as the delete service's counterpart — compared against the
    *  channel of the page the run was started on (`hostChannelName`, F7/E13), never against the
    *  target. Since #256 (Plan-256 Festlegung 13) this only fires for a `closed` run: a run still
-   *  reporting follows the user for the few seconds until its report reaches an end state —
-   *  dropping it mid-report would leave a later `failed` with no dock to show it and no retry to
-   *  reach it (Codex-Befund 2). */
+   *  reporting — or, since #275, still `settling` its re-read — follows the user for the few
+   *  seconds until its outcome and report reach an end state — dropping it mid-report would leave a
+   *  later `failed` with no dock to show it and no retry to reach it (Codex-Befund 2). */
   resetIfChannelChanged(pageChannelName: string): void {
     const current = this.run();
     if (
@@ -468,15 +474,16 @@ export class SevenTvRestoreService {
   /**
    * Turns the engine's snapshot into the run's outcome, always on the run's own record (#256:
    * there is no early return for a run that is no longer shown; its confirmed adds are reported all
-   * the same). Mirrors `SevenTvDeleteService.onRunComplete` (#275, Plan-275 Festlegung 3 T3):
+   * the same). Mirrors `SevenTvDeleteService.onRunComplete` (#275, Plan-275 T3):
    *
    * Without an `unknown` row the snapshot settles at once, exactly as before #275. With one, the
    * run is `settling` (Festlegung 2) and its `result` stays `null` (Festlegung 10) while the target
    * set (`run.targetSetId`) is read once, tokenless (Festlegung 6): after `CANCEL_SETTLE_GRACE_MS`
    * when the run ended through this service's own `cancel()` (Festlegung 5 — 7TV may still be
-   * finishing the aborted `ADD`), at once after a plain transport loss. A read that fails, runs out
-   * of `SET_ENTRIES_READ_TIMEOUT_MS` or comes back incomplete is `null`; every path ends in
-   * `settleRun`, so the run always leaves `settling` (Festlegung 19, P6).
+   * finishing the aborted `ADD`), at once after a plain transport loss. A read that fails or runs
+   * out of `SET_ENTRIES_READ_TIMEOUT_MS` is `null`; an incomplete one confirms nothing
+   * (`settleRestoreResult`/`settleDeleteResult`). Every path ends in `settleRun`, so the run always
+   * leaves `settling` (Festlegung 19, P6).
    *
    * `aliasByKey`/`defaultNameByKey` are the same per-run maps `startRestore` built for
    * `addOperation` — carried in this closure (Festlegung 8), not on the engine or the record, since
@@ -665,7 +672,7 @@ export class SevenTvRestoreService {
    *  Takes `expectedChannelName` as a parameter rather than re-reading it off the record (#256): a
    *  superseded run that already ended `closed` can be pruned from the lifecycle's map by the time
    *  this runs, but the resync it triggers is still owed to 7TV's state, not to whether anything
-   *  still shows the run — see `onRunComplete`. Whatever state this writes back onto the record via
+   *  still shows the run — see `settleRun`. Whatever state this writes back onto the record via
    *  `patchRun` below is a no-op once the record is gone, same as it was silently ignored under the
    *  old per-object `applyIfCurrent` guard for a run nothing shows any more. */
   private resyncAfterReport(

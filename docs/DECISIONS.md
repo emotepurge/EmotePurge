@@ -29,7 +29,7 @@ directly for an unknown-only run, `toRestoreQueue`'s new `defaultNameByKey`,
 `web/src/app/core/seven-tv/seven-tv-run-arbiter.spec.ts` (a restore's cancel-in-flight case updated
 to settle, like the delete's).
 
-Issue #275 (Plan-275 Festlegungen 1, 2, 5, 6, 10–13, 19, 20). Until now a delete whose `REMOVE` was
+Issue #275 (Plan-275 Festlegungen 1, 2, 5, 6, 8, 10–13, 19, 20). Until now a delete whose `REMOVE` was
 still in flight when the user clicked "Cancel" ended that row `cancelled` — "nothing happened" in
 the dock and in the protocol — although the request had usually reached 7TV and taken the emote out
 of the set; a lost answer (no response, a 5xx) ended it `failed`, which says the same. Both are
@@ -57,7 +57,10 @@ stays `unknown` — "the id is still there", a failed or timed-out read, `comple
 prove that a mutation landed; it cannot prove that one still in flight, or whose answer was lost,
 did not — and "still there" is also what a third party re-adding the id after our `REMOVE` looks
 like (Codex, adversarial review 2026-09-27). "The id is gone" can equally be a third party's doing;
-indistinguishable, and the set *is* without the id either way — the import accepts the same.
+indistinguishable, and the set *is* without the id either way — the import accepts the same. For the
+restore the wanted effect is the mirror image (Festlegung 8): the row's alias sitting on this id: for
+a `null`-alias row (only ever from a transfer-run file) either `aliaslessIds` or, checked before any
+stale name the file itself recorded, the read's own live default name for that id.
 
 **Published and reported only once settled.** Unlike the import and the undo, which publish their
 snapshot while re-reading, the delete keeps `result` `null` through `settling` and writes the settled
@@ -66,7 +69,8 @@ protocol download and the usage-stats page's `watchRunSettle` see exactly one re
 snapshot whose rows are about to change. The dock still shows rows meanwhile: `queue` is now a
 projection — the shown run's settled `result.items` once it has one, the engine's queue otherwise —
 kept a `linkedSignal` so specs can still `set` it. `sync-deleted` names the settled `doneKeys`, so
-`retrySyncReport` is right automatically; a row still `unknown` is never reported.
+`retrySyncReport` is right automatically; a row still `unknown` is never reported. The restore's
+`result` is held back the same way, until `sync-restored` is the one to send it.
 
 **What an `unknown` row that stays pulls after it.** With nothing to report (no row ended `done`),
 the run closes at once and the client resyncs `expectedChannelName` itself through the existing N1
@@ -75,7 +79,9 @@ report, nothing more: the backend resyncs every channel that holds the set, the 
 and that heals the unclear row as well; should the report fail for good, the N1 fallback resync
 stands in exactly as before. Resyncing on top of a report would only run into the per-channel
 cooldown both share. The delete dock's own reload for the unknown-only case is a later step of this
-plan.
+plan. The restore runs this same D6 (a) resync through its existing `triggerResync` rather than a
+silent fallback — visible in its dock through `resyncTrigger`, and, like the delete, only ever for
+the active target.
 
 **Lifecycle and arbiter are untouched** — `settling` has existed since the 2026-09-26 run-bound
 entry; `isSettling` and the arbiter's `settling` claim pick it up on their own, so no other run can

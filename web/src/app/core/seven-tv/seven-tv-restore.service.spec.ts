@@ -1513,8 +1513,10 @@ describe('SevenTvRestoreService', () => {
       [
         'an incomplete read',
         (read: ReturnType<HttpTestingController['expectOne']>) => {
-          // The id is not on this page — but the read only vouches for part of the set.
-          const partial = setEntriesPage([]);
+          // The alias *is* on this page — a settle that ignored `complete: false` would wrongly
+          // confirm the row. `totalCount` disagreeing with what the page carries is what
+          // `loadSevenTvSetEntries` reads as incomplete (K5, `seven-tv-set-entries.ts`).
+          const partial = setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]);
           partial.data.emoteSets.emoteSet.emotes.totalCount = 7;
           read.flush(partial);
         },
@@ -1661,6 +1663,59 @@ describe('SevenTvRestoreService', () => {
       ]);
     });
 
+    // Sonde 5, branch A / #74: two aliases of one duplicate cell are two rows, `7tv-1#PogU` and
+    // `7tv-1#PogU2` — a cancel in flight only ever hits one of the two ADDs, and the settle clears
+    // each row independently of the other's fate.
+    describe('two aliases of one duplicate cell (#74)', () => {
+      function startTwoAliasRow() {
+        service.startRestore(target(), [
+          { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+        ]);
+      }
+
+      it('confirms only the alias the read shows and leaves the other row unknown, reporting the id once', () => {
+        startTwoAliasRow();
+        httpMock.expectOne(isAdd).flush({}); // PogU lands
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        httpMock.expectOne(isAdd); // PogU2 in flight
+        service.cancel();
+
+        expect(service.queue().map((item) => item.status)).toEqual(['done', 'unknown']);
+
+        // Only the first alias shows up on the read — the second stays unclear.
+        readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+        expect(service.run()?.result?.items.map((item) => item.status)).toEqual([
+          'done',
+          'unknown',
+        ]);
+        const syncReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+        expect(syncReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+        syncReq.flush(restoredAnswer());
+      });
+
+      it('confirms both aliases once the read shows both, reporting the id exactly once', () => {
+        startTwoAliasRow();
+        httpMock.expectOne(isAdd).flush({}); // PogU lands
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        httpMock.expectOne(isAdd); // PogU2 in flight
+        service.cancel();
+
+        readAfterGrace().flush(
+          setEntriesPage([
+            { id: '7tv-1', alias: 'PogU' },
+            { id: '7tv-1', alias: 'PogU2' },
+          ]),
+        );
+
+        expect(service.run()?.result?.items.map((item) => item.status)).toEqual(['done', 'done']);
+        const syncReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+        // One id, even though both of its rows ended done (`doneSevenTvEmoteIds` dedupes).
+        expect(syncReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+        syncReq.flush(restoredAnswer());
+      });
+    });
+
     // Aliasless entries only ever come from a transfer-run protocol file (Spec #254 F5): 7TV names
     // an aliasless ADD after the emote's current default name.
     describe('a null-alias row from a transfer-run source', () => {
@@ -1699,6 +1754,23 @@ describe('SevenTvRestoreService', () => {
         startNullAliasRow();
 
         readAfterGrace().flush(setEntriesPage([{ id: '7tv-1', alias: 'SomeoneElsesAlias' }]));
+
+        expect(service.run()?.result?.items[0].status).toBe('unknown');
+        httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+        httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+      });
+
+      // Pins the live-first ordering (Plan-275 Festlegung 8): only the *stale* file-recorded name
+      // ('PogDefault', from `startNullAliasRow`'s default) sits in the set — under a live default
+      // name that disagrees with it. A settle that checked the file's name ahead of the live one
+      // would wrongly confirm this row; checking the live name first (which the read says is
+      // 'CurrentLiveName', not 'PogDefault') correctly leaves it unclear.
+      it('stays unknown when only the stale file-recorded default name sits in the set, not the current live one', () => {
+        startNullAliasRow();
+
+        readAfterGrace().flush(
+          setEntriesPage([{ id: '7tv-1', alias: 'PogDefault', defaultName: 'CurrentLiveName' }]),
+        );
 
         expect(service.run()?.result?.items[0].status).toBe('unknown');
         httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
@@ -1764,6 +1836,20 @@ describe('SevenTvRestoreService', () => {
       service.retrySyncReport();
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
       expect(service.syncReport()).toBe('succeeded');
+    });
+
+    // D6 (a) fires for a detached run too (#256: a run completes run-bound whether or not it is
+    // shown) — the resync is owed to 7TV's state, not to what the dock shows.
+    it('resyncs the active target for a detached run that settles with nothing but unknown rows', () => {
+      cancelOneRowInFlight();
+
+      service.reset();
+      expect(service.run()).toBeNull();
+
+      readAfterGrace().flush(setEntriesPage([])); // confirms nothing
+
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
     it('resetIfChannelChanged() leaves a settling run shown', () => {

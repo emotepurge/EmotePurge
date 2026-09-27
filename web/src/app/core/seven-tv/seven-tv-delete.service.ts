@@ -451,10 +451,11 @@ export class SevenTvDeleteService {
    * run is `settling` (Plan-275 Festlegung 2) and its `result` stays `null` (Festlegung 10) while
    * the set is read once, tokenless (Festlegung 6): after `CANCEL_SETTLE_GRACE_MS` when the run
    * ended through this service's own `cancel()` (Festlegung 5 — 7TV may still be finishing the
-   * aborted `REMOVE`), at once after a plain transport loss. A read that fails, runs out of
-   * `SET_ENTRIES_READ_TIMEOUT_MS` or comes back incomplete is `null`; every path ends in
-   * `settleRun`, so the run always leaves `settling` (Festlegung 19, P6). The snapshot waits in
-   * this closure, not on the engine: the engine's queue may belong to a newer run by then.
+   * aborted `REMOVE`), at once after a plain transport loss. A read that fails or runs out of
+   * `SET_ENTRIES_READ_TIMEOUT_MS` is `null`; an incomplete one confirms nothing
+   * (`settleRestoreResult`/`settleDeleteResult`). Every path ends in `settleRun`, so the run always
+   * leaves `settling` (Festlegung 19, P6). The snapshot waits in this closure, not on the engine: the
+   * engine's queue may belong to a newer run by then.
    *
    * A run `reset()` detached while in flight has left its queue on the engine until now, because
    * `finish()` builds this very result from it; nothing shows that queue any more, so it is
