@@ -267,6 +267,21 @@ function sortableLastUsed(lastUsedDate: string | null): number {
   return Number.isNaN(parsed) ? NEVER_USED_SORT_VALUE : parsed;
 }
 
+/**
+ * A row with a confirmed step but not all of them (a Replace/full gap, or an addOnly row short of
+ * its ADDs) may have changed the target set on 7TV without ever reaching `done`; a row still
+ * `unknown` after the re-read might have too, since nothing in the run can tell. Used as
+ * `watchRunSettle`'s reload predicate for the import and undo calls only: delete and restore are
+ * single-step and currently never settle a row as `unknown`, so a done row is exactly a change
+ * there, and they keep the default `doneKeys.length > 0` rule instead.
+ */
+function mayHaveChangedTheSet(result: RunResult): boolean {
+  return (
+    result.doneKeys.length > 0 ||
+    result.items.some((item) => item.completedSteps >= 1 || item.status === 'unknown')
+  );
+}
+
 @Component({
   selector: 'app-usage-stats-page',
   imports: [
@@ -2850,15 +2865,15 @@ export class UsageStatsPage {
   }
 
   /**
-   * addendum N2 (restore-per-set spec, AK 37): a restore, delete or import run of our own changes
-   * the members of its target set, but a non-active set's member list is read through the Api's
-   * 60-s cache, which neither `channel.synced` nor a resync reach — the view would show the old
-   * members until the cache expired. So when such a run settles with at least one done row, and its
-   * target is not the active set, the page reloads the list loudly (`refresh: true`) if the target
-   * is the chosen set, and otherwise marks it for its next load. The trigger is the settle, not the
-   * report: the 7TV mutations are done by then, and waiting for the report would never reload after
-   * a failed one. Set ids are globally unique, so no channel comparison is needed. A run that had
-   * already settled before this page mounted is not replayed.
+   * addendum N2 (restore-per-set spec, AK 37): a restore, delete, import or undo run of our own
+   * changes the members of its target set, but a non-active set's member list is read through the
+   * Api's 60-s cache, which neither `channel.synced` nor a resync reach — the view would show the old
+   * members until the cache expired. So when such a run settles and its result says the set may
+   * have changed, and its target is not the active set, the page reloads the list loudly
+   * (`refresh: true`) if the target is the chosen set, and otherwise marks it for its next load. The
+   * trigger is the settle, not the report: the 7TV mutations are done by then, and waiting for the
+   * report would never reload after a failed one. Set ids are globally unique, so no channel
+   * comparison is needed. A run that had already settled before this page mounted is not replayed.
    *
    * A settle is recognised by its settled `result` object, not by the run record around it: since
    * #256 a run's report states live on its record, so every report answer replaces the record while
@@ -2873,21 +2888,26 @@ export class UsageStatsPage {
       () => this.deleteService.lastRun(),
       (run) => ({ setId: run.setId, result: run.result }),
     );
+    // Widened reload predicate (see mayHaveChangedTheSet above) — import can change the set on 7TV
+    // without a done row.
     this.watchRunSettle(
       () => this.importService.run(),
       (run) =>
         run.settlement !== 'settled' || run.result === null
           ? null
           : { setId: run.targetSetId, result: run.result },
+      mayHaveChangedTheSet,
     );
     // The undo (#254) as the import: its `result` exists before its re-read settles it. A `partial`
-    // row is `done` in `doneKeys`, so a run that only partly restored an entry still reloads.
+    // row is `done` in `doneKeys`, so a run that only partly restored an entry still reloads — same
+    // widened predicate as import.
     this.watchRunSettle(
       () => this.undoService.run(),
       (run) =>
         run.settlement !== 'settled' || run.result === null
           ? null
           : { setId: run.targetSetId, result: run.result },
+      mayHaveChangedTheSet,
     );
     // A mark belongs to the channel it was left on; a channel switch drops it.
     effect(() => {
@@ -2899,6 +2919,7 @@ export class UsageStatsPage {
   private watchRunSettle<T extends object>(
     source: () => T | null,
     settledTarget: (run: T) => { setId: string; result: RunResult } | null,
+    shouldReload: (result: RunResult) => boolean = (result) => result.doneKeys.length > 0,
   ): void {
     const settledOf = (run: T | null) => (run === null ? null : settledTarget(run));
     let seen = untracked(() => settledOf(source()))?.result ?? null;
@@ -2909,7 +2930,7 @@ export class UsageStatsPage {
         return;
       }
       seen = result;
-      if (settled !== null && settled.result.doneKeys.length > 0) {
+      if (settled !== null && shouldReload(settled.result)) {
         untracked(() => this.onOwnRunSettled(settled.setId));
       }
     });

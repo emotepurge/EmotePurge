@@ -1671,6 +1671,10 @@ Abschnitt sagt, wo er nicht mehr stimmt.
    `usage-stats-page.ts`). Ein Lauf, in dem jede Zeile nach bestätigtem REMOVE `failed` endet, hat
    das Set verändert, aber keinen `done`-Schlüssel — die Liste bleibt veraltet. Der Import hat
    dieselbe Lücke; ein Folge-Issue für beide entscheidet der Betreiber.
+
+   Nachtrag 2026-09-27: #279 schließt die Lücke für Import und Undo — der Reload greift, sobald
+   eine Zeile einen bestätigten Schritt hat oder nach dem Re-Read `unknown` bleibt; Delete und
+   Restore bleiben bei `doneKeys`.
 10. **„Rückweg sichern gesperrt" (AK 28, 9.4).** Ohne Bestätigung gibt es keinen gesperrten Knopf
     „Rückweg sichern": die unbelegten `full`-Zeilen sind `skippedUnproven`, der Knopf fehlt, und
     „Starten" ist mit Grund gesperrt, solange keine Zeile laufen kann (17 K2).
