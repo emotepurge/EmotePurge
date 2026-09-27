@@ -268,12 +268,12 @@ function sortableLastUsed(lastUsedDate: string | null): number {
 }
 
 /**
- * A row with a confirmed step but not all of them (a Replace/full gap, or an addOnly row short of
- * its ADDs) may have changed the target set on 7TV without ever reaching `done`; a row still
- * `unknown` after the re-read might have too, since nothing in the run can tell. Used as
- * `watchRunSettle`'s reload predicate for the import and undo calls only: delete and restore are
- * single-step and currently never settle a row as `unknown`, so a done row is exactly a change
- * there, and they keep the default `doneKeys.length > 0` rule instead.
+ * `watchRunSettle`'s reload predicate for all four run kinds (delete, restore, import, undo). A row
+ * with a confirmed step but not all of them (a Replace/full gap, or an addOnly row short of its
+ * ADDs) may have changed the target set on 7TV without ever reaching `done`; a row still `unknown`
+ * after the re-read might have too, since nothing in the run can tell. Delete and restore are
+ * single-step, so for them this is equivalent to `done || unknown` — a cancelled or plain-failed row
+ * never confirms a step.
  */
 function mayHaveChangedTheSet(result: RunResult): boolean {
   return (
@@ -2892,26 +2892,23 @@ export class UsageStatsPage {
       () => this.deleteService.lastRun(),
       (run) => ({ setId: run.setId, result: run.result }),
     );
-    // Widened reload predicate (see mayHaveChangedTheSet above) — import can change the set on 7TV
-    // without a done row.
+    // watchRunSettle reloads on mayHaveChangedTheSet — import can change the set on 7TV without a
+    // done row.
     this.watchRunSettle(
       () => this.importService.run(),
       (run) =>
         run.settlement !== 'settled' || run.result === null
           ? null
           : { setId: run.targetSetId, result: run.result },
-      mayHaveChangedTheSet,
     );
     // The undo (#254) as the import: its `result` exists before its re-read settles it. A `partial`
-    // row is `done` in `doneKeys`, so a run that only partly restored an entry still reloads — same
-    // widened predicate as import.
+    // row is `done` in `doneKeys`, so a run that only partly restored an entry still reloads.
     this.watchRunSettle(
       () => this.undoService.run(),
       (run) =>
         run.settlement !== 'settled' || run.result === null
           ? null
           : { setId: run.targetSetId, result: run.result },
-      mayHaveChangedTheSet,
     );
     // A mark belongs to the channel it was left on; a channel switch drops it.
     effect(() => {
@@ -2923,7 +2920,6 @@ export class UsageStatsPage {
   private watchRunSettle<T extends object>(
     source: () => T | null,
     settledTarget: (run: T) => { setId: string; result: RunResult } | null,
-    shouldReload: (result: RunResult) => boolean = (result) => result.doneKeys.length > 0,
   ): void {
     const settledOf = (run: T | null) => (run === null ? null : settledTarget(run));
     let seen = untracked(() => settledOf(source()))?.result ?? null;
@@ -2934,7 +2930,7 @@ export class UsageStatsPage {
         return;
       }
       seen = result;
-      if (settled !== null && shouldReload(settled.result)) {
+      if (settled !== null && mayHaveChangedTheSet(settled.result)) {
         untracked(() => this.onOwnRunSettled(settled.setId));
       }
     });
