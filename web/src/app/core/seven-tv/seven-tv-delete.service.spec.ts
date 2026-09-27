@@ -1547,6 +1547,78 @@ describe('SevenTvDeleteService', () => {
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
+    // Festlegung 5: the cancel flag lives only for the synchronous span of `cancel()` — a later run
+    // that ends on a plain transport loss must read at once, not inherit an earlier run's grace.
+    it('does not carry a cancelled run’s grace period over to a later run that ends on a transport loss', () => {
+      cancelOneRowInFlight();
+      readAfterGrace().flush(setEntriesPage([]));
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.run()?.phase).toBe('closed');
+
+      service.startDelete('set-2', 'sensitron', [EMOTES[1]], 'sensitron');
+      httpMock.expectOne(isRemove).flush('boom', { status: 503, statusText: 'Unavailable' });
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      // Already out — no grace period for this run.
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([]));
+      expect(httpMock.expectOne(SYNC_ENDPOINT_SET_2).request.body.sevenTvEmoteIds).toEqual([
+        '7tv-2',
+      ]);
+    });
+
+    // The settle works on the run's own record by runId: a newer run shown in the meantime keeps the
+    // dock, and the superseded run still settles and reports on its own.
+    it('settles and reports a detached run by its runId without touching a newer run shown meanwhile', () => {
+      cancelOneRowInFlight();
+      const runA = service.run()?.runId;
+      service.reset();
+
+      service.startDelete('set-2', 'sensitron', [EMOTES[1]], 'sensitron');
+      const runB = service.run()?.runId;
+      expect(runB).not.toBe(runA);
+      const removeB = httpMock.expectOne(isRemove);
+
+      const readA = readAfterGrace();
+      expect(readA.request.body.variables.id).toBe('set-1');
+      readA.flush(setEntriesPage([]));
+
+      // B stays on the dock, with its own live queue.
+      expect(service.run()?.runId).toBe(runB);
+      expect(service.run()?.phase).toBe('running');
+      expect(service.queue().map((item) => [item.key, item.status])).toEqual([
+        ['7tv-2', 'in-progress'],
+      ]);
+      // A reports all the same, for its own set and id.
+      const syncA = httpMock.expectOne(SYNC_ENDPOINT);
+      expect(syncA.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+      syncA.flush(deletedAnswer());
+      expect(service.run()?.runId).toBe(runB);
+
+      removeB.flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(SYNC_ENDPOINT_SET_2).flush(deletedAnswer());
+      expect(service.lastRun()?.result.doneKeys).toEqual(['7tv-2']);
+    });
+
+    it('resyncs exactly once when a mixed run’s report fails for good', () => {
+      service.startDelete('set-1', 'sensitron', THREE_EMOTES, 'sensitron');
+      httpMock.expectOne(isRemove).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(isRemove).flush('boom', { status: 502, statusText: 'Bad Gateway' });
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(isRemove).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+
+      // A 403 is final — no automatic retry, straight to the N1 fallback.
+      httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.syncReport()).toBe('failed');
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+      vi.advanceTimersByTime(10_000);
+      httpMock.expectNone((request) => request.url.endsWith('/resync'));
+    });
+
     it('keeps the arbiter busy and the unload guard armed through settling, until closed', () => {
       const arbiter = TestBed.inject(SevenTvRunArbiter);
       cancelOneRowInFlight();

@@ -61,14 +61,14 @@ projection — the shown run's settled `result.items` once it has one, the engin
 kept a `linkedSignal` so specs can still `set` it. `sync-deleted` names the settled `doneKeys`, so
 `retrySyncReport` is right automatically; a row still `unknown` is never reported.
 
-**What an `unknown` row that stays pulls after it.** With nothing to report (every confirmed row
-was `unknown` and stayed so), the run closes at once and the client resyncs `expectedChannelName`
-itself through the existing N1 fallback — never for a non-active or untracked set, which has no
-channel of ours showing it. With a report, nothing more: the backend resyncs every channel that
-holds the set, the active one included, and that heals the unclear row as well; should the report
-fail for good, the N1 fallback resync stands in exactly as before. Resyncing on top of a report would
-only run into the per-channel cooldown both share. The delete dock's own reload for the
-unknown-only case is a later step of this plan.
+**What an `unknown` row that stays pulls after it.** With nothing to report (no row ended `done`),
+the run closes at once and the client resyncs `expectedChannelName` itself through the existing N1
+fallback — never for a non-active or untracked set, which has no channel of ours showing it. With a
+report, nothing more: the backend resyncs every channel that holds the set, the active one included,
+and that heals the unclear row as well; should the report fail for good, the N1 fallback resync
+stands in exactly as before. Resyncing on top of a report would only run into the per-channel
+cooldown both share. The delete dock's own reload for the unknown-only case is a later step of this
+plan.
 
 **Lifecycle and arbiter are untouched** — `settling` has existed since the 2026-09-26 run-bound
 entry; `isSettling` and the arbiter's `settling` claim pick it up on their own, so no other run can
@@ -134,18 +134,18 @@ being readable; a v3 file opened in a tab still running a v2 reader is refused a
 the same intended refusal K5 already established, not a new gap. CSV export gains no new column:
 the protocol's restorability has only ever lived in the JSON round-trip.
 
-The parser's restorable rows are no longer raw protocol rows — `status`/`errorMessage` are the
-paper trail's own business, not the restore flow's — but plain `RestoreRow`s. A `done` row comes
-back exactly as before; an `unknown` row comes back with a new optional marker, `uncertain: true`.
-The marker exists because the delete behind an `unknown` row may never have reached 7TV at all: the
+The parser's restorable rows are no longer raw protocol rows — `status`/`errorMessage` are the paper
+trail's own business, not the restore flow's — but plain `RestoreRow`s. A `done` row comes back
+exactly as before; an `unknown` row comes back with a new optional marker, `uncertain: true`. The
+marker exists because the delete behind an `unknown` row may never have reached 7TV at all: the
 `REMOVE` could still be in flight, or its answer could be the one that was lost — either way, the
 emote can still be sitting in the set under its old alias. Restoring such a row without checking
 would run its `ADD` blind: at best 7TV refuses the colliding alias (a burnt ticket, a red row); at
 worst, if the emote sits under a different alias by the time the file is used, a second entry of the
 same id that no rollback removes — 7TV's `addEmote` mutation does not dedupe by emote id, it only
 rejects a colliding alias string (the #149 hole, `already-present-filter.ts:31-35`, `:127-131`). A
-`done` row carries neither risk: its delete's own settling re-read found the id provably gone, which
-is exactly why it is free to keep the filter's ordinary fail-open behaviour.
+`done` row carries neither risk: 7TV's own answer, or the settling re-read, confirmed the id gone,
+which is exactly why it is free to keep the filter's ordinary fail-open behaviour.
 
 That is why `uncertain` rows are held to a stricter rule than `done` ones, and that rule lives only
 in the already-present filter (`already-present-filter.ts`) — never in either restore entry point

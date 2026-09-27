@@ -427,7 +427,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
 
     // #275: the REMOVE was in flight, so its row is `unknown` and the run settles by one re-read
     // after the cancel's grace period — busy until then. The read fails here, the row stays
-    // `unknown`, nothing is reported, and the run closes after the active set's resync request.
+    // `unknown`, nothing is reported, and the run closes; the resync request is fire-and-forget.
     expect(arbiter.activeClaim()).toEqual({ kind: 'delete', phase: 'settling' });
     vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
     httpMock
