@@ -49,9 +49,13 @@ paper trail's own business, not the restore flow's — but plain `RestoreRow`s. 
 back exactly as before; an `unknown` row comes back with a new optional marker, `uncertain: true`.
 The marker exists because the delete behind an `unknown` row may never have reached 7TV at all: the
 `REMOVE` could still be in flight, or its answer could be the one that was lost — either way, the
-emote can still be sitting in the set. Restoring such a row without checking would run its `ADD`
-blind, right next to an emote that was never actually removed — at best a no-op, at worst a second
-alias colliding with the one already there.
+emote can still be sitting in the set under its old alias. Restoring such a row without checking
+would run its `ADD` blind: at best 7TV refuses the colliding alias (a burnt ticket, a red row); at
+worst, if the emote sits under a different alias by the time the file is used, a second entry of the
+same id that no rollback removes — 7TV's `addEmote` mutation does not dedupe by emote id, it only
+rejects a colliding alias string (the #149 hole, `already-present-filter.ts:31-35`, `:127-131`). A
+`done` row carries neither risk: its delete's own settling re-read found the id provably gone, which
+is exactly why it is free to keep the filter's ordinary fail-open behaviour.
 
 That is why `uncertain` rows are held to a stricter rule than `done` ones, and that rule lives only
 in the already-present filter (`already-present-filter.ts`) — never in either restore entry point
@@ -63,12 +67,12 @@ say so; a `done` row keeps its existing fail-open behaviour on the very same fai
 confirm-time fallback (`fallOnOpenTime`) is untouched either way. When the re-read *does* complete,
 an `uncertain` row is judged exactly like any other: if its id turns up under a different alias than
 the row itself names, the row is dropped as already present (rule 2 — one id never gets a second
-`ADD`, no matter which alias is in the file); if it turns up only under an alias the row already
-lists, it is skipped the same way a repeated restore always is (rule 3). The window between that
-filter read and the eventual `ADD` stays open on purpose — a third party could still add the id in
-between, the same residual race every restore row already carries, not a new one this marker
-introduces. Neither restore call site (`restore-flow.ts`, `mass-delete-panel.ts`) grows a branch of
-its own for any of this; it all sits inside the one filter.
+`ADD`, no matter which alias is in the file); if it turns up only under aliases the row itself
+already lists, its present aliases are skipped and only the missing ones restored (rule 3). The
+window between that filter read and the eventual `ADD` stays open on purpose — a third party could
+still add the id in between, the same residual race every restore row already carries, not a new one
+this marker introduces. Neither restore call site (`restore-flow.ts`, `mass-delete-panel.ts`) grows
+a branch of its own for any of this; it all sits inside the one filter.
 
 ### 2026-09-26 — Run-protocol exports default to JSON, the re-importable format
 

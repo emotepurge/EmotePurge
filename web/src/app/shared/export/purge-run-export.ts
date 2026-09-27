@@ -208,10 +208,12 @@ export type ProtocolParseResult =
  * parser's. A protocol without `meta.emoteSetId` is `wrongKind` — every protocol this app wrote
  * carries one, and there is deliberately no fallback that would guess a set (F1). Returns rows with
  * `status: 'done'` **or**, since format version 3 (#275), `status: 'unknown'` — a failed or
- * cancelled delete means the emote never left the set, and re-adding it would at best be a no-op, at
- * worst an alias collision, so those stay out. An `unknown` row is never *itself* proof the restore
- * would land cleanly (the settling re-read that produced it only ever confirms positively, never
- * clears an emote as gone) — it comes back as a plain `RestoreRow` marked `uncertain: true`; a
+ * cancelled delete means the emote never left the set, and re-adding it would at best have 7TV
+ * refuse the colliding alias (a burnt ticket, a red row), at worst — if the emote sits under a
+ * different alias by the time the file is used — add a second entry of the same id that no rollback
+ * removes, so those stay out. An `unknown` row is never *itself* proof the restore would land
+ * cleanly (the settling re-read that produced it only ever confirms positively, never clears an
+ * emote as gone) — it comes back as a plain `RestoreRow` marked `uncertain: true`; a
  * `done` row comes back without the marker. Whether an `uncertain` row actually gets offered, and
  * fail-closed if the live check at restore time cannot vouch for it, is the restore entry points'
  * job (`already-present-filter.ts`), not this parser's — it only carries the marker through.
