@@ -10,25 +10,32 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
-### 2026-09-28 — A confirmed restore or undo locks the start triggers before its run exists, and the announcer speaks that wait
+### 2026-09-28 — A confirmed start of any 7TV run locks the start triggers before its run exists, and the announcer speaks that wait
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (+ spec; `SevenTvRunParticipant.startCheckPending`,
-new `startPending` and `startLocked`) · `web/src/app/core/seven-tv/seven-tv-restore.service.ts` and
-`seven-tv-undo.service.ts` (`startCheckPending`, registered with the arbiter) ·
-`web/src/app/shared/seven-tv/restore-flow.ts`, `undo-flow.ts`, `mass-delete-panel.ts`, `import-trigger.ts`,
+new `startPending` and `startLocked`) · `web/src/app/core/seven-tv/seven-tv-delete.service.ts`,
+`seven-tv-restore.service.ts`, `seven-tv-import.service.ts` and `seven-tv-undo.service.ts`
+(`startCheckPending`, registered with the arbiter) · `web/src/app/shared/seven-tv/restore-flow.ts`,
+`undo-flow.ts`, `import-flow.ts` (the flag, bounded `resolveEditableSet` and `recheckTransferPlan`),
+`import-confirm-dialog.ts`, `mass-delete-panel.ts`, `import-trigger.ts`,
 `import-trigger-gate.ts`, `import-shortcut.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts`
 (`transferButtonDisabled`, `importShortcutLocked`) · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts`
-(`START_CHECK_ANNOUNCE_DELAY_MS`) · `web/public/i18n/de.json`/`en.json` (`restore.startChecking`,
-`undo.startChecking`) · `docs/UI-Designsprache.md` §4.2, §4.5 · every affected spec and
+(`START_CHECK_ANNOUNCE_DELAY_MS`) · `web/public/i18n/de.json`/`en.json` (`massDelete.startChecking`,
+`restore.startChecking`, `import.startChecking`, `undo.startChecking`) · `docs/UI-Designsprache.md`
+§4.2, §4.5 · every affected spec and
 `web/e2e/emote-import.e2e.spec.ts`.
 
-Issue #280. Between a confirmation closing and its run appearing, a restore's confirm-time
-duplicate check and an undo's freshness read (each up to 20 s) ran with nothing on screen and every
-start trigger free again; a click there only ever led to a refused start.
+Issue #280. Between a confirmation closing and its run appearing, each run's last live read ran
+with nothing on screen and (except for the delete's own button) every start trigger free again —
+the delete's live alias read (spec §37/§38), the restore's confirm-time duplicate check, the
+import's shared pre-check and `recheckTransferPlan`, the undo's freshness read (each up to 20 s). A
+click there only ever led to a refused start.
 
-- **A pre-run lock.** A confirmed restore or undo whose last live read is still out now locks the
-  run triggers before the run exists. The two services register a `startCheckPending` signal with
-  the arbiter; `startPending` is their union and `startLocked` (`activeRun() !== null ||
+- **A pre-run lock.** A confirmed start whose last live read is still out now locks the run
+  triggers before the run exists. All four run services — delete, restore, import, undo — register
+  a `startCheckPending` signal with the arbiter, set by their flow (the delete's by
+  `MassDeletePanel`, whose `liveAliasReadPending` now aliases it) around exactly that read and
+  released by `finalize` on every exit; `startPending` is their union and `startLocked` (`activeRun() !== null ||
   startPending()`) is the condition the arbiter-gated triggers bind to — the header's
   "Übertragen", the import trigger, the dock's copy shortcut, the mass-delete CTA (each disabled
   on it, and each click handler returning silently on it, since nothing is confirmed yet —
@@ -40,24 +47,32 @@ start trigger free again; a click there only ever led to a refused start.
   start point (the re-checks right before `startRestore`/`startUndo`/`startImport`/`startDelete`)
   keeps reading `activeRun`/`activeClaim`: `startLocked` would refuse the confirmed run on its own
   still-set `startCheckPending`, and silently.
-- **Not every confirm-to-start window is covered.** Only restore and undo register a start check.
-  The import's `resolveEditableSet`/`recheckTransferPlan` after its confirmation and the delete's
-  live alias read (`liveAliasReadPending`) are the same kind of window with `activeRun` still
-  `null`: known, uncovered, outside #280's scope, and deliberately not folded into the lock here.
+- **No self-lock.** Every flag is set only after the flow's own confirmation has closed (the
+  import's executor, `runBlocked`, is never live while the import's own flag is set), and the
+  confirmed start points read `activeRun`/`activeClaim` as above, so no flow blocks its own start.
 - **A named exception to §4.5.** `DockOutcomeAnnouncer` used to speak only what the dock shows. It
-  now also speaks the pre-run wait (`restore.startChecking`, `undo.startChecking`), which no dock
+  now also speaks the pre-run wait (`massDelete.startChecking` on both pages that mount the
+  mass-delete panel, `restore.startChecking` likewise, `import.startChecking` and
+  `undo.startChecking` on the usage-stats page only), which no dock
   shows, because the only visible sign is a disabled button — silent for a screen reader — and
   §6.1 allows no loading text for an isolated action. The line enters only after the read has been
   out for `START_CHECK_ANNOUNCE_DELAY_MS` (1 s), so a quick read does not open every start with it;
   the lock itself is immediate.
-- **The confirm-time restore check is bounded like the open-time one** (the same 20 s); `timeout()`
-  aborts the request, so a timeout is a failed read in the sense of Plan-275 Festlegung 16, which
-  is unchanged.
+- **Every read behind a flag is bounded.** The confirm-time restore check now shares the open-time
+  one's 20 s; `timeout()` aborts the request, so a timeout is a failed read in the sense of Plan-275
+  Festlegung 16, which is unchanged. The import's shared pre-check and `recheckTransferPlan` gain
+  the same budget (`LIVE_READ_TIMEOUT_MS`): a timed-out pre-check is "unavailable" like a 429, a
+  timed-out re-check is the failed read it already handled (no replace row through, duplicate
+  check unavailable). The delete's live alias read was already bounded; its block on error,
+  incomplete answer or timeout is unchanged.
 - **The confirm-time restore read deliberately has no teardown**: a confirmed restore is started and
   shown by the root service regardless of the host that opened it, so dropping the read with its
   host would silently lose a confirmed restore. The undo differs — its flow drops both reads with
   its caller (`UndoFlowDeps.destroyRef`, `undo-flow.ts`); aligning the two would be a separate
-  product decision.
+  product decision. The import's checks and the delete's alias read keep their existing teardown
+  semantics too — neither is dropped with its host (the import flow never had a teardown, and a
+  torn-down panel's `startDelete` starts nothing by contract); both are bounded, so their flag is
+  always released.
 
 ### 2026-09-28 — A 7TV run step is `done` only when the answer carries the mutation's result — an unconfirmed 200 is `unknown` or `failed`
 
