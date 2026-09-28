@@ -1,7 +1,8 @@
-# Plan #216 — Besitzer-Hinweis: der set-zentrierte Bericht und die Vorprüfung lesen die Liste des wahrscheinlichen Besitzers zuerst
+# Plan #216 — Besitzer-Hinweis: der set-zentrierte Bericht und die Vorprüfung lesen die Liste des wahrscheinlichen Besitzers neben der eigenen, statt alle Grants abzugehen
 
 Erstellt am 2026-09-28 gegen `feat/216-owner-hint` = `2d979e89` (= `origin/feat/emote-sets-200`, #280
-gemergt). Quellen: Issue #216, Epic #200 (Tabelle „Open"), `docs/DECISIONS.md` (2026-09-28 #280,
+gemergt); **überarbeitet am 2026-09-28 nach dem Codex-Sol-Adversarial-Review** (vier Befunde, alle
+übernommen, Abschnitt 12) **und den Betreiber-Entscheidungen zu Abschnitt 10**. Quellen: Issue #216, Epic #200 (Tabelle „Open"), `docs/DECISIONS.md` (2026-09-28 #280,
 Absatz „Known limit"; 2026-09-25 „Who may report …" mit F16; 2026-09-25 „The replace lock … falls"),
 die Spec `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (§32 P1 und zweite Runde, §6.2,
 §6.10), die Restore-pro-Set-Spec (`2026-09-24-restore-pro-set-253-design.md`, E19, F16, F17),
@@ -29,8 +30,9 @@ und fail-closed bei Timeout.
 
 **Ziel.** (Pfad A, #216) Die drei set-zentrierten Berichte `sync-imported`, `sync-deleted`,
 `sync-restored` nehmen im Body einen optionalen Hinweis auf den Besitzer des Sets (Twitch-ID) mit;
-die Besitzer-Prüfung liest die Liste dieses Kontos zuerst und kostet mit gültigem Hinweis bei kaltem
-Cache **einen** Listen-Request statt `1 + k`. (Pfad B, #280 „Known limit") Die geteilte Vorprüfung
+die Besitzer-Prüfung liest die Liste dieses Kontos neben der eigenen und kostet mit gültigem Hinweis
+bei kaltem Cache **einen** (Akteur) bzw. **zwei parallele** Listen-Requests (Grant) statt `1 + k`
+seriellen. (Pfad B, #280 „Known limit") Die geteilte Vorprüfung
 `resolveEditableSet` antwortet aus der 60-s-Client-Kopie der Zielliste, wenn die frisch ist (0
 Requests), und fragt sonst eine **neue, set-bezogene Route**, die dieselbe Prüfung mit demselben
 Hinweis fährt — statt wie heute die ganze Zielliste zu laden, deren Backend `1 + k` Konten seriell
@@ -47,7 +49,7 @@ null Requests" wird in Spec und Code durch die wahre Aussage ersetzt.
   bestehenden `/api/seventv/me`-Gruppe unter `ForeignEmoteLookup`.
 - **Kein Versionssprung** bei `PURGE_RUN_FORMAT_VERSION` (3), `TRANSFER_RUN_FORMAT_VERSION` (1),
   `TRANSFER_UNDO_FORMAT_VERSION` (1). Das neue `meta`-Feld ist additiv; alte Dateien lesen sich wie
-  heute und laufen ohne Hinweis in den heutigen Vollgang.
+  heute und liefern nur den Kanal-Login aus dem Envelope als Hinweis (3.7).
 - **Keine längere Server-TTL** für die Listen (#216, Option 2 — verworfen: die 60 s sind E12).
 - **Picker-Route `GET /api/seventv/me/emote-set-targets` bleibt unverändert**, inklusive ihres
   ungeschützten Grant-Wegs (`ISevenTvEditorService`, §32 zweite Runde „Warum der Autorisierungspfad
@@ -76,10 +78,10 @@ null Requests" wird in Spec und Code durch die wahre Aussage ersetzt.
 | `src/EmotePurge.Api/Validation/EmoteSetIdValidationFilter.cs:27-35` | Prüft den Routenwert `emoteSetId` zuerst; registrierbar je Route. Fehlercode `invalid_emote_set_id` existiert. |
 | `src/EmotePurge.Api/Validation/ApiErrorCodes.cs:57,106` und `web/src/app/core/i18n/api-error.ts:36,53` | `foreign_channel_seventv_unavailable`, `emote_set_not_found` in Backend und Frontend vorhanden. |
 | `web/src/app/core/seven-tv/seven-tv-emote-set.service.ts:192-225` | `loadCachedEmoteSetTargets` (60 s, nur Erfolg gecacht, `refresh` bypasst); `resolveEditableSet(emoteSetId)` = `loadCachedEmoteSetTargets().pipe(map(classifyEditableSet))` — bei kalter Kopie **immer** die volle Liste. `classifyEditableSet` (`:106-122`): kind≠NORMAL ⇒ `notSelectable`; editable ⇒ `editable`; sonst `unavailable`, wenn `sevenTvUnavailable` oder ein `setsUnavailable`, sonst `notEditable`. `toEditableSetTarget` (`:74-87`) hat `account.twitchChannelId` in der Hand, gibt es aber nicht weiter. |
-| `web/src/app/core/seven-tv/seven-tv-emote-set.model.ts:171-191` | `EditableSetTarget {emoteSetId, setName, ownerDisplayName, twitchLogin, trackedChannelName, isActiveSet}` — **kein** `twitchChannelId`; `EditableSetResolution` = vier Ausgänge. `SyncInSetBody {sevenTvEmoteIds, expectedChannelName}` (`:124-127`); `SyncImportedToSetBody` in der Service-Datei (`:128-133`). |
+| `web/src/app/core/seven-tv/seven-tv-emote-set.model.ts:171-191` | `EditableSetTarget {emoteSetId, setName, ownerDisplayName, twitchLogin, trackedChannelName, isActiveSet}` — **keine** Twitch-ID des Besitzers; `EditableSetResolution` = vier Ausgänge. `SyncInSetBody {sevenTvEmoteIds, expectedChannelName}` (`:124-127`); `SyncImportedToSetBody` in der Service-Datei (`:128-133`). |
 | Aufrufer der Vorprüfung | `import-flow.ts:411-435` (Replace-Start, `timeout(LIVE_READ_TIMEOUT_MS)`, `startCheckPending`); `file-import-step.ts:392-427` (Datei-Tür, `takeUntilDestroyed`, kein Timeout — Bestand); `mass-delete-panel.ts:794-830` (Restore aus dem Dock) und `:1080-1119` (vor der Lösch-Bestätigung, `openConfirmDialogAfterCheck(checkedSetId)` `:1107`). |
 | Twitch-ID im Client | Nur `auth.model.ts:2` (`twitchUserId` des Akteurs) und `EmoteSetTargetAccount.twitchChannelId` (Zielliste). Eine `ChannelSummary` trägt **keine** Twitch-ID — der Lösch-Pfad kennt die ID seines Kontos nur über die Antwort der Vorprüfung. |
-| `import-target-dialog.ts:69-78, 520-566` | `ImportTargetChoice` ohne `twitchChannelId`; `selectSet` baut die Auswahl aus `group` (`ImportTargetAccountGroup.twitchChannelId`, `import-target-choices.ts:40, 172`). |
+| `import-target-dialog.ts:69-78, 520-566` | `ImportTargetChoice` ohne Twitch-ID; `selectSet` baut die Auswahl aus `group` (`ImportTargetAccountGroup.twitchChannelId`, `import-target-choices.ts:40, 172` — das **listende** Konto, nicht der Besitzer; `buildImportTargetChoices` hat die ganze Antwort inkl. `sevenTvUserId` je Konto). Zweiter Produzent: `import-trigger.ts:50-67` (`toImportTarget`, `kind: 'chosen'` nur aus dem Kanal-Login). |
 | `import-flow.ts:77-79, 143-156, 440-500` | `ImportFlowTarget` = `activeSet {channelName}` \| `chosen {choice}`; `start` (Vorprüfung nur bei Replace-Zeile) → `startAfterCheck` → `startImport({setId, channelName, ownerDisplayName, setName, isActiveSet}, …)`. |
 | `seven-tv-import.service.ts:169-215, 430-520, 837-870, 892` | `ImportRunInfo` (`targetChannelName`, `targetOwnerDisplayName`, `targetSetId`, …); `startImport` mit Ziel-Parameterobjekt; `reportImported`: getrackt ⇒ kanalgebunden, sonst `reportImportedToSet` (`:863-867`); Removal-Report `reportDeletedInSet` (`:892`). |
 | `seven-tv-delete.service.ts:157-177, 360-372, 563-575` | `DeleteRunInfo {channelName, expectedChannelName, setId, …}`; `startDelete(setId, channelName, emotes, expectedChannelName)`; Report-Body `{sevenTvEmoteIds, expectedChannelName}`. |
@@ -101,8 +103,8 @@ null Requests" wird in Spec und Code durch die wahre Aussage ersetzt.
 |---|---|---|
 | 1 | **Neuer Core-Typ `EmoteSetOwnerHint`** (`Core/Services/`, neben `IImportTargetOwnershipService`): zwei optionale Felder, `TwitchUserId` und `TwitchLogin`. Beide dürfen fehlen; ein Hinweis ohne beides ist kein Hinweis. | Ein Typ für Berichte und Route; kein Tupel, kein `string?`-Paar in jeder Signatur. |
 | 2 | **Auflösung des Hinweises, vor jedem 7TV-Request:** Die Menge der zulässigen Konten ist `{Akteur (Session)} ∪ Grants.Entries` (geschützter Weg, Festlegung 9). `TwitchUserId` gewinnt: gleich dem Akteur ⇒ „Akteur"; gleich `entry.TwitchChannelId` eines Grants (ordinal) ⇒ dieser Grant; sonst verworfen. Nur ohne `TwitchUserId` wird `TwitchLogin` geprüft: über `ChannelName.Normalize` (Regel 9) gegen den normalisierten Akteur-Login und die normalisierten `entry.ChannelLogin` — ein Treffer liefert die Twitch-ID **des Grants**, nie den Login selbst als Schlüssel. Ein verworfener Hinweis wird bei `Debug` geloggt, nie mit 400 beantwortet, nie in die Antwort gespiegelt. | Auftrag: „ein Hinweis außerhalb der Menge wird verworfen, bevor irgendein Request entsteht". Logins gehören nicht in die Listenabfrage (`ISevenTvEmoteSetListService.cs:155-158`). |
-| 3 | **Reihenfolge.** Hinweis ⇒ Akteur, oder kein gültiger Hinweis: **wie heute** — eigene Liste zuerst, bei Fund mit eigenem Besitz sofort fertig, Grants gar nicht erst gelesen (`:59-63` ist bereits genau das). Hinweis ⇒ Grant G: Grants (Cache, meist warm) → **Liste von G** → eigene Liste → übrige Grants in Reihenfolge der `Entries`. Ein Treffer (`Inspect` liefert einen Match) beendet den Gang sofort; das ist heute schon so und bleibt. | Auftrag. Die eigene Liste bleibt beim Akteur-Hinweis vorn, weil sie dort ohnehin die wahrscheinlichste ist. |
-| 4 | **Die Grants-Sonderregel bleibt:** liefert die eigene Liste `NoSevenTvAccount`, werden die übrigen Grants nicht gelesen (`editor_of` hängt am selben Konto, `:65-72`). Beim Grant-Hinweis sind Grants und Hinweis-Liste zu diesem Zeitpunkt schon gelesen — höchstens ein Listen-Request umsonst, nur in einem manipulierten oder verirrten Aufruf. | Bestand; der Sonderfall ist kein Normalfall. |
+| 3 | **Reihenfolge — die eigene Liste wird immer gelesen.** Hinweis ⇒ Akteur, oder kein gültiger Hinweis: **wie heute** — eigene Liste zuerst, bei Fund mit eigenem Besitz sofort fertig, Grants gar nicht erst gelesen (`:59-63` ist bereits genau das). Hinweis ⇒ Grant G: Grants (Cache, meist warm; nötig, um den Hinweis zu validieren) → **eigene Liste und Liste von G parallel** (beide über `ListByTwitchIdAsync`, also je Schlüssel Cache, Coalescer, Breaker `emote-set-list`, Budget; zwei Slots der Nebenläufigkeitsgrenze, für die Dauer **eines** Round-Trips) → Auswertung (Nr. 4) → übrige Grants in Reihenfolge der `Entries`, seriell wie heute. Ein Treffer beendet den Gang sofort. | Codex-Befund 1: Die Hinweis-Liste darf den `NoSevenTvAccount`-Schutz der eigenen Liste nicht umgehen; Parallelität hält die Latenz bei einem Round-Trip. |
+| 4 | **Die `NoSevenTvAccount`-Sperre der eigenen Liste gilt auch für den Hinweis.** Ein Treffer in der Liste von G wird erst dann zu `Owner`, wenn die eigene Liste **nicht** `NoSevenTvAccount` gemeldet hat. Genau: (a) eigene Liste `Ok` ⇒ beide Evidenzen zählen, Auswertung wie heute; (b) eigene Liste unlesbar (`Unavailable`/`RateLimited`/`BudgetExhausted`/Breaker) ⇒ wie heute `AnyListUnreadable`, die Hinweis-Evidenz zählt, ein zulässiger Fund bei G ist `Owner` (Teilausfall-Regel §32: „Fund anderswo ⇒ 204"), kein Fund ⇒ Gang läuft weiter und endet ohne Fund `Unavailable`; (c) eigene Liste `NoSevenTvAccount` ⇒ die Hinweis-Evidenz wird **verworfen** (nicht in `OwnershipEvidence` übernommen), die übrigen Grants werden wie heute nicht gelesen (`:65-72`), das Ergebnis ist byte-gleich dem heutigen ohne Hinweis (Bericht: ein Owner-Lookup ⇒ `Forbidden`/`SetNotFound`; Vorprüfung: `SetNotFound`). Der Grant-Cache (10 min) kann die 7TV-Verbindung des Akteurs überleben — ein positiver, aber veralteter Grant darf die Annahme nie erweitern. | Codex-Befund 1 (high). Bestandssemantik `:59-72` bleibt Wort für Wort erhalten. |
 | 5 | **Fehlende Hinweis-Liste ist kein Ende.** Ist die Liste von G nicht lesbar (`Unavailable`, `RateLimited`, `BudgetExhausted`, offener Breaker), wird sie wie jede andere als unlesbar vermerkt (`AnyListUnreadable`) und der Gang läuft weiter. Enthält sie das Set nicht, oder unter fremdem Besitz: Gang läuft weiter (die Liste ist danach 60 s im Cache, ein zweiter Blick kostet nichts). | Auftrag; Teilausfall-Regel §32 unverändert. |
 | 6 | **Das frühe 403 („nur unter fremdem Besitzer gelistet") fällt erst nach dem vollständigen Gang**, wie heute (`:74-81` steht nach `InspectEditorAccountsAsync`). Ein Set, das in der Hinweis-Liste unter Besitzer B steht, kann von B selbst — einem später gelesenen Konto — zulässig werden (`MatchAgainstAllKnownAccounts`, `:136-138`). | Auftrag; §32 „X steht in einer Liste, aber unter fremdem Besitzer". |
 | 7 | **Kein Bypass.** Die Hinweis-Liste wird ausschließlich über `ISevenTvEmoteSetListService.ListByTwitchIdAsync` gelesen — Cache, Coalescer, Breaker-Operation `emote-set-list` (je Operation gezählt), Provider-Budget. Offener Breaker ⇒ die Liste ist unlesbar ⇒ ohne anderweitigen Fund `Unavailable` (fail-closed). | Auftrag; F14 („ein Request, der das Budget nicht belastet, ist einer zu viel"). |
@@ -112,8 +114,8 @@ null Requests" wird in Spec und Code durch die wahre Aussage ersetzt.
 
 | # | Festlegung | Grund |
 |---|---|---|
-| 9 | **Ein Gang, zwei Betriebsarten.** `ImportTargetOwnershipService` behält seine Klasse und seine DI-Abhängigkeiten; der Listen-Gang (Hinweis-Auflösung, Reihenfolge, `OwnershipEvidence`) wird in **einen** privaten Kern gezogen, den zwei öffentliche Methoden aufrufen: (a) `CheckAsync(actorTwitchUserId, actorTwitchLogin, emoteSetId, EmoteSetOwnerHint? hint, ct)` — die Berichte, **mit** dem budgetierten Owner-Lookup als Fallback wie heute; (b) eine zweite Methode für die Vorprüfung (Name des Implementers, z. B. `ResolveEditableAsync`), **ohne** Owner-Lookup: nach dem Gang gilt „in keiner lesbaren Liste, alle lesbar" ⇒ `SetNotFound`; „nur unter fremdem Besitz oder ohne Besitzer-ID gelistet" ⇒ `Forbidden`; „eine Quelle unlesbar, kein zulässiger Fund" ⇒ `Unavailable`. Beide lesen Grants über `IGuardedSevenTvEditorGrantsService`. | Auftrag „ein Helfer für beide"; F16 („nie lockerer als der Bericht", ein Set ohne Besitzer-ID ⇒ nicht bearbeitbar). Bestehende Signatur bleibt aufrufbar: `hint` ist optional. |
-| 10 | **Das Ergebnis trägt additiv, was die Route braucht:** `SevenTvEmoteSetOwnershipCheckResult` bekommt — non-null genau bei `Owner`, sofern der Fund aus einer **Liste** stammt (nie aus dem Owner-Lookup-Fallback) — das `EmoteSetSummary` des Sets (Name, `Kind`, `OwnerDisplayName`, `OwnerSevenTvUserId`) und `SevenTvActiveEmoteSetId` der Liste des **Besitzer-Kontos** (null, wenn das Set nur unter einem anderen Konto gelistet war). Das Besitzer-Konto ist das, dessen `SevenTvUserId` die Besitzer-ID ist (`CheckedAccount`: Login + Twitch-ID) — dieselbe Identität, die der Bericht in die Audit-Zeile schreibt. | Die Route muss `setName`, `ownerDisplayName`, `twitchLogin`, `twitchChannelId`, `isActiveSet` liefern (3.4). Die Zielliste nennt für ein „unter A gelistet, von B besessen"-Set das **listende** Konto A; die Route nennt B. Beide sind `editable`; die Papierspur nutzt B. Unterschied dokumentieren, nicht angleichen. |
+| 9 | **Ein Gang, zwei Betriebsarten.** `ImportTargetOwnershipService` behält seine Klasse und seine DI-Abhängigkeiten; der Listen-Gang (Hinweis-Auflösung, Reihenfolge, `OwnershipEvidence`) wird in **einen** privaten Kern gezogen, den zwei öffentliche Methoden aufrufen: (a) `CheckAsync` — die Berichte, **mit** dem budgetierten Owner-Lookup als Fallback wie heute; (b) eine zweite Methode für die Vorprüfung (Name des Implementers, z. B. `ResolveEditableAsync`), **ohne** Owner-Lookup: nach dem Gang gilt „in keiner lesbaren Liste, alle lesbar" ⇒ `SetNotFound`; „nur unter fremdem Besitz oder ohne Besitzer-ID gelistet" ⇒ `Forbidden`; „eine Quelle unlesbar, kein zulässiger Fund" ⇒ `Unavailable`. Beide lesen Grants über `IGuardedSevenTvEditorGrantsService`. **Signatur (Codex-Befund 3):** die bestehende `CheckAsync(actorTwitchUserId, actorTwitchLogin, emoteSetId, ct)` bleibt als Overload unverändert bestehen (die positionalen Aufrufe `SevenTvEndpoints.cs:251, 527` und alle Tests bauen in T1 ohne Änderung); der Hinweis kommt als **zusätzlicher Parameter hinter dem `CancellationToken`** oder als eigener Overload — nie davor. Dasselbe für die Vorprüfungs-Methode. | Auftrag „ein Helfer für beide"; F16 („nie lockerer als der Bericht", ein Set ohne Besitzer-ID ⇒ nicht bearbeitbar). T1 muss allein grün sein. |
+| 10 | **Das Ergebnis trägt additiv, was die Route braucht:** `SevenTvEmoteSetOwnershipCheckResult` bekommt — non-null genau bei `Owner`, sofern der Fund aus einer **Liste** stammt (nie aus dem Owner-Lookup-Fallback) — das `EmoteSetSummary` des Sets (Name, `Kind`, `OwnerDisplayName`, `OwnerSevenTvUserId`) und `SevenTvActiveEmoteSetId` der Liste des **Besitzer-Kontos** (null, wenn das Set nur unter einem anderen Konto gelistet war). Das Besitzer-Konto ist das, dessen `SevenTvUserId` die Besitzer-ID ist (`CheckedAccount`: Login + Twitch-ID) — dieselbe Identität, die der Bericht in die Audit-Zeile schreibt. **Nie das listende Konto** (Codex-Befund 2, Betreiber 2026-09-28): für ein „unter A gelistet, von B besessen"-Set nennen Route, `OwnerTwitchUserId` und damit jeder Hinweis B; A kommt nirgends als Besitzer-Identität vor. | Die Route muss `setName`, `ownerDisplayName`, `twitchLogin`, `twitchChannelId`, `isActiveSet` liefern (3.4). Ein Hinweis auf A wäre eine Liste, die das Set nur listet, nicht besitzt — ein Round-Trip umsonst. |
 | 11 | **Kein Ausbau von `IGuardedSevenTvEditorGrantsService`.** Die Vorprüfung liest die Grants durch dieselbe Instanz und dieselbe Methode; die Doku beider Typen (Interface `:220-257`, Klasse `:14-17`) nennt danach beide Aufrufer und die wahre Kostenformel (3.8). Die Picker-Route bleibt ungeschützt (Nicht-Ziel). | Auftrag; §32 zweite Runde. Folge (DECISIONS): eine gehaltene Grant-Störung (`7tveditorhold:`, 30–60 s) macht die Vorprüfung `unavailable`, wo die Zielliste `sevenTvUnavailable: true` **und** trotzdem Konten geliefert hätte — strenger, nicht lockerer. |
 
 ### 3.3 Die Berichte (Pfad A)
@@ -138,36 +140,39 @@ null Requests" wird in Spec und Code durch die wahre Aussage ersetzt.
 |---|---|---|
 | 18 | **Signatur:** `resolveEditableSet(emoteSetId, hint?: OwnerHint)` mit `OwnerHint = { twitchChannelId: string \| null; twitchLogin: string \| null }` (Core-Modell in `seven-tv-emote-set.model.ts`). Die vier Ausgänge und `EditableSetResolution` bleiben. | Alle vier Aufrufer, ein Vertrag. |
 | 19 | **Cache-first:** Ist `cachedTargets` frisch (dieselbe Prüfung wie `loadCachedEmoteSetTargets` ohne `refresh`), wird lokal mit `classifyEditableSet` klassifiziert — **0 Requests**, byte-gleiche Antwort wie heute. Sonst **die neue Route** mit `ownerTwitchId`/`ownerLogin` aus dem Hinweis; die Antwort wird 1:1 auf `EditableSetResolution` abgebildet, `setName`/`ownerDisplayName` mit **denselben** Fallbacks wie `toEditableSetTarget` (`nonBlank(name) ?? id`, `ownerDisplayName ?? twitchLogin`). Die volle Liste wird von der Vorprüfung **nie mehr** geladen; `loadCachedEmoteSetTargets` bleibt für den Picker. Ein Fehler der Route (429, 503, Netz, Timeout des Aufrufers) landet wie heute im `error:`-Zweig der Aufrufer ⇒ `unavailable`, fail-closed. | Auftrag. Die 20-s-Schranken bleiben bei den Aufrufern (`timeout(...)` an `import-flow.ts:413`, `mass-delete-panel.ts:798, 1085`) und greifen unverändert. |
-| 20 | **Antwort-Cache je Set, 60 s** (Erweiterung gegenüber dem Auftrag — Offener Punkt 2): Eine Route-Antwort mit `status ≠ unavailable` wird unter der Set-ID für `EMOTE_SET_TARGETS_CACHE_TTL_MS` gehalten (Muster `cachedPreviews`, nur Erfolg, ein `Map`); die Frische-Prüfung ist: Listen-Kopie frisch → lokal; sonst Set-Eintrag frisch → Eintrag; sonst Route. `unavailable` wird nie gecacht. Ein `refresh` des Pickers ersetzt die Listen-Kopie und **löscht** die Set-Einträge. | Lösch-Bestätigung → Restore aus dem Dock derselben Minute kostet sonst zwei Permits für dieselbe Frage; dieselbe TTL und dieselbe Semantik wie E19/F3. Fällt die Entscheidung dagegen, entfällt nur diese Zeile. |
-| 21 | **`EditableSetTarget` bekommt `twitchChannelId: string`** (Pflichtfeld) — aus `account.twitchChannelId` in `toEditableSetTarget`, aus `target.twitchChannelId` der Route. `ResolvedRestoreTarget` (eigene Feldliste, `restore-flow.ts:27-38`) zieht das Feld nach. | Der einzige Weg, auf dem Delete/Restore/Undo an die Twitch-ID des Besitzers kommen (Ist-Stand „Twitch-ID im Client"). |
+| 20 | **Antwort-Cache je Set, 60 s** (Betreiber-Entscheidung 2026-09-28: ja): Eine Route-Antwort mit `status ≠ unavailable` wird unter der Set-ID für `EMOTE_SET_TARGETS_CACHE_TTL_MS` gehalten (Muster `cachedPreviews`, nur Erfolg, ein `Map`); die Frische-Prüfung ist: Listen-Kopie frisch → lokal; sonst Set-Eintrag frisch → Eintrag; sonst Route. `unavailable` wird nie gecacht. Ein `refresh` des Pickers ersetzt die Listen-Kopie und **löscht** die Set-Einträge. | Lösch-Bestätigung → Restore aus dem Dock derselben Minute kostet sonst zwei Permits für dieselbe Frage; dieselbe TTL und dieselbe Semantik wie E19/F3. Fällt die Entscheidung dagegen, entfällt nur diese Zeile. |
+| 21 | **`EditableSetTarget` bekommt `ownerTwitchChannelId: string \| null`** — **immer die Twitch-ID des Besitzer-Kontos** (Codex-Befund 2): im Cache-first-Pfad löst `toEditableSetTarget` `set.ownerSevenTvUserId` gegen die `sevenTvUserId` **aller** Konten der gecachten Antwort auf und nimmt dessen `twitchChannelId`; ist der Besitzer kein Konto der Antwort (kann bei `editable: true` nach `EmoteSetEditability` nicht vorkommen, wird aber nicht vorausgesetzt) ⇒ `null`, **nie** das listende Konto. Im Route-Pfad kommt es aus `target.twitchChannelId` (Besitzer nach Nr. 10). `twitchLogin`, `trackedChannelName`, `isActiveSet` beziehen sich im Cache-first-Pfad weiter auf das **listende** Konto wie heute (Anzeige, Routing der Vorschau) — nur die ID ist Besitzer-Semantik. `ResolvedRestoreTarget` (eigene Feldliste, `restore-flow.ts:27-38`) zieht das Feld nach. | Der einzige Weg, auf dem Delete/Restore/Undo an die Twitch-ID des Besitzers kommen (Ist-Stand „Twitch-ID im Client"). `null` ⇒ kein Hinweis, kein Platzhalter. |
 
 ### 3.6 Client-Plumbing (Hinweise an Vorprüfung und Berichte)
 
 | Aufrufer | Hinweis an die **Vorprüfung** | Hinweis an den **Bericht** (immer ID aus der Vorprüfungs-Antwort bzw. dem Picker) |
 |---|---|---|
-| Replace-Start `import-flow.ts:411` | `chosen` ⇒ `{ twitchChannelId: choice.twitchChannelId }` (neues Feld an `ImportTargetChoice`, aus `group.twitchChannelId` in `selectSet`); `activeSet` ⇒ `{ twitchLogin: channelName }` | `resolution.target.twitchChannelId` → `startImport(target.ownerTwitchChannelId)` → `ImportRunInfo.targetOwnerTwitchId` → Removal-Report (`:892`) **und** `reportImportedToSet` (`:867`). Ein Add-only-Lauf (keine Vorprüfung): `chosen` ⇒ ID aus der Wahl; `activeSet` ⇒ getrackt ⇒ kanalgebundener Bericht, kein Hinweis nötig. |
-| Datei-Tür `file-import-step.ts:397` | `{ twitchChannelId: parsed.target.ownerTwitchId }` (3.7); alte Datei ⇒ kein Hinweis | `ResolvedRestoreTarget.twitchChannelId` → `RestoreStartTarget`/`UndoRunTarget` → `RestoreRunInfo`/`UndoRunInfo` → Body |
-| Lösch-Vorprüfung `mass-delete-panel.ts:1083` | `{ twitchLogin: channelName() }` — die Seite kennt nur den Login ihres Kanals; alle Sets der Seite gehören diesem Konto (6.1) | `resolution.target.twitchChannelId` wird mit `checkedSetId` **eingefroren** und durch `openConfirmDialogAfterCheck` → `startDelete(…, ownerTwitchId)` → `DeleteRunInfo.targetOwnerTwitchId` → Body und Purge-Protokoll (3.7) getragen |
-| Restore aus dem Dock `mass-delete-panel.ts:795` | `{ twitchChannelId: run.targetOwnerTwitchId }` des Lösch-Laufs (Fallback `{ twitchLogin: run.channelName }` für einen Lauf ohne ID, z. B. aus einem älteren Tab) | `resolution.target.twitchChannelId` → `RestoreStartTarget` |
+| Replace-Start `import-flow.ts:411` | `chosen` aus dem **Picker** ⇒ `{ twitchChannelId: choice.ownerTwitchChannelId }` (neues Feld `ownerTwitchChannelId: string \| null` an `ImportTargetChoice`, in `import-target-choices.ts` je Set aus `ownerSevenTvUserId` gegen die `sevenTvUserId` **aller** Konten der Antwort aufgelöst — Besitzer, nie die Gruppe; `null`, wenn unbekannt); `chosen` aus **`import-trigger.ts:50-67`** (`toImportTarget` fabriziert eine Wahl nur aus dem Kanal-Login, Codex-Befund 4) ⇒ `ownerTwitchChannelId: null` **explizit**, Hinweis `{ twitchLogin: choice.channelName }`; `activeSet` ⇒ `{ twitchLogin: channelName }` | `resolution.target.ownerTwitchChannelId` → `startImport(target.ownerTwitchChannelId)` → `ImportRunInfo.targetOwnerTwitchId` → Removal-Report (`:892`) **und** `reportImportedToSet` (`:867`). Ein Add-only-Lauf (keine Vorprüfung): Picker-`chosen` ⇒ ID aus der Wahl; `import-trigger`-`chosen` und `activeSet` ⇒ getrackt ⇒ kanalgebundener Bericht, kein Hinweis nötig. |
+| Datei-Tür `file-import-step.ts:397` | `{ twitchChannelId: parsed.target.ownerTwitchId, twitchLogin: parsed.target.ownerLogin }` (3.7): ID, wenn die Datei sie trägt; sonst Login-Fallback aus dem Envelope (Betreiber 2026-09-28: ja); beides `null` ⇒ kein Hinweis | `ResolvedRestoreTarget.ownerTwitchChannelId` → `RestoreStartTarget`/`UndoRunTarget` → `RestoreRunInfo`/`UndoRunInfo` → Body |
+| Lösch-Vorprüfung `mass-delete-panel.ts:1083` | `{ twitchLogin: channelName() }` — die Seite kennt nur den Login ihres Kanals; alle Sets der Seite gehören diesem Konto (6.1) | `resolution.target.ownerTwitchChannelId` wird mit `checkedSetId` **eingefroren** und durch `openConfirmDialogAfterCheck` → `startDelete(…, ownerTwitchId)` → `DeleteRunInfo.targetOwnerTwitchId` → Body und Purge-Protokoll (3.7) getragen |
+| Restore aus dem Dock `mass-delete-panel.ts:795` | `{ twitchChannelId: run.targetOwnerTwitchId, twitchLogin: run.channelName }` des Lösch-Laufs (Login greift nur ohne ID, z. B. Lauf aus einem älteren Tab) | `resolution.target.ownerTwitchChannelId` → `RestoreStartTarget` |
 | Undo (`undo-flow.ts`) | über die Datei-Tür | wie Restore |
 
 Alle Run-Records (`DeleteRunInfo`, `RestoreRunInfo`, `UndoRunInfo`, `ImportRunInfo`) tragen das
 Feld `targetOwnerTwitchId: string | null`, gefroren beim Start; Retries eines Berichts senden
 dasselbe. `RestoreStartTarget`, `UndoRunTarget` und das Ziel-Objekt von `startImport` bekommen das
-Feld als Pflichtfeld (`string | null`), damit kein Aufrufer es vergisst.
+Feld als Pflichtfeld (`string | null`), damit kein Aufrufer es vergisst. **Überall gilt: die ID ist
+die des Besitzer-Kontos; fehlt sie, steht `null`, nie die ID des listenden Kontos und nie ein
+Platzhalter** (Codex-Befund 2).
 
 ### 3.7 Dateiformate (additiv, keine Versionssprünge)
 
 | Datei | Neues `meta`-Feld | Schreiber | Leser |
 |---|---|---|---|
-| `purge-run` (v3 bleibt) | `targetOwnerTwitchId: string \| null` | `buildPurgeRunProtocol` aus `DeleteRunInfo.targetOwnerTwitchId` | `parsePurgeRunProtocol` → `RestoreFileTarget.ownerTwitchId: string \| null` (nur wenn nicht-leerer String, sonst `null`) |
-| `transfer-run` `planned` + `finished` (v1 bleibt) | dito in `TransferRunMetaBase` | `buildTransferPlanRecord` (aus dem Hinweis des Import-Flows, über `ImportConfirmDialogData`), `buildTransferRunProtocol` (aus `ImportRunInfo`) | `parseTransferRunForRestore`, `parseTransferRunForUndo` → `target.ownerTwitchId` |
-| `transfer-undo` `planned` + `finished` (v1 bleibt) | dito | aus `UndoRunInfo` | `parseTransferUndoForRestore` |
+| `purge-run` (v3 bleibt) | `targetOwnerTwitchId: string \| null` | `buildPurgeRunProtocol` aus `DeleteRunInfo.targetOwnerTwitchId` | `parsePurgeRunProtocol` → `RestoreFileTarget { emoteSetId, ownerTwitchId: string \| null, ownerLogin: string \| null }`: `ownerTwitchId` nur bei nicht-leerem String, sonst `null`; `ownerLogin` = `envelope.channelName` (nicht-leer, sonst `null`) — die Seite, deren Konto alle ihre Sets besitzt |
+| `transfer-run` `planned` + `finished` (v1 bleibt) | dito in `TransferRunMetaBase` | `buildTransferPlanRecord` (aus dem Hinweis des Import-Flows, über `ImportConfirmDialogData`), `buildTransferRunProtocol` (aus `ImportRunInfo`) | `parseTransferRunForRestore`, `parseTransferRunForUndo` → `target.ownerTwitchId`, `target.ownerLogin` = `meta.targetChannelName` (String, sonst `null`; bei ungetracktem Ziel ist es `null`) |
+| `transfer-undo` `planned` + `finished` (v1 bleibt) | dito | aus `UndoRunInfo` | `parseTransferUndoForRestore`, dito |
 
 Dateiinhalt ist untrusted — unproblematisch, weil ein Hinweis nur eine Reihenfolge ist (3.1 Nr. 2,
-Nr. 8). Alte Dateien ohne das Feld ⇒ `ownerTwitchId: null` ⇒ Vorprüfung ohne Hinweis ⇒ heutiger
-Gang (Auftrag; Offener Punkt 1 zum Login-Fallback aus dem Envelope). Die Parser tolerieren das Feld
-schon heute (Ist-Stand); der Test macht es fest.
+Nr. 8). **Alte Dateien ohne das Feld** ⇒ `ownerTwitchId: null`, `ownerLogin` aus dem Envelope
+(Betreiber-Entscheidung 2026-09-28) ⇒ Login-Hinweis; passt er zu Akteur oder Grant, kostet die
+Vorprüfung 1 bzw. 2 Listen statt `1 + k`; sonst heutiger Gang. Die Parser tolerieren das Feld schon
+heute (Ist-Stand); der Test macht es fest. Die Reihenfolge der Auflösung (ID vor Login) ist 3.1 Nr. 2.
 
 ### 3.8 Wortlaut-Korrektur — die wahre Kostenformel
 
@@ -175,11 +180,13 @@ schon heute (Ist-Stand); der Test macht es fest.
 
 | Fall | Listen-Requests | dazu |
 |---|---|---|
-| Warm (Liste ≤ 60 s alt) | 0 | 0 |
-| Kalt, gültiger Hinweis | **1** (die Hinweis-Liste) | +2 (Identität, `editor_of`), wenn der Grant-Cache (10 min) kalt ist — **außer** Hinweis ⇒ Akteur |
-| Kalt, ohne/ungültiger Hinweis | bis zu **1 + k** (Akteur + k Grants) | + 1 Owner-Lookup, wenn das Set in keiner Liste steht; +2 wie oben |
+| Warm (Listen ≤ 60 s alt) | 0 | 0 |
+| Kalt, Hinweis ⇒ Akteur | **1** (die eigene Liste) | 0 (Grants werden nicht gelesen) |
+| Kalt, gültiger Grant-Hinweis | **2** (eigene Liste + Hinweis-Liste, **parallel, ein Round-Trip**) | +2 (Identität, `editor_of`), wenn der Grant-Cache (10 min) kalt ist |
+| Kalt, ohne/ungültiger Hinweis | bis zu **1 + k** (Akteur + k Grants, seriell) | + 1 Owner-Lookup, wenn das Set in keiner Liste steht; +2 wie oben |
 
-Alles budgetiert, hinter Breaker und Coalescer. Zu korrigieren (englisch im Code, deutsch in der
+Alles budgetiert, hinter Breaker und Coalescer. Latenz kalt mit Grant-Hinweis: ein Round-Trip
+(die zwei Listen laufen parallel), statt bis zu `1 + k` seriellen. Zu korrigieren (englisch im Code, deutsch in der
 Spec): `ImportTargetOwnershipService.cs:23-27`, `IImportTargetOwnershipService.cs:84-89`,
 `SevenTvEndpoints.cs:215-219`, `GuardedSevenTvEditorGrantsService.cs:14-17`,
 `IGuardedSevenTvEditorGrantsService.cs:220-226` (Aufruferkreis), Spec-Stellen aus Abschnitt 2 als
@@ -194,19 +201,22 @@ Eintrag nennt sie.
 | Fall | Verhalten | Wo geprüft |
 |---|---|---|
 | Besitzer ist der Akteur (Hinweis ⇒ Akteur oder gar keiner) | eigene Liste zuerst, Grants nicht gelesen, wenn das Set dort mit eigenem Besitz steht — heutiges Verhalten, 1 Request kalt | T1 Unit („hint==actor skips grants") |
+| **Veralteter positiver Grant-Cache** + eigene Liste `NoSevenTvAccount` + gültiger Grant-Hinweis, Set in der Hinweis-Liste mit passendem Besitzer | Hinweis-Evidenz verworfen (3.1 Nr. 4c); Ergebnis und Request-Zahl **wie ohne Hinweis** (Bericht: Owner-Lookup ⇒ `Forbidden`; Vorprüfung: `SetNotFound`) — die Annahme wird nie erweitert | T1 Unit (Pflichtfall, Codex-Befund 1) |
+| Eigene Liste unlesbar + gültiger Grant-Hinweis mit Fund | `Owner` (Teilausfall mit Fund anderswo, wie heute); ohne Fund: Gang weiter, am Ende `Unavailable` | T1 Unit |
 | Konto ist zugleich eigen und gegrantet | der Grant wird übersprungen (`:124-127`, Bestand); ein Hinweis auf diese ID löst als „Akteur" auf | T1 Unit |
 | Hinweis auf einen widerrufenen Grant | nicht in `Grants.Entries` ⇒ verworfen vor jedem Request, heutiger Gang; Ergebnis identisch mit „ohne Hinweis" | T1 Unit („foreign hint dropped, zero extra requests") |
 | Besitzer hat gewechselt (Set in Hinweis-Liste, Besitzer-ID ≠ Hinweis-Konto) | kein früher 403; Gang läuft, Besitzer wird ggf. später als zulässiges Konto gefunden | T1 Unit („set in hinted list but owned by another account") |
 | Umbenannter Login (Login-Hinweis passt zu keinem Grant-Login) | verworfen ⇒ heutiger Gang; Grants-Cache erneuert Logins alle 10 min, danach passt er wieder | T1 Unit (Login-Fall negativ) |
 | Login-Hinweis passt (Groß-/Kleinschreibung, Whitespace) | `ChannelName.Normalize` beidseitig; Auflösung auf die Twitch-ID des Grants | T1 Unit („login hint") |
 | Hinweis-Liste unlesbar (Breaker offen, Budget, 429) | als unlesbar vermerkt, Gang läuft; kein anderweitiger Fund ⇒ `Unavailable` (fail-closed); Fund anderswo ⇒ `Owner` | T1 Unit („hinted list failure → walk continues", „open breaker → Unavailable") |
-| Set listed unter A, Besitzer B, Hinweis auf A | A gelesen (Set unter B), B später gelesen ⇒ `Owner` B; Route nennt B (3.2 Nr. 10) | T1 Unit, T3 Endpoint |
-| Kein 7TV-Konto des Akteurs + Grant-Hinweis | Grants (gehalten 60 s), Hinweis-Liste, dann eigene Liste `NoSevenTvAccount` ⇒ übrige Grants übersprungen | T1 Unit (bestehender Sonderfall erweitert) |
+| Set gelistet unter A, Besitzer B (beides geprüfte Konten) | Hinweis ist **B** (Client löst den Besitzer auf, nie A): Route nennt B, `ownerTwitchChannelId` = B, Bericht schreibt B. Cache-first-Pfad: `toEditableSetTarget` liefert `ownerTwitchChannelId` = B, `twitchLogin` = A (Anzeige). Ein Hinweis auf A (nur aus einem manipulierten Aufruf) ⇒ A parallel zur eigenen Liste gelesen, B später ⇒ `Owner` B, ein Round-Trip umsonst | T1 Unit, T3 Endpoint, T4 Spec (Cache-first **und** Route, Codex-Befund 2) |
+| Kein 7TV-Konto des Akteurs + Grant-Hinweis | Grants (gehalten 60 s) → eigene Liste ∥ Hinweis-Liste → eigene `NoSevenTvAccount` ⇒ Hinweis-Evidenz verworfen, übrige Grants übersprungen, Ergebnis wie heute; höchstens ein Listen-Request umsonst | T1 Unit (bestehender Sonderfall erweitert) |
+| `import-trigger.ts`-Wahl (Login, keine ID) | `ownerTwitchChannelId: null` explizit, Login-Hinweis `channelName`; Bericht ist kanalgebunden | T6a Spec (Codex-Befund 4) |
 | Set ohne `owner.id` in der Liste | Bericht: Owner-Lookup wie heute; Vorprüfung: `Forbidden` ⇒ `notEditable` (F16, strenger) | T1 Unit (beide Betriebsarten) |
 | Set in keiner Liste | Bericht: Owner-Lookup; Vorprüfung: `SetNotFound` ⇒ `notEditable`, **kein** Lookup (`LookUpEmoteSetOwnerAsync` nie aufgerufen) | T1 Unit, T3 Endpoint |
 | Gehaltene Grant-Störung (`7tveditorhold:`) | Vorprüfung `unavailable`, wo die Picker-Liste noch Konten zeigt — dokumentierte Verschärfung (3.2 Nr. 11) | T3 Endpoint, DECISIONS |
 | Alter Tab / alter Client ohne Hinweis-Feld | Bericht ohne Feld ⇒ heutiger Gang; `resolveEditableSet` ohne zweiten Parameter ⇒ Route ohne Query | T2 Endpoint, T4 Spec |
-| Alte Datei ohne `targetOwnerTwitchId` | `ownerTwitchId: null` ⇒ kein Hinweis ⇒ heutiger Gang | T5 Spec (alle drei Formate, v1/v2/v3 bzw. v1) |
+| Alte Datei ohne `targetOwnerTwitchId` | `ownerTwitchId: null`, `ownerLogin` aus `envelope.channelName` bzw. `meta.targetChannelName` ⇒ Login-Hinweis; passt er (Akteur/Grant) ⇒ 1 bzw. 2 Listen, sonst heutiger Gang; ungetracktes Transfer-Ziel (`targetChannelName: null`) ⇒ kein Hinweis | T5 Spec (alle drei Formate, v1/v2/v3 bzw. v1), T6b Spec |
 | Replace zielt immer auf genau ein Set | ein Hinweis je Lauf; Removal-Report und `sync-imported` tragen denselben | T6a Spec |
 | Kalte Client-Kopie, neue Route kostet ein Permit | 1 `ForeignEmoteLookup`-Permit je Vorprüfung; Rechnung in 3.4 Nr. 16 | T3 Route-Policy-Row |
 | Budget-Konkurrenz ohne gültigen Hinweis | weiter bis zu `1 + k` Listen × (5 s Slot-Wartezeit + 10 s HTTP) — kann 20 s überschreiten; das ist der **verbleibende** Known-limit-Rest (DECISIONS-Nachtrag) | — (dokumentiert) |
@@ -224,16 +234,17 @@ Eintrag nennt sie.
 
 | Titel | Kernaussage |
 |---|---|
-| *The owner check reads the hinted owner's list first, the pre-check gets a set-scoped route on the guarded grants path, and "zero requests" becomes the true cost* | (1) Ein Hinweis (`targetOwnerTwitchId` im Body; `ownerTwitchId`/`ownerLogin` als Query) ist nur eine Reihenfolge über `{Akteur} ∪ Grants` aus der Session; außerhalb ⇒ verworfen vor jedem Request; nie eine Erlaubnis; `EmoteSetEditability` entscheidet weiter. (2) `GET /api/seventv/me/emote-set-targets/{emoteSetId}`, 200 mit `status`, `ForeignEmoteLookup`; die Vorprüfung ist cache-first und lädt die Zielliste nie mehr. (3) Die Vorprüfung liest Grants geschützt — **Abweichung von Spec §32** („nur von `ImportTargetOwnershipService` aufgelöst" bleibt wörtlich wahr, der Aufruferkreis ist jetzt Bericht **und** Vorprüfung); eine gehaltene Störung macht die Vorprüfung `unavailable`. (4) Die Kostenformel aus 3.8 ersetzt „null Requests im Normalfall" in `ImportTargetOwnershipService.cs`, `SevenTvEndpoints.cs`, `GuardedSevenTvEditorGrantsService.cs` und Spec (§41). (5) F16 bleibt: die Vorprüfung nimmt den Owner-Lookup nicht. Genannt werden die Bestandseinträge 2026-09-25 „Who may report …" (F16), 2026-09-25 „The replace lock … falls" (Vorprüfung), 2026-09-28 #280. |
+| *The owner check reads the hinted owner's list beside the actor's own, the pre-check gets a set-scoped route on the guarded grants path, and "zero requests" becomes the true cost* | (1) Ein Hinweis (`targetOwnerTwitchId` im Body; `ownerTwitchId`/`ownerLogin` als Query) ist nur eine Reihenfolge über `{Akteur} ∪ Grants` aus der Session; außerhalb ⇒ verworfen vor jedem Request; nie eine Erlaubnis; `EmoteSetEditability` entscheidet weiter. **Die eigene Liste wird immer gelesen**; ein Grant-Hinweis wird parallel dazu gelesen und zählt erst, wenn die eigene Liste nicht `NoSevenTvAccount` sagt (ein veralteter Grant-Cache erweitert die Annahme nie). Die ID ist immer die des **Besitzer**-Kontos, nie des listenden. (2) `GET /api/seventv/me/emote-set-targets/{emoteSetId}`, 200 mit `status`, `ForeignEmoteLookup`; die Vorprüfung ist cache-first (Listen-Kopie, dann Set-Antwort 60 s) und lädt die Zielliste nie mehr. (3) Die Vorprüfung liest Grants geschützt — **Abweichung von Spec §32** („nur von `ImportTargetOwnershipService` aufgelöst" bleibt wörtlich wahr, der Aufruferkreis ist jetzt Bericht **und** Vorprüfung); eine gehaltene Störung macht die Vorprüfung `unavailable`. (4) Die Kostenformel aus 3.8 (warm 0; kalt Akteur 1; kalt Grant-Hinweis 2 in einem Round-Trip, +2 bei kalten Grants; sonst `1 + k` + 1 Lookup, +2) ersetzt „null Requests im Normalfall" in `ImportTargetOwnershipService.cs`, `SevenTvEndpoints.cs`, `GuardedSevenTvEditorGrantsService.cs` und Spec (§41). (5) F16 bleibt: die Vorprüfung nimmt den Owner-Lookup nicht. (6) Alte Protokolldateien liefern ihren Kanal-Login als Hinweis. Genannt werden die Bestandseinträge 2026-09-25 „Who may report …" (F16), 2026-09-25 „The replace lock … falls" (Vorprüfung), 2026-09-28 #280. |
 
 **Nachtrag an den Bestandseintrag 2026-09-28 #280** (`docs/DECISIONS.md:63-70`), als eigener
 Absatz „*Addendum 2026-09-xx (#216)*" am Ende des Eintrags, **nicht** als Umschreibung — im Commit
 von **T4** (dort ändert sich das Verhalten von `resolveEditableSet`): Das Known limit verengt sich
-auf den Fall **ohne gültigen Hinweis** — alte Dateien ohne `targetOwnerTwitchId`, ein Login-Hinweis
-auf einen inzwischen umbenannten Kanal, ein widerrufener Grant — und auf Budget-Konkurrenz, unter
-der auch ein Hinweis-Request die 5 s Slot-Wartezeit plus 10 s HTTP-Timeout ausschöpfen kann. Mit
-gültigem Hinweis und kaltem Cache kostet die Vorprüfung einen Listen-Request (+2 bei kalten
-Grants), warm keinen.
+auf den Fall **ohne gültigen Hinweis** — alte Dateien, deren Kanal-Login inzwischen umbenannt ist
+oder ein ungetracktes Transfer-Ziel nennt, ein Login-Hinweis auf einen umbenannten Kanal, ein
+widerrufener Grant — und auf Budget-Konkurrenz, unter der auch ein Hinweis-Request die 5 s
+Slot-Wartezeit plus 10 s HTTP-Timeout ausschöpfen kann. Mit gültigem Hinweis und kaltem Cache
+kostet die Vorprüfung einen Listen-Request (Akteur) bzw. zwei parallele in einem Round-Trip
+(Grant; +2 bei kalten Grants), warm keinen.
 
 **Entscheidung ein oder zwei Einträge:** ein Eintrag plus Nachtrag. Der Hinweis-Vertrag, die Route
 und der Grant-Weg sind eine zusammenhängende Entscheidung (ein Kern, zwei Betriebsarten); das
@@ -246,7 +257,7 @@ und der Grant-Weg sind eine zusammenhängende Entscheidung (ein Kern, zwei Betri
 ### 6.1 `tests/EmotePurge.Infrastructure.Tests/Unit/ImportTargetOwnershipServiceTests.cs` (T1)
 
 Der Kern des Issues („Done when"): **mit kalter Listen-Kopie und dem Besitzer als letztem von k
-Grants — mit Hinweis genau 1 Listen-Request, ohne Hinweis 1 + k.** Dafür muss die echte Kette
+Grants — mit Hinweis genau 2 Listen-Requests (eigene + Besitzer, parallel), ohne Hinweis 1 + k.** Dafür muss die echte Kette
 (`CreateRealChainAsync`, `:366-390`) die **v4-Listenabfrage** beantworten, was
 `CountingOwnerHandler` nicht kann. Vorgabe: `Fakes/SevenTvGqlRouteHandler` um eine Art `List`
 erweitern (Erkennung am Abfragetext der v4-Liste, `SevenTvApiClient.cs:82-83` — etwa an
@@ -257,17 +268,20 @@ den Request-Body sieht (Muster `StubHandler(Func<string, string>)`,
 mit leerem Listen-Cache statt zwei vorbefüllten.
 
 Fälle (jeder ein eigener Test, Namen frei):
-1. kalt, Besitzer = letzter von k = 5 Grants, Hinweis = Besitzer-ID ⇒ **1** Listen-Request, 0 Owner-Requests, `Owner` mit dessen Login/ID;
+1. kalt, Besitzer = letzter von k = 5 Grants, Hinweis = Besitzer-ID ⇒ **2** Listen-Requests (Akteur + Besitzer; die Handler-Zählung belegt, dass die Grant-Listen 1…k−1 nie gelesen wurden), 0 Owner-Requests, `Owner` mit dessen Login/ID; **Parallelität:** ein gated Handler (Muster `SevenTvGqlRouteHandler.Gate`) hält beide Antworten und belegt, dass beide Requests unterwegs sind, bevor eine Antwort kommt;
 2. dasselbe ohne Hinweis ⇒ **1 + k** Listen-Requests (Bestandsverhalten), 0 Owner-Requests;
 3. fremder Hinweis (weder Akteur noch Grant) ⇒ Requests **und** Ergebnis identisch mit Fall 2;
-4. Hinweis ⇒ Akteur, Set in eigener Liste ⇒ Grants nie gefragt (`IGuardedSevenTvEditorGrantsService`-Substitute `DidNotReceive`);
+3a. **Pflichtfall Codex-Befund 1:** Grant-Cache warm und positiv (Grant auf G), eigene Liste `NoSevenTvAccount`, gültiger Hinweis auf G, Set in G's Liste mit Besitzer G ⇒ **abgelehnt**, Ergebnis und Request-Zahl byte-gleich mit demselben Aufruf ohne Hinweis (Bericht: ein Owner-Lookup, `Forbidden`; Vorprüfung: `SetNotFound`, kein Lookup); die übrigen Grants nie gelesen;
+3b. eigene Liste `Unavailable`, gültiger Grant-Hinweis mit Fund ⇒ `Owner`; ohne Fund ⇒ `Unavailable`;
+4. Hinweis ⇒ Akteur, Set in eigener Liste ⇒ Grants nie gefragt (`IGuardedSevenTvEditorGrantsService`-Substitute `DidNotReceive`), 1 Listen-Request kalt;
 5. Hinweis-Liste antwortet 503 ⇒ Gang läuft weiter, Set bei Grant 3 gefunden ⇒ `Owner`; Hinweis-Liste 503 **und** nirgends gefunden ⇒ `Unavailable`;
 6. Set in Hinweis-Liste, Besitzer ein anderes geprüftes Konto ⇒ `Owner` des anderen, kein früher 403;
 7. Set in Hinweis-Liste unter fremdem Besitzer, sonst nirgends ⇒ `Forbidden` erst nach vollem Gang (Zählung = 1 + k);
 8. Breaker `emote-set-list` offen ⇒ `Unavailable` ohne Request (auch mit Hinweis);
 9. Login-Hinweis: passend (mit Groß-/Kleinschreibung) ⇒ wie Fall 1; unpassend ⇒ wie Fall 2; ID-Hinweis gewinnt über Login;
 10. Vorprüfungs-Betriebsart: Set in keiner Liste ⇒ `SetNotFound`, `LookUpEmoteSetOwnerAsync` nie aufgerufen; Set ohne Besitzer-ID ⇒ `Forbidden`; Ergebnis trägt `EmoteSetSummary` und Aktiv-Flag der Besitzer-Liste;
-11. Grants kalt + Hinweis ⇒ Grant: 2 Grant-Requests (`CountOf(Identity)`, `CountOf(EditorOf)`) + 1 Listen-Request, 3 Permits;
+11. Grants kalt + Hinweis ⇒ Grant: 2 Grant-Requests (`CountOf(Identity)`, `CountOf(EditorOf)`) + 2 Listen-Requests, 4 Permits;
+11a. Set gelistet unter Grant A, Besitzer Grant B, Hinweis B ⇒ 2 Listen (Akteur + B), `Owner` B mit B's Login/ID; die Vorprüfungs-Betriebsart liefert B's Konto im Ergebnis (nie A);
 12. alle 17 Bestandsfälle byte-gleich grün (kein Hinweis = heutiges Verhalten).
 
 ### 6.2 `tests/EmotePurge.Api.Tests` (T2, T3)
@@ -279,17 +293,17 @@ Fälle (jeder ein eigener Test, Namen frei):
 
 ### 6.3 Vitest (T4, T5, T6a, T6b)
 
-- `seven-tv-emote-set.service.spec.ts:339-496`: **umschreiben** — frisch nach `loadCachedEmoteSetTargets` ⇒ 0 Requests und Ergebnis wie heute (die vier Bestandsklassifikationen bleiben als lokale Fälle); kalt ⇒ `expectOne` auf `/api/seventv/me/emote-set-targets/<id>` mit `ownerTwitchId`/`ownerLogin`, Mapping der vier Status, `setName`/`ownerDisplayName`-Fallbacks, `twitchChannelId` im Ziel; Route-Fehler ⇒ Observable-Fehler (kein Verschlucken); Nr. 20: zweiter Aufruf innerhalb 60 s ohne Request, `unavailable` nie gecacht, Picker-`refresh` leert die Einträge.
+- `seven-tv-emote-set.service.spec.ts:339-496`: **umschreiben** — frisch nach `loadCachedEmoteSetTargets` ⇒ 0 Requests und Ergebnis wie heute (die vier Bestandsklassifikationen bleiben als lokale Fälle); kalt ⇒ `expectOne` auf `/api/seventv/me/emote-set-targets/<id>` mit `ownerTwitchId`/`ownerLogin`, Mapping der vier Status, `setName`/`ownerDisplayName`-Fallbacks, `ownerTwitchChannelId` im Ziel; **A-gelistet/B-besessen** auf beiden Pfaden: Cache-first ⇒ `ownerTwitchChannelId` = B's `twitchChannelId`, `twitchLogin` = A; Besitzer nicht in der Antwort ⇒ `null` (nie A); Route ⇒ `target.twitchChannelId` 1:1; Route-Fehler ⇒ Observable-Fehler (kein Verschlucken); Nr. 20: zweiter Aufruf innerhalb 60 s ohne Request, `unavailable` nie gecacht, Picker-`refresh` leert die Einträge.
 - `mass-delete-panel.spec.ts:3155-3300, ~3780`: die Blöcke, die die Listen-Route flushen, flushen die neue Route (oder wärmen erst die Liste, wo der Fall „warm" gemeint ist); neue Fälle: Login-Hinweis der Lösch-Vorprüfung; eingefrorene Besitzer-ID landet in `startDelete`; Restore aus dem Dock reicht `run.targetOwnerTwitchId`.
-- `file-import-step.spec.ts:388-420, 693, 741`: `toHaveBeenCalledWith(id, { twitchChannelId })` bzw. `null`-Hinweis bei alter Datei.
-- `import-flow.spec.ts`, `restore-flow.spec.ts`, `undo-flow.spec.ts`: Hinweis-Weitergabe an Vorprüfung und `start*`; Bestands-Timeout-Fälle grün.
+- `file-import-step.spec.ts:388-420, 693, 741`: `toHaveBeenCalledWith(id, { twitchChannelId, twitchLogin })`; alte Purge-Datei ⇒ `{ twitchChannelId: null, twitchLogin: <envelope.channelName> }`; alte Transfer-Datei mit ungetracktem Ziel ⇒ beides `null`.
+- `import-flow.spec.ts`, `restore-flow.spec.ts`, `undo-flow.spec.ts`, `import-trigger.spec.ts`: Hinweis-Weitergabe an Vorprüfung und `start*`; `import-trigger`-Wahl trägt `ownerTwitchChannelId: null` und liefert den Login-Hinweis; Bestands-Timeout-Fälle grün.
 - `seven-tv-import.service.spec.ts`, `seven-tv-delete.service.spec.ts`, `seven-tv-restore.service.spec.ts`, `seven-tv-undo.service.spec.ts`: Report-Bodies tragen `targetOwnerTwitchId` (auch bei Retry), `null` ohne Hinweis.
-- `purge-run-export.spec.ts`, `transfer-run-export.spec.ts`, `transfer-undo-export.spec.ts`: Round-trip des Felds; Datei ohne Feld ⇒ `ownerTwitchId: null` (v1/v2/v3 bzw. v1); Nicht-String ⇒ `null`; Versionskonstanten unverändert (Assertion auf den Wert).
-- `import-target-dialog.spec.ts`, `import-target-choices.spec.ts`: `twitchChannelId` in der Auswahl.
+- `purge-run-export.spec.ts`, `transfer-run-export.spec.ts`, `transfer-undo-export.spec.ts`: Round-trip des Felds; Datei ohne Feld ⇒ `ownerTwitchId: null` und `ownerLogin` aus `envelope.channelName` bzw. `meta.targetChannelName` (v1/v2/v3 bzw. v1); ungetracktes Transfer-Ziel ⇒ `ownerLogin: null`; Nicht-String ⇒ `null`; Versionskonstanten unverändert (Assertion auf den Wert).
+- `import-target-dialog.spec.ts`, `import-target-choices.spec.ts`: `ownerTwitchChannelId` je Set aus dem **Besitzer** aufgelöst (A-gelistet/B-besessen ⇒ B; unbekannter Besitzer ⇒ `null`), in der Auswahl durchgereicht.
 
 ### 6.4 Playwright (T4 Helfer, T7 Fälle)
 
-- `web/e2e/support/mocks.ts`: `mockEmoteSetTargets` registriert **zusätzlich** eine Route für `**/api/seventv/me/emote-set-targets/*`, die aus derselben `accounts`-Fixture antwortet (Set suchen; `kind ≠ NORMAL` ⇒ `notSelectable`; `editable` ⇒ `editable` mit `target` aus Konto + Set; sonst `unavailable`, wenn `sevenTvUnavailable`/`setsUnavailable`, sonst `notEditable`). Damit bleiben die 20 bestehenden Nutzungen grün, ohne dass ein Spec angefasst wird.
+- `web/e2e/support/mocks.ts`: `mockEmoteSetTargets` registriert **zusätzlich** eine Route für `**/api/seventv/me/emote-set-targets/*`, die aus derselben `accounts`-Fixture antwortet (Set suchen; `kind ≠ NORMAL` ⇒ `notSelectable`; `editable` ⇒ `editable` mit `target` aus dem **Besitzer**-Konto (`ownerSevenTvUserId` → Konto mit dieser `sevenTvUserId`) + Set; sonst `unavailable`, wenn `sevenTvUnavailable`/`setsUnavailable`, sonst `notEditable`). Damit bleiben die 20 bestehenden Nutzungen grün, ohne dass ein Spec angefasst wird.
 - `emote-import.e2e.spec.ts` (T7): (1) Lösch-Vorprüfung auf frischer Seite ⇒ genau ein Request auf die neue Route, keiner auf die Listen-Route, Query `ownerLogin=<kanal>`; (2) Picker geöffnet, dann Replace-Start binnen 60 s (`page.clock`) ⇒ **kein** Request auf die neue Route; (3) `sync-deleted`-Body eines Lösch-Laufs trägt `targetOwnerTwitchId` des Kontos aus der Fixture. `page.clock.install()` vor `goto`, `runFor`, nicht `fastForward` (CLAUDE.md). Specs importieren `test`/`expect` aus `e2e/support/test.ts`.
 
 ---
@@ -314,8 +328,8 @@ Betreiber.
 ### T1 — Backend: Hinweis-Vertrag, gemeinsamer Kern, Vorprüfungs-Betriebsart, Unit-Tests, DECISIONS, Spec-Nachtrag
 **Art:** Backend (Core + Infrastructure + Tests + Doku).
 **Dateien:** `Core/Services/IImportTargetOwnershipService.cs` (Typ `EmoteSetOwnerHint`, erweiterte `CheckAsync`, zweite Methode, additives Ergebnis), `Infrastructure/Services/ImportTargetOwnershipService.cs`, `Core/Services/IGuardedSevenTvEditorGrantsService.cs` + `Infrastructure/Services/GuardedSevenTvEditorGrantsService.cs` (nur Doku), `tests/…/Fakes/SevenTvGqlRouteHandler.cs`, `tests/…/Unit/ImportTargetOwnershipServiceTests.cs`, `docs/DECISIONS.md` (neuer Eintrag), `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (Nachtrag §41, deutsch).
-**Vertrag:** 3.1, 3.2, 3.8. Die bestehende Signatur bleibt für Aufrufer gültig (optionaler Parameter), damit Api und Api.Tests ohne Änderung bauen.
-**Grenzfälle:** alle Zeilen aus Abschnitt 4 bis „Set in keiner Liste".
+**Vertrag:** 3.1 (insbesondere Nr. 3/4: eigene Liste immer, Grant-Hinweis parallel, `NoSevenTvAccount`-Sperre), 3.2 (Nr. 9: Hinweis hinter dem `CancellationToken` oder als Overload — die bestehende Signatur bleibt, damit Api und Api.Tests ohne Änderung bauen), 3.8.
+**Grenzfälle:** alle Zeilen aus Abschnitt 4 bis „Set in keiner Liste", inklusive des veralteten Grant-Caches.
 **Tests:** 6.1 vollständig.
 **Fertig:** Backend-Gates grün; DECISIONS-Eintrag im selben Commit wie die Vertragsänderung; Spec-Nachtrag als eigener `docs:`-Commit.
 **Abhängigkeiten:** keine.
@@ -339,9 +353,9 @@ Betreiber.
 
 ### T4 — Frontend: `resolveEditableSet` cache-first + Route, Modelle, E2E-Helfer, #280-Nachtrag
 **Art:** Frontend (core + e2e/support).
-**Dateien:** `core/seven-tv/seven-tv-emote-set.model.ts` (`OwnerHint`, `EditableSetTarget.twitchChannelId`, `SyncInSetBody.targetOwnerTwitchId`), `core/seven-tv/seven-tv-emote-set.service.ts` (`resolveEditableSet`, Route-Aufruf, Set-Cache Nr. 20, `SyncImportedToSetBody.targetOwnerTwitchId`) + `.spec.ts`, `web/e2e/support/mocks.ts`, `docs/DECISIONS.md` (#280-Nachtrag, `Betrifft:`).
+**Dateien:** `core/seven-tv/seven-tv-emote-set.model.ts` (`OwnerHint`, `EditableSetTarget.ownerTwitchChannelId: string | null`, `SyncInSetBody.targetOwnerTwitchId`), `core/seven-tv/seven-tv-emote-set.service.ts` (`resolveEditableSet`, Besitzer-Auflösung in `toEditableSetTarget`, Route-Aufruf, Set-Cache Nr. 20, `SyncImportedToSetBody.targetOwnerTwitchId`) + `.spec.ts`, `web/e2e/support/mocks.ts`, `docs/DECISIONS.md` (#280-Nachtrag, `Betrifft:`).
 **Vertrag:** 3.5; die Body-Felder sind hier optional (`?:`), damit die Aufrufer erst in T6 nachziehen — ab T6 Pflicht.
-**Hinweis für den Implementer:** `EditableSetTarget.twitchChannelId` als Pflichtfeld bricht die Typisierung von `ResolvedRestoreTarget`-Literalen in `restore-flow.ts`, `mass-delete-panel.ts`, `file-import-step.ts` und deren Specs — diese Stellen bekommen das Feld in **diesem** Task (mechanisch aus `resolution.target`), damit der Build grün bleibt; die *Nutzung* als Hinweis ist T6.
+**Hinweis für den Implementer:** `EditableSetTarget.ownerTwitchChannelId` als Pflichtfeld (`string | null`) bricht die Typisierung von `ResolvedRestoreTarget`-Literalen in `restore-flow.ts`, `mass-delete-panel.ts`, `file-import-step.ts` und deren Specs — diese Stellen bekommen das Feld in **diesem** Task (mechanisch aus `resolution.target`), damit der Build grün bleibt; die *Nutzung* als Hinweis ist T6. Der E2E-Helfer löst den Besitzer nach derselben Regel auf (Set-`ownerSevenTvUserId` → Konto der Fixture).
 **Tests:** 6.3, erster Spiegelstrich; 6.4, erster Spiegelstrich; E2E-Lauf (nur ohne Api auf `:5151`).
 **Fertig:** Frontend-Gates grün, E2E grün.
 **Abhängigkeiten:** T3 (die Route muss existieren, damit der Live-Test später trägt; für die Unit-Suite reicht der Vertrag).
@@ -349,22 +363,22 @@ Betreiber.
 ### T5 — Frontend: Dateiformate tragen den Besitzer
 **Art:** Frontend (shared/export).
 **Dateien:** `shared/export/purge-run-export.ts`, `transfer-run-export.ts`, `transfer-undo-export.ts` (+ die drei Specs); Builder bekommen das Eingabefeld als **Pflichtfeld** `targetOwnerTwitchId: string | null`, die vier Aufrufer (`mass-delete-panel.ts`, `import-confirm-dialog.ts`, `import-progress-section.ts`, Undo) übergeben in diesem Task `null` — T6 füllt sie.
-**Vertrag:** 3.7; `RestoreFileTarget.ownerTwitchId`, Undo-`target.ownerTwitchId`.
+**Vertrag:** 3.7; `RestoreFileTarget { emoteSetId, ownerTwitchId, ownerLogin }`, Undo-`target` dito — die Parser liefern den Login-Fallback aus dem Envelope schon hier, `file-import-step.ts` **nutzt** ihn erst in T6b (bis dahin ignoriert er die neuen Felder, Build und Specs bleiben grün).
 **Tests:** 6.3, sechster Spiegelstrich.
 **Fertig:** Frontend-Gates grün; Versionskonstanten unverändert.
 **Abhängigkeiten:** T4.
 
 ### T6a — Frontend: Import-Pfad — Picker-Wahl, Replace-Vorprüfung, `ImportRunInfo`, beide Berichte, Transfer-Dateien
 **Art:** Frontend (shared + core).
-**Dateien:** `shared/seven-tv/import-target-dialog.ts` (`ImportTargetChoice.twitchChannelId`, `selectSet`), `import-target-choices.ts` (nur, falls der Gruppe ein Feld fehlt — sie hat es), `import-flow.ts` (Hinweis an `resolveEditableSet`, an `startImport`, an `ImportConfirmDialogData` für die `planned`-Datei), `import-confirm-dialog.ts`, `import-progress-section.ts`, `core/seven-tv/seven-tv-import.service.ts` (`ImportRunInfo.targetOwnerTwitchId`, `startImport`-Ziel, `reportImported`, Removal-Report), alle zugehörigen Specs, `docs/DECISIONS.md` (`Betrifft:`).
-**Vertrag:** 3.6 Zeilen 1 und Undo-unabhängig; 3.7 für `transfer-run`.
-**Tests:** 6.3 (import-flow, import service, dialog, choices).
+**Dateien:** `shared/seven-tv/import-target-choices.ts` (`ImportTargetSetChoice.ownerTwitchChannelId: string | null`, je Set aus `ownerSevenTvUserId` gegen die `sevenTvUserId` **aller** Konten der Antwort aufgelöst — der Builder hat die ganze Antwort, `toAccountGroup` allein nicht), `import-target-dialog.ts` (`ImportTargetChoice.ownerTwitchChannelId`, `selectSet` aus dem Set, nicht aus der Gruppe), **`import-trigger.ts:50-67`** (`toImportTarget` setzt `ownerTwitchChannelId: null` explizit — Codex-Befund 4), `import-flow.ts` (Hinweis an `resolveEditableSet`: ID der Wahl, sonst Login `choice.channelName`/`channelName`; an `startImport`; an `ImportConfirmDialogData` für die `planned`-Datei), `import-confirm-dialog.ts`, `import-progress-section.ts`, `core/seven-tv/seven-tv-import.service.ts` (`ImportRunInfo.targetOwnerTwitchId`, `startImport`-Ziel, `reportImported`, Removal-Report), alle zugehörigen Specs, `docs/DECISIONS.md` (`Betrifft:`).
+**Vertrag:** 3.6 Zeile 1; 3.7 für `transfer-run`.
+**Tests:** 6.3 (import-flow, import service, dialog, choices, import-trigger).
 **Fertig:** Frontend-Gates grün.
 **Abhängigkeiten:** T5.
 
 ### T6b — Frontend: Delete/Restore/Undo — Login-Hinweis der Lösch-Vorprüfung, eingefrorene Besitzer-ID, Run-Records, Berichte, Purge-/Undo-Dateien
 **Art:** Frontend (shared + core).
-**Dateien:** `shared/seven-tv/mass-delete-panel.ts` (Nr. 3.6 Zeilen 3–4, `openConfirmDialogAfterCheck` reicht die ID durch, `startDelete`-Aufruf, Purge-Protokoll), `restore-flow.ts` (`ResolvedRestoreTarget`, `RestoreStartTarget`), `undo-flow.ts` (`UndoRunTarget`), `file-import-step.ts` (Hinweis aus `parsed.target`), `core/seven-tv/seven-tv-delete.service.ts` (`DeleteRunInfo`, `startDelete`-Signatur, Body), `seven-tv-restore.service.ts`, `seven-tv-undo.service.ts` (Records, Bodies, Undo-Protokoll), alle zugehörigen Specs, `docs/DECISIONS.md` (`Betrifft:`).
+**Dateien:** `shared/seven-tv/mass-delete-panel.ts` (Nr. 3.6 Zeilen 3–4, `openConfirmDialogAfterCheck` reicht die ID durch, `startDelete`-Aufruf, Purge-Protokoll), `restore-flow.ts` (`ResolvedRestoreTarget`, `RestoreStartTarget`), `undo-flow.ts` (`UndoRunTarget`), `file-import-step.ts` (Hinweis aus `parsed.target`: ID, sonst Login-Fallback aus dem Envelope — Betreiber 2026-09-28), `core/seven-tv/seven-tv-delete.service.ts` (`DeleteRunInfo`, `startDelete`-Signatur, Body), `seven-tv-restore.service.ts`, `seven-tv-undo.service.ts` (Records, Bodies, Undo-Protokoll), alle zugehörigen Specs, `docs/DECISIONS.md` (`Betrifft:`).
 **Vertrag:** 3.6 Zeilen 2–5; 3.7 für `purge-run` und `transfer-undo`.
 **Tests:** 6.3 (mass-delete-panel, file-import-step, restore-/undo-flow, die drei Run-Services).
 **Fertig:** Frontend-Gates grün.
@@ -394,10 +408,10 @@ Läuft im Orchestrator mit dem Betreiber, nicht als Implementer-Subagent.
 
 | Handgriff | Erwartung vorher | Erwartung nachher |
 |---|---|---|
-| Kalte Replace-Vorprüfung über den Picker (Picker öffnen, > 61 s warten, Replace bestätigen) | Listen-Route: 1 + k Listen-Requests | neue Route mit `ownerTwitchId`: **1** Listen-Request (Grants warm) |
-| Kalter `sync-imported` an ungetracktes Set mit k Grants (Import in `olaf_olaf_son`, Bericht > 61 s nach Picker) | 1 + k Listen (#216: 6) | **1** Liste, Audit-Zeile identisch (Besitzer-Login `olaf_olaf_son`) |
-| Datei-Tür ohne Hinweis (Restore aus einer **alten** Purge-Datei ohne `targetOwnerTwitchId`, kalte Kopie) | 1 + k | **1 + k** (Fallback belegt) — und dieselbe Datei nach einem neuen Lauf gespeichert: 1 |
-| Kalte Lösch-Vorprüfung auf der Nutzungsseite (Login-Hinweis) | 1 + k | 1 (Login → Grant-ID aufgelöst; bei `sensitron` selbst: Akteur ⇒ 1) |
+| Kalte Replace-Vorprüfung über den Picker (Picker öffnen, > 61 s warten, Replace bestätigen; Ziel `olaf_olaf_son`) | Listen-Route: 1 + k Listen-Requests, seriell | neue Route mit `ownerTwitchId`: **2** Listen-Requests (eigene + Besitzer), zeitlich überlappend (Grants warm) |
+| Kalter `sync-imported` an ungetracktes Set mit k Grants (Import in `olaf_olaf_son`, Bericht > 61 s nach Picker) | 1 + k Listen (#216: 6) | **2** Listen, Audit-Zeile identisch (Besitzer-Login `olaf_olaf_son`) |
+| Datei-Tür: Restore aus einer **alten** Purge-Datei ohne `targetOwnerTwitchId` (kalte Kopie) | 1 + k | `envelope.channelName` als Login-Hinweis: `sensitron` ⇒ **1**, `olaf_olaf_son` ⇒ **2**; Datei mit umbenanntem/fremdem Kanal ⇒ **1 + k** (Fallback belegt); dieselbe Datei nach einem neuen Lauf gespeichert ⇒ ID-Hinweis, gleiche Zahl |
+| Kalte Lösch-Vorprüfung auf der Nutzungsseite (Login-Hinweis) | 1 + k | `sensitron` (Akteur) ⇒ 1; ein getrackter Grant-Kanal ⇒ 2 |
 
 Zusätzlich prüfen: fremder `ownerTwitchId` per Hand (curl mit Cookie) ⇒ Antwort und Zählung wie
 ohne Hinweis; die Set-Warnung/Vorschau bleiben unberührt; das Set nach dem Test exakt
@@ -407,7 +421,7 @@ wiederherstellen.
 
 ## 9. Commit-Aufteilung (Conventional Commits, englisch, keine `#`-Referenzen)
 
-1. `feat(seven-tv): read the hinted owner's set list first in the ownership check` — T1 Kern + Tests + DECISIONS-Eintrag (ein Commit, Regel 3).
+1. `feat(seven-tv): read the hinted owner's set list beside the actor's own in the ownership check` — T1 Kern + Tests + DECISIONS-Eintrag (ein Commit, Regel 3).
 2. `docs(spec): correct the zero-request claim of the owner check (addendum 41)` — T1.
 3. `feat(api): accept an owner hint on the set-centric reports` — T2.
 4. `feat(api): add the set-scoped editable pre-check route` — T3.
@@ -420,23 +434,33 @@ wiederherstellen.
 
 ---
 
-## 10. Offene Punkte (nicht aus dem Code entscheidbar)
+## 10. Offene Punkte
 
-1. **Login-Fallback aus dem Envelope für alte Dateien.** Eine `purge-run`-Datei trägt `channelName` (die Seite, deren Konto alle ihre Sets besitzt), eine `transfer-run`/`transfer-undo`-Datei `meta.targetChannelName` (null bei ungetracktem Ziel). Beides taugt als `ownerLogin` für eine Datei ohne `targetOwnerTwitchId`. Der Auftrag sagt „alte Dateien ⇒ heutiger Gang"; der Plan folgt dem. Will der Betreiber den Fallback, ist er eine Zeile in `file-import-step.ts` (T6b) plus ein Spec-Fall.
-2. **Antwort-Cache je Set (Festlegung 20)** ist eine Erweiterung gegenüber dem Auftrag. Empfehlung: ja (spart ein Permit je Delete→Restore-Folge, gleiche TTL und Semantik wie E19). Nein ⇒ Zeile streichen, sonst nichts.
-3. **Route nennt das Besitzer-Konto, die Liste das listende Konto** bei „unter A gelistet, von B besessen" (Festlegung 10). Empfehlung: Besitzer (Papierspur). Bestätigung erbeten.
-4. **Kein Login-Feld auf den Berichten** (Festlegung 12) — der Auftrag nannte den Login-Fallback auch für „delete, activeSet"; im Code liefert jede Vorprüfung die ID, sodass die Berichte ihn nicht brauchen. Falls doch gewünscht (z. B. für einen Bericht aus einem Tab, der die Vorprüfung vor diesem Deploy gefahren hat): `TargetOwnerLogin` additiv, T2/T6 je eine Zeile.
-5. **Name der zweiten Methode** und ob `IImportTargetOwnershipService` umbenannt wird (es dient jetzt auch der Vorprüfung). Empfehlung: nicht umbenennen (Churn in Api, Tests, DECISIONS-`Betrifft`); Doku nachziehen.
+Entschieden durch den Betreiber am 2026-09-28 (Punkte 1–5), eingearbeitet in 3.1–3.7:
+
+1. ~~Login-Fallback aus dem Envelope für alte Dateien~~ — **ja** (3.7, T5 Parser, T6b Nutzung, Spec-Fälle in 6.3).
+2. ~~Antwort-Cache je Set, 60 s~~ — **ja** (Festlegung 20).
+3. ~~Besitzer- vs. listendes Konto~~ — **Besitzer**, überall (Codex-Befund 2, Festlegungen 10 und 21).
+4. ~~Login-Feld auf den Berichten~~ — **nein**, bestätigt (Festlegung 12).
+5. ~~Rename von `IImportTargetOwnershipService`~~ — **nein**, bestätigt (Festlegung 9); Doku nachziehen.
+
+Bleiben als Annahme bzw. Messpunkt:
+
 6. **`ownerLogin`-Vergleich über `ChannelName.Normalize`** setzt voraus, dass Twitch-Logins dieselbe Normalform haben wie Kanalnamen (trim + lowercase) — im Code identisch (Regel 9), aber als Annahme benannt.
 7. **Messung:** ob `providers[]` in `/api/admin/rate-limits` die Grants-/Owner-Requests unter `seventv-rest` zählt oder ob `LookUpEditorGrantsAsync`/`LookUpEmoteSetOwnerAsync` die Telemetrie unterdrücken — im Live-Test prüfen; die HttpClient-Log-Zeilen sind unabhängig davon vollständig.
+
+Neu nach der Überarbeitung:
+
+8. **Zwei Nebenläufigkeits-Slots für einen Aufruf.** Der parallele Grant-Hinweis belegt bei kaltem Cache kurz beide Slots von `ForeignEmoteSetProviderBudget` (`MaxConcurrent`, `:94`); ein gleichzeitiger Picker oder eine Vorschau wartet dann bis zu einen Round-Trip länger auf einen Slot (5-s-Wartezeit unverändert). Bei `MaxConcurrent = 2` ist das der einzige Fall, in dem ein einzelner Aufruf das Budget ganz belegt. Wenn das nicht gewollt ist: die Hinweis-Liste erst nach der eigenen lesen (seriell, zwei Round-Trips, Sperre nach Nr. 4 bleibt) — im Live-Test die Zahl von `MaxConcurrent` gegenprüfen und entscheiden.
 
 ---
 
 ## 11. Abweichungen vom Auftrag, im Code gefunden
 
 - „Konto zugleich eigen und gegrantet — schon übersprungen bei ~224": die Stelle ist `ImportTargetOwnershipService.cs:124-127` (Zeile 224 ist der `ApplyBreakerFeedback`-Switch).
-- „Hinweis ⇒ Akteur: eigene Liste zuerst, keine Grants nötig bei Fund" ist **heute schon** das Verhalten (`:59-63`); die Umordnung betrifft nur Grant-Hinweise.
-- **Der Client kennt die Twitch-ID eines getrackten Kanals nicht** (`ChannelSummary` ohne ID); Delete/Restore/Undo kommen an sie nur über die Antwort der Vorprüfung — deshalb ist `EditableSetTarget.twitchChannelId` tragend, nicht nur „verify the model".
+- „Hinweis ⇒ Akteur: eigene Liste zuerst, keine Grants nötig bei Fund" ist **heute schon** das Verhalten (`:59-63`); die Umordnung betrifft nur Grant-Hinweise — und dort nach Befund 1 nicht mehr als Voranstellung, sondern als paralleles Lesen neben der eigenen Liste.
+- `import-trigger.ts:50-67` fabriziert eine `kind: 'chosen'`-Wahl mit Platzhaltern (`ownerDisplayName`/`twitchLogin` = Kanal-Login) — ein Produzent von `ImportTargetChoice`, den der Auftrag nicht nannte (Befund 4).
+- **Der Client kennt die Twitch-ID eines getrackten Kanals nicht** (`ChannelSummary` ohne ID); Delete/Restore/Undo kommen an sie nur über die Antwort der Vorprüfung — deshalb ist `EditableSetTarget.ownerTwitchChannelId` tragend, nicht nur „verify the model".
 - Daraus folgt: **die Berichte brauchen keinen Login-Hinweis** (Offener Punkt 4).
 - Die Vitest-Fälle zu `resolveEditableSet` (`seven-tv-emote-set.service.spec.ts:339-496`) und der Block `mass-delete-panel.spec.ts:3155-3300`, der den echten Service gegen die Listen-Route fährt, müssen **umgeschrieben** werden — im Auftrag nicht genannt.
 - Die E2E-Suite mockt nur die Listen-Route (`mocks.ts:943-973`, 20 Nutzungen); eine kalte Vorprüfung auf frischer Seite würde die neue Route ungemockt treffen und über den Dev-Proxy scheitern ⇒ Helfer-Erweiterung ist Pflicht (T4), nicht Kür.
@@ -444,3 +468,23 @@ wiederherstellen.
 - Die Spec-Stelle `:2991-2992` betrifft den **Grant**-Cache (10 min) und ist für sich richtig; korrigiert wird die Verallgemeinerung, nicht der Satz.
 - Es gibt zwei 20-s-Konstanten: `LIVE_READ_TIMEOUT_MS` (`recovery-file-gate.ts:6`, Import/Undo/Restore-Flow) und `LIVE_ALIAS_READ_TIMEOUT_MS` (`mass-delete-panel.ts:121`, Delete-Panel); beide bleiben unberührt.
 - `Api.Tests` substituiert `IGuardedSevenTvEditorGrantsService`, `ISevenTvEmoteSetListService` und `ISevenTvApiClient`, **nicht** `IImportTargetOwnershipService` (`ApiFactory.cs:107-146`) — die Endpoint-Tests fahren den echten Kern; die Request-Zählung gehört deshalb in `Infrastructure.Tests`, nicht in `Api.Tests`.
+
+---
+
+## 12. Review-Nachtrag 2026-09-28 (Codex Sol, adversarial)
+
+Vier Befunde, alle vom Betreiber angenommen und oben eingearbeitet; die ursprünglichen Festlegungen
+sind an Ort und Stelle ersetzt, nicht als Streichung stehen gelassen.
+
+| # | Schwere | Befund | Aufgenommen in |
+|---|---|---|---|
+| 1 | high | Ein Grant-Hinweis vor der eigenen Liste hätte den `NoSevenTvAccount`-Schutz (`ImportTargetOwnershipService.cs:59-72`) umgangen: der Grant-Cache (10 min) kann die 7TV-Verbindung des Akteurs überleben, ein veralteter positiver Grant hätte die Annahme erweitert. | Festlegungen 3 und 4 (eigene Liste **immer**, Grant-Hinweis **parallel**, Treffer zählt erst nach Ausschluss von `NoSevenTvAccount`, unlesbare eigene Liste wie heute); Kostenformel 3.8 (kalt Grant-Hinweis **2** in einem Round-Trip); DECISIONS-Entwurf und #280-Nachtrag (Abschnitt 5); Testfälle 6.1 Nr. 1, 3a, 3b, 4, 11; Live-Erwartungen (Abschnitt 8); Grenzfälle „veralteter Grant-Cache", „eigene Liste unlesbar". Offener Punkt 8 (zwei Slots). |
+| 2 | medium | `twitchChannelId`/`targetOwnerTwitchId` müssen immer das **Besitzer**-Konto sein (über die 7TV-ID des Set-Besitzers aufgelöst), nie das listende; unbekannter Besitzer ⇒ kein Hinweis, kein Platzhalter. | Festlegung 10 (Route), 21 (`ownerTwitchChannelId: string \| null` im Cache-first-Pfad), 3.6 (Picker-Auswahl je Set, Runs, Dateien), Grenzfall „A gelistet / B besessen" auf beiden Pfaden, Tests 6.3 (Service-Spec, Choices-Spec). Erledigt damit den früheren Offenen Punkt 3. |
+| 3 | medium | Der optionale Hinweis darf nicht vor dem `CancellationToken` stehen — `SevenTvEndpoints.cs:251, 527` rufen positional; T1 muss allein bauen. | Festlegung 9: bestehende Signatur bleibt als Overload, Hinweis hinter `ct` oder eigener Overload; T1-Vertragszeile. |
+| 4 | medium | `import-trigger.ts:50-67` fabriziert eine `kind: 'chosen'`-Wahl nur aus dem Kanal-Login — ein fehlender Produzent in T6a. | 3.6 Zeile 1 (`ownerTwitchChannelId: null` explizit, Login-Hinweis `channelName`), T6a-Dateiliste, Grenzfall, Tests 6.3 (`import-trigger.spec.ts`). |
+
+**Reihenfolge nach der Überarbeitung, geprüft:** T1 baut allein (Overload, Fake-Erweiterung im
+selben Task). T2/T3 nutzen den neuen Overload. T4 macht `ownerTwitchChannelId` nullable und trägt die
+mechanischen Literal-Ergänzungen mit, T5 liefert die Parser-Felder ohne Nutzer, T6a/T6b nutzen sie;
+T6a und T6b bleiben disjunkt (`import-trigger.ts` liegt bei T6a). Kein Task hinterlässt einen
+Aufrufer, der ein Pflichtfeld nicht liefern kann.
