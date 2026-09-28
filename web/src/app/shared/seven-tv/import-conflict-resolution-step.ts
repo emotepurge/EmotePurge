@@ -3,6 +3,7 @@ import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrollin
 import {
   Component,
   ElementRef,
+  afterEveryRender,
   afterNextRender,
   computed,
   effect,
@@ -46,6 +47,14 @@ export interface ConflictStepRow {
   /** The target entry is no longer in the set, as the last live read saw it. */
   targetGone: boolean;
   options: ResolutionActionOption[];
+}
+
+/** A row focus the step still owes because the row was not rendered when focus was asked for it —
+ *  see `ImportConflictResolutionStep.focusRow`. `handoff` marks the initial hand-off on open, the
+ *  only focus that does not count as the reader settling on a row. */
+interface PendingFocus {
+  index: number;
+  handoff: boolean;
 }
 
 /** One sentence of the apply button's lock reason: a rule and the source names it involves. */
@@ -303,6 +312,7 @@ export function violationMessages(
           : 'import.resolve.listLabelMismatches'
         ) | transloco
       "
+      (focusin)="onContainerFocusIn()"
       (focusout)="onContainerFocusOut($event)"
     >
       <!-- Column headers for the wide layout only — the stacked layout captions each cell instead
@@ -614,12 +624,16 @@ export class ImportConflictResolutionStep {
    *  events — same "pointerKey ?? focusKey" idea as `foreign-emote-grid.ts` §7.3. */
   private readonly pointerKey = signal<string | null>(null);
   private readonly focusedKey = signal<string | null>(null);
-  /** True for exactly the one `focusin` the constructor's own initial focus handoff produces —
-   *  set right before that call, consumed the moment it lands. Without it, opening the step would
-   *  count as the user having settled on row 0 to compare and start it animating before the reader
-   *  has done anything; a later Home/End/arrow-key move (a real, deliberate row change) is not
-   *  flagged and counts normally. */
-  private skipNextFocusedKey = false;
+  /** True only while the initial focus hand-off's own `focus()` call runs — `focusin` fires
+   *  synchronously inside it, so the flag is set right before that one call and cleared right after
+   *  it, whether or not focus actually moved; it never outlives the call. Without it, opening the
+   *  step would count as the user having settled on row 0 to compare and start it animating before
+   *  the reader has done anything; a Home/End/arrow-key move (a real, deliberate row change) is
+   *  never a hand-off and counts normally. */
+  private handingOffFocus = false;
+  /** The one row focus still owed — at most one: every newer target (another key, the user's own
+   *  focus anywhere in the step) replaces it. See {@link focusRow}. */
+  private pendingFocus: PendingFocus | null = null;
   /** The one row that may animate, pointer first — docs/UI-Designsprache.md §113 earns animation by
    *  dwelling, one emote at a time; here, one ROW at a time, both its cells together, because the
    *  row is a comparison (§7.2). */
@@ -729,12 +743,16 @@ export class ImportConflictResolutionStep {
     }
 
     // The step replaces the first step's content, whose button had focus — hand focus to the
-    // table. That handoff must not itself count as the user settling on row 0 to compare — see
-    // `skipNextFocusedKey`.
-    afterNextRender(() => {
-      this.skipNextFocusedKey = true;
-      this.focusRow(0);
-    });
+    // table. Row 0 is usually not rendered yet (the viewport renders its first range a pass later),
+    // so this mostly just registers the hand-off as the pending target. It must not itself count as
+    // the user settling on row 0 to compare — see `handingOffFocus`.
+    afterNextRender(() => this.focusRow(0, true));
+
+    // Lands a pending focus target once its row is in the DOM. Rows only ever reach the DOM through
+    // a render pass, and this runs after every one, so the target lands in the very pass that
+    // renders its row — no frame counting, no timeout. The hook dies with the component, which is
+    // what drops a target still owed when the step is destroyed.
+    afterEveryRender(() => this.landPendingFocus());
   }
 
   protected trackRow(_index: number, row: ConflictStepRow): string {
@@ -845,11 +863,17 @@ export class ImportConflictResolutionStep {
 
   protected onRowFocusIn(row: ConflictStepRow, index: number): void {
     this.activeIndex.set(index);
-    if (this.skipNextFocusedKey) {
-      this.skipNextFocusedKey = false;
+    if (this.handingOffFocus) {
       return;
     }
     this.focusedKey.set(row.key);
+  }
+
+  /** Any focus arriving inside the step is the newest focus target there is — the user's own, or
+   *  one this step just landed — so a target still waiting for its row is dropped, never landed
+   *  on top of it. */
+  protected onContainerFocusIn(): void {
+    this.pendingFocus = null;
   }
 
   /** Ends the list's own focus playback once focus actually leaves it — moving between two
@@ -897,24 +921,65 @@ export class ImportConflictResolutionStep {
   }
 
   /**
-   * Moves focus onto a row the viewport may not have rendered. A rendered row is focused directly
-   * (the browser scrolls it into view); one past the buffer is scrolled to first and focused once
-   * the viewport has rendered it — same approach as the usage atlas's `focusCell`.
+   * Moves focus onto a row the viewport may not have rendered, by making it the one pending focus
+   * target (replacing any older one). A rendered row is focused at once (the browser scrolls it into
+   * view); one past the buffer is scrolled to and focused once a render pass has put it in the DOM
+   * (the `afterEveryRender` hook in the constructor) — however many passes that takes, so the tab
+   * stop (`activeIndex`) and DOM focus cannot drift apart. `handoff` marks the initial hand-off on
+   * open. An empty list focuses nothing.
    */
-  private focusRow(index: number): void {
+  private focusRow(index: number, handoff = false): void {
     if (index < 0 || index >= this.rows().length) {
       return;
     }
     this.activeIndex.set(index);
-    const find = () =>
-      this.host.nativeElement.querySelector<HTMLElement>(`[data-resolve-index="${index}"]`);
-    const rendered = find();
-    if (rendered) {
-      rendered.focus();
+    this.pendingFocus = {
+      index,
+      handoff,
+    };
+    this.landPendingFocus();
+    if (this.pendingFocus !== null) {
+      this.viewport()?.scrollToIndex(index);
+    }
+  }
+
+  /** Focuses the pending target's row if it is rendered; otherwise the target keeps waiting. Drops
+   *  it instead once focus has been moved somewhere outside the step — never steals focus back. */
+  private landPendingFocus(): void {
+    const target = this.pendingFocus;
+    if (target === null) {
       return;
     }
-    this.viewport()?.scrollToIndex(index);
-    requestAnimationFrame(() => find()?.focus());
+    if (target.index >= this.rows().length || !this.mayMoveFocus()) {
+      this.pendingFocus = null;
+      return;
+    }
+    const row = this.host.nativeElement.querySelector<HTMLElement>(
+      `[data-resolve-index="${target.index}"]`,
+    );
+    if (!row) {
+      return;
+    }
+    this.pendingFocus = null;
+    this.handingOffFocus = target.handoff;
+    try {
+      row.focus();
+    } finally {
+      this.handingOffFocus = false;
+    }
+  }
+
+  /** Whether the step may still move focus: focus is nowhere, on an element that encloses the
+   *  step, or already inside it. "Encloses" covers `body` (the first step's focused button was
+   *  removed, or the viewport recycled the focused row away) and the dialog's own `tabindex="-1"`
+   *  container: on macOS Safari and Firefox (and iOS Safari on tap) a click does not focus the
+   *  button it hits but its nearest focusable ancestor, so opening this step by mouse leaves focus
+   *  on that container. Anywhere else — an unrelated element outside the step — the user put it
+   *  there, and the step leaves it alone. */
+  private mayMoveFocus(): boolean {
+    const host = this.host.nativeElement;
+    const active = host.ownerDocument.activeElement;
+    return active === null || active.contains(host) || host.contains(active);
   }
 
   /** Whether the row for this key is among the rows the viewport renders — see `renderedRange`. */

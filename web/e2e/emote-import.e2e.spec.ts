@@ -1,6 +1,15 @@
 import { readFileSync } from 'node:fs';
 
-import { Download, Locator, Page, Request, expect, test } from '@playwright/test';
+import {
+  CDN_URL_PATTERN,
+  Download,
+  Locator,
+  Page,
+  Request,
+  expect,
+  fulfillCdnStub,
+  test,
+} from './support/test';
 
 import {
   AUTH_USER,
@@ -1547,11 +1556,6 @@ test.describe('import dialog: shell contract', () => {
  * and "a still triggers nothing" as no further request for that id.
  */
 test.describe('import dialog: animated emotes in the grid', () => {
-  const PNG_1X1 = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-    'base64',
-  );
-
   // Every other emote animated, and enough rows that scrolling recycles row views well beyond the
   // viewport's buffer — the situation a per-cell animated sprite would have fired requests in.
   const FOREIGN_EMOTES = Array.from({ length: 400 }, (_, index) => {
@@ -1570,9 +1574,10 @@ test.describe('import dialog: animated emotes in the grid', () => {
 
   async function openGrid(page: Page) {
     const cdnRequests: string[] = [];
-    await page.route('https://cdn.7tv.app/**', (route) => {
+    // A page route, so it takes precedence over the suite-wide context stub; it answers the same way.
+    await page.route(CDN_URL_PATTERN, (route) => {
       cdnRequests.push(route.request().url());
-      return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1X1 });
+      return fulfillCdnStub(route);
     });
 
     await mockAuthMe(page, AUTH_USER);
@@ -1610,17 +1615,22 @@ test.describe('import dialog: animated emotes in the grid', () => {
     await page.locator('main header button').nth(2).click();
     await dialog.getByRole('button', { name: /^Aus einem Kanal/ }).click();
     await dialog.getByLabel('Kanalname').fill('handofblood');
-    await dialog.getByRole('button', { name: 'Set laden' }).click();
+    // K3 review, P2-1 (revised for #278): hovering the freshly mounted cell starts its 200 ms dwell
+    // timer as soon as the cell appears, and a park sent only after toBeVisible() resolves reaches
+    // the browser one test-to-browser round trip later. That round trip is normally well under the
+    // dwell and the park still wins — but under load, and amplified by CDN route interception, it
+    // could exceed the 200 ms and let the sprite swap fire first. Parking before the trigger removes
+    // the race instead of narrowing it, but only holds if nothing afterwards moves the pointer again
+    // — and .click() on "Set laden" itself would put it right back on the button, wherever a future
+    // reflow leaves it. Triggering the load via keyboard (focus + Enter) instead of a click keeps the
+    // parked position untouched through the mount, so no cell can ever have a pointer over it when it
+    // first appears. (0,0) sits on the dialog backdrop, outside the dialog: the pane keeps a margin
+    // from the viewport edge (`.cdk-overlay-pane.app-dialog-panel`, web/src/styles.css), and the
+    // backdrop has no hover handlers.
+    await page.mouse.move(0, 0);
+    await dialog.getByRole('button', { name: 'Set laden' }).press('Enter');
     const grid = dialog.getByRole('group', { name: 'Emote-Auswahl' });
     await expect(grid).toBeVisible();
-    // K3 review, P2-1: the always-visible source-set radiogroup moved the grid down from where it
-    // used to render, and "Set laden"'s own on-screen position — where .click() leaves the cursor —
-    // now happens to fall inside a cell's box once the grid mounts under it. Chromium recomputes
-    // :hover on layout changes even with no further pointer movement, so that stray leftover
-    // position played a real animation before any of this test's own explicit hovers ran. Parking
-    // the pointer off the grid entirely closes that gap for good, regardless of where a future
-    // reflow happens to leave "Set laden".
-    await page.mouse.move(0, 0);
 
     const viewport = dialog.locator('cdk-virtual-scroll-viewport');
     return {

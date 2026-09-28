@@ -1,4 +1,4 @@
-import { Page, expect, test } from '@playwright/test';
+import { Page, expect, test } from './support/test';
 
 import {
   AUTH_USER,

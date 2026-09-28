@@ -10,6 +10,64 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-28 — E2E specs import from a shared fixture that stubs and guards the 7TV CDN, and Chromium cannot resolve the CDN at all
+
+**Betrifft:** `web/playwright.config.ts` (`use.launchOptions`: `--host-resolver-rules=MAP cdn.7tv.app
+~NOTFOUND`) · `web/e2e/support/test.ts` (new — `test` with the automatic `sevenTvCdn` fixture,
+`expect`, type re-exports, `fulfillCdnStub`, `CDN_URL_PATTERN`) · `web/eslint.config.mjs`
+(`@typescript-eslint/no-restricted-imports` for `e2e/**/*.spec.ts`) · every `web/e2e/*.spec.ts`
+(import switched) · `web/e2e/usage-atlas.e2e.spec.ts` (its own CDN stub and `PNG_1X1` removed) ·
+`web/e2e/emote-import.e2e.spec.ts` (the recording route in `openGrid` answers through
+`fulfillCdnStub`, its own `PNG_1X1` removed) · `CLAUDE.md` („Tests").
+
+Issue #222. Every spec imported `test` and `expect` straight from `@playwright/test`, there was no
+shared fixture, and 100 of 214 tests sent 434 real requests to `cdn.7tv.app` per full run (7TV
+answered 400 for the made-up ids). Two specs had grown their own 1×1-PNG stub — `usage-atlas`
+after exactly that made it flaky, `emote-import` to record CDN requests for its own acceptance
+criterion; every other spec depended on a third-party host by accident.
+
+**E2E specs import `test`/`expect` from the shared fixture, never directly from
+`@playwright/test`.** The regular Playwright config makes `cdn.7tv.app` unresolvable for Chromium,
+so no run can reach the CDN — the network is closed by construction instead of watched after the
+fact. Playwright routing happens before DNS, so routes still answer. Both projects inherit the
+argument from the shared `use`; a project that sets its own `launchOptions` has to carry it along.
+
+**The fixture stubs the CDN suite-wide with a 1×1 PNG** — a route on the browser context, so every
+page of a test gets it — and one helper, `fulfillCdnStub`, is the only place that PNG lives. A test
+that needs other dimensions or formats, or records requests (the animated-grid tests in
+`emote-import`), adds its own `page.route` for the CDN, which takes precedence, and answers through
+the helper. Behaviour change: sprites that used to fail now load and become visible, and animated
+overlays reach "settled"; no spec asserts dimensions, `naturalWidth` or screenshots against them.
+
+**A CDN request that fails with `net::ERR_NAME_NOT_RESOLVED` fails the test.** That error means the
+request got past every stub (`route.continue()`, a missing route) and died at the resolver block —
+the one signal the guard reads. Cancellations (`net::ERR_ABORTED` and the like) are ignored: a
+sprite whose url changes and a row the virtual scroll recycles cancel requests that were stubbed,
+not escaped. No marker header: with the resolver block the guard no longer has to tell stubbed
+from real responses. The check runs after the test body and waits only while CDN requests are
+still open, bounded at 1 s — an escaped request fails at DNS within milliseconds, and a fixed wait
+would have cost every test. What escapes only after that, or during teardown, goes unreported,
+but it still cannot reach the network. The block only holds while Chromium resolves names itself;
+a configured HTTP proxy would resolve for it (none is configured). A test that simulates a CDN
+failure uses `route.abort()` or `route.abort('failed')`, never `'namenotresolved'`: that produces
+exactly the guard's signal and fails the test.
+
+**Two blind spots, neither used today.** A test that creates its own `browser.newContext()` gets
+neither stub nor guard, silently — the resolver block still holds, and ESLint cannot catch it. And
+`APIRequestContext` (the `request` fixture, `page.request`) runs in Node, bypassing both the
+resolver block and routes, so "no request reaches the CDN" holds for the browser only.
+
+**A lint rule instead of discipline.** A spec that imports from `@playwright/test` still cannot
+reach the CDN, but it loses stub and guard silently — its sprites stay invisible and the console
+fills with DNS errors. `@typescript-eslint/no-restricted-imports` forbids value imports from
+`@playwright/test` in `e2e/**/*.spec.ts`; type imports stay allowed. The rule is syntactic and
+needs no type information, like the rest of the config.
+
+**Measure and audit configs are deliberately excluded.** `atlas-image-loading.measure.ts` exists
+to measure the real CDN; the audit harness keeps its own stub. `e2e/support/mocks.ts` therefore
+imports only types from `@playwright/test` and not the fixture, because the measure spec uses it
+too. Only the 7TV CDN is covered: `7tv.io/v4/gql` and Turnstile are neither blocked nor guarded.
+
 ### 2026-09-27 — Import and undo wait the cancel grace before their settle read, and their docks hold back summary and unclear rows while settling
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-import.service.ts` (+ spec) — `cancel` (cancel

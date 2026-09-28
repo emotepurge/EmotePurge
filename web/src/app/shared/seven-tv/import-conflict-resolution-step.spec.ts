@@ -267,6 +267,53 @@ describe('ImportConflictResolutionStep', () => {
       return Array.from(host.querySelectorAll<HTMLElement>('[data-resolve-index]'));
     }
 
+    function rowAt(index: number): HTMLElement | null {
+      return host.querySelector<HTMLElement>(`[data-resolve-index="${index}"]`);
+    }
+
+    function keydown(row: HTMLElement, key: string): void {
+      row.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    }
+
+    function viewportOf(): CdkVirtualScrollViewport {
+      return fixture.debugElement.query(By.directive(CdkVirtualScrollViewport))
+        .componentInstance as CdkVirtualScrollViewport;
+    }
+
+    /** jsdom has no layout and no `Element.scrollTo`, so the viewport never scrolls by itself.
+     *  This stands in for the browser: `scrollToIndex` moves a simulated scroll offset onto the row
+     *  and fires the scroll event the viewport re-renders its range from. Returns the spy. */
+    function simulateScrolling(viewport: CdkVirtualScrollViewport) {
+      const rowHeight = parseFloat(rowElements()[0].style.height);
+      let offset = 0;
+      vi.spyOn(viewport, 'measureScrollOffset').mockImplementation(() => offset);
+      return vi.spyOn(viewport, 'scrollToIndex').mockImplementation((index) => {
+        offset = index * rowHeight;
+        viewport.elementRef.nativeElement.dispatchEvent(new Event('scroll'));
+      });
+    }
+
+    /** Stands in for the viewport growing tall enough to render every row at once — the only way,
+     *  without layout, to have a far row and the first rows in the DOM together. */
+    function growViewportToFit(viewport: CdkVirtualScrollViewport, rowCount: number): void {
+      const rowHeight = parseFloat(rowElements()[0].style.height);
+      vi.spyOn(viewport, 'measureViewportSize').mockReturnValue(rowCount * rowHeight);
+      viewport.checkViewportSize();
+    }
+
+    /** Lets real time pass — renders, and whatever focus the step still owes — until `done` holds
+     *  or a generous cap runs out. jsdom has no layout, so there is nothing more specific to wait
+     *  on; the caller asserts the outcome itself. The cap is deliberately wide: the viewport reacts
+     *  to a scroll only on an animation frame, and frames slow down when the whole suite shares
+     *  the CPU — a held condition ends the wait at once anyway. */
+    async function settle(done: () => boolean, rounds = 200): Promise<void> {
+      for (let round = 0; round < rounds && !done(); round++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await fixture.whenStable();
+        fixture.detectChanges();
+      }
+    }
+
     /** The reserved consequence line for one row and side — always present, whether or not it
      *  currently holds text (issue #268 AK 3). */
     function consequenceEl(key: string, side: 'source' | 'target'): HTMLElement {
@@ -469,27 +516,127 @@ describe('ImportConflictResolutionStep', () => {
         collision(`r${index}`, `Emote${index}`),
       );
       await render('nameCollision', collisionStepRows(many, new Map()));
-      const viewport = fixture.debugElement.query(By.directive(CdkVirtualScrollViewport))
-        .componentInstance as CdkVirtualScrollViewport;
-      // jsdom has no Element.scrollTo — only the call itself is the subject here.
-      const scrollToIndex = vi.spyOn(viewport, 'scrollToIndex').mockImplementation(() => undefined);
+      const scrollToIndex = simulateScrolling(viewportOf());
 
       const first = rowElements()[0];
       expect(first.tabIndex).toBe(0);
       first.focus();
-      first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      keydown(first, 'ArrowDown');
       fixture.detectChanges();
 
       // One tab stop across the rows, and it moved with the focus.
-      const second = host.querySelector<HTMLElement>('[data-resolve-index="1"]');
+      const second = rowAt(1);
       expect(document.activeElement).toBe(second);
       expect(second?.tabIndex).toBe(0);
       expect(first.tabIndex).toBe(-1);
 
       // Row 199 is far outside the rendered buffer: not in the DOM, so Tab could never reach it.
-      expect(host.querySelector('[data-resolve-index="199"]')).toBeNull();
-      second!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+      expect(rowAt(199)).toBeNull();
+      keydown(second!, 'End');
       expect(scrollToIndex).toHaveBeenCalledWith(199);
+
+      // Focus follows once the row is there — it must not stay behind on a row scrolled away.
+      await settle(() => rowAt(199) !== null && document.activeElement === rowAt(199));
+      expect(document.activeElement).toBe(rowAt(199));
+      expect(rowAt(199)?.tabIndex).toBe(0);
+    });
+
+    it('lets a newer focus target win over an older one still waiting for its row', async () => {
+      const many = Array.from({ length: 200 }, (_, index) =>
+        collision(`r${index}`, `Emote${index}`),
+      );
+      await render('nameCollision', collisionStepRows(many, new Map()));
+      const viewport = viewportOf();
+      // The scroll is held back here, so End's row stays unrendered until the test says so.
+      vi.spyOn(viewport, 'scrollToIndex').mockImplementation(() => undefined);
+      await settle(() => document.activeElement === rowAt(0));
+      const first = rowAt(0)!;
+
+      keydown(first, 'End');
+      // Pressed before row 199 ever rendered: row 1 is right there and takes focus at once.
+      keydown(first, 'ArrowDown');
+      expect(document.activeElement).toBe(rowAt(1));
+
+      // Row 199 reaching the DOM only now must not pull focus back to End's outdated target.
+      growViewportToFit(viewport, 200);
+      await settle(() => rowAt(199) !== null);
+      expect(rowAt(199)).not.toBeNull();
+      await settle(() => false, 5);
+      expect(document.activeElement).toBe(rowAt(1));
+      expect(rowAt(1)?.tabIndex).toBe(0);
+    });
+
+    it('focuses nothing and throws nothing when destroyed before its first row renders', async () => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      fixture.componentRef.setInput('group', 'nameCollision');
+      fixture.componentRef.setInput(
+        'rows',
+        collisionStepRows([collision('a', 'Kappa'), collision('b', 'Pog')], new Map()),
+      );
+      fixture.componentRef.setInput('decisions', new Map());
+      fixture.detectChanges();
+      // The viewport renders its first rows only after this first pass — the hand-off is still owed.
+      expect(rowElements()).toHaveLength(0);
+
+      fixture.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it('still hands focus to the first row when focus sits on a focusable ancestor of the step', async () => {
+      // Stands in for the dialog's own tabindex="-1" container: on macOS Safari/Firefox a click on
+      // the button that opens this step focuses that container instead of the button.
+      const wrapper = document.createElement('div');
+      wrapper.tabIndex = -1;
+      host.parentElement!.insertBefore(wrapper, host);
+      wrapper.appendChild(host);
+      try {
+        fixture.componentRef.setInput('group', 'nameCollision');
+        fixture.componentRef.setInput(
+          'rows',
+          collisionStepRows([collision('a', 'Kappa'), collision('b', 'Pog')], new Map()),
+        );
+        fixture.componentRef.setInput('decisions', new Map());
+        fixture.detectChanges();
+        expect(rowElements()).toHaveLength(0);
+
+        wrapper.focus();
+        expect(document.activeElement).toBe(wrapper);
+        await settle(() => document.activeElement === rowAt(0));
+
+        expect(document.activeElement).toBe(rowAt(0));
+      } finally {
+        // TestBed teardown only removes the root host, not this stand-in ancestor — unwrap it
+        // so the empty wrapper doesn't linger in `body` for the rest of the file's tests.
+        wrapper.parentElement?.insertBefore(host, wrapper);
+        wrapper.remove();
+      }
+    });
+
+    it('leaves focus alone once the user moves it outside the step before the hand-off lands', async () => {
+      const outside = document.createElement('button');
+      document.body.appendChild(outside);
+      try {
+        (document.activeElement as HTMLElement | null)?.blur();
+        fixture.componentRef.setInput('group', 'nameCollision');
+        fixture.componentRef.setInput(
+          'rows',
+          collisionStepRows([collision('a', 'Kappa'), collision('b', 'Pog')], new Map()),
+        );
+        fixture.componentRef.setInput('decisions', new Map());
+        fixture.detectChanges();
+        expect(rowElements()).toHaveLength(0);
+
+        outside.focus();
+        await settle(() => rowElements().length > 0);
+        expect(rowElements().length).toBeGreaterThan(0);
+        await settle(() => false, 5);
+
+        expect(document.activeElement).toBe(outside);
+      } finally {
+        outside.remove();
+      }
     });
 
     describe('consequence line (issue #268)', () => {
@@ -643,23 +790,22 @@ describe('ImportConflictResolutionStep', () => {
         return row.querySelectorAll('app-emote-sprite-animated').length;
       }
 
-      /** Lets the step's own initial "hand focus to the table" (`afterNextRender`) settle before
-       *  this describe's own hover/focus interactions run — otherwise it can land after them and
-       *  reclaim focus back onto row 0 mid-test. `render`'s own wait loop does not guarantee this:
-       *  it returns as soon as rows exist, which can be before `afterNextRender` has fired. */
+      /** Waits until the step's own initial "hand focus to the table" has landed on row 0, so it
+       *  cannot land after this describe's own hover/focus interactions and reclaim focus mid-test.
+       *  `render`'s own wait loop returns as soon as rows exist, which says nothing about focus. */
       async function settleInitialFocus(): Promise<void> {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        await fixture.whenStable();
-        fixture.detectChanges();
+        await settle(() => document.activeElement === rowElements()[0]);
       }
 
-      it('animates nothing until a row is hovered or focused', async () => {
+      it('hands focus to the first row on open without animating it, and animates nothing until a row is hovered or focused', async () => {
         await render(
           'nameCollision',
           collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], new Map()),
         );
         await settleInitialFocus();
 
+        // Opening is not the reader settling on row 0 to compare it (WCAG 2.4.3 hand-off only).
+        expect(document.activeElement).toBe(rowElements()[0]);
         expect(host.querySelectorAll('app-emote-sprite-animated')).toHaveLength(0);
       });
 
@@ -716,6 +862,29 @@ describe('ImportConflictResolutionStep', () => {
         fixture.detectChanges();
         expect(animatedCellCount(rowElements()[0])).toBe(0);
         expect(animatedCellCount(rowElements()[1])).toBe(2);
+      });
+
+      it('keeps focus on a row the user focuses while a keyboard target still waits, and animates it', async () => {
+        const many = Array.from({ length: 200 }, (_, index) =>
+          animatedRow(`r${index}`, `Emote${index}`),
+        );
+        await render('nameCollision', collisionStepRows(many, new Map()));
+        await settleInitialFocus();
+        const viewport = viewportOf();
+        vi.spyOn(viewport, 'scrollToIndex').mockImplementation(() => undefined);
+
+        keydown(rowAt(0)!, 'End');
+        // The user's own focus is the newer target: it counts normally, so the row animates.
+        rowAt(1)!.focus();
+        fixture.detectChanges();
+        expect(animatedCellCount(rowAt(1)!)).toBe(2);
+
+        growViewportToFit(viewport, 200);
+        await settle(() => rowAt(199) !== null);
+        expect(rowAt(199)).not.toBeNull();
+        await settle(() => false, 5);
+        expect(document.activeElement).toBe(rowAt(1));
+        expect(animatedCellCount(rowAt(1)!)).toBe(2);
       });
     });
   });
