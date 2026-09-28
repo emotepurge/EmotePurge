@@ -3158,6 +3158,69 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
     expect(await unloadPrevented(page)).toBe(false);
   });
 
+  // #280: between "Wiederherstellen" and the run, the confirm-time duplicate check runs with the
+  // confirmation already closed — the trigger must not look free again, and the page's permanently
+  // mounted announcer says why, until the run takes over.
+  test('a restore from a protocol file keeps the import trigger locked through its confirm-time check, and the page announces the wait until the run takes over', async ({
+    page,
+  }) => {
+    await mockSourceWorkspace(page);
+    await mockSyncRestoredInSet(page, 'set-1', {
+      channels: [{ channelName: SOURCE_CHANNEL }],
+      resyncTriggered: [SOURCE_CHANNEL],
+    });
+    await mockSevenTvGql(page, (request) => {
+      const kind = sevenTvGqlRequestKind(request);
+      if (kind === 'setRead') {
+        return sevenTvSetReadPayload(LIVE_SET);
+      }
+      if (kind === 'addEmote') {
+        return {
+          data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+        };
+      }
+      throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+    });
+    let confirmed = false;
+    const confirmCheck = await holdRoute(
+      page,
+      'https://7tv.io/v4/gql',
+      (request) =>
+        confirmed &&
+        sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
+    );
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    const fileInput = await openFileImportDialog(page);
+    await fileInput.setInputFiles(
+      purgeRunV3File([{ id: '7tv-spooky', name: 'Spooky', status: 'done' }]),
+    );
+    const confirm = page.getByRole('dialog');
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      '1 Emote wieder zum Set hinzufügen?',
+    );
+    confirmed = true;
+    await confirm.getByRole('button', { name: 'Wiederherstellen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await confirmCheck.arrived;
+
+    const trigger = page.getByRole('button', { name: 'Importieren', exact: true });
+    const announcer = page.locator('app-dock-outcome-announcer');
+    const waitLine =
+      'Das Zielset wird vor dem Start der Wiederherstellung noch einmal live geprüft…';
+    await expect(trigger).toBeDisabled();
+    await expect(announcer).toContainText(waitLine);
+    await expect(restoreDock(page)).toHaveCount(0);
+
+    confirmCheck.release();
+
+    await expect(
+      restoreDock(page).getByText('1 wiederhergestellt · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+    await expect(announcer).not.toContainText(waitLine);
+    await expect(trigger).toBeEnabled();
+  });
+
   test('a restore from a protocol file cancelled before its ADD reached 7TV stays unclear: no sync-restored, one resync of the channel, shown in the dock', async ({
     page,
   }) => {
@@ -6599,6 +6662,47 @@ test.describe('replace undo (#254)', () => {
     expect(reports.syncDeleted).toEqual([]);
     // The undo's dock stays empty: no undo ran.
     await expect(undoDock(page)).toBeEmpty();
+  });
+
+  // #280: between "Starten" and the run, the freshness read (E14) runs with the confirmation
+  // already closed — the trigger stays locked and the page's announcer says why, until the run
+  // takes over.
+  test('the import trigger stays locked through the freshness read after "Starten", and the page announces the wait until the run takes over', async ({
+    page,
+  }) => {
+    await undoWorkspace(page);
+    const fake = await fakeSevenTvSet(page, AFTER_TWO_REPLACES);
+    let started = false;
+    const freshRead = await holdRoute(
+      page,
+      'https://7tv.io/v4/gql',
+      (request) =>
+        started && sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
+    );
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await chooseUndoFromFile(page, transferRunFile('finished', [CATJAM_ROW]));
+    const confirm = await waitForUndoConfirm(page);
+    await saveRecoveryFile(page, confirm);
+    started = true;
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await freshRead.arrived;
+
+    const trigger = page.getByRole('button', { name: 'Importieren', exact: true });
+    const announcer = page.locator('app-dock-outcome-announcer');
+    const waitLine = 'Das Zielset wird vor dem Start der Rücknahme noch einmal live geprüft…';
+    await expect(trigger).toBeDisabled();
+    await expect(announcer).toContainText(waitLine);
+    await expect(undoDock(page)).toHaveCount(0);
+
+    freshRead.release();
+
+    await runClockUntilVisible(page, restoreReported(page));
+    await expect(announcer).not.toContainText(waitLine);
+    await expect(trigger).toBeEnabled();
+    expectUndoRequestInvariants(fake.calls);
   });
 
   test('a mixed recovery file without the confirmation runs only its ADD-only row: no REMOVE, no removal report, and the protocol lists the unproven row as skipped (AK 28, spec 17 K2/K4)', async ({
