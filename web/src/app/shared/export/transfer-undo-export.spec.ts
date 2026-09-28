@@ -722,6 +722,7 @@ function undoRunInfo(overrides: Partial<UndoRunInfo> = {}): UndoRunInfo {
     trackedChannelName: 'kanal_t',
     ownerDisplayName: 'Olaf',
     sourceFile: sourceFile({ stage: 'finished' }),
+    targetOwnerTwitchId: null,
     acknowledgedUnproven: false,
     rows: [],
     skipped: [],
@@ -746,6 +747,18 @@ describe('buildUndoRunProtocol', () => {
 
   it('is null when the run has no result even if marked settled', () => {
     expect(buildUndoRunProtocol(undoRunInfo({ settlement: 'settled', result: null }))).toBeNull();
+  });
+
+  // Owner-hint design 3.7: the finished protocol carries the run's own frozen owner hint, never a
+  // placeholder — `null` when the run started without one.
+  it("carries the run's own targetOwnerTwitchId into the finished protocol's meta", () => {
+    const protocol = buildUndoRunProtocol(
+      undoRunInfo({
+        targetOwnerTwitchId: 'tw-owner',
+        result: { doneKeys: [], items: [], startedAt: 0, finishedAt: 1 },
+      }),
+    );
+    expect(protocol?.meta.targetOwnerTwitchId).toBe('tw-owner');
   });
 
   it('lists every executed row and every skipped candidate once the run has settled', () => {

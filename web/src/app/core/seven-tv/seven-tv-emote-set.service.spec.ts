@@ -755,6 +755,7 @@ describe('SevenTvEmoteSetService', () => {
         .reportDeletedInSet('set-x', {
           sevenTvEmoteIds: ['7tv-1', '7tv-2'],
           expectedChannelName: 'handofblood',
+          targetOwnerTwitchId: null,
         })
         .subscribe((r) => (result = r));
 
@@ -763,6 +764,7 @@ describe('SevenTvEmoteSetService', () => {
       expect(req.request.body).toEqual({
         sevenTvEmoteIds: ['7tv-1', '7tv-2'],
         expectedChannelName: 'handofblood',
+        targetOwnerTwitchId: null,
       });
 
       const payload: SyncDeletedInSetResponse = {
@@ -781,12 +783,20 @@ describe('SevenTvEmoteSetService', () => {
     it('POSTs sevenTvEmoteIds and expectedChannelName to the set-scoped sync-restored route', () => {
       let result: SyncRestoredInSetResponse | undefined;
       service
-        .reportRestoredInSet('set-x', { sevenTvEmoteIds: ['7tv-1'], expectedChannelName: null })
+        .reportRestoredInSet('set-x', {
+          sevenTvEmoteIds: ['7tv-1'],
+          expectedChannelName: null,
+          targetOwnerTwitchId: null,
+        })
         .subscribe((r) => (result = r));
 
       const req = httpMock.expectOne('/api/seventv/emote-sets/set-x/sync-restored');
       expect(req.request.method).toBe('POST');
-      expect(req.request.body).toEqual({ sevenTvEmoteIds: ['7tv-1'], expectedChannelName: null });
+      expect(req.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: null,
+        targetOwnerTwitchId: null,
+      });
 
       const payload: SyncRestoredInSetResponse = {
         reportedCount: 1,

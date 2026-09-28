@@ -82,6 +82,7 @@ const TARGET_ACTIVE: UndoRunTarget = {
   trackedChannelName: 'kanal_t',
   ownerDisplayName: 'Olaf',
   sourceFile: SOURCE_FILE,
+  targetOwnerTwitchId: null,
 };
 /** A non-active set of a tracked channel: nothing to expect, no resync of ours. */
 const TARGET_NON_ACTIVE: UndoRunTarget = { ...TARGET_ACTIVE, expectedChannelName: null };
@@ -328,9 +329,14 @@ describe('SevenTvUndoService', () => {
     url: string,
     ids: string[],
     expectedChannelName: string | null = 'kanal_t',
+    targetOwnerTwitchId: string | null = null,
   ) {
     const req = httpMock.expectOne(url);
-    expect(req.request.body).toEqual({ sevenTvEmoteIds: ids, expectedChannelName });
+    expect(req.request.body).toEqual({
+      sevenTvEmoteIds: ids,
+      expectedChannelName,
+      targetOwnerTwitchId,
+    });
     return req;
   }
 
@@ -357,6 +363,16 @@ describe('SevenTvUndoService', () => {
       expect(service.items()[0]).toMatchObject({ status: 'done', completedSteps: 4 });
       expect(service.summary()).toMatchObject({ done: 1, removedCount: 1, restoredCount: 3 });
       expect(service.run()?.phase).toBe('closed');
+    });
+
+    // Owner-hint design 3.6: the pre-check's resolved owner id, frozen onto the run at start, rides
+    // along on both reports unchanged — never re-resolved by this service.
+    it('carries the target owner hint on both the removal and the restore report', () => {
+      start([fullRow('1')], { target: { ...TARGET_ACTIVE, targetOwnerTwitchId: 'tw-owner' } });
+      runFull('1');
+
+      expectReport(SYNC_DELETED, ['src-1'], 'kanal_t', 'tw-owner').flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1'], 'kanal_t', 'tw-owner').flush(answer());
     });
 
     it('runs an addOnly row as its ADDs alone — no read, no REMOVE', () => {

@@ -89,6 +89,7 @@ function runInfo(overrides: Partial<RestoreRunInfo> = {}): RestoreRunInfo {
     hostChannelName: 'hostkanal',
     setName: 'Set-1',
     ownerOrChannelLabel: 'zielkanal',
+    targetOwnerTwitchId: null,
     result: null,
     syncReport: 'idle',
     syncReportReason: null,

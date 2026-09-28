@@ -392,5 +392,6 @@ export function restoreStartTarget(target: ResolvedRestoreTarget): RestoreStartT
     hostChannelName: target.hostChannelName,
     setName: target.setName,
     ownerOrChannelLabel: channel ?? target.ownerDisplayName,
+    targetOwnerTwitchId: target.ownerTwitchChannelId,
   };
 }

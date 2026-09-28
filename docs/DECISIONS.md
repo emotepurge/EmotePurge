@@ -62,7 +62,24 @@ carry it) · `web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` and `seven-
 (`SyncImportedToSetBody.targetOwnerTwitchId` made required — its one caller is now wired;
 `SyncInSetBody`'s stays optional for T6b) · `seven-tv-emote-set.service.spec.ts`,
 `seven-tv-run-arbiter.spec.ts`, `foreign-import-flow.spec.ts` and `dock-outcome-announcer.spec.ts`
-(mechanical field addition only, following the new required fields).
+(mechanical field addition only, following the new required fields) · **T6b** (delete/restore/undo):
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (+ spec; hints the delete pre-check with the
+page's channel login, freezes the pre-check's resolved owner id through
+`openConfirmDialogAfterCheck` into `startDelete` and the purge protocol, hints the restore-from-dock
+pre-check with the finished run's own owner id or its frozen channel) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` and `undo-flow.ts` (+ specs;
+`restoreStartTarget`/`undoRunTarget` carry `ResolvedRestoreTarget.ownerTwitchChannelId` onto
+`RestoreStartTarget`/`UndoRunTarget`) · `web/src/app/shared/seven-tv/file-import-step.ts` (+ spec;
+hints the pre-check from the parsed file's `ownerTwitchId`, else its `ownerLogin` fallback) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (+ spec; `DeleteRunInfo.targetOwnerTwitchId`,
+`startDelete` gains a required parameter, `lastRun`'s projection carries it, the report carries it) ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (+ spec;
+`RestoreStartTarget`/`RestoreRunInfo.targetOwnerTwitchId`, the report carries it) ·
+`web/src/app/core/seven-tv/seven-tv-undo.service.ts` (+ spec;
+`UndoRunTarget`/`UndoRunInfo.targetOwnerTwitchId`, both reports carry it) ·
+`web/src/app/shared/seven-tv/undo-confirm-dialog.ts` (+ spec; the planned back-out file reads the
+hint off the resolved target) · `web/src/app/shared/export/transfer-undo-export.ts` (+ spec;
+`buildUndoRunProtocol` reads the hint off the run record instead of a `null` placeholder).
 
 Issue #216, and the "Known limit" of the #280 entry below. The set-centric reports (`sync-imported`
 to an untracked set, `sync-deleted`, `sync-restored`) walked the actor's list and then every

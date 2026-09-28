@@ -416,6 +416,10 @@ describe('UndoConfirmDialog', () => {
       expect(record.meta.stage).toBe('planned');
       expect(record.meta.acknowledgedUnproven).toBe(false);
       expect(record.meta.undoneFile).toEqual(FINISHED_FILE);
+      // Owner-hint design 3.7: the back-out file's own owner hint is the target's resolved owner id
+      // (`data.target.ownerTwitchChannelId`), not a placeholder — set to `'tw-owner'` in this
+      // suite's default target fixture.
+      expect(record.meta.targetOwnerTwitchId).toBe('tw-owner');
       // Only the running row — the skipped one (source under another name) is not in the file.
       expect(record.rows).toHaveLength(1);
       expect(record.rows[0]).toMatchObject({

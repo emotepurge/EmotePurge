@@ -311,6 +311,7 @@ const RESTORE_TARGET: RestoreStartTarget = {
   hostChannelName: 'sensitron',
   setName: 'Set 1',
   ownerOrChannelLabel: 'sensitron',
+  targetOwnerTwitchId: null,
 };
 
 const EMOTES: DeleteQueueEmote[] = [
@@ -368,6 +369,7 @@ const UNDO_TARGET: UndoRunTarget = {
     finishedAt: '2026-09-25T10:00:00.000Z',
     origin: null,
   },
+  targetOwnerTwitchId: null,
 };
 const SYNC_RESTORED_SET_U = '/api/seventv/emote-sets/set-u/sync-restored';
 
@@ -484,7 +486,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
   });
 
   it('reports "delete" while a delete run is active, then null again after it ends', () => {
-    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
 
     expect(arbiter.activeRun()).toBe('delete');
 
@@ -546,7 +548,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
   // pins the display rule — running before settling (Plan-256 Festlegung 7) — against the real
   // services: the import registered last still wins over the delete registered first.
   it('prefers a running import over a delete that is still reporting', () => {
-    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
     flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     const deleteReport = httpMock.expectOne(SYNC_DELETED_SET_1);
@@ -569,7 +571,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
 
   // Same construction with two running at once: among equals the first registered wins.
   it('prefers the service registered first when a delete and a restore run at once', () => {
-    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
     restoreService.startRestore(RESTORE_TARGET, [EMOTES[1]]);
 
     expect(arbiter.activeRun()).toBe('delete');
@@ -582,7 +584,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
   });
 
   it('holds "delete" after the engine is done, until the report answers', () => {
-    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
     flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(DELETE_DELAY_MS);
 
@@ -727,7 +729,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
       const addSpy = vi.spyOn(window, 'addEventListener');
       const removeSpy = vi.spyOn(window, 'removeEventListener');
 
-      deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+      deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
       TestBed.tick();
       expect(unloadCalls(addSpy)).toHaveLength(1);
 

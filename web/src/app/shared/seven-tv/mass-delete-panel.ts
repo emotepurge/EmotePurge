@@ -696,8 +696,7 @@ export class MassDeletePanel {
       startedAt: run.result.startedAt,
       finishedAt: run.result.finishedAt,
       items: run.result.items,
-      // `DeleteRunInfo` does not carry an owner hint yet (plan #216, T6b wires it).
-      targetOwnerTwitchId: null,
+      targetOwnerTwitchId: run.targetOwnerTwitchId,
     });
     const data: ExportDialogData = {
       rowCount: protocol.rows.length,
@@ -794,7 +793,13 @@ export class MassDeletePanel {
     // entries disabled until a full page reload, not just this panel's own button.
     let handedOff = false;
     this.emoteSetService
-      .resolveEditableSet(run.setId)
+      // Owner-hint design 3.6, fourth row: the delete run's own owner hint when it has one, else
+      // its frozen channel login (a run carried over from an older tab that started before this
+      // field existed).
+      .resolveEditableSet(run.setId, {
+        twitchChannelId: run.targetOwnerTwitchId,
+        twitchLogin: run.channelName,
+      })
       .pipe(
         timeout(LIVE_ALIAS_READ_TIMEOUT_MS),
         takeUntilDestroyed(this.destroyRef),
@@ -1082,7 +1087,9 @@ export class MassDeletePanel {
     const checkedSetId = this.setId();
     this.deleteTargetCheckPending.set(true);
     this.emoteSetService
-      .resolveEditableSet(checkedSetId)
+      // Owner-hint design 3.6, third row: the page knows only its own channel's login — every set
+      // it shows belongs to that one account (spec 6.1).
+      .resolveEditableSet(checkedSetId, { twitchChannelId: null, twitchLogin: this.channelName() })
       .pipe(timeout(LIVE_ALIAS_READ_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (resolution) => {
@@ -1106,7 +1113,10 @@ export class MassDeletePanel {
             });
             return;
           }
-          this.openConfirmDialogAfterCheck(checkedSetId);
+          // Frozen from this very answer (owner-hint design, Codex finding 1's own "never
+          // re-resolve" spirit): the confirmation, the run it starts and the purge protocol all
+          // carry this one resolved owner id, never a later re-check's.
+          this.openConfirmDialogAfterCheck(checkedSetId, resolution.target.ownerTwitchChannelId);
         },
         // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
         // allowed" (F3) — the same distinction `FileImportStep`'s own pre-check makes.
@@ -1120,7 +1130,10 @@ export class MassDeletePanel {
       });
   }
 
-  private openConfirmDialogAfterCheck(checkedSetId: string): void {
+  private openConfirmDialogAfterCheck(
+    checkedSetId: string,
+    frozenOwnerTwitchId: string | null,
+  ): void {
     this.setWarning.set(null);
     this.warningLoading.set(true);
 
@@ -1206,14 +1219,25 @@ export class MassDeletePanel {
         // `finally`, because a leaked claim pins an empty dock until the page is reloaded — a worse
         // outcome than whatever threw, and one nothing on screen could explain.
         try {
-          this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
+          this.startDelete(
+            frozenSetId,
+            frozenChannelName,
+            confirmedSelection,
+            null,
+            frozenOwnerTwitchId,
+          );
         } finally {
           this.deleteService.endConfirmedRun();
         }
         return;
       }
       // Owns the claim from here to the end of the read — see `readLiveAliasesThenDelete`.
-      this.readLiveAliasesThenDelete(frozenSetId, frozenChannelName, confirmedSelection);
+      this.readLiveAliasesThenDelete(
+        frozenSetId,
+        frozenChannelName,
+        confirmedSelection,
+        frozenOwnerTwitchId,
+      );
     });
   }
 
@@ -1231,12 +1255,19 @@ export class MassDeletePanel {
     frozenSetId: string,
     frozenChannelName: string,
     confirmedSelection: readonly DeletableEmote[],
+    frozenOwnerTwitchId: string | null,
   ): void {
     // The same checks `startDelete` makes, made once before the read as well: a delete that is
     // already doomed must not wait for (or spend) a 7TV read first.
     if (this.abortReasonBeforeStart(frozenSetId) !== undefined) {
       try {
-        this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
+        this.startDelete(
+          frozenSetId,
+          frozenChannelName,
+          confirmedSelection,
+          null,
+          frozenOwnerTwitchId,
+        );
       } finally {
         this.deleteService.endConfirmedRun();
       }
@@ -1275,7 +1306,13 @@ export class MassDeletePanel {
         }),
       )
       .subscribe((read) => {
-        this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, read);
+        this.startDelete(
+          frozenSetId,
+          frozenChannelName,
+          confirmedSelection,
+          read,
+          frozenOwnerTwitchId,
+        );
       });
   }
 
@@ -1311,12 +1348,15 @@ export class MassDeletePanel {
    *  snapshotted in the `closed` callback at confirm time (operator decision 2026-09-22) — never
    *  the live `selectedEmotes()` input at this point, which an async live alias read can have let
    *  move on. `liveAliases` is the active-set delete's live alias read
-   *  (`readLiveAliasesThenDelete`), or `null` when none was made. */
+   *  (`readLiveAliasesThenDelete`), or `null` when none was made. `frozenOwnerTwitchId` is the
+   *  pre-check's own resolved owner id (`openConfirmDialog`), frozen the same way — never
+   *  re-resolved here. */
   private startDelete(
     frozenSetId: string,
     frozenChannelName: string,
     confirmedSelection: readonly DeletableEmote[],
     liveAliases: LiveAliasRead | null,
+    frozenOwnerTwitchId: string | null,
   ): void {
     const abort = this.abortReasonBeforeStart(frozenSetId);
     if (abort !== undefined) {
@@ -1414,7 +1454,13 @@ export class MassDeletePanel {
     // point 21); a non-active set's report is paper only and expects no channel.
     const expectedChannelName =
       frozenSetId === this.effectiveActiveSetId() ? frozenChannelName : null;
-    this.deleteService.startDelete(frozenSetId, frozenChannelName, emotes, expectedChannelName);
+    this.deleteService.startDelete(
+      frozenSetId,
+      frozenChannelName,
+      emotes,
+      expectedChannelName,
+      frozenOwnerTwitchId,
+    );
   }
 
   /**

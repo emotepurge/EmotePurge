@@ -3036,7 +3036,11 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
     await expect(deleteDock(page).getByText(/Unklar, ob gelöscht/)).toHaveCount(0);
     await expect(deleteDock(page).getByText(/ist unklar, ob 7TV/)).toHaveCount(0);
     expect(syncDeletedBodies).toEqual([
-      { sevenTvEmoteIds: ['7tv-1'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     await expect.poll(() => unloadPrevented(page)).toBe(false);
     await expect(cell(page, 'CatJAM')).toHaveCount(0);
@@ -3226,7 +3230,13 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
     await expect(restoreDock(page).getByText(/ist unklar, ob 7TV/)).toHaveCount(0);
     await expect
       .poll(() => syncRestoredBodies)
-      .toEqual([{ sevenTvEmoteIds: ['7tv-spooky'], expectedChannelName: SOURCE_CHANNEL }]);
+      .toEqual([
+        {
+          sevenTvEmoteIds: ['7tv-spooky'],
+          expectedChannelName: SOURCE_CHANNEL,
+          targetOwnerTwitchId: 'source-1',
+        },
+      ]);
     expect(await unloadPrevented(page)).toBe(false);
   });
 
@@ -4846,7 +4856,11 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     // target's tracked channel expected, since the set is its active one.
     await expect
       .poll(() => syncRestoredBodies[0])
-      .toEqual({ sevenTvEmoteIds: ['target-b'], expectedChannelName: TARGET_CHANNEL });
+      .toEqual({
+        sevenTvEmoteIds: ['target-b'],
+        expectedChannelName: TARGET_CHANNEL,
+        targetOwnerTwitchId: 'target-1',
+      });
     // The dock's own "name taken" notice for the row the restore itself could not bring back
     // (target-a, since 7tv-1 already holds 'CatJAM') — lives in the mass-delete panel + its
     // announcer, not import-progress-section (adjustment G row 5). Two elements carry this text by
@@ -5203,7 +5217,13 @@ test.describe('restore per set: the file names the target (#253)', () => {
     // ours expected for an untracked target.
     await expect
       .poll(() => syncRestoredBodies)
-      .toEqual([{ sevenTvEmoteIds: ['target-catjam'], expectedChannelName: null }]);
+      .toEqual([
+        {
+          sevenTvEmoteIds: ['target-catjam'],
+          expectedChannelName: null,
+          targetOwnerTwitchId: 'untracked-1',
+        },
+      ]);
     // No client resync for an untracked target (AK 21) — nothing of ours could show the change.
     expect(resyncPosts).toEqual([]);
   });
@@ -5311,7 +5331,13 @@ test.describe('restore per set: the file names the target (#253)', () => {
     // The target is its tracked channel's active set: that channel is the expected hit (E18).
     await expect
       .poll(() => syncRestoredBodies)
-      .toEqual([{ sevenTvEmoteIds: ['target-catjam'], expectedChannelName: TARGET_CHANNEL }]);
+      .toEqual([
+        {
+          sevenTvEmoteIds: ['target-catjam'],
+          expectedChannelName: TARGET_CHANNEL,
+          targetOwnerTwitchId: 'target-1',
+        },
+      ]);
     // The backend already resynced it (`resyncTriggered`), and an active set never needs the
     // client's own (E12).
     expect(resyncPosts).toEqual([]);
@@ -6062,10 +6088,18 @@ test.describe('replace undo (#254)', () => {
     // Both set-centric, the tracked channel expected.
     expect(reports.reportOrder).toEqual(['sync-deleted', 'sync-restored']);
     expect(reports.syncDeleted).toEqual([
-      { sevenTvEmoteIds: ['src-catjam', 'src-kekw'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['src-catjam', 'src-kekw'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     expect(reports.syncRestored).toEqual([
-      { sevenTvEmoteIds: ['tgt-catjam', 'tgt-kekw'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['tgt-catjam', 'tgt-kekw'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     // AK 14 (request half): the backend resynced; the client sends no resync of its own.
     expect(reports.strayRequests).toEqual([]);
@@ -6198,10 +6232,18 @@ test.describe('replace undo (#254)', () => {
     await expect(dock.getByText(ONE_GAP_LINE)).toBeVisible();
     // The REMOVE and the first ADD were confirmed: both reports carry their id.
     expect(reports.syncDeleted).toEqual([
-      { sevenTvEmoteIds: ['src-hype'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['src-hype'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     expect(reports.syncRestored).toEqual([
-      { sevenTvEmoteIds: ['tgt-hype'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['tgt-hype'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     const firstRun = fake.calls.length;
     expect(trace(fake.calls)).toEqual([
@@ -6243,6 +6285,7 @@ test.describe('replace undo (#254)', () => {
     expect(reports.syncRestored[1]).toEqual({
       sevenTvEmoteIds: ['tgt-hype'],
       expectedChannelName: SOURCE_CHANNEL,
+      targetOwnerTwitchId: 'source-1',
     });
     expectUndoRequestInvariants(fake.calls);
   });
@@ -6721,7 +6764,11 @@ test.describe('replace undo (#254)', () => {
       dock.getByText(/^GG: Das Quell-Emote wurde entfernt, das Ziel aber nicht vollständig/),
     ).toBeVisible();
     expect(reports.syncDeleted).toEqual([
-      { sevenTvEmoteIds: ['src-gg'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['src-gg'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     expect(reports.syncRestored).toEqual([]);
 
@@ -6797,7 +6844,13 @@ test.describe('replace undo (#254)', () => {
     expect(trace(mutations)).toEqual(['add tgt-bye Bye']);
     await expect
       .poll(() => reports.syncRestored)
-      .toEqual([{ sevenTvEmoteIds: ['tgt-bye'], expectedChannelName: SOURCE_CHANNEL }]);
+      .toEqual([
+        {
+          sevenTvEmoteIds: ['tgt-bye'],
+          expectedChannelName: SOURCE_CHANNEL,
+          targetOwnerTwitchId: 'source-1',
+        },
+      ]);
     expect(reports.syncDeleted).toEqual([]);
     // The undo's dock stays empty: no undo ran.
     await expect(undoDock(page)).toBeEmpty();
@@ -6890,7 +6943,11 @@ test.describe('replace undo (#254)', () => {
     expect(fake.entriesOf('src-first')).toEqual(['First']);
     expect(reports.syncDeleted).toEqual([]);
     expect(reports.syncRestored).toEqual([
-      { sevenTvEmoteIds: ['tgt-second'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['tgt-second'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
 
     const protocol = await downloadUndoProtocol(page);

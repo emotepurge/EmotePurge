@@ -167,6 +167,11 @@ export interface DeleteRunInfo extends RunRecordBase {
   /** The set the run removes from, frozen when it starts (spec #200, 7.2, AK 71): the first
    *  report and every retry name this set, whatever the page's set dropdown shows by then. */
   setId: string;
+  /** The set owner's Twitch id, from the pre-check that started this run (owner-hint design 3.6) —
+   *  `null` when the pre-check found none, or when the run started without one (a non-active-set
+   *  delete skips the pre-check entirely). Sent with every report and retry, and carried into the
+   *  purge protocol as `PurgeRunMeta.targetOwnerTwitchId`, never re-resolved later. */
+  targetOwnerTwitchId: string | null;
   /** `null` while the run is in flight **and while it is `settling`**; set once, to the settled
    *  outcome, in the same update that moves the run to `reporting` (Plan-275 Festlegung 10) — so
    *  every reader (`lastRun`, the protocol download, the page's `watchRunSettle`) only ever sees
@@ -251,14 +256,22 @@ export class SevenTvDeleteService {
    *  `{setId, channelName, result}` once the shown run has its settled result — `result` keeps the
    *  identity `settleRun` gave it across every later report patch, which is what
    *  `usage-stats-page.ts`'s `watchRunSettle` dedupes on. */
-  readonly lastRun = linkedSignal<{ setId: string; channelName: string; result: RunResult } | null>(
-    () => {
-      const shown = this.run();
-      return shown === null || shown.result === null
-        ? null
-        : { setId: shown.setId, channelName: shown.channelName, result: shown.result };
-    },
-  );
+  readonly lastRun = linkedSignal<{
+    setId: string;
+    channelName: string;
+    targetOwnerTwitchId: string | null;
+    result: RunResult;
+  } | null>(() => {
+    const shown = this.run();
+    return shown === null || shown.result === null
+      ? null
+      : {
+          setId: shown.setId,
+          channelName: shown.channelName,
+          targetOwnerTwitchId: shown.targetOwnerTwitchId,
+          result: shown.result,
+        };
+  });
 
   /**
    * A delete the user is deciding on, or has decided on, that is not (yet) a run: `MassDeletePanel`
@@ -355,13 +368,16 @@ export class SevenTvDeleteService {
   }
 
   /** `expectedChannelName` is `channelName` when `setId` is the page's active set, `null`
-   *  otherwise (spec 6.5) — the caller knows which, this service does not. A run that starts is
-   *  shown at once; the run shown before it goes on to close on its own record (#256). */
+   *  otherwise (spec 6.5) — the caller knows which, this service does not. `targetOwnerTwitchId` is
+   *  the owner hint the pre-check that led to this call resolved (owner-hint design 3.6) — frozen
+   *  onto the record here, never re-resolved by this service. A run that starts is shown at once;
+   *  the run shown before it goes on to close on its own record (#256). */
   startDelete(
     setId: string,
     channelName: string,
     emotes: DeleteQueueEmote[],
     expectedChannelName: string | null,
+    targetOwnerTwitchId: string | null,
   ): void {
     const previousShown = this.lifecycle.shown();
     const runId = this.lifecycle.createRunId();
@@ -372,6 +388,7 @@ export class SevenTvDeleteService {
       channelName,
       expectedChannelName,
       setId,
+      targetOwnerTwitchId,
       result: null,
       syncReport: 'idle',
       syncReportReason: null,
@@ -572,6 +589,7 @@ export class SevenTvDeleteService {
       .reportDeletedInSet(run.setId, {
         sevenTvEmoteIds,
         expectedChannelName: run.expectedChannelName,
+        targetOwnerTwitchId: run.targetOwnerTwitchId,
       })
       .pipe(
         timeoutReportAttempt(),

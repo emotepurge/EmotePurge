@@ -3652,6 +3652,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     TestBed.inject(SevenTvDeleteService).lastRun.set({
       setId: 'set-a',
       channelName: 'a',
+      targetOwnerTwitchId: null,
       result: { doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
     });
 
@@ -3669,6 +3670,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     TestBed.inject(SevenTvDeleteService).lastRun.set({
       setId: 'set-a',
       channelName: 'a',
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: ['7tv-a'],
         items: [
@@ -3706,6 +3708,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
         channelName: 'a',
         expectedChannelName: 'a',
         setId: 'set-a',
+        targetOwnerTwitchId: null,
         result: null,
         syncReport: 'idle',
         syncReportReason: null,
@@ -3797,6 +3800,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       hostChannelName: 'a',
       setName: setId,
       ownerOrChannelLabel: 'a',
+      targetOwnerTwitchId: null,
       result: runResult(doneKeys, items),
       syncReport: 'pending',
       syncReportReason: null,
@@ -3821,6 +3825,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     TestBed.inject(SevenTvDeleteService).lastRun.set({
       setId,
       channelName: 'a',
+      targetOwnerTwitchId: null,
       result: runResult(doneKeys, items),
     });
   }
@@ -4002,6 +4007,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
         hostChannelName: 'a',
         setName: 'set-b',
         ownerOrChannelLabel: 'a',
+        targetOwnerTwitchId: null,
         result: runResult(['7tv-y']),
         syncReport: 'succeeded',
         syncReportReason: null,

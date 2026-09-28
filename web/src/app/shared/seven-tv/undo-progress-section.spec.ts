@@ -146,6 +146,7 @@ function runInfo(overrides: Partial<UndoRunInfo> = {}): UndoRunInfo {
       finishedAt: '2026-09-25T10:00:00.000Z',
       origin: null,
     },
+    targetOwnerTwitchId: null,
     acknowledgedUnproven: false,
     rows: [],
     skipped: [],

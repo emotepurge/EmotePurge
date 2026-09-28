@@ -297,7 +297,12 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
   let fixture: ComponentFixture<MassDeletePanel>;
   let panel: MassDeletePanel;
   let openSpy: ReturnType<typeof vi.fn>;
-  let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+  let lastRun: WritableSignal<{
+    setId: string;
+    channelName: string;
+    targetOwnerTwitchId: string | null;
+    result: RunResult;
+  } | null>;
   let downloads: CapturedDownload[];
 
   beforeEach(async () => {
@@ -306,6 +311,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
     lastRun = signal({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: ['7tv-1', '7tv-live'],
         items: [
@@ -502,7 +508,12 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     syncReport: signal<SyncReportState>('idle'),
     syncReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
-    lastRun: signal<{ setId: string; channelName: string; result: RunResult } | null>(null),
+    lastRun: signal<{
+      setId: string;
+      channelName: string;
+      targetOwnerTwitchId: string | null;
+      result: RunResult;
+    } | null>(null),
     // The dock's claim on a confirmed-but-not-yet-running delete. Spied rather than implemented:
     // what the *service* does with them (drop at once for a started run, hold for the abort notice
     // otherwise, drop outright when nothing was confirmed) is pinned in
@@ -713,7 +724,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
   let panel: MassDeletePanel;
   let isRunning: WritableSignal<boolean>;
   let syncReport: WritableSignal<SyncReportState>;
-  let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+  let lastRun: WritableSignal<{
+    setId: string;
+    channelName: string;
+    targetOwnerTwitchId: string | null;
+    result: RunResult;
+  } | null>;
 
   // A delete run keys every row by its 7TV id, so key and sevenTvEmoteId are the same value.
   function runResult(doneKeys: string[]): RunResult {
@@ -755,7 +771,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
   beforeEach(async () => {
     isRunning = signal(false);
     syncReport = signal<SyncReportState>('idle');
-    lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
+    lastRun = signal<{
+      setId: string;
+      channelName: string;
+      targetOwnerTwitchId: string | null;
+      result: RunResult;
+    } | null>(null);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -788,7 +809,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1', 'e2']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1', 'e2']),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([['e1', 'e2']]);
@@ -804,7 +830,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('failed');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([]);
@@ -819,7 +850,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('partial');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
 
     expect(reloads).toHaveLength(1);
@@ -842,7 +878,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     expect(reloads).toEqual([]);
 
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([['e1']]);
@@ -861,7 +902,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult([]) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult([]),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([]);
@@ -887,6 +933,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     lastRun.set({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: [],
         items: [
@@ -933,13 +980,18 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     isRunning.set(true);
     fixture.detectChanges();
     isRunning.set(false);
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
     fixture.detectChanges();
     expect(reloads).toHaveLength(1);
 
     // The effect running again over the same, still-idle run must not re-fire the latch — a fresh
     // record with the same content re-runs it, as any later write to the shown run would.
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: { ...result } });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: { ...result },
+    });
     fixture.detectChanges();
     expect(reloads).toHaveLength(1);
   });
@@ -954,6 +1006,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     lastRun.set({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: settledResult([['e1', 'unknown']]),
     });
     fixture.detectChanges();
@@ -966,6 +1019,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     lastRun.set({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: settledResult([['e2', 'unknown']]),
     });
     fixture.detectChanges();
@@ -988,6 +1042,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     lastRun.set({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: settledResult([
         ['e1', 'done'],
         ['e2', 'unknown'],
@@ -1021,6 +1076,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     lastRun.set({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: settledResult([
         ['e1', 'done'],
         ['e2', 'unknown'],
@@ -1045,6 +1101,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     lastRun.set({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: settledResult([
         ['e1', 'cancelled'],
         ['e2', 'cancelled'],
@@ -1067,6 +1124,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     lastRun.set({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: [],
         items: [
@@ -1104,7 +1162,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('failed');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
     expect(reloads).toHaveLength(1);
     expect(deleted).toEqual([]);
@@ -1132,6 +1195,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     lastRun.set({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: ['7tv-1', '7tv-live'],
         items: [
@@ -1170,7 +1234,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
     expect(deleted).toEqual([['e1']]);
 
@@ -1188,7 +1257,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
 
     isRunning.set(false);
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e2']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e2']),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([['e1'], ['e2']]);
@@ -1257,6 +1331,7 @@ describe('MassDeletePanel — Schließen-Gate (#256)', () => {
       channelName: 'somechannel',
       expectedChannelName: 'somechannel',
       setId: 'set-1',
+      targetOwnerTwitchId: null,
       result: { doneKeys: ['e1'], items: queue(), startedAt: 0, finishedAt: 1 },
       syncReport: 'pending',
       syncReportReason: null,
@@ -1275,6 +1350,7 @@ describe('MassDeletePanel — Schließen-Gate (#256)', () => {
       channelName: 'somechannel',
       expectedChannelName: 'somechannel',
       setId: 'set-1',
+      targetOwnerTwitchId: null,
       result: { doneKeys: ['e1'], items: queue(), startedAt: 0, finishedAt: 1 },
       syncReport: 'succeeded',
       syncReportReason: null,
@@ -1297,7 +1373,12 @@ describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4
   let fixture: ComponentFixture<MassDeletePanel>;
   let queue: WritableSignal<RunQueueItem[]>;
   let run: WritableSignal<DeleteRunInfo | null>;
-  let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+  let lastRun: WritableSignal<{
+    setId: string;
+    channelName: string;
+    targetOwnerTwitchId: string | null;
+    result: RunResult;
+  } | null>;
 
   function unknownItem(key: string): RunQueueItem {
     return {
@@ -1357,6 +1438,7 @@ describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4
       channelName: 'somechannel',
       expectedChannelName: 'somechannel',
       setId: 'set-1',
+      targetOwnerTwitchId: null,
       result: null,
       syncReport: 'idle',
       syncReportReason: null,
@@ -1367,7 +1449,12 @@ describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4
   beforeEach(async () => {
     queue = signal<RunQueueItem[]>([]);
     run = signal<DeleteRunInfo | null>(null);
-    lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
+    lastRun = signal<{
+      setId: string;
+      channelName: string;
+      targetOwnerTwitchId: string | null;
+      result: RunResult;
+    } | null>(null);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -1396,7 +1483,7 @@ describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4
     const result: RunResult = { doneKeys: ['e1'], items, startedAt: 0, finishedAt: 1 };
     queue.set(items);
     run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
     fixture.detectChanges();
 
     const text: string = fixture.nativeElement.textContent;
@@ -1413,7 +1500,7 @@ describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4
     const result: RunResult = { doneKeys: ['e1'], items, startedAt: 0, finishedAt: 1 };
     queue.set(items);
     run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).not.toContain('ist unklar');
@@ -1424,7 +1511,7 @@ describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4
     const result: RunResult = { doneKeys: [], items, startedAt: 0, finishedAt: 1 };
     queue.set(items);
     run.set(baseRun({ phase: 'closed', result }));
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
     fixture.detectChanges();
 
     const text: string = fixture.nativeElement.textContent;
@@ -1462,7 +1549,7 @@ describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4
     const result: RunResult = { doneKeys: ['e1', 'e4'], items, startedAt: 0, finishedAt: 1 };
     queue.set(items);
     run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
     fixture.detectChanges();
 
     const text: string = fixture.nativeElement.textContent;
@@ -2029,6 +2116,7 @@ describe('MassDeletePanel — the host lock is re-checked at confirm time (#200,
         { emoteId: undefined, sevenTvEmoteId: '7tv-live', name: 'LiveOnly', aliases: undefined },
       ],
       'somechannel',
+      'tw-owner',
     );
   });
 
@@ -2161,6 +2249,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
         { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
       ],
       'somechannel',
+      'tw-owner',
     );
   });
 
@@ -2193,6 +2282,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
         { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
       ],
       'somechannel',
+      'tw-owner',
     );
   });
 
@@ -2226,6 +2316,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       'somechannel',
       [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
       'somechannel',
+      'tw-owner',
     );
   });
 
@@ -2353,6 +2444,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
         { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
       ],
       'somechannel',
+      'tw-owner',
     );
   });
 
@@ -2703,6 +2795,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       'somechannel',
       [{ emoteId: undefined, sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] }],
       null,
+      'tw-owner',
     );
   });
 
@@ -2748,6 +2841,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
         { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
       ],
       'somechannel',
+      'tw-owner',
     );
   });
 
@@ -2795,6 +2889,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       'somechannel',
       [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
       'somechannel',
+      'tw-owner',
     );
   });
 
@@ -2823,6 +2918,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       'somechannel',
       [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
       'somechannel',
+      'tw-owner',
     );
   });
 
@@ -2976,6 +3072,7 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
         },
       ],
       null,
+      'tw-owner',
     );
   });
 
@@ -3008,6 +3105,7 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
         },
       ],
       null,
+      'tw-owner',
     );
   });
 
@@ -3077,6 +3175,7 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
         },
       ],
       'somechannel',
+      'tw-owner',
     );
   });
 
@@ -3212,7 +3311,10 @@ function preCheckEditableBody(setId: string, trackedChannel: string): Record<str
 
 /** The set-scoped pre-check route's URL (owner-hint design 3.4) — every `resolveEditableSet` call
  *  in this file hits this once its list copy is cold, which it always is here (a fresh
- *  `HttpTestingController` per test, no warmed picker call). */
+ *  `HttpTestingController` per test, no warmed picker call). Matched against `TestRequest.url`
+ *  (not `urlWithParams`, whose exact `?ownerTwitchId=…`/`?ownerLogin=…` query this file leaves to
+ *  the dedicated hint tests below, T6b) — the delete pre-check and the restore-from-dock chain
+ *  both send a login or owner-id hint now, which every other block here does not care about. */
 function preCheckUrl(emoteSetId: string): string {
   return `/api/seventv/me/emote-set-targets/${emoteSetId}`;
 }
@@ -3233,7 +3335,12 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   let restoreService: RestoreServiceFake & { startRestore: ReturnType<typeof vi.fn> };
   /** Hoisted out of `beforeEach` (unlike most fields there) so individual tests can reshape the
    *  finished run — #255 P3(11)'s partial-filtering test needs a second done row. */
-  let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+  let lastRun: WritableSignal<{
+    setId: string;
+    channelName: string;
+    targetOwnerTwitchId: string | null;
+    result: RunResult;
+  } | null>;
   /** Hoisted so the two #256 T4 tests below can claim the arbiter from another kind mid-chain,
    *  same pattern as the "an active-set delete" block above. */
   let activeRun: WritableSignal<SevenTvRunKind | null>;
@@ -3258,7 +3365,9 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   /** Flushes the one pre-check request every test in this block triggers via `openRestoreConfirm`
    *  (spec E16, E19) before the rest of the chain can proceed. */
   function flushTargetsResponse(): void {
-    httpMock.expectOne(preCheckUrl('set-1')).flush(preCheckEditableBody('set-1', RUN_CHANNEL));
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush(preCheckEditableBody('set-1', RUN_CHANNEL));
   }
 
   beforeEach(async () => {
@@ -3269,6 +3378,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     lastRun = signal({
       setId: 'set-1',
       channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: ['7tv-1'],
         items: [
@@ -3327,6 +3437,33 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     httpMock.verify();
   });
 
+  // Owner-hint design 3.6, fourth row: the restore-from-dock pre-check hints with the delete run's
+  // own resolved owner id when it has one, falling back to the run's frozen channel login only for
+  // a run carried over from before this field existed (T5's `targetOwnerTwitchId: null` placeholder).
+  it("hints the pre-check with the delete run's own owner id, not the live page's channel", () => {
+    lastRun.set({ ...lastRun()!, targetOwnerTwitchId: 'tw-run-owner' });
+
+    fixture.componentInstance['openRestoreConfirm']();
+
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+    expect(req.request.params.get('ownerTwitchId')).toBe('tw-run-owner');
+    expect(req.request.params.get('ownerLogin')).toBe(RUN_CHANNEL);
+    req.flush(preCheckEditableBody('set-1', RUN_CHANNEL));
+    // An editable answer goes straight on into the confirmation's own open-time duplicate check
+    // (`openRestoreConfirmDialog`) — drained here like every other test in this block, fail-open.
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+  });
+
+  it("falls back to the run's frozen channel login when it carries no owner id", () => {
+    fixture.componentInstance['openRestoreConfirm']();
+
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+    expect(req.request.params.has('ownerTwitchId')).toBe(false);
+    expect(req.request.params.get('ownerLogin')).toBe(RUN_CHANNEL);
+    req.flush(preCheckEditableBody('set-1', RUN_CHANNEL));
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+  });
+
   it("reads the slot-status check from the resolved target's tracked channel, not the live page", () => {
     fixture.componentInstance['openRestoreConfirm']();
     flushTargetsResponse();
@@ -3372,6 +3509,10 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
       hostChannelName: RUN_CHANNEL,
       setName: 'set-1',
       ownerOrChannelLabel: RUN_CHANNEL,
+      // From the fresh pre-check's own resolved owner (`preCheckEditableBody`'s `twitchChannelId`),
+      // never from the delete run's own hint — that hint only orders which list the check reads
+      // first (owner-hint design 3.1 Nr. 2), it never becomes the answer by itself.
+      targetOwnerTwitchId: 'tw-1',
     });
   });
 
@@ -3391,7 +3532,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     expect(fixture.componentInstance['restoreConfirmPending']()).toBe(false);
     expect(dialogOpen).not.toHaveBeenCalled();
     expect(startRestore).not.toHaveBeenCalled();
-    httpMock.expectNone(preCheckUrl('set-1'));
+    httpMock.expectNone((r) => r.url === preCheckUrl('set-1'));
   });
 
   // Operator decision 2026-09-22 ("middle rule"): the restore offered from a finished run runs the
@@ -3446,7 +3587,9 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   // confirmation, no slot-status read, no run.
   it('shows the abort notice and starts nothing when the pre-check finds the set not editable', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notEditable', target: null });
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'notEditable', target: null });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'restore.nothingRestored',
@@ -3461,7 +3604,9 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   // offers another kind), but the mapping stays total rather than assuming that at the call site.
   it('shows the abort notice and starts nothing when the pre-check finds the set no longer selectable', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notSelectable', target: null });
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'notSelectable', target: null });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'restore.nothingRestored',
@@ -3473,7 +3618,9 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
 
   it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'unavailable', target: null });
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'unavailable', target: null });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'restore.nothingRestored',
@@ -3487,7 +3634,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   // silently inert instead of showing the abort notice every other pre-check failure already does.
   it('shows "check unavailable" when the pre-check request itself fails (network error, not a degraded list)', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock.expectOne(preCheckUrl('set-1')).error(new ProgressEvent('error'));
+    httpMock.expectOne((r) => r.url === preCheckUrl('set-1')).error(new ProgressEvent('error'));
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'restore.nothingRestored',
@@ -3502,7 +3649,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     vi.useFakeTimers();
     try {
       fixture.componentInstance['openRestoreConfirm']();
-      const req = httpMock.expectOne(preCheckUrl('set-1'));
+      const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
       expect(req.cancelled).toBeFalsy();
 
       vi.advanceTimersByTime(20_000);
@@ -3522,7 +3669,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   // restore confirmation nobody can see or answer any more.
   it('cancels the pre-check request once the panel is destroyed', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    const req = httpMock.expectOne(preCheckUrl('set-1'));
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
     expect(req.cancelled).toBeFalsy();
 
     fixture.destroy();
@@ -3543,6 +3690,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     lastRun.set({
       setId: 'set-1',
       channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: ['7tv-1', '7tv-2'],
         items: [
@@ -3603,6 +3751,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     lastRun.set({
       setId: 'set-1',
       channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: ['7tv-1', '7tv-2'],
         items: [
@@ -3666,6 +3815,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     lastRun.set({
       setId: 'set-1',
       channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: ['7tv-1', '7tv-2'],
         items: [
@@ -3821,7 +3971,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
 
     fixture.componentInstance['openRestoreConfirm']();
 
-    httpMock.expectNone(preCheckUrl('set-1'));
+    httpMock.expectNone((r) => r.url === preCheckUrl('set-1'));
     expect(dialogOpen).not.toHaveBeenCalled();
 
     // Released once the other entry's own chain settles — the panel's button works normally again.
@@ -3944,6 +4094,7 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
     const lastRun = signal({
       setId: 'set-1',
       channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
       result: {
         doneKeys: items.filter((entry) => entry.status === 'done').map((entry) => entry.key),
         items,
@@ -3985,7 +4136,9 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
    *  check's read for the test to answer. */
   function openRestore(): void {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock.expectOne(preCheckUrl('set-1')).flush(preCheckEditableBody('set-1', RUN_CHANNEL));
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush(preCheckEditableBody('set-1', RUN_CHANNEL));
   }
 
   /** A single, last page of `entries`; `truncated` makes 7TV's `totalCount` promise one more
@@ -4218,7 +4371,7 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
 
       fixture.componentInstance['openRestoreConfirm']();
 
-      httpMock.expectNone(preCheckUrl('set-1'));
+      httpMock.expectNone((r) => r.url === preCheckUrl('set-1'));
       expect(dialogOpen).not.toHaveBeenCalled();
     });
 
@@ -4296,7 +4449,9 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
     ).toBe(true);
     expect(dialogOpen).not.toHaveBeenCalled();
 
-    httpMock.expectOne(preCheckUrl('set-1')).flush(preCheckEditableBody('set-1', 'somechannel'));
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush(preCheckEditableBody('set-1', 'somechannel'));
     fixture.detectChanges();
 
     expect(
@@ -4306,9 +4461,23 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
     expect(fixture.componentInstance['abortNotice']()).toBeNull();
   });
 
+  // Owner-hint design 3.6, third row: the page knows only its own channel's login — every set it
+  // shows belongs to that one account (spec 6.1) — never a Twitch id, since the panel has no way to
+  // learn one ahead of the pre-check's own answer.
+  it("hints the pre-check with the page's own channel login, never an owner id", () => {
+    fixture.componentInstance['openConfirm']();
+
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+    expect(req.request.params.has('ownerTwitchId')).toBe(false);
+    expect(req.request.params.get('ownerLogin')).toBe('somechannel');
+    req.flush(preCheckEditableBody('set-1', 'somechannel'));
+  });
+
   it('shows the abort notice and opens no dialog when the pre-check finds the set not editable', () => {
     fixture.componentInstance['openConfirm']();
-    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notEditable', target: null });
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'notEditable', target: null });
 
     expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
     expect(fixture.componentInstance['abortNotice']()).toEqual({
@@ -4320,7 +4489,9 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
 
   it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
     fixture.componentInstance['openConfirm']();
-    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'unavailable', target: null });
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'unavailable', target: null });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'massDelete.nothingDeleted',
@@ -4332,7 +4503,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
   it('maps a failed pre-check request (429) to the "check unavailable" reason too', () => {
     fixture.componentInstance['openConfirm']();
     httpMock
-      .expectOne(preCheckUrl('set-1'))
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
       .flush(null, { status: 429, statusText: 'Too Many Requests' });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
@@ -4349,7 +4520,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
     vi.useFakeTimers();
     try {
       fixture.componentInstance['openConfirm']();
-      const req = httpMock.expectOne(preCheckUrl('set-1'));
+      const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
       expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(true);
       expect(req.cancelled).toBeFalsy();
 
@@ -4374,7 +4545,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
   // guarantee than merely dropping a late answer, and proof the panel never even waits for one.
   it('cancels the pre-check request and opens no dialog once the panel is destroyed', () => {
     fixture.componentInstance['openConfirm']();
-    const req = httpMock.expectOne(preCheckUrl('set-1'));
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
     expect(req.cancelled).toBeFalsy();
 
     fixture.destroy();
@@ -4392,7 +4563,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
     fixture.componentRef.setInput('setName', 'Set A');
     fixture.detectChanges();
     fixture.componentInstance['openConfirm']();
-    const req = httpMock.expectOne(preCheckUrl('set-1'));
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
     expect(req.request.url).toContain('/api/seventv/me/emote-set-targets');
 
     // The set switches behind the still-open pre-check.

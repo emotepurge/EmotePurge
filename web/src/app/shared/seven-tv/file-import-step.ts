@@ -387,6 +387,11 @@ export class FileImportStep {
    * id included, the one the confirmation shows (AK 35) — plus the two host fields; a blocked check
    * ends in the banner, before any switch (AK 2). The host values are read here, at answer time,
    * from the inputs the caller froze at its click.
+   *
+   * The pre-check's order (owner-hint design 3.6, second row): the file's own `ownerTwitchId` when
+   * it read as a non-blank string, else its `ownerLogin` fallback (the purge-run envelope's
+   * `channelName`, or a transfer file's `targetChannelName`) — both `null` for a file with neither
+   * (an untracked transfer target), which `resolveEditableSet` reads as no hint at all.
    */
   private checkTarget(
     fileTarget: RestoreFileTarget,
@@ -394,7 +399,10 @@ export class FileImportStep {
   ): void {
     this.checking.set(true);
     this.emoteSetService
-      .resolveEditableSet(fileTarget.emoteSetId)
+      .resolveEditableSet(fileTarget.emoteSetId, {
+        twitchChannelId: fileTarget.ownerTwitchId,
+        twitchLogin: fileTarget.ownerLogin,
+      })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (resolution) => {

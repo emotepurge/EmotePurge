@@ -504,9 +504,7 @@ export function buildUndoRunProtocol(run: UndoRunInfo): TransferUndoProtocol | n
     acknowledgedUnproven: run.acknowledgedUnproven,
     executed: run.result.items.map(toExecutedInput),
     skipped: run.skipped.map((row) => ({ candidate: row.candidate, skippedReason: row.reason })),
-    // `UndoRunInfo` does not carry an owner hint yet (plan #216, T6b wires it) — `null` here until
-    // then, same as this task's other three builder callers.
-    targetOwnerTwitchId: null,
+    targetOwnerTwitchId: run.targetOwnerTwitchId,
   });
 }
 

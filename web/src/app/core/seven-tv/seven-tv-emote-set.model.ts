@@ -122,17 +122,17 @@ export interface UnresolvedChannel {
  *  touch (E18): the target's tracked channel when the target is that channel's *active* set,
  *  `null` otherwise (untracked target, or a tracked-but-not-active one).
  *
- *  `targetOwnerTwitchId` is the owner-hint design's optional order for the backend's owner check
- *  (3.3): the Twitch id of the set's probable owner, as a prior pre-check already resolved it —
- *  never a login (the report always follows a pre-check whose answer already carries the owner's
- *  Twitch id). Still optional (T4/T6a): the import's own removal report
- *  (`SevenTvImportService.reportRemoved`) supplies it since T6a, but `SevenTvDeleteService`,
- *  `SevenTvRestoreService` and `SevenTvUndoService` are not wired yet (T6b) and keep omitting it — a
- *  missing, `null` or blank value costs nothing but the ordinary walk. */
+ *  `targetOwnerTwitchId` is the owner-hint design's order for the backend's owner check (3.3): the
+ *  Twitch id of the set's probable owner, as a prior pre-check already resolved it — never a login
+ *  (the report always follows a pre-check whose answer already carries the owner's Twitch id).
+ *  Required, not optional (T6b): every caller of `reportDeletedInSet`/`reportRestoredInSet` —
+ *  `SevenTvImportService`'s removal report (T6a), `SevenTvDeleteService`, `SevenTvRestoreService`
+ *  and `SevenTvUndoService` (T6b) — is wired, so a caller cannot forget the field; `null` when the
+ *  run's own pre-check found no owner, which costs nothing but the ordinary walk. */
 export interface SyncInSetBody {
   sevenTvEmoteIds: string[];
   expectedChannelName: string | null;
-  targetOwnerTwitchId?: string | null;
+  targetOwnerTwitchId: string | null;
 }
 
 /**
