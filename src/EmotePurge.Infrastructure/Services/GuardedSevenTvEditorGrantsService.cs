@@ -12,8 +12,11 @@ namespace EmotePurge.Infrastructure.Services;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>A hit costs nothing.</b> The picker (<c>/me/emote-set-targets</c>) fills the grant cache
-/// minutes before the report, so the ordinary report never reaches this class's guarded half.
+/// <b>A hit costs nothing.</b> The picker (<c>/me/emote-set-targets</c>) and every other reader fill
+/// the grant cache for ten minutes, so a report or pre-check inside that window never reaches this
+/// class's guarded half. After it, a miss costs two budgeted requests (identity and
+/// <c>editor_of</c>); the callers are the set-centric reports' owner check and the editable
+/// pre-check, both through <see cref="ImportTargetOwnershipService"/>.
 /// </para>
 /// <para>
 /// <b>A success is shared.</b> It is written to the same <c>7tveditor:</c> entry, in the same shape

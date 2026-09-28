@@ -7,15 +7,18 @@ namespace EmotePurge.Infrastructure.Tests.Fakes;
 /// Answers 7TV GraphQL requests by what they ask for, and counts them per kind — so a test can say
 /// "two grant requests and no owner request" instead of only "two requests". The kind is read from
 /// the query text: <c>user_by_connection</c> (identity), <c>editor_of</c> (grants), <c>emote_set</c>
-/// (the v3 owner query). Anything a test did not configure answers HTTP 503.
+/// (the v3 owner query), <c>emoteSets { id name capacity kind</c> (the v4 set list of one account).
+/// Anything a test did not configure answers HTTP 503. An answer can read the request body — the
+/// set list's <c>platformId</c> sits in its variables, so one kind can answer each account differently.
 /// </summary>
 public sealed class SevenTvGqlRouteHandler : HttpMessageHandler
 {
     public const string Identity = "user_by_connection";
     public const string EditorOf = "editor_of";
     public const string Owner = "emote_set: emoteSet";
+    public const string List = "emoteSets { id name capacity kind";
 
-    private readonly Dictionary<string, Func<HttpResponseMessage>> _answers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Func<string, HttpResponseMessage>> _answers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _counts = new(StringComparer.Ordinal);
     private readonly Lock _gate = new();
     private int _requests;
@@ -35,7 +38,7 @@ public sealed class SevenTvGqlRouteHandler : HttpMessageHandler
 
     public SevenTvGqlRouteHandler Answer(string kind, HttpStatusCode statusCode, string body = "")
     {
-        _answers[kind] = () => new HttpResponseMessage(statusCode)
+        _answers[kind] = _ => new HttpResponseMessage(statusCode)
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
@@ -44,7 +47,14 @@ public sealed class SevenTvGqlRouteHandler : HttpMessageHandler
 
     public SevenTvGqlRouteHandler Answer(string kind, Func<HttpResponseMessage> answer)
     {
-        _answers[kind] = answer;
+        _answers[kind] = _ => answer();
+        return this;
+    }
+
+    /// <summary>Answers by the request body — the raw JSON the client posted.</summary>
+    public SevenTvGqlRouteHandler Answer(string kind, Func<string, HttpResponseMessage> answerForBody)
+    {
+        _answers[kind] = answerForBody;
         return this;
     }
 
@@ -52,7 +62,7 @@ public sealed class SevenTvGqlRouteHandler : HttpMessageHandler
     {
         Interlocked.Increment(ref _requests);
         var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
-        var kind = new[] { Identity, EditorOf, Owner }.FirstOrDefault(body.Contains) ?? "other";
+        var kind = new[] { Identity, EditorOf, Owner, List }.FirstOrDefault(body.Contains) ?? "other";
         lock (_gate)
         {
             _counts[kind] = _counts.GetValueOrDefault(kind) + 1;
@@ -64,7 +74,7 @@ public sealed class SevenTvGqlRouteHandler : HttpMessageHandler
         }
 
         return _answers.TryGetValue(kind, out var answer)
-            ? answer()
+            ? answer(body)
             : new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent(string.Empty) };
     }
 }

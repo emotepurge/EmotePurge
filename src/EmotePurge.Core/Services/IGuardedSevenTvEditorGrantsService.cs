@@ -3,8 +3,9 @@ using EmotePurge.Core.SevenTv;
 namespace EmotePurge.Core.Services;
 
 /// <summary>
-/// A user's 7TV editor grants for the set-centric import's owner check, and for nobody else (spec
-/// 2026-09-20, section 32, second review round). Reads the same grant cache as
+/// A user's 7TV editor grants for <see cref="IImportTargetOwnershipService"/>, and for nobody else
+/// (spec 2026-09-20, section 32, second review round) — which since the owner hint serves two
+/// callers: the set-centric reports' owner check and the editable pre-check. Reads the same grant cache as
 /// <see cref="ISevenTvEditorService"/>, but resolves a miss behind the provider guards the set lists
 /// and the preview already sit behind — circuit breaker, concurrency slot, one request permit per
 /// upstream request — and holds a failure for a short while instead of retrying it on every report.
@@ -23,10 +24,17 @@ namespace EmotePurge.Core.Services;
 /// mutation has already happened, and the frontend does not retry.
 /// </para>
 /// <para>
-/// <b>Why only this caller.</b> Behind a shared budget, an exhausted budget would make roles unknown
+/// <b>Why only this service.</b> Behind a shared budget, an exhausted budget would make roles unknown
 /// on the authorization path, and every channel page would answer 403. That is a far larger effect
 /// than the finding, and not this interface's decision: <see cref="ISevenTvEditorService"/> stays
-/// unguarded for authorization, the target picker and the channel overview.
+/// unguarded for authorization, the target picker and the channel overview. The pre-check reads
+/// through here on purpose, and is stricter for it: a held failure makes it unavailable where the
+/// picker's unguarded list would still show accounts.
+/// </para>
+/// <para>
+/// <b>What it costs.</b> Nothing on a cache hit (ten minutes, filled by the picker and every other
+/// reader); two budgeted requests — identity and <c>editor_of</c>, one permit each — on a miss;
+/// nothing while a failure is held.
 /// </para>
 /// </remarks>
 public interface IGuardedSevenTvEditorGrantsService

@@ -10,6 +10,85 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-28 — The owner check reads the hinted owner's list beside the actor's own, the pre-check gets a set-scoped route on the guarded grants path, and "zero requests" becomes the true cost
+
+**Betrifft:** `src/EmotePurge.Core/Services/IImportTargetOwnershipService.cs` (new `EmoteSetOwnerHint`;
+`CheckAsync` gains an optional `ownerHint` after the token; new `ResolveEditableAsync`;
+`SevenTvEmoteSetOwnershipCheckResult.EmoteSet`/`SevenTvActiveEmoteSetId`) ·
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` (one shared list walk,
+two modes) · `src/EmotePurge.Core/Services/IGuardedSevenTvEditorGrantsService.cs` and
+`src/EmotePurge.Infrastructure/Services/GuardedSevenTvEditorGrantsService.cs` (docs only: both
+callers, true cost) · `tests/EmotePurge.Infrastructure.Tests/Fakes/SevenTvGqlRouteHandler.cs` (the
+v4 set list as a kind of its own, body-aware answers) ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ImportTargetOwnershipServiceTests.cs` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (addendum §41).
+
+Issue #216, and the "Known limit" of the #280 entry below. The set-centric reports (`sync-imported`
+to an untracked set, `sync-deleted`, `sync-restored`) walked the actor's list and then every
+`editor_of` grant's list serially until a match; with the lists older than their 60 s, a report
+into the last of k grants cost `1 + k` list requests (measured: 6). The shared editable pre-check
+(`resolveEditableSet`) had it worse — on a cold client copy it reloaded the whole target list,
+whose backend walks the same `1 + k` accounts serially, which can exceed the pre-check's 20 s
+bound. Code and spec claimed the ordinary report "costs no upstream request at all"; that only
+holds inside the lists' 60 s.
+
+- **A hint is an order, never a permission.** Callers may name the probable owner — the report
+  body's `targetOwnerTwitchId`, the pre-check route's `ownerTwitchId`/`ownerLogin` query — as an
+  `EmoteSetOwnerHint`. It resolves only against `{actor} ∪ grants` of the session, before any list
+  is read: the Twitch id wins (actor, else the grant with that `TwitchChannelId`); a login is only
+  consulted without an id, normalised on both sides (`ChannelName.Normalize`), and only ever yields
+  the matching grant's id. Anything else is dropped (logged at Debug), never answered with 400,
+  never echoed. Admissibility is still `EmoteSetEditability.IsEditable` over the verified accounts'
+  lists alone.
+- **The actor's own list is always read** (Codex adversarial review, finding 1). A hint on the
+  actor, or none, walks exactly as before. A hint on grant G reads the grants (cached ten minutes;
+  needed to validate the hint), then the own list **and** G's list in parallel — one round trip,
+  two of the provider's `MaxConcurrent = 2` slots — then the remaining grants serially. G's evidence
+  counts only once the own list has not said `NoSevenTvAccount`: the grant cache can outlive the
+  actor's 7TV connection, and a stale positive grant must never widen what is admissible. In that
+  case G's list is discarded and the outcome equals the one without a hint; the one hinted list
+  request already in flight is the only extra cost. An unreadable own list is the partial outage it
+  always was (a find in G's list is admissible, none is "unavailable"); an unreadable G's list is
+  noted and the walk goes on. The early 403 for "listed only under foreign owners" still falls only
+  after the full walk.
+- **Always the owner's identity, never the listing account's** (finding 2). A match names the
+  account whose 7TV id is the set's owner id — the same identity the report writes to the audit row.
+  The result now also carries, for a match from a list, the set as listed (`EmoteSet`: name, kind,
+  owner display name, owner 7TV id) and the owner list's `SevenTvActiveEmoteSetId` (null when the
+  owner's own list did not carry the set). The report's owner-lookup fallback carries neither.
+- **One walk, two modes.** `CheckAsync` (the reports) keeps its budgeted owner lookup as the
+  fallback. `ResolveEditableAsync` (the pre-check) never looks up: in no readable list ⇒
+  `SetNotFound`; listed only under foreign owners or without an owner id ⇒ `Forbidden` (F16, never
+  looser than the report); any unreadable source without an admissible find ⇒ `Unavailable`. The
+  hint sits after the `CancellationToken` as an optional parameter (finding 3), so every positional
+  call of the old signature compiles unchanged.
+- **The pre-check reads the grants the guarded way** — a deviation from spec §32 as worded ("only
+  resolved by `ImportTargetOwnershipService`" stays literally true; that service now serves both the
+  reports and the pre-check). A held grant failure (`7tveditorhold:`, 30–60 s) makes the pre-check
+  "unavailable" where the picker's unguarded target list would still have shown accounts — stricter,
+  not looser. The picker route keeps its unguarded way.
+- **The pre-check gets its own route**, `GET /api/seventv/me/emote-set-targets/{emoteSetId}` in the
+  `/me` group under `ForeignEmoteLookup`, answering 200 with a `status` (`editable`, `notSelectable`,
+  `notEditable`, `unavailable`) and the target on `editable`; `resolveEditableSet` answers from the
+  client's fresh target-list copy first (0 requests), then from a per-set answer cached 60 s, and
+  only then asks the route — it never reloads the whole target list again.
+- **The true cost replaces "zero requests"** in `ImportTargetOwnershipService`,
+  `IImportTargetOwnershipService`, `GuardedSevenTvEditorGrantsService`, `SevenTvEndpoints` and the
+  spec (§41): lists warm ⇒ 0; cold with the actor as owner ⇒ 1; cold with a valid grant hint ⇒ 2 in
+  one round trip; cold without a valid hint ⇒ up to `1 + k` serially, plus the report's one owner
+  lookup for a set in no list; reading cold grants adds 2 (identity, `editor_of`). All budgeted,
+  behind breaker and coalescer; an open list breaker is "unavailable" with or without a hint.
+- **Old protocol files** carry no owner id; their channel login (the purge envelope's
+  `channelName`, a transfer file's `targetChannelName`) serves as a login hint — no format version
+  changes.
+
+Existing entries are not rewritten; this one qualifies 2026-09-25 "Who may report …" (F16 holds:
+the pre-check takes no owner lookup), 2026-09-25 "The replace lock … falls" (the pre-check it
+relies on) and 2026-09-28 #280 (its Known limit narrows to calls without a valid hint and to budget
+contention; the addendum lands with the client change).
+
+---
+
 ### 2026-09-28 — A confirmed start of any 7TV run locks the start triggers before its run exists, and the announcer speaks that wait
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (+ spec; `SevenTvRunParticipant.startCheckPending`,

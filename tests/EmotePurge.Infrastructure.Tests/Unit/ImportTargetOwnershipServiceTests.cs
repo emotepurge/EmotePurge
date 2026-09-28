@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Services;
@@ -18,10 +20,18 @@ namespace EmotePurge.Infrastructure.Tests.Unit;
 /// of them, under the provider budget and its own breaker operation.
 /// </summary>
 /// <remarks>
-/// The two cases at the bottom run the real chain — list service, editor service and 7TV client —
-/// with only the two caches and the HTTP handler faked. They are the evidence for the Codex finding
-/// this class answers: an ordinary report whose lists are cached costs no upstream request, and the
-/// one case that does costs exactly one, charged against the shared budget.
+/// <para>
+/// The real-chain cases run list service, editor service and 7TV client with only the caches and
+/// the HTTP handler faked. They are the evidence for the Codex finding this class answers: a report
+/// whose lists are cached costs no upstream request, and a set in no list costs exactly one,
+/// charged against the shared budget.
+/// </para>
+/// <para>
+/// The owner-hint cases run the same chain cold (empty list cache): with a hint on the owner — the
+/// last of five grants — two list requests in one round trip, without one <c>1 + k</c>; the hint
+/// never widens what is admissible, and the pre-check mode (<c>ResolveEditableAsync</c>) never
+/// looks a set up.
+/// </para>
 /// </remarks>
 public class ImportTargetOwnershipServiceTests
 {
@@ -33,6 +43,11 @@ public class ImportTargetOwnershipServiceTests
     private const string EditedSevenTvId = "01EDITED";
     private const string StrangerSevenTvId = "01STRANGER";
     private const string EmoteSetId = "01TARGETSET";
+    private const int GrantCount = 5;
+    private const string NoSevenTvAccountJson = """{"data":{"users":{"userByConnection":null}}}""";
+
+    private const string IdentityJson =
+        """{"data":{"user_by_connection":{"id":"01ACTOR","connections":[{"platform":"TWITCH","id":"100","emote_set_id":null}]}}}""";
 
     [Fact]
     public async Task ASetOwnedByTheActor_InTheActorsOwnList_IsAdmissible()
@@ -363,6 +378,467 @@ public class ImportTargetOwnershipServiceTests
         Assert.False(breaker.TryAcquire(ForeignSevenTvBreakerOperations.EmoteSetOwner).Allowed);
     }
 
+    // ---- The owner hint (the set-centric reports' and the pre-check's shared walk) ----------------
+    //
+    // The cases below run the real chain cold: list service, guarded grants service and 7TV client,
+    // with an empty list cache and a handler that answers the v4 set list per platformId. The grant
+    // cache is warm (five grants, the owner last) unless a case says otherwise.
+
+    /// <summary>
+    /// The core of the owner hint: a cold check whose owner is the last of five grants costs two
+    /// list requests with a hint on that owner — the actor's own and the owner's, in flight together
+    /// — and none of the other four.
+    /// </summary>
+    [Fact]
+    public async Task AColdCheck_WithAHintOnTheLastOfFiveGrants_ReadsTwoListsInOneRoundTrip()
+    {
+        var chain = CreateColdChain(OwnerIsLastGrant());
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        chain.Handler.Gate = gate;
+
+        SevenTvEmoteSetOwnershipCheckResult result;
+        try
+        {
+            var check = chain.Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(GrantTwitchId(GrantCount)));
+
+            // Both requests reach the handler while neither has been answered: one round trip.
+            await WaitUntilAsync(() => chain.Handler.CountOf(SevenTvGqlRouteHandler.List) == 2);
+            Assert.False(check.IsCompleted);
+            gate.SetResult();
+            result = await check;
+        }
+        finally
+        {
+            gate.TrySetResult();
+        }
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Equal(GrantSevenTvId(GrantCount), result.OwnerSevenTvUserId);
+        Assert.Equal(GrantLogin(GrantCount), result.OwnerTwitchLogin);
+        Assert.Equal(GrantTwitchId(GrantCount), result.OwnerTwitchUserId);
+        Assert.Equal(EmoteSetId, result.EmoteSet?.Id);
+        Assert.Equal(EmoteSetId, result.SevenTvActiveEmoteSetId);
+        Assert.Equal(2, chain.Handler.CountOf(SevenTvGqlRouteHandler.List));
+        Assert.Equal(0, chain.Handler.CountOf(SevenTvGqlRouteHandler.Owner));
+        Assert.Equal(2, chain.RequestBudget.Charges);
+        Assert.Equal(new[] { ActorTwitchId, GrantTwitchId(GrantCount) }, chain.ListedTwitchIds.Order().ToArray());
+    }
+
+    /// <summary>The same check without a hint: today's walk, 1 + k lists, serially.</summary>
+    [Fact]
+    public async Task AColdCheck_WithoutAHint_WalksAllOnePlusKLists()
+    {
+        var chain = CreateColdChain(OwnerIsLastGrant());
+
+        var result = await chain.Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Equal(GrantTwitchId(GrantCount), result.OwnerTwitchUserId);
+        Assert.Equal(1 + GrantCount, chain.Handler.CountOf(SevenTvGqlRouteHandler.List));
+        Assert.Equal(0, chain.Handler.CountOf(SevenTvGqlRouteHandler.Owner));
+        Assert.Equal(AllAccountsInWalkOrder(), chain.ListedTwitchIds.ToArray());
+    }
+
+    /// <summary>
+    /// A hint on an account that is neither the actor nor a grant — a revoked grant, a forged value —
+    /// is dropped before any list is read: the same requests, in the same order, and the same answer
+    /// as without a hint.
+    /// </summary>
+    [Fact]
+    public async Task AForeignHint_IsDropped_WithTheSameRequestsAndResultAsWithoutOne()
+    {
+        var withoutHint = CreateColdChain(OwnerIsLastGrant());
+        var withForeignHint = CreateColdChain(OwnerIsLastGrant());
+
+        var expected = await withoutHint.Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+        var actual = await withForeignHint.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint("999", "stranger"));
+
+        Assert.Equal(Describe(expected), Describe(actual));
+        Assert.Equal(withoutHint.ListedTwitchIds.ToArray(), withForeignHint.ListedTwitchIds.ToArray());
+        Assert.Equal(withoutHint.Handler.Requests, withForeignHint.Handler.Requests);
+    }
+
+    /// <summary>
+    /// Codex finding 1 (high): the grant cache outlives the actor's 7TV connection by up to ten
+    /// minutes. With the actor's own list saying "no 7TV account", a stale positive grant and a
+    /// valid hint on it — even with the set right there in the hinted list, owned by that grant —
+    /// must not widen anything: the answer is the one without a hint, the owner lookup runs exactly
+    /// as often, and no other grant's list is read. The only extra cost is the hinted list itself,
+    /// already in flight beside the own one when the own one comes back.
+    /// </summary>
+    [Fact]
+    public async Task AStalePositiveGrant_WithAnActorWithoutASevenTvAccount_NeverWidensTheReport()
+    {
+        var answers = OwnerIsLastGrant();
+        answers[ActorTwitchId] = NoSevenTvAccountJson;
+        var withoutHint = CreateColdChain(answers, ownerLookupAnswer: GrantSevenTvId(GrantCount));
+        var withHint = CreateColdChain(answers, ownerLookupAnswer: GrantSevenTvId(GrantCount));
+
+        var expected = await withoutHint.Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+        var actual = await withHint.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(GrantTwitchId(GrantCount)));
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Forbidden, expected.Status);
+        Assert.Equal(Describe(expected), Describe(actual));
+        Assert.Equal(1, withoutHint.Handler.CountOf(SevenTvGqlRouteHandler.Owner));
+        Assert.Equal(1, withHint.Handler.CountOf(SevenTvGqlRouteHandler.Owner));
+        Assert.Equal(new[] { ActorTwitchId }, withoutHint.ListedTwitchIds.ToArray());
+        Assert.Equal(new[] { ActorTwitchId, GrantTwitchId(GrantCount) }, withHint.ListedTwitchIds.Order().ToArray());
+    }
+
+    /// <summary>The same guard in the pre-check's mode: "not found", and no owner lookup either way.</summary>
+    [Fact]
+    public async Task AStalePositiveGrant_WithAnActorWithoutASevenTvAccount_NeverWidensThePreCheck()
+    {
+        var answers = OwnerIsLastGrant();
+        answers[ActorTwitchId] = NoSevenTvAccountJson;
+        var withoutHint = CreateColdChain(answers, ownerLookupAnswer: GrantSevenTvId(GrantCount));
+        var withHint = CreateColdChain(answers, ownerLookupAnswer: GrantSevenTvId(GrantCount));
+
+        var expected = await withoutHint.Service.ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+        var actual = await withHint.Service.ResolveEditableAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(GrantTwitchId(GrantCount)));
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.SetNotFound, expected.Status);
+        Assert.Equal(Describe(expected), Describe(actual));
+        Assert.Equal(0, withoutHint.Handler.CountOf(SevenTvGqlRouteHandler.Owner));
+        Assert.Equal(0, withHint.Handler.CountOf(SevenTvGqlRouteHandler.Owner));
+        Assert.Equal(new[] { ActorTwitchId }, withoutHint.ListedTwitchIds.ToArray());
+        Assert.Equal(new[] { ActorTwitchId, GrantTwitchId(GrantCount) }, withHint.ListedTwitchIds.Order().ToArray());
+    }
+
+    /// <summary>
+    /// An own list that could not be read is the partial outage it always was: a find in the hinted
+    /// list is admissible, and without one the walk goes on and ends "unavailable", never "forbidden".
+    /// </summary>
+    [Fact]
+    public async Task AnUnreadableOwnList_WithAValidGrantHint_IsAdmissibleOnAFind_AndUnavailableWithout()
+    {
+        var withFind = OwnerIsLastGrant();
+        withFind.Remove(ActorTwitchId);
+        var withoutFind = NoSetAnywhere();
+        withoutFind.Remove(ActorTwitchId);
+        var hint = new EmoteSetOwnerHint(GrantTwitchId(GrantCount));
+
+        var found = await CreateColdChain(withFind).Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hint);
+        var reported = await CreateColdChain(withoutFind, ownerLookupAnswer: StrangerSevenTvId).Service
+            .CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hint);
+        var preChecked = await CreateColdChain(withoutFind).Service
+            .ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hint);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, found.Status);
+        Assert.Equal(GrantTwitchId(GrantCount), found.OwnerTwitchUserId);
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, reported.Status);
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, preChecked.Status);
+    }
+
+    /// <summary>
+    /// A hint on the actor walks exactly as today: the own list first, and with the set found there
+    /// the grants are never asked — also when the actor's own account is among their grants.
+    /// </summary>
+    [Fact]
+    public async Task AHintOnTheActor_WithTheSetInTheOwnList_NeverAsksForTheGrants()
+    {
+        var lists = ListsReturning((ActorTwitchId, ListOf(ActorSevenTvId, Set(EmoteSetId, ActorSevenTvId))));
+        var editors = EditorsReturning(Grants((ActorLogin, ActorTwitchId), (EditedLogin, EditedTwitchId)));
+
+        var result = await CreateService(lists, editors, Substitute.For<ISevenTvApiClient>())
+            .CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(ActorTwitchId));
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Equal(ActorTwitchId, result.OwnerTwitchUserId);
+        await editors.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await lists.Received(1).ListByTwitchIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>The same by login, cold: one list request, and the grant cache is never touched.</summary>
+    [Fact]
+    public async Task ALoginHintOnTheActor_Cold_CostsOneListRequest()
+    {
+        var answers = NoSetAnywhere();
+        answers[ActorTwitchId] = ListJson(ActorSevenTvId, null, new ListedSet(EmoteSetId, ActorSevenTvId));
+        var chain = CreateColdChain(answers);
+
+        var result = await chain.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(TwitchLogin: "  Actor "));
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Equal(1, chain.Handler.CountOf(SevenTvGqlRouteHandler.List));
+        await chain.GrantsCache.DidNotReceive().TryGetSevenTvEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// A hinted list that cannot be read is noted as unreadable and the walk goes on: a find further
+    /// down is admissible; with none, the outcome is "unavailable" — the unread list may have been
+    /// the owner's.
+    /// </summary>
+    [Fact]
+    public async Task AnUnreadableHintedList_DoesNotEndTheWalk()
+    {
+        var foundLater = NoSetAnywhere();
+        foundLater.Remove(GrantTwitchId(1));
+        foundLater[GrantTwitchId(3)] = ListJson(GrantSevenTvId(3), null, new ListedSet(EmoteSetId, GrantSevenTvId(3)));
+        var nowhere = NoSetAnywhere();
+        nowhere.Remove(GrantTwitchId(1));
+        var hint = new EmoteSetOwnerHint(GrantTwitchId(1));
+
+        var chain = CreateColdChain(foundLater);
+        var found = await chain.Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hint);
+        var reported = await CreateColdChain(nowhere, ownerLookupAnswer: StrangerSevenTvId).Service
+            .CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hint);
+        var preChecked = await CreateColdChain(nowhere).Service
+            .ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hint);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, found.Status);
+        Assert.Equal(GrantTwitchId(3), found.OwnerTwitchUserId);
+        Assert.Equal(4, chain.Handler.CountOf(SevenTvGqlRouteHandler.List));
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, reported.Status);
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, preChecked.Status);
+    }
+
+    /// <summary>
+    /// Owner changed hands: the hinted list carries the set, but under another checked account.
+    /// No early "forbidden" — the walk goes on and finds the owner later, under the owner's identity.
+    /// </summary>
+    [Fact]
+    public async Task ASetInTheHintedList_OwnedByAnotherCheckedAccount_IsThatAccounts_WithoutAnEarlyForbidden()
+    {
+        var answers = NoSetAnywhere();
+        answers[GrantTwitchId(2)] = ListJson(GrantSevenTvId(2), null, new ListedSet(EmoteSetId, GrantSevenTvId(4)));
+        var chain = CreateColdChain(answers);
+
+        var result = await chain.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(GrantTwitchId(2)));
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Equal(GrantSevenTvId(4), result.OwnerSevenTvUserId);
+        Assert.Equal(GrantLogin(4), result.OwnerTwitchLogin);
+        Assert.Equal(GrantTwitchId(4), result.OwnerTwitchUserId);
+        // The owner's own list did not carry the set: the set comes from the listing account, the
+        // active flag from nobody.
+        Assert.Equal(EmoteSetId, result.EmoteSet?.Id);
+        Assert.Null(result.SevenTvActiveEmoteSetId);
+        Assert.Equal(0, chain.Handler.CountOf(SevenTvGqlRouteHandler.Owner));
+    }
+
+    /// <summary>
+    /// Listed in the hinted list under a stranger and nowhere else: "forbidden", but only after the
+    /// whole walk — any later account might have been that stranger — and without a lookup.
+    /// </summary>
+    [Fact]
+    public async Task ASetInTheHintedList_UnderAForeignOwner_IsForbiddenOnlyAfterTheFullWalk()
+    {
+        var answers = NoSetAnywhere();
+        answers[GrantTwitchId(2)] = ListJson(GrantSevenTvId(2), null, new ListedSet(EmoteSetId, StrangerSevenTvId));
+        var hint = new EmoteSetOwnerHint(GrantTwitchId(2));
+        var reportChain = CreateColdChain(answers);
+
+        var reported = await reportChain.Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hint);
+        var preChecked = await CreateColdChain(answers).Service.ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hint);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Forbidden, reported.Status);
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Forbidden, preChecked.Status);
+        Assert.Equal(1 + GrantCount, reportChain.Handler.CountOf(SevenTvGqlRouteHandler.List));
+        Assert.Equal(0, reportChain.Handler.CountOf(SevenTvGqlRouteHandler.Owner));
+    }
+
+    /// <summary>
+    /// The hint takes no way around the guards: with the list breaker open, no list request leaves
+    /// the process, hinted or not, and the answer is "unavailable" — fail-closed.
+    /// </summary>
+    [Fact]
+    public async Task AnOpenListBreaker_IsUnavailable_WithoutAListRequest_WithOrWithoutAHint()
+    {
+        var hint = new EmoteSetOwnerHint(GrantTwitchId(GrantCount));
+        foreach (var ownerHint in new[] { (EmoteSetOwnerHint?)null, hint })
+        {
+            var preCheckChain = CreateColdChain(OwnerIsLastGrant(), breaker: BreakerWithOpenListOperation());
+            var reportChain = CreateColdChain(OwnerIsLastGrant(), breaker: BreakerWithOpenListOperation());
+
+            var preChecked = await preCheckChain.Service.ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: ownerHint);
+            var reported = await reportChain.Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: ownerHint);
+
+            Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, preChecked.Status);
+            Assert.Equal(0, preCheckChain.Handler.Requests);
+            // The report's owner lookup has a breaker operation of its own; its 503 keeps the
+            // answer "unavailable". The lists stay closed either way.
+            Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, reported.Status);
+            Assert.Equal(0, reportChain.Handler.CountOf(SevenTvGqlRouteHandler.List));
+        }
+    }
+
+    [Fact]
+    public async Task ALoginHint_MatchingAGrantInAnyCase_ResolvesToThatGrantsId()
+    {
+        var chain = CreateColdChain(OwnerIsLastGrant());
+
+        var result = await chain.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(TwitchLogin: $" {GrantLogin(GrantCount).ToUpperInvariant()} "));
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Equal(GrantTwitchId(GrantCount), result.OwnerTwitchUserId);
+        Assert.Equal(new[] { ActorTwitchId, GrantTwitchId(GrantCount) }, chain.ListedTwitchIds.Order().ToArray());
+    }
+
+    /// <summary>A renamed login matches no grant: dropped, and the walk is today's.</summary>
+    [Fact]
+    public async Task ALoginHint_MatchingNoGrant_IsDropped()
+    {
+        var chain = CreateColdChain(OwnerIsLastGrant());
+
+        var result = await chain.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(TwitchLogin: "renamedchannel"));
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Equal(AllAccountsInWalkOrder(), chain.ListedTwitchIds.ToArray());
+    }
+
+    /// <summary>The id wins: a valid login beside it is never consulted, whether the id is valid or not.</summary>
+    [Fact]
+    public async Task AnIdHint_WinsOverALoginHint()
+    {
+        var validId = CreateColdChain(OwnerIsLastGrant());
+        var foreignId = CreateColdChain(OwnerIsLastGrant());
+
+        await validId.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(GrantTwitchId(GrantCount), GrantLogin(1)));
+        await foreignId.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint("999", GrantLogin(GrantCount)));
+
+        Assert.Equal(new[] { ActorTwitchId, GrantTwitchId(GrantCount) }, validId.ListedTwitchIds.Order().ToArray());
+        Assert.Equal(AllAccountsInWalkOrder(), foreignId.ListedTwitchIds.ToArray());
+    }
+
+    /// <summary>
+    /// The pre-check never asks 7TV about a set directly (F16: never looser than the list rule): a set
+    /// in no list is "not found", where the report would have looked it up.
+    /// </summary>
+    [Fact]
+    public async Task ThePreCheck_ASetInNoList_IsNotFound_WithoutAnOwnerLookup()
+    {
+        var client = ClientAnsweringOwner(SevenTvEmoteSetOwnerLookupResult.Ok(ActorSevenTvId));
+
+        var result = await CreateService(ListsReturning((ActorTwitchId, ListOf(ActorSevenTvId))), EditorsReturning(Grants()), client)
+            .ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.SetNotFound, result.Status);
+        await client.DidNotReceive().LookUpEmoteSetOwnerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>A set listed without an owner id is not editable on the list (F16) — "forbidden", no lookup.</summary>
+    [Fact]
+    public async Task ThePreCheck_ASetListedWithoutAnOwnerId_IsForbidden()
+    {
+        var client = ClientAnsweringOwner(SevenTvEmoteSetOwnerLookupResult.Ok(ActorSevenTvId));
+        var lists = ListsReturning((ActorTwitchId, ListOf(ActorSevenTvId, Set(EmoteSetId, null))));
+
+        var result = await CreateService(lists, EditorsReturning(Grants()), client)
+            .ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Forbidden, result.Status);
+        await client.DidNotReceive().LookUpEmoteSetOwnerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>A held grant failure makes the pre-check "unavailable" — stricter than the picker's list, never looser.</summary>
+    [Fact]
+    public async Task ThePreCheck_WithUnreadableGrants_AndNoFind_IsUnavailable()
+    {
+        var editors = Substitute.For<IGuardedSevenTvEditorGrantsService>();
+        editors.GetEditorGrantsAsync(ActorTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Failed(SevenTvLookupStatus.Unavailable));
+
+        var result = await CreateService(ListsReturning((ActorTwitchId, ListOf(ActorSevenTvId))), editors, Substitute.For<ISevenTvApiClient>())
+            .ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, result.Status);
+    }
+
+    /// <summary>
+    /// What the pre-check route needs besides the verdict: the set as the list named it (whatever its
+    /// kind — telling PERSONAL apart is the route's job) and the owner list's active set.
+    /// </summary>
+    [Fact]
+    public async Task ThePreCheck_CarriesTheSetAndTheOwnersActiveSet()
+    {
+        var set = new EmoteSetSummary(EmoteSetId, "Personal Emotes", 5, "PERSONAL", true, "Actor Display", ActorSevenTvId);
+        var lists = ListsReturning((ActorTwitchId, EmoteSetListResult.Ok(new EmoteSetList(EmoteSetId, [set], ActorSevenTvId))));
+
+        var result = await CreateService(lists, EditorsReturning(Grants()), Substitute.For<ISevenTvApiClient>())
+            .ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Equal(ActorLogin, result.OwnerTwitchLogin);
+        Assert.Equal(set, result.EmoteSet);
+        Assert.Equal(EmoteSetId, result.SevenTvActiveEmoteSetId);
+    }
+
+    /// <summary>The report's owner-lookup fallback knows no list entry, so it carries none.</summary>
+    [Fact]
+    public async Task TheReportsLookupFallback_CarriesNoSet()
+    {
+        var client = ClientAnsweringOwner(SevenTvEmoteSetOwnerLookupResult.Ok(ActorSevenTvId));
+
+        var result = await CreateService(ListsReturning((ActorTwitchId, ListOf(ActorSevenTvId))), EditorsReturning(Grants()), client)
+            .CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Null(result.EmoteSet);
+        Assert.Null(result.SevenTvActiveEmoteSetId);
+    }
+
+    /// <summary>
+    /// A cold grant cache is the one case the hint cannot skip: the grants vouch for it, at two
+    /// budgeted requests (identity and editor_of), before the two lists — four permits in all.
+    /// </summary>
+    [Fact]
+    public async Task AColdGrantCache_WithAHintOnAGrant_CostsTwoGrantRequestsAndTwoListRequests()
+    {
+        var chain = CreateColdChain(OwnerIsLastGrant(), grantsCached: false);
+        chain.Handler
+            .Answer(SevenTvGqlRouteHandler.Identity, HttpStatusCode.OK, IdentityJson)
+            .Answer(SevenTvGqlRouteHandler.EditorOf, HttpStatusCode.OK, EditorOfJson());
+
+        var result = await chain.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint(GrantTwitchId(GrantCount)));
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+        Assert.Equal(GrantTwitchId(GrantCount), result.OwnerTwitchUserId);
+        Assert.Equal(1, chain.Handler.CountOf(SevenTvGqlRouteHandler.Identity));
+        Assert.Equal(1, chain.Handler.CountOf(SevenTvGqlRouteHandler.EditorOf));
+        Assert.Equal(2, chain.Handler.CountOf(SevenTvGqlRouteHandler.List));
+        Assert.Equal(4, chain.RequestBudget.Charges);
+    }
+
+    /// <summary>
+    /// Codex finding 2: listed under grant A, owned by grant B. The hint is B (the client resolves
+    /// the owner, never the listing account) and costs two lists; both modes name B — its login, its
+    /// Twitch id, its own list's active set — and never A. Without a hint the walk reaches B too.
+    /// </summary>
+    [Fact]
+    public async Task ASetListedUnderGrantA_OwnedByGrantB_IsBs_InBothModes()
+    {
+        var answers = NoSetAnywhere();
+        answers[GrantTwitchId(2)] = ListJson(GrantSevenTvId(2), null, new ListedSet(EmoteSetId, GrantSevenTvId(4)));
+        answers[GrantTwitchId(4)] = ListJson(GrantSevenTvId(4), EmoteSetId, new ListedSet(EmoteSetId, GrantSevenTvId(4)));
+        var hintOnB = new EmoteSetOwnerHint(GrantTwitchId(4));
+        var reportChain = CreateColdChain(answers);
+
+        var reported = await reportChain.Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hintOnB);
+        var preChecked = await CreateColdChain(answers).Service.ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: hintOnB);
+        var preCheckedWithoutHint = await CreateColdChain(answers).Service.ResolveEditableAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+
+        Assert.Equal(new[] { ActorTwitchId, GrantTwitchId(4) }, reportChain.ListedTwitchIds.Order().ToArray());
+        foreach (var result in new[] { reported, preChecked, preCheckedWithoutHint })
+        {
+            Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
+            Assert.Equal(GrantSevenTvId(4), result.OwnerSevenTvUserId);
+            Assert.Equal(GrantLogin(4), result.OwnerTwitchLogin);
+            Assert.Equal(GrantTwitchId(4), result.OwnerTwitchUserId);
+            Assert.Equal(EmoteSetId, result.SevenTvActiveEmoteSetId);
+        }
+    }
+
     private static async Task<(ImportTargetOwnershipService Service, CountingOwnerHandler Handler, RecordingForeignUpstreamRequestBudget RequestBudget)>
         CreateRealChainAsync(EmoteSetListResult actorList, EmoteSetListResult editedList)
     {
@@ -443,8 +919,165 @@ public class ImportTargetOwnershipServiceTests
     private static EmoteSetListResult ListOf(string accountSevenTvId, params EmoteSetSummary[] sets) =>
         EmoteSetListResult.Ok(new EmoteSetList(null, sets, accountSevenTvId));
 
-    private static EmoteSetSummary Set(string id, string ownerSevenTvId) =>
+    private static EmoteSetSummary Set(string id, string? ownerSevenTvId) =>
         new(id, "Some Set", 1000, "NORMAL", false, "Some Owner", ownerSevenTvId);
+
+    // The cold chain of the owner-hint cases: the real list service with an empty cache, the real
+    // guarded grants service over a grant cache that holds the five grants (or nothing), and one
+    // handler answering the v4 set list per platformId — an id without an answer gets a 503.
+    private static ColdChain CreateColdChain(
+        IReadOnlyDictionary<string, string> listAnswers,
+        bool grantsCached = true,
+        string? ownerLookupAnswer = null,
+        ForeignSevenTvBreakerPolicy? breaker = null)
+    {
+        var listedTwitchIds = new ConcurrentQueue<string>();
+        var handler = new SevenTvGqlRouteHandler().Answer(SevenTvGqlRouteHandler.List, body =>
+        {
+            var twitchId = PlatformIdOf(body);
+            listedTwitchIds.Enqueue(twitchId);
+            return listAnswers.TryGetValue(twitchId, out var json)
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") }
+                : new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent(string.Empty) };
+        });
+        if (ownerLookupAnswer is not null)
+        {
+            handler.Answer(
+                SevenTvGqlRouteHandler.Owner, HttpStatusCode.OK, "{\"data\":{\"emote_set\":{\"owner_id\":\"" + ownerLookupAnswer + "\"}}}");
+        }
+
+        var requestBudget = new RecordingForeignUpstreamRequestBudget();
+        var client = new SevenTvApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
+            new RecordingRateLimitTelemetry(),
+            requestBudget,
+            new RecordingLogger<SevenTvApiClient>());
+
+        var grantsCache = Substitute.For<IModRoleCache>();
+        if (grantsCached)
+        {
+            grantsCache.TryGetSevenTvEditorGrantsAsync(ActorTwitchId, Arg.Any<CancellationToken>()).Returns(FiveGrants());
+        }
+
+        breaker ??= new ForeignSevenTvBreakerPolicy();
+        var budget = new ForeignEmoteSetProviderBudget();
+        var lists = new SevenTvEmoteSetListService(
+            client, new InMemoryListCache(), new ForeignEmoteSetRequestCoalescer<EmoteSetListResult>(), breaker, budget,
+            NullLogger<SevenTvEmoteSetListService>.Instance);
+        var editors = new GuardedSevenTvEditorGrantsService(
+            client, grantsCache, new InMemoryEditorGrantsHoldCache(), breaker, budget, new RecordingRateLimitTelemetry(),
+            NullLogger<GuardedSevenTvEditorGrantsService>.Instance);
+
+        return new ColdChain(CreateService(lists, editors, client, breaker, budget), handler, requestBudget, grantsCache, listedTwitchIds);
+    }
+
+    private static ForeignSevenTvBreakerPolicy BreakerWithOpenListOperation()
+    {
+        var breaker = new ForeignSevenTvBreakerPolicy();
+        for (var failure = 0; failure < ForeignSevenTvBreakerPolicy.FailureThreshold; failure++)
+        {
+            var decision = breaker.TryAcquire(ForeignSevenTvBreakerOperations.EmoteSetList);
+            breaker.RecordFailure(
+                ForeignSevenTvBreakerOperations.EmoteSetList, ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
+        }
+
+        return breaker;
+    }
+
+    /// <summary>Every account's list without the set; the owner-hint cases put it where they need it.</summary>
+    private static Dictionary<string, string> NoSetAnywhere()
+    {
+        var answers = new Dictionary<string, string>(StringComparer.Ordinal) { [ActorTwitchId] = ListJson(ActorSevenTvId, null) };
+        for (var grant = 1; grant <= GrantCount; grant++)
+        {
+            answers[GrantTwitchId(grant)] = ListJson(GrantSevenTvId(grant), null);
+        }
+
+        return answers;
+    }
+
+    /// <summary>The set in the last grant's list only, owned by that grant and active there.</summary>
+    private static Dictionary<string, string> OwnerIsLastGrant()
+    {
+        var answers = NoSetAnywhere();
+        answers[GrantTwitchId(GrantCount)] = ListJson(
+            GrantSevenTvId(GrantCount), EmoteSetId, new ListedSet(EmoteSetId, GrantSevenTvId(GrantCount)));
+        return answers;
+    }
+
+    private static string[] AllAccountsInWalkOrder() =>
+        [ActorTwitchId, .. Enumerable.Range(1, GrantCount).Select(GrantTwitchId)];
+
+    private static SevenTvEditorGrants FiveGrants() =>
+        Grants([.. Enumerable.Range(1, GrantCount).Select(grant => (GrantLogin(grant), GrantTwitchId(grant)))]);
+
+    private static string GrantTwitchId(int grant) => $"20{grant}";
+
+    private static string GrantLogin(int grant) => $"grant{grant}";
+
+    private static string GrantSevenTvId(int grant) => $"01GRANT{grant}";
+
+    // The v4 answer shape of SevenTvApiClient's set-list query (measured 2026-09-20).
+    private static string ListJson(string accountSevenTvId, string? activeEmoteSetId, params ListedSet[] sets) =>
+        JsonSerializer.Serialize(new
+        {
+            data = new
+            {
+                users = new
+                {
+                    userByConnection = new
+                    {
+                        id = accountSevenTvId,
+                        style = new { activeEmoteSetId },
+                        emoteSets = sets.Select(set => new
+                        {
+                            id = set.Id,
+                            name = "Some Set",
+                            capacity = 1000,
+                            kind = "NORMAL",
+                            owner = set.OwnerSevenTvId is null
+                                ? null
+                                : new { id = set.OwnerSevenTvId, mainConnection = new { platformDisplayName = "Some Owner" } },
+                        }),
+                    },
+                },
+            },
+        });
+
+    private static string EditorOfJson() =>
+        JsonSerializer.Serialize(new
+        {
+            data = new
+            {
+                user = new
+                {
+                    editor_of = Enumerable.Range(1, GrantCount).Select(grant => new
+                    {
+                        user = new { connections = new[] { new { platform = "TWITCH", id = GrantTwitchId(grant), username = GrantLogin(grant) } } },
+                    }),
+                },
+            },
+        });
+
+    private static string PlatformIdOf(string requestBody)
+    {
+        using var document = JsonDocument.Parse(requestBody);
+        return document.RootElement.GetProperty("variables").GetProperty("pid").GetString()!;
+    }
+
+    private static (SevenTvEmoteSetOwnershipStatus, string?, string?, string?, EmoteSetSummary?, string?) Describe(
+        SevenTvEmoteSetOwnershipCheckResult result) =>
+        (result.Status, result.OwnerSevenTvUserId, result.OwnerTwitchLogin, result.OwnerTwitchUserId, result.EmoteSet, result.SevenTvActiveEmoteSetId);
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "Condition not reached within 10 s.");
+            await Task.Delay(10);
+        }
+    }
 
     private sealed class InMemoryListCache : ISevenTvEmoteSetListCache
     {
@@ -478,4 +1111,13 @@ public class ImportTargetOwnershipServiceTests
             });
         }
     }
+
+    private sealed record ColdChain(
+        ImportTargetOwnershipService Service,
+        SevenTvGqlRouteHandler Handler,
+        RecordingForeignUpstreamRequestBudget RequestBudget,
+        IModRoleCache GrantsCache,
+        ConcurrentQueue<string> ListedTwitchIds);
+
+    private sealed record ListedSet(string Id, string? OwnerSevenTvId);
 }
