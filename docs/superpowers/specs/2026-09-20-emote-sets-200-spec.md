@@ -3357,3 +3357,63 @@ beiden Routen gilt ab #253 jene Spec, nicht mehr dieser Abschnitt.
 `sync-deleted`/`sync-restored`-Bodyform beschreibt) statt auf 6.7 (der set-zentrierte
 `sync-imported`-Endpunkt, um den es in F7 tatsächlich geht) — die in einem früheren Plan-230-Task
 vorgesehene Korrektur war nie gelandet. Korrigiert direkt an der Stelle.
+
+## 41. Nachtrag: Besitzer-Hinweis und die wahre Kostenformel der Besitzer-Prüfung (#216, 2026-09-28)
+
+Dieser Nachtrag hebt die Behauptung auf, die Besitzer-Prüfung koste „im Normalfall null Requests",
+und hält fest, was mit dem Besitzer-Hinweis gilt. Der Fließtext von §32 bleibt stehen, wie er ist;
+die folgenden Stellen gelten ab hier in der korrigierten Form. Plan:
+`docs/plans/Plan-216-Besitzer-Hinweis.md`; Entscheidungslog-Eintrag 2026-09-28 „The owner check
+reads the hinted owner's list beside the actor's own …".
+
+**Was an der Null-Behauptung falsch war.** Die Listen sind 60 s gecacht (E12), die Grants zehn
+Minuten. Liegt zwischen Picker und Bericht mehr als eine Minute, liest die Prüfung die Listen neu —
+ohne Hinweis die eigene und dann die jedes `editor_of`-Kontos, seriell bis zum Treffer, also bis zu
+`1 + k` Requests (#216: 6 gemessen). „Null" galt nur innerhalb der 60 s.
+
+| Stelle | Was jetzt gilt |
+|---|---|
+| **§32 P1, Absatz „Tests"** („erzeugt der Normalfall **null** HTTP-Requests") | Richtig für den gemessenen Fall — Listen **und** Grants gecacht. Als Aussage über „den Normalfall" gilt stattdessen die Kostenformel unten |
+| **§32 zweite Runde, „Cache-Treffer … Das ist der Normalfall, weil der Picker den Grant-Cache Minuten vor dem Bericht füllt"** | Für den **Grant**-Cache (zehn Minuten) weiterhin richtig; die Verallgemeinerung auf die ganze Prüfung entfällt — die Listen halten nur 60 s |
+| **§32 zweite Runde, „Der geschützte Weg kostet im Normalfall nichts"** | Er kostet bei warmem Grant-Cache nichts, bei kaltem zwei budgetierte Requests (Identität, `editor_of`), bei gehaltenem Fehler nichts |
+| **§32 zweite Runde, „`IGuardedSevenTvEditorGrantsService`, nur von `ImportTargetOwnershipService` aufgelöst"** | Wörtlich weiter wahr — aber `ImportTargetOwnershipService` bedient jetzt **zwei** Aufrufer: die set-zentrierten Berichte (`CheckAsync`) und die Bearbeitbarkeits-Vorprüfung (`ResolveEditableAsync`). Die Vorprüfung liest die Grants damit bewusst geschützt; eine gehaltene Grant-Störung macht sie „nicht prüfbar", wo die ungeschützte Zielliste noch Konten gezeigt hätte — strenger, nie lockerer. Der Ziel-Picker (`/me/emote-set-targets`) bleibt ungeschützt |
+
+**Die Kostenformel.**
+
+| Fall | Listen-Requests | dazu |
+|---|---|---|
+| Warm (Listen ≤ 60 s alt) | 0 | 0 |
+| Kalt, Besitzer ist der Akteur (mit oder ohne Hinweis) | 1 (die eigene Liste) | 0 — die Grants werden nicht gelesen |
+| Kalt, gültiger Hinweis auf einen Grant | 2 (eigene Liste und Hinweis-Liste **parallel**, ein Round-Trip) | +2 (Identität, `editor_of`), wenn der Grant-Cache kalt ist |
+| Kalt, ohne oder mit ungültigem Hinweis | bis zu `1 + k` (Akteur + k Grants, seriell) | +1 Owner-Lookup des Berichts, wenn das Set in keiner Liste steht; +2 wie oben |
+
+Alles budgetiert, hinter Breaker und Coalescer. Ein offener Listen-Breaker ergibt mit und ohne
+Hinweis „nicht verfügbar", ohne Listen-Request.
+
+**Der Hinweis.** Ein Hinweis nennt das Konto, das das Set wahrscheinlich besitzt (Twitch-ID, sonst
+Login). Er ist eine **Reihenfolge, nie eine Erlaubnis**: Er wird nur gegen `{Akteur} ∪ Grants` der
+Session aufgelöst, bevor eine Liste gelesen wird; die ID gewinnt, ein Login zählt nur ohne ID und
+wird beidseitig über `ChannelName.Normalize` verglichen; alles andere wird verworfen (kein 400, keine
+Spiegelung). Ob das Set zulässig ist, entscheidet weiter allein `EmoteSetEditability.IsEditable` über
+die Listen der verifizierten Konten.
+
+**Die eigene Liste wird immer gelesen.** Ein Hinweis auf einen Grant G liest die Grants (meist aus
+dem Cache), dann die eigene Liste und die Liste von G **parallel**, danach die übrigen Grants wie
+bisher seriell. Die Evidenz aus G's Liste zählt erst, wenn die eigene Liste **nicht**
+`NoSevenTvAccount` gemeldet hat — der Grant-Cache kann die 7TV-Verbindung des Akteurs um bis zu zehn
+Minuten überleben, und ein veralteter positiver Grant darf die Annahme nie erweitern. In diesem Fall
+wird G's Liste verworfen, das Ergebnis ist das ohne Hinweis; einziger Mehraufwand ist der schon
+laufende Request auf G's Liste. Eine unlesbare eigene Liste bleibt der Teilausfall aus §32 (Fund
+anderswo ⇒ zulässig, sonst „nicht verfügbar"); eine unlesbare Hinweis-Liste beendet den Gang nicht.
+Das frühe 403 „nur unter fremdem Besitzer gelistet" fällt wie bisher erst nach dem vollständigen Gang.
+
+**Immer das Besitzer-Konto.** Ein Treffer nennt das Konto, dessen 7TV-ID die Besitzer-ID des Sets
+ist — nie das Konto, das das Set nur listet. Stammt der Treffer aus einer Liste, trägt das Ergebnis
+zusätzlich das Set, wie die Liste es nennt (Name, Art, Anzeigename des Besitzers), und das aktive Set
+der **Besitzer**-Liste (leer, wenn das Set dort nicht stand). Der Owner-Lookup-Fallback des Berichts
+trägt beides nicht.
+
+**Die Vorprüfung nimmt keinen Owner-Lookup.** `ResolveEditableAsync` fährt denselben Gang ohne
+Fallback: in keiner lesbaren Liste ⇒ „nicht gefunden"; nur unter fremdem Besitzer oder ohne
+Besitzer-ID gelistet ⇒ „nicht erlaubt" (F16 der Restore-pro-Set-Spec: nie lockerer als der Bericht);
+eine Quelle unlesbar ohne zulässigen Fund ⇒ „nicht verfügbar".
