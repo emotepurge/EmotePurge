@@ -685,6 +685,7 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
       sourceChannelName: SOURCE_CHANNEL,
       sourceKind: 'channel',
       leaderboardSort: null,
+      targetOwnerTwitchId: null,
     });
   });
 
@@ -3606,7 +3607,11 @@ test.describe('import replace: a cancelled request is settled (#284)', () => {
     expect(syncImportedBodies).toHaveLength(1);
     expect(syncImportedBodies[0]?.['sevenTvEmoteIds']).toEqual(['7tv-1']);
     expect(syncDeletedBodies).toEqual([
-      { sevenTvEmoteIds: ['target-a'], expectedChannelName: TARGET_CHANNEL },
+      {
+        sevenTvEmoteIds: ['target-a'],
+        expectedChannelName: TARGET_CHANNEL,
+        targetOwnerTwitchId: null,
+      },
     ]);
     await expect.poll(() => unloadPrevented(page)).toBe(false);
   });

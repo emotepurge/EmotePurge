@@ -47,6 +47,9 @@ function choice(overrides: Partial<ImportTargetChoice> = {}): ImportTargetChoice
     emoteSetId: 'set-halloween',
     channelName: 'handofblood',
     ownerDisplayName: 'HandOfBlood',
+    // `null` by default — the owner-hint design's dedicated cases below (`toOwnerHint`/
+    // `toOwnerTwitchIdHint`) override this explicitly; every other test here is indifferent to it.
+    ownerTwitchChannelId: null,
     setName: 'Halloween',
     isTracked: true,
     twitchLogin: 'handofblood',
@@ -425,6 +428,9 @@ describe('startImportFlow', () => {
         ownerDisplayName: null,
         setName: 'set-1',
         isActiveSet: true,
+        // An add-only run into an 'activeSet' door never resolved an owner — nothing to hint with,
+        // and a channel-bound report reads no hint at all (owner-hint design 3.6).
+        targetOwnerTwitchId: null,
       },
       src.origin,
       outcome.plan,
@@ -523,7 +529,10 @@ describe('startImportFlow', () => {
         plan: { rows: [replaceRow] },
       });
 
-      expect(resolveEditableSet).toHaveBeenCalledWith('set-1');
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-1', {
+        twitchChannelId: null,
+        twitchLogin: 'target-channel',
+      });
       expect(reportTargetCheckBlocked).toHaveBeenCalledWith('notEditable');
       // recheckTransferPlan's own live read (`already-present-filter.ts`) never ran.
       expect(httpPost).not.toHaveBeenCalled();
@@ -570,10 +579,148 @@ describe('startImportFlow', () => {
         plan: { rows: [replaceRow] },
       });
 
-      expect(resolveEditableSet).toHaveBeenCalledWith('set-1');
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-1', {
+        twitchChannelId: null,
+        twitchLogin: 'target-channel',
+      });
       expect(httpPost).toHaveBeenCalled();
       expect(startImport).toHaveBeenCalledTimes(1);
       expect(reportTargetCheckBlocked).not.toHaveBeenCalled();
+    });
+  });
+
+  // Owner-hint design 3.6, first row: what this flow hints `resolveEditableSet` with, and what it
+  // eventually carries onto the run/report — the picker's own owner id when the choice has one, the
+  // door's own login otherwise, and (for a replace-carrying plan) the pre-check's own answer rather
+  // than the original hint once it comes back.
+  describe('owner-hint design 3.6 — hinting the pre-check and carrying the owner id onto the run', () => {
+    const replaceRow: TransferRow = {
+      action: 'replace',
+      source: { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null },
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
+    };
+
+    it('hints the pre-check with the picker choice’s own owner id when it has one', () => {
+      const { deps, dialogOpen, resolveEditableSet, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ ownerTwitchChannelId: 'owner-tw-1' }),
+      });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-halloween', {
+        twitchChannelId: 'owner-tw-1',
+        twitchLogin: null,
+      });
+    });
+
+    it('falls back to the choice’s own channel login when it has no owner id', () => {
+      const { deps, dialogOpen, resolveEditableSet, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-halloween', {
+        twitchChannelId: null,
+        twitchLogin: 'handofblood',
+      });
+    });
+
+    it('carries the pre-check’s own resolved owner id onto the run, not the original login hint', () => {
+      const { deps, dialogOpen, resolveEditableSet, startImport, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      // The check resolves a *different* owner id than the login hint named — a grant match the
+      // picker's own choice never knew about (owner-hint design 3.1 Nr. 10).
+      resolveEditableSet.mockReturnValue(
+        of<EditableSetResolution>({
+          status: 'editable',
+          target: {
+            emoteSetId: 'set-halloween',
+            setName: 'Halloween',
+            ownerDisplayName: 'owner',
+            twitchLogin: 'owner',
+            trackedChannelName: 'handofblood',
+            isActiveSet: true,
+            ownerTwitchChannelId: 'checked-owner-tw',
+          },
+        }),
+      );
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ targetOwnerTwitchId: 'checked-owner-tw' }),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('carries the picker choice’s own owner id straight onto an add-only run, without asking the pre-check', () => {
+      const { deps, dialogOpen, resolveEditableSet, startImport, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ ownerTwitchChannelId: 'owner-tw-2' }),
+      });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+      });
+
+      expect(resolveEditableSet).not.toHaveBeenCalled();
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ targetOwnerTwitchId: 'owner-tw-2' }),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('hands the confirm dialog the same owner id it would hint the pre-check with, for the planned transfer file', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ ownerTwitchChannelId: 'owner-tw-3' }),
+      });
+
+      expect(confirmData(dialogOpen).targetOwnerTwitchId).toBe('owner-tw-3');
+    });
+
+    it('gives the confirm dialog no owner id for an activeSet door', () => {
+      const { deps, dialogOpen } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      expect(confirmData(dialogOpen).targetOwnerTwitchId).toBeNull();
     });
   });
 
@@ -775,6 +922,7 @@ describe('startImportFlow', () => {
           ownerDisplayName: null,
           setName: 'set-1',
           isActiveSet: true,
+          targetOwnerTwitchId: null,
         },
         source().origin,
         addPlan([]),
@@ -806,6 +954,7 @@ describe('startImportFlow', () => {
           ownerDisplayName: null,
           setName: 'set-1',
           isActiveSet: true,
+          targetOwnerTwitchId: null,
         },
         source().origin,
         addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
@@ -1051,6 +1200,8 @@ describe('startImportFlow', () => {
           ownerDisplayName: null,
           setName: 'Halloween',
           isActiveSet: false,
+          // choice()'s default `ownerTwitchChannelId` is null — nothing to carry onto the run.
+          targetOwnerTwitchId: null,
         },
         source().origin,
         addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
@@ -1177,6 +1328,7 @@ describe('startImportFlow', () => {
           ownerDisplayName: 'Stranger',
           setName: 'Halloween',
           isActiveSet: false,
+          targetOwnerTwitchId: null,
         },
         src.origin,
         outcome.plan,

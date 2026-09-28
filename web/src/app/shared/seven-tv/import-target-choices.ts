@@ -28,6 +28,13 @@ export interface ImportTargetSetChoice {
    *  the progress section) reads this field rather than the raw one, so the fallback only has to be
    *  decided once, here, instead of at each place that renders an owner (Codex round 3 P2). */
   ownerDisplayName: string;
+  /** The Twitch id of this set's **owner** account (owner-hint design 3.6, Codex finding 2) —
+   *  resolved from `EmoteSetTargetSummary.ownerSevenTvUserId` against the `sevenTvUserId` of every
+   *  account of the response, never merely the account whose list happened to carry this set (see
+   *  {@link resolveOwnerTwitchChannelId}). `null` when the owner is not one of the response's own
+   *  accounts. `import-flow.ts` hints `resolveEditableSet` and the eventual report with this id when
+   *  the picker produced the choice. */
+  ownerTwitchChannelId: string | null;
   /** Labeled "aktiv" (spec 8.6) — `EmoteSetTargetSummary.isActive`, from `activeEmoteSetId` (E21). */
   isActive: boolean;
   disabled: boolean;
@@ -115,6 +122,25 @@ function resolveOwnerLabel(
   return unknownOwnerLabel;
 }
 
+/** The Twitch id of the account whose 7TV id is `ownerSevenTvUserId`, across every account of the
+ *  target response — never merely the account whose list happened to carry the set (owner-hint
+ *  design 3.6, Codex finding 2). Mirrors `seven-tv-emote-set.service.ts`'s own
+ *  `resolveOwnerTwitchChannelId`, kept as a separate copy rather than imported: that one is a
+ *  private helper of `resolveEditableSet`'s cache-first path, and this file already keeps its own
+ *  copy of the analogous owner-*name* fallback ({@link resolveOwnerLabel}) for the same reason — a
+ *  small pure lookup over the same wire shape, not a contract worth coupling two files over. `null`
+ *  when the set has no owner id at all, or no account of `accounts` carries it. */
+function resolveOwnerTwitchChannelId(
+  accounts: readonly EmoteSetTargetAccount[],
+  ownerSevenTvUserId: string | null,
+): string | null {
+  if (ownerSevenTvUserId === null) {
+    return null;
+  }
+  const owner = accounts.find((account) => account.sevenTvUserId === ownerSevenTvUserId);
+  return owner?.twitchChannelId ?? null;
+}
+
 /**
  * Pure transform from 6.2's wire response into the picker's two account groups (spec 8.6, first
  * three bullets; layout and PERSONAL-filtering per addendum 39). Replaces
@@ -141,7 +167,7 @@ export function importTargetChoices(
   unknownOwnerLabel: string,
 ): ImportTargetChoices {
   const groups = response.accounts.map((account) =>
-    toAccountGroup(account, sourceEmoteSetId, unknownOwnerLabel),
+    toAccountGroup(account, response.accounts, sourceEmoteSetId, unknownOwnerLabel),
   );
   return {
     tracked: groups.filter((group) => group.isTracked),
@@ -151,6 +177,7 @@ export function importTargetChoices(
 
 function toAccountGroup(
   account: EmoteSetTargetAccount,
+  allAccounts: readonly EmoteSetTargetAccount[],
   sourceEmoteSetId: string,
   unknownOwnerLabel: string,
 ): ImportTargetAccountGroup {
@@ -185,6 +212,7 @@ function toAccountGroup(
         account.twitchLogin,
         unknownOwnerLabel,
       ),
+      ownerTwitchChannelId: resolveOwnerTwitchChannelId(allAccounts, set.ownerSevenTvUserId),
       isActive: set.isActive,
       disabled: set.id === sourceEmoteSetId || set.kind !== 'NORMAL' || !set.editable,
       disabledReason:

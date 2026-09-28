@@ -43,7 +43,26 @@ mechanically) and the `EditableSetTarget`/`ResolvedRestoreTarget` literals of
 `import-source-dialog.spec.ts`, `import-trigger.spec.ts`, `mass-delete-panel.spec.ts`,
 `restore-flow.spec.ts`, `undo-confirm-dialog.spec.ts` and `undo-flow.spec.ts` (mechanical field
 addition only) · `web/e2e/support/mocks.ts` (`mockEmoteSetTargets` answers the new route from the
-same fixture, resolving the **owner** account).
+same fixture, resolving the **owner** account) · `web/src/app/shared/export/purge-run-export.ts`,
+`transfer-run-export.ts` and `transfer-undo-export.ts` (T5: additive `targetOwnerTwitchId` meta
+field on all three file formats, no version bump) · **T6a** (the import path):
+`web/src/app/shared/seven-tv/import-target-choices.ts` (+ spec; `ImportTargetSetChoice.ownerTwitchChannelId`,
+resolved per set against every account of the target response) ·
+`web/src/app/shared/seven-tv/import-target-dialog.ts` (+ spec; `ImportTargetChoice.ownerTwitchChannelId`,
+`selectSet` reads it off the set, never the group) · `web/src/app/shared/seven-tv/import-trigger.ts`
+(+ spec; its fabricated choice sets `ownerTwitchChannelId: null` explicitly) ·
+`web/src/app/shared/seven-tv/import-flow.ts` (+ spec; hints `resolveEditableSet` and the confirm
+dialog with the choice's owner id or its login, carries the pre-check's or the choice's own id onto
+`startImport`) · `web/src/app/shared/seven-tv/import-confirm-dialog.ts` (+ spec;
+`ImportConfirmDialogData.targetOwnerTwitchId` reaches the planned transfer-run file) ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` (+ spec; the finished-stage protocol reads
+the run's own frozen id) · `web/src/app/core/seven-tv/seven-tv-import.service.ts` (+ spec;
+`ImportRunInfo.targetOwnerTwitchId`, `startImport`'s target gains a required field, both reports
+carry it) · `web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` and `seven-tv-emote-set.service.ts`
+(`SyncImportedToSetBody.targetOwnerTwitchId` made required — its one caller is now wired;
+`SyncInSetBody`'s stays optional for T6b) · `seven-tv-emote-set.service.spec.ts`,
+`seven-tv-run-arbiter.spec.ts`, `foreign-import-flow.spec.ts` and `dock-outcome-announcer.spec.ts`
+(mechanical field addition only, following the new required fields).
 
 Issue #216, and the "Known limit" of the #280 entry below. The set-centric reports (`sync-imported`
 to an untracked set, `sync-deleted`, `sync-restored`) walked the actor's list and then every

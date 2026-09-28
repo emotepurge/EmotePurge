@@ -125,8 +125,10 @@ export interface UnresolvedChannel {
  *  `targetOwnerTwitchId` is the owner-hint design's optional order for the backend's owner check
  *  (3.3): the Twitch id of the set's probable owner, as a prior pre-check already resolved it —
  *  never a login (the report always follows a pre-check whose answer already carries the owner's
- *  Twitch id). Optional here (T4) so callers can keep omitting it until they are wired to supply it
- *  (T6a/T6b); a missing, `null` or blank value costs nothing but the ordinary walk. */
+ *  Twitch id). Still optional (T4/T6a): the import's own removal report
+ *  (`SevenTvImportService.reportRemoved`) supplies it since T6a, but `SevenTvDeleteService`,
+ *  `SevenTvRestoreService` and `SevenTvUndoService` are not wired yet (T6b) and keep omitting it — a
+ *  missing, `null` or blank value costs nothing but the ordinary walk. */
 export interface SyncInSetBody {
   sevenTvEmoteIds: string[];
   expectedChannelName: string | null;

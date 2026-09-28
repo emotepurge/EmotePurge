@@ -326,7 +326,12 @@ const IMPORT_PLAN: TransferPlan = {
 const IMPORT_ORIGIN: ImportOrigin = { kind: 'channel', channelName: 'sensitron' };
 
 // A replace against an untracked target: its reports go set-centric, and no resync follows.
-const TARGET_UNTRACKED = { setId: 'set-u', channelName: null, ownerDisplayName: 'Stranger' };
+const TARGET_UNTRACKED = {
+  setId: 'set-u',
+  channelName: null,
+  ownerDisplayName: 'Stranger',
+  targetOwnerTwitchId: null,
+};
 const SYNC_IMPORTED_SET_U = '/api/seventv/emote-sets/set-u/sync-imported';
 const SYNC_DELETED_SET_U = '/api/seventv/emote-sets/set-u/sync-deleted';
 const SOURCE_X: ImportRow = { sevenTvEmoteId: 'src-x', name: 'Kappa', imageUrl: null };
@@ -525,7 +530,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
 
   it('reports "import" while an import run is active, then null again after it ends', () => {
     importService.startImport(
-      { setId: 'set-2', channelName: 'kanal_b' },
+      { setId: 'set-2', channelName: 'kanal_b', targetOwnerTwitchId: null },
       IMPORT_ORIGIN,
       IMPORT_PLAN,
     );
@@ -548,7 +553,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
     expect(arbiter.activeClaim()).toEqual({ kind: 'delete', phase: 'settling' });
 
     importService.startImport(
-      { setId: 'set-2', channelName: 'kanal_b' },
+      { setId: 'set-2', channelName: 'kanal_b', targetOwnerTwitchId: null },
       IMPORT_ORIGIN,
       IMPORT_PLAN,
     );
@@ -706,7 +711,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
       const addSpy = vi.spyOn(window, 'addEventListener');
 
       importService.startImport(
-        { setId: 'set-2', channelName: 'kanal_b' },
+        { setId: 'set-2', channelName: 'kanal_b', targetOwnerTwitchId: null },
         IMPORT_ORIGIN,
         IMPORT_PLAN,
       );

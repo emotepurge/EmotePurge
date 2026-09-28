@@ -10,6 +10,7 @@ import {
   loadImportTarget,
 } from '../../core/emotes/import-target-loader';
 import { ImportSource } from '../../core/seven-tv/import-source';
+import { OwnerHint } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -196,6 +197,35 @@ function toLiveTargetSelection(
  *  untracked choice, which the header then names by owner instead (spec 8.6, AK 39). */
 function toTargetChannelName(target: ImportFlowTarget): string | null {
   return target.kind === 'activeSet' ? target.channelName : target.choice.channelName;
+}
+
+/** The Twitch id of the target's probable owner, known synchronously from the picker's own choice
+ *  (owner-hint design 3.6, first row) — `null` for an `'activeSet'` door (it never asked a picker) and
+ *  for `import-trigger.ts`'s fabricated choice (`toImportTarget`'s `ownerTwitchChannelId: null`,
+ *  Codex finding 4). Never derived from a login: `SyncInSetBody`/`SyncImportedToSetBody`'s
+ *  `targetOwnerTwitchId` is a Twitch id or nothing (3.3 Nr. 12), so this is the one value this flow
+ *  may carry straight onto a report body without going through the owner check first — used both for
+ *  {@link toOwnerHint} below and for the confirm dialog's own `planned` transfer-run file, which is
+ *  saved before the shared pre-check (`resolveEditableSet`) ever runs. */
+function toOwnerTwitchIdHint(target: ImportFlowTarget): string | null {
+  return target.kind === 'chosen' ? target.choice.ownerTwitchChannelId : null;
+}
+
+/** `resolveEditableSet`'s order (owner-hint design 3.1 Nr. 2, 3.6 first row) for this flow's one
+ *  pre-check (a plan with a replace row, in `start()` below): the picker's own owner id when the
+ *  choice carries one, otherwise the target's channel login — the door's own channel for an
+ *  `'activeSet'` target, or the choice's own `channelName` for a tracked pick (including
+ *  `import-trigger.ts`'s fabricated one, which always has a login but never an id). An untracked
+ *  choice with no resolved owner has no login to fall back to either (`channelName` is `null` by
+ *  contract) — both fields `null` there, which `resolveEditableSet` reads as no hint at all, the
+ *  same walk as omitting the argument. */
+function toOwnerHint(target: ImportFlowTarget): OwnerHint {
+  const twitchChannelId = toOwnerTwitchIdHint(target);
+  if (twitchChannelId !== null) {
+    return { twitchChannelId, twitchLogin: null };
+  }
+  const twitchLogin = target.kind === 'activeSet' ? target.channelName : target.choice.channelName;
+  return { twitchChannelId: null, twitchLogin };
 }
 
 /** What `recheckTransferPlan` hands to `startImport`. */
@@ -408,7 +438,7 @@ export function startImportFlow(
       let handedOff = false;
       deps.importService.startCheckPending.set(true);
       deps.emoteSetService
-        .resolveEditableSet(outcome.targetSetId)
+        .resolveEditableSet(outcome.targetSetId, toOwnerHint(target))
         .pipe(
           timeout(LIVE_READ_TIMEOUT_MS),
           finalize(() => {
@@ -424,7 +454,11 @@ export function startImportFlow(
               return;
             }
             handedOff = true;
-            startAfterCheck(outcome);
+            // The check's own answer names the **owner** account (3.1 Nr. 10) — carried onto the
+            // report from here rather than re-reading `toOwnerTwitchIdHint(target)` a second time,
+            // since the check may have resolved an owner the picker's own choice never knew (a
+            // login-only hint that matched a grant, say).
+            startAfterCheck(outcome, resolution.target.ownerTwitchChannelId);
           },
           // 429, 503, no connection or a timeout: "cannot be checked right now", never "not
           // allowed" (F3) — the same distinction every other pre-check caller makes.
@@ -432,10 +466,17 @@ export function startImportFlow(
         });
       return;
     }
-    startAfterCheck(outcome);
+    // An add-only run never asks the shared pre-check (spec 4.5 point 17) — the report's owner hint
+    // is then whatever the picker's own choice already carried, never re-derived from a login: a
+    // tracked target (an `'activeSet'` door, or `import-trigger.ts`'s fabricated choice) reports
+    // channel-bound and reads no hint at all (3.6, "kein Hinweis nötig").
+    startAfterCheck(outcome, toOwnerTwitchIdHint(target));
   };
 
-  const startAfterCheck = (outcome: ImportConfirmOutcome): void => {
+  const startAfterCheck = (
+    outcome: ImportConfirmOutcome,
+    targetOwnerTwitchId: string | null,
+  ): void => {
     // #149/T5: `outcome.plan` already passed `buildImportPreview`'s filter against the target set's
     // contents as of when the confirm dialog opened — that snapshot can be stale by the time the
     // user actually confirms (another editor, another tab, a long-open dialog). Re-check fresh,
@@ -490,6 +531,7 @@ export function startImportFlow(
             ownerDisplayName: targetOwnerDisplayName,
             setName: outcome.targetSetName,
             isActiveSet,
+            targetOwnerTwitchId,
           },
           source.origin,
           plan,
@@ -513,6 +555,7 @@ export function startImportFlow(
     reloadLive,
     runBlocked: computed(() => deps.arbiter.startLocked()),
     httpClient: deps.httpClient,
+    targetOwnerTwitchId: toOwnerTwitchIdHint(target),
   });
 
   confirmRef.closed.subscribe((outcome) => {

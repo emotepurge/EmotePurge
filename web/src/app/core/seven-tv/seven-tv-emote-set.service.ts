@@ -224,9 +224,12 @@ export interface SyncImportedToSetBody {
   sourceChannelName: string | null;
   sourceKind: 'channel' | 'file' | 'seventv-channel' | 'seventv-leaderboard';
   leaderboardSort: LeaderboardSort | null;
-  /** Owner-hint design 3.3 — same field and same optionality as {@link SyncInSetBody.targetOwnerTwitchId},
-   *  see its doc there. Optional here (T4) until the import flow is wired to supply it (T6a). */
-  targetOwnerTwitchId?: string | null;
+  /** Owner-hint design 3.3 — same field and same rule as {@link SyncInSetBody.targetOwnerTwitchId}
+   *  (see its doc there): the Twitch id of the set's probable owner, never a login. Required here
+   *  since T6a — this body has exactly one caller, `SevenTvImportService.reportImported`'s untracked
+   *  branch, and it is now wired to always supply it (`null` when the run started without a resolved
+   *  owner), so there is no caller left this could stay optional for. */
+  targetOwnerTwitchId: string | null;
 }
 
 /**

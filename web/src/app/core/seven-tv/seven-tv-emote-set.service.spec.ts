@@ -342,6 +342,7 @@ describe('SevenTvEmoteSetService', () => {
           sourceChannelName: 'handofblood',
           sourceKind: 'channel',
           leaderboardSort: null,
+          targetOwnerTwitchId: null,
         })
         .subscribe(() => (completed = true));
 
@@ -352,6 +353,7 @@ describe('SevenTvEmoteSetService', () => {
         sourceChannelName: 'handofblood',
         sourceKind: 'channel',
         leaderboardSort: null,
+        targetOwnerTwitchId: null,
       });
       req.flush(null, { status: 204, statusText: 'No Content' });
 

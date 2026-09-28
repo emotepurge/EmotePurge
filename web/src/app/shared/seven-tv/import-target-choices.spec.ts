@@ -490,4 +490,81 @@ describe('importTargetChoices', () => {
       expect(result.untracked[0].sets[0].ownerDisplayName).toBe(UNKNOWN_OWNER);
     });
   });
+
+  // Owner-hint design 3.6, Codex finding 2: `ownerTwitchChannelId` is resolved per set against the
+  // **owner**'s 7TV id, across every account of the response — never the account whose list
+  // happened to carry the set.
+  describe('ownerTwitchChannelId (owner-hint design 3.6, Codex finding 2)', () => {
+    it('resolves to the listing account’s own id when it owns the set (the common case)', () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: 'tw-1',
+            sevenTvUserId: 'owner-1',
+            sets: [set({ id: 'set-a', ownerSevenTvUserId: 'owner-1' })],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.untracked[0].sets[0].ownerTwitchChannelId).toBe('tw-1');
+    });
+
+    it('resolves to a different account of the same response when that account owns the set (A-listed, B-owned)', () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: 'tw-a',
+            twitchLogin: 'accounta',
+            sevenTvUserId: 'sevenTv-a',
+            sets: [set({ id: 'shared-set', ownerSevenTvUserId: 'sevenTv-b' })],
+          }),
+          account({
+            twitchChannelId: 'tw-b',
+            twitchLogin: 'accountb',
+            sevenTvUserId: 'sevenTv-b',
+            sets: [],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      // The set is listed under account A, but its owner id names account B — never A's own id.
+      expect(result.untracked[0].sets[0].ownerTwitchChannelId).toBe('tw-b');
+    });
+
+    it('resolves to null when the set has no owner id at all', () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: 'tw-1',
+            sevenTvUserId: 'owner-1',
+            sets: [set({ id: 'set-a', ownerSevenTvUserId: null })],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.untracked[0].sets[0].ownerTwitchChannelId).toBeNull();
+    });
+
+    it('resolves to null when the owner id names no account in this response', () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: 'tw-1',
+            sevenTvUserId: 'owner-1',
+            sets: [set({ id: 'set-a', ownerSevenTvUserId: 'some-other-account' })],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.untracked[0].sets[0].ownerTwitchChannelId).toBeNull();
+    });
+  });
 });

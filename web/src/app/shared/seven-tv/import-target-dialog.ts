@@ -71,6 +71,12 @@ export interface ImportTargetChoice {
   emoteSetId: string;
   channelName: string | null;
   ownerDisplayName: string;
+  /** The Twitch id of the chosen set's **owner** account (owner-hint design 3.6) — taken from the
+   *  set itself (`ImportTargetSetChoice.ownerTwitchChannelId`), never from `group.twitchChannelId`,
+   *  which only names the *listing* account and can differ from the owner (Codex finding 2). `null`
+   *  when the owner is not one of the picker's own accounts. `import-flow.ts` hints the shared
+   *  pre-check and the eventual report with this id. */
+  ownerTwitchChannelId: string | null;
   setName: string;
   isTracked: boolean;
   twitchLogin: string;
@@ -522,6 +528,7 @@ export class ImportTargetDialog {
       emoteSetId: set.emoteSetId,
       channelName: group.channelName,
       ownerDisplayName: set.ownerDisplayName,
+      ownerTwitchChannelId: set.ownerTwitchChannelId,
       setName: set.setName,
       isTracked: group.isTracked,
       twitchLogin: group.twitchLogin,
@@ -604,6 +611,7 @@ export class ImportTargetDialog {
       emoteSetId: activeSet.emoteSetId,
       channelName: own.channelName,
       ownerDisplayName: activeSet.ownerDisplayName,
+      ownerTwitchChannelId: activeSet.ownerTwitchChannelId,
       setName: activeSet.setName,
       isTracked: own.isTracked,
       twitchLogin: own.twitchLogin,
