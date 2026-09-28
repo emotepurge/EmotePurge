@@ -591,20 +591,27 @@ describe('ImportConflictResolutionStep', () => {
       wrapper.tabIndex = -1;
       host.parentElement!.insertBefore(wrapper, host);
       wrapper.appendChild(host);
-      fixture.componentRef.setInput('group', 'nameCollision');
-      fixture.componentRef.setInput(
-        'rows',
-        collisionStepRows([collision('a', 'Kappa'), collision('b', 'Pog')], new Map()),
-      );
-      fixture.componentRef.setInput('decisions', new Map());
-      fixture.detectChanges();
-      expect(rowElements()).toHaveLength(0);
+      try {
+        fixture.componentRef.setInput('group', 'nameCollision');
+        fixture.componentRef.setInput(
+          'rows',
+          collisionStepRows([collision('a', 'Kappa'), collision('b', 'Pog')], new Map()),
+        );
+        fixture.componentRef.setInput('decisions', new Map());
+        fixture.detectChanges();
+        expect(rowElements()).toHaveLength(0);
 
-      wrapper.focus();
-      expect(document.activeElement).toBe(wrapper);
-      await settle(() => document.activeElement === rowAt(0));
+        wrapper.focus();
+        expect(document.activeElement).toBe(wrapper);
+        await settle(() => document.activeElement === rowAt(0));
 
-      expect(document.activeElement).toBe(rowAt(0));
+        expect(document.activeElement).toBe(rowAt(0));
+      } finally {
+        // TestBed teardown only removes the root host, not this stand-in ancestor — unwrap it
+        // so the empty wrapper doesn't linger in `body` for the rest of the file's tests.
+        wrapper.parentElement?.insertBefore(host, wrapper);
+        wrapper.remove();
+      }
     });
 
     it('leaves focus alone once the user moves it outside the step before the hand-off lands', async () => {
