@@ -21,6 +21,7 @@ import {
 } from './seven-tv-restore.service';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { SevenTvTokenService } from './seven-tv-token.service';
+import { flushApplied, flushWithoutResult } from './seven-tv-mutation.testing';
 
 const DE_TRANSLATIONS = {
   massDelete: {
@@ -140,9 +141,9 @@ describe('SevenTvRestoreService', () => {
 
     expect(service.queue().map((item) => item.key)).toEqual(['7tv-1#PogU', '7tv-2#KEKW']);
 
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
   });
@@ -160,7 +161,7 @@ describe('SevenTvRestoreService', () => {
       emoteId: '7tv-1',
       alias: 'PogU',
     });
-    req.flush({});
+    flushApplied(req);
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
   });
@@ -179,7 +180,7 @@ describe('SevenTvRestoreService', () => {
       alias: 'Gänsehosen',
     });
 
-    req.flush({});
+    flushApplied(req);
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
   });
@@ -201,7 +202,7 @@ describe('SevenTvRestoreService', () => {
       ['7tv-1#PogU', 'PogU'],
       ['7tv-1#', 'PogDefault'],
     ]);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
     const aliasless = httpMock.expectOne(GQL_ENDPOINT);
     expect(aliasless.request.body.variables).toEqual({
@@ -209,7 +210,7 @@ describe('SevenTvRestoreService', () => {
       emoteId: '7tv-1',
       alias: null,
     });
-    aliasless.flush({});
+    flushApplied(aliasless);
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
   });
@@ -217,9 +218,9 @@ describe('SevenTvRestoreService', () => {
   it('reports the finished run to the set-centric sync-restored with the ids and no expected channel for a non-active set', () => {
     service.startRestore(target({ active: false }), EMOTES);
 
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
@@ -238,7 +239,7 @@ describe('SevenTvRestoreService', () => {
   // AK 15, F8: a touched channel whose count falls short of the reported ids is partial/shortfall.
   it('marks the report partial/shortfall when a channel restored fewer than reported', () => {
     service.startRestore(target({ active: true }), [EMOTES[0]]);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(
@@ -254,7 +255,7 @@ describe('SevenTvRestoreService', () => {
 
   it('marks the report failed on a 401 and re-sends it via retrySyncReport()', () => {
     service.startRestore(target({ active: false }), [EMOTES[0]]);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     // 401 is not retried automatically — waiting cannot fix an expired session.
@@ -296,7 +297,7 @@ describe('SevenTvRestoreService', () => {
       emoteId: '7tv-1',
       alias: 'PogU',
     });
-    firstAdd.flush({});
+    flushApplied(firstAdd);
     vi.advanceTimersByTime(RUN_DELAY_MS);
     const secondAdd = httpMock.expectOne(GQL_ENDPOINT);
     expect(secondAdd.request.body.variables).toEqual({
@@ -304,7 +305,7 @@ describe('SevenTvRestoreService', () => {
       emoteId: '7tv-1',
       alias: 'PogU2',
     });
-    secondAdd.flush({});
+    flushApplied(secondAdd);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
@@ -323,7 +324,7 @@ describe('SevenTvRestoreService', () => {
   it('reports and retries with the set id frozen at the start of the run', () => {
     service.startRestore(target({ active: false }), [EMOTES[0]]);
     service.startRestore(target({ setId: 'set-2', active: false }), [EMOTES[1]]);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     // The set is in the route now: the report is addressed to set-1, never to set-2.
@@ -345,7 +346,7 @@ describe('SevenTvRestoreService', () => {
   // Spec 5.1, E3: only the set-centric body — also for a protocol row that never had a local emote.
   it('sends only the set-centric body form for a row without an emoteId, never the legacy emoteIds', () => {
     service.startRestore(target(), [{ sevenTvEmoteId: '7tv-live', name: 'LiveOnly' }]);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
@@ -361,7 +362,7 @@ describe('SevenTvRestoreService', () => {
   // touch, a plain success without a reason.
   it('treats a paper-only answer (channels: [], no unresolvedChannel) as succeeded, without a reason', () => {
     service.startRestore(target(), [EMOTES[0]]);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
@@ -390,7 +391,7 @@ describe('SevenTvRestoreService', () => {
 
   it('reset() clears queue, report and resync state', () => {
     service.startRestore(target(), [EMOTES[0]]);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
 
@@ -411,7 +412,7 @@ describe('SevenTvRestoreService', () => {
 
       expect(service.skippedDuplicates()).toBe(0);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
     });
@@ -446,7 +447,7 @@ describe('SevenTvRestoreService', () => {
       service.startRestore(target(), [EMOTES[0]]);
       expect(service.skippedDuplicates()).toBe(0);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
     });
@@ -471,7 +472,7 @@ describe('SevenTvRestoreService', () => {
 
       expect(service.duplicateCheckAvailable()).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
     });
@@ -483,7 +484,7 @@ describe('SevenTvRestoreService', () => {
       // Fails open, same as always — an unverifiable check does not block the confirmed run.
       expect(service.isRunning()).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
     });
@@ -495,7 +496,7 @@ describe('SevenTvRestoreService', () => {
       service.startRestore(target(), [EMOTES[0]]);
       expect(service.duplicateCheckAvailable()).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
     });
@@ -536,7 +537,7 @@ describe('SevenTvRestoreService', () => {
 
       expect(service.duplicateNoticePending()).toBe(false);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
     });
@@ -552,7 +553,7 @@ describe('SevenTvRestoreService', () => {
 
       expect(service.duplicateNoticePending()).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
     });
@@ -598,7 +599,7 @@ describe('SevenTvRestoreService', () => {
     endpoint = SYNC_RESTORED_ENDPOINT,
   ) {
     service.startRestore(restoreTarget, [EMOTES[0]]);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
     return httpMock.expectOne(endpoint);
   }
@@ -958,7 +959,7 @@ describe('SevenTvRestoreService', () => {
       service.resetIfChannelChanged('other-channel');
 
       expect(service.isRunning()).toBe(true);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
       expect(service.syncReport()).toBe('succeeded');
@@ -975,7 +976,7 @@ describe('SevenTvRestoreService', () => {
       service.startRestore(target({ active: true }), [EMOTES[0]]);
       expect(service.destructiveOpen()).toBe(false);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       expect(service.destructiveOpen()).toBe(false); // reporting, but still never destructive
 
@@ -1004,9 +1005,9 @@ describe('SevenTvRestoreService', () => {
       expect(service.run()).toBeNull();
       expect(service.isRunning()).toBe(true); // the engine itself was not touched
 
-      inFlightReq.flush({});
+      flushApplied(inFlightReq);
       vi.advanceTimersByTime(RUN_DELAY_MS);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
@@ -1068,7 +1069,7 @@ describe('SevenTvRestoreService', () => {
       service.startRestore(target({ setId: 'set-2', channel: 'other-channel', active: false }), [
         EMOTES[1],
       ]);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       const run2ReportReq = httpMock.expectOne(SYNC_RESTORED_SET_2);
       expect(service.isRunning()).toBe(false); // run 2's engine work is done, only its report is out
@@ -1208,7 +1209,7 @@ describe('SevenTvRestoreService', () => {
     // succeed, to exercise that path.
     it('discards a late sync-restored answer from a superseded run without touching the new one', () => {
       service.startRestore(target({ active: true }), [EMOTES[0]]);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       const staleSyncReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
@@ -1238,7 +1239,7 @@ describe('SevenTvRestoreService', () => {
 
       // Run 2 finishes normally afterwards — the guard must not have swallowed its own terminal
       // flank along with the stale one.
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock
         .expectOne(SYNC_RESTORED_SET_2)
@@ -1251,7 +1252,7 @@ describe('SevenTvRestoreService', () => {
 
     it('never lets a stale resync answer overwrite a later state — including "cooldown"', () => {
       service.startRestore(target({ active: true }), [EMOTES[0]]);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock
         .expectOne(SYNC_RESTORED_ENDPOINT)
@@ -1263,7 +1264,7 @@ describe('SevenTvRestoreService', () => {
       service.startRestore(target({ setId: 'set-2', channel: 'other-channel', active: true }), [
         EMOTES[1],
       ]);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock
         .expectOne(SYNC_RESTORED_SET_2)
@@ -1296,7 +1297,7 @@ describe('SevenTvRestoreService', () => {
 
       expect(arbiter.activeRun()).toBe('restore');
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       // #255: a plain success naming nothing (the default `restoredAnswer()`) produces no resync
       // request for the active set any more — nothing left to drain here.
@@ -1307,7 +1308,7 @@ describe('SevenTvRestoreService', () => {
 
     it('clears the active run once a run ended by cancel() has had its report answered', () => {
       service.startRestore(target(), EMOTES);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
 
       service.cancel();
 
@@ -1342,7 +1343,7 @@ describe('SevenTvRestoreService', () => {
       service.startRestore(target(), [EMOTES[0]]);
       expect(arbiter.activeRun()).toBe('restore');
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
 
@@ -1352,7 +1353,7 @@ describe('SevenTvRestoreService', () => {
 
       expect(arbiter.activeRun()).toBe('delete');
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       httpMock.expectOne('/api/seventv/emote-sets/set-1/sync-deleted').flush({
         reportedCount: 1,
@@ -1558,17 +1559,30 @@ describe('SevenTvRestoreService', () => {
         (add: ReturnType<HttpTestingController['expectOne']>) =>
           add.error(new ProgressEvent('error')),
       ],
+      // #285: a 200 that neither rejects nor confirms the mutation is as unclear as a lost answer.
+      [
+        'an HTTP 200 with an empty body',
+        (add: ReturnType<HttpTestingController['expectOne']>) => add.flush(null),
+      ],
+      [
+        'an HTTP 200 with neither data nor errors',
+        (add: ReturnType<HttpTestingController['expectOne']>) => add.flush({}),
+      ],
+      [
+        'an HTTP 200 whose data stops short of the addEmote result',
+        (add: ReturnType<HttpTestingController['expectOne']>) => flushWithoutResult(add),
+      ],
     ])(
       'makes %s mid-run unknown, keeps the run going and reads right after it without a grace period',
       (_label, answer) => {
         service.startRestore(target(), THREE_EMOTES);
-        httpMock.expectOne(isAdd).flush({});
+        flushApplied(httpMock.expectOne(isAdd));
         vi.advanceTimersByTime(RUN_DELAY_MS);
         answer(httpMock.expectOne(isAdd));
         expect(service.queue()[1].status).toBe('unknown');
         expect(service.isRunning()).toBe(true);
         vi.advanceTimersByTime(RUN_DELAY_MS);
-        httpMock.expectOne(isAdd).flush({});
+        flushApplied(httpMock.expectOne(isAdd));
         vi.advanceTimersByTime(RUN_DELAY_MS);
 
         expect(service.run()?.phase).toBe('settling');
@@ -1586,11 +1600,11 @@ describe('SevenTvRestoreService', () => {
 
     it('reports only the confirmed rows of a mixed run and leaves the rest to the report’s backend resync — no client resync', () => {
       service.startRestore(target(), THREE_EMOTES);
-      httpMock.expectOne(isAdd).flush({});
+      flushApplied(httpMock.expectOne(isAdd));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(isAdd).flush('boom', { status: 502, statusText: 'Bad Gateway' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
-      httpMock.expectOne(isAdd).flush({});
+      flushApplied(httpMock.expectOne(isAdd));
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       // Nothing confirms the lost row's alias (KEKW) — it stays unknown.
@@ -1611,11 +1625,11 @@ describe('SevenTvRestoreService', () => {
 
     it('resyncs exactly once when a mixed run’s report fails for good', () => {
       service.startRestore(target(), THREE_EMOTES);
-      httpMock.expectOne(isAdd).flush({});
+      flushApplied(httpMock.expectOne(isAdd));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(isAdd).flush('boom', { status: 502, statusText: 'Bad Gateway' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
-      httpMock.expectOne(isAdd).flush({});
+      flushApplied(httpMock.expectOne(isAdd));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
 
@@ -1632,7 +1646,7 @@ describe('SevenTvRestoreService', () => {
 
     it('settles a cancel in flight after already confirmed rows into one report, not two', () => {
       service.startRestore(target(), EMOTES);
-      httpMock.expectOne(isAdd).flush({});
+      flushApplied(httpMock.expectOne(isAdd));
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(isAdd);
       service.cancel();
@@ -1675,7 +1689,7 @@ describe('SevenTvRestoreService', () => {
 
       it('confirms only the alias the read shows and leaves the other row unknown, reporting the id once', () => {
         startTwoAliasRow();
-        httpMock.expectOne(isAdd).flush({}); // PogU lands
+        flushApplied(httpMock.expectOne(isAdd)); // PogU lands
         vi.advanceTimersByTime(RUN_DELAY_MS);
         httpMock.expectOne(isAdd); // PogU2 in flight
         service.cancel();
@@ -1696,7 +1710,7 @@ describe('SevenTvRestoreService', () => {
 
       it('confirms both aliases once the read shows both, reporting the id exactly once', () => {
         startTwoAliasRow();
-        httpMock.expectOne(isAdd).flush({}); // PogU lands
+        flushApplied(httpMock.expectOne(isAdd)); // PogU lands
         vi.advanceTimersByTime(RUN_DELAY_MS);
         httpMock.expectOne(isAdd); // PogU2 in flight
         service.cancel();
@@ -1909,7 +1923,7 @@ describe('SevenTvRestoreService', () => {
       syncA.flush(restoredAnswer());
       expect(service.run()?.runId).toBe(runB);
 
-      addB.flush({});
+      flushApplied(addB);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(SYNC_RESTORED_SET_2).flush(restoredAnswer());
       expect(service.run()?.result?.doneKeys).toEqual(['7tv-2#KEKW']);

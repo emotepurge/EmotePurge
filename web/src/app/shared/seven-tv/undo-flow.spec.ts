@@ -18,6 +18,7 @@ import { LIVE_READ_TIMEOUT_MS } from './recovery-file-gate';
 import { ResolvedRestoreTarget } from './restore-flow';
 import { UndoConfirmDialogData, UndoConfirmOutcome } from './undo-confirm-dialog';
 import { TransferUndoFileResult, UndoFlowDeps, startUndoFlow, undoRunTarget } from './undo-flow';
+import { flushApplied } from '../../core/seven-tv/seven-tv-mutation.testing';
 
 /**
  * `startUndoFlow` opens dialogs through the plain `Dialog` it is handed and injects nothing — so,
@@ -757,7 +758,7 @@ describe('startUndoFlow with the real undo service (spec 17 K2)', () => {
       httpMock.expectNone(isRemove);
       for (const add of httpMock.match(isAdd)) {
         sent.push(`add ${add.request.body.variables.emoteId} ${add.request.body.variables.alias}`);
-        add.flush({});
+        flushApplied(add);
       }
       vi.advanceTimersByTime(RUN_DELAY_MS);
     }

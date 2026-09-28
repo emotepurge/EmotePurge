@@ -23,6 +23,7 @@ import {
   RunQueueEmote,
   RunQueueItem,
   RunResult,
+  SevenTvMutation,
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
@@ -91,7 +92,8 @@ export const ABORTED_DELETE_NOTICE_MS = 8000;
  *  `EmoteSetEmoteId` input object rather than as a sibling argument, and variable types are `Id!`
  *  instead of `ObjectID!`. Removal has no alias, unlike `addEmote` in the import/restore services.
  *  One `removeEmote` takes every entry of the id. Shared with the import run's replace rows. */
-export const REMOVE_EMOTE_MUTATION = `
+export const REMOVE_EMOTE_MUTATION: SevenTvMutation = {
+  query: `
   mutation RemoveEmote($setId: Id!, $emoteId: Id!) {
     emoteSets {
       emoteSet(id: $setId) {
@@ -101,11 +103,14 @@ export const REMOVE_EMOTE_MUTATION = `
       }
     }
   }
-`;
+`,
+  resultPath: ['emoteSets', 'emoteSet', 'removeEmote'],
+};
 
 /** The one thing that makes this run a *delete* — everything else lives in the engine.
  *  `transportLossIsUnknown` (#275, Plan-275 Festlegung 1): a `REMOVE` whose answer never came out
- *  of 7TV's GraphQL layer — no answer, a 5xx, or a `cancel()` that aborted it in flight — may still
+ *  of 7TV's GraphQL layer — no answer, a 5xx, a 200 without the `removeEmote` result (#285), or a
+ *  `cancel()` that aborted it in flight — may still
  *  have taken the emote out of the set, so its row ends `unknown` rather than `failed`/`cancelled`
  *  and is cleared up by the run's one re-read (`SevenTvDeleteService.onRunComplete`). A 4xx and a
  *  GraphQL rejection stay `failed`, a cancel between two rows or in a rate-limit pause stays
@@ -113,7 +118,7 @@ export const REMOVE_EMOTE_MUTATION = `
 const REMOVE_OPERATION: RunOperation = {
   label: 'mass delete',
   buildRequest: (setId, emote) => ({
-    query: REMOVE_EMOTE_MUTATION,
+    mutation: REMOVE_EMOTE_MUTATION,
     variables: { setId, emoteId: emote.sevenTvEmoteId },
   }),
   transportLossIsUnknown: true,

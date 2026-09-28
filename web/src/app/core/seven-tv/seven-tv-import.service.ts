@@ -23,7 +23,9 @@ import {
   RunOperation,
   RunQueueEmote,
   RunQueueItem,
+  RunRequest,
   RunResult,
+  SevenTvMutation,
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
@@ -57,7 +59,8 @@ const DUPLICATE_NOTICE_MS = 4000;
  *  `EmoteSetEmoteId` input object, not as a sibling argument — v4's `addEmote` field replaces v3's
  *  single `emotes(action: ADD, name:)` mutation with one field per operation (see docs/DECISIONS.md,
  *  #149). */
-const ADD_EMOTE_MUTATION = `
+const ADD_EMOTE_MUTATION: SevenTvMutation = {
+  query: `
   mutation AddEmote($setId: Id!, $emoteId: Id!, $alias: String) {
     emoteSets {
       emoteSet(id: $setId) {
@@ -67,14 +70,17 @@ const ADD_EMOTE_MUTATION = `
       }
     }
   }
-`;
+`,
+  resultPath: ['emoteSets', 'emoteSet', 'addEmote'],
+};
 
 /** An `adoptSourceName` row's one mutation: renames an existing entry in place. The *current* alias
  *  inside the `EmoteSetEmoteId` input selects the entry — even on a #74 duplicate — and `alias` is
  *  the new name. A name that is taken comes back over HTTP 200 as a GraphQL error with
  *  `extensions.status = 409` (live probe 2026-09-23; the text differs from `addEmote`'s collision,
  *  so it is matched by status, never by text). */
-const UPDATE_EMOTE_ALIAS_MUTATION = `
+const UPDATE_EMOTE_ALIAS_MUTATION: SevenTvMutation = {
+  query: `
   mutation UpdateEmoteAlias($setId: Id!, $emoteId: Id!, $currentAlias: String!, $alias: String!) {
     emoteSets {
       emoteSet(id: $setId) {
@@ -84,7 +90,9 @@ const UPDATE_EMOTE_ALIAS_MUTATION = `
       }
     }
   }
-`;
+`,
+  resultPath: ['emoteSets', 'emoteSet', 'updateEmoteAlias'],
+};
 
 /** `extensions.status` of a GraphQL rejection for a name that is already taken in the set — on
  *  `addEmote` and on `updateEmoteAlias` alike. */
@@ -1013,11 +1021,7 @@ function transferRowOf(rowsByKey: ReadonlyMap<string, TransferRow>, key: string)
 /** The request for one step of one plan row. Only a `replace` row has two steps: the REMOVE of the
  *  target id (which takes every entry of that id), then the ADD of the source under the freed
  *  name, against the same set. */
-function buildTransferRequest(
-  setId: string,
-  row: TransferRow,
-  step: number,
-): { query: string; variables: Record<string, unknown> } {
+function buildTransferRequest(setId: string, row: TransferRow, step: number): RunRequest {
   switch (row.action) {
     case 'add':
     case 'renameSource':
@@ -1025,7 +1029,7 @@ function buildTransferRequest(
     case 'replace':
       return step === 0
         ? {
-            query: REMOVE_EMOTE_MUTATION,
+            mutation: REMOVE_EMOTE_MUTATION,
             variables: { setId, emoteId: row.target.sevenTvEmoteId },
           }
         : addRequest(setId, row.source.sevenTvEmoteId, row.alias);
@@ -1034,7 +1038,7 @@ function buildTransferRequest(
       // (`'duplicateTarget'` rules out two) and at least one (`'aliaslessTarget'` rules out zero) —
       // so exactly one, which is why this reads `row.target.aliases[0]` unconditionally.
       return {
-        query: UPDATE_EMOTE_ALIAS_MUTATION,
+        mutation: UPDATE_EMOTE_ALIAS_MUTATION,
         variables: {
           setId,
           emoteId: row.target.sevenTvEmoteId,
@@ -1047,12 +1051,8 @@ function buildTransferRequest(
   }
 }
 
-function addRequest(
-  setId: string,
-  emoteId: string,
-  alias: string,
-): { query: string; variables: Record<string, unknown> } {
-  return { query: ADD_EMOTE_MUTATION, variables: { setId, emoteId, alias } };
+function addRequest(setId: string, emoteId: string, alias: string): RunRequest {
+  return { mutation: ADD_EMOTE_MUTATION, variables: { setId, emoteId, alias } };
 }
 
 /** Source ids of every `done` row of `run` that added an emote — what `sync-imported` names. */

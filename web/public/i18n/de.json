@@ -1118,6 +1118,7 @@
       "rateLimitedGaveUp": "7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.",
       "cancelledMidRow": "Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.",
       "beforeStepFailed": "Übersprungen — die Prüfung vor dem Schritt ist fehlgeschlagen.",
+      "unconfirmedAnswer": "7TV hat geantwortet, die Änderung aber nicht bestätigt.",
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
       "genericStatus": "7TV-Fehler (Status {{ status }}).",
       "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",

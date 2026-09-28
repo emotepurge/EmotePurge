@@ -31,16 +31,24 @@ const DE_TRANSLATIONS = {
         '7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.',
       cancelledMidRow: 'Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.',
       beforeStepFailed: 'Übersprungen — die Prüfung vor dem Schritt ist fehlgeschlagen.',
+      unconfirmedAnswer: '7TV hat geantwortet, die Änderung aber nicht bestätigt.',
     },
   },
 };
 
 const GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 
+/** Where every test mutation's result sits in its answer — shared, so one confirmed answer
+ *  (`CONFIRMED`) fits them all. The case that needs two different paths builds its own. */
+const TEST_RESULT_PATH = ['testSet', 'mutate'];
+
+/** The answer 7TV gives a mutation it applied: HTTP 200, no `errors`, the result at its path. */
+const CONFIRMED = { data: { testSet: { mutate: { id: 'result' } } } };
+
 const TEST_OPERATION: RunOperation = {
   label: 'test run',
   buildRequest: (setId, emote) => ({
-    query: 'mutation Test',
+    mutation: { query: 'mutation Test', resultPath: TEST_RESULT_PATH },
     variables: { setId, emoteId: emote.sevenTvEmoteId },
   }),
 };
@@ -51,7 +59,10 @@ const TWO_STEP_OPERATION: RunOperation = {
   label: 'two-step run',
   stepCount: () => 2,
   buildRequest: (setId, emote, step) => ({
-    query: step === 0 ? 'mutation Remove' : 'mutation Add',
+    mutation: {
+      query: step === 0 ? 'mutation Remove' : 'mutation Add',
+      resultPath: TEST_RESULT_PATH,
+    },
     variables: { setId, emoteId: emote.sevenTvEmoteId, step },
   }),
 };
@@ -161,7 +172,7 @@ describe('SevenTvRunEngine', () => {
       query: 'mutation Test',
       variables: { setId: 'set-1', emoteId: '7tv-1' },
     });
-    req1.flush({});
+    req1.flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'boom' }] });
@@ -178,7 +189,7 @@ describe('SevenTvRunEngine', () => {
     const emote: RunQueueEmote = { key: 'import-1', sevenTvEmoteId: '7tv-9', name: 'PogU' };
     expect(start([emote])).toBe(true);
 
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(engine.isRunning()).toBe(false);
@@ -192,14 +203,14 @@ describe('SevenTvRunEngine', () => {
     ];
     expect(start(emotes)).toBe(true);
 
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
 
     expect(engine.queue()[0].status).toBe('done');
     expect(engine.queue()[1].status).toBe('pending');
 
     // Drain the rest so httpMock.verify() stays green.
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
   });
 
@@ -210,9 +221,9 @@ describe('SevenTvRunEngine', () => {
     ];
     expect(start(emotes)).toBe(true);
 
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(results[0].doneKeys).toEqual(['k1', 'k2']);
@@ -229,7 +240,7 @@ describe('SevenTvRunEngine', () => {
 
     httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'boom' }] });
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(results[0].doneKeys).toEqual(['7tv-2']);
@@ -250,7 +261,7 @@ describe('SevenTvRunEngine', () => {
     };
     expect(start([emote])).toBe(true);
 
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(results[0].doneKeys).toEqual(['7tv-9']);
@@ -267,7 +278,7 @@ describe('SevenTvRunEngine', () => {
     expect(engine.rateLimitPauseSeconds()).toBe(31);
 
     vi.advanceTimersByTime(30_500);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     // Generously past the re-paced inter-request delay (~330ms after the 100-per-30s answer).
     vi.advanceTimersByTime(1000);
 
@@ -281,7 +292,7 @@ describe('SevenTvRunEngine', () => {
 
     expect(engine.rateLimitPauseSeconds()).toBe(60);
     vi.advanceTimersByTime(60_000);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(engine.queue()[0].status).toBe('done');
@@ -307,7 +318,7 @@ describe('SevenTvRunEngine', () => {
     expect(engine.rateLimitPauseSeconds()).toBe(60);
 
     vi.advanceTimersByTime(60_000);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(engine.queue()[0].status).toBe('done');
@@ -325,7 +336,7 @@ describe('SevenTvRunEngine', () => {
 
   it('cancel() marks the rest cancelled, keeps terminal states and still completes the run', () => {
     start();
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
 
     engine.cancel();
 
@@ -354,7 +365,7 @@ describe('SevenTvRunEngine', () => {
     expect(engine.showFinishedRows(shownRows)).toBe(false);
     expect(engine.queue().map((item) => item.key)).toEqual(['internal-1']);
 
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
     engine.reset();
 
@@ -365,7 +376,7 @@ describe('SevenTvRunEngine', () => {
 
   it('logs the closing measurement under the operation label', () => {
     start([EMOTES[0]]);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(console.info).toHaveBeenCalledWith(
@@ -384,7 +395,7 @@ describe('SevenTvRunEngine', () => {
       const operation: RunOperation = { ...TEST_OPERATION, abortOn: () => true };
       expect(start(emotes, operation)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'boom' }] });
 
@@ -405,7 +416,7 @@ describe('SevenTvRunEngine', () => {
       const operation: RunOperation = { ...TEST_OPERATION, abortOn: () => false };
       expect(start(EMOTES, operation)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'boom' }] });
       vi.advanceTimersByTime(RUN_DELAY_MS);
@@ -492,7 +503,7 @@ describe('SevenTvRunEngine', () => {
       const operation: RunOperation = { ...TEST_OPERATION, abortOn };
       expect(start([EMOTES[0], EMOTES[1]], operation)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       expect(abortOn).not.toHaveBeenCalled();
 
@@ -538,7 +549,7 @@ describe('SevenTvRunEngine', () => {
       const operation: RunOperation = { ...TEST_OPERATION, abortOn };
       expect(start(EMOTES, operation)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'boom' }] });
       vi.advanceTimersByTime(RUN_DELAY_MS);
@@ -559,7 +570,7 @@ describe('SevenTvRunEngine', () => {
       expect(start([EMOTES[0]], operation)).toBe(true);
 
       expect(beforeStep).toHaveBeenCalledExactlyOnceWith('set-1', EMOTES[0], 0);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       expect(engine.queue()[0].status).toBe('done');
@@ -604,7 +615,7 @@ describe('SevenTvRunEngine', () => {
       const operation: RunOperation = { ...TWO_STEP_OPERATION, beforeStep };
       expect(start([EMOTES[0]], operation)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       httpMock.expectNone(GQL_ENDPOINT);
@@ -628,7 +639,7 @@ describe('SevenTvRunEngine', () => {
 
       vi.advanceTimersByTime(30_500);
       expect(beforeStep).toHaveBeenCalledTimes(2);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(1000);
 
       expect(engine.queue()[0].status).toBe('done');
@@ -762,7 +773,7 @@ describe('SevenTvRunEngine', () => {
       gate.next({ kind: 'proceed' });
       gate.complete();
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       expect(engine.queue()[0].status).toBe('done');
@@ -794,7 +805,7 @@ describe('SevenTvRunEngine', () => {
       // `proceed` would just be queued behind the first request, not sent alongside it. The actual
       // proof is that no *second* request follows once the first one's answer lets the chain move
       // on — that is where an un-gated double emission would send its duplicate REMOVE.
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       httpMock.expectNone(GQL_ENDPOINT);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectNone(GQL_ENDPOINT);
@@ -812,7 +823,7 @@ describe('SevenTvRunEngine', () => {
       // Deliberately never completed or errored — take(1) must still let the row (and the run)
       // finish instead of hanging on a source that stays open forever.
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       expect(engine.queue()[0].status).toBe('done');
@@ -823,9 +834,9 @@ describe('SevenTvRunEngine', () => {
       expect(start(EMOTES, TEST_OPERATION)).toBe(true);
 
       const req1 = httpMock.expectOne(GQL_ENDPOINT);
-      req1.flush({});
+      req1.flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       expect(engine.queue().map((item) => item.status)).toEqual(['done', 'done']);
@@ -838,7 +849,7 @@ describe('SevenTvRunEngine', () => {
 
       const remove = httpMock.expectOne(GQL_ENDPOINT);
       expect(remove.request.body.query).toBe('mutation Remove');
-      remove.flush({});
+      remove.flush(CONFIRMED);
 
       // Still one decision open: the row stays in progress and the bar does not move yet.
       expect(engine.queue()[0].status).toBe('in-progress');
@@ -851,7 +862,7 @@ describe('SevenTvRunEngine', () => {
 
       const add = httpMock.expectOne(GQL_ENDPOINT);
       expect(add.request.body.query).toBe('mutation Add');
-      add.flush({});
+      add.flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       expect(engine.queue()[0]).toMatchObject({ status: 'done', completedSteps: 2 });
@@ -884,7 +895,7 @@ describe('SevenTvRunEngine', () => {
     it('fails the row at step 1 on a failed second step and carries on with the next row', () => {
       expect(start(EMOTES, TWO_STEP_OPERATION)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'boom' }] });
 
@@ -898,9 +909,9 @@ describe('SevenTvRunEngine', () => {
       vi.advanceTimersByTime(RUN_DELAY_MS);
       const nextRow = httpMock.expectOne(GQL_ENDPOINT);
       expect(nextRow.request.body.variables).toEqual({ setId: 'set-1', emoteId: '7tv-2', step: 0 });
-      nextRow.flush({});
+      nextRow.flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       expect(engine.queue().map((item) => item.status)).toEqual(['failed', 'done']);
@@ -910,7 +921,7 @@ describe('SevenTvRunEngine', () => {
     it('retries only the second step after a rate limit between the steps', () => {
       expect(start([EMOTES[0]], TWO_STEP_OPERATION)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       const firstAdd = httpMock.expectOne(GQL_ENDPOINT);
       expect(stepOf(firstAdd)).toBe(1);
@@ -922,7 +933,7 @@ describe('SevenTvRunEngine', () => {
       vi.advanceTimersByTime(30_500);
       const retriedAdd = httpMock.expectOne(GQL_ENDPOINT);
       expect(stepOf(retriedAdd)).toBe(1);
-      retriedAdd.flush({});
+      retriedAdd.flush(CONFIRMED);
       vi.advanceTimersByTime(1000);
 
       expect(engine.queue()[0]).toMatchObject({ status: 'done', completedSteps: 2 });
@@ -931,7 +942,7 @@ describe('SevenTvRunEngine', () => {
     it('cancel() between the steps fails the row at step 1, sends no second step and cancels the rest', () => {
       expect(start(EMOTES, TWO_STEP_OPERATION)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       engine.cancel();
 
       expect(engine.isRunning()).toBe(false);
@@ -953,7 +964,7 @@ describe('SevenTvRunEngine', () => {
       const operation: RunOperation = { ...TWO_STEP_OPERATION, abortOn };
       expect(start(EMOTES, operation)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(GQL_ENDPOINT).flush(NAME_CONFLICT_RESPONSE);
 
@@ -998,9 +1009,9 @@ describe('SevenTvRunEngine', () => {
         const nextRow = httpMock.expectOne(GQL_ENDPOINT);
         expect(nextRow.request.body.variables.emoteId).toBe('7tv-2');
         expect(stepOf(nextRow)).toBe(0);
-        nextRow.flush({});
+        nextRow.flush(CONFIRMED);
         vi.advanceTimersByTime(RUN_DELAY_MS);
-        httpMock.expectOne(GQL_ENDPOINT).flush({});
+        httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
         vi.advanceTimersByTime(RUN_DELAY_MS);
 
         expect(engine.queue().map((item) => item.status)).toEqual(['unknown', 'done']);
@@ -1013,7 +1024,7 @@ describe('SevenTvRunEngine', () => {
       const operation: RunOperation = { ...UNKNOWN_AWARE_OPERATION, abortOn };
       expect(start(EMOTES, operation)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       const add = httpMock.expectOne(GQL_ENDPOINT);
       expect(stepOf(add)).toBe(1);
@@ -1071,7 +1082,7 @@ describe('SevenTvRunEngine', () => {
     it('counts confirmed steps whatever the row ends as: 1 when the second step stayed unknown, 0 when the first did', () => {
       expect(start(EMOTES, UNKNOWN_AWARE_OPERATION)).toBe(true);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(GQL_ENDPOINT).flush(null, { status: 0, statusText: 'Unknown Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
@@ -1094,6 +1105,162 @@ describe('SevenTvRunEngine', () => {
     });
   });
 
+  // #285: an HTTP 200 is a confirmation only when it carries the mutation's result.
+  describe('a 200 that does not confirm the mutation', () => {
+    // What a proxy or an edge page may serve under HTTP 200 instead of 7TV's GraphQL answer — none
+    // of them rejects the mutation, none of them confirms it. `''` stands in for an empty body the
+    // way HttpTestingController hands it over; a real empty body arrives as `null`.
+    const UNCONFIRMED_BODIES: { label: string; body: string | object | null }[] = [
+      { label: 'an empty body', body: '' },
+      { label: 'null', body: null },
+      { label: 'a body with neither data nor errors', body: {} },
+      { label: 'data: null without errors', body: { data: null } },
+      { label: 'an empty errors list', body: { errors: [] } },
+      { label: 'data without the mutation field', body: { data: {} } },
+      { label: 'a null mutation result', body: { data: { testSet: { mutate: null } } } },
+      { label: 'a scalar where the result belongs', body: { data: { testSet: 'mutate' } } },
+    ];
+
+    it.each(UNCONFIRMED_BODIES)(
+      'ends the row unknown on $label for an operation that asks for it — no second step, no abortOn, the run goes on',
+      ({ body }) => {
+        const abortOn = vi.fn().mockReturnValue(true);
+        const operation: RunOperation = { ...UNKNOWN_AWARE_OPERATION, abortOn };
+        expect(start(EMOTES, operation)).toBe(true);
+
+        httpMock.expectOne(GQL_ENDPOINT).flush(body);
+
+        expect(engine.queue()[0]).toMatchObject({
+          status: 'unknown',
+          failedStep: 0,
+          completedSteps: 0,
+          errorMessage: DE_TRANSLATIONS.massDelete.errors.unconfirmedAnswer,
+        });
+        expect(abortOn).not.toHaveBeenCalled();
+
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        const nextRow = httpMock.expectOne(GQL_ENDPOINT);
+        expect(nextRow.request.body.variables.emoteId).toBe('7tv-2');
+        expect(stepOf(nextRow)).toBe(0);
+        nextRow.flush(CONFIRMED);
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+
+        expect(results[0].items.map((item) => item.status)).toEqual(['unknown', 'done']);
+        expect(results[0].doneKeys).toEqual(['internal-2']);
+      },
+    );
+
+    it.each(UNCONFIRMED_BODIES)(
+      'ends the row failed on $label for an operation that does not ask for unknown, and asks abortOn',
+      ({ body }) => {
+        const abortOn = vi.fn().mockReturnValue(false);
+        const operation: RunOperation = { ...TEST_OPERATION, abortOn };
+        expect(start([EMOTES[0]], operation)).toBe(true);
+
+        httpMock.expectOne(GQL_ENDPOINT).flush(body);
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+
+        expect(results[0].items[0]).toMatchObject({
+          status: 'failed',
+          failedStep: 0,
+          errorMessage: DE_TRANSLATIONS.massDelete.errors.unconfirmedAnswer,
+        });
+        expect(results[0].doneKeys).toEqual([]);
+        expect(abortOn).toHaveBeenCalledExactlyOnceWith({
+          message: DE_TRANSLATIONS.massDelete.errors.unconfirmedAnswer,
+          httpStatus: 200,
+          errorCode: null,
+          gqlStatus: null,
+        });
+      },
+    );
+
+    it('reads each step by its own result path — a second step answered with the first step’s result stays unknown', () => {
+      const operation: RunOperation = {
+        label: 'two-path run',
+        stepCount: () => 2,
+        transportLossIsUnknown: true,
+        buildRequest: (setId, emote, step) => ({
+          mutation: {
+            query: step === 0 ? 'mutation Remove' : 'mutation Add',
+            resultPath: step === 0 ? ['set', 'removeEmote'] : ['set', 'addEmote'],
+          },
+          variables: { setId, emoteId: emote.sevenTvEmoteId, step },
+        }),
+      };
+      const removed = { data: { set: { removeEmote: { id: 'set-1' } } } };
+      expect(start([EMOTES[0]], operation)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush(removed);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush(removed);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(results[0].items[0]).toMatchObject({
+        status: 'unknown',
+        completedSteps: 1,
+        failedStep: 1,
+      });
+    });
+
+    it('sends only the query and the variables — the result path stays with the engine', () => {
+      expect(start([EMOTES[0]])).toBe(true);
+
+      const request = httpMock.expectOne(GQL_ENDPOINT);
+      expect(request.request.body).toEqual({
+        query: 'mutation Test',
+        variables: { setId: 'set-1', emoteId: '7tv-1' },
+      });
+      request.flush(CONFIRMED);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+    });
+
+    it('confirms a 200 whose errors list is empty and whose data holds the result', () => {
+      expect(start([EMOTES[0]], TEST_OPERATION)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [], ...CONFIRMED });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(results[0].items[0]).toMatchObject({ status: 'done', completedSteps: 1 });
+      expect(results[0].doneKeys).toEqual(['internal-1']);
+    });
+
+    it('keeps a 200 that carries errors a rejection, not unknown, even with data beside it', () => {
+      const abortOn = vi.fn().mockReturnValue(false);
+      const operation: RunOperation = { ...UNKNOWN_AWARE_OPERATION, abortOn };
+      expect(start([EMOTES[0]], operation)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({ data: null, ...NAME_CONFLICT_RESPONSE });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(results[0].items[0]).toMatchObject({ status: 'failed', failedStep: 0 });
+      expect(abortOn).toHaveBeenCalledExactlyOnceWith({
+        message: 'emote name conflict',
+        httpStatus: null,
+        errorCode: 'BAD_REQUEST',
+        gqlStatus: 409,
+      });
+    });
+
+    it('keeps a rate-limited 200 a backoff and retry, not unknown', () => {
+      expect(start([EMOTES[0]], UNKNOWN_AWARE_OPERATION)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({ data: null, ...rateLimitResponse(1) });
+      expect(engine.queue()[0].status).toBe('in-progress');
+      expect(engine.rateLimitPauseSeconds()).not.toBeNull();
+
+      vi.advanceTimersByTime(1500);
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(results[0].items[0]).toMatchObject({ status: 'done', completedSteps: 2 });
+    });
+  });
+
   // Wire contract, not template: a single-step operation sends exactly what it sent before rows
   // could take several steps — same requests, same order, same pacing.
   it('sends a single-step two-row run exactly as before', () => {
@@ -1110,11 +1277,11 @@ describe('SevenTvRunEngine', () => {
     };
     expect(start()).toBe(true);
 
-    nextRequest().flush({});
+    nextRequest().flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS - 1);
     httpMock.expectNone(GQL_ENDPOINT);
     vi.advanceTimersByTime(1);
-    nextRequest().flush({});
+    nextRequest().flush(CONFIRMED);
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(sent).toEqual([

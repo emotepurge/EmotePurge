@@ -13,6 +13,7 @@ import { RUN_DELAY_MS } from './seven-tv-run-engine';
 import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import { TransferPlan, TransferRow } from './transfer-plan';
+import { flushApplied, flushWithoutResult } from './seven-tv-mutation.testing';
 
 // The keys the run engine translates, plus the import service's own row reasons.
 const DE_TRANSLATIONS = {
@@ -202,9 +203,9 @@ describe('SevenTvImportService', () => {
 
   /** Runs both rows of ROWS to 'done' and drains the closing calls of a successful run. */
   function runTwoRowsToDone(): void {
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
   }
 
@@ -224,9 +225,9 @@ describe('SevenTvImportService', () => {
       emoteId: '7tv-1',
       alias: 'PogU',
     });
-    req.flush({});
+    flushApplied(req);
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
     httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
@@ -250,7 +251,7 @@ describe('SevenTvImportService', () => {
       alias: 'Sitzgemüse',
     });
 
-    req.flush({});
+    flushApplied(req);
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
     httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
@@ -345,9 +346,9 @@ describe('SevenTvImportService', () => {
   // chosen non-active target through to `startImport`.
   it("sends the run's own targetSetId as targetEmoteSetId, not the channel active set", () => {
     service.startImport(TARGET_C, CHANNEL_ORIGIN, addPlan(ROWS));
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     const reportReq = httpMock.expectOne(SYNC_IMPORTED_C);
@@ -460,7 +461,7 @@ describe('SevenTvImportService', () => {
       .expectOne(GQL_ENDPOINT)
       .flush({ errors: [{ message: 'BAD_REQUEST this emote has a conflicting name' }] });
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(service.queue().map((item) => item.status)).toEqual(['failed', 'done']);
@@ -739,7 +740,7 @@ describe('SevenTvImportService', () => {
     );
     expect(service.isRunning()).toBe(true);
 
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(SYNC_IMPORTED_C).flush(null, { status: 204, statusText: 'No Content' });
     httpMock.expectOne(RESYNC_C).flush(null, { status: 202, statusText: 'Accepted' });
@@ -777,9 +778,15 @@ describe('SevenTvImportService', () => {
     httpMock.expectNone(SYNC_IMPORTED_B);
   });
 
-  /** Answers the next mutation and waits out the pacing delay behind it. */
-  function answerNext(body: object = {}): void {
-    httpMock.expectOne(GQL_ENDPOINT).flush(body);
+  /** Answers the next mutation — as applied unless `body` says otherwise — and waits out the
+   *  pacing delay behind it. */
+  function answerNext(body?: object): void {
+    const request = httpMock.expectOne(GQL_ENDPOINT);
+    if (body === undefined) {
+      flushApplied(request);
+    } else {
+      request.flush(body);
+    }
     vi.advanceTimersByTime(RUN_DELAY_MS);
   }
 
@@ -798,9 +805,9 @@ describe('SevenTvImportService', () => {
     };
 
     service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
-    record(httpMock.expectOne(GQL_ENDPOINT)).flush({});
+    flushApplied(record(httpMock.expectOne(GQL_ENDPOINT)));
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    record(httpMock.expectOne(GQL_ENDPOINT)).flush({});
+    flushApplied(record(httpMock.expectOne(GQL_ENDPOINT)));
     vi.advanceTimersByTime(RUN_DELAY_MS);
     record(httpMock.expectOne(SYNC_IMPORTED_B)).flush(null, { status: 204, statusText: 'OK' });
     record(httpMock.expectOne(RESYNC_B)).flush(null, { status: 202, statusText: 'Accepted' });
@@ -857,7 +864,7 @@ describe('SevenTvImportService', () => {
         emoteId: 'src-x',
         alias: 'KappaAlt',
       });
-      req.flush({});
+      flushApplied(req);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
@@ -873,7 +880,7 @@ describe('SevenTvImportService', () => {
       const remove = nextMutation();
       expect(remove.request.body.query).toContain('removeEmote(id: { emoteId: $emoteId })');
       expect(remove.request.body.variables).toEqual({ setId: 'set-b', emoteId: 'tgt-x' });
-      remove.flush({});
+      flushApplied(remove);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       // The ADD of the same row comes next — before the next row's request.
@@ -884,7 +891,7 @@ describe('SevenTvImportService', () => {
         emoteId: 'src-x',
         alias: 'Kappa',
       });
-      add.flush({});
+      flushApplied(add);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       const next = nextMutation();
@@ -893,7 +900,7 @@ describe('SevenTvImportService', () => {
         emoteId: 'src-y',
         alias: 'Pog',
       });
-      next.flush({});
+      flushApplied(next);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       // Destructive until closed (#256): the removal report still has to be answered.
@@ -918,7 +925,7 @@ describe('SevenTvImportService', () => {
         currentAlias: 'KappaOld',
         alias: 'Kappa',
       });
-      req.flush({});
+      flushApplied(req);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       // An adopt reports nothing — only the resync pulls the renamed entry in.
@@ -934,7 +941,7 @@ describe('SevenTvImportService', () => {
       });
 
       answerNext(gqlRejection('BAD_REQUEST emote name conflict', 409));
-      answerNext({});
+      answerNext();
 
       const [adopt, add] = service.run()?.result?.items ?? [];
       expect(adopt.status).toBe('failed');
@@ -950,7 +957,7 @@ describe('SevenTvImportService', () => {
     it('marks a replace that failed after its REMOVE with the gap reason and reports the removal', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
 
-      answerNext({});
+      answerNext();
       answerNext(gqlRejection('BAD_REQUEST this emote has a conflicting name', 409));
 
       const [row] = service.run()?.result?.items ?? [];
@@ -968,8 +975,8 @@ describe('SevenTvImportService', () => {
 
     it("reports the removal to the target set's sync-deleted, expecting the target channel of an active set", () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       const removal = httpMock.expectOne(SYNC_DELETED_B);
@@ -991,8 +998,8 @@ describe('SevenTvImportService', () => {
     // resynced by the backend already — the import's own resync skips it.
     it('skips its own resync when the removal report says the backend already resynced the channel', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(SYNC_DELETED_B).flush(
@@ -1014,8 +1021,8 @@ describe('SevenTvImportService', () => {
       service.startImport({ ...TARGET_B, isActiveSet: false }, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x')],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       const removal = httpMock.expectOne(SYNC_DELETED_B);
@@ -1033,8 +1040,8 @@ describe('SevenTvImportService', () => {
     // #255: kept apart from the notTracked case below — the two read differently to a user.
     it('reads an unresolved expected channel in the removal answer with reason activeSetDiffers as partial/channelMismatchActiveSetDiffers', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(SYNC_DELETED_B).flush(
@@ -1051,8 +1058,8 @@ describe('SevenTvImportService', () => {
 
     it('reads an unresolved expected channel in the removal answer with reason notTracked as partial/channelMismatchNotTracked', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(SYNC_DELETED_B).flush(
@@ -1074,8 +1081,8 @@ describe('SevenTvImportService', () => {
     // reason.
     it('refuses a manual retry of a removal report that ended partial/channelMismatchActiveSetDiffers', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(SYNC_DELETED_B).flush(
@@ -1096,8 +1103,8 @@ describe('SevenTvImportService', () => {
     // which the failed report did not cover, still runs.
     it('reads a 404 removal report after the retries as failed/setNotFound and still resyncs', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(SYNC_DELETED_B).flush(null, { status: 404, statusText: 'Not Found' });
@@ -1122,8 +1129,8 @@ describe('SevenTvImportService', () => {
       });
 
       expect(service.isRunning()).toBe(true);
-      answerNext({}); // REMOVE
-      answerNext({}); // ADD
+      answerNext(); // REMOVE
+      answerNext(); // ADD
 
       httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
       const removal = httpMock.expectOne(SYNC_DELETED_SET_U);
@@ -1151,8 +1158,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x')],
       });
-      answerNext({}); // REMOVE
-      answerNext({}); // ADD
+      answerNext(); // REMOVE
+      answerNext(); // ADD
 
       httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(SYNC_DELETED_SET_U).flush(null);
@@ -1175,7 +1182,7 @@ describe('SevenTvImportService', () => {
       // The next request is the next row's ADD, not the failed row's second step.
       const next = nextMutation();
       expect(next.request.body.variables.emoteId).toBe('src-y');
-      next.flush({});
+      flushApplied(next);
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       const [replace] = service.run()?.result?.items ?? [];
@@ -1191,8 +1198,8 @@ describe('SevenTvImportService', () => {
 
     it('re-sends a failed removal report from the same run record', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       const record = service.run();
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
@@ -1227,8 +1234,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
       expect(service.run()?.result?.items[1].status).toBe('unknown');
@@ -1241,12 +1248,45 @@ describe('SevenTvImportService', () => {
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
+    // #285: a 200 that neither rejects nor confirms follows the same split as a lost answer.
+    it('treats a 200 without the mutation result like a lost answer — failed add-only, unknown and re-read with a replace row', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
+      flushWithoutResult(nextMutation());
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      expect(service.run()?.result?.items[0].status).toBe('failed');
+      expect(service.run()?.settlement).toBe('settled');
+      httpMock.expectNone(GQL_ENDPOINT);
+
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
+      });
+      answerNext();
+      answerNext();
+      flushWithoutResult(nextMutation());
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      expect(service.run()?.result?.items[1].status).toBe('unknown');
+
+      // Read at once, like after a 5xx — and it confirms the ADD that was never confirmed.
+      httpMock.expectOne(isSetRead).flush(
+        setEntriesPage([
+          { id: 'src-x', alias: 'Kappa' },
+          { id: 'src-y', alias: 'Pog' },
+        ]),
+      );
+      expect(service.run()?.result?.items.map((item) => item.status)).toEqual(['done', 'done']);
+      const imported = httpMock.expectOne(SYNC_IMPORTED_B);
+      expect(imported.request.body.sevenTvEmoteIds).toEqual(['src-x', 'src-y']);
+      imported.flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
     it('clears up an unknown ADD through the re-read and reports it as imported', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 502, statusText: 'Bad Gateway' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
@@ -1301,11 +1341,11 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
+      answerNext();
       // The replace row's ADD gets no answer: REMOVE confirmed, ADD unknown.
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
-      answerNext({});
+      answerNext();
 
       httpMock.expectOne(GQL_ENDPOINT).error(new ProgressEvent('error'));
 
@@ -1334,8 +1374,8 @@ describe('SevenTvImportService', () => {
       });
       // #256 issue point 4: zero in flight, before the engine has even produced an unknown row.
       expect(service.run()?.unknownRemovalCount).toBe(0);
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
@@ -1361,8 +1401,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
       const read = httpMock.expectOne(GQL_ENDPOINT);
@@ -1402,7 +1442,7 @@ describe('SevenTvImportService', () => {
       expect(warn).toHaveBeenCalledTimes(2);
       expect(service.run()).toBe(second);
 
-      answerNext({});
+      answerNext();
       expect(service.run()?.plan).toBe(secondPlan);
       httpMock.expectOne(SYNC_IMPORTED_C).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(RESYNC_C).flush(null, { status: 202, statusText: 'Accepted' });
@@ -1413,8 +1453,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
       const read = httpMock.expectOne(GQL_ENDPOINT);
@@ -1447,7 +1487,7 @@ describe('SevenTvImportService', () => {
       // Not `done` yet — doneAdoptCount only counts a settled adopt (spec #255).
       expect(service.doneAdoptCount()).toBe(0);
 
-      answerNext({});
+      answerNext();
 
       expect(service.isRunning()).toBe(false);
       expect(service.items()).toBe(service.run()?.result?.items);
@@ -1464,8 +1504,8 @@ describe('SevenTvImportService', () => {
       });
       expect(service.doneAdoptCount()).toBe(0);
 
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
 
       expect(service.items().map((item) => item.transfer.action)).toEqual([
         'add',
@@ -1486,7 +1526,7 @@ describe('SevenTvImportService', () => {
       expect(service.doneAdoptCount()).toBe(0);
 
       answerNext(gqlRejection('BAD_REQUEST emote name conflict', 409));
-      answerNext({});
+      answerNext();
 
       const [failedAdopt, doneAdopt] = service.run()?.result?.items ?? [];
       expect(failedAdopt.status).toBe('failed');
@@ -1496,6 +1536,16 @@ describe('SevenTvImportService', () => {
       // Adopts report nothing to sync-imported (only the resync pulls the renamed entry in).
       httpMock.expectNone(SYNC_IMPORTED_B);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    // #285: the adopt is confirmed by its `updateEmoteAlias` result and by nothing short of it.
+    it('does not count an adopt done on a 200 whose data stops short of the updateEmoteAlias result', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [adoptRow(SOURCE_X, 'KappaOld')] });
+      flushWithoutResult(nextMutation());
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(service.run()?.result?.items[0].status).toBe('failed');
+      expect(service.doneAdoptCount()).toBe(0);
     });
 
     it('leaves out a queue row the shown plan does not know instead of throwing', () => {
@@ -1510,7 +1560,7 @@ describe('SevenTvImportService', () => {
       expect(service.items()).toEqual([]);
       // #256: the run completes on its own record, whatever the display holds — its confirmed ADD
       // is reported all the same.
-      answerNext({});
+      answerNext();
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
@@ -1519,8 +1569,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
@@ -1549,7 +1599,7 @@ describe('SevenTvImportService', () => {
       });
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 503, statusText: 'Unavailable' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
-      answerNext({});
+      answerNext();
 
       httpMock.expectOne(GQL_ENDPOINT).flush(
         setEntriesPage([
@@ -1624,7 +1674,7 @@ describe('SevenTvImportService', () => {
       // all — a run without a single replace row never counts one either.
       expect(service.run()?.unknownRemovalCount).toBe(0);
 
-      answerNext({});
+      answerNext();
 
       expect(service.run()).toMatchObject({ settlement: 'settled', unknownRemovalCount: 0 });
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
@@ -1635,8 +1685,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
@@ -1658,8 +1708,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
       const read = httpMock.expectOne(GQL_ENDPOINT);
@@ -1684,8 +1734,8 @@ describe('SevenTvImportService', () => {
         service.startImport(TARGET_B, CHANNEL_ORIGIN, {
           rows: [replaceRow(SOURCE_Y, 'tgt-y'), adoptRow(SOURCE_X, 'KappaOld')],
         });
-        answerNext({});
-        answerNext({});
+        answerNext();
+        answerNext();
         httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
         vi.advanceTimersByTime(RUN_DELAY_MS);
 
@@ -1712,7 +1762,7 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      nextMutation().flush({});
+      flushApplied(nextMutation());
       // In the pacing pause before the ADD.
       service.cancel();
 
@@ -1736,8 +1786,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
@@ -1764,7 +1814,7 @@ describe('SevenTvImportService', () => {
     /** Starts a one-row replace, lets its REMOVE be confirmed and cancels while its ADD is out. */
     function cancelReplaceWithAddInFlight(): void {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
-      answerNext({}); // REMOVE confirmed
+      answerNext(); // REMOVE confirmed
       const add = nextMutation();
       expect(add.request.body.variables).toMatchObject({ emoteId: 'src-x', alias: 'Kappa' });
       service.cancel();
@@ -1902,7 +1952,7 @@ describe('SevenTvImportService', () => {
 
     it('reads at once, without a grace period, after a 5xx the user did not cancel', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
-      answerNext({});
+      answerNext();
       nextMutation().flush('boom', { status: 503, statusText: 'Unavailable' });
 
       // Well inside the grace period — and the read is already out.
@@ -1919,7 +1969,7 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y), addRow(SOURCE_Z)],
       });
-      answerNext({}); // the replace row's REMOVE
+      answerNext(); // the replace row's REMOVE
       nextMutation().flush('boom', { status: 500, statusText: 'Server Error' }); // its ADD: lost
       vi.advanceTimersByTime(RUN_DELAY_MS);
       nextMutation().flush({
@@ -1952,7 +2002,7 @@ describe('SevenTvImportService', () => {
       drainReplaceReports(['src-x']);
 
       service.startImport(TARGET_C, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_Y, 'tgt-y')] });
-      answerNext({});
+      answerNext();
       nextMutation().flush('boom', { status: 502, statusText: 'Bad Gateway' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
@@ -1966,7 +2016,7 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
+      answerNext();
       nextMutation().flush('boom', { status: 500, statusText: 'Server Error' });
       service.cancel(); // in the pacing pause before the add row: nothing in flight
 
@@ -2016,7 +2066,7 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({}); // the replace row's REMOVE
+      answerNext(); // the replace row's REMOVE
       answerNext(gqlRejection('BAD_REQUEST this emote has a conflicting name', 409)); // its ADD
       const add = nextMutation(); // the add row's ADD, in flight
       service.cancel();
@@ -2068,7 +2118,7 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.phase).toBe('running');
       expect(service.isSettling()).toBe(false);
 
-      answerNext({});
+      answerNext();
 
       expect(service.run()?.phase).toBe('reporting');
       expect(service.isSettling()).toBe(true);
@@ -2081,7 +2131,7 @@ describe('SevenTvImportService', () => {
     it('closes at once when nothing is to be reported, and a resync does not hold it open', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [adoptRow(SOURCE_X, 'KappaOld')] });
 
-      answerNext({});
+      answerNext();
 
       // An adopt reports nothing; the resync it triggers is not a report (Festlegung 4).
       const resync = httpMock.expectOne(RESYNC_B);
@@ -2096,7 +2146,7 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x')],
       });
-      answerNext({});
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 502, statusText: 'Bad Gateway' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
@@ -2116,7 +2166,7 @@ describe('SevenTvImportService', () => {
 
     it('closes a run whose report ends failed after the retries, and frees the arbiter', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
-      answerNext({});
+      answerNext();
 
       httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 503, statusText: 'Down' });
       vi.advanceTimersByTime(2000);
@@ -2134,8 +2184,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x')],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(SYNC_DELETED_SET_U).flush({}, { status: 403, statusText: 'Forbidden' });
       expect(service.run()?.phase).toBe('closed');
@@ -2155,8 +2205,8 @@ describe('SevenTvImportService', () => {
         rows: [replaceRow(SOURCE_X, 'tgt-x')],
       });
       expect(service.destructiveOpen()).toBe(true);
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       const imported = httpMock.expectOne(SYNC_IMPORTED_SET_U);
       const removed = httpMock.expectOne(SYNC_DELETED_SET_U);
 
@@ -2171,7 +2221,7 @@ describe('SevenTvImportService', () => {
       // Only the add-only run is left, and it never counts.
       expect(service.destructiveOpen()).toBe(false);
 
-      answerNext({});
+      answerNext();
       httpMock.expectOne(SYNC_IMPORTED_C).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(RESYNC_C).flush(null, { status: 202, statusText: 'Accepted' });
       expect(service.destructiveOpen()).toBe(false);
@@ -2193,10 +2243,10 @@ describe('SevenTvImportService', () => {
       expect(service.queue()).toHaveLength(2);
       expect(remove.cancelled).toBe(false);
 
-      remove.flush({});
+      flushApplied(remove);
       vi.advanceTimersByTime(RUN_DELAY_MS);
-      answerNext({}); // the replace row's ADD
-      answerNext({}); // the pending add row runs too
+      answerNext(); // the replace row's ADD
+      answerNext(); // the pending add row runs too
 
       expect(service.isRunning()).toBe(false);
       expect(service.queue()).toEqual([]);
@@ -2222,8 +2272,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
       vi.advanceTimersByTime(RUN_DELAY_MS);
       const read = httpMock.expectOne(GQL_ENDPOINT);
@@ -2246,7 +2296,7 @@ describe('SevenTvImportService', () => {
 
     it('lets reset() during reporting land the answer on the record, and settles only after it', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
-      answerNext({});
+      answerNext();
       const report = httpMock.expectOne(SYNC_IMPORTED_SET_U);
 
       service.reset();
@@ -2266,7 +2316,7 @@ describe('SevenTvImportService', () => {
     it('shows a detached run again when its report fails, with the dock queue and a working retry', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
       const runId = service.run()?.runId;
-      answerNext({});
+      answerNext();
       const report = httpMock.expectOne(SYNC_IMPORTED_SET_U);
       service.reset();
       expect(service.queue()).toEqual([]);
@@ -2290,8 +2340,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x')],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
       const imported = httpMock.expectOne(SYNC_IMPORTED_SET_U);
       const removed = httpMock.expectOne(SYNC_DELETED_SET_U);
       service.reset();
@@ -2315,8 +2365,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x')],
       });
-      answerNext({});
-      answerNext({});
+      answerNext();
+      answerNext();
 
       for (const pause of [2000, 4000, 0]) {
         const imported = httpMock.expectOne(SYNC_IMPORTED_SET_U);
@@ -2339,7 +2389,7 @@ describe('SevenTvImportService', () => {
 
     it('records the protocol download on the shown run, and drops it with the display', () => {
       service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
-      answerNext({});
+      answerNext();
       httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
       expect(service.protocolSaved()).toBe(false);
 

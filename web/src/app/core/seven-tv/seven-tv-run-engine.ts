@@ -69,8 +69,9 @@ export interface RunQueueEmote {
 }
 
 /** `unknown` is the outcome of a step whose answer never came out of 7TV's GraphQL layer — no
- *  answer at all, an HTTP 5xx, or a `cancel()` that aborted the step's request — on an operation
- *  that asks for it (`transportLossIsUnknown`).
+ *  answer at all, an HTTP 5xx, an HTTP 200 that carries neither `errors` nor the mutation's result,
+ *  or a `cancel()` that aborted the step's request — on an operation that asks for it
+ *  (`transportLossIsUnknown`).
  *  7TV may or may not have applied that step; nothing in the run can tell. */
 export type RunItemStatus = 'pending' | 'in-progress' | 'done' | 'failed' | 'cancelled' | 'unknown';
 
@@ -100,6 +101,27 @@ export interface RunFailure {
   gqlStatus: number | null;
 }
 
+/** One 7TV mutation as the engine sends it: the GraphQL text, and where in a successful answer the
+ *  mutation's own result sits. Declared together, next to the query text, so the path cannot drift
+ *  away from the selection it describes.
+ *
+ *  `resultPath` names the fields from the answer's `data` down to the mutation field itself — for
+ *  `emoteSets { emoteSet(id:) { removeEmote(...) { id } } }` that is
+ *  `['emoteSets', 'emoteSet', 'removeEmote']`. A step is `done` only when an answer without `errors`
+ *  holds an object there (#285): an empty body, `null`, or `data` without that field is no
+ *  confirmation, whatever the HTTP status. */
+export interface SevenTvMutation {
+  readonly query: string;
+  readonly resultPath: readonly string[];
+}
+
+/** What `RunOperation.buildRequest` returns for one step. Only `mutation.query` and `variables` go
+ *  over the wire; `mutation.resultPath` stays with the engine, which reads the answer by it. */
+export interface RunRequest {
+  mutation: SevenTvMutation;
+  variables: Record<string, unknown>;
+}
+
 /** What a `beforeStep` hook returns for one attempt of a step — see the hook's own documentation
  *  on `RunOperation` for what each outcome does. */
 export type StepGate = { kind: 'proceed' } | { kind: 'skip'; errorMessage: string };
@@ -119,15 +141,9 @@ export interface RunOperation {
    *  import. A value below one is treated as one. */
   stepCount?(emote: RunQueueEmote): number;
   /** The request for one step of one row; `step` counts from `0` and a single-step operation can
-   *  ignore it. Called again for every rate-limit retry of that step. */
-  buildRequest(
-    setId: string,
-    emote: RunQueueEmote,
-    step: number,
-  ): {
-    query: string;
-    variables: Record<string, unknown>;
-  };
+   *  ignore it. Called again for every rate-limit retry of that step. The mutation carries the path
+   *  its result comes back under — see `SevenTvMutation`. */
+  buildRequest(setId: string, emote: RunQueueEmote, step: number): RunRequest;
   /**
    * Asked before every attempt of this step's request — the first try and, because the engine
    * calls it again whenever `retry()` resubscribes, every retry after a rate-limit pause too.
@@ -165,16 +181,18 @@ export interface RunOperation {
 
   /**
    * `true` makes a step whose answer never came out of 7TV's GraphQL layer end its row `unknown`
-   * instead of `failed`: no response at all (`httpStatus 0` — network loss, timeout) and every HTTP
+   * instead of `failed`: no response at all (`httpStatus 0` — network loss, timeout), every HTTP
    * `5xx`, `500` included, since such an answer says that something failed but not whether before
-   * or after the write. Anything 7TV answered unambiguously keeps today's outcome: a GraphQL answer
-   * (HTTP 200, with or without `errors`) is a success, a rate-limit backoff or `failed`, and any
-   * HTTP `4xx` rejects the request before it is processed (`401`/`403` still clear the token, `429`
-   * still backs off). An `unknown` row sends no further step, is not passed to `abortOn` (there is
+   * or after the write, and an HTTP 200 that neither rejects nor confirms (#285) — no `errors`, but
+   * no mutation result at the step's `resultPath` either: an empty body, `null`, a body without
+   * `data`, whatever a proxy or an edge page may serve under that status. Anything 7TV answered
+   * unambiguously keeps today's outcome: a GraphQL answer with `errors` is a rate-limit backoff or
+   * `failed`, one with the mutation's result is a success, and any HTTP `4xx` rejects the request
+   * before it is processed (`401`/`403` still clear the token, `429` still backs off). An `unknown` row sends no further step, is not passed to `abortOn` (there is
    * no reason to weigh) and does not stop the run; `progress` counts it as finished, and it is not
    * among the done keys of the `RunResult`. A `cancel()` that aborts a step's request in flight
-   * ends that row `unknown` too, for the same reason. Omitted means `false`: a lost answer then
-   * stays `failed`, and a cancelled request in flight `cancelled`. Set by the delete and the restore
+   * ends that row `unknown` too, for the same reason. Omitted means `false`: a lost answer and an
+   * unconfirmed 200 then stay `failed`, and a cancelled request in flight `cancelled`. Set by the delete and the restore
    * (#275), the undo and an import whose plan deletes; an add-only import deliberately does without
    * (#284). The engine only marks such a row — clearing it up by a re-read of the set is the owning
    * service's job.
@@ -190,21 +208,26 @@ export interface RunOperation {
    *
    * `message` is the raw 7TV GQL error text when 7TV rejected the mutation itself (untranslated —
    * matching on it is the caller's job), the already-translated text for an HTTP-layer failure
-   * (`401`/`403`/`429`/network/generic — see `describeHttpError`), and the translated give-up text
-   * once the rate-limit retries are exhausted. `httpStatus` is the HTTP status of a transport
-   * failure — including Angular's `0` for a network error — and `null` for a GQL-level rejection or
-   * a rate-limit give-up.
+   * (`401`/`403`/`429`/network/generic — see `describeHttpError`), the translated give-up text
+   * once the rate-limit retries are exhausted, and the translated `unconfirmedAnswer` text for an
+   * HTTP 200 that carried neither `errors` nor the mutation's result (#285 — `failed` only on an
+   * operation without `transportLossIsUnknown`, otherwise the row is `unknown` and never gets here).
+   * `httpStatus` is the HTTP status of a transport failure — including Angular's `0` for a network
+   * error —, `200` for that unconfirmed answer (the only case in which it is `200`), and `null` for
+   * a GQL-level rejection or a rate-limit give-up.
    *
    * `errorCode` is 7TV's structured `extensions.code` from the GQL error — v4's `LACKING_PRIVILEGES`
    * for a missing-permission mutation, for one, which is the reason this field exists: that rejection
    * arrives over HTTP 200, so there is no `httpStatus` to match on. It is `null` whenever there is
    * nothing to read a code from — a transport-layer failure (no GraphQL body at all), a GQL error
-   * without an `extensions.code`, or the rate-limit give-up (synthesised locally after the retry
-   * budget is spent, not read off a specific server error).
+   * without an `extensions.code`, an unconfirmed 200 (no GraphQL error at all), or the rate-limit
+   * give-up (synthesised locally after the retry budget is spent, not read off a specific server
+   * error).
    *
    * `gqlStatus` is the HTTP-like `extensions.status` 7TV puts on a GraphQL rejection — `409` for a
-   * name conflict on `updateEmoteAlias`, for one — and `null` for a transport failure, for the
-   * rate-limit give-up and for a GraphQL error without a status. Match on it, never on the text.
+   * name conflict on `updateEmoteAlias`, for one — and `null` for a transport failure, for an
+   * unconfirmed 200, for the rate-limit give-up and for a GraphQL error without a status. Match on
+   * it, never on the text.
    *
    * Not called for a successful step, for a rate-limited attempt that is still being retried (only
    * the retry's final outcome reaches this hook), for a row that is `cancelled`, or for a row that
@@ -272,6 +295,32 @@ interface SevenTvGqlError {
     status?: number;
     headers?: Record<string, string>;
   };
+}
+
+interface SevenTvGqlResponse {
+  data?: unknown;
+  errors?: SevenTvGqlError[];
+}
+
+/** Whether `response.data` holds an object at `resultPath` — the mutation's own result, which 7TV
+ *  sends only for a mutation it applied. Anything else along the way (a missing field, `null`, a
+ *  scalar, an array) is no confirmation. */
+function holdsMutationResult(
+  response: SevenTvGqlResponse | null,
+  resultPath: readonly string[],
+): boolean {
+  let node: unknown = response?.data;
+  for (const field of resultPath) {
+    if (!isPlainObject(node)) {
+      return false;
+    }
+    node = node[field];
+  }
+  return isPlainObject(node);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseHeaderNumber(headers: Record<string, string> | undefined, suffix: string) {
@@ -607,11 +656,12 @@ export class SevenTvRunEngine {
       this.requestsInWindow += 1;
       this.requestTimestamps.push(startedAt);
       this.inFlight = { key: emote.key, step };
+      const { mutation, variables } = operation.buildRequest(setId, emote, step);
 
       return this.http
-        .post<{ errors?: SevenTvGqlError[] }>(
+        .post<SevenTvGqlResponse | null>(
           SEVEN_TV_GQL_ENDPOINT,
-          operation.buildRequest(setId, emote, step),
+          { query: mutation.query, variables },
           { headers: { Authorization: `Bearer ${token}` } },
         )
         .pipe(
@@ -625,7 +675,9 @@ export class SevenTvRunEngine {
           map((response): RunOneResult => {
             const gqlError = response?.errors?.[0];
             if (!gqlError) {
-              return { outcome: 'done' };
+              return holdsMutationResult(response, mutation.resultPath)
+                ? { outcome: 'done' }
+                : this.unconfirmedAnswer(operation);
             }
             // 7TV answers a rate-limited mutation with HTTP 200 and the rejection inside `errors`
             // (async-graphql never touches the status code), so this is the only place it surfaces.
@@ -636,7 +688,7 @@ export class SevenTvRunEngine {
             // transport status to report. errorCode carries extensions.code verbatim — v4's
             // structured rejection reason (e.g. LACKING_PRIVILEGES) — or null when the error has
             // none; gqlStatus likewise extensions.status (e.g. 409 for a name conflict). A GraphQL
-            // answer is never `unknown`: 7TV processed the request and said how it went.
+            // rejection is never `unknown`: 7TV processed the request and said how it went.
             return {
               outcome: 'failed',
               errorMessage: gqlError.message ?? '',
@@ -679,6 +731,21 @@ export class SevenTvRunEngine {
           }),
         );
     });
+  }
+
+  /** An HTTP 200 without `errors` and without the mutation's result (#285) — an empty body, `null`,
+   *  a body with neither `data` nor `errors`, or `data` missing the field. Nothing in it says 7TV
+   *  processed the mutation, nor that it did not: `unknown` for an operation that asks for it, the
+   *  same as a lost answer, `failed` otherwise. `httpStatus` is the 200 it came with; `errorCode` and
+   *  `gqlStatus` are null, there is no GraphQL error to read them off. */
+  private unconfirmedAnswer(operation: RunOperation): RunOneResult {
+    return {
+      outcome: operation.transportLossIsUnknown ? 'unknown' : 'failed',
+      errorMessage: this.translocoService.translate('massDelete.errors.unconfirmedAnswer'),
+      httpStatus: 200,
+      errorCode: null,
+      gqlStatus: null,
+    };
   }
 
   /** Called on every rejection. Logs what 7TV reported (this is how we learn the real quota — the
