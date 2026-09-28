@@ -1,4 +1,4 @@
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, Signal, computed, effect, inject, input, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
@@ -44,6 +44,11 @@ export function resyncNoticeKey(
 ): string | null {
   return state === 'idle' ? null : `${family}.resync.${state}`;
 }
+
+/** How long a confirmed restore's or undo's last live read has to be out before the announcer
+ *  speaks the wait (#280). Most reads answer well inside it, and a line on every start that was
+ *  gone again a moment later would only be noise; the triggers lock at once regardless. */
+export const START_CHECK_ANNOUNCE_DELAY_MS = 1000;
 
 /** One line of the undo's skipped candidates: how many were skipped for `reason`. */
 export interface UndoSkippedLine {
@@ -205,7 +210,10 @@ export function markedCountNoticeKey(count: number): string {
  * Since #280 it also speaks the one state the dock cannot show at all: a confirmed restore or undo
  * whose last live read is still out, between the confirmation closing and the run appearing. The
  * visible side of that window is only the disabled trigger (docs/UI-Designsprache.md §6.1 — a
- * disabled button, no loading text), which a screen reader does not hear change.
+ * disabled button, no loading text), which a screen reader does not hear change. That makes it
+ * the one named exception to §4.5's rule that this region says nothing the dock does not show.
+ * The line only enters once the read has been out for `START_CHECK_ANNOUNCE_DELAY_MS`: most
+ * reads answer sooner, and a line on every single start would be noise.
  *
  * Several messages at once: one paragraph each, in the dock's own reading order — the marked-count
  * row first (it sits at the very top of the marking half), then the hidden-by-filter line (it sits
@@ -260,7 +268,7 @@ export function markedCountNoticeKey(count: number): string {
          closed and nothing in the dock says so yet; the buttons that would start another restore
          are disabled meanwhile, and this is what says why. First in the restore group: it comes
          before any outcome of the run it precedes. -->
-    @if (restoreService.startCheckPending()) {
+    @if (restoreStartCheckAudible()) {
       <p>{{ 'restore.startChecking' | transloco }}</p>
     }
     @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
@@ -313,7 +321,7 @@ export function markedCountNoticeKey(count: number): string {
       <!-- The undo (#254) after the import, in the dock's own order: its skipped notice, then its
            resync acknowledgement — both aria-hidden in UndoProgressSection. Before them the wait
            for a confirmed undo's freshness check (#280), same reasoning as the restore's above. -->
-      @if (undoService.startCheckPending()) {
+      @if (undoStartCheckAudible()) {
         <p>{{ 'undo.startChecking' | transloco }}</p>
       }
       @for (line of undoSkippedNotice(); track line.reason) {
@@ -346,7 +354,7 @@ export class DockOutcomeAnnouncer {
 
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
-  protected readonly undoService = inject(SevenTvUndoService);
+  private readonly undoService = inject(SevenTvUndoService);
 
   protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>
@@ -393,4 +401,33 @@ export class DockOutcomeAnnouncer {
   protected readonly undoResyncKey = computed(() =>
     resyncNoticeKey(this.undoService.resyncTrigger(), 'undo'),
   );
+  /** The restore's and the undo's `startCheckPending`, but only once it has held for
+   *  {@link START_CHECK_ANNOUNCE_DELAY_MS} — see `afterHolding`. */
+  protected readonly restoreStartCheckAudible = afterHolding(
+    this.restoreService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+  protected readonly undoStartCheckAudible = afterHolding(
+    this.undoService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+}
+
+/**
+ * `true` once `source` has been `true` for `delayMs` without a break, `false` again the moment it
+ * turns `false` — the timer is cleared on that change and on the caller's destroy (the effect's own
+ * cleanup), so the line can never appear after the wait it names has ended. Call from an injection
+ * context (a field initializer).
+ */
+function afterHolding(source: Signal<boolean>, delayMs: number): Signal<boolean> {
+  const held = signal(false);
+  effect((onCleanup) => {
+    if (!source()) {
+      held.set(false);
+      return;
+    }
+    const timer = setTimeout(() => held.set(true), delayMs);
+    onCleanup(() => clearTimeout(timer));
+  });
+  return held.asReadonly();
 }

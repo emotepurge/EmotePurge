@@ -2,7 +2,7 @@ import { Component, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ImportRunInfo,
@@ -18,6 +18,7 @@ import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome'
 import { UndoSkippedRow } from '../../core/seven-tv/undo-plan';
 import {
   DockOutcomeAnnouncer,
+  START_CHECK_ANNOUNCE_DELAY_MS,
   copiedNotActiveNotice,
   hiddenByFilterNoticeKey,
   markedCountNoticeKey,
@@ -662,29 +663,76 @@ describe('DockOutcomeAnnouncer', () => {
   });
 
   // #280: between a confirmation closing and its run appearing, the only visible sign is a
-  // disabled trigger — this region is what says why, from a region that was already standing.
+  // disabled trigger — this region is what says why, from a region that was already standing, and
+  // only once the read has lasted START_CHECK_ANNOUNCE_DELAY_MS (most answer sooner).
   describe('a confirmed start still being checked (#280)', () => {
-    it('speaks the restore wait into the standing region, on both pages, and falls silent once it ends', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Lets `ms` pass with change detection before and after, so the effect that arms the delay
+     *  has run and the line it releases is rendered. */
+    function pass(ms: number): void {
+      fixture.detectChanges();
+      vi.advanceTimersByTime(ms);
+      fixture.detectChanges();
+    }
+
+    it('says nothing while the read is younger than the delay, then speaks the restore wait into the standing region', () => {
       const regionAtRest = regions()[0];
 
       restoreService.startCheckPending.set(true);
-      fixture.detectChanges();
+      pass(START_CHECK_ANNOUNCE_DELAY_MS - 1);
+      expect(spoken()).toEqual([]);
+
+      pass(1);
       expect(regions()).toEqual([regionAtRest]);
       expect(spoken()).toEqual(['Wiederherstellung wird geprüft.']);
 
-      fixture.componentInstance.withImport.set(false);
-      fixture.detectChanges();
-      expect(spoken()).toEqual(['Wiederherstellung wird geprüft.']);
-
       restoreService.startCheckPending.set(false);
-      fixture.detectChanges();
+      pass(0);
       expect(regions()).toEqual([regionAtRest]);
       expect(spoken()).toEqual([]);
     });
 
+    it('never speaks a wait whose read answered before the delay ran out', () => {
+      restoreService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS / 2);
+      restoreService.startCheckPending.set(false);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS * 2);
+
+      expect(spoken()).toEqual([]);
+    });
+
+    it('starts the delay afresh for the next read instead of carrying over the last one', () => {
+      restoreService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS - 100);
+      restoreService.startCheckPending.set(false);
+      pass(0);
+      restoreService.startCheckPending.set(true);
+      pass(200);
+
+      expect(spoken()).toEqual([]);
+
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
+      expect(spoken()).toEqual(['Wiederherstellung wird geprüft.']);
+    });
+
+    it('speaks the restore wait on the voting page too', () => {
+      fixture.componentInstance.withImport.set(false);
+      restoreService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
+
+      expect(spoken()).toEqual(['Wiederherstellung wird geprüft.']);
+    });
+
     it('speaks the undo wait on the usage-stats page only', () => {
       undoService.startCheckPending.set(true);
-      fixture.detectChanges();
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
       expect(spoken()).toEqual(['Rücknahme wird geprüft.']);
 
       fixture.componentInstance.withImport.set(false);
@@ -697,7 +745,7 @@ describe('DockOutcomeAnnouncer', () => {
       restoreService.startCheckPending.set(true);
       undoService.resyncTrigger.set('backendTriggered');
       undoService.startCheckPending.set(true);
-      fixture.detectChanges();
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
 
       expect(spoken()).toEqual([
         'Wiederherstellung wird geprüft.',
@@ -705,6 +753,16 @@ describe('DockOutcomeAnnouncer', () => {
         'Rücknahme wird geprüft.',
         'Abgleich läuft bereits.',
       ]);
+    });
+
+    it('leaves no timer behind once the announcer is gone', () => {
+      restoreService.startCheckPending.set(true);
+      fixture.detectChanges();
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      fixture.destroy();
+
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 });
