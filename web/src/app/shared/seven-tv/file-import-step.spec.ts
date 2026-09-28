@@ -135,6 +135,7 @@ function purgeRunText(
     emoteSetId: overrides.emoteSetId ?? CURRENT_SET,
     startedAt: Date.parse('2026-09-01T10:00:00Z'),
     finishedAt: Date.parse('2026-09-01T10:05:00Z'),
+    targetOwnerTwitchId: null,
     items: overrides.items ?? [
       {
         key: 'e1',
@@ -205,6 +206,7 @@ function transferRunText(
     targetChannelName: options.channelName ?? CURRENT_CHANNEL,
     targetOwnerDisplayName: null,
     origin: { kind: 'channel' as const, channelName: 'quellkanal' },
+    targetOwnerTwitchId: null,
   };
   if (stage === 'planned') {
     return transferRunJson(
@@ -283,6 +285,7 @@ function transferUndoText(stage: 'planned' | 'finished', set = CURRENT_SET): str
       origin: null,
     },
     acknowledgedUnproven: false,
+    targetOwnerTwitchId: null,
   };
   if (stage === 'planned') {
     return transferUndoJson(

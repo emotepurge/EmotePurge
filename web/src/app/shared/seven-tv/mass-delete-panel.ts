@@ -696,6 +696,8 @@ export class MassDeletePanel {
       startedAt: run.result.startedAt,
       finishedAt: run.result.finishedAt,
       items: run.result.items,
+      // `DeleteRunInfo` does not carry an owner hint yet (plan #216, T6b wires it).
+      targetOwnerTwitchId: null,
     });
     const data: ExportDialogData = {
       rowCount: protocol.rows.length,

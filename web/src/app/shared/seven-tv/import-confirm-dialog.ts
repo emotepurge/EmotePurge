@@ -1267,6 +1267,8 @@ export class ImportConfirmDialog {
       plan: stampedPlan,
       entries: read,
       defaultNameById: read.defaultNameById,
+      // The import flow does not carry an owner hint here yet (plan #216, T6a wires it).
+      targetOwnerTwitchId: null,
     });
     downloadFile(
       transferPlanFilename(

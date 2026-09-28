@@ -12,7 +12,7 @@ import { UndoSkipReason } from '../../core/seven-tv/undo-plan';
 import { CsvColumn, toCsv } from './csv';
 import { ExportEnvelope, buildEnvelope } from './export-envelope';
 import { sanitizeFilenamePart } from './file-download';
-import { RestoreFileTarget, RestoreRow } from './purge-run-export';
+import { readNonBlankStringHint, RestoreFileTarget, RestoreRow } from './purge-run-export';
 import { readEnvelope } from './read-envelope';
 import { UndoCandidate, UndoSourceFileInfo } from './transfer-run-export';
 
@@ -160,6 +160,10 @@ interface TransferUndoMetaBase {
    *  `finished` row whose own status never settled `'done'` is unproven too (spec §18). `false` when
    *  every runnable row was already `provenance: 'confirmed'`, or when the run was `addOnly`-only. */
   acknowledgedUnproven: boolean;
+  /** The set owner's Twitch id the run's pre-check hinted, or `null` when there was none — same owner
+   *  hint `PurgeRunMeta.targetOwnerTwitchId`/`TransferRunMetaBase.targetOwnerTwitchId` carry, additive
+   *  to format version 1 (no bump; plan #216, 3.7). */
+  targetOwnerTwitchId: string | null;
 }
 
 export interface TransferUndoCountsPlanned {
@@ -358,6 +362,10 @@ export function buildTransferUndoPlanRecord(input: {
   acknowledgedUnproven: boolean;
   read: SevenTvSetEntries;
   rows: TransferUndoRunnableInput[];
+  /** The owner hint the undo's pre-check resolved, or `null` when there was none — required so no
+   *  caller forgets it; plan #216's callers other than the undo path pass `null` until they carry a
+   *  hint of their own. */
+  targetOwnerTwitchId: string | null;
 }): TransferUndoPlanRecord {
   const removals = input.rows.filter((row) => row.mode === 'full').length;
   const additions = input.rows.reduce((sum, row) => sum + row.adds.length, 0);
@@ -374,6 +382,7 @@ export function buildTransferUndoPlanRecord(input: {
       acknowledgedUnproven: input.acknowledgedUnproven,
       verifiedAt: new Date(input.verifiedAt).toISOString(),
       counts: { planned: input.rows.length, removals, additions },
+      targetOwnerTwitchId: input.targetOwnerTwitchId,
     },
     rows: input.rows.map((row) =>
       transferUndoExecutedRow(
@@ -413,6 +422,10 @@ export function buildTransferUndoProtocol(input: {
   acknowledgedUnproven: boolean;
   executed: TransferUndoExecutedInput[];
   skipped: TransferUndoSkippedInput[];
+  /** The owner hint the undo's pre-check resolved, or `null` when there was none — required so no
+   *  caller forgets it; plan #216's callers other than the undo path pass `null` until they carry a
+   *  hint of their own. */
+  targetOwnerTwitchId: string | null;
 }): TransferUndoProtocol {
   const executedRows = input.executed.map((item) =>
     // `item.mode === 'full'` narrows `item.sourceEntriesAtRemove` to the non-null branch of the
@@ -459,6 +472,7 @@ export function buildTransferUndoProtocol(input: {
         added,
         skipped: skippedRows.length,
       },
+      targetOwnerTwitchId: input.targetOwnerTwitchId,
     },
     rows: [...executedRows, ...skippedRows],
   });
@@ -490,6 +504,9 @@ export function buildUndoRunProtocol(run: UndoRunInfo): TransferUndoProtocol | n
     acknowledgedUnproven: run.acknowledgedUnproven,
     executed: run.result.items.map(toExecutedInput),
     skipped: run.skipped.map((row) => ({ candidate: row.candidate, skippedReason: row.reason })),
+    // `UndoRunInfo` does not carry an owner hint yet (plan #216, T6b wires it) — `null` here until
+    // then, same as this task's other three builder callers.
+    targetOwnerTwitchId: null,
   });
 }
 
@@ -664,7 +681,16 @@ export function parseTransferUndoForRestore(text: string): TransferUndoRestorePa
   if (rows.length === 0) {
     return { ok: false, errorKey: 'restore.import.errors.transferUndoNoRows' };
   }
-  return { ok: true, rows, stage, target: { emoteSetId: targetEmoteSetId } };
+  return {
+    ok: true,
+    rows,
+    stage,
+    target: {
+      emoteSetId: targetEmoteSetId,
+      ownerTwitchId: readNonBlankStringHint(meta.targetOwnerTwitchId),
+      ownerLogin: readNonBlankStringHint(meta.targetChannelName),
+    },
+  };
 }
 
 /** The restore row for one untrusted `kind: 'executed'` file row, or `null` when it names no source

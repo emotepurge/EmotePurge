@@ -65,6 +65,7 @@ const TARGET = {
   targetEmoteSetId: 'set-1',
   targetChannelName: 'zielkanal',
   targetOwnerDisplayName: null as string | null,
+  targetOwnerTwitchId: null as string | null,
 };
 
 describe('buildTransferUndoPlanRecord', () => {
@@ -313,6 +314,7 @@ describe('buildTransferUndoPlanRecord — assignability from classifyUndoRows', 
       targetEmoteSetId: 'set-1',
       targetChannelName: null,
       targetOwnerDisplayName: null,
+      targetOwnerTwitchId: null,
       sourceFile: {
         stage: 'planned',
         exportedAt: '',
@@ -383,6 +385,10 @@ function protocol(
     executed: [],
     skipped: [],
     ...overrides,
+    // Spelled out last (rather than folded into the `...overrides` spread above): a `Partial<...>`
+    // override makes this optional at the type level, which would let it come back `undefined` —
+    // the `??` keeps it `string | null` the way the builder requires.
+    targetOwnerTwitchId: overrides.targetOwnerTwitchId ?? TARGET.targetOwnerTwitchId,
   });
 }
 
@@ -953,7 +959,7 @@ describe('parseTransferUndoForRestore', () => {
     expect(parsed).toEqual({
       ok: true,
       stage: 'planned',
-      target: { emoteSetId: 'set-1' },
+      target: { emoteSetId: 'set-1', ownerTwitchId: null, ownerLogin: 'zielkanal' },
       rows: [
         {
           emoteId: null,
@@ -1147,5 +1153,71 @@ describe('parseTransferUndoForRestore', () => {
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
+  });
+
+  // Plan #216, 3.7: the owner hint a run started with round-trips through
+  // `meta.targetOwnerTwitchId`; the login fallback (`meta.targetChannelName`) stands ready behind
+  // it regardless.
+  it('round-trips a run that started with an owner hint', () => {
+    const record = protocol({
+      targetOwnerTwitchId: 'twitch-42',
+      executed: [executedInput({ completedSteps: 2, status: 'done' })],
+    });
+
+    const parsed = parseTransferUndoForRestore(transferUndoJson(record));
+
+    expect(parsed.ok && parsed.target).toEqual({
+      emoteSetId: 'set-1',
+      ownerTwitchId: 'twitch-42',
+      ownerLogin: 'zielkanal',
+    });
+  });
+
+  // A file written before this field existed (#216) has no `meta.targetOwnerTwitchId` at all — it
+  // must read exactly like one that explicitly carries `null`.
+  it('reads a file without targetOwnerTwitchId as no id hint, falling back to the channel login', () => {
+    const record = JSON.parse(
+      transferUndoJson(
+        protocol({ executed: [executedInput({ completedSteps: 2, status: 'done' })] }),
+      ),
+    ) as { meta: Record<string, unknown> };
+    delete record.meta['targetOwnerTwitchId'];
+
+    const parsed = parseTransferUndoForRestore(JSON.stringify(record));
+
+    expect(parsed.ok && parsed.target).toEqual({
+      emoteSetId: 'set-1',
+      ownerTwitchId: null,
+      ownerLogin: 'zielkanal',
+    });
+  });
+
+  // Untrusted input — a non-string or blank value is exactly as absent as a missing field.
+  it.each([42, '', '   '])('reads a malformed targetOwnerTwitchId (%j) as no hint', (malformed) => {
+    const record = JSON.parse(
+      transferUndoJson(
+        protocol({ executed: [executedInput({ completedSteps: 2, status: 'done' })] }),
+      ),
+    ) as { meta: Record<string, unknown> };
+    record.meta['targetOwnerTwitchId'] = malformed;
+
+    const parsed = parseTransferUndoForRestore(JSON.stringify(record));
+
+    expect(parsed.ok && parsed.target.ownerTwitchId).toBeNull();
+  });
+
+  // An untracked target's file carries null for meta.targetChannelName (spec 8.6) — no login to
+  // fall back to either.
+  it('reads an untracked target as no login fallback', () => {
+    const record = JSON.parse(
+      transferUndoJson(
+        protocol({ executed: [executedInput({ completedSteps: 2, status: 'done' })] }),
+      ),
+    ) as { meta: Record<string, unknown> };
+    record.meta['targetChannelName'] = null;
+
+    const parsed = parseTransferUndoForRestore(JSON.stringify(record));
+
+    expect(parsed.ok && parsed.target.ownerLogin).toBeNull();
   });
 });

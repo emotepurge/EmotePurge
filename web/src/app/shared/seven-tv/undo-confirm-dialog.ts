@@ -731,6 +731,8 @@ export class UndoConfirmDialog {
       acknowledgedUnproven: stampedPlan.acknowledgedUnproven,
       read,
       rows: stampedPlan.runnable,
+      // The undo flow does not carry an owner hint here yet (plan #216, T6b wires it).
+      targetOwnerTwitchId: null,
     });
     downloadFile(
       transferUndoPlanFilename(

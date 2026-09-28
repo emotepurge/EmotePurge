@@ -41,13 +41,14 @@ const ITEMS: RunQueueItem[] = [
   },
 ];
 
-function protocol() {
+function protocol(targetOwnerTwitchId: string | null = null) {
   return buildPurgeRunProtocol({
     channelName: 'sensitron',
     emoteSetId: 'set-1',
     startedAt: Date.parse('2026-08-02T10:00:00Z'),
     finishedAt: Date.parse('2026-08-02T10:05:00Z'),
     items: ITEMS,
+    targetOwnerTwitchId,
   });
 }
 
@@ -90,6 +91,7 @@ describe('buildPurgeRunProtocol', () => {
       emoteSetId: 'set-1',
       startedAt: 0,
       finishedAt: 1,
+      targetOwnerTwitchId: null,
       items: [ITEMS[0], { ...ITEMS[1], status: 'unknown' }, { ...ITEMS[2], status: 'unknown' }],
     });
     expect(proto.meta.counts).toEqual({
@@ -109,6 +111,7 @@ describe('buildPurgeRunProtocol', () => {
       emoteSetId: 'set-1',
       startedAt: 0,
       finishedAt: 1,
+      targetOwnerTwitchId: null,
       items: [
         ITEMS[0],
         {
@@ -131,6 +134,7 @@ describe('buildPurgeRunProtocol', () => {
       emoteSetId: 'set-1',
       startedAt: 0,
       finishedAt: 1,
+      targetOwnerTwitchId: null,
       items: [
         { ...ITEMS[0], aliases: ['PogU', 'PogU2'] },
         {
@@ -182,6 +186,7 @@ describe('parsePurgeRunProtocol', () => {
       emoteSetId: 'set-1',
       startedAt: 0,
       finishedAt: 1,
+      targetOwnerTwitchId: null,
       items: [
         ITEMS[0], // done
         ITEMS[1], // failed
@@ -222,6 +227,7 @@ describe('parsePurgeRunProtocol', () => {
       emoteSetId: 'set-1',
       startedAt: 0,
       finishedAt: 1,
+      targetOwnerTwitchId: null,
       items: [{ ...ITEMS[0], status: 'unknown' }],
     });
     const result = parsePurgeRunProtocol(purgeRunJson(proto));
@@ -336,11 +342,73 @@ describe('parsePurgeRunProtocol', () => {
       const result = parsePurgeRunProtocol(text);
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.target).toEqual({ emoteSetId: 'set-1' });
+        // No hint on this file (`protocol()`'s default): the login fallback still carries the
+        // envelope's own channel, spec #216 3.7.
+        expect(result.target).toEqual({
+          emoteSetId: 'set-1',
+          ownerTwitchId: null,
+          ownerLogin: 'sensitron',
+        });
         expect(result.channelName).toBe('sensitron');
       }
     },
   );
+
+  // Plan #216, 3.7: the owner hint the run started with round-trips through the file, and the
+  // login fallback still stands ready behind it — the file step only ever falls back to it when
+  // `ownerTwitchId` is `null`.
+  it('round-trips a run that started with an owner hint', () => {
+    const result = parsePurgeRunProtocol(purgeRunJson(protocol('twitch-42')));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.target).toEqual({
+        emoteSetId: 'set-1',
+        ownerTwitchId: 'twitch-42',
+        ownerLogin: 'sensitron',
+      });
+    }
+  });
+
+  // A file written before this field existed (#216) has no `targetOwnerTwitchId` in `meta` at
+  // all — it must read exactly like one that explicitly carries `null`, falling back to the
+  // envelope's own channel login.
+  it('reads a file without targetOwnerTwitchId as no id hint, falling back to the channel login', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    delete proto.meta.targetOwnerTwitchId;
+    const result = parsePurgeRunProtocol(JSON.stringify(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.target).toEqual({
+        emoteSetId: 'set-1',
+        ownerTwitchId: null,
+        ownerLogin: 'sensitron',
+      });
+    }
+  });
+
+  // Untrusted input (Regel: Dateiinhalt untrusted) — a non-string or blank value is exactly as
+  // absent as a missing field, never an empty-string placeholder.
+  it.each([42, '', '   '])('reads a malformed targetOwnerTwitchId (%j) as no hint', (malformed) => {
+    const proto = JSON.parse(purgeRunJson(protocol('twitch-42')));
+    proto.meta.targetOwnerTwitchId = malformed;
+    const result = parsePurgeRunProtocol(JSON.stringify(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.target.ownerTwitchId).toBeNull();
+    }
+  });
+
+  // An untracked run's channel is written as '' on the envelope (spec 8.6's own convention,
+  // mirrored here) — blank still counts as no login hint, not an empty placeholder.
+  it('reads a blank envelope channelName as no login fallback', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    proto.channelName = '';
+    const result = parsePurgeRunProtocol(JSON.stringify(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.target.ownerLogin).toBeNull();
+    }
+  });
 
   // F1: every purge-run file ever written carries meta.emoteSetId — one without it is not a
   // protocol of ours, and there is no fallback that would guess a set for it.
@@ -393,6 +461,7 @@ describe('parsePurgeRunProtocol', () => {
       emoteSetId: 'set-1',
       startedAt: 0,
       finishedAt: 1,
+      targetOwnerTwitchId: null,
       items: [
         {
           key: '7tv-live',

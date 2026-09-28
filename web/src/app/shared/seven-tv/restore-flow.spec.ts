@@ -105,6 +105,7 @@ function undoProtocolRows(outcome: 'done' | 'failedAtAdd'): RestoreRow[] {
     startedAt: 0,
     finishedAt: 1,
     acknowledgedUnproven: false,
+    targetOwnerTwitchId: null,
     executed: [
       {
         candidate: {
