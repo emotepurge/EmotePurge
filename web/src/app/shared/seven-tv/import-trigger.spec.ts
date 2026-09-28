@@ -1194,7 +1194,7 @@ describe('ImportTrigger', () => {
     );
 
     // #280, Festlegung Nr. 8: a click outracing the lock (CDK hands focus back to this button when a
-    // restore or undo confirmation closes) opens nothing and says nothing.
+    // confirmation opened from it closes) opens nothing and says nothing.
     it.each([
       ['a restore', () => restoreStartCheckPending],
       ['an undo', () => undoStartCheckPending],

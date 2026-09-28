@@ -238,7 +238,7 @@ describe('SevenTvRunArbiter with stub participants', () => {
     expect(arbiter.refusedStart()).toBeNull();
   });
 
-  // #280: a confirmed restore/undo whose last live read is still out locks the start triggers
+  // #280: a confirmed start (of any run) whose last live read is still out locks the start triggers
   // without being a claim of its own.
   it('locks starts while a participant checks a confirmed start, without claiming the arbiter', () => {
     const startCheckPending = signal(false);

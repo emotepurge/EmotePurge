@@ -1661,9 +1661,9 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
     expect(button.disabled).toBe(true);
   });
 
-  // #280: a confirmed restore or undo whose last live read is still out locks every start trigger
+  // #280: a confirmed start (of any run) whose last live read is still out locks every start trigger
   // the arbiter gates, this one included — before its run exists and claims the arbiter.
-  it('disables the button while a confirmed restore or undo is still being checked before its start', async () => {
+  it('disables the button while a confirmed start of any run is still being checked', async () => {
     arbiter.otherStartPending.set(true);
     const button = await render(EMOTES);
 
@@ -2635,9 +2635,9 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(fixture.componentInstance['abortNotice']()).toBeNull();
   });
 
-  // #280: the same silent guard while a confirmed restore or undo is still being checked before its
+  // #280: the same silent guard while a confirmed start of any run is still being checked before its
   // start — no run holds the arbiter yet, but the button is locked by `startLocked` all the same.
-  it('does not even open the confirmation while a confirmed restore or undo is still being checked', () => {
+  it('does not even open the confirmation while a confirmed start of any run is still being checked', () => {
     (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).otherStartPending.set(true);
 
     fixture.componentInstance['openConfirm']();

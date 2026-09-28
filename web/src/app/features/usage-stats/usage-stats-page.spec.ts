@@ -1449,7 +1449,7 @@ describe('UsageStatsPage — header export/transfer locks ask about the union, n
     expect(component['transferButtonDisabled']()).toBe(false);
   });
 
-  // #280: a confirmed restore/undo whose last live read is still out locks every start trigger the
+  // #280: a confirmed start (of any run) whose last live read is still out locks every start trigger the
   // arbiter gates — the header's "Übertragen" and the dock's copy shortcut too, not only the import
   // trigger and the delete CTA.
   it('locks the transfer button and the dock copy shortcut while a confirmed start is still being checked', () => {

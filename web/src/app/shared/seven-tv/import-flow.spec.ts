@@ -162,7 +162,7 @@ interface Harness {
   startImport: ReturnType<typeof vi.fn>;
   hasToken: WritableSignal<boolean>;
   activeRun: WritableSignal<SevenTvRunKind | null>;
-  /** The arbiter's `startPending` (#280) — a confirmed restore/undo still being checked. */
+  /** The arbiter's `startPending` (#280) — another run's confirmed start still being checked. */
   startPending: WritableSignal<boolean>;
   /** `SevenTvImportService.startCheckPending` (#280) on the fake service. */
   importStartCheckPending: WritableSignal<boolean>;
@@ -232,7 +232,7 @@ function setup(): Harness {
 
   const activeRun = signal<SevenTvRunKind | null>(null);
   const noteRefusedStart = vi.fn();
-  // #280: a confirmed restore/undo still being checked before its start — the arbiter's
+  // #280: another run's confirmed start still being checked before it begins — the arbiter's
   // `startPending`; `startLocked` derived from both the way the real arbiter derives it.
   const startPending = signal(false);
   const arbiter = {
@@ -387,7 +387,7 @@ describe('startImportFlow', () => {
   });
 
   // #280: the executor locks for the pre-run wait too, not only for a run that already exists.
-  it('blocks the run while a confirmed restore or undo is still being checked before its start', () => {
+  it("blocks the run while another run's confirmed start is still being checked", () => {
     const { deps, dialogOpen, startPending } = setup();
     startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
     const data = confirmData(dialogOpen);
