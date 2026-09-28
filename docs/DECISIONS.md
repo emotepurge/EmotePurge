@@ -22,8 +22,9 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 Issue #222. Every spec imported `test` and `expect` straight from `@playwright/test`, there was no
 shared fixture, and 100 of 214 tests sent 434 real requests to `cdn.7tv.app` per full run (7TV
-answered 400 for the made-up ids). Two specs had grown their own 1×1-PNG stub after exactly that
-made them flaky; every other spec depended on a third-party host by accident.
+answered 400 for the made-up ids). Two specs had grown their own 1×1-PNG stub — `usage-atlas`
+after exactly that made it flaky, `emote-import` to record CDN requests for its own acceptance
+criterion; every other spec depended on a third-party host by accident.
 
 **E2E specs import `test`/`expect` from the shared fixture, never directly from
 `@playwright/test`.** The regular Playwright config makes `cdn.7tv.app` unresolvable for Chromium,
@@ -47,7 +48,14 @@ from real responses. The check runs after the test body and waits only while CDN
 still open, bounded at 1 s — an escaped request fails at DNS within milliseconds, and a fixed wait
 would have cost every test. What escapes only after that, or during teardown, goes unreported,
 but it still cannot reach the network. The block only holds while Chromium resolves names itself;
-a configured HTTP proxy would resolve for it (none is configured).
+a configured HTTP proxy would resolve for it (none is configured). A test that simulates a CDN
+failure uses `route.abort()` or `route.abort('failed')`, never `'namenotresolved'`: that produces
+exactly the guard's signal and fails the test.
+
+**Two blind spots, neither used today.** A test that creates its own `browser.newContext()` gets
+neither stub nor guard, silently — the resolver block still holds, and ESLint cannot catch it. And
+`APIRequestContext` (the `request` fixture, `page.request`) runs in Node, bypassing both the
+resolver block and routes, so "no request reaches the CDN" holds for the browser only.
 
 **A lint rule instead of discipline.** A spec that imports from `@playwright/test` still cannot
 reach the CDN, but it loses stub and guard silently — its sprites stay invisible and the console

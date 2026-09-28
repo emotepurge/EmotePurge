@@ -17,6 +17,14 @@ import { test as base, type Request, type Route } from '@playwright/test';
  *   the network, hits the resolver block and fails with `net::ERR_NAME_NOT_RESOLVED`. Cancelled
  *   requests (`net::ERR_ABORTED` and the like) are ignored on purpose — a sprite whose url changes
  *   or a row the virtual scroll recycles cancels a request that was stubbed, not one that escaped.
+ *   To simulate a CDN failure, use `route.abort()` or `route.abort('failed')` — never
+ *   `'namenotresolved'`, which produces exactly the guard's signal and fails the test.
+ *
+ * What the guard cannot see (neither is used today):
+ * - A test that creates its own `browser.newContext()` gets neither stub nor guard, silently — the
+ *   resolver block still holds, and ESLint cannot catch it.
+ * - `APIRequestContext` (the `request` fixture, `page.request`) runs in Node and bypasses both the
+ *   resolver block and routes: "no request reaches the CDN" holds for the browser only.
  *
  * `support/mocks.ts` deliberately does not import this module: the measure config reuses it and must
  * hit the real CDN.
@@ -95,7 +103,8 @@ export const test = base.extend<{ sevenTvCdn: void }>({
         throw new Error(
           `${escaped.length} request(s) to ${CDN_HOST} got past every stub and failed with ` +
             `${ESCAPED_REQUEST_ERROR} at the resolver block. Answer them through the context stub ` +
-            `or fulfillCdnStub() (e2e/support/test.ts) instead of route.continue():\n` +
+            `or fulfillCdnStub() (e2e/support/test.ts) instead of route.continue() or ` +
+            `route.abort('namenotresolved'):\n` +
             escaped.map((url) => `  ${url}`).join('\n'),
         );
       }
