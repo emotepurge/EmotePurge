@@ -1,4 +1,4 @@
-import { Locator, Page, expect, test } from '@playwright/test';
+import { Locator, Page, expect, test } from './support/test';
 
 import {
   AUTH_USER,

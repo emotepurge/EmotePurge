@@ -1,6 +1,15 @@
 import { readFileSync } from 'node:fs';
 
-import { Download, Locator, Page, Request, expect, test } from '@playwright/test';
+import {
+  CDN_URL_PATTERN,
+  Download,
+  Locator,
+  Page,
+  Request,
+  expect,
+  fulfillCdnStub,
+  test,
+} from './support/test';
 
 import {
   AUTH_USER,
@@ -1547,11 +1556,6 @@ test.describe('import dialog: shell contract', () => {
  * and "a still triggers nothing" as no further request for that id.
  */
 test.describe('import dialog: animated emotes in the grid', () => {
-  const PNG_1X1 = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-    'base64',
-  );
-
   // Every other emote animated, and enough rows that scrolling recycles row views well beyond the
   // viewport's buffer — the situation a per-cell animated sprite would have fired requests in.
   const FOREIGN_EMOTES = Array.from({ length: 400 }, (_, index) => {
@@ -1570,9 +1574,10 @@ test.describe('import dialog: animated emotes in the grid', () => {
 
   async function openGrid(page: Page) {
     const cdnRequests: string[] = [];
-    await page.route('https://cdn.7tv.app/**', (route) => {
+    // A page route, so it takes precedence over the suite-wide context stub; it answers the same way.
+    await page.route(CDN_URL_PATTERN, (route) => {
       cdnRequests.push(route.request().url());
-      return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1X1 });
+      return fulfillCdnStub(route);
     });
 
     await mockAuthMe(page, AUTH_USER);

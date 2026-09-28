@@ -1,4 +1,4 @@
-import { Page, expect, test } from '@playwright/test';
+import { Page, expect, test } from './support/test';
 
 import {
   AUTH_USER,
@@ -26,12 +26,6 @@ import {
  * that is visible to a unit test — the pure parts are covered in atlas-grid.spec.ts, but whether
  * the focus actually lands on the cell the arrow key aimed at only shows in a browser.
  */
-
-/** A transparent 1x1 PNG — what a stubbed CDN answers so no test depends on cdn.7tv.app. */
-const PNG_1X1 = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-  'base64',
-);
 
 /** A set with a clear head, a middle, a tail and a block of never-used emotes. */
 const EMOTES = [
@@ -1167,13 +1161,8 @@ test.describe('set view (#200, K4)', () => {
     // keep the console clean for the NG0955 assertion below.
     await mockUsageChannelSeries(page, CHANNEL, {});
     // The live members above carry made-up 7TV ids, and the atlas builds their sprite URLs from
-    // those ids — unstubbed, the browser really fetches https://cdn.7tv.app/emote/7tv-ghost/2x.webp,
-    // 7TV answers 400 for an id that is not an ObjectID, and Chromium logs "Failed to load
-    // resource: … 400". Whether that line lands before or after the assertion below depended on
-    // the CDN's round trip, which made this test flaky. Stubbing the CDN keeps it hermetic.
-    await page.route('https://cdn.7tv.app/**', (route) =>
-      route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1X1 }),
-    );
+    // those ids. The suite-wide CDN stub (e2e/support/test.ts) answers them with a 1×1 PNG; against
+    // the real CDN they would 400 and log a console error the assertion below would trip over.
 
     // Deep link straight into the non-active view — the switch itself is the previous test's job.
     await gotoSetView(page, `?emoteSetId=${HALLOWEEN_SET_ID}`);
