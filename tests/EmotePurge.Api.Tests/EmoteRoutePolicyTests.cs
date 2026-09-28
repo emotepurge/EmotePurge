@@ -42,6 +42,10 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     // K3 (spec 6.3/6.10, T3.1): the source-set picker's list route, same policy as its /emotes sibling.
     [InlineData("GET", "/api/seventv/channels/{channelName}/emote-sets", RateLimitPolicyNames.ForeignEmoteLookup)]
     [InlineData("GET", "/api/seventv/me/emote-set-targets", RateLimitPolicyNames.ForeignEmoteLookup)]
+    // The editable pre-check for one set (owner-hint design 3.4): a sibling in the same /me group, so
+    // the same ForeignEmoteLookup permit per call as opening the picker — not Bookkeeping, because
+    // this call runs before any 7TV mutation and pulls set-list requests of its own.
+    [InlineData("GET", "/api/seventv/me/emote-set-targets/{emoteSetId}", RateLimitPolicyNames.ForeignEmoteLookup)]
     // The set-centric import (spec 6.7/6.10, T2.4): the 7TV mutation already happened by the time this
     // call runs, same reasoning as its channel-scoped sibling two lines up — Bookkeeping, not
     // ForeignEmoteLookup, so a spent read budget cannot drop the paper trail.

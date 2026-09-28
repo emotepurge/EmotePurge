@@ -66,6 +66,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/testchannel/emote-sets")]
     [InlineData("GET", "/api/channels/testchannel/emotes/set-warning")]
     [InlineData("GET", "/api/seventv/me/emote-set-targets")]
+    [InlineData("GET", "/api/seventv/me/emote-set-targets/01GV88A38G0006FW5TVZVMG507")]
     [InlineData("POST", "/api/channels/testchannel/emotes/sync-restored")]
     [InlineData("POST", "/api/channels/testchannel/emotes/sync-imported")]
     [InlineData("POST", "/api/seventv/emote-sets/01GV88A38G0006FW5TVZVMG507/sync-imported")]

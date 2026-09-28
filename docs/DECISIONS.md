@@ -26,7 +26,12 @@ v4 set list as a kind of its own, body-aware answers) ·
 `TargetOwnerTwitchId`, forwarded as an `EmoteSetOwnerHint` at the two `CheckAsync` call sites; true
 cost replaces the "no unguarded request" comment) ·
 `tests/EmotePurge.Api.Tests/SevenTvEmoteSetSyncImportedEndpointTests.cs` and
-`SevenTvEmoteSetSyncBookkeepingEndpointTests.cs`.
+`SevenTvEmoteSetSyncBookkeepingEndpointTests.cs` · `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs`
+(new `GET /api/seventv/me/emote-set-targets/{emoteSetId}` with `ownerTwitchId`/`ownerLogin`,
+`EditableSetPreCheckResponse`/`EditableSetPreCheckTarget`/`EditableSetPreCheckStatus`) ·
+`src/EmotePurge.Api/Validation/EmoteSetIdValidationFilter.cs` (docs: the new route) ·
+`tests/EmotePurge.Api.Tests/SevenTvEmoteSetPreCheckEndpointTests.cs`, `EmoteRoutePolicyTests.cs` and
+`AuthFilterMatrixTests.cs`.
 
 Issue #216, and the "Known limit" of the #280 entry below. The set-centric reports (`sync-imported`
 to an untracked set, `sync-deleted`, `sync-restored`) walked the actor's list and then every
