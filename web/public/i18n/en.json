@@ -927,6 +927,7 @@
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Restore progress",
     "settling": "Finishing…",
+    "startChecking": "Checking the target set live once more before the restore starts…",
     "deleteFailedFallback": "Restore failed",
     "unknownOutcome": "Unclear whether it was restored — 7TV gave no clear answer. Please check the set.",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
@@ -1541,6 +1542,7 @@
       "start": "Start"
     },
     "settling": "Finishing — the re-read and the reports are still running…",
+    "startChecking": "Checking the target set live once more before the undo starts…",
     "errors": {
       "removedButNotRestored": "The source emote was removed, but the target was not fully brought back — the set is now missing an entry. Run the same undo from the same file again to close the gap.",
       "cancelledMidRow": "Cancelled after the source emote had already been removed — the target is not fully back. Run the same undo again to close the gap.",

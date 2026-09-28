@@ -27,6 +27,7 @@ import {
 
 const DE_TRANSLATIONS = {
   undo: {
+    startChecking: 'Rücknahme wird geprüft.',
     confirm: { reason: { nothingToDo: 'nichts zu tun' } },
     summary: { skipped: '{{ count }} übersprungen: {{ reason }}' },
     resync: { backendTriggered: 'Abgleich läuft bereits.' },
@@ -44,6 +45,7 @@ const DE_TRANSLATIONS = {
     },
   },
   restore: {
+    startChecking: 'Wiederherstellung wird geprüft.',
     duplicateCheckUnavailable: 'Restore-Prüfung nicht möglich.',
     skippedDuplicates: {
       one: '{{ count }} Emote ist bereits im Zielset und wurde übersprungen.',
@@ -112,6 +114,9 @@ interface FakeOutcomeSource {
    *  entry's own pre-check has no notice at all, spec E16, 4.6 point 22). Same reasoning as `run`
    *  and `replaceSkippedDrift` above: shared shape, the restore fake's copy is never read. */
   targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
+  /** Only `SevenTvRestoreService` has this (#280) — the confirm-time check's window. Shared shape,
+   *  the import fake's copy is never read. */
+  startCheckPending: WritableSignal<boolean>;
 }
 
 function createFakeSource(): FakeOutcomeSource {
@@ -124,6 +129,7 @@ function createFakeSource(): FakeOutcomeSource {
     run: signal<ImportRunInfo | null>(null),
     replaceSkippedDrift: signal(0),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
+    startCheckPending: signal(false),
   };
 }
 
@@ -135,6 +141,8 @@ interface FakeUndoSource {
   run: WritableSignal<UndoRunInfo | null>;
   isRunning: WritableSignal<boolean>;
   resyncTrigger: WritableSignal<ResyncTriggerState>;
+  /** The freshness check's window after a confirmed undo (#280). */
+  startCheckPending: WritableSignal<boolean>;
 }
 
 function createFakeUndoSource(): FakeUndoSource {
@@ -144,6 +152,7 @@ function createFakeUndoSource(): FakeUndoSource {
     run: signal<UndoRunInfo | null>(null),
     isRunning: signal(false),
     resyncTrigger: signal<ResyncTriggerState>('idle'),
+    startCheckPending: signal(false),
   };
 }
 
@@ -650,5 +659,52 @@ describe('DockOutcomeAnnouncer', () => {
     fixture.componentInstance.withImport.set(false);
     fixture.detectChanges();
     expect(spoken()).toEqual([]);
+  });
+
+  // #280: between a confirmation closing and its run appearing, the only visible sign is a
+  // disabled trigger — this region is what says why, from a region that was already standing.
+  describe('a confirmed start still being checked (#280)', () => {
+    it('speaks the restore wait into the standing region, on both pages, and falls silent once it ends', () => {
+      const regionAtRest = regions()[0];
+
+      restoreService.startCheckPending.set(true);
+      fixture.detectChanges();
+      expect(regions()).toEqual([regionAtRest]);
+      expect(spoken()).toEqual(['Wiederherstellung wird geprüft.']);
+
+      fixture.componentInstance.withImport.set(false);
+      fixture.detectChanges();
+      expect(spoken()).toEqual(['Wiederherstellung wird geprüft.']);
+
+      restoreService.startCheckPending.set(false);
+      fixture.detectChanges();
+      expect(regions()).toEqual([regionAtRest]);
+      expect(spoken()).toEqual([]);
+    });
+
+    it('speaks the undo wait on the usage-stats page only', () => {
+      undoService.startCheckPending.set(true);
+      fixture.detectChanges();
+      expect(spoken()).toEqual(['Rücknahme wird geprüft.']);
+
+      fixture.componentInstance.withImport.set(false);
+      fixture.detectChanges();
+      expect(spoken()).toEqual([]);
+    });
+
+    it('speaks the wait before the outcomes of its own family, in the dock reading order', () => {
+      restoreService.resyncTrigger.set('cooldown');
+      restoreService.startCheckPending.set(true);
+      undoService.resyncTrigger.set('backendTriggered');
+      undoService.startCheckPending.set(true);
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual([
+        'Wiederherstellung wird geprüft.',
+        'Sync-Cooldown aktiv.',
+        'Rücknahme wird geprüft.',
+        'Abgleich läuft bereits.',
+      ]);
+    });
   });
 });

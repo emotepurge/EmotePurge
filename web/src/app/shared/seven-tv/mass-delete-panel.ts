@@ -302,12 +302,15 @@ export interface DeletableEmote {
                      Disabled while restoreConfirmPending() (#255 P2a): the target check and the
                      open-time duplicate check both run before any dialog is on screen, and a
                      second click in that window must not start a second read racing towards a
-                     second confirmation. -->
+                     second confirmation. Likewise while restoreService.startCheckPending()
+                     (#280): the confirmation is closed but its confirm-time check still decides
+                     whether the run starts, and the button must not look free again meanwhile —
+                     DockOutcomeAnnouncer speaks that wait. -->
                 <button
                   type="button"
                   appButton="outline"
                   class="disabled:cursor-not-allowed"
-                  [disabled]="restoreConfirmPending()"
+                  [disabled]="restoreConfirmPending() || restoreService.startCheckPending()"
                   (click)="openRestoreConfirm()"
                 >
                   {{ 'restore.button' | transloco }}
@@ -730,7 +733,7 @@ export class MassDeletePanel {
     // #255 P2a: refuses a second click while the pre-check chain below (this method's own
     // `resolveEditableSet`, or `openRestoreConfirmDialog`'s open-time duplicate check) is still
     // out — belt and suspenders next to the button's own `[disabled]="restoreConfirmPending()"`.
-    if (this.restoreConfirmPending()) {
+    if (this.restoreConfirmPending() || this.restoreService.startCheckPending()) {
       return;
     }
     const run = this.deleteService.lastRun();
@@ -986,12 +989,14 @@ export class MassDeletePanel {
       // aliases re-adds just the missing ones, and an alias another emote now holds is left out
       // rather than sent into a certain name conflict — see `filterAlreadyPresentForRestore`.
       //
-      // Bounded like `startRestoreFlow`'s own confirm-time check (see there): a timeout reads as a
-      // failed check.
+      // #280: held from here until the check has settled, same as `startRestoreFlow`'s own
+      // confirm-time check (see there) — bounded, a timeout reading as a failed check.
+      this.restoreService.startCheckPending.set(true);
       filterAlreadyPresentForRestore(this.httpClient, target.emoteSetId, emotes)
         .pipe(
           timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS),
           catchError(() => of(restoreConfirmPreviewUnavailable(emotes))),
+          finalize(() => this.restoreService.startCheckPending.set(false)),
         )
         .subscribe((confirmCheck) => {
           // #149 P2 review fix: openRestoreConfirm()'s own arbiter check ran before this dialog

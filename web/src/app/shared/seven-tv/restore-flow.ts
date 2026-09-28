@@ -134,7 +134,9 @@ export function startRestoreFlow(
     // suspenders next to the caller's own disabled button (`previewPending`, see the field doc),
     // so a click that outraces it, or a caller with no button of its own, still cannot end up with
     // two confirmations racing for the same rows.
-    if (deps.previewPending()) {
+    // #280: nor while a confirmed restore from either entry is still being checked before its
+    // start — the arbiter would refuse this one at its own start anyway.
+    if (deps.previewPending() || deps.restoreService.startCheckPending()) {
       return;
     }
     deps.previewPending.set(true);
@@ -281,14 +283,19 @@ export function startRestoreFlow(
         // aliases re-adds just the missing ones, and an alias another emote now holds is left out
         // rather than sent into a certain name conflict — see `filterAlreadyPresentForRestore`.
         //
-        // Bounded by the same budget as the open-time check above, so a hung read cannot keep a
-        // confirmed restore waiting forever without a word: a timeout reads as the failed check the
+        // #280: the confirmation is closed and nothing runs yet, so `startCheckPending` holds the
+        // restore buttons disabled and lets the page announce the wait — released by `finalize`
+        // once the check has settled, after the start below (a started run then keeps the buttons
+        // locked through the arbiter). Bounded by the same budget as the open-time check above,
+        // so a hung read cannot hold the flag forever: a timeout reads as the failed check the
         // filter itself already fails open on (`restoreConfirmPreviewUnavailable`), and the
         // fallback to the open-time answer below applies to it unchanged.
+        deps.restoreService.startCheckPending.set(true);
         filterAlreadyPresentForRestore(deps.httpClient, target.emoteSetId, emotes)
           .pipe(
             timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS),
             catchError(() => of(restoreConfirmPreviewUnavailable(emotes))),
+            finalize(() => deps.restoreService.startCheckPending.set(false)),
           )
           .subscribe((confirmCheck) => {
             // #149 P2 review fix: the arbiter check above ran *before* this fetch, outside the

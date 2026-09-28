@@ -235,6 +235,8 @@ interface Harness {
   /** `RestoreFlowDeps.previewPending` (#255 P2a) — read directly by tests that check the flow's own
    *  re-entrancy guard, rather than only its externally visible effects. */
   previewPending: WritableSignal<boolean>;
+  /** `SevenTvRestoreService.startCheckPending` (#280) on the fake service. */
+  startCheckPending: WritableSignal<boolean>;
   /** The fake behind `deps.destroyRef` — `triggerDestroy()` simulates the caller's teardown. */
   destroyRef: FakeDestroyRef;
 }
@@ -253,7 +255,8 @@ function setup(): Harness {
   const tokenService = { hasToken } as unknown as SevenTvTokenService;
 
   const startRestore = vi.fn();
-  const restoreService = { startRestore } as unknown as SevenTvRestoreService;
+  const startCheckPending = signal(false);
+  const restoreService = { startRestore, startCheckPending } as unknown as SevenTvRestoreService;
 
   const activeRun = signal<SevenTvRunKind | null>(null);
   const noteRefusedStart = vi.fn();
@@ -282,6 +285,7 @@ function setup(): Harness {
     loadEmoteSetPreview,
     httpPost,
     previewPending,
+    startCheckPending,
     destroyRef,
     startRestore,
     hasToken,
@@ -1060,6 +1064,89 @@ describe('startRestoreFlow', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // #280: the confirmation is closed while the confirm-time check is out and nothing runs yet —
+  // `startCheckPending` spans exactly that window, whatever ends it.
+  describe('confirm-time check: the window before the start (#280)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('marks the start check pending exactly while the confirm-time check is out', () => {
+      const { deps, dialogOpen, httpPost, startRestore, startCheckPending } = setup();
+      const confirmCheck = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(of(emoteSetPage())).mockReturnValueOnce(confirmCheck);
+
+      startRestoreFlow(deps, target(), rows());
+      expect(startCheckPending()).toBe(false);
+
+      firstClosed<boolean>(dialogOpen).next(true);
+      expect(startCheckPending()).toBe(true);
+      expect(startRestore).not.toHaveBeenCalled();
+
+      confirmCheck.next(emoteSetPage());
+      confirmCheck.complete();
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it('opens nothing for a second restore while a confirmed one is still being checked', () => {
+      const { deps, dialogOpen, httpPost, startCheckPending } = setup();
+      startCheckPending.set(true);
+
+      startRestoreFlow(deps, target(), rows());
+
+      expect(httpPost).not.toHaveBeenCalled();
+      expect(dialogOpen).not.toHaveBeenCalled();
+    });
+
+    it('releases the start check when the confirm-time check fails', () => {
+      const { deps, dialogOpen, httpPost, startRestore, startCheckPending } = setup();
+      httpPost
+        .mockReturnValueOnce(of(emoteSetPage()))
+        .mockReturnValueOnce(throwError(() => new Error('network error')));
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startCheckPending()).toBe(false);
+      expect(startRestore).toHaveBeenCalledTimes(1);
+    });
+
+    it('releases the start check when the arbiter refuses the start after the check', () => {
+      const { deps, dialogOpen, httpPost, activeRun, noteRefusedStart, startCheckPending } =
+        setup();
+      const confirmCheck = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(of(emoteSetPage())).mockReturnValueOnce(confirmCheck);
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+      activeRun.set('delete');
+      confirmCheck.next(emoteSetPage());
+      confirmCheck.complete();
+
+      expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('restore');
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the confirm-time check hangs past its timeout', () => {
+      vi.useFakeTimers();
+      const { deps, dialogOpen, httpPost, startRestore, startCheckPending } = setup();
+      httpPost
+        .mockReturnValueOnce(of(emoteSetPage()))
+        .mockReturnValueOnce(new Subject<ReturnType<typeof emoteSetPage>>());
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+      expect(startCheckPending()).toBe(true);
+
+      vi.advanceTimersByTime(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS);
+
+      expect(startCheckPending()).toBe(false);
+      expect(startRestore).toHaveBeenCalledTimes(1);
+    });
   });
 
   // #255 P3(7): a confirm-time check that fails outright must not undo the open-time check's own,

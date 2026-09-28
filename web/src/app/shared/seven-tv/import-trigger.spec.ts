@@ -153,6 +153,9 @@ describe('ImportTrigger', () => {
   let hasToken: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
   let dialogOpen: ReturnType<typeof vi.fn>;
+  /** `SevenTvRestoreService.startCheckPending` / `SevenTvUndoService.startCheckPending` (#280). */
+  let restoreStartCheckPending: WritableSignal<boolean>;
+  let undoStartCheckPending: WritableSignal<boolean>;
 
   beforeEach(async () => {
     getSetStatus = vi.fn(() => of(readyStatus()));
@@ -176,6 +179,8 @@ describe('ImportTrigger', () => {
     hasToken = signal(true);
     activeRun = signal<SevenTvRunKind | null>(null);
     dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
+    restoreStartCheckPending = signal(false);
+    undoStartCheckPending = signal(false);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -200,6 +205,7 @@ describe('ImportTrigger', () => {
           useValue: {
             startRestore,
             restorePreCheckPending: signal(false),
+            startCheckPending: restoreStartCheckPending,
           } as unknown as SevenTvRestoreService,
         },
         {
@@ -210,7 +216,10 @@ describe('ImportTrigger', () => {
         // construction (#256), and the arbiter here is a stub without `register`.
         {
           provide: SevenTvUndoService,
-          useValue: { startUndo } as unknown as SevenTvUndoService,
+          useValue: {
+            startUndo,
+            startCheckPending: undoStartCheckPending,
+          } as unknown as SevenTvUndoService,
         },
         {
           provide: SevenTvEmoteSetService,
@@ -519,6 +528,47 @@ describe('ImportTrigger', () => {
       expect(startUndo).toHaveBeenCalledTimes(1);
       expect(startUndo.mock.calls[0][1]).toEqual([]);
     });
+
+    // #280: the confirmation is closed while the freshness read is out, and nothing runs yet — the
+    // trigger must not look free again in that window.
+    it('stays disabled after the confirmation while the freshness read is out, and frees up once it has answered', () => {
+      const fresh = new Subject<unknown>();
+      httpPost.mockReturnValueOnce(of(setRead(true))).mockReturnValueOnce(fresh);
+      const dialog = render();
+      dialog.click();
+      closedAt<FileImportResult | undefined>(0).next(undoResult());
+      const data = dataAt(1) as UndoConfirmDialogData;
+      dialog.detect();
+      expect(dialog.triggerDisabled()).toBe(false);
+
+      closedAt<UndoConfirmOutcome>(1).next({
+        runnable: [
+          {
+            candidate,
+            mode: 'full',
+            adds: [{ alias: 'Kappa' }],
+            stepCount: 2,
+            provenance: 'confirmed',
+            omittedEntries: [],
+            notes: [],
+          },
+        ],
+        skipped: [],
+        acknowledgedUnproven: false,
+        read: data.initialRead!,
+      });
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(true);
+      expect(startUndo).not.toHaveBeenCalled();
+
+      fresh.next(setRead(true));
+      fresh.complete();
+      dialog.detect();
+
+      expect(startUndo).toHaveBeenCalledTimes(1);
+      expect(dialog.triggerDisabled()).toBe(false);
+    });
   });
 
   describe('restore result: token prompt before the confirmation', () => {
@@ -611,6 +661,31 @@ describe('ImportTrigger', () => {
 
       expect(dialog.triggerDisabled()).toBe(false);
       expect(dialogOpen).toHaveBeenCalledTimes(2);
+    });
+
+    // #280: the same after the confirmation — its confirm-time duplicate check still decides what
+    // starts, with the dialog already gone.
+    it('stays disabled after the confirmation while the confirm-time duplicate check is out, and frees up once it has answered', () => {
+      const confirmCheck = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(of(emoteSetPage())).mockReturnValueOnce(confirmCheck);
+      const dialog = render();
+      dialog.click();
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
+      dialog.detect();
+      expect(dialog.triggerDisabled()).toBe(false);
+
+      closedAt<boolean>(1).next(true);
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(true);
+      expect(startRestore).not.toHaveBeenCalled();
+
+      confirmCheck.next(emoteSetPage());
+      confirmCheck.complete();
+      dialog.detect();
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      expect(dialog.triggerDisabled()).toBe(false);
     });
   });
 
@@ -1075,6 +1150,25 @@ describe('ImportTrigger', () => {
 
       expect(button.disabled).toBe(true);
     });
+
+    it.each([
+      ['a restore', () => restoreStartCheckPending],
+      ['an undo', () => undoStartCheckPending],
+    ])(
+      'disables while %s is checked before its start, after its confirmation closed (#280)',
+      (_kind, flag) => {
+        const dialog = render();
+        expect(dialog.triggerDisabled()).toBe(false);
+
+        flag().set(true);
+        dialog.detect();
+        expect(dialog.triggerDisabled()).toBe(true);
+
+        flag().set(false);
+        dialog.detect();
+        expect(dialog.triggerDisabled()).toBe(false);
+      },
+    );
 
     it('defaults importScopeCurrent to true when the caller does not pass it', () => {
       const dialog = render();

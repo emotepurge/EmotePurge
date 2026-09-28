@@ -193,6 +193,10 @@ export class ImportTrigger {
    *  covers it (unlike `restorePreviewPending` above). */
   private readonly undoReadPending = signal(false);
 
+  /** The two `startCheckPending` flags (#280) cover the window after a confirmation in which a
+   *  restore's or an undo's last live read still decides whether its run starts. Without them this
+   *  button looked free again for up to that read's timeout, from the confirmation closing to the
+   *  run appearing — and a click there only ever led to a refused start. */
   protected readonly disabled = computed(
     () =>
       importTriggerDisabled({
@@ -200,7 +204,9 @@ export class ImportTrigger {
         importScopeCurrent: this.importScopeCurrent(),
       }) ||
       this.restorePreviewPending() ||
-      this.undoReadPending(),
+      this.undoReadPending() ||
+      this.restoreService.startCheckPending() ||
+      this.undoService.startCheckPending(),
   );
 
   protected openDialog(): void {

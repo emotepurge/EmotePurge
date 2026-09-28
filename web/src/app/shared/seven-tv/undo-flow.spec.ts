@@ -167,6 +167,8 @@ interface Harness {
   activeRun: WritableSignal<SevenTvRunKind | null>;
   noteRefusedStart: ReturnType<typeof vi.fn>;
   firstReadPending: WritableSignal<boolean>;
+  /** `SevenTvUndoService.startCheckPending` (#280) on the fake service. */
+  startCheckPending: WritableSignal<boolean>;
   destroyRef: FakeDestroyRef;
 }
 
@@ -178,13 +180,14 @@ function setup(): Harness {
   const noteRefusedStart = vi.fn();
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const firstReadPending = signal(false);
+  const startCheckPending = signal(false);
   const destroyRef = fakeDestroyRef();
   return {
     deps: {
       dialog: { open: dialogOpen } as unknown as Dialog,
       httpClient: { post: httpPost } as unknown as HttpClient,
       tokenService: { hasToken } as unknown as SevenTvTokenService,
-      undoService: { startUndo } as unknown as SevenTvUndoService,
+      undoService: { startUndo, startCheckPending } as unknown as SevenTvUndoService,
       arbiter: { activeRun, noteRefusedStart } as unknown as SevenTvRunArbiter,
       firstReadPending,
       destroyRef: destroyRef as unknown as DestroyRef,
@@ -196,6 +199,7 @@ function setup(): Harness {
     activeRun,
     noteRefusedStart,
     firstReadPending,
+    startCheckPending,
     destroyRef,
   };
 }
@@ -538,6 +542,82 @@ describe('startUndoFlow', () => {
 
       expect(h.noteRefusedStart).toHaveBeenCalledWith('undo');
       expect(h.startUndo).not.toHaveBeenCalled();
+    });
+
+    // #280: the confirmation is closed and nothing runs yet while the freshness read is out.
+    it('marks the start check pending exactly while the freshness read is out, and refuses a second flow meanwhile', () => {
+      const h = setup();
+      const fresh = new Subject<unknown>();
+      h.httpPost.mockReturnValueOnce(of(readPage(fullState('1')))).mockReturnValueOnce(fresh);
+      startUndoFlow(h.deps, result([cand('1')]));
+      expect(h.startCheckPending()).toBe(false);
+
+      closedAt<UndoConfirmOutcome>(h.dialogOpen, 0).next(outcomeFor([cand('1')], fullState('1')));
+      expect(h.startCheckPending()).toBe(true);
+
+      startUndoFlow(h.deps, result([cand('1')]));
+      expect(h.httpPost).toHaveBeenCalledTimes(2);
+      expect(h.dialogOpen).toHaveBeenCalledTimes(1);
+
+      fresh.next(readPage(fullState('1')));
+      fresh.complete();
+
+      expect(h.startUndo).toHaveBeenCalledTimes(1);
+      expect(h.startCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the freshness read fails, and still hands the full row on as recheckUnavailable', () => {
+      const h = setup();
+      confirmed(h, [cand('1')], fullState('1'), {
+        fresh: throwError(() => new Error('network')),
+      });
+
+      expect(h.startCheckPending()).toBe(false);
+      expect(h.startUndo).toHaveBeenCalledTimes(1);
+      expect(h.startUndo.mock.calls[0][2].map((row: UndoSkippedRow) => row.reason)).toEqual([
+        'recheckUnavailable',
+      ]);
+    });
+
+    it('releases the start check when the freshness read hangs past its timeout', () => {
+      vi.useFakeTimers();
+      try {
+        const h = setup();
+        confirmed(h, [cand('1')], fullState('1'), { fresh: new Subject<unknown>() });
+        expect(h.startCheckPending()).toBe(true);
+
+        vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS);
+
+        expect(h.startCheckPending()).toBe(false);
+        expect(h.startUndo).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('releases the start check and starts nothing when the caller is torn down while the freshness read is out', () => {
+      const h = setup();
+      const fresh = new Subject<unknown>();
+      confirmed(h, [cand('1')], fullState('1'), { fresh });
+
+      h.destroyRef.triggerDestroy();
+      fresh.next(readPage(fullState('1')));
+
+      expect(h.startCheckPending()).toBe(false);
+      expect(h.startUndo).not.toHaveBeenCalled();
+    });
+
+    it('releases the start check when another run claims the arbiter while the freshness read is out', () => {
+      const h = setup();
+      const fresh = new Subject<unknown>();
+      confirmed(h, [cand('1')], fullState('1'), { fresh });
+      h.activeRun.set('delete');
+      fresh.next(readPage(fullState('1')));
+      fresh.complete();
+
+      expect(h.noteRefusedStart).toHaveBeenCalledWith('undo');
+      expect(h.startUndo).not.toHaveBeenCalled();
+      expect(h.startCheckPending()).toBe(false);
     });
 
     it('asks for the token again when it was cleared while the dialog was open, and only then reads fresh', () => {

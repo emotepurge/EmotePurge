@@ -329,6 +329,16 @@ export class SevenTvRestoreService {
    *  the shared instance lives. */
   readonly restorePreCheckPending: WritableSignal<boolean> = signal(false);
 
+  /** A confirmed restore's confirm-time duplicate check is out, from either entry point
+   *  (`startRestoreFlow`, `MassDeletePanel`'s restore confirmation): the confirmation is closed, but
+   *  the run has not started yet and may still be refused (#280). The counterpart of
+   *  {@link restorePreCheckPending} for the window *after* the confirmation, kept apart from it
+   *  because only this one is announced (`DockOutcomeAnnouncer`) — the window before the
+   *  confirmation ends in a dialog, which announces itself. Both entries fold it into their buttons'
+   *  disabled state, so neither looks free again while the run is still being prepared. Set and
+   *  cleared by the two entries only, around that one bounded read. */
+  readonly startCheckPending: WritableSignal<boolean> = signal(false);
+
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
   /** `true` only for the synchronous span of this service's own `cancel()` — see the identical

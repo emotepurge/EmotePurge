@@ -202,6 +202,11 @@ export function markedCountNoticeKey(count: number): string {
  * every gate of the dock (`!isCoarse()` included) — its region always exists, only the text inside
  * comes and goes, mirroring the service signals the visible notices are gated on.
  *
+ * Since #280 it also speaks the one state the dock cannot show at all: a confirmed restore or undo
+ * whose last live read is still out, between the confirmation closing and the run appearing. The
+ * visible side of that window is only the disabled trigger (docs/UI-Designsprache.md §6.1 — a
+ * disabled button, no loading text), which a screen reader does not hear change.
+ *
  * Several messages at once: one paragraph each, in the dock's own reading order — the marked-count
  * row first (it sits at the very top of the marking half), then the hidden-by-filter line (it sits
  * just below), then restore (the marking half) before import, then the undo (#254), and within each
@@ -251,6 +256,13 @@ export function markedCountNoticeKey(count: number): string {
     @if (hiddenSelectedCount(); as hidden) {
       <p>{{ hiddenByFilterKey() | transloco: { count: hidden } }}</p>
     }
+    <!-- #280: a confirmed restore whose last live check is still out — the confirmation has
+         closed and nothing in the dock says so yet; the buttons that would start another restore
+         are disabled meanwhile, and this is what says why. First in the restore group: it comes
+         before any outcome of the run it precedes. -->
+    @if (restoreService.startCheckPending()) {
+      <p>{{ 'restore.startChecking' | transloco }}</p>
+    }
     @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
       <p>
         {{ restoreSkippedKey() | transloco: { count: restoreService.skippedDuplicates() } }}
@@ -299,7 +311,11 @@ export function markedCountNoticeKey(count: number): string {
         <p>{{ key | transloco }}</p>
       }
       <!-- The undo (#254) after the import, in the dock's own order: its skipped notice, then its
-           resync acknowledgement — both aria-hidden in UndoProgressSection. -->
+           resync acknowledgement — both aria-hidden in UndoProgressSection. Before them the wait
+           for a confirmed undo's freshness check (#280), same reasoning as the restore's above. -->
+      @if (undoService.startCheckPending()) {
+        <p>{{ 'undo.startChecking' | transloco }}</p>
+      }
       @for (line of undoSkippedNotice(); track line.reason) {
         <p>
           {{
@@ -330,7 +346,7 @@ export class DockOutcomeAnnouncer {
 
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
-  private readonly undoService = inject(SevenTvUndoService);
+  protected readonly undoService = inject(SevenTvUndoService);
 
   protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>

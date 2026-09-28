@@ -214,6 +214,7 @@ describe('MassDeletePanel row composition', () => {
             // now aliases — read as soon as the component is constructed, not just once a restore
             // pre-check actually starts.
             restorePreCheckPending: signal(false),
+            startCheckPending: signal(false),
           } as unknown as SevenTvRestoreService,
         },
         {
@@ -371,6 +372,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             // now aliases — read as soon as the component is constructed, not just once a restore
             // pre-check actually starts.
             restorePreCheckPending: signal(false),
+            startCheckPending: signal(false),
           } as unknown as SevenTvRestoreService,
         },
         {
@@ -527,6 +529,7 @@ type RestoreServiceFake = Pick<
   | 'duplicateCheckAvailable'
   | 'duplicateNoticePending'
   | 'restorePreCheckPending'
+  | 'startCheckPending'
 >;
 
 function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): RestoreServiceFake {
@@ -545,6 +548,8 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
     // test that wants to simulate the *other* restore entry already holding this gate overrides it
     // with a shared instance (see "ignores a click while the other restore entry's own pre-check…").
     restorePreCheckPending: signal(false),
+    // #280: the confirm-time check's window, same default as the gate above.
+    startCheckPending: signal(false),
     ...overrides,
   };
 }
@@ -4031,6 +4036,72 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // #280: the window after the confirmation, before anything runs. Here rather than in a block of
+  // its own because this block is the one that puts the restore entry itself on screen.
+  describe('the confirm-time check holds the restore entry (#280)', () => {
+    /** `SevenTvRestoreService.startCheckPending` on the fake `mount` provided — read, not held. */
+    function startCheckPending(): boolean {
+      return startCheckPendingSignal()();
+    }
+
+    function startCheckPendingSignal(): WritableSignal<boolean> {
+      return (TestBed.inject(SevenTvRestoreService) as unknown as RestoreServiceFake)
+        .startCheckPending;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('keeps the restore entry disabled from the confirmation until the confirm-time check has answered', async () => {
+      await mount([DONE]);
+      openRestore();
+      httpMock.expectOne(GQL).flush(entriesPage([]));
+      fixture.detectChanges();
+      expect(restoreEntry()?.disabled).toBe(false);
+
+      closed.next(true);
+      fixture.detectChanges();
+
+      expect(startCheckPending()).toBe(true);
+      expect(restoreEntry()?.disabled).toBe(true);
+      expect(startRestore).not.toHaveBeenCalled();
+
+      httpMock.expectOne(GQL).flush(entriesPage([]));
+      fixture.detectChanges();
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      expect(startCheckPending()).toBe(false);
+      expect(restoreEntry()?.disabled).toBe(false);
+    });
+
+    it('ignores a click on the restore entry while a confirmed restore is still being checked', async () => {
+      await mount([DONE]);
+      startCheckPendingSignal().set(true);
+
+      fixture.componentInstance['openRestoreConfirm']();
+
+      httpMock.expectNone('/api/seventv/me/emote-set-targets');
+      expect(dialogOpen).not.toHaveBeenCalled();
+    });
+
+    it('releases the start check when the confirm-time check hangs past its timeout', async () => {
+      await mount([DONE]);
+      openRestore();
+      httpMock.expectOne(GQL).flush(entriesPage([]));
+      vi.useFakeTimers();
+
+      closed.next(true);
+      httpMock.expectOne(GQL);
+      expect(startCheckPending()).toBe(true);
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(startCheckPending()).toBe(false);
+      expect(startRestore).toHaveBeenCalledTimes(1);
+    });
   });
 });
 
