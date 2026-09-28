@@ -4013,6 +4013,25 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
     expect(dialogOpen).not.toHaveBeenCalled();
     expect(startRestore).toHaveBeenCalledWith(expect.anything(), [], 1, true, 0);
   });
+
+  it('gives up on a confirm-time check that hangs past its timeout and starts as for a failed check', async () => {
+    await mount([DONE]);
+    openRestore();
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    vi.useFakeTimers();
+    try {
+      closed.next(true);
+      const req = httpMock.expectOne(GQL);
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(req.cancelled).toBe(true);
+      expect(sentIds()).toEqual(['7tv-1']);
+      expect(startRestore.mock.calls[0][3]).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // #253, spec 4.6 point 20, AK 31: the shared pre-check now runs before the delete confirmation

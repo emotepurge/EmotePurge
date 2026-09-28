@@ -17,6 +17,7 @@ import {
   parseTransferUndoForRestore,
   transferUndoJson,
 } from '../export/transfer-undo-export';
+import { RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS } from './already-present-filter';
 import { RestoreConfirmDialogData } from './restore-confirm-dialog';
 import { ResolvedRestoreTarget, RestoreFlowDeps, startRestoreFlow } from './restore-flow';
 
@@ -1022,6 +1023,43 @@ describe('startRestoreFlow', () => {
     expect(dialogOpen).not.toHaveBeenCalled();
     expect(startRestore).not.toHaveBeenCalled();
     expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('restore');
+  });
+
+  // Bounded like the open-time check: a confirm-time check that hangs reads as a failed one — the
+  // open-time answer is reused and the duplicate check is reported unavailable, exactly as for a
+  // failed request, instead of the confirmed restore never starting.
+  it('gives up on a confirm-time check that hangs past its timeout, starting on the open-time answer as for a failed check', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      const missingRow: PurgeRunRow = {
+        emoteId: 'e2',
+        sevenTvEmoteId: '7tv-2',
+        name: 'Kappa',
+        aliases: ['Kappa'],
+        status: 'done',
+        errorMessage: null,
+      };
+      httpPost
+        .mockReturnValueOnce(of(emoteSetPage(['7tv-1'])))
+        .mockReturnValueOnce(new Subject<ReturnType<typeof emoteSetPage>>());
+
+      startRestoreFlow(deps, target(), [...rows(), missingRow]);
+      firstClosed<boolean>(dialogOpen).next(true);
+      expect(startRestore).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] }],
+        1,
+        false,
+        0,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // #255 P3(7): a confirm-time check that fails outright must not undo the open-time check's own,

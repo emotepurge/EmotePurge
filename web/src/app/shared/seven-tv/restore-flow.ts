@@ -2,7 +2,7 @@ import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
 import { DestroyRef, WritableSignal, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { finalize, timeout } from 'rxjs';
+import { catchError, finalize, of, timeout } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
@@ -280,8 +280,17 @@ export function startRestoreFlow(
         // (operator decision 2026-09-22): a row whose id is present only under some of its own
         // aliases re-adds just the missing ones, and an alias another emote now holds is left out
         // rather than sent into a certain name conflict — see `filterAlreadyPresentForRestore`.
-        filterAlreadyPresentForRestore(deps.httpClient, target.emoteSetId, emotes).subscribe(
-          (confirmCheck) => {
+        //
+        // Bounded by the same budget as the open-time check above, so a hung read cannot keep a
+        // confirmed restore waiting forever without a word: a timeout reads as the failed check the
+        // filter itself already fails open on (`restoreConfirmPreviewUnavailable`), and the
+        // fallback to the open-time answer below applies to it unchanged.
+        filterAlreadyPresentForRestore(deps.httpClient, target.emoteSetId, emotes)
+          .pipe(
+            timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS),
+            catchError(() => of(restoreConfirmPreviewUnavailable(emotes))),
+          )
+          .subscribe((confirmCheck) => {
             // #149 P2 review fix: the arbiter check above ran *before* this fetch, outside the
             // mutual-exclusion contract (design doc §4.3) it is meant to enforce — another run can
             // start in that window. Re-checked here, right before the only remaining call that
@@ -324,8 +333,7 @@ export function startRestoreFlow(
               confirmCheck.available,
               fallOnOpenTime ? preview.skippedNameTaken : confirmCheck.skippedNameTaken,
             );
-          },
-        );
+          });
       });
     }
   };

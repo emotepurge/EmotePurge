@@ -985,8 +985,15 @@ export class MassDeletePanel {
       // (operator decision 2026-09-22): a row whose id is present only under some of its own
       // aliases re-adds just the missing ones, and an alias another emote now holds is left out
       // rather than sent into a certain name conflict — see `filterAlreadyPresentForRestore`.
-      filterAlreadyPresentForRestore(this.httpClient, target.emoteSetId, emotes).subscribe(
-        (confirmCheck) => {
+      //
+      // Bounded like `startRestoreFlow`'s own confirm-time check (see there): a timeout reads as a
+      // failed check.
+      filterAlreadyPresentForRestore(this.httpClient, target.emoteSetId, emotes)
+        .pipe(
+          timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS),
+          catchError(() => of(restoreConfirmPreviewUnavailable(emotes))),
+        )
+        .subscribe((confirmCheck) => {
           // #149 P2 review fix: openRestoreConfirm()'s own arbiter check ran before this dialog
           // even opened — well outside the mutual-exclusion contract (design doc §4.3) it exists
           // to enforce, since a delete or import can start while the confirm dialog is open and
@@ -1031,8 +1038,7 @@ export class MassDeletePanel {
             confirmCheck.available,
             fallOnOpenTime ? preview.skippedNameTaken : confirmCheck.skippedNameTaken,
           );
-        },
-      );
+        });
     });
   }
 
