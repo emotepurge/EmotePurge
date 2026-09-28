@@ -29,10 +29,21 @@ start trigger free again; a click there only ever led to a refused start.
 - **A pre-run lock.** A confirmed restore or undo whose last live read is still out now locks the
   run triggers before the run exists. The two services register a `startCheckPending` signal with
   the arbiter; `startPending` is their union and `startLocked` (`activeRun() !== null ||
-  startPending()`) is the one condition every arbiter-gated trigger binds to — the header's
-  "Übertragen", the import trigger, the dock's copy shortcut, the mass-delete CTA and the dock's
-  restore entry — so the running window and the pre-run window lock the same set. A pending start
-  is not a claim: `activeRun` stays `null` and `noteRefusedStart` names nothing on its account.
+  startPending()`) is the condition the arbiter-gated triggers bind to — the header's
+  "Übertragen", the import trigger, the dock's copy shortcut, the mass-delete CTA (each disabled
+  on it, and each click handler returning silently on it, since nothing is confirmed yet —
+  Festlegung Nr. 8) and the import confirmation's executor (`runBlocked`). The dock's restore entry
+  keeps its own shape with the same effect: hidden while `activeRun` is set, disabled on
+  `restoreConfirmPending() || startPending()`. So the running window and the pre-run window never
+  leave a different set of these buttons usable. A pending start is not a claim: `activeRun` stays
+  `null` and `noteRefusedStart` names nothing on its account — which is why every *confirmed*
+  start point (the re-checks right before `startRestore`/`startUndo`/`startImport`/`startDelete`)
+  keeps reading `activeRun`/`activeClaim`: `startLocked` would refuse the confirmed run on its own
+  still-set `startCheckPending`, and silently.
+- **Not every confirm-to-start window is covered.** Only restore and undo register a start check.
+  The import's `resolveEditableSet`/`recheckTransferPlan` after its confirmation and the delete's
+  live alias read (`liveAliasReadPending`) are the same kind of window with `activeRun` still
+  `null`: known, uncovered, outside #280's scope, and deliberately not folded into the lock here.
 - **A named exception to §4.5.** `DockOutcomeAnnouncer` used to speak only what the dock shows. It
   now also speaks the pre-run wait (`restore.startChecking`, `undo.startChecking`), which no dock
   shows, because the only visible sign is a disabled button — silent for a screen reader — and
