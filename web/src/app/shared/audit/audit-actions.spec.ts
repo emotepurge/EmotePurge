@@ -5,7 +5,9 @@ import {
   CHANNEL_SCOPED_ACTIONS,
   CHANNELLESS_ACTIONS,
   DETAIL_KEYS,
+  LEGACY_BODY_FORM_KEY,
   TARGET_EMOTE_SET_KEYS,
+  UNRESOLVED_CHANNEL_KEYS,
 } from './audit-actions';
 import de from '../../../../public/i18n/de.json';
 import en from '../../../../public/i18n/en.json';
@@ -78,6 +80,23 @@ describe('audit action tables', () => {
     (key) => {
       expect(lookup(de, key)).toBeTypeOf('string');
       expect(lookup(en, key)).toBeTypeOf('string');
+    },
+  );
+
+  it('translates the legacy-body-form addendum key in both locales (#273)', () => {
+    expect(lookup(de, LEGACY_BODY_FORM_KEY)).toBeTypeOf('string');
+    expect(lookup(en, LEGACY_BODY_FORM_KEY)).toBeTypeOf('string');
+  });
+
+  it.each(Object.values(UNRESOLVED_CHANNEL_KEYS))(
+    'translates the unresolved-channel addendum key %s in both locales (#273)',
+    (key) => {
+      for (const bundle of [de, en]) {
+        const entry = lookup(bundle, key);
+        expect(entry).toBeTypeOf('object');
+        expect((entry as { one: unknown }).one).toBeTypeOf('string');
+        expect((entry as { other: unknown }).other).toBeTypeOf('string');
+      }
     },
   );
 

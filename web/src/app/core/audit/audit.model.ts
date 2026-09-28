@@ -57,6 +57,20 @@ export interface AuditLogTargetEmoteSet {
   isActiveSetOfChannel: boolean | null;
   /** The set's owner, as a Twitch login — `null` for the channel-scoped endpoint. */
   ownerLogin: string | null;
+  /**
+   * The channel a set-scoped `sync-deleted`/`sync-restored` report expected to hit
+   * (`expectedChannelName`, spec E18) but did not — present only alongside `unresolvedReason` and
+   * `unresolvedSevenTvEmoteIds` (#273, restore-per-set spec 5.5 addendum N3); the import ladder
+   * never sends any of the three. Optional, not just nullable, for the same reason `targetEmoteSet`
+   * itself is on `AuditLogDetail`: a build older than #273 built this object without them.
+   */
+  unresolvedChannelName?: string | null;
+  /** Why `unresolvedChannelName` was not hit — `'notTracked'` or `'activeSetDiffers'`
+   *  (`UnresolvedChannelReasons` on the server), typed loosely since an unrecognized value is a
+   *  display decision for the consumer, not a safety one. */
+  unresolvedReason?: string | null;
+  /** The reported 7TV emote ids, verbatim — none of them was matched in `unresolvedChannelName`. */
+  unresolvedSevenTvEmoteIds?: readonly string[] | null;
 }
 
 /**
@@ -82,6 +96,14 @@ export interface AuditLogDetail {
   count: number | null;
   text: string | null;
   targetEmoteSet?: AuditLogTargetEmoteSet | null;
+  /**
+   * `true` for an `emoteCount` row written by the channel-bound Guid-keyed legacy form of
+   * `sync-deleted`/`sync-restored` (restore-per-set spec 5.6, E4; server field #273) — never
+   * alongside `targetEmoteSet`, since that form carries no set of its own. Optional for the same
+   * write-once-additive reason as `targetEmoteSet`: a row from before #273 has no such key at all,
+   * which reads as falsy the same way an explicit `false` would.
+   */
+  legacyBodyForm?: boolean;
 }
 
 /**

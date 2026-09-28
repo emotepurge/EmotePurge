@@ -82,3 +82,25 @@ export const TARGET_EMOTE_SET_KEYS = {
   notActive: 'audit.details.targetEmoteSetNotActive',
   forOwner: 'audit.details.targetEmoteSetForOwner',
 } as const;
+
+/**
+ * The legacy-body-form addendum (#273, restore-per-set spec 5.6 step 3) — a third, independent line
+ * segment alongside `detail` and the target-set addendum above, shown whenever
+ * `AuditLogDetail.legacyBodyForm` is `true`. Never co-occurs with a `targetEmoteSet`: the legacy
+ * Guid-keyed form has no set of its own to name.
+ */
+export const LEGACY_BODY_FORM_KEY = 'audit.details.legacyBodyForm';
+
+/**
+ * The unresolved-expected-channel addendum (#273, restore-per-set spec 5.5 addendum N3) — a fourth,
+ * independent line segment, present whenever a set-scoped `sync-deleted`/`sync-restored` paper
+ * entry names a channel it expected to hit (`expectedChannelName`, spec E18) but did not. Keyed by
+ * `AuditLogTargetEmoteSet.unresolvedReason` (`UnresolvedChannelReasons` on the server); an
+ * unrecognized reason renders nothing, the same degradation as an unrecognized detail `kind`. Both
+ * keys carry a `count` and go through `pluralKey` like every other counting detail (CLAUDE.md's
+ * "Unpluralised audit count" rule, #255).
+ */
+export const UNRESOLVED_CHANNEL_KEYS = {
+  notTracked: 'audit.details.unresolvedChannelNotTracked',
+  activeSetDiffers: 'audit.details.unresolvedChannelActiveSetDiffers',
+} as const;

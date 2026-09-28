@@ -615,7 +615,16 @@
       },
       "targetEmoteSet": "in set {{setId}}",
       "targetEmoteSetNotActive": "in set {{setId}} (not the active set)",
-      "targetEmoteSetForOwner": "in set {{setId}} for {{ownerLogin}}"
+      "targetEmoteSetForOwner": "in set {{setId}} for {{ownerLogin}}",
+      "legacyBodyForm": "(old form)",
+      "unresolvedChannelNotTracked": {
+        "one": "{{channelName}} expected ({{count}} emote, not tracked)",
+        "other": "{{channelName}} expected ({{count}} emotes, not tracked)"
+      },
+      "unresolvedChannelActiveSetDiffers": {
+        "one": "{{channelName}} expected ({{count}} emote, not the active set)",
+        "other": "{{channelName}} expected ({{count}} emotes, not the active set)"
+      }
     }
   },
   "emoteCount": {
