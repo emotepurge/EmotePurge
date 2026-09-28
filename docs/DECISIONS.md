@@ -51,9 +51,11 @@ click there only ever led to a refused start.
   import's executor, `runBlocked`, is never live while the import's own flag is set), and the
   confirmed start points read `activeRun`/`activeClaim` as above, so no flow blocks its own start.
 - **A named exception to §4.5.** `DockOutcomeAnnouncer` used to speak only what the dock shows. It
-  now also speaks the pre-run wait (`massDelete.startChecking` on both pages that mount the
-  mass-delete panel, `restore.startChecking` likewise, `import.startChecking` and
-  `undo.startChecking` on the usage-stats page only), which no dock
+  now also speaks the pre-run wait (`massDelete.startChecking`, `restore.startChecking` and
+  `import.startChecking` on both pages that mount the mass-delete panel — the import's too, because
+  its checks outlive a navigation and can lock a vote-session page's mass-delete button — and
+  `undo.startChecking` on the usage-stats page only, whose reads are dropped with their trigger),
+  which no dock
   shows, because the only visible sign is a disabled button — silent for a screen reader — and
   §6.1 allows no loading text for an isolated action. The line enters only after the read has been
   out for `START_CHECK_ANNOUNCE_DELAY_MS` (1 s), so a quick read does not open every start with it;
@@ -64,7 +66,12 @@ click there only ever led to a refused start.
   the same budget (`LIVE_READ_TIMEOUT_MS`): a timed-out pre-check is "unavailable" like a 429, a
   timed-out re-check is the failed read it already handled (no replace row through, duplicate
   check unavailable). The delete's live alias read was already bounded; its block on error,
-  incomplete answer or timeout is unchanged.
+  incomplete answer or timeout is unchanged. Known limit: a cold `resolveEditableSet` walk over
+  several editor grants (the backend walks 1+k accounts serially, each with up to 5 s budget wait
+  plus a 10 s HTTP timeout, #216) can exceed the 20 s pre-check bound — the replace import then ends
+  fail-closed with the "cannot be checked right now" notice, and the user redoes picker,
+  confirmation and recovery file; a retry gets further, because the backend caches the accounts it
+  finished. The same bound already applies to this read in the delete and restore pre-checks.
 - **The confirm-time restore read deliberately has no teardown**: a confirmed restore is started and
   shown by the root service regardless of the host that opened it, so dropping the read with its
   host would silently lose a confirmed restore. The undo differs — its flow drops both reads with

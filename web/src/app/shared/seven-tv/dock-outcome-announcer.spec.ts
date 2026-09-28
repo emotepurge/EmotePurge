@@ -752,15 +752,23 @@ describe('DockOutcomeAnnouncer', () => {
       expect(spoken()).toEqual([]);
     });
 
-    it('speaks the delete wait on both pages, and the import wait on the usage-stats page only', () => {
+    // The import's checks outlive a navigation, so one confirmed on the usage-stats page can still be
+    // out on a vote-session page, where it locks the mass-delete button — the line is its reason
+    // there too, even though that page shows no import section.
+    it('speaks the delete wait and the import wait on both pages', () => {
       deleteStartCheckPending.set(true);
       importService.startCheckPending.set(true);
+      importService.resyncTrigger.set('failed');
       pass(START_CHECK_ANNOUNCE_DELAY_MS);
-      expect(spoken()).toEqual(['Löschlauf wird geprüft.', 'Übertragung wird geprüft.']);
+      expect(spoken()).toEqual([
+        'Löschlauf wird geprüft.',
+        'Übertragung wird geprüft.',
+        'Abgleich fehlgeschlagen.',
+      ]);
 
       fixture.componentInstance.withImport.set(false);
       fixture.detectChanges();
-      expect(spoken()).toEqual(['Löschlauf wird geprüft.']);
+      expect(spoken()).toEqual(['Löschlauf wird geprüft.', 'Übertragung wird geprüft.']);
     });
 
     it('never speaks a delete or import wait whose read answered before the delay ran out', () => {

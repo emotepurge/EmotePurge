@@ -219,10 +219,12 @@ export function markedCountNoticeKey(count: number): string {
  *
  * Several messages at once: one paragraph each, in the dock's own reading order — the marked-count
  * row first (it sits at the very top of the marking half), then the hidden-by-filter line (it sits
- * just below), then restore (the marking half) before import, then the undo (#254), and within each
- * the skipped count (for restore followed by its name-taken count, for the undo one line per skip
- * reason), the check-unavailable notice, then the resync acknowledgement. `role="status"` is
- * implicitly
+ * just below), then the delete's pre-run wait (#280, the marking half's own), then restore before
+ * import, then the undo (#254). Within each of those three groups the pre-run wait of that kind
+ * comes first (#280), then the skipped count (for restore followed by its name-taken count, for the
+ * undo one line per skip reason), the check-unavailable notice, then the resync acknowledgement —
+ * in full: marked → hidden → delete wait → restore wait → restore outcomes → import wait → import
+ * outcomes → undo wait → undo outcomes. `role="status"` is implicitly
  * `aria-atomic="true"` (WAI-ARIA 1.2, §status), and Blink/WebKit apply that default — so without an
  * explicit override, a new or changed paragraph would make the whole region, standing ones
  * included, be read again. This multi-message region therefore sets `aria-atomic="false"` on its
@@ -232,7 +234,10 @@ export function markedCountNoticeKey(count: number): string {
  *
  * `withImport`: the import section — and since #254 the undo section — only exists on the
  * usage-stats page. The voting-results page mounts the mass-delete panel alone and must not speak
- * for an import or undo run it does not show.
+ * for an import or undo run it does not show. The two pre-run waits that can outlive a navigation
+ * — the delete's and the import's (#280) — are the exception: both are spoken on either page,
+ * because either can lock that page's mass-delete button. The undo's is not: its reads are dropped
+ * with the trigger that started them.
  *
  * `hiddenSelectedCount` is not a run outcome but a standing condition: how many marked rows a filter
  * currently hides. It does not self-clear the way a run outcome does (docs/UI-Designsprache.md §4.4,
@@ -295,12 +300,15 @@ export function markedCountNoticeKey(count: number): string {
     @if (restoreResyncKey(); as key) {
       <p>{{ key | transloco }}</p>
     }
+    <!-- #280: a confirmed import whose last checks are still out, first in the import group — the
+         same reasoning as the restore's line above. Outside the withImport() gate, unlike the rest
+         of the group: those checks are not dropped on navigation, so one confirmed on the
+         usage-stats page can still be out on a vote-session page, whose mass-delete button it then
+         locks (startLocked) — this line is the reason given for that lock there too. -->
+    @if (importStartCheckAudible()) {
+      <p>{{ 'import.startChecking' | transloco }}</p>
+    }
     @if (withImport()) {
-      <!-- #280: a confirmed import whose last checks are still out, first in the import group —
-           the same reasoning as the restore's line above. -->
-      @if (importStartCheckAudible()) {
-        <p>{{ 'import.startChecking' | transloco }}</p>
-      }
       @if (importService.duplicateNoticePending() && importService.skippedDuplicates() > 0) {
         <p>
           {{ importSkippedKey() | transloco: { count: importService.skippedDuplicates() } }}
