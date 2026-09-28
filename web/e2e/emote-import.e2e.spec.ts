@@ -2309,6 +2309,77 @@ test.describe('running import: progress wording matches the outcome (#158)', () 
   });
 });
 
+// #280: between "Kopieren" and the run, the import's last re-check of the target runs with the
+// confirmation already closed — every start trigger stays locked, and the page announces the wait
+// until the run takes over.
+test.describe('running import: the wait before the start (#280)', () => {
+  test('the start triggers stay locked through the re-check after "Kopieren", and the page announces the wait until the run takes over', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, []);
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+    await mockSevenTvGql(page, (request) => {
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+      };
+    });
+    let confirmed = false;
+    const recheck = await holdRoute(
+      page,
+      'https://7tv.io/v4/gql',
+      (request) =>
+        confirmed &&
+        sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
+    );
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await copyButton(page).click();
+    let dialog = page.getByRole('dialog');
+    await dialog.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await dialog.getByRole('button', { name: 'Weiter' }).click();
+    dialog = page.getByRole('dialog');
+    await expect(dialog.locator('#app-dialog-title')).toHaveText(
+      '1 Emote nach aatrociity kopieren?',
+    );
+    confirmed = true;
+    await dialog.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await recheck.arrived;
+
+    const announcer = page.locator('app-dock-outcome-announcer');
+    const waitLine = 'Das Zielset wird vor dem Start der Übertragung noch einmal live geprüft…';
+    await page.clock.runFor(1_000);
+    await expect(copyButton(page)).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Importieren', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Löschen (1)' })).toBeDisabled();
+    await expect(announcer).toContainText(waitLine);
+    // No run yet: nothing has been sent, so there is no progress to show.
+    await expect(page.getByText(/verarbeitet|kopiert ·/)).toHaveCount(0);
+
+    recheck.release();
+
+    await page.clock.runFor(2_000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    await expect(announcer).not.toContainText(waitLine);
+  });
+});
+
 test.describe('running import: leaving the page', () => {
   /**
    * The half of R11 that asks (`usageStatsLeaveGuard`). Its exemption for a pure channel switch has
@@ -3158,6 +3229,65 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
     expect(await unloadPrevented(page)).toBe(false);
   });
 
+  // #280: between "Löschen starten" and the run, the delete's live alias read runs with the
+  // confirmation already closed — every start trigger stays locked, and the page announces the wait
+  // until the run takes over.
+  test('a delete keeps every start trigger locked through its live alias read, and the page announces the wait until the run takes over', async ({
+    page,
+  }) => {
+    await mockSourceWorkspace(page);
+    await mockSyncDeletedInSet(page, 'set-1', {
+      channels: [{ channelName: SOURCE_CHANNEL }],
+      resyncTriggered: [SOURCE_CHANNEL],
+    });
+    await mockSevenTvGql(page, (request) => {
+      const kind = sevenTvGqlRequestKind(request);
+      if (kind === 'setRead') {
+        return sevenTvSetReadPayload(LIVE_SET);
+      }
+      if (kind === 'removeEmote') {
+        return {
+          data: {
+            emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+          },
+        };
+      }
+      throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+    });
+    let confirmed = false;
+    const aliasRead = await holdRoute(
+      page,
+      'https://7tv.io/v4/gql',
+      (request) =>
+        confirmed &&
+        sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
+    );
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    confirmed = true;
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await aliasRead.arrived;
+
+    const announcer = page.locator('app-dock-outcome-announcer');
+    const waitLine = 'Das Set wird vor dem Start des Löschlaufs noch einmal live geprüft…';
+    await page.clock.runFor(1_000);
+    await expect(page.getByRole('button', { name: 'Löschen (1)' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Importieren', exact: true })).toBeDisabled();
+    await expect(copyButton(page)).toBeDisabled();
+    await expect(announcer).toContainText(waitLine);
+
+    aliasRead.release();
+
+    await expect(
+      deleteDock(page).getByText('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+    await expect(announcer).not.toContainText(waitLine);
+  });
+
   // #280: between "Wiederherstellen" and the run, the confirm-time duplicate check runs with the
   // confirmation already closed — the trigger must not look free again, and the page's permanently
   // mounted announcer says why, until the run takes over.
@@ -3190,6 +3320,8 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
         sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
     );
 
+    await page.clock.install();
+
     await gotoUsageStats(page, SOURCE_CHANNEL);
     const fileInput = await openFileImportDialog(page);
     await fileInput.setInputFiles(
@@ -3208,6 +3340,8 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
     const announcer = page.locator('app-dock-outcome-announcer');
     const waitLine =
       'Das Zielset wird vor dem Start der Wiederherstellung noch einmal live geprüft…';
+    // The line only enters once the read has been out for a second (START_CHECK_ANNOUNCE_DELAY_MS).
+    await page.clock.runFor(1_000);
     await expect(trigger).toBeDisabled();
     await expect(announcer).toContainText(waitLine);
     await expect(restoreDock(page)).toHaveCount(0);
@@ -6693,6 +6827,7 @@ test.describe('replace undo (#254)', () => {
     const trigger = page.getByRole('button', { name: 'Importieren', exact: true });
     const announcer = page.locator('app-dock-outcome-announcer');
     const waitLine = 'Das Zielset wird vor dem Start der Rücknahme noch einmal live geprüft…';
+    await page.clock.runFor(1_000);
     await expect(trigger).toBeDisabled();
     await expect(announcer).toContainText(waitLine);
     await expect(undoDock(page)).toHaveCount(0);
