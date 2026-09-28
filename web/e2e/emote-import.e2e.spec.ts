@@ -6989,3 +6989,215 @@ interface UndoFileJson {
     omittedEntries?: { alias: string | null; reason: string }[];
   }[];
 }
+
+/**
+ * Plan-216 T7 (owner-hint design 3.4/3.5, spec 6.4): the set-scoped pre-check route this plan adds
+ * (`GET /api/seventv/me/emote-set-targets/{emoteSetId}`), and the owner id it feeds onward into a
+ * report. `mockEmoteSetTargets` (support/mocks.ts) answers both this route and the plain list route
+ * from the same fixture, so every case below only needs the one helper the rest of this file already
+ * uses.
+ */
+test.describe('owner hint (#216): the set-scoped pre-check and the reports it feeds', () => {
+  const deleteDock = (page: Page) => page.locator('app-mass-delete-panel');
+
+  /** Every request against the set-scoped pre-check route (one path segment after
+   *  `emote-set-targets/`, never the bare list route — mocks.ts's own trailing `/*` already keeps
+   *  the two from ever matching the same request), kept as a `URL` so a case can inspect the query
+   *  string as well as the path. */
+  function recordSetScopedPreCheckRequests(page: Page): URL[] {
+    const requests: URL[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (/^\/api\/seventv\/me\/emote-set-targets\/[^/]+$/.test(url.pathname)) {
+        requests.push(url);
+      }
+    });
+    return requests;
+  }
+
+  /** Every request against the plain list route — used to prove a fresh page's pre-check goes
+   *  straight to the set-scoped route instead of falling back to loading the whole list (E19). */
+  function recordListRequests(page: Page): string[] {
+    const paths: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === '/api/seventv/me/emote-set-targets') {
+        paths.push(url.pathname);
+      }
+    });
+    return paths;
+  }
+
+  test('a delete pre-check on a fresh page hits only the set-scoped route, exactly once, with the channel login as its hint', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockTargetPicker(page);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    await mockChannelScopedResync(page, SOURCE_CHANNEL);
+    await mockSyncDeletedInSet(page, 'set-1');
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload([{ id: '7tv-1', aliases: ['CatJAM'] }]);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+
+    const setScopedRequests = recordSetScopedPreCheckRequests(page);
+    const listRequests = recordListRequests(page);
+
+    // Nothing has warmed `resolveEditableSet`'s client-side list copy yet on a fresh page (E19) —
+    // the picker was never opened — so the delete button's own pre-check
+    // (`MassDeletePanel.openConfirmDialog`) is the very first thing to ask about this set, and it
+    // must ask the set-scoped route directly rather than loading the whole list first.
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    await expect(
+      page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }),
+    ).toBeVisible();
+
+    expect(listRequests).toHaveLength(0);
+    expect(setScopedRequests).toHaveLength(1);
+    expect(setScopedRequests[0]?.pathname).toBe('/api/seventv/me/emote-set-targets/set-1');
+    expect(setScopedRequests[0]?.searchParams.get('ownerLogin')).toBe(SOURCE_CHANNEL);
+    // No id hint on this door (3.6, third row): the page only ever knows its own channel's login.
+    expect(setScopedRequests[0]?.searchParams.get('ownerTwitchId')).toBeNull();
+  });
+
+  test('a replace-carrying import started within 60 s of opening the picker resolves from the cached list, never the set-scoped route', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    // The target already holds a CatJAM, so importing the source's CatJAM is a name collision and
+    // "Ziel ersetzen" is offered — the only shape of import whose start runs the shared pre-check
+    // at all (spec 4.5 point 17); an add-only run never reaches `resolveEditableSet`.
+    await mockEmoteList(page, TARGET_CHANNEL, [{ sevenTvEmoteId: 'target-a', name: 'CatJAM' }]);
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockSyncDeletedInSet(page, 'target-set');
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload([{ id: 'target-a', aliases: ['CatJAM'] }]);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        case 'addEmote':
+          return {
+            data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+
+    const setScopedRequests = recordSetScopedPreCheckRequests(page);
+
+    // Installed before goto (CLAUDE.md): the zoneless app must boot against the fake clock from its
+    // first tick, not have it swapped in underneath a running change-detection cycle.
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await copyButton(page).click();
+
+    // Opening the picker is what warms `resolveEditableSet`'s client-side list copy (Festlegung 19)
+    // — the picker's own account/set read (`mockTargetPicker`'s list route).
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    // 59 s of virtual time between the picker's list load and the replace-carrying start — still
+    // inside the 60 s client copy (Festlegung 19/20, `EMOTE_SET_TARGETS_CACHE_TTL_MS`), so the
+    // pre-check must answer from it rather than asking the backend again. `runFor`, not
+    // `fastForward` (CLAUDE.md) — nothing here is a repeating interval, but the convention is one
+    // rule for the whole suite.
+    await page.clock.runFor(59_000);
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    const downloadPromise = page.waitForEvent('download');
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+    await downloadPromise;
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(2_000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+
+    expect(setScopedRequests).toHaveLength(0);
+  });
+
+  test("a delete run's sync-deleted report carries the owning account's Twitch id from the fixture", async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    // `mockTargetPicker`'s default fixture: the source account's own Twitch channel id is
+    // 'source-1', and it owns 'set-1' (the page's own active set) — no other account lists it, so
+    // the pre-check's owner resolution has exactly one candidate to land on.
+    await mockTargetPicker(page);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    await mockChannelScopedResync(page, SOURCE_CHANNEL);
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'set-1');
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload([{ id: '7tv-1', aliases: ['CatJAM'] }]);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+    expect(syncDeletedBodies).toEqual([
+      {
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
+    ]);
+  });
+});
