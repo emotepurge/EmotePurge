@@ -207,6 +207,7 @@ function setup(): Harness {
         twitchLogin: 'owner',
         trackedChannelName: 'target-channel',
         isActiveSet: true,
+        ownerTwitchChannelId: 'tw-owner',
       },
     }),
   );
@@ -622,6 +623,7 @@ describe('startImportFlow', () => {
           twitchLogin: 'owner',
           trackedChannelName: 'target-channel',
           isActiveSet: true,
+          ownerTwitchChannelId: 'tw-owner',
         },
       });
       preCheck.complete();

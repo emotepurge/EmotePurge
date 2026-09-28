@@ -50,6 +50,10 @@ export interface ResolvedRestoreTarget {
   twitchLogin: string;
   trackedChannelName: string | null;
   isActiveSet: boolean;
+  /** The set's owner's Twitch id, straight from `EditableSetTarget.ownerTwitchChannelId` (owner-hint
+   *  design 3.6) — carried mechanically from here on (T5/T6b use it as the report's owner hint;
+   *  this field alone does not yet feed anything). */
+  ownerTwitchChannelId: string | null;
   hostChannelName: string;
   hostSelectedSetId: string | null;
 }

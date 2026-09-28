@@ -120,10 +120,30 @@ export interface UnresolvedChannel {
 /** Shared body of the two set-centric bookkeeping routes (spec 5.1) — no `emoteSetId` here, the
  *  route already names it. `expectedChannelName` is the channel the client expects this report to
  *  touch (E18): the target's tracked channel when the target is that channel's *active* set,
- *  `null` otherwise (untracked target, or a tracked-but-not-active one). */
+ *  `null` otherwise (untracked target, or a tracked-but-not-active one).
+ *
+ *  `targetOwnerTwitchId` is the owner-hint design's optional order for the backend's owner check
+ *  (3.3): the Twitch id of the set's probable owner, as a prior pre-check already resolved it —
+ *  never a login (the report always follows a pre-check whose answer already carries the owner's
+ *  Twitch id). Optional here (T4) so callers can keep omitting it until they are wired to supply it
+ *  (T6a/T6b); a missing, `null` or blank value costs nothing but the ordinary walk. */
 export interface SyncInSetBody {
   sevenTvEmoteIds: string[];
   expectedChannelName: string | null;
+  targetOwnerTwitchId?: string | null;
+}
+
+/**
+ * An order for the shared owner check (owner-hint design 3.1 Nr. 2, 3.5 Nr. 18) — never a
+ * permission: the check resolves it only against `{actor} ∪ grants` of the session, before any 7TV
+ * request is made, and drops anything outside that set silently. `twitchChannelId` wins when
+ * present; `twitchLogin` is the fallback for a caller that only knows a channel name (a purge file's
+ * envelope, a transfer file's `targetChannelName`). Both `null` is no hint at all — the same walk as
+ * calling {@link SevenTvEmoteSetService.resolveEditableSet} without one.
+ */
+export interface OwnerHint {
+  twitchChannelId: string | null;
+  twitchLogin: string | null;
 }
 
 /** One tracked channel the deletion report actually touched (spec 5.3). */
@@ -175,6 +195,13 @@ export interface EditableSetTarget {
   twitchLogin: string;
   trackedChannelName: string | null;
   isActiveSet: boolean;
+  /** The Twitch id of the set's **owner** account — always the owner, never the listing account a
+   *  set happened to be found under (Codex finding 2, Festlegung 21). `null` when the owner is not
+   *  one of the checked accounts of this answer (cannot happen for an `editable` result today, but
+   *  never assumed). This is the one place the client learns a tracked channel's own Twitch id at
+   *  all (`ChannelSummary` carries none) — Delete/Restore/Undo/Import read it from here to hint the
+   *  owner on the report that follows. */
+  ownerTwitchChannelId: string | null;
 }
 
 /**

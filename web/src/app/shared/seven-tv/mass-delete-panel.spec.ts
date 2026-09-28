@@ -605,6 +605,7 @@ const EDITABLE_STUB_TARGET: EditableSetTarget = {
   twitchLogin: 'owner',
   trackedChannelName: 'somechannel',
   isActiveSet: true,
+  ownerTwitchChannelId: 'tw-owner',
 };
 
 type EmoteSetServiceFake = Pick<SevenTvEmoteSetService, 'resolveEditableSet'>;
@@ -3155,7 +3156,10 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
 /** `resolveEditableSet(setId)` finds `setId` under `trackedChannel`'s account, `kind: 'NORMAL'`
  *  and `editable: true` — the one account/set pair every test in the block below needs, since
  *  `SevenTvEmoteSetService` is never mocked at the service level here (real service, real
- *  `HttpClient`, intercepted by `HttpTestingController` like every other request in this block). */
+ *  `HttpClient`, intercepted by `HttpTestingController` like every other request in this block).
+ *  Kept for reference (this is what the picker's list route would answer) even though this file's
+ *  cold `resolveEditableSet` calls no longer read it directly — see {@link preCheckUrl} and
+ *  {@link preCheckEditableBody}, the pre-check route's own shapes (owner-hint design 3.4). */
 function targetsResponse(setId: string, trackedChannel: string): EmoteSetTargetsResponse {
   return {
     accounts: [
@@ -3184,6 +3188,33 @@ function targetsResponse(setId: string, trackedChannel: string): EmoteSetTargets
     ],
     sevenTvUnavailable: false,
   };
+}
+
+/** `resolveEditableSet`'s cold path (owner-hint design 3.4) — this file's default target for
+ *  `setId`, once it is found, `NORMAL` and editable: the owner is `trackedChannel`'s own account
+ *  (`twitchChannelId: 'tw-1'`), same as {@link targetsResponse}'s trivial "listing account owns
+ *  what it lists" case, so every test that only cares about the block's blocking/gating behaviour
+ *  can keep asserting against `trackedChannel` without also tracking a separate owner identity. */
+function preCheckEditableBody(setId: string, trackedChannel: string): Record<string, unknown> {
+  return {
+    status: 'editable',
+    target: {
+      emoteSetId: setId,
+      setName: setId,
+      ownerDisplayName: null,
+      twitchLogin: trackedChannel,
+      twitchChannelId: 'tw-1',
+      trackedChannelName: trackedChannel,
+      isActiveSet: true,
+    },
+  };
+}
+
+/** The set-scoped pre-check route's URL (owner-hint design 3.4) — every `resolveEditableSet` call
+ *  in this file hits this once its list copy is cold, which it always is here (a fresh
+ *  `HttpTestingController` per test, no warmed picker call). */
+function preCheckUrl(emoteSetId: string): string {
+  return `/api/seventv/me/emote-set-targets/${emoteSetId}`;
 }
 
 describe("MassDeletePanel — the restore-confirm path resolves its target fresh and attributes the dock to the delete run's own channel (#253 spec E13/E16, revised by #256 P3-3)", () => {
@@ -3227,9 +3258,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   /** Flushes the one pre-check request every test in this block triggers via `openRestoreConfirm`
    *  (spec E16, E19) before the rest of the chain can proceed. */
   function flushTargetsResponse(): void {
-    httpMock
-      .expectOne('/api/seventv/me/emote-set-targets')
-      .flush(targetsResponse('set-1', RUN_CHANNEL));
+    httpMock.expectOne(preCheckUrl('set-1')).flush(preCheckEditableBody('set-1', RUN_CHANNEL));
   }
 
   beforeEach(async () => {
@@ -3362,7 +3391,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     expect(fixture.componentInstance['restoreConfirmPending']()).toBe(false);
     expect(dialogOpen).not.toHaveBeenCalled();
     expect(startRestore).not.toHaveBeenCalled();
-    httpMock.expectNone('/api/seventv/me/emote-set-targets');
+    httpMock.expectNone(preCheckUrl('set-1'));
   });
 
   // Operator decision 2026-09-22 ("middle rule"): the restore offered from a finished run runs the
@@ -3417,9 +3446,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   // confirmation, no slot-status read, no run.
   it('shows the abort notice and starts nothing when the pre-check finds the set not editable', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock
-      .expectOne('/api/seventv/me/emote-set-targets')
-      .flush({ accounts: [], sevenTvUnavailable: false });
+    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notEditable', target: null });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'restore.nothingRestored',
@@ -3434,33 +3461,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   // offers another kind), but the mapping stays total rather than assuming that at the call site.
   it('shows the abort notice and starts nothing when the pre-check finds the set no longer selectable', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock.expectOne('/api/seventv/me/emote-set-targets').flush({
-      accounts: [
-        {
-          twitchChannelId: 'tw-1',
-          twitchLogin: RUN_CHANNEL,
-          isOwnAccount: true,
-          trackedChannelName: RUN_CHANNEL,
-          activeEmoteSetId: 'set-1',
-          sets: [
-            {
-              id: 'set-1',
-              name: 'set-1',
-              capacity: null,
-              kind: 'GLOBAL',
-              isActive: true,
-              isPersonal: false,
-              ownerDisplayName: null,
-              ownerSevenTvUserId: 'owner-1',
-              editable: true,
-            },
-          ],
-          setsUnavailable: false,
-          sevenTvUserId: 'owner-1',
-        },
-      ],
-      sevenTvUnavailable: false,
-    });
+    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notSelectable', target: null });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'restore.nothingRestored',
@@ -3472,9 +3473,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
 
   it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock
-      .expectOne('/api/seventv/me/emote-set-targets')
-      .flush({ accounts: [], sevenTvUnavailable: true });
+    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'unavailable', target: null });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'restore.nothingRestored',
@@ -3488,7 +3487,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   // silently inert instead of showing the abort notice every other pre-check failure already does.
   it('shows "check unavailable" when the pre-check request itself fails (network error, not a degraded list)', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock.expectOne('/api/seventv/me/emote-set-targets').error(new ProgressEvent('error'));
+    httpMock.expectOne(preCheckUrl('set-1')).error(new ProgressEvent('error'));
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'restore.nothingRestored',
@@ -3503,7 +3502,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     vi.useFakeTimers();
     try {
       fixture.componentInstance['openRestoreConfirm']();
-      const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+      const req = httpMock.expectOne(preCheckUrl('set-1'));
       expect(req.cancelled).toBeFalsy();
 
       vi.advanceTimersByTime(20_000);
@@ -3523,7 +3522,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   // restore confirmation nobody can see or answer any more.
   it('cancels the pre-check request once the panel is destroyed', () => {
     fixture.componentInstance['openRestoreConfirm']();
-    const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+    const req = httpMock.expectOne(preCheckUrl('set-1'));
     expect(req.cancelled).toBeFalsy();
 
     fixture.destroy();
@@ -3822,7 +3821,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
 
     fixture.componentInstance['openRestoreConfirm']();
 
-    httpMock.expectNone('/api/seventv/me/emote-set-targets');
+    httpMock.expectNone(preCheckUrl('set-1'));
     expect(dialogOpen).not.toHaveBeenCalled();
 
     // Released once the other entry's own chain settles — the panel's button works normally again.
@@ -3986,9 +3985,7 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
    *  check's read for the test to answer. */
   function openRestore(): void {
     fixture.componentInstance['openRestoreConfirm']();
-    httpMock
-      .expectOne('/api/seventv/me/emote-set-targets')
-      .flush(targetsResponse('set-1', RUN_CHANNEL));
+    httpMock.expectOne(preCheckUrl('set-1')).flush(preCheckEditableBody('set-1', RUN_CHANNEL));
   }
 
   /** A single, last page of `entries`; `truncated` makes 7TV's `totalCount` promise one more
@@ -4221,7 +4218,7 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
 
       fixture.componentInstance['openRestoreConfirm']();
 
-      httpMock.expectNone('/api/seventv/me/emote-set-targets');
+      httpMock.expectNone(preCheckUrl('set-1'));
       expect(dialogOpen).not.toHaveBeenCalled();
     });
 
@@ -4299,9 +4296,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
     ).toBe(true);
     expect(dialogOpen).not.toHaveBeenCalled();
 
-    httpMock
-      .expectOne('/api/seventv/me/emote-set-targets')
-      .flush(targetsResponse('set-1', 'somechannel'));
+    httpMock.expectOne(preCheckUrl('set-1')).flush(preCheckEditableBody('set-1', 'somechannel'));
     fixture.detectChanges();
 
     expect(
@@ -4313,9 +4308,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
 
   it('shows the abort notice and opens no dialog when the pre-check finds the set not editable', () => {
     fixture.componentInstance['openConfirm']();
-    httpMock
-      .expectOne('/api/seventv/me/emote-set-targets')
-      .flush({ accounts: [], sevenTvUnavailable: false });
+    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notEditable', target: null });
 
     expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
     expect(fixture.componentInstance['abortNotice']()).toEqual({
@@ -4327,9 +4320,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
 
   it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
     fixture.componentInstance['openConfirm']();
-    httpMock
-      .expectOne('/api/seventv/me/emote-set-targets')
-      .flush({ accounts: [], sevenTvUnavailable: true });
+    httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'unavailable', target: null });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
       leadKey: 'massDelete.nothingDeleted',
@@ -4341,7 +4332,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
   it('maps a failed pre-check request (429) to the "check unavailable" reason too', () => {
     fixture.componentInstance['openConfirm']();
     httpMock
-      .expectOne('/api/seventv/me/emote-set-targets')
+      .expectOne(preCheckUrl('set-1'))
       .flush(null, { status: 429, statusText: 'Too Many Requests' });
 
     expect(fixture.componentInstance['abortNotice']()).toEqual({
@@ -4358,7 +4349,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
     vi.useFakeTimers();
     try {
       fixture.componentInstance['openConfirm']();
-      const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+      const req = httpMock.expectOne(preCheckUrl('set-1'));
       expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(true);
       expect(req.cancelled).toBeFalsy();
 
@@ -4383,7 +4374,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
   // guarantee than merely dropping a late answer, and proof the panel never even waits for one.
   it('cancels the pre-check request and opens no dialog once the panel is destroyed', () => {
     fixture.componentInstance['openConfirm']();
-    const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+    const req = httpMock.expectOne(preCheckUrl('set-1'));
     expect(req.cancelled).toBeFalsy();
 
     fixture.destroy();
@@ -4401,7 +4392,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
     fixture.componentRef.setInput('setName', 'Set A');
     fixture.detectChanges();
     fixture.componentInstance['openConfirm']();
-    const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+    const req = httpMock.expectOne(preCheckUrl('set-1'));
     expect(req.request.url).toContain('/api/seventv/me/emote-set-targets');
 
     // The set switches behind the still-open pre-check.
@@ -4411,7 +4402,7 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
 
     // Answers for the originally checked set ('set-1'), editable — but no longer the one
     // selected by the time the answer arrives.
-    req.flush(targetsResponse('set-1', 'somechannel'));
+    req.flush(preCheckEditableBody('set-1', 'somechannel'));
 
     expect(dialogOpen).not.toHaveBeenCalled();
     expect(fixture.componentInstance['abortNotice']()).toEqual({

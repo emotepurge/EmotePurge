@@ -101,6 +101,7 @@ const RESOLVED_TARGET: EditableSetTarget = {
   twitchLogin: 'somechannel',
   trackedChannelName: CURRENT_CHANNEL,
   isActiveSet: true,
+  ownerTwitchChannelId: 'tw-somechannel',
 };
 
 /** The restore rows `purgeRunText()` (with its default single done row) yields. */
@@ -623,6 +624,7 @@ describe('FileImportStep', () => {
         twitchLogin: 'stranger',
         trackedChannelName: null,
         isActiveSet: false,
+        ownerTwitchChannelId: 'tw-stranger',
       };
       resolveEditableSet.mockReturnValue(of({ status: 'editable', target: untracked }));
       const dialog = render();
@@ -728,6 +730,7 @@ describe('FileImportStep', () => {
             twitchLogin: 'besitzerin',
             trackedChannelName: null,
             isActiveSet: false,
+            ownerTwitchChannelId: 'tw-besitzerin',
           },
         }),
       );
@@ -750,6 +753,7 @@ describe('FileImportStep', () => {
             twitchLogin: 'besitzerin',
             trackedChannelName: null,
             isActiveSet: false,
+            ownerTwitchChannelId: 'tw-besitzerin',
             hostChannelName: CURRENT_CHANNEL,
             hostSelectedSetId: CURRENT_SET,
           },

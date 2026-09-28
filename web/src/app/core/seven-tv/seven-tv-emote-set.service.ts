@@ -12,6 +12,7 @@ import {
   EmoteSetTargetAccount,
   EmoteSetTargetSummary,
   EmoteSetTargetsResponse,
+  OwnerHint,
   SyncDeletedInSetResponse,
   SyncInSetBody,
   SyncRestoredInSetResponse,
@@ -47,6 +48,39 @@ interface EmoteSetTargetsCacheEntry {
   readonly expiresAtMs: number;
 }
 
+/**
+ * Wire shape of `GET /api/seventv/me/emote-set-targets/{emoteSetId}` (owner-hint design 3.4) —
+ * `resolveEditableSet`'s cold path, once the client's own copy of the whole target list (above) is
+ * no longer fresh. `target` is non-null exactly when `status` is `'editable'`.
+ */
+interface EditableSetPreCheckWireTarget {
+  emoteSetId: string;
+  setName: string;
+  ownerDisplayName: string | null;
+  twitchLogin: string;
+  twitchChannelId: string;
+  trackedChannelName: string | null;
+  isActiveSet: boolean;
+}
+
+interface EditableSetPreCheckWireResponse {
+  status: 'editable' | 'notSelectable' | 'notEditable' | 'unavailable';
+  target: EditableSetPreCheckWireTarget | null;
+}
+
+/**
+ * Per-set cache entry for the pre-check route (Festlegung 20, operator decision 2026-09-28): keyed
+ * by `emoteSetId` alone, never by the hint that produced it — a hint is only an order for *which*
+ * lists the backend reads, not part of the answer's identity, and up to three pre-checks (restore,
+ * delete, replace) asking about the same set inside one user action must share this entry
+ * regardless of which one happened to carry a hint. Only a resolution with `status !== 'unavailable'`
+ * is ever cached, same rule as {@link EmoteSetTargetsCacheEntry}.
+ */
+interface EditableSetPreCheckCacheEntry {
+  readonly resolution: EditableSetResolution;
+  readonly expiresAtMs: number;
+}
+
 /** Every set across every account of a target list, paired with the account it belongs to — the
  *  shape {@link toEditableSetTarget} needs to build an {@link EditableSetTarget} without querying
  *  the response twice for the same account. */
@@ -71,7 +105,25 @@ function nonBlank(value: string): string | null {
   return value.trim().length > 0 ? value : null;
 }
 
+/** The Twitch id of the account whose 7TV id is `ownerSevenTvUserId`, across every account of
+ *  `response` — never merely the account whose list happened to carry the set (Codex finding 2,
+ *  Festlegung 21). `null` when there is no owner id at all, or no checked account carries it (the
+ *  latter cannot happen for a set {@link classifyEditableSet} already called `editable`, since
+ *  `EmoteSetEditability.IsEditable` only says so once such an account is among the response's own —
+ *  never assumed here all the same). */
+function resolveOwnerTwitchChannelId(
+  response: EmoteSetTargetsResponse,
+  ownerSevenTvUserId: string | null,
+): string | null {
+  if (ownerSevenTvUserId === null) {
+    return null;
+  }
+  const owner = response.accounts.find((account) => account.sevenTvUserId === ownerSevenTvUserId);
+  return owner?.twitchChannelId ?? null;
+}
+
 function toEditableSetTarget(
+  response: EmoteSetTargetsResponse,
   account: EmoteSetTargetAccount,
   set: EmoteSetTargetSummary,
 ): EditableSetTarget {
@@ -83,7 +135,46 @@ function toEditableSetTarget(
     twitchLogin: account.twitchLogin,
     trackedChannelName: account.trackedChannelName,
     isActiveSet: account.activeEmoteSetId === set.id,
+    ownerTwitchChannelId: resolveOwnerTwitchChannelId(response, set.ownerSevenTvUserId),
   };
+}
+
+/** {@link toEditableSetTarget}'s counterpart for the pre-check route's cold path (Festlegung 19) —
+ *  same two fallbacks (`nonBlank(name) ?? id`, `ownerDisplayName ?? twitchLogin`), applied to the
+ *  route's own raw fields instead of a list entry. The route already names the **owner** account
+ *  (design 3.4 Festlegung 10), so `twitchLogin`/`twitchChannelId` need no further resolution here. */
+function toEditableSetTargetFromPreCheck(target: EditableSetPreCheckWireTarget): EditableSetTarget {
+  const ownerDisplayName =
+    target.ownerDisplayName !== null ? nonBlank(target.ownerDisplayName) : null;
+  return {
+    emoteSetId: target.emoteSetId,
+    setName: nonBlank(target.setName) ?? target.emoteSetId,
+    ownerDisplayName: ownerDisplayName ?? target.twitchLogin,
+    twitchLogin: target.twitchLogin,
+    trackedChannelName: target.trackedChannelName,
+    isActiveSet: target.isActiveSet,
+    ownerTwitchChannelId: target.twitchChannelId,
+  };
+}
+
+/** Maps the pre-check route's wire response onto {@link EditableSetResolution} (Festlegung 19),
+ *  1:1 except for the fallbacks {@link toEditableSetTargetFromPreCheck} applies. A response that
+ *  claims `'editable'` without a target would violate the route's own contract (3.4 Festlegung 15)
+ *  — treated as `unavailable` rather than trusted, the same fail-closed instinct the rest of this
+ *  pre-check already follows. */
+function toEditableSetResolutionFromPreCheck(
+  response: EditableSetPreCheckWireResponse,
+): EditableSetResolution {
+  if (response.status === 'editable' && response.target !== null) {
+    return { status: 'editable', target: toEditableSetTargetFromPreCheck(response.target) };
+  }
+  if (response.status === 'notSelectable') {
+    return { status: 'notSelectable' };
+  }
+  if (response.status === 'notEditable') {
+    return { status: 'notEditable' };
+  }
+  return { status: 'unavailable' };
 }
 
 /**
@@ -113,7 +204,10 @@ function classifyEditableSet(
       return { status: 'notSelectable' };
     }
     if (found.set.editable) {
-      return { status: 'editable', target: toEditableSetTarget(found.account, found.set) };
+      return {
+        status: 'editable',
+        target: toEditableSetTarget(response, found.account, found.set),
+      };
     }
   }
   const listIncomplete =
@@ -130,6 +224,9 @@ export interface SyncImportedToSetBody {
   sourceChannelName: string | null;
   sourceKind: 'channel' | 'file' | 'seventv-channel' | 'seventv-leaderboard';
   leaderboardSort: LeaderboardSort | null;
+  /** Owner-hint design 3.3 — same field and same optionality as {@link SyncInSetBody.targetOwnerTwitchId},
+   *  see its doc there. Optional here (T4) until the import flow is wired to supply it (T6a). */
+  targetOwnerTwitchId?: string | null;
 }
 
 /**
@@ -162,6 +259,14 @@ export class SevenTvEmoteSetService {
    *  /api/seventv/me/emote-set-targets` takes no parameters), so a `Map` would only add a key
    *  nothing ever varies. */
   private cachedTargets: EmoteSetTargetsCacheEntry | null = null;
+
+  /** Backing store for {@link resolveEditableSet}'s per-set cache (Festlegung 20) — a `Map`, unlike
+   *  {@link cachedTargets}: unlike the whole target list there is one entry per set id, and several
+   *  distinct sets can be pre-checked inside the same 60 s window (restore, delete, replace). Only a
+   *  resolution with `status !== 'unavailable'` is ever stored; {@link loadCachedEmoteSetTargets}'s
+   *  `refresh: true` path clears it entirely, since a forced reload of the whole list makes every
+   *  entry here stale by the same reasoning that made it stale in the first place. */
+  private readonly cachedPreChecks = new Map<string, EditableSetPreCheckCacheEntry>();
 
   /** 6.1 — the set list of a *tracked* channel (K4's usage-stats dropdown). `isActive` in the
    *  response is `Channel.ActiveEmoteSetId` (E21), our own observed state. */
@@ -205,22 +310,53 @@ export class SevenTvEmoteSetService {
           response,
           expiresAtMs: Date.now() + EMOTE_SET_TARGETS_CACHE_TTL_MS,
         };
+        if (options.refresh) {
+          // Festlegung 20: a forced reload of the whole list (the picker's retry action) replaces
+          // the list copy above and drops every per-set pre-check answer — each was only ever an
+          // answer about the list this call just replaced.
+          this.cachedPreChecks.clear();
+        }
       }),
     );
   }
 
   /**
    * The one shared pre-check every first mutation into a 7TV set runs before touching it (spec 4.2,
-   * 6.2, E19: restore's file step, a delete confirmation, a replace start with a replace row) — it
-   * reads {@link loadCachedEmoteSetTargets} (so it is free whenever the picker or another pre-check
-   * already warmed the cache this minute) and classifies the one set the caller cares about into
-   * the four outcomes {@link EditableSetResolution} distinguishes. It trusts the backend's own
-   * `editable` verdict rather than recomputing it (spec 5.8: "das Frontend liest `editable`, es
-   * berechnet es nicht") — see {@link classifyEditableSet} for the exact decision table.
+   * 6.2, E19: restore's file step, a delete confirmation, a replace start with a replace row) —
+   * classified into the four outcomes {@link EditableSetResolution} distinguishes. It trusts the
+   * backend's own `editable` verdict rather than recomputing it (spec 5.8: "das Frontend liest
+   * `editable`, es berechnet es nicht") — see {@link classifyEditableSet} for the exact decision
+   * table on the cache-first path below.
+   *
+   * **Cache-first (owner-hint design 3.5, Festlegung 19).** A fresh copy of the whole target list
+   * (the same freshness test {@link loadCachedEmoteSetTargets} itself uses) answers locally — 0
+   * requests, byte-identical to what this method always returned. Otherwise a fresh **per-set**
+   * answer (Festlegung 20, `EMOTE_SET_TARGETS_CACHE_TTL_MS`) is served next. Only once both are
+   * cold does this call the set-scoped pre-check route (`GET
+   * /api/seventv/me/emote-set-targets/{emoteSetId}`) — the whole target list is never reloaded by
+   * this method again. `hint` is an order for which lists the backend's owner check reads next to
+   * the actor's own (3.1 Nr. 2) — never a permission, and irrelevant to which cache entry answers
+   * first. A route error (429, 503, no connection, or a caller's own `timeout()`) surfaces as an
+   * Observable error exactly as {@link listEmoteSetTargets}'s already did — every caller's existing
+   * `error:` handling still applies unchanged.
    */
-  resolveEditableSet(emoteSetId: string): Observable<EditableSetResolution> {
-    return this.loadCachedEmoteSetTargets().pipe(
-      map((response) => classifyEditableSet(response, emoteSetId)),
+  resolveEditableSet(emoteSetId: string, hint?: OwnerHint): Observable<EditableSetResolution> {
+    if (this.cachedTargets !== null && this.cachedTargets.expiresAtMs > Date.now()) {
+      return of(classifyEditableSet(this.cachedTargets.response, emoteSetId));
+    }
+    const cachedPreCheck = this.cachedPreChecks.get(emoteSetId);
+    if (cachedPreCheck !== undefined && cachedPreCheck.expiresAtMs > Date.now()) {
+      return of(cachedPreCheck.resolution);
+    }
+    return this.loadEditableSetPreCheck(emoteSetId, hint).pipe(
+      tap((resolution) => {
+        if (resolution.status !== 'unavailable') {
+          this.cachedPreChecks.set(emoteSetId, {
+            resolution,
+            expiresAtMs: Date.now() + EMOTE_SET_TARGETS_CACHE_TTL_MS,
+          });
+        }
+      }),
     );
   }
 
@@ -346,5 +482,28 @@ export class SevenTvEmoteSetService {
    */
   reportImportedToSet(emoteSetId: string, body: SyncImportedToSetBody): Observable<void> {
     return this.http.post<void>(`/api/seventv/emote-sets/${emoteSetId}/sync-imported`, body);
+  }
+
+  /** The pre-check route itself (owner-hint design 3.4) — {@link resolveEditableSet}'s cold path
+   *  only, never called directly by anything else. `ownerTwitchId`/`ownerLogin` are the same order
+   *  the reports' `targetOwnerTwitchId` body field is (3.1 Nr. 2): each present field of `hint` is
+   *  sent as its own query parameter (the backend accepts either or both and the id wins, 3.1
+   *  Nr. 2), a missing or blank one is simply not sent — never a 400 either way. */
+  private loadEditableSetPreCheck(
+    emoteSetId: string,
+    hint: OwnerHint | undefined,
+  ): Observable<EditableSetResolution> {
+    let params = new HttpParams();
+    if (hint?.twitchChannelId) {
+      params = params.set('ownerTwitchId', hint.twitchChannelId);
+    }
+    if (hint?.twitchLogin) {
+      params = params.set('ownerLogin', hint.twitchLogin);
+    }
+    return this.http
+      .get<EditableSetPreCheckWireResponse>(`/api/seventv/me/emote-set-targets/${emoteSetId}`, {
+        params,
+      })
+      .pipe(map((response) => toEditableSetResolutionFromPreCheck(response)));
   }
 }

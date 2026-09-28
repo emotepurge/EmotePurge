@@ -69,6 +69,7 @@ function restoreResult(target: Partial<ResolvedRestoreTarget> = {}): FileImportR
       twitchLogin: CURRENT_CHANNEL,
       trackedChannelName: CURRENT_CHANNEL,
       isActiveSet: true,
+      ownerTwitchChannelId: 'tw-currentchannel',
       hostChannelName: CURRENT_CHANNEL,
       hostSelectedSetId: CURRENT_SET,
       ...target,

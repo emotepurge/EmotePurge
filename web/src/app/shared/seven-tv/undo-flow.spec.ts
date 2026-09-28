@@ -47,6 +47,7 @@ function target(overrides: Partial<ResolvedRestoreTarget> = {}): ResolvedRestore
     twitchLogin: CHANNEL,
     trackedChannelName: CHANNEL,
     isActiveSet: true,
+    ownerTwitchChannelId: 'tw-olaf',
     hostChannelName: 'host_channel',
     hostSelectedSetId: SET_ID,
     ...overrides,

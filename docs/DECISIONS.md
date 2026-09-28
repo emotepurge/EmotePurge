@@ -31,7 +31,19 @@ cost replaces the "no unguarded request" comment) ·
 `EditableSetPreCheckResponse`/`EditableSetPreCheckTarget`/`EditableSetPreCheckStatus`) ·
 `src/EmotePurge.Api/Validation/EmoteSetIdValidationFilter.cs` (docs: the new route) ·
 `tests/EmotePurge.Api.Tests/SevenTvEmoteSetPreCheckEndpointTests.cs`, `EmoteRoutePolicyTests.cs` and
-`AuthFilterMatrixTests.cs`.
+`AuthFilterMatrixTests.cs` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` (new `OwnerHint`;
+`EditableSetTarget.ownerTwitchChannelId`; `SyncInSetBody.targetOwnerTwitchId`, optional) ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` (+ spec; `resolveEditableSet` gains an
+optional `hint`, cache-first over the list copy then a per-set 60 s cache before the new route;
+`SyncImportedToSetBody.targetOwnerTwitchId`, optional) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`ResolvedRestoreTarget.ownerTwitchChannelId`, carried
+mechanically) and the `EditableSetTarget`/`ResolvedRestoreTarget` literals of
+`web/src/app/shared/seven-tv/file-import-step.spec.ts`, `import-flow.spec.ts`,
+`import-source-dialog.spec.ts`, `import-trigger.spec.ts`, `mass-delete-panel.spec.ts`,
+`restore-flow.spec.ts`, `undo-confirm-dialog.spec.ts` and `undo-flow.spec.ts` (mechanical field
+addition only) · `web/e2e/support/mocks.ts` (`mockEmoteSetTargets` answers the new route from the
+same fixture, resolving the **owner** account).
 
 Issue #216, and the "Known limit" of the #280 entry below. The set-centric reports (`sync-imported`
 to an untracked set, `sync-deleted`, `sync-restored`) walked the actor's list and then every
@@ -169,6 +181,15 @@ click there only ever led to a refused start.
   semantics too — neither is dropped with its host (the import flow never had a teardown, and a
   torn-down panel's `startDelete` starts nothing by contract); both are bounded, so their flag is
   always released.
+
+**Addendum 2026-09-28 (#216).** The Known limit above narrows to calls without a valid hint: an old
+protocol file whose channel login has since been renamed or that names an untracked transfer target,
+a login hint against a renamed channel, and a revoked editor grant — plus budget contention, under
+which even a hinted request can still exhaust the 5 s slot wait and the 10 s HTTP timeout. With a
+valid hint and a cold client copy, the pre-check now costs one list request when the hint resolves
+to the actor, or two parallel ones in a single round trip when it resolves to a grant (plus two more
+if that grant's own ten-minute cache is cold); warm, it still costs none. See the 2026-09-28 entry
+above ("The owner check reads the hinted owner's list beside the actor's own …") for the full design.
 
 ### 2026-09-28 — A 7TV run step is `done` only when the answer carries the mutation's result — an unconfirmed 200 is `unknown` or `failed`
 
