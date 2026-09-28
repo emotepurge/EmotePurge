@@ -156,6 +156,7 @@ describe('ImportTrigger', () => {
   /** `SevenTvRestoreService.startCheckPending` / `SevenTvUndoService.startCheckPending` (#280). */
   let restoreStartCheckPending: WritableSignal<boolean>;
   let undoStartCheckPending: WritableSignal<boolean>;
+  let importStartCheckPending: WritableSignal<boolean>;
 
   beforeEach(async () => {
     getSetStatus = vi.fn(() => of(readyStatus()));
@@ -181,6 +182,7 @@ describe('ImportTrigger', () => {
     dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
     restoreStartCheckPending = signal(false);
     undoStartCheckPending = signal(false);
+    importStartCheckPending = signal(false);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -210,7 +212,10 @@ describe('ImportTrigger', () => {
         },
         {
           provide: SevenTvImportService,
-          useValue: { startImport } as unknown as SevenTvImportService,
+          useValue: {
+            startImport,
+            startCheckPending: importStartCheckPending,
+          } as unknown as SevenTvImportService,
         },
         // A stub, not the real service: the real one registers itself with the arbiter on
         // construction (#256), and the arbiter here is a stub without `register`.
@@ -241,7 +246,9 @@ describe('ImportTrigger', () => {
   });
 
   function fakeArbiter(): SevenTvRunArbiter {
-    const startPending = computed(() => restoreStartCheckPending() || undoStartCheckPending());
+    const startPending = computed(
+      () => restoreStartCheckPending() || undoStartCheckPending() || importStartCheckPending(),
+    );
     return {
       activeRun,
       startPending,
@@ -1169,6 +1176,7 @@ describe('ImportTrigger', () => {
     it.each([
       ['a restore', () => restoreStartCheckPending],
       ['an undo', () => undoStartCheckPending],
+      ['an import', () => importStartCheckPending],
     ])(
       'disables while %s is checked before its start, after its confirmation closed (#280)',
       (_kind, flag) => {
@@ -1190,6 +1198,7 @@ describe('ImportTrigger', () => {
     it.each([
       ['a restore', () => restoreStartCheckPending],
       ['an undo', () => undoStartCheckPending],
+      ['an import', () => importStartCheckPending],
     ])(
       'opens no dialog for a click that outraces the lock while %s is checked before its start',
       (_kind, flag) => {

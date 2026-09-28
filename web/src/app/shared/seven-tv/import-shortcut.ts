@@ -8,7 +8,7 @@
  * act on. Beyond that it inherits every lock the header button ("Übertragen") already
  * carries: `importScopeCurrent()` — a capture mid-channel-switch would copy channel A's emotes out
  * of A's set under B's name, see `importScopeIsCurrent` — and `SevenTvRunArbiter.startLocked()`, any
- * 7TV-writing run active or settling, not just this button's own kind, or a confirmed restore/undo
+ * 7TV-writing run active or settling, not just this button's own kind, or a confirmed start of any run
  * still being checked before its start (#280).
  *
  * `!isCoarse()` and an active 7TV set deliberately do NOT appear in this state: the dock this
@@ -23,7 +23,7 @@ export interface ImportShortcutState {
   /** See `importScopeIsCurrent` — false during the window right after a same-route channel switch. */
   readonly importScopeCurrent: boolean;
   /** `SevenTvRunArbiter.startLocked()` — any 7TV-writing run active or settling, not just this
-   *  one, or a confirmed restore/undo still being checked before its start (#280). Named for the
+   *  one, or a confirmed start of any run still being checked before its start (#280). Named for the
    *  first case, which is what it meant before #280. */
   readonly hasActiveRun: boolean;
 }

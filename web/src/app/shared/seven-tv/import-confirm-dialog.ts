@@ -108,7 +108,7 @@ export interface ImportConfirmDialogData {
    *  target has nothing yet for this to force live for. */
   reloadLive: () => void;
   /** `SevenTvRunArbiter.startLocked()`: true while any 7TV run (delete, restore, import, undo) is
-   *  running or settling, or a confirmed restore/undo is still being checked before its start
+   *  running or settling, or a confirmed start of any run is still being checked before its start
    *  (#280) — locks the executor without a reason text, the same silent lock as every start trigger
    *  (docs/UI-Designsprache.md §4.2). A run in progress explains itself in its dock; the pre-run
    *  wait has no dock and is spoken by `DockOutcomeAnnouncer` instead (§4.5). */

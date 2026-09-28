@@ -407,6 +407,13 @@ export class SevenTvImportService {
    *  show the reason. Cleared by the next `startImport()` call, whatever it does, and by `reset()`. */
   readonly targetCheckBlockReason = signal<TargetCheckBlockReason | null>(null);
 
+  /** A confirmed import's last checks (`startImportFlow`: the shared pre-check for a plan with a
+   *  replace row, then `recheckTransferPlan`) are out: the confirmation is closed, the run does not
+   *  exist yet, and it may still be blocked or trimmed (#280). Registered with the arbiter, whose
+   *  `startLocked` every 7TV start trigger binds to, and spoken by `DockOutcomeAnnouncer`. Set and
+   *  cleared by the flow only, around those bounded reads, released by `finalize` on every exit. */
+  readonly startCheckPending = signal(false);
+
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
   /** `true` only for the synchronous span of this service's own `cancel()`: `engine.cancel()` calls
@@ -427,6 +434,7 @@ export class SevenTvImportService {
       isRunning: this.isRunning,
       isSettling: this.isSettling,
       destructiveOpen: this.destructiveOpen,
+      startCheckPending: this.startCheckPending,
     });
   }
 

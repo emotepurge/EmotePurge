@@ -2,6 +2,7 @@ import { Component, Signal, computed, effect, inject, input, signal } from '@ang
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import {
   ResyncTriggerState,
@@ -45,7 +46,7 @@ export function resyncNoticeKey(
   return state === 'idle' ? null : `${family}.resync.${state}`;
 }
 
-/** How long a confirmed restore's or undo's last live read has to be out before the announcer
+/** How long a confirmed run's last live read has to be out before the announcer
  *  speaks the wait (#280). Most reads answer well inside it, and a line on every start that was
  *  gone again a moment later would only be noise; the triggers lock at once regardless. */
 export const START_CHECK_ANNOUNCE_DELAY_MS = 1000;
@@ -207,8 +208,9 @@ export function markedCountNoticeKey(count: number): string {
  * every gate of the dock (`!isCoarse()` included) — its region always exists, only the text inside
  * comes and goes, mirroring the service signals the visible notices are gated on.
  *
- * Since #280 it also speaks the one state the dock cannot show at all: a confirmed restore or undo
- * whose last live read is still out, between the confirmation closing and the run appearing. The
+ * Since #280 it also speaks the one state the dock cannot show at all: a confirmed delete, restore,
+ * import or undo whose last live read is still out, between the confirmation closing and the run
+ * appearing. The
  * visible side of that window is only the disabled trigger (docs/UI-Designsprache.md §6.1 — a
  * disabled button, no loading text), which a screen reader does not hear change. That makes it
  * the one named exception to §4.5's rule that this region says nothing the dock does not show.
@@ -264,6 +266,12 @@ export function markedCountNoticeKey(count: number): string {
     @if (hiddenSelectedCount(); as hidden) {
       <p>{{ hiddenByFilterKey() | transloco: { count: hidden } }}</p>
     }
+    <!-- #280: a confirmed delete whose live alias read is still out — the marking half's own wait,
+         so after the two marking lines and before the restore group; spoken on both pages, since
+         both mount the mass-delete panel. -->
+    @if (deleteStartCheckAudible()) {
+      <p>{{ 'massDelete.startChecking' | transloco }}</p>
+    }
     <!-- #280: a confirmed restore whose last live check is still out — the confirmation has
          closed and nothing in the dock says so yet; the buttons that would start another restore
          are disabled meanwhile, and this is what says why. First in the restore group: it comes
@@ -288,6 +296,11 @@ export function markedCountNoticeKey(count: number): string {
       <p>{{ key | transloco }}</p>
     }
     @if (withImport()) {
+      <!-- #280: a confirmed import whose last checks are still out, first in the import group —
+           the same reasoning as the restore's line above. -->
+      @if (importStartCheckAudible()) {
+        <p>{{ 'import.startChecking' | transloco }}</p>
+      }
       @if (importService.duplicateNoticePending() && importService.skippedDuplicates() > 0) {
         <p>
           {{ importSkippedKey() | transloco: { count: importService.skippedDuplicates() } }}
@@ -355,6 +368,7 @@ export class DockOutcomeAnnouncer {
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
   private readonly undoService = inject(SevenTvUndoService);
+  private readonly deleteService = inject(SevenTvDeleteService);
 
   protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>
@@ -401,10 +415,18 @@ export class DockOutcomeAnnouncer {
   protected readonly undoResyncKey = computed(() =>
     resyncNoticeKey(this.undoService.resyncTrigger(), 'undo'),
   );
-  /** The restore's and the undo's `startCheckPending`, but only once it has held for
+  /** Each run service's `startCheckPending`, but only once it has held for
    *  {@link START_CHECK_ANNOUNCE_DELAY_MS} — see `afterHolding`. */
+  protected readonly deleteStartCheckAudible = afterHolding(
+    this.deleteService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
   protected readonly restoreStartCheckAudible = afterHolding(
     this.restoreService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+  protected readonly importStartCheckAudible = afterHolding(
+    this.importService.startCheckPending,
     START_CHECK_ANNOUNCE_DELAY_MS,
   );
   protected readonly undoStartCheckAudible = afterHolding(

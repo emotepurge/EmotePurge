@@ -460,9 +460,11 @@ describe('SevenTvRunArbiter with the real run services', () => {
     expect(arbiter.activeRun()).toBeNull();
   });
 
-  // #280: the two services with a confirm-to-start window register it with the arbiter.
+  // #280: all four run services have a confirm-to-start window and register it with the arbiter.
   it.each([
+    ['delete', () => deleteService.startCheckPending],
     ['restore', () => restoreService.startCheckPending],
+    ['import', () => importService.startCheckPending],
     ['undo', () => undoService.startCheckPending],
   ])("locks starts while the %s service's start check is pending", (_kind, flag) => {
     expect(arbiter.startLocked()).toBe(false);

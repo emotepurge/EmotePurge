@@ -1074,6 +1074,7 @@
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Delete progress",
     "settling": "Finishing…",
+    "startChecking": "Checking the set live once more before the deletion run starts…",
     "deleteFailedFallback": "Delete failed",
     "unknownOutcome": "Unclear whether it was deleted — 7TV gave no clear answer. Please check the set.",
     "confirmTitle": {
@@ -1180,6 +1181,7 @@
       "noTargetSet": "No set to copy into"
     },
     "dockCopyButton": "Transfer ({{ count }})",
+    "startChecking": "Checking the target set live once more before the transfer starts…",
     "target": {
       "title": "Transfer emotes",
       "label": "Target",

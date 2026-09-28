@@ -2564,7 +2564,7 @@ export class UsageStatsPage {
     if (emoteSetId === null || !this.importScopeCurrent() || this.arbiter.startLocked()) {
       // The header button is gated on all three, so this only guards against a click that
       // outraces a channel switch or the arbiter's lock (`startLocked`: a run running or settling,
-      // or a confirmed restore/undo still being checked before its start, #280) — silently, since
+      // or a confirmed start of any run still being checked before its start, #280) — silently, since
       // nothing has been confirmed yet (Festlegung Nr. 8). The scope check is what keeps a
       // mid-switch capture from pairing the new channel's name with the previous one's set id and
       // rows — see importScopeIsCurrent.

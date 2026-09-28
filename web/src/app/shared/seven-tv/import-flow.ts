@@ -1,7 +1,7 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
 import { computed, signal } from '@angular/core';
-import { Observable, map } from 'rxjs';
+import { Observable, catchError, finalize, map, of, timeout } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import {
@@ -18,6 +18,7 @@ import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import { filterAlreadyPresent, verifyReplaceTargets } from './already-present-filter';
 import { ImportConfirmOutcome, openImportConfirmDialog } from './import-confirm-dialog';
 import { ImportTargetChoice } from './import-target-dialog';
+import { LIVE_READ_TIMEOUT_MS } from './recovery-file-gate';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 
 /**
@@ -223,6 +224,10 @@ export interface TransferPlanRecheck {
  *   one that drifted drops out and is counted. A failed or incomplete read lets **no** `replace` row
  *   through — deleting on an unchecked basis is worse than not deleting.
  *
+ * Bounded by {@link LIVE_READ_TIMEOUT_MS} (#280): a read that hangs past it counts as the failed
+ * read above — every row through the duplicate filter unfiltered, no `replace` row through — so a
+ * confirmed import can never wait for it forever.
+ *
  * Exported on its own so it can be tested apart from the dialogs around it.
  */
 export function recheckTransferPlan(
@@ -234,6 +239,10 @@ export function recheckTransferPlan(
     .filter((row) => row.action !== 'adoptSourceName')
     .map((row) => ({ sevenTvEmoteId: row.source.sevenTvEmoteId, row }));
   return filterAlreadyPresent(httpClient, targetSetId, checked).pipe(
+    timeout(LIVE_READ_TIMEOUT_MS),
+    // A timeout lands outside `filterAlreadyPresent`'s own `catchError`, so its failed-read shape is
+    // built here, from exactly the rows it was asked about.
+    catchError(() => of({ rows: [...checked], skipped: 0, available: false, entries: null })),
     map(({ rows, skipped, available, entries }) => {
       const notPresent = new Set<TransferRow>(rows.map(({ row }) => row));
       const verification = entries === null ? null : verifyReplaceTargets(entries, plan);
@@ -390,18 +399,37 @@ export function startImportFlow(
     // 7TV itself, and its report is already set-centric and gated on the same right server-side.
     const hasReplace = outcome.plan.rows.some((row) => row.action === 'replace');
     if (hasReplace) {
-      deps.emoteSetService.resolveEditableSet(outcome.targetSetId).subscribe({
-        next: (resolution) => {
-          if (resolution.status !== 'editable') {
-            deps.importService.reportTargetCheckBlocked(resolution.status);
-            return;
-          }
-          startAfterCheck(outcome);
-        },
-        // 429, 503 or no connection: "cannot be checked right now", never "not allowed" (F3) — the
-        // same distinction every other pre-check caller makes.
-        error: () => deps.importService.reportTargetCheckBlocked('unavailable'),
-      });
+      // #280: from here to the start (or the block) the confirmation is closed and nothing runs
+      // yet — `startCheckPending` locks every start trigger meanwhile and lets the page announce
+      // the wait. Handed on to `startAfterCheck` when the check passes, released here otherwise.
+      // Bounded like every other read before a 7TV write: a timeout is a failed check,
+      // "unavailable", exactly like a 429 or a lost connection. Not dropped with any caller —
+      // this flow never had a teardown, and a confirmed import keeps going without its host.
+      let handedOff = false;
+      deps.importService.startCheckPending.set(true);
+      deps.emoteSetService
+        .resolveEditableSet(outcome.targetSetId)
+        .pipe(
+          timeout(LIVE_READ_TIMEOUT_MS),
+          finalize(() => {
+            if (!handedOff) {
+              deps.importService.startCheckPending.set(false);
+            }
+          }),
+        )
+        .subscribe({
+          next: (resolution) => {
+            if (resolution.status !== 'editable') {
+              deps.importService.reportTargetCheckBlocked(resolution.status);
+              return;
+            }
+            handedOff = true;
+            startAfterCheck(outcome);
+          },
+          // 429, 503, no connection or a timeout: "cannot be checked right now", never "not
+          // allowed" (F3) — the same distinction every other pre-check caller makes.
+          error: () => deps.importService.reportTargetCheckBlocked('unavailable'),
+        });
       return;
     }
     startAfterCheck(outcome);
@@ -415,8 +443,14 @@ export function startImportFlow(
     // (see `filterAlreadyPresent`'s doc for why that distinction matters and for the residual race
     // this does not close). The same read verifies every replace target a second time
     // (`recheckTransferPlan`).
-    recheckTransferPlan(deps.httpClient, outcome.targetSetId, outcome.plan).subscribe(
-      ({ plan, skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift }) => {
+    //
+    // #280: `startCheckPending` spans this read too (bounded inside `recheckTransferPlan`), released
+    // once it has settled — after the start below, which then holds the triggers through the
+    // arbiter.
+    deps.importService.startCheckPending.set(true);
+    recheckTransferPlan(deps.httpClient, outcome.targetSetId, outcome.plan)
+      .pipe(finalize(() => deps.importService.startCheckPending.set(false)))
+      .subscribe(({ plan, skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift }) => {
         // #149 P2 review fix: the arbiter check above ran *before* this fetch, which the mutual
         // exclusion contract (design doc §4.3, the SevenTvRunArbiter paragraph) does not actually
         // cover — a delete or restore can start in that window and this would otherwise start a
@@ -426,6 +460,9 @@ export function startImportFlow(
         // notes why, so it fires `noteRefusedStart` again rather than assuming the first call above
         // already said enough — the arbiter's own claim can have changed kind or phase in the
         // meantime, and the notice always reflects the most recent refusal.
+        // Deliberately `activeRun`, not `startLocked` (#280): this import's own
+        // `startCheckPending` is still set here, so `startLocked` would refuse the confirmed run
+        // itself — silently, with no claim to name (see `restore-flow.ts`).
         if (deps.arbiter.activeRun() !== null) {
           deps.arbiter.noteRefusedStart('import');
           return;
@@ -460,8 +497,7 @@ export function startImportFlow(
           duplicateCheckAvailable,
           replaceSkippedDrift,
         );
-      },
-    );
+      });
   };
 
   load();

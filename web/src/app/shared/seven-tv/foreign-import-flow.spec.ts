@@ -100,7 +100,10 @@ function setup(): Harness {
       emoteSetService: { loadEmoteSetPreview: vi.fn() } as unknown as SevenTvEmoteSetService,
       httpClient,
       tokenService: { hasToken: signal(true) } as unknown as SevenTvTokenService,
-      importService: { startImport } as unknown as SevenTvImportService,
+      importService: {
+        startImport,
+        startCheckPending: signal(false),
+      } as unknown as SevenTvImportService,
       arbiter: {
         activeRun: signal<SevenTvRunKind | null>(null),
         startLocked: signal(false),

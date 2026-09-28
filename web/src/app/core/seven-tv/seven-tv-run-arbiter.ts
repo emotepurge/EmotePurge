@@ -43,10 +43,9 @@ export interface SevenTvRunParticipant {
   /** A run of the service with at least one destructive row is not `closed` yet. */
   destructiveOpen: Signal<boolean>;
   /** A confirmed start of the service is still waiting for its last live read before the run
-   *  exists (#280) — the restore's confirm-time duplicate check, the undo's freshness read. Only
-   *  those two register one. The import (`resolveEditableSet`/`recheckTransferPlan` after its
-   *  confirmation) and the delete (its live alias read, `liveAliasReadPending`) have the same kind
-   *  of window but leave it out: known, uncovered, outside #280's scope. */
+   *  exists (#280): the delete's live alias read, the restore's confirm-time duplicate check, the
+   *  import's pre-check and re-check, the undo's freshness read. All four run services register
+   *  one; optional so a participant without such a window (a spec stub) can leave it out. */
   startCheckPending?: Signal<boolean>;
 }
 
@@ -60,8 +59,8 @@ export const REFUSED_START_FEEDBACK_MS = 4000;
  * `SevenTvRunEngine` instance, so no single engine's `isRunning` can speak for all of them.
  *
  * **Registration, not a service list (#256, contract P4).** Each run service registers itself in
- * its constructor (`register(...)`) with its kind, three run signals and, for restore and undo, the
- * optional `startCheckPending` (#280). The arbiter injects no run service and imports none of
+ * its constructor (`register(...)`) with its kind, three run signals and its `startCheckPending`
+ * (#280, optional in the type). The arbiter injects no run service and imports none of
  * their files, so the DI edge now points service → arbiter only — the
  * reverse of the 2026-09-06 decision (arbiter → services, "the services do not know the arbiter").
  * That is why no cycle arises: the arbiter's only dependency is `@angular/core`. A fourth run kind

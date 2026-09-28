@@ -13,6 +13,7 @@ import {
   ResyncTriggerState,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import { UndoSkippedRow } from '../../core/seven-tv/undo-plan';
@@ -27,6 +28,9 @@ import {
 } from './dock-outcome-announcer';
 
 const DE_TRANSLATIONS = {
+  massDelete: {
+    startChecking: 'Löschlauf wird geprüft.',
+  },
   undo: {
     startChecking: 'Rücknahme wird geprüft.',
     confirm: { reason: { nothingToDo: 'nichts zu tun' } },
@@ -65,6 +69,7 @@ const DE_TRANSLATIONS = {
     },
   },
   import: {
+    startChecking: 'Übertragung wird geprüft.',
     duplicateCheckUnavailable: 'Import-Prüfung nicht möglich.',
     errors: {
       targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
@@ -219,12 +224,15 @@ describe('DockOutcomeAnnouncer', () => {
   let restoreService: FakeOutcomeSource;
   let importService: FakeOutcomeSource;
   let undoService: FakeUndoSource;
+  /** `SevenTvDeleteService.startCheckPending` (#280) — the only delete signal the announcer reads. */
+  let deleteStartCheckPending: WritableSignal<boolean>;
   let fixture: ComponentFixture<HostPage>;
 
   beforeEach(async () => {
     restoreService = createFakeSource();
     importService = createFakeSource();
     undoService = createFakeUndoSource();
+    deleteStartCheckPending = signal(false);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -238,6 +246,10 @@ describe('DockOutcomeAnnouncer', () => {
         { provide: SevenTvRestoreService, useValue: restoreService },
         { provide: SevenTvImportService, useValue: importService },
         { provide: SevenTvUndoService, useValue: undoService },
+        {
+          provide: SevenTvDeleteService,
+          useValue: { startCheckPending: deleteStartCheckPending },
+        },
       ],
     }).compileComponents();
 
@@ -740,16 +752,46 @@ describe('DockOutcomeAnnouncer', () => {
       expect(spoken()).toEqual([]);
     });
 
-    it('speaks the wait before the outcomes of its own family, in the dock reading order', () => {
+    it('speaks the delete wait on both pages, and the import wait on the usage-stats page only', () => {
+      deleteStartCheckPending.set(true);
+      importService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
+      expect(spoken()).toEqual(['Löschlauf wird geprüft.', 'Übertragung wird geprüft.']);
+
+      fixture.componentInstance.withImport.set(false);
+      fixture.detectChanges();
+      expect(spoken()).toEqual(['Löschlauf wird geprüft.']);
+    });
+
+    it('never speaks a delete or import wait whose read answered before the delay ran out', () => {
+      deleteStartCheckPending.set(true);
+      importService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS - 1);
+      deleteStartCheckPending.set(false);
+      importService.startCheckPending.set(false);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS * 2);
+
+      expect(spoken()).toEqual([]);
+    });
+
+    it('speaks each wait before the outcomes of its own family, in the dock reading order', () => {
+      fixture.componentInstance.hiddenSelectedCount.set(2);
+      deleteStartCheckPending.set(true);
       restoreService.resyncTrigger.set('cooldown');
       restoreService.startCheckPending.set(true);
+      importService.resyncTrigger.set('failed');
+      importService.startCheckPending.set(true);
       undoService.resyncTrigger.set('backendTriggered');
       undoService.startCheckPending.set(true);
       pass(START_CHECK_ANNOUNCE_DELAY_MS);
 
       expect(spoken()).toEqual([
+        '2 davon durch den Filter ausgeblendet',
+        'Löschlauf wird geprüft.',
         'Wiederherstellung wird geprüft.',
         'Sync-Cooldown aktiv.',
+        'Übertragung wird geprüft.',
+        'Abgleich fehlgeschlagen.',
         'Rücknahme wird geprüft.',
         'Abgleich läuft bereits.',
       ]);

@@ -23,7 +23,7 @@
  */
 export interface ImportTriggerGateState {
   /** `SevenTvRunArbiter.startLocked()` — any 7TV-writing run active or settling, not just this
-   *  one, or a confirmed restore/undo still being checked before its start (#280). Named for the
+   *  one, or a confirmed start of any run still being checked before its start (#280). Named for the
    *  first case, which is what it meant before #280. */
   readonly hasActiveRun: boolean;
   /** See `importScopeIsCurrent` — false during the window right after a same-route channel switch. */

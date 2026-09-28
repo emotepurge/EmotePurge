@@ -196,6 +196,7 @@ describe('MassDeletePanel row composition', () => {
             syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun: signal(null),
+            startCheckPending: signal(false),
           } as unknown as SevenTvDeleteService,
         },
         {
@@ -352,6 +353,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun,
+            startCheckPending: signal(false),
           } as unknown as SevenTvDeleteService,
         },
         {
@@ -486,6 +488,7 @@ type DeleteServiceFake = Pick<
   | 'beginConfirmedRun'
   | 'endConfirmedRun'
   | 'clearConfirmedRun'
+  | 'startCheckPending'
 >;
 
 function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteServiceFake {
@@ -509,6 +512,8 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     beginConfirmedRun: vi.fn(),
     endConfirmedRun: vi.fn(),
     clearConfirmedRun: vi.fn(),
+    // #280: the live alias read's window, aliased by the panel's `liveAliasReadPending`.
+    startCheckPending: signal(false),
     ...overrides,
   };
 }
@@ -554,8 +559,8 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
 interface RunArbiterFake {
   activeRun: WritableSignal<SevenTvRunKind | null>;
   activeClaim: () => SevenTvRunClaim | null;
-  /** #280: the restore's own start check (linked by `panelProviders`) or any other participant's —
-   *  `otherStartPending` stands in for an undo's freshness read. */
+  /** #280: the restore's and the delete's own start checks (linked by `panelProviders`) or any
+   *  other participant's — `otherStartPending` stands in for an undo's or an import's. */
   startPending: Signal<boolean>;
   startLocked: Signal<boolean>;
   otherStartPending: WritableSignal<boolean>;
@@ -570,14 +575,16 @@ interface RunArbiterFake {
  *  test below that expects an abort notice asserts on `abortNotice()`, never on this spy. */
 function fakeRunArbiter(
   activeRun: WritableSignal<SevenTvRunKind | null> = signal(null),
-  restoreStartCheckPending: Signal<boolean> = signal(false),
+  ...ownStartChecks: Signal<boolean>[]
 ): RunArbiterFake {
   const activeClaim = computed<SevenTvRunClaim | null>(() => {
     const kind = activeRun();
     return kind === null ? null : { kind, phase: 'running' };
   });
   const otherStartPending = signal(false);
-  const startPending = computed(() => restoreStartCheckPending() || otherStartPending());
+  const startPending = computed(
+    () => ownStartChecks.some((check) => check()) || otherStartPending(),
+  );
   return {
     activeRun,
     activeClaim,
@@ -632,6 +639,7 @@ function panelProviders(
   } = {},
 ) {
   const restoreService = options.restoreService ?? fakeRestoreService();
+  const deleteService = options.deleteService ?? fakeDeleteService();
   const providers: (Provider | EnvironmentProviders)[] = [
     provideHttpClient(),
     {
@@ -640,7 +648,7 @@ function panelProviders(
     },
     {
       provide: SevenTvDeleteService,
-      useValue: (options.deleteService ?? fakeDeleteService()) as unknown as SevenTvDeleteService,
+      useValue: deleteService as unknown as SevenTvDeleteService,
     },
     {
       provide: SevenTvRestoreService,
@@ -648,11 +656,13 @@ function panelProviders(
     },
     {
       provide: SevenTvRunArbiter,
-      // Linked to the restore fake's start check the way the real service registers it (#280).
+      // Linked to the restore and delete fakes' start checks the way the real services register
+      // them (#280).
       useValue: (options.arbiter ??
         fakeRunArbiter(
           signal(null),
           restoreService.startCheckPending,
+          deleteService.startCheckPending,
         )) as unknown as SevenTvRunArbiter,
     },
     {
@@ -2066,7 +2076,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     const deleteService = { ...fakeDeleteService(), startDelete };
     const providers = panelProviders({
       deleteService,
-      arbiter: fakeRunArbiter(activeRun),
+      arbiter: fakeRunArbiter(activeRun, deleteService.startCheckPending),
       dialogOpen,
       emoteAdminService: {
         getSetWarning: () =>
@@ -2485,6 +2495,83 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // #280: the live alias read is the delete's own confirm-to-start window — its flag lives on the
+  // root service (the panel's `liveAliasReadPending` aliases it), so every other start trigger locks
+  // and the page can announce it. The confirmed start itself still goes through while that flag,
+  // and with it `startLocked`, is set: `startDelete`'s own re-check reads `activeClaim`.
+  describe('the window before the start (#280)', () => {
+    function startCheckPending(): boolean {
+      return (
+        TestBed.inject(SevenTvDeleteService) as unknown as DeleteServiceFake
+      ).startCheckPending();
+    }
+
+    it('holds the start check exactly while the live read is out, and starts the confirmed delete while it is still set', () => {
+      const lockedAtStart: boolean[] = [];
+      startDelete.mockImplementation(() => {
+        lockedAtStart.push(
+          startCheckPending() &&
+            (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).startLocked(),
+        );
+      });
+      expect(startCheckPending()).toBe(false);
+
+      confirm();
+      expect(startCheckPending()).toBe(true);
+
+      httpMock.expectOne(GQL).flush(
+        entriesPage([
+          { id: '7tv-1', alias: 'PogU' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+      expect(startDelete).toHaveBeenCalledTimes(1);
+      expect(lockedAtStart).toEqual([true]);
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the live read fails, blocking the delete as before', () => {
+      confirm();
+      httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+      fixture.detectChanges();
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(statusText()).toContain('massDelete.memberRead.unavailable');
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the live read hangs past its timeout', () => {
+      vi.useFakeTimers();
+      try {
+        confirm();
+        httpMock.expectOne(GQL);
+        expect(startCheckPending()).toBe(true);
+
+        vi.advanceTimersByTime(20_000);
+
+        expect(startCheckPending()).toBe(false);
+        expect(startDelete).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps the read, and releases the start check once it answers, when the panel is torn down meanwhile', () => {
+      confirm();
+      const req = httpMock.expectOne(GQL);
+
+      fixture.destroy();
+      expect(req.cancelled).toBeFalsy();
+      expect(startCheckPending()).toBe(true);
+
+      req.flush(entriesPage([]));
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(startCheckPending()).toBe(false);
+    });
   });
 
   it('aborts when the set switched while the read was out', () => {

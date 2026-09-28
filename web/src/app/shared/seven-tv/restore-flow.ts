@@ -134,7 +134,7 @@ export function startRestoreFlow(
     // suspenders next to the caller's own disabled button (`previewPending`, see the field doc),
     // so a click that outraces it, or a caller with no button of its own, still cannot end up with
     // two confirmations racing for the same rows.
-    // #280: nor while a confirmed restore or undo is still being checked before its start
+    // #280: nor while a confirmed start of any run is still being checked before its start
     // (`arbiter.startPending`) — the arbiter would refuse this one at its own start anyway.
     if (deps.previewPending() || deps.arbiter.startPending()) {
       return;

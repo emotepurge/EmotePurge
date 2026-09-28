@@ -1074,6 +1074,7 @@
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Löschfortschritt",
     "settling": "Wird abgeschlossen…",
+    "startChecking": "Das Set wird vor dem Start des Löschlaufs noch einmal live geprüft…",
     "deleteFailedFallback": "Löschen fehlgeschlagen",
     "unknownOutcome": "Unklar, ob gelöscht — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "confirmTitle": {
@@ -1180,6 +1181,7 @@
       "noTargetSet": "Kein Set, in das kopiert werden könnte"
     },
     "dockCopyButton": "Übertragen ({{ count }})",
+    "startChecking": "Das Zielset wird vor dem Start der Übertragung noch einmal live geprüft…",
     "target": {
       "title": "Emotes übertragen",
       "label": "Ziel",
