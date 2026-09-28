@@ -970,6 +970,74 @@ export async function mockEmoteSetTargets(
       sevenTvUnavailable: options.sevenTvUnavailable ?? false,
     }),
   );
+
+  // GET /api/seventv/me/emote-set-targets/{emoteSetId} (owner-hint design 3.4) — `resolveEditableSet`'s
+  // cold path (Festlegung 19), answered from the very same fixture so every existing caller of this
+  // mock stays correct without touching its own spec: a fresh page (or one past the 60 s client
+  // copy) reaches this route instead of the list one above. The classification mirrors
+  // `classifyEditableSet` exactly (kind !== NORMAL wins over editable; not found or editable:false
+  // is notEditable unless the list was incomplete, then unavailable), so the two routes can never
+  // disagree about the same fixture. The trailing `/*` requires a path segment after
+  // `emote-set-targets/` (a single `*` never crosses a `/`), so this route and the plain list route
+  // above never both match the same request.
+  await page.route('**/api/seventv/me/emote-set-targets/*', (route) => {
+    const emoteSetId = decodeURIComponent(
+      new URL(route.request().url()).pathname.split('/').pop() ?? '',
+    );
+    const listIncomplete =
+      (options.sevenTvUnavailable ?? false) ||
+      accounts.some((account) => account.setsUnavailable ?? false);
+
+    let found: { account: MockEmoteSetTargetAccount; set: MockEmoteSetTargetSet } | null = null;
+    for (const account of accounts) {
+      const set = (account.sets ?? []).find((candidate) => candidate.id === emoteSetId);
+      if (set !== undefined) {
+        found = { account, set };
+        break;
+      }
+    }
+
+    if (found === null) {
+      return fulfillJson(route, 200, {
+        status: listIncomplete ? 'unavailable' : 'notEditable',
+        target: null,
+      });
+    }
+    const { account: listingAccount, set } = found;
+    if ((set.kind ?? 'NORMAL') !== 'NORMAL') {
+      return fulfillJson(route, 200, { status: 'notSelectable', target: null });
+    }
+    if (!(set.editable ?? true)) {
+      return fulfillJson(route, 200, {
+        status: listIncomplete ? 'unavailable' : 'notEditable',
+        target: null,
+      });
+    }
+
+    // The **owner** account, never merely the listing one (Codex finding 2, Festlegung 10): the
+    // account whose own `sevenTvUserId` equals the set's `ownerSevenTvUserId`. Falls back to the
+    // listing account when no account of the fixture carries that id — every existing usage of
+    // this mock leaves both fields at their `null` default, and `null` never matches `null` here on
+    // purpose, so those 20 callers keep getting exactly the listing account they always did.
+    const ownerAccount =
+      accounts.find(
+        (account) =>
+          account.sevenTvUserId != null && account.sevenTvUserId === set.ownerSevenTvUserId,
+      ) ?? listingAccount;
+
+    return fulfillJson(route, 200, {
+      status: 'editable',
+      target: {
+        emoteSetId: set.id,
+        setName: set.name,
+        ownerDisplayName: set.ownerDisplayName ?? null,
+        twitchLogin: ownerAccount.twitchLogin,
+        twitchChannelId: ownerAccount.twitchChannelId,
+        trackedChannelName: ownerAccount.trackedChannelName ?? null,
+        isActiveSet: set.isActive ?? false,
+      },
+    });
+  });
 }
 
 export interface MockForeignEmoteSetPreview {
