@@ -17,6 +17,7 @@ import {
   RunQueueEmote,
   RunQueueItem,
   RunResult,
+  SevenTvMutation,
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
@@ -45,7 +46,8 @@ import {
  *  the `EmoteSetEmoteId` input object, not as a sibling argument — v4's `addEmote` field replaces
  *  v3's single `emotes(action: ADD, name:)` mutation with one field per operation (see
  *  docs/DECISIONS.md, #149). */
-const ADD_EMOTE_MUTATION = `
+const ADD_EMOTE_MUTATION: SevenTvMutation = {
+  query: `
   mutation AddEmote($setId: Id!, $emoteId: Id!, $alias: String) {
     emoteSets {
       emoteSet(id: $setId) {
@@ -55,14 +57,16 @@ const ADD_EMOTE_MUTATION = `
       }
     }
   }
-`;
+`,
+  resultPath: ['emoteSets', 'emoteSet', 'addEmote'],
+};
 
 /** The `ADD` of one restore run. The alias each queue row sends is looked up by its key in
  *  `aliasByKey` (built together with the queue by `toRestoreQueue`, so every key is in it) rather
  *  than read from the row's `name`, which for an entry without an alias is only its display name.
  *  `transportLossIsUnknown` (#275, Plan-275 Festlegung 1, mirroring `REMOVE_OPERATION`): an `ADD`
- *  whose answer never came out of 7TV's GraphQL layer — no answer, a 5xx, or a `cancel()` that
- *  aborted it in flight — may still have landed, so its row ends `unknown` rather than
+ *  whose answer never came out of 7TV's GraphQL layer — no answer, a 5xx, a 200 without the
+ *  `addEmote` result (#285), or a `cancel()` that aborted it in flight — may still have landed, so its row ends `unknown` rather than
  *  `failed`/`cancelled` and is cleared up by the run's one re-read
  *  (`SevenTvRestoreService.onRunComplete`). A 4xx and a GraphQL rejection stay `failed`, a cancel
  *  between two rows or in a rate-limit pause stays `cancelled`. */
@@ -70,7 +74,7 @@ function addOperation(aliasByKey: ReadonlyMap<string, string | null>): RunOperat
   return {
     label: 'restore',
     buildRequest: (setId, emote) => ({
-      query: ADD_EMOTE_MUTATION,
+      mutation: ADD_EMOTE_MUTATION,
       variables: {
         setId,
         emoteId: emote.sevenTvEmoteId,

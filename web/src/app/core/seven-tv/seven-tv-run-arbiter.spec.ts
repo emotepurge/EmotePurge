@@ -25,6 +25,7 @@ import { SevenTvTokenService } from './seven-tv-token.service';
 import { SevenTvUndoService, UndoRunTarget } from './seven-tv-undo.service';
 import { TransferPlan } from './transfer-plan';
 import { UndoPlanRow, classifyUndoRows } from './undo-plan';
+import { flushApplied } from './seven-tv-mutation.testing';
 
 /** A registered participant whose three signals a case sets by hand (contract P5). */
 interface StubParticipant extends SevenTvRunParticipant {
@@ -482,7 +483,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
   // services: the import registered last still wins over the delete registered first.
   it('prefers a running import over a delete that is still reporting', () => {
     deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     const deleteReport = httpMock.expectOne(SYNC_DELETED_SET_1);
     expect(arbiter.activeClaim()).toEqual({ kind: 'delete', phase: 'settling' });
@@ -518,7 +519,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
 
   it('holds "delete" after the engine is done, until the report answers', () => {
     deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(DELETE_DELAY_MS);
 
     expect(deleteService.isRunning()).toBe(false);
@@ -532,7 +533,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
   it('holds "import" across the re-read of a lost replace answer and both reports, free only once both ended', () => {
     importService.startImport(TARGET_UNTRACKED, IMPORT_ORIGIN, REPLACE_PLAN);
     // REMOVE answered, ADD lost: the row ends unknown, and the run re-reads before it reports.
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 502, statusText: 'Bad Gateway' });
     vi.advanceTimersByTime(RUN_DELAY_MS);
@@ -570,9 +571,9 @@ describe('SevenTvRunArbiter with the real run services', () => {
   it('holds "undo" while it settles — through both reports — and frees only after the last answer', () => {
     undoService.startUndo(UNDO_TARGET, [undoFullRow()], [], false);
     httpMock.expectOne(GQL_ENDPOINT).flush(setEntriesPage([{ id: 'undo-src', alias: 'Kappa' }]));
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     expect(undoService.isRunning()).toBe(false);
@@ -588,7 +589,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
 
   it('refuses an undo start while an import settles and names the import as the reason', () => {
     importService.startImport(TARGET_UNTRACKED, IMPORT_ORIGIN, REPLACE_PLAN);
-    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 502, statusText: 'Bad Gateway' });
     vi.advanceTimersByTime(RUN_DELAY_MS);
@@ -621,9 +622,9 @@ describe('SevenTvRunArbiter with the real run services', () => {
       expect(arbiter.destructiveOpen()).toBe(true);
       expect(unloadCalls(addSpy)).toHaveLength(1);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
       // Its reports are still out, and nothing shows it any more: the guard holds.
@@ -666,7 +667,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
       TestBed.tick();
       expect(unloadCalls(addSpy)).toHaveLength(1);
 
-      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       TestBed.tick();
       expect(deleteService.isRunning()).toBe(false);

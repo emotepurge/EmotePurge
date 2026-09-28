@@ -28,6 +28,7 @@ import {
 } from './seven-tv-undo.service';
 import { UndoCandidate, UndoSourceFileInfo } from './undo-candidate';
 import { UndoPlan, UndoPlanRow, UndoSkippedRow, classifyUndoRows } from './undo-plan';
+import { flushApplied, flushWithoutResult } from './seven-tv-mutation.testing';
 
 // The keys the engine and this service translate.
 const DE_TRANSLATIONS = {
@@ -308,17 +309,17 @@ describe('SevenTvUndoService', () => {
   /** A `full` row of candidate `n` from its recheck read to its last ADD, everything answered. */
   function runFull(n: string, adds: string[] = [`A${n}`]): void {
     answerRead([{ id: `src-${n}`, alias: `A${n}` }]);
-    expectRemove(`src-${n}`).flush({});
+    flushApplied(expectRemove(`src-${n}`));
     next();
     for (const alias of adds) {
-      expectAdd(`tgt-${n}`, alias).flush({});
+      flushApplied(expectAdd(`tgt-${n}`, alias));
       next();
     }
   }
 
   function runAddOnly(n: string, adds: string[] = [`A${n}`]): void {
     for (const alias of adds) {
-      expectAdd(`tgt-${n}`, alias).flush({});
+      flushApplied(expectAdd(`tgt-${n}`, alias));
       next();
     }
   }
@@ -524,7 +525,7 @@ describe('SevenTvUndoService', () => {
     it('ends an ADD answered with a 5xx unknown, not failed', () => {
       start([fullRow('1')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').flush('boom', { status: 503, statusText: 'Unavailable' });
       next();
@@ -551,7 +552,7 @@ describe('SevenTvUndoService', () => {
     it('aborts on LACKING_PRIVILEGES over HTTP 200, clears the token too and still reports the confirmed REMOVE', () => {
       start([fullRow('1'), fullRow('2')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').flush(
         gqlRejection('lacking privileges', { code: 'LACKING_PRIVILEGES', status: 403 }),
@@ -573,7 +574,7 @@ describe('SevenTvUndoService', () => {
     it('fails a row on a GraphQL rejection and keeps going — a gap after the REMOVE is named', () => {
       start([fullRow('1'), fullRow('2')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').flush(gqlRejection('name taken', { code: 'CONFLICT', status: 409 }));
       next();
@@ -666,9 +667,9 @@ describe('SevenTvUndoService', () => {
       expectRemove('src-1').flush('slow down', { status: 429, statusText: 'Too Many Requests' });
       vi.advanceTimersByTime(BLIND_RATE_LIMIT_WAIT_MS);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
-      expectAdd('tgt-1', 'A1').flush({});
+      flushApplied(expectAdd('tgt-1', 'A1'));
       next();
 
       expect(readCount).toBe(2);
@@ -795,7 +796,7 @@ describe('SevenTvUndoService', () => {
     it('fails a row cancelled between its REMOVE and its first ADD with cancelledMidRow and reports the REMOVE', () => {
       start([fullRow('1'), fullRow('2')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       service.cancel();
 
       expect(service.items().map((item) => item.status)).toEqual(['failed', 'cancelled']);
@@ -819,7 +820,7 @@ describe('SevenTvUndoService', () => {
     function cancelWithAddInFlight(): void {
       start([fullRow('1')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       const add = expectAdd('tgt-1', 'A1');
       service.cancel();
@@ -927,7 +928,7 @@ describe('SevenTvUndoService', () => {
     it('reads at once, without a grace period, after a 5xx the user did not cancel', () => {
       start([fullRow('1')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').flush('boom', { status: 503, statusText: 'Unavailable' });
 
@@ -941,12 +942,29 @@ describe('SevenTvUndoService', () => {
       expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
     });
 
+    // #285: a 200 that neither rejects nor confirms is as unclear as a lost answer — same re-read.
+    it('reads at once after a 200 whose data stops short of the addEmote result, and confirms the ADD from it', () => {
+      start([fullRow('1')]);
+      answerRead([{ id: 'src-1', alias: 'A1' }]);
+      flushApplied(expectRemove('src-1'));
+      next();
+      flushWithoutResult(expectAdd('tgt-1', 'A1'));
+      expect(service.items()[0]).toMatchObject({ status: 'unknown', completedSteps: 1 });
+
+      next();
+      expectRead().flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
+
+      expect(service.items()[0].status).toBe('done');
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+    });
+
     // Plan-284 Festlegung 1: an `abortOn` abort ends the run through the engine, not through this
     // service's `cancel()` — so a run it stops with an older transport-loss row reads at once.
     it('reads at once, without a grace period, when a privileges abort ends a run that has an unknown row', () => {
       start([fullRow('1'), fullRow('2')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').flush('boom', { status: 503, statusText: 'Unavailable' }); // lost
       next();
@@ -982,7 +1000,7 @@ describe('SevenTvUndoService', () => {
     it('also waits out the grace period when a cancel between rows ends a run with an older transport loss', () => {
       start([fullRow('1'), addOnlyRow('2')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').flush('boom', { status: 500, statusText: 'Server Error' });
       httpMock.expectNone(isAdd);
@@ -1058,7 +1076,7 @@ describe('SevenTvUndoService', () => {
 
       function runRejectedAfterRemove(n: string): void {
         answerRead([{ id: `src-${n}`, alias: `A${n}` }]);
-        expectRemove(`src-${n}`).flush({});
+        flushApplied(expectRemove(`src-${n}`));
         next();
         expectAdd(`tgt-${n}`, `A${n}`).flush(
           gqlRejection('name taken', { code: 'CONFLICT', status: 409 }),
@@ -1070,12 +1088,12 @@ describe('SevenTvUndoService', () => {
     it('publishes a row cancelled after its REMOVE with cancelledMidRow already in the settling snapshot, unchanged once closed', () => {
       start([fullRow('1'), fullRow('2')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').flush('boom', { status: 503, statusText: 'Unavailable' }); // lost
       next();
       answerRead([{ id: 'src-2', alias: 'A2' }]);
-      expectRemove('src-2').flush({});
+      flushApplied(expectRemove('src-2'));
       service.cancel(); // after the second row's REMOVE, before its ADD: nothing in flight
 
       expect(service.run()?.phase).toBe('settling');
@@ -1127,7 +1145,7 @@ describe('SevenTvUndoService', () => {
     function firstAddUnanswered(): void {
       start([fullRow('1', { entries: ['A1', 'B1'] })]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').flush('boom', { status: 502, statusText: 'Bad Gateway' });
       next();
@@ -1210,7 +1228,7 @@ describe('SevenTvUndoService', () => {
     it('settles the row done when the unanswered ADD was its last one', () => {
       start([fullRow('1')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').error(new ProgressEvent('error'));
       next();
@@ -1367,7 +1385,7 @@ describe('SevenTvUndoService', () => {
       'addOnly',
     );
     start([addOnly]);
-    expectAdd('tgt-1', 'B1').flush({});
+    flushApplied(expectAdd('tgt-1', 'B1'));
     next();
     httpMock.expectNone(isRemove);
     expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
@@ -1493,7 +1511,7 @@ describe('SevenTvUndoService', () => {
       // local to the settling describe block above): the REMOVE is confirmed before the ADD stalls.
       start([fullRow('1', { entries: ['A1', 'B1'] })]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       expectAdd('tgt-1', 'A1').flush('boom', { status: 502, statusText: 'Bad Gateway' });
       next();
@@ -1658,13 +1676,13 @@ describe('SevenTvUndoService', () => {
     it('lets a run reset() while running finish on its own record and send both reports once', () => {
       start([fullRow('1')]);
       answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').flush({});
+      flushApplied(expectRemove('src-1'));
       next();
       service.reset();
 
       expect(service.run()).toBeNull();
       expect(service.items()).toEqual([]);
-      expectAdd('tgt-1', 'A1').flush({});
+      flushApplied(expectAdd('tgt-1', 'A1'));
       next();
 
       expect(service.queue()).toEqual([]);

@@ -37,7 +37,9 @@ import {
   RunOperation,
   RunQueueEmote,
   RunQueueItem,
+  RunRequest,
   RunResult,
+  SevenTvMutation,
   SevenTvRunEngine,
   StepGate,
 } from './seven-tv-run-engine';
@@ -70,7 +72,8 @@ import {
  *  use (copied, not shared, like theirs). The undo **always** sets `$alias` (spec E21): an entry the
  *  file names without an alias goes back under the file's `defaultName`, never under whatever 7TV's
  *  default name is today. */
-const ADD_EMOTE_MUTATION = `
+const ADD_EMOTE_MUTATION: SevenTvMutation = {
+  query: `
   mutation AddEmote($setId: Id!, $emoteId: Id!, $alias: String) {
     emoteSets {
       emoteSet(id: $setId) {
@@ -80,7 +83,9 @@ const ADD_EMOTE_MUTATION = `
       }
     }
   }
-`;
+`,
+  resultPath: ['emoteSets', 'emoteSet', 'addEmote'],
+};
 
 /** Time budget of the read before one REMOVE attempt (spec E19). `loadSevenTvSetEntries` has no
  *  deadline of its own and the engine gives a `beforeStep` hook none either — the same 20 s as the
@@ -1132,20 +1137,16 @@ function stepCountOf(row: Pick<UndoPlanRow, 'mode' | 'adds'>): number {
 
 /** The request for one step (E6): step 0 of a `full` row is the REMOVE of the source, every other
  *  step the ADD of one target entry under its explicit alias (E21). */
-function buildUndoRequest(
-  setId: string,
-  row: UndoPlanRow,
-  step: number,
-): { query: string; variables: Record<string, unknown> } {
+function buildUndoRequest(setId: string, row: UndoPlanRow, step: number): RunRequest {
   if (row.mode === 'full' && step === 0) {
     return {
-      query: REMOVE_EMOTE_MUTATION,
+      mutation: REMOVE_EMOTE_MUTATION,
       variables: { setId, emoteId: row.candidate.sourceSevenTvEmoteId },
     };
   }
   const add = row.adds[addIndexOf(row.mode, step)];
   return {
-    query: ADD_EMOTE_MUTATION,
+    mutation: ADD_EMOTE_MUTATION,
     variables: { setId, emoteId: row.candidate.target.sevenTvEmoteId, alias: add.alias },
   };
 }

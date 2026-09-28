@@ -10,6 +10,69 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-28 — A 7TV run step is `done` only when the answer carries the mutation's result — an unconfirmed 200 is `unknown` or `failed`
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-engine.ts` (+ spec) — new `SevenTvMutation`
+(`query` + `resultPath`) and `RunRequest`, `RunOperation.buildRequest` returns a `RunRequest`,
+`runOne` posts only `query` and `variables` and checks the result path, new `unconfirmedAnswer`,
+`holdsMutationResult`, `RunItemStatus`/`transportLossIsUnknown` docs ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (`REMOVE_EMOTE_MUTATION` becomes a
+`SevenTvMutation`, `REMOVE_OPERATION` doc) · `web/src/app/core/seven-tv/seven-tv-restore.service.ts`,
+`seven-tv-import.service.ts` and `seven-tv-undo.service.ts` (`ADD_EMOTE_MUTATION`, the import's
+`UPDATE_EMOTE_ALIAS_MUTATION`, their request builders) · `web/public/i18n/de.json`/`en.json`
+(`massDelete.errors.unconfirmedAnswer`) · new `web/src/app/core/seven-tv/seven-tv-mutation.testing.ts`
+(+ spec; `mutationSelection`, `flushApplied`, `flushWithoutResult`, spec support only) and every
+spec that confirmed a mutation with `flush({})`.
+
+Issue #285, found by the adversarial plan review for #275. The engine counted every HTTP 200 without
+`errors[0]` as `done` — an empty body, `null`, `{}`, whatever a proxy or an edge error page served
+under that status. Such a row was reported to the backend (`sync-deleted`, `sync-restored`,
+`sync-imported`), counted as succeeded in the dock and written into the run protocol as `done`, so a
+restore from that file skipped it.
+
+**A step is `done` only when the answer holds the mutation's result.** Each mutation now declares,
+right next to its query text, the path from `data` down to its own mutation field:
+`['emoteSets', 'emoteSet', 'removeEmote']` for the `REMOVE` (delete, the import's replace, the
+undo), `[…, 'addEmote']` for the `ADD` (restore, import, undo) and `[…, 'updateEmoteAlias']` for the
+import's adopt. A 200 without `errors` counts as `done` only when an object sits at that path. The
+engine reads it off the request's `SevenTvMutation`, not off a switch over operation names, and it
+posts only `query` and `variables`. The path ends at the mutation field, not at the scalar it
+selects (`id`, `alias`): the field is what GraphQL nulls when a resolver fails, and 7TV fills it
+only for a mutation it applied.
+
+**A 200 that neither rejects nor confirms is classified like a lost answer.** It is `unknown` for an
+operation with `transportLossIsUnknown` (delete, restore, undo, an import whose plan deletes) and
+`failed` otherwise (the add-only import). Both carry the engine's own
+`massDelete.errors.unconfirmedAnswer`; a `failed` one reaches `abortOn` with `httpStatus: 200` and
+`errorCode`/`gqlStatus` `null`, so neither privilege check aborts on it. A 200 with `errors` keeps its
+classification exactly: a rate limit (`RATE_LIMIT_EXCEEDED` or `extensions.status: 429`) still backs
+off and retries, any other GraphQL error is still `failed`, whether or not `data` sits beside it. A
+body that is not JSON already failed in `HttpClient` with status 200 and was already `unknown` or
+`failed` by the same rule.
+
+**Downstream nothing new was needed.** An `unknown` from this path is indistinguishable from one
+after a 5xx: no cancel flag is set, so the settle read goes out at once, without
+`CANCEL_SETTLE_GRACE_MS`; delete and restore clear it up positively only, import and undo through
+their clarification tables; reports name only settled `doneKeys`; the protocol carries the row as
+`unknown` and a restore from it treats it fail-closed. The add-only import's `failed` row is not
+reported either — should 7TV have applied it anyway, only the periodic resync notices. That is the
+exception the #230 entry keeps on purpose for its lost answers, and #290 asks whether to lift it for
+every import; setting the flag there would carry this path along.
+
+**Specs answer from the query, in both directions.** `flushApplied` answers a mutation with its
+result nested along the path its query text selects, read off the query by `mutationSelection` and
+not off the declared `resultPath` — so a service spec that confirms a step through it shows the
+declared path is not longer than the query's, nor off to the side of it. A path that is too *short*
+would find an object in that answer too; `flushWithoutResult` answers everything along the path
+except the mutation field, and each mutation constant (the delete's `REMOVE`, the three copies of the
+`ADD`, the import's adopt) has a service spec that expects *no* `done` from it. The helper is
+production code to Sonar (neither excluded nor a spec file) and has its own co-located spec rather
+than a new exclusion pattern. The e2e mocks that answered `RemoveEmote` with `{ data: {} }` were
+switched to the result beforehand, in a commit of their own that is valid under both engines.
+
+**What this revises** (texts stay as they are): the 2026-09-27 #275 entry's "An HTTP 200 without
+`errors`, or with an empty body, is still `done` without any read (#285)" no longer holds.
+
 ### 2026-09-28 — E2E specs import from a shared fixture that stubs and guards the 7TV CDN, and Chromium cannot resolve the CDN at all
 
 **Betrifft:** `web/playwright.config.ts` (`use.launchOptions`: `--host-resolver-rules=MAP cdn.7tv.app
