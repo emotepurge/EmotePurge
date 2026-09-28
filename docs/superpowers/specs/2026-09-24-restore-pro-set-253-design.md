@@ -494,6 +494,12 @@ Replace-Zeile hat — die Picker-Wahl trug `editable` schon, die drei Seiten-Tü
     (`AuditLogQueryService.cs:153-162`, `:237-263`); die neuen Detailfelder liegen im JSON und
     werden erst mit #255 angezeigt.
 
+    **Nachtrag 2026-09-28 (#273):** Die letzte Aussage ist überholt. `AuditLogQueryService` liest
+    `unresolvedChannelName`, `unresolvedReason`, `unresolvedSevenTvEmoteIds` (generisch, wie die
+    schon vorhandenen Felder) sowie `legacyBodyForm` jetzt mit, und `audit-row.ts` rendert beide als
+    eigene Zeilensegmente — Wortlaut und Reihenfolge in DECISIONS 2026-09-28. Die IDs werden
+    mitgeliefert, aber nicht gerendert: `emoteCount` im selben Eintrag nennt die Menge bereits.
+
 ### 4.8 Nicht in #253
 
 24. Das Rückgängigmachen eines geglückten Replace (#254). Regel 4 des Restore-Filters gilt
@@ -642,6 +648,13 @@ darf einen zweiten Eintrag schreiben — „ein Duplikat schlägt eine Lücke" (
 keinen Kanal **und** die beiden `targetOwner*`-Felder — nie beides. Das ist genau die Zweiteilung,
 die `AuditLogTargetEmoteSet` dokumentiert und nach der `audit-row.ts` rendert; Projektion und
 Ansicht bleiben unverändert.
+
+**Nachtrag 2026-09-28 (#273):** Die Invariante selbst gilt unverändert, aber die letzte Aussage
+nicht mehr — Projektion und Ansicht ändern sich mit #273: `AuditLogQueryService` liest jetzt auch
+`unresolvedChannelName`, `unresolvedReason`, `unresolvedSevenTvEmoteIds` (nur auf einem Eintrag mit
+Besitzerkanal-Feldern oder `targetIsActiveSetOfChannel: false`, nie beide Gruppen gleichzeitig,
+s. o.) sowie `legacyBodyForm` auf der Guid-Altform (5.6), und `audit-row.ts` rendert beide als
+eigene Addenda. Details in DECISIONS 2026-09-28.
 
 ### 5.6 Die Guid-Altform — nur noch Audit + Resync (E4, H4) — und das Ergebnis der Aufruferprüfung
 
