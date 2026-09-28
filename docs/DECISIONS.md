@@ -131,6 +131,64 @@ to measure the real CDN; the audit harness keeps its own stub. `e2e/support/mock
 imports only types from `@playwright/test` and not the fixture, because the measure spec uses it
 too. Only the 7TV CDN is covered: `7tv.io/v4/gql` and Turnstile are neither blocked nor guarded.
 
+### 2026-09-28 — Both audit-log endpoints' response grows the unresolved-channel trio and the legacy-body-form flag
+
+**Betrifft:** `src/EmotePurge.Core/Services/IAuditLogQueryService.cs` (`AuditLogTargetEmoteSet` — three
+new optional trailing fields; `AuditLogDetail` — `LegacyBodyForm`) ·
+`src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs` (`ReadTargetEmoteSet`, `ReadBoolFlag`,
+`ReadStringArray`) · `web/src/app/core/audit/audit.model.ts` (mirrored, all optional) ·
+`web/src/app/shared/audit/audit-row.ts`, `audit-actions.ts`, `audit-log-list.ts` (two new addenda) ·
+`web/public/i18n/{en,de}.json` (`audit.details.legacyBodyForm`,
+`audit.details.unresolvedChannel{NotTracked,ActiveSetDiffers}`).
+
+Issue #273. `EmoteService.MarkDeletedInSetAsync`/`MarkRestoredInSetAsync` have written
+`unresolvedChannelName`, `unresolvedReason` and `unresolvedSevenTvEmoteIds` into a paper entry's
+`DetailsJson` since #253/#270 (restore-per-set spec 5.5, addendum N3), and `MarkDeletedAsync`/
+`MarkRestoredAsync` have written `legacyBodyForm: true` since the same spec's 5.6 (E4) — but
+`AuditLogQueryService.ListAsync` never read either back out, so both endpoints
+(`GET /api/admin/audit-log` and `GET /api/channels/{c}/audit-log`) served a `Detail` that dropped
+them silently. This closes that gap: the response DTO (both endpoints share `AuditLogEntryDto`)
+grows five fields — `AuditLogTargetEmoteSet.UnresolvedChannelName`/`UnresolvedReason`/
+`UnresolvedSevenTvEmoteIds` and `AuditLogDetail.LegacyBodyForm` — no route, no request shape and no
+existing field changes.
+
+**Read generically, same as the existing `targetIsActiveSetOfChannel`/`ownerLogin` fields — no new
+whitelisting mechanism.** The unresolved trio lands on `AuditLogTargetEmoteSet` because it is always
+written alongside `emoteSetId` (never on its own); `legacyBodyForm` lands directly on
+`AuditLogDetail` because the legacy Guid-keyed form carries no `emoteSetId` at all, so
+`AuditLogTargetEmoteSet` stays `null` on that row regardless. All five default to their
+already-established absent-field reading (`null`/`false`), so a row written before this change
+projects exactly as it did before — pinned by both a resurfaced-assertion test on the pre-existing
+legacy-row case and two new hand-built-JSON tests in `AuditLogQueryServiceTests`, plus two real
+round-trip tests in `EmoteServiceTests` that write through `EmoteService` and read back through
+`AuditLogQueryService` in the same test.
+
+**An unrecognized `unresolvedReason` drops the addendum, not the row.** `AuditLogQueryService`
+passes the string through unvalidated — the closed vocabulary
+(`UnresolvedChannelReasons.NotTracked`/`ActiveSetDiffers`) is a display decision for the frontend,
+the same way an unrecognized `Kind` or leaderboard sort code already is: `audit-row.ts`'s
+`renderUnresolvedChannel` returns `null` for anything else, and the row keeps its action, actor and
+every other addendum it has.
+
+**The ids are delivered but not displayed.** `unresolvedSevenTvEmoteIds` reaches the wire and the
+frontend model (the issue asks for the field, and carrying it costs nothing), but the audit row does
+not render a count from it: the row's own `emoteCount` in `detail` already states the quantity
+(`unresolvedSevenTvEmoteIds.length` always equals it — none of the reported ids matched in the
+missed channel), and deriving a second number from a list that could in principle be malformed would
+risk a misleading "0" rather than add information. The addendum instead just names the channel:
+"expected channel X: not tracked" / "erwarteter Kanal X: nicht getrackt", and for `activeSetDiffers`
+the same hedge the #255 dock line already uses (`ActiveEmoteSetId` can lag a 7TV set switch, F13) —
+"according to EmotePurge, not currently its active set" / "laut EmotePurge gerade nicht dessen
+aktives Set" — rather than stating it as settled fact.
+
+**Supersedes two earlier statements, left standing rather than rewritten (Regel: bestehende
+DECISIONS-Einträge werden nicht rückwirkend umgeschrieben).** The 2026-09-25 entry "Delete, restore
+and a replace's removals report per emote set" says of the channel-entry branch "the audit view
+renders it as before" — still true for that branch — but the paper entry's own new fields it goes on
+to name (`unresolvedChannelName`, `unresolvedReason`, `unresolvedSevenTvEmoteIds`) went unrendered
+until this entry; see it above for what changed. The restore-per-set spec itself carries a short,
+dated German addendum at the same two places (§4.7 no. 23, §5.5) for the same reason.
+
 ### 2026-09-27 — Import and undo wait the cancel grace before their settle read, and their docks hold back summary and unclear rows while settling
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-import.service.ts` (+ spec) — `cancel` (cancel
@@ -1472,7 +1530,9 @@ channel never goes on the wire; it only decides the live event.
 `{ emoteCount, emoteSetId, targetIsActiveSetOfChannel: true }` — the same shape the set-scoped active
 branch writes, so the audit view renders it as before. When no channel entry was written (no hit, or
 every hit found 0 rows) **or** a channel stayed unresolved, one paper entry, plus
-`unresolvedChannelName`, `unresolvedReason` and `unresolvedSevenTvEmoteIds` on a mismatch. Its
+`unresolvedChannelName`, `unresolvedReason` and `unresolvedSevenTvEmoteIds` on a mismatch. **(The
+paper entry's own new fields just named went unrendered until the 2026-09-28 entry above, #273.)**
+Its
 channel is the set owner's tracked channel (addendum N3, amended after the live verification): the
 service resolves it from the owner's Twitch id, which the owner check now returns as
 `SevenTvEmoteSetOwnershipCheckResult.OwnerTwitchUserId` (the actor's own id, or the matching grant's

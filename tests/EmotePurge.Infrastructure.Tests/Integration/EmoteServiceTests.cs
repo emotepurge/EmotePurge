@@ -976,6 +976,68 @@ public class EmoteServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task MarkRestoredInSetAsync_ExpectedChannelWithAnotherActiveSet_RoundTripsTheUnresolvedTrioThroughAuditLogQueryService()
+    {
+        // #273 end to end: the write side (this method) and the read side (AuditLogQueryService,
+        // pinned separately against hand-built JSON in AuditLogQueryServiceTests) agree on the shape
+        // MarkRestoredInSetAsync actually produces — same scenario as the sibling test above
+        // (ExpectedChannelWithAnotherActiveSet), read back through the query service instead of a
+        // raw DetailsJson substring check.
+        await using var db = fixture.CreateDbContext();
+        var channel = SeedChannel(db, "insetres_rt_lag", "4427", "set-insetres-rt-stale");
+        SeedEmote(db, channel, "7tv-irtl1", isArchived: true, archivedAt: DateTime.UtcNow.AddMinutes(-5));
+        await db.SaveChangesAsync();
+
+        await CreateService(db).MarkRestoredInSetAsync(
+            "set-insetres-rt-new", OwnerSevenTvUserId, OwnerTwitchLogin, "4427", ["7tv-irtl1"], "insetres_rt_lag", Actor);
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(AuditActions.EmotesSyncRestored, "insetres_rt_lag", null));
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(AuditLogDetail.Kinds.EmoteCount, dto.Detail!.Kind);
+
+        var targetSet = dto.Detail.TargetEmoteSet;
+        Assert.NotNull(targetSet);
+        Assert.Equal("set-insetres-rt-new", targetSet.Id);
+        Assert.False(targetSet.IsActiveSetOfChannel);
+        Assert.Null(targetSet.OwnerLogin);
+        Assert.Equal("insetres_rt_lag", targetSet.UnresolvedChannelName);
+        Assert.Equal(UnresolvedChannelReasons.ActiveSetDiffers, targetSet.UnresolvedReason);
+        Assert.Equal(["7tv-irtl1"], targetSet.UnresolvedSevenTvEmoteIds);
+    }
+
+    [Fact]
+    public async Task MarkRestoredAsync_LegacyBodyForm_RoundTripsThroughAuditLogQueryService()
+    {
+        // #273 end to end, the legacy Guid form's counterpart (restore-per-set spec 5.6, E4).
+        await using var db = fixture.CreateDbContext();
+        var channel = new Channel { ChannelName = "syncrestore_rt_legacy", TwitchChannelId = "4502", ActiveEmoteSetId = "set-rt-legacy" };
+        var emote = new Emote
+        {
+            ChannelId = channel.Id,
+            Channel = channel,
+            Name = "PogU",
+            SevenTvEmoteId = "7tv-rtlegacy1",
+            ImageUrl = "https://cdn/rtlegacy1",
+            IsArchived = true,
+            ArchivedAt = DateTime.UtcNow.AddMinutes(-5),
+        };
+        db.Channels.Add(channel);
+        db.Emotes.Add(emote);
+        await db.SaveChangesAsync();
+
+        await CreateService(db).MarkRestoredAsync("syncrestore_rt_legacy", [emote.Id], Actor);
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(AuditActions.EmotesSyncRestored, "syncrestore_rt_legacy", null));
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(AuditLogDetail.Kinds.EmoteCount, dto.Detail!.Kind);
+        Assert.Equal(1, dto.Detail.Count);
+        Assert.True(dto.Detail.LegacyBodyForm);
+        Assert.Null(dto.Detail.TargetEmoteSet);
+    }
+
+    [Fact]
     public async Task MarkRestoredInSetAsync_BlockedExpectedChannel_IsNotTracked_WithoutTouchingItsRows()
     {
         await using var db = fixture.CreateDbContext();

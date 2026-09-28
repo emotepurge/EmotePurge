@@ -380,4 +380,202 @@ describe('toAuditRows', () => {
       expect(row.targetSet).toBeNull();
     });
   });
+
+  // #273/restore-per-set spec 5.6 step 3: the legacy Guid-keyed form of sync-deleted/sync-restored
+  // marks its bare emoteCount row with legacyBodyForm, rendered as a fourth, independent addendum.
+  describe('legacyForm (#273)', () => {
+    it('is null when the entry carries no legacyBodyForm flag', () => {
+      const [row] = toAuditRows(
+        [entry({ detail: { kind: 'emoteCount', count: 6, text: null } })],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.legacyForm).toBeNull();
+    });
+
+    // A row written before #273: the key is simply absent from the wire payload, which the
+    // `AuditLogDetail` type reads no differently from an explicit `false`.
+    it('is null for an entry with no detail at all', () => {
+      const [row] = toAuditRows([entry({ detail: null })], 'de-DE', IDENTITY_TRANSLATE);
+
+      expect(row.legacyForm).toBeNull();
+    });
+
+    it('shows the legacy-body-form addendum when the flag is set', () => {
+      const [row] = toAuditRows(
+        [
+          entry({
+            action: 'emotes.syncRestored',
+            detail: { kind: 'emoteCount', count: 3, text: null, legacyBodyForm: true },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.detail).toEqual({ key: 'audit.details.emoteCount.other', params: { count: 3 } });
+      expect(row.legacyForm).toEqual({ key: 'audit.details.legacyBodyForm', params: {} });
+    });
+  });
+
+  // #273/restore-per-set spec 5.5 addendum N3: the set-scoped report's paper entry can name a
+  // channel it expected to hit (expectedChannelName, spec E18) but did not.
+  describe('unresolvedChannel (#273)', () => {
+    it('is null when the entry names no target set at all', () => {
+      const [row] = toAuditRows(
+        [entry({ detail: { kind: 'emoteCount', count: 6, text: null } })],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.unresolvedChannel).toBeNull();
+    });
+
+    it('is null for a target set naming no unresolved channel', () => {
+      const [row] = toAuditRows(
+        [
+          entry({
+            detail: {
+              kind: 'emoteCount',
+              count: 4,
+              text: null,
+              targetEmoteSet: { id: 'set-a', isActiveSetOfChannel: true, ownerLogin: null },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.unresolvedChannel).toBeNull();
+    });
+
+    it('shows the not-tracked form, naming the channel without a count', () => {
+      const [row] = toAuditRows(
+        [
+          entry({
+            channelName: null,
+            detail: {
+              kind: 'emoteCount',
+              count: 3,
+              text: null,
+              targetEmoteSet: {
+                id: 'set-b',
+                isActiveSetOfChannel: null,
+                ownerLogin: 'handofblood',
+                unresolvedChannelName: 'strangertv',
+                unresolvedReason: 'notTracked',
+                unresolvedSevenTvEmoteIds: ['e1', 'e2', 'e3'],
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      // No `count` param: the row's own `detail` already names the quantity (`emoteCount: 3`
+      // above), and `unresolvedSevenTvEmoteIds.length` would only repeat it.
+      expect(row.unresolvedChannel).toEqual({
+        key: 'audit.details.unresolvedChannelNotTracked',
+        params: { channelName: 'strangertv' },
+      });
+      // Coexists with the owner form of the target-set addendum — a paper entry without a tracked
+      // owner channel names both the owner and the channel the report missed.
+      expect(row.targetSet).toEqual({
+        key: 'audit.details.targetEmoteSetForOwner',
+        params: { setId: 'set-b', ownerLogin: 'handofblood' },
+      });
+    });
+
+    it('shows the active-set-differs form', () => {
+      const [row] = toAuditRows(
+        [
+          entry({
+            action: 'emotes.syncRestored',
+            detail: {
+              kind: 'emoteCount',
+              count: 1,
+              text: null,
+              targetEmoteSet: {
+                id: 'set-c',
+                isActiveSetOfChannel: false,
+                ownerLogin: null,
+                unresolvedChannelName: 'othertv',
+                unresolvedReason: 'activeSetDiffers',
+                unresolvedSevenTvEmoteIds: ['e9'],
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.unresolvedChannel).toEqual({
+        key: 'audit.details.unresolvedChannelActiveSetDiffers',
+        params: { channelName: 'othertv' },
+      });
+    });
+
+    it('names the channel even when unresolvedSevenTvEmoteIds is missing', () => {
+      // The field is delivered for #273's own sake but never read by this function (no count is
+      // derived from it any more) — a row missing or malformed on that one field must not lose the
+      // addendum, unlike a genuinely missing unresolvedChannelName/unresolvedReason.
+      const [row] = toAuditRows(
+        [
+          entry({
+            detail: {
+              kind: 'emoteCount',
+              count: 2,
+              text: null,
+              targetEmoteSet: {
+                id: 'set-e',
+                isActiveSetOfChannel: true,
+                ownerLogin: null,
+                unresolvedChannelName: 'othertv',
+                unresolvedReason: 'notTracked',
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.unresolvedChannel).toEqual({
+        key: 'audit.details.unresolvedChannelNotTracked',
+        params: { channelName: 'othertv' },
+      });
+    });
+
+    it('drops the addendum for an unresolvedReason this build does not recognize', () => {
+      // Forward-compatibility case, same degradation as an unrecognized detail kind or leaderboard
+      // sort code: a build older than the backend that wrote the row shows nothing here.
+      const [row] = toAuditRows(
+        [
+          entry({
+            detail: {
+              kind: 'emoteCount',
+              count: 2,
+              text: null,
+              targetEmoteSet: {
+                id: 'set-d',
+                isActiveSetOfChannel: false,
+                ownerLogin: null,
+                unresolvedChannelName: 'othertv',
+                unresolvedReason: 'somethingNew',
+                unresolvedSevenTvEmoteIds: ['e1', 'e2'],
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.unresolvedChannel).toBeNull();
+    });
+  });
 });

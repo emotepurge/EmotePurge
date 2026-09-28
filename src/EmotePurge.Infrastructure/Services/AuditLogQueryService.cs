@@ -39,6 +39,20 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     // Guid-keyed form (spec 5.6, E4) writes neither property — it has no set to name.
     private const string EmoteSetIdProperty = "emoteSetId";
 
+    // The set-scoped report's unresolved-expected-channel trio (restore-per-set spec 5.5, addendum
+    // N3): written together by EmoteService.BuildOwnerPaperDetails/BuildOwnerChannelPaperDetails
+    // whenever expectedChannelName (spec E18) named a channel the report did not hit. Never written
+    // by the import ladder, so these simply stay absent on that shape's payloads — read generically
+    // here, same as the two properties above.
+    private const string UnresolvedChannelNameProperty = "unresolvedChannelName";
+    private const string UnresolvedReasonProperty = "unresolvedReason";
+    private const string UnresolvedSevenTvEmoteIdsProperty = "unresolvedSevenTvEmoteIds";
+
+    // The legacy Guid-keyed form's own marker (restore-per-set spec 5.6, E4): written by
+    // EmoteService.MarkDeletedAsync/MarkRestoredAsync alongside a bare emoteCount, never alongside
+    // "emoteSetId" — that form has no set to name. Missing on every row written before #273.
+    private const string LegacyBodyFormProperty = "legacyBodyForm";
+
     // The closed vocabulary the endpoint accepts for that discriminator (EmoteEndpoints, F5.1/F1).
     // Both channel-shaped kinds render as ImportedFromChannel: what the row has to preserve is that
     // the emotes came from a channel and which one, not through which of the two read paths we saw
@@ -160,7 +174,12 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
             // same as the import ladder above, so a legacy-body row (no such property, spec 5.6) or an
             // unrelated action that also happens to carry a bare emoteCount projects with
             // TargetEmoteSet null, exactly as before.
-            return new AuditLogDetail(AuditLogDetail.Kinds.EmoteCount, emoteCount, null, ReadTargetEmoteSet(root, EmoteSetIdProperty));
+            return new AuditLogDetail(
+                AuditLogDetail.Kinds.EmoteCount,
+                emoteCount,
+                null,
+                ReadTargetEmoteSet(root, EmoteSetIdProperty),
+                ReadBoolFlag(root, LegacyBodyFormProperty));
         }
 
         if (TryReadCount(root, AuditLogDetail.Kinds.RemovedEntries, out var removedEntries))
@@ -261,7 +280,57 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
                 ? ownerElement.GetString()
                 : null;
 
-        return new AuditLogTargetEmoteSet(id, isActiveSetOfChannel, ownerLogin);
+        // Addendum N3 (restore-per-set spec 5.5): the unresolved-expected-channel trio, absent on
+        // every shape but the set-scoped report's paper entry — TryGetProperty simply misses on an
+        // import-ladder row, same as ownerLogin above.
+        string? unresolvedChannelName = root.TryGetProperty(UnresolvedChannelNameProperty, out var unresolvedChannelNameElement)
+            && unresolvedChannelNameElement.ValueKind == JsonValueKind.String
+                ? unresolvedChannelNameElement.GetString()
+                : null;
+
+        string? unresolvedReason = root.TryGetProperty(UnresolvedReasonProperty, out var unresolvedReasonElement)
+            && unresolvedReasonElement.ValueKind == JsonValueKind.String
+                ? unresolvedReasonElement.GetString()
+                : null;
+
+        var unresolvedSevenTvEmoteIds = ReadStringArray(root, UnresolvedSevenTvEmoteIdsProperty);
+
+        return new AuditLogTargetEmoteSet(
+            id,
+            isActiveSetOfChannel,
+            ownerLogin,
+            unresolvedChannelName,
+            unresolvedReason,
+            unresolvedSevenTvEmoteIds);
+    }
+
+    /// <summary>Reads a JSON boolean flag, degrading to <c>false</c> — not a throw — on anything but
+    /// a literal <c>true</c>: a missing property (every row written before this flag existed) and an
+    /// unexpectedly-typed one read the same way.</summary>
+    private static bool ReadBoolFlag(JsonElement root, string propertyName) =>
+        root.TryGetProperty(propertyName, out var element) && element.ValueKind == JsonValueKind.True;
+
+    /// <summary>Reads a JSON array of strings, degrading to <c>null</c> — not a throw — on a missing
+    /// property, a non-array value, or an array holding anything but strings.</summary>
+    private static IReadOnlyList<string>? ReadStringArray(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var element) || element.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var values = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String || item.GetString() is not { } value)
+            {
+                return null;
+            }
+
+            values.Add(value);
+        }
+
+        return values;
     }
 
     /// <summary>

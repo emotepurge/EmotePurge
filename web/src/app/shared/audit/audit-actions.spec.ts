@@ -5,7 +5,9 @@ import {
   CHANNEL_SCOPED_ACTIONS,
   CHANNELLESS_ACTIONS,
   DETAIL_KEYS,
+  LEGACY_BODY_FORM_KEY,
   TARGET_EMOTE_SET_KEYS,
+  UNRESOLVED_CHANNEL_KEYS,
 } from './audit-actions';
 import de from '../../../../public/i18n/de.json';
 import en from '../../../../public/i18n/en.json';
@@ -75,6 +77,21 @@ describe('audit action tables', () => {
 
   it.each(Object.values(TARGET_EMOTE_SET_KEYS))(
     'translates the target-set addendum key %s in both locales (spec 8.10)',
+    (key) => {
+      expect(lookup(de, key)).toBeTypeOf('string');
+      expect(lookup(en, key)).toBeTypeOf('string');
+    },
+  );
+
+  it('translates the legacy-body-form addendum key in both locales (#273)', () => {
+    expect(lookup(de, LEGACY_BODY_FORM_KEY)).toBeTypeOf('string');
+    expect(lookup(en, LEGACY_BODY_FORM_KEY)).toBeTypeOf('string');
+  });
+
+  // Plain strings, not { one, other } pairs (unlike DETAIL_KEYS above): the addendum names a
+  // channel, not a quantity — see UNRESOLVED_CHANNEL_KEYS's own doc.
+  it.each(Object.values(UNRESOLVED_CHANNEL_KEYS))(
+    'translates the unresolved-channel addendum key %s in both locales (#273)',
     (key) => {
       expect(lookup(de, key)).toBeTypeOf('string');
       expect(lookup(en, key)).toBeTypeOf('string');

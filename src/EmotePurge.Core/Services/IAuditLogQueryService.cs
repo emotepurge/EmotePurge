@@ -27,7 +27,31 @@ namespace EmotePurge.Core.Services;
 /// The Twitch login of the set's owner (the set-centric endpoint's own account, or the matching
 /// editor grant's channel) — <c>null</c> for the channel-scoped endpoint, which never resolves one.
 /// </param>
-public record AuditLogTargetEmoteSet(string Id, bool? IsActiveSetOfChannel, string? OwnerLogin);
+/// <param name="UnresolvedChannelName">
+/// The normalized channel name the client expected the set-scoped report to hit
+/// (<c>expectedChannelName</c>, spec E18) but did not — <c>null</c> whenever every channel the
+/// client expected was among the hit channels, or no channel was expected at all. Exclusively a
+/// set-scoped sync-deleted/sync-restored field (restore-per-set spec 5.5); the import ladder never
+/// writes one. Always accompanied by <see cref="UnresolvedReason"/> and
+/// <see cref="UnresolvedSevenTvEmoteIds"/> — the three are written together or not at all.
+/// </param>
+/// <param name="UnresolvedReason">
+/// Why <see cref="UnresolvedChannelName"/> was not hit — one of
+/// <see cref="UnresolvedChannelReasons"/> (<c>"notTracked"</c>/<c>"activeSetDiffers"</c>), read
+/// through as-is rather than validated against that closed vocabulary here: an unrecognized value
+/// is a display decision for the consumer, the same way an unrecognized <c>Kind</c> already is.
+/// </param>
+/// <param name="UnresolvedSevenTvEmoteIds">
+/// The reported 7TV emote ids, verbatim — none of them was matched in
+/// <see cref="UnresolvedChannelName"/>, since that channel was never a hit.
+/// </param>
+public record AuditLogTargetEmoteSet(
+    string Id,
+    bool? IsActiveSetOfChannel,
+    string? OwnerLogin,
+    string? UnresolvedChannelName = null,
+    string? UnresolvedReason = null,
+    IReadOnlyList<string>? UnresolvedSevenTvEmoteIds = null);
 
 /// <summary>
 /// The renderable part of an entry's <c>DetailsJson</c>, reduced to a closed set of shapes.
@@ -43,7 +67,18 @@ public record AuditLogTargetEmoteSet(string Id, bool? IsActiveSetOfChannel, stri
 /// to every consumer until someone adds it to <see cref="Kinds"/> on purpose.
 /// </para>
 /// </summary>
-public record AuditLogDetail(string Kind, long? Count, string? Text, AuditLogTargetEmoteSet? TargetEmoteSet = null)
+/// <param name="LegacyBodyForm">
+/// <c>true</c> for an <see cref="Kinds.EmoteCount"/> row written by the channel-bound Guid-keyed
+/// legacy form of <c>sync-deleted</c>/<c>sync-restored</c> (restore-per-set spec 5.6, E4) — never
+/// alongside a <see cref="TargetEmoteSet"/>, since that form carries no set of its own. Defaults to
+/// <c>false</c> so every row written before this field existed still projects exactly as before.
+/// </param>
+public record AuditLogDetail(
+    string Kind,
+    long? Count,
+    string? Text,
+    AuditLogTargetEmoteSet? TargetEmoteSet = null,
+    bool LegacyBodyForm = false)
 {
     /// <summary>The recognized <see cref="Kind"/> values. Anything else is dropped.</summary>
     public static class Kinds

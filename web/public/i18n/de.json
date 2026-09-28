@@ -615,7 +615,10 @@
       },
       "targetEmoteSet": "in Set {{setId}}",
       "targetEmoteSetNotActive": "in Set {{setId}} (nicht das aktive Set)",
-      "targetEmoteSetForOwner": "in Set {{setId}} für {{ownerLogin}}"
+      "targetEmoteSetForOwner": "in Set {{setId}} für {{ownerLogin}}",
+      "legacyBodyForm": "(alte Form)",
+      "unresolvedChannelNotTracked": "erwarteter Kanal {{channelName}}: nicht getrackt",
+      "unresolvedChannelActiveSetDiffers": "erwarteter Kanal {{channelName}}: laut EmotePurge gerade nicht dessen aktives Set"
     }
   },
   "emoteCount": {

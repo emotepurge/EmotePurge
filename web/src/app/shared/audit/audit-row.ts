@@ -1,4 +1,10 @@
-import { ACTION_KEYS, DETAIL_KEYS, TARGET_EMOTE_SET_KEYS } from './audit-actions';
+import {
+  ACTION_KEYS,
+  DETAIL_KEYS,
+  LEGACY_BODY_FORM_KEY,
+  TARGET_EMOTE_SET_KEYS,
+  UNRESOLVED_CHANNEL_KEYS,
+} from './audit-actions';
 import { AuditLogDetail, AuditLogEntry } from '../../core/audit/audit.model';
 import { pluralKey } from '../../core/i18n/plural';
 import {
@@ -38,6 +44,16 @@ export interface AuditRow {
    *  from `AuditLogDetail.targetEmoteSet`, never from the row's action or kind. `null` whenever the
    *  entry names no target set at all. */
   targetSet: RenderedDetail | null;
+  /** The legacy-body-form addendum (#273, restore-per-set spec 5.6 step 3) — a third, independent
+   *  line segment, `null` unless `AuditLogDetail.legacyBodyForm` is `true`. Never set alongside
+   *  `targetSet`: the legacy Guid-keyed form has no set of its own. */
+  legacyForm: RenderedDetail | null;
+  /** The unresolved-expected-channel addendum (#273, restore-per-set spec 5.5 addendum N3) — a
+   *  fourth, independent line segment, present whenever the entry names a channel a set-scoped
+   *  `sync-deleted`/`sync-restored` report expected to hit but did not. Can coexist with `targetSet`
+   *  showing the owner form: a paper entry without a tracked owner channel names both the set's
+   *  owner *and* the channel the report missed. */
+  unresolvedChannel: RenderedDetail | null;
 }
 
 /**
@@ -71,6 +87,8 @@ export function toAuditRows(
     channelName: entry.channelName,
     detail: renderDetail(entry.detail, translate),
     targetSet: renderTargetSet(entry.detail),
+    legacyForm: renderLegacyForm(entry.detail),
+    unresolvedChannel: renderUnresolvedChannel(entry.detail),
   }));
 }
 
@@ -149,4 +167,52 @@ function renderTargetSet(detail: AuditLogDetail | null): RenderedDetail | null {
     return { key: TARGET_EMOTE_SET_KEYS.notActive, params: { setId } };
   }
   return { key: TARGET_EMOTE_SET_KEYS.plain, params: { setId } };
+}
+
+/**
+ * The legacy-body-form addendum (#273, restore-per-set spec 5.6 step 3) — flags a row written by
+ * the channel-bound Guid-keyed legacy form of `sync-deleted`/`sync-restored`, which carries no set
+ * of its own (`renderTargetSet` above always returns `null` for the same row). A row from before
+ * this field existed has `legacyBodyForm` simply absent, which reads the same as an explicit
+ * `false` — no marker, exactly as it rendered before #273.
+ */
+function renderLegacyForm(detail: AuditLogDetail | null): RenderedDetail | null {
+  return detail?.legacyBodyForm ? { key: LEGACY_BODY_FORM_KEY, params: {} } : null;
+}
+
+/**
+ * The unresolved-expected-channel addendum (#273, restore-per-set spec 5.5 addendum N3) — present
+ * whenever a set-scoped `sync-deleted`/`sync-restored` paper entry names a channel it expected to
+ * hit (`expectedChannelName`, spec E18) but did not. `unresolvedChannelName` and `unresolvedReason`
+ * are written together or not at all (`EmoteService.BuildOwnerPaperDetails`/
+ * `BuildOwnerChannelPaperDetails`), so either both are present or the addendum is skipped entirely
+ * — never a half-populated line. An `unresolvedReason` outside the known two degrades to `null`,
+ * the same forward-compatible drop as an unrecognized detail `kind` or leaderboard sort code: a
+ * build older than the backend that wrote the row shows nothing here rather than a raw code.
+ *
+ * No count parameter: `unresolvedSevenTvEmoteIds` is delivered (kept on the wire and the model for
+ * #273's own sake) but not read here — the row's own `emoteCount` in `detail` already names the
+ * quantity, `unresolvedSevenTvEmoteIds.length` always equals it (none of the reported ids matched
+ * in the missed channel), and re-deriving a second, redundant count from a list that could in
+ * principle be absent or malformed (`?? 0`) risked a misleading "0" rather than adding information.
+ */
+function renderUnresolvedChannel(detail: AuditLogDetail | null): RenderedDetail | null {
+  const targetSet = detail?.targetEmoteSet;
+  const channelName = targetSet?.unresolvedChannelName;
+  const reason = targetSet?.unresolvedReason;
+  if (channelName == null || reason == null) {
+    return null;
+  }
+
+  const key =
+    reason === 'notTracked'
+      ? UNRESOLVED_CHANNEL_KEYS.notTracked
+      : reason === 'activeSetDiffers'
+        ? UNRESOLVED_CHANNEL_KEYS.activeSetDiffers
+        : null;
+  if (key === null) {
+    return null;
+  }
+
+  return { key, params: { channelName } };
 }
