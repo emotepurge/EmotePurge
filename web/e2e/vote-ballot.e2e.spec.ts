@@ -378,7 +378,11 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
     await mockSevenTvGql(page, (request) => {
       if (request.query.includes('mutation RemoveEmote')) {
         removeSetId = request.variables['setId'] as string;
-        return { data: {} };
+        return {
+          data: {
+            emoteSets: { emoteSet: { removeEmote: { id: request.variables['setId'] } } },
+          },
+        };
       }
       // #227: the vote page now reads its target set's live entries before the run starts
       // (readLiveAliasesFromSet) — answered with the ballot's one live entry so that read succeeds
@@ -574,7 +578,11 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
     await mockSevenTvGql(page, (request) => {
       if (request.query.includes('mutation RemoveEmote')) {
         removeVariables = request.variables as { setId?: string; emoteId?: string };
-        return { data: {} };
+        return {
+          data: {
+            emoteSets: { emoteSet: { removeEmote: { id: request.variables['setId'] } } },
+          },
+        };
       }
       entriesReadSetIds.push(request.variables['id'] as string);
       return {
@@ -635,7 +643,11 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
         // RemoveEmote's own id variable is `emoteId`, not `id` (seven-tv-delete.service.ts's
         // REMOVE_EMOTE_MUTATION) — the entries-read query above is the one that uses `id`.
         removedIds.push(request.variables['emoteId'] as string);
-        return { data: {} };
+        return {
+          data: {
+            emoteSets: { emoteSet: { removeEmote: { id: request.variables['setId'] } } },
+          },
+        };
       }
       return {
         data: {
@@ -709,7 +721,11 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
     await mockSevenTvGql(page, (request) => {
       if (request.query.includes('mutation RemoveEmote')) {
         removeCalled = true;
-        return { data: {} };
+        return {
+          data: {
+            emoteSets: { emoteSet: { removeEmote: { id: request.variables['setId'] } } },
+          },
+        };
       }
       return {
         data: {

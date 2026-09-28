@@ -1482,7 +1482,9 @@ export function sevenTvGqlRequestKind(request: SevenTvGqlRequest): SevenTvGqlReq
  * import, delete and restore alike). The handler sees each call's parsed body plus a zero-based
  * call index (the run engine issues one request per queued row, in order), and returns the GQL
  * response body to answer with; always a 200 with either `data` or `errors` — 7TV's own contract,
- * which is what `SevenTvRunEngine` reads its outcome from rather than the HTTP status.
+ * which is what `SevenTvRunEngine` reads its outcome from rather than the HTTP status. A mutation
+ * counts as applied only when `data` carries its result (`emoteSets.emoteSet.removeEmote`,
+ * `.addEmote` or `.updateEmoteAlias`, #285) — a bare `{ data: {} }` leaves the row unclear.
  *
  * Sets `ep_7tv_write_token` in `sessionStorage` via `addInitScript` (R14) so the write flow never
  * hits the token prompt — call before `page.goto`, same as `installLiveStub`.
