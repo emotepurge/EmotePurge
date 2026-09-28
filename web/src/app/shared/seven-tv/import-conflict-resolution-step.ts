@@ -51,12 +51,10 @@ export interface ConflictStepRow {
 
 /** A row focus the step still owes because the row was not rendered when focus was asked for it —
  *  see `ImportConflictResolutionStep.focusRow`. `handoff` marks the initial hand-off on open, the
- *  only focus that does not count as the reader settling on a row; `from` is where focus was when
- *  the target was set, so that landing can tell "nobody moved it since" from "the user moved it". */
+ *  only focus that does not count as the reader settling on a row. */
 interface PendingFocus {
   index: number;
   handoff: boolean;
-  from: Element | null;
 }
 
 /** One sentence of the apply button's lock reason: a rule and the source names it involves. */
@@ -938,7 +936,6 @@ export class ImportConflictResolutionStep {
     this.pendingFocus = {
       index,
       handoff,
-      from: this.host.nativeElement.ownerDocument.activeElement,
     };
     this.landPendingFocus();
     if (this.pendingFocus !== null) {
@@ -953,7 +950,7 @@ export class ImportConflictResolutionStep {
     if (target === null) {
       return;
     }
-    if (target.index >= this.rows().length || !this.mayMoveFocus(target)) {
+    if (target.index >= this.rows().length || !this.mayMoveFocus()) {
       this.pendingFocus = null;
       return;
     }
@@ -972,20 +969,17 @@ export class ImportConflictResolutionStep {
     }
   }
 
-  /** Whether the step may still move focus: it is nowhere (on `body`, e.g. once the first step's
-   *  button was removed, or on a row the viewport just recycled away), already inside the step, or
-   *  still exactly where it was when the target was set — some browsers leave focus on the dialog's
-   *  own Cancel button when a click on "resolve" does not focus that button, and nobody has chosen
-   *  anything there since. Anywhere else, the user moved it and the step leaves it alone. */
-  private mayMoveFocus(target: PendingFocus): boolean {
+  /** Whether the step may still move focus: focus is nowhere, on an element that encloses the
+   *  step, or already inside it. "Encloses" covers `body` (the first step's focused button was
+   *  removed, or the viewport recycled the focused row away) and the dialog's own `tabindex="-1"`
+   *  container: on macOS Safari and Firefox (and iOS Safari on tap) a click does not focus the
+   *  button it hits but its nearest focusable ancestor, so opening this step by mouse leaves focus
+   *  on that container. Anywhere else — an unrelated element outside the step — the user put it
+   *  there, and the step leaves it alone. */
+  private mayMoveFocus(): boolean {
     const host = this.host.nativeElement;
     const active = host.ownerDocument.activeElement;
-    return (
-      active === null ||
-      active === host.ownerDocument.body ||
-      active === target.from ||
-      host.contains(active)
-    );
+    return active === null || active.contains(host) || host.contains(active);
   }
 
   /** Whether the row for this key is among the rows the viewport renders — see `renderedRange`. */

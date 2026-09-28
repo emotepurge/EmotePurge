@@ -584,6 +584,29 @@ describe('ImportConflictResolutionStep', () => {
       expect(document.activeElement).toBe(document.body);
     });
 
+    it('still hands focus to the first row when focus sits on a focusable ancestor of the step', async () => {
+      // Stands in for the dialog's own tabindex="-1" container: on macOS Safari/Firefox a click on
+      // the button that opens this step focuses that container instead of the button.
+      const wrapper = document.createElement('div');
+      wrapper.tabIndex = -1;
+      host.parentElement!.insertBefore(wrapper, host);
+      wrapper.appendChild(host);
+      fixture.componentRef.setInput('group', 'nameCollision');
+      fixture.componentRef.setInput(
+        'rows',
+        collisionStepRows([collision('a', 'Kappa'), collision('b', 'Pog')], new Map()),
+      );
+      fixture.componentRef.setInput('decisions', new Map());
+      fixture.detectChanges();
+      expect(rowElements()).toHaveLength(0);
+
+      wrapper.focus();
+      expect(document.activeElement).toBe(wrapper);
+      await settle(() => document.activeElement === rowAt(0));
+
+      expect(document.activeElement).toBe(rowAt(0));
+    });
+
     it('leaves focus alone once the user moves it outside the step before the hand-off lands', async () => {
       const outside = document.createElement('button');
       document.body.appendChild(outside);
