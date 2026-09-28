@@ -306,6 +306,12 @@ export function startRestoreFlow(
             // start in that window. Re-checked here, right before the only remaining call that
             // actually starts anything — same reasoning as the check above (#256 contract P2,
             // Festlegung Nr. 8): a confirmed start finding nothing to start notes why.
+            //
+            // Deliberately `activeRun`, not `startLocked` (#280), here and at every other confirmed
+            // start point: this restore's own `startCheckPending` is still `true` inside this
+            // handler (it is released by `finalize`, after it), so `startLocked` would refuse the
+            // very run being started — and `noteRefusedStart` names nothing without an
+            // `activeClaim`, so that refusal would vanish silently. Only a real run blocks here.
             if (deps.arbiter.activeRun() !== null) {
               deps.arbiter.noteRefusedStart('restore');
               return;

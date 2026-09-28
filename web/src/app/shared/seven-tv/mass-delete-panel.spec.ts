@@ -2548,6 +2548,19 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(fixture.componentInstance['abortNotice']()).toBeNull();
   });
 
+  // #280: the same silent guard while a confirmed restore or undo is still being checked before its
+  // start — no run holds the arbiter yet, but the button is locked by `startLocked` all the same.
+  it('does not even open the confirmation while a confirmed restore or undo is still being checked', () => {
+    (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).otherStartPending.set(true);
+
+    fixture.componentInstance['openConfirm']();
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toBeNull();
+  });
+
   // Opus review P3-2: the third way deleteService.startDelete refuses in silence. A 401 from any
   // 7TV call behind the open confirmation clears the stored token, and the engine then declines
   // without a word — with the dock claim of this round holding an empty dock over it.

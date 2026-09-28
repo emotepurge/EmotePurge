@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { signal, WritableSignal } from '@angular/core';
+import { computed, signal, WritableSignal } from '@angular/core';
 import { firstValueFrom, Observable, of, Subject, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -161,6 +161,8 @@ interface Harness {
   startImport: ReturnType<typeof vi.fn>;
   hasToken: WritableSignal<boolean>;
   activeRun: WritableSignal<SevenTvRunKind | null>;
+  /** The arbiter's `startPending` (#280) — a confirmed restore/undo still being checked. */
+  startPending: WritableSignal<boolean>;
   noteRefusedStart: ReturnType<typeof vi.fn>;
 }
 
@@ -225,7 +227,15 @@ function setup(): Harness {
 
   const activeRun = signal<SevenTvRunKind | null>(null);
   const noteRefusedStart = vi.fn();
-  const arbiter = { activeRun, noteRefusedStart } as unknown as SevenTvRunArbiter;
+  // #280: a confirmed restore/undo still being checked before its start — the arbiter's
+  // `startPending`; `startLocked` derived from both the way the real arbiter derives it.
+  const startPending = signal(false);
+  const arbiter = {
+    activeRun,
+    noteRefusedStart,
+    startPending,
+    startLocked: computed(() => activeRun() !== null || startPending()),
+  } as unknown as SevenTvRunArbiter;
 
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const dialog = { open: dialogOpen } as unknown as Dialog;
@@ -251,6 +261,7 @@ function setup(): Harness {
     startImport,
     hasToken,
     activeRun,
+    startPending,
     noteRefusedStart,
   };
 }
@@ -363,6 +374,20 @@ describe('startImportFlow', () => {
     activeRun.set('restore');
 
     expect(data.runBlocked()).toBe(true);
+  });
+
+  // #280: the executor locks for the pre-run wait too, not only for a run that already exists.
+  it('blocks the run while a confirmed restore or undo is still being checked before its start', () => {
+    const { deps, dialogOpen, startPending } = setup();
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+    const data = confirmData(dialogOpen);
+    expect(data.runBlocked()).toBe(false);
+
+    startPending.set(true);
+    expect(data.runBlocked()).toBe(true);
+
+    startPending.set(false);
+    expect(data.runBlocked()).toBe(false);
   });
 
   it('starts the import immediately when confirmed and a 7TV token is already stored', () => {

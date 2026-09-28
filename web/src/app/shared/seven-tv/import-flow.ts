@@ -475,7 +475,7 @@ export function startImportFlow(
     target: targetState.asReadonly(),
     retry: load,
     reloadLive,
-    runBlocked: computed(() => deps.arbiter.activeRun() !== null),
+    runBlocked: computed(() => deps.arbiter.startLocked()),
     httpClient: deps.httpClient,
   });
 

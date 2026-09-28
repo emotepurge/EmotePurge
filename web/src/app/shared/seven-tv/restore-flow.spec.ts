@@ -264,10 +264,12 @@ function setup(): Harness {
   const activeRun = signal<SevenTvRunKind | null>(null);
   const noteRefusedStart = vi.fn();
   const otherStartPending = signal(false);
+  const startPending = computed(() => startCheckPending() || otherStartPending());
   const arbiter = {
     activeRun,
     noteRefusedStart,
-    startPending: computed(() => startCheckPending() || otherStartPending()),
+    startPending,
+    startLocked: computed(() => activeRun() !== null || startPending()),
   } as unknown as SevenTvRunArbiter;
 
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
@@ -1116,6 +1118,29 @@ describe('startRestoreFlow', () => {
         expect(h.dialogOpen).not.toHaveBeenCalled();
       },
     );
+
+    // The invariant behind every confirmed start point reading `activeRun`, not `startLocked`: at
+    // the moment the run starts, this restore's own start check is still pending — `startLocked`
+    // would refuse the very run being confirmed, and silently, since no claim exists to name.
+    it('still starts the confirmed restore while its own start check is pending at that moment', () => {
+      const { deps, dialogOpen, httpPost, startRestore, startCheckPending, noteRefusedStart } =
+        setup();
+      const pendingAtStart: boolean[] = [];
+      const lockedAtStart: boolean[] = [];
+      startRestore.mockImplementation(() => {
+        pendingAtStart.push(startCheckPending());
+        lockedAtStart.push(deps.arbiter.startLocked());
+      });
+      httpPost.mockReturnValueOnce(of(emoteSetPage())).mockReturnValueOnce(of(emoteSetPage()));
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      expect(pendingAtStart).toEqual([true]);
+      expect(lockedAtStart).toEqual([true]);
+      expect(noteRefusedStart).not.toHaveBeenCalled();
+    });
 
     it('releases the start check when the confirm-time check fails', () => {
       const { deps, dialogOpen, httpPost, startRestore, startCheckPending } = setup();

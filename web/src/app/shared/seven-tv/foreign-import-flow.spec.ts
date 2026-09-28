@@ -101,7 +101,10 @@ function setup(): Harness {
       httpClient,
       tokenService: { hasToken: signal(true) } as unknown as SevenTvTokenService,
       importService: { startImport } as unknown as SevenTvImportService,
-      arbiter: { activeRun: signal<SevenTvRunKind | null>(null) } as unknown as SevenTvRunArbiter,
+      arbiter: {
+        activeRun: signal<SevenTvRunKind | null>(null),
+        startLocked: signal(false),
+      } as unknown as SevenTvRunArbiter,
     },
     dialogOpen,
     startImport,

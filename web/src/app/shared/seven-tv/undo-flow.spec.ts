@@ -195,6 +195,9 @@ function setup(): Harness {
         activeRun,
         noteRefusedStart,
         startPending: computed(() => startCheckPending() || otherStartPending()),
+        startLocked: computed(
+          () => activeRun() !== null || startCheckPending() || otherStartPending(),
+        ),
       } as unknown as SevenTvRunArbiter,
       firstReadPending,
       destroyRef: destroyRef as unknown as DestroyRef,
@@ -572,6 +575,25 @@ describe('startUndoFlow', () => {
 
       expect(h.startUndo).toHaveBeenCalledTimes(1);
       expect(h.startCheckPending()).toBe(false);
+    });
+
+    // Same invariant as the restore's (see `restore-flow.spec.ts`): the confirmed start re-checks
+    // `activeRun`, because its own freshness read still holds `startCheckPending` at that moment.
+    it('still starts the confirmed undo while its own start check is pending at that moment', () => {
+      const h = setup();
+      const pendingAtStart: boolean[] = [];
+      const lockedAtStart: boolean[] = [];
+      h.startUndo.mockImplementation(() => {
+        pendingAtStart.push(h.startCheckPending());
+        lockedAtStart.push(h.deps.arbiter.startLocked());
+      });
+
+      confirmed(h, [cand('1')], fullState('1'));
+
+      expect(h.startUndo).toHaveBeenCalledTimes(1);
+      expect(pendingAtStart).toEqual([true]);
+      expect(lockedAtStart).toEqual([true]);
+      expect(h.noteRefusedStart).not.toHaveBeenCalled();
     });
 
     it("starts nothing — no prompt, no read — while a confirmed restore's check is still out", () => {

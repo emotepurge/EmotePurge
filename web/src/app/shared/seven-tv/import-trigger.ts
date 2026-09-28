@@ -208,6 +208,14 @@ export class ImportTrigger {
   );
 
   protected openDialog(): void {
+    // Same shape, same reason as `MassDeletePanel.openConfirm`'s guard: the button is disabled while
+    // `startLocked` holds (a run running or settling, or a confirmed restore/undo still being
+    // checked before its start, #280), and this catches the click that outraces that lock — CDK
+    // hands focus back to this very button when a restore or undo confirmation closes. Silent:
+    // nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2).
+    if (this.arbiter.startLocked()) {
+      return;
+    }
     // Frozen here, at the click — never read again from the live inputs below, so a channel switch
     // (or a set switch, T4.5) while a dialog further down either chain is still open cannot
     // retarget what gets read, validated or restored/imported (plan §1.5).

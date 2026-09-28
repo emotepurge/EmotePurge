@@ -7,8 +7,9 @@
  * radiogroup in the target dialog to fall back to `visible`, so an empty selection is nothing to
  * act on. Beyond that it inherits every lock the header button ("Übertragen") already
  * carries: `importScopeCurrent()` — a capture mid-channel-switch would copy channel A's emotes out
- * of A's set under B's name, see `importScopeIsCurrent` — and `SevenTvRunArbiter.activeRun()`, any
- * 7TV-writing run active or settling, not just this button's own kind.
+ * of A's set under B's name, see `importScopeIsCurrent` — and `SevenTvRunArbiter.startLocked()`, any
+ * 7TV-writing run active or settling, not just this button's own kind, or a confirmed restore/undo
+ * still being checked before its start (#280).
  *
  * `!isCoarse()` and an active 7TV set deliberately do NOT appear in this state: the dock this
  * shortcut lives in is already gated on both — `usage-stats-page.html`'s

@@ -656,7 +656,9 @@ export class MassDeletePanel {
     // above — nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2), so this stays
     // quiet the same way `openRestoreConfirm`'s own pre-dialog guard does. The re-check in
     // `startDelete` is what covers the far side of the dialog, and it does show a reason (#256 T4).
-    if (this.arbiter.activeRun() !== null) {
+    // `startLocked`, not `activeRun` alone (#280): a confirmed restore or undo still being checked
+    // before its start locks this button too, and a click outracing that lock stays quiet as well.
+    if (this.arbiter.startLocked()) {
       return;
     }
     // No stored 7TV token yet: ask for it first. The prompt closes itself with `true` the moment

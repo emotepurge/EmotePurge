@@ -1185,6 +1185,32 @@ describe('ImportTrigger', () => {
       },
     );
 
+    // #280, Festlegung Nr. 8: a click outracing the lock (CDK hands focus back to this button when a
+    // restore or undo confirmation closes) opens nothing and says nothing.
+    it.each([
+      ['a restore', () => restoreStartCheckPending],
+      ['an undo', () => undoStartCheckPending],
+    ])(
+      'opens no dialog for a click that outraces the lock while %s is checked before its start',
+      (_kind, flag) => {
+        const dialog = render();
+        flag().set(true);
+
+        (dialog.fixture.componentInstance as unknown as { openDialog(): void }).openDialog();
+
+        expect(dialogOpen).not.toHaveBeenCalled();
+      },
+    );
+
+    it('opens no dialog for a click that outraces the lock while a run holds the arbiter', () => {
+      const dialog = render();
+      activeRun.set('delete');
+
+      (dialog.fixture.componentInstance as unknown as { openDialog(): void }).openDialog();
+
+      expect(dialogOpen).not.toHaveBeenCalled();
+    });
+
     it('defaults importScopeCurrent to true when the caller does not pass it', () => {
       const dialog = render();
       expect(dialog.triggerDisabled()).toBe(false);

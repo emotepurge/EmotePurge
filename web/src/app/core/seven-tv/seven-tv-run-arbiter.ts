@@ -30,8 +30,10 @@ export interface SevenTvRefusedStart {
   blockedBy: SevenTvRunClaim;
 }
 
-/** What a run service hands the arbiter when it registers (#256, contract P1/P4). All three
- *  signals are the service's own projections over every run it has open, not only the shown one. */
+/** What a run service hands the arbiter when it registers (#256, contract P1/P4). The three
+ *  required signals are the service's own projections over every run it has open, not only the
+ *  shown one; the optional fourth, `startCheckPending` (#280), is not a run projection at all but
+ *  the window before a run exists. */
 export interface SevenTvRunParticipant {
   kind: SevenTvRunKind;
   /** The service's engine works a queue. */
@@ -42,7 +44,9 @@ export interface SevenTvRunParticipant {
   destructiveOpen: Signal<boolean>;
   /** A confirmed start of the service is still waiting for its last live read before the run
    *  exists (#280) — the restore's confirm-time duplicate check, the undo's freshness read. Only
-   *  those two services have such a window; the others leave it out. */
+   *  those two register one. The import (`resolveEditableSet`/`recheckTransferPlan` after its
+   *  confirmation) and the delete (its live alias read, `liveAliasReadPending`) have the same kind
+   *  of window but leave it out: known, uncovered, outside #280's scope. */
   startCheckPending?: Signal<boolean>;
 }
 
@@ -56,8 +60,9 @@ export const REFUSED_START_FEEDBACK_MS = 4000;
  * `SevenTvRunEngine` instance, so no single engine's `isRunning` can speak for all of them.
  *
  * **Registration, not a service list (#256, contract P4).** Each run service registers itself in
- * its constructor (`register(...)`) with its kind and three signals. The arbiter injects no run
- * service and imports none of their files, so the DI edge now points service → arbiter only — the
+ * its constructor (`register(...)`) with its kind, three run signals and, for restore and undo, the
+ * optional `startCheckPending` (#280). The arbiter injects no run service and imports none of
+ * their files, so the DI edge now points service → arbiter only — the
  * reverse of the 2026-09-06 decision (arbiter → services, "the services do not know the arbiter").
  * That is why no cycle arises: the arbiter's only dependency is `@angular/core`. A fourth run kind
  * is one value in `SevenTvRunKind` and one `register(...)` call in its own service. Registration
