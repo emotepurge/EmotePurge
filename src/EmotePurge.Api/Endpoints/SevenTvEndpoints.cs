@@ -19,6 +19,9 @@ namespace EmotePurge.Api.Endpoints;
 /// </summary>
 public static class SevenTvEndpoints
 {
+    /// <summary>The same cap the editable pre-check's own owner-hint query applies (owner-hint design 3.4).</summary>
+    private const int OwnerHintMaxLength = 64;
+
     public static void MapSevenTvEndpoints(this WebApplication app)
     {
         // No /api/seventv/... group existed before this spec. Filter order here is a tested contract
@@ -214,9 +217,13 @@ public static class SevenTvEndpoints
         // need not be a channel EmotePurge tracks at all, and the channel-scoped route 404s without a
         // Channel row (F7). Bookkeeping, not ForeignEmoteLookup: like its channel-scoped sibling, the
         // 7TV mutation already happened by the time this call runs, so a spent read budget must not
-        // drop the paper trail. That policy only fits because the owner check below costs no
-        // unguarded 7TV request (spec section 32): it answers from the cached, budgeted set lists,
-        // and its one direct lookup runs under the provider budget and breaker.
+        // drop the paper trail. That policy only fits because the owner check below never makes an
+        // unguarded 7TV request (spec section 32): every list and lookup it reads runs under the
+        // provider budget, the coalescer and the breaker — not because it is free. Its true cost
+        // (IImportTargetOwnershipService, spec addendum 41): nothing while the set lists are cached
+        // (60 s); cold, one list request when the actor owns the set (hinted or not); two, in one
+        // round trip, with a valid TargetOwnerTwitchId hint on a grant; up to 1 + k serial ones for k
+        // grants without a valid hint, plus one owner lookup for a set in no list.
         // EmoteSetIdValidationFilter here validates the *route* value, not a query string — see the
         // filter's own remarks.
         var emoteSetGroup = app.MapGroup("/api/seventv/emote-sets/{emoteSetId}")
@@ -248,7 +255,8 @@ public static class SevenTvEndpoints
             }
 
             // Step 4: does the actor own emoteSetId, or hold a 7TV editor grant on its owner?
-            var ownership = await ownershipService.CheckAsync(actor.TwitchUserId, actor.Login, emoteSetId, ct);
+            var ownership = await ownershipService.CheckAsync(
+                actor.TwitchUserId, actor.Login, emoteSetId, ct, BuildOwnerHint(request.TargetOwnerTwitchId));
 
             switch (ownership.Status)
             {
@@ -494,6 +502,20 @@ public static class SevenTvEndpoints
     }
 
     /// <summary>
+    /// Turns the reports' optional <c>targetOwnerTwitchId</c> body field into an
+    /// <see cref="EmoteSetOwnerHint"/> — or drops it. A blank value is no hint (Regel 7: never a
+    /// 400); neither is one longer than <see cref="OwnerHintMaxLength"/>, the same cap the editable
+    /// pre-check's query applies to its own hint. <see cref="IImportTargetOwnershipService"/> only
+    /// ever resolves a hint against the actor and the actor's editor grants, so an implausible or
+    /// foreign value costs nothing but a comparison either way — the cap only keeps a client from
+    /// handing this class an arbitrarily large string to hold and log.
+    /// </summary>
+    private static EmoteSetOwnerHint? BuildOwnerHint(string? targetOwnerTwitchId) =>
+        string.IsNullOrWhiteSpace(targetOwnerTwitchId) || targetOwnerTwitchId.Length > OwnerHintMaxLength
+            ? null
+            : new EmoteSetOwnerHint(TwitchUserId: targetOwnerTwitchId);
+
+    /// <summary>
     /// Stages 3-4 of the set-centric <c>sync-deleted</c>/<c>sync-restored</c> ladder (restore-per-set
     /// spec 5.1): the body, then the owner check. A non-null <see cref="SyncInSetLadder.Rejection"/>
     /// is the answer; nothing was reported, audited or resynced on any of those exits. Otherwise the
@@ -524,7 +546,8 @@ public static class SevenTvEndpoints
 
         // The same owner check and the same three exits as sync-imported: 404 with a code, a bare
         // 403, and 503 when 7TV could not be asked.
-        var ownership = await ownershipService.CheckAsync(actor.TwitchUserId, actor.Login, emoteSetId, ct);
+        var ownership = await ownershipService.CheckAsync(
+            actor.TwitchUserId, actor.Login, emoteSetId, ct, BuildOwnerHint(request.TargetOwnerTwitchId));
         switch (ownership.Status)
         {
             case SevenTvEmoteSetOwnershipStatus.SetNotFound:
@@ -739,8 +762,15 @@ internal sealed record EmoteSetTargetSummaryDto(
 /// already carries the target set, so repeating it in the body would just be a second, potentially
 /// disagreeing source of truth for the same value.
 /// </summary>
+/// <param name="TargetOwnerTwitchId">
+/// Optional order for the owner check (owner-hint design 3.3): the probable owner's Twitch id, as
+/// the client's own editable pre-check already resolved it. Never a login — every set-centric
+/// report follows a pre-check whose answer already carries the owner's Twitch id. Missing, blank or
+/// implausibly long is no hint at all (see <see cref="SevenTvEndpoints.BuildOwnerHint"/>), never 400.
+/// </param>
 internal sealed record SyncImportedToSetRequest(
-    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null);
+    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null,
+    string? TargetOwnerTwitchId = null);
 
 /// <summary>
 /// Body of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted</c> and <c>…/sync-restored</c>
@@ -753,7 +783,8 @@ internal sealed record SyncImportedToSetRequest(
 /// set is its active one — or <c>null</c> when it expects none. Validated with
 /// <c>ChannelNameValidation.IsValid</c> and normalized before it reaches the service (Regel 9).
 /// </param>
-internal sealed record SyncInSetRequest(IReadOnlyList<string>? SevenTvEmoteIds, string? ExpectedChannelName);
+/// <param name="TargetOwnerTwitchId">Same order for the owner check as <see cref="SyncImportedToSetRequest.TargetOwnerTwitchId"/>.</param>
+internal sealed record SyncInSetRequest(IReadOnlyList<string>? SevenTvEmoteIds, string? ExpectedChannelName, string? TargetOwnerTwitchId = null);
 
 /// <summary>
 /// Answer of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted</c> (restore-per-set spec 5.3).

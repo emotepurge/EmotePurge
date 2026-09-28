@@ -169,6 +169,79 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
         await _factory.EditorService.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task BodyOwnerHint_ReachesTheOwnerCheck_AndSkipsTheOtherGrantsList()
+    {
+        // T2: the body's targetOwnerTwitchId is forwarded to CheckAsync's ownerHint parameter. The
+        // actor's own list is still read (owner-hint design 3.1 Nr. 3), and the hinted grant's list
+        // is read alongside it; the other grant, earlier in the walk order, is never asked at all —
+        // observable proof that the hint reached the service, without substituting the service
+        // itself (Api.Tests does not substitute IImportTargetOwnershipService).
+        const string OtherTwitchId = "other-twitch-id";
+        const string OtherTwitchLogin = "otherlogin";
+        var userId = NewUserId();
+        _factory.EmoteSetList.ListByTwitchIdAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(SetList(ActorSevenTvUserId));
+        _factory.EmoteSetList.ListByTwitchIdAsync(OtherTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SetList("other-seven-tv-id"));
+        _factory.EmoteSetList.ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SetList(OwnerSevenTvUserId, (EmoteSetId, OwnerSevenTvUserId)));
+        _factory.GuardedEditorGrants.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(
+                new HashSet<string> { OtherTwitchLogin, OwnerTwitchLogin },
+                new HashSet<string> { OtherTwitchId, OwnerTwitchId },
+                [
+                    new SevenTvEditorGrantEntry(OtherTwitchLogin, OtherTwitchId),
+                    new SevenTvEditorGrantEntry(OwnerTwitchLogin, OwnerTwitchId),
+                ])));
+
+        var body = $$"""
+            {"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "file", "targetOwnerTwitchId": "{{OwnerTwitchId}}"}
+            """;
+        var response = await SendAsync(EmoteSetId, userId, body: body);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.Emotes.Received(1).MarkImportedToSetAsync(
+            EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, Arg.Any<IReadOnlyList<string>>(),
+            null, "file", null, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        await _factory.EmoteSetList.Received(1).ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>());
+        await _factory.EmoteSetList.DidNotReceive().ListByTwitchIdAsync(OtherTwitchId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task BlankBodyOwnerHint_BehavesLikeNoHint_AndWalksEveryGrantsList()
+    {
+        // Regel 7 / owner-hint design 3.3 Nr. 12: an empty string is no hint at all, never a 400 —
+        // same grants as above, but without a hint the walk reaches every one of them in order.
+        const string OtherTwitchId = "other-twitch-id";
+        const string OtherTwitchLogin = "otherlogin";
+        var userId = NewUserId();
+        _factory.EmoteSetList.ListByTwitchIdAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(SetList(ActorSevenTvUserId));
+        _factory.EmoteSetList.ListByTwitchIdAsync(OtherTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SetList("other-seven-tv-id"));
+        _factory.EmoteSetList.ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SetList(OwnerSevenTvUserId, (EmoteSetId, OwnerSevenTvUserId)));
+        _factory.GuardedEditorGrants.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(
+                new HashSet<string> { OtherTwitchLogin, OwnerTwitchLogin },
+                new HashSet<string> { OtherTwitchId, OwnerTwitchId },
+                [
+                    new SevenTvEditorGrantEntry(OtherTwitchLogin, OtherTwitchId),
+                    new SevenTvEditorGrantEntry(OwnerTwitchLogin, OwnerTwitchId),
+                ])));
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "file", "targetOwnerTwitchId": ""}""";
+        var response = await SendAsync(EmoteSetId, userId, body: body);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.Emotes.Received(1).MarkImportedToSetAsync(
+            EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, Arg.Any<IReadOnlyList<string>>(),
+            null, "file", null, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        await _factory.EmoteSetList.Received(1).ListByTwitchIdAsync(OtherTwitchId, Arg.Any<CancellationToken>());
+        await _factory.EmoteSetList.Received(1).ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>());
+    }
+
     private static EmoteSetListResult SetList(string accountSevenTvUserId, params (string Id, string OwnerSevenTvUserId)[] sets) =>
         EmoteSetListResult.Ok(new EmoteSetList(
             null,

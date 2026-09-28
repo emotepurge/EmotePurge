@@ -217,6 +217,90 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
     [Theory]
     [InlineData(Deleted)]
     [InlineData(Restored)]
+    public async Task BodyOwnerHint_ReachesTheOwnerCheck_AndSkipsTheOtherGrantsList(string route)
+    {
+        // T2: the body's targetOwnerTwitchId reaches PassSyncInSetLadderAsync's CheckAsync call. The
+        // actor's own list is still read (owner-hint design 3.1 Nr. 3), and the hinted grant's list
+        // is read alongside it; the other grant, earlier in the walk order, is never asked at all —
+        // observable proof that the hint reached the service, without substituting the service
+        // itself (Api.Tests does not substitute IImportTargetOwnershipService).
+        const string OtherTwitchId = "other-twitch-id";
+        const string OtherTwitchLogin = "otherlogin";
+        var userId = NewUserId();
+        _factory.EmoteSetList.ListByTwitchIdAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(SetList(ActorSevenTvUserId));
+        _factory.EmoteSetList.ListByTwitchIdAsync(OtherTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SetList("other-seven-tv-id"));
+        _factory.EmoteSetList.ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SetList(OwnerSevenTvUserId, (EmoteSetId, OwnerSevenTvUserId)));
+        _factory.GuardedEditorGrants.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(
+                new HashSet<string> { OtherTwitchLogin, OwnerTwitchLogin },
+                new HashSet<string> { OtherTwitchId, OwnerTwitchId },
+                [
+                    new SevenTvEditorGrantEntry(OtherTwitchLogin, OtherTwitchId),
+                    new SevenTvEditorGrantEntry(OwnerTwitchLogin, OwnerTwitchId),
+                ])));
+        ArrangeReport(route, new InSetOutcome(1, [], null));
+
+        var body = $$"""{"sevenTvEmoteIds": ["7tv-x1"], "expectedChannelName": null, "targetOwnerTwitchId": "{{OwnerTwitchId}}"}""";
+        var response = await SendAsync(route, EmoteSetId, userId, body: body);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        if (route == Deleted)
+        {
+            await _factory.Emotes.Received(1).MarkDeletedInSetAsync(
+                EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchId, Arg.Any<IReadOnlyList<string>>(),
+                null, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        }
+        else
+        {
+            await _factory.Emotes.Received(1).MarkRestoredInSetAsync(
+                EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchId, Arg.Any<IReadOnlyList<string>>(),
+                null, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        }
+
+        await _factory.EmoteSetList.Received(1).ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>());
+        await _factory.EmoteSetList.DidNotReceive().ListByTwitchIdAsync(OtherTwitchId, Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(Deleted)]
+    [InlineData(Restored)]
+    public async Task BlankBodyOwnerHint_BehavesLikeNoHint_AndWalksEveryGrantsList(string route)
+    {
+        // Regel 7 / owner-hint design 3.3 Nr. 12: an empty string is no hint at all, never a 400 —
+        // same grants as above, but without a hint the walk reaches every one of them in order.
+        const string OtherTwitchId = "other-twitch-id";
+        const string OtherTwitchLogin = "otherlogin";
+        var userId = NewUserId();
+        _factory.EmoteSetList.ListByTwitchIdAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(SetList(ActorSevenTvUserId));
+        _factory.EmoteSetList.ListByTwitchIdAsync(OtherTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SetList("other-seven-tv-id"));
+        _factory.EmoteSetList.ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SetList(OwnerSevenTvUserId, (EmoteSetId, OwnerSevenTvUserId)));
+        _factory.GuardedEditorGrants.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(
+                new HashSet<string> { OtherTwitchLogin, OwnerTwitchLogin },
+                new HashSet<string> { OtherTwitchId, OwnerTwitchId },
+                [
+                    new SevenTvEditorGrantEntry(OtherTwitchLogin, OtherTwitchId),
+                    new SevenTvEditorGrantEntry(OwnerTwitchLogin, OwnerTwitchId),
+                ])));
+        ArrangeReport(route, new InSetOutcome(1, [], null));
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "expectedChannelName": null, "targetOwnerTwitchId": ""}""";
+        var response = await SendAsync(route, EmoteSetId, userId, body: body);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _factory.EmoteSetList.Received(1).ListByTwitchIdAsync(OtherTwitchId, Arg.Any<CancellationToken>());
+        await _factory.EmoteSetList.Received(1).ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(Deleted)]
+    [InlineData(Restored)]
     public async Task PaperOnlyAnswer_HasEmptyChannels_NullUnresolvedChannel_AndNoLiveEventOrResync(string route)
     {
         var userId = NewUserId();
