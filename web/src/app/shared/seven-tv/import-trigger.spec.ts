@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { WritableSignal, signal } from '@angular/core';
+import { WritableSignal, computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom, of, Subject } from 'rxjs';
@@ -226,13 +226,28 @@ describe('ImportTrigger', () => {
           useValue: { loadEmoteSetPreview } as unknown as SevenTvEmoteSetService,
         },
         { provide: SevenTvTokenService, useValue: { hasToken } as unknown as SevenTvTokenService },
-        { provide: SevenTvRunArbiter, useValue: { activeRun } as unknown as SevenTvRunArbiter },
+        {
+          provide: SevenTvRunArbiter,
+          // `startPending`/`startLocked` derived the way the real arbiter derives them from the two
+          // services that register a start check (#280), so a flow setting its service's flag
+          // reaches this trigger the same way it does in the app.
+          useValue: fakeArbiter(),
+        },
         { provide: Dialog, useValue: { open: dialogOpen } as unknown as Dialog },
       ],
     }).compileComponents();
 
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
   });
+
+  function fakeArbiter(): SevenTvRunArbiter {
+    const startPending = computed(() => restoreStartCheckPending() || undoStartCheckPending());
+    return {
+      activeRun,
+      startPending,
+      startLocked: computed(() => activeRun() !== null || startPending()),
+    } as unknown as SevenTvRunArbiter;
+  }
 
   function render(
     channelName = CURRENT_CHANNEL,

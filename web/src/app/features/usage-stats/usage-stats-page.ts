@@ -1599,13 +1599,14 @@ export class UsageStatsPage {
   /**
    * Whether the header "Übertragen" button is disabled — same empty-scope reasoning as
    * `exportButtonDisabled` above, plus the two locks the push shares with `app-import-trigger`
-   * (see the template comment above both buttons): any 7TV-writing run active or settling, or
-   * the set status/rows still belonging to the previous channel (`importScopeCurrent`).
+   * (see the template comment above both buttons): any 7TV-writing run active or settling, or a
+   * confirmed one still being checked before its start (`startLocked`, #280), or the set
+   * status/rows still belonging to the previous channel (`importScopeCurrent`).
    */
   protected readonly transferButtonDisabled = computed(
     () =>
       (this.atlasOrder().length === 0 && this.selection.selectedItems().length === 0) ||
-      this.arbiter.activeRun() !== null ||
+      this.arbiter.startLocked() ||
       !this.importScopeCurrent(),
   );
 
@@ -1749,7 +1750,7 @@ export class UsageStatsPage {
     importShortcutDisabled({
       selectionCount: this.importShortcutSelectionCount(),
       importScopeCurrent: this.importScopeCurrent(),
-      hasActiveRun: this.arbiter.activeRun() !== null,
+      hasActiveRun: this.arbiter.startLocked(),
     }),
   );
 

@@ -134,9 +134,9 @@ export function startRestoreFlow(
     // suspenders next to the caller's own disabled button (`previewPending`, see the field doc),
     // so a click that outraces it, or a caller with no button of its own, still cannot end up with
     // two confirmations racing for the same rows.
-    // #280: nor while a confirmed restore from either entry is still being checked before its
-    // start — the arbiter would refuse this one at its own start anyway.
-    if (deps.previewPending() || deps.restoreService.startCheckPending()) {
+    // #280: nor while a confirmed restore or undo is still being checked before its start
+    // (`arbiter.startPending`) — the arbiter would refuse this one at its own start anyway.
+    if (deps.previewPending() || deps.arbiter.startPending()) {
       return;
     }
     deps.previewPending.set(true);
@@ -289,7 +289,10 @@ export function startRestoreFlow(
         // locked through the arbiter). Bounded by the same budget as the open-time check above,
         // so a hung read cannot hold the flag forever: a timeout reads as the failed check the
         // filter itself already fails open on (`restoreConfirmPreviewUnavailable`), and the
-        // fallback to the open-time answer below applies to it unchanged.
+        // fallback to the open-time answer below applies to it unchanged. Deliberately no
+        // `takeUntilDestroyed`: the restore is confirmed, and the root service starts and shows it
+        // whether or not the caller that opened it is still mounted — dropping the read on
+        // teardown would silently lose it (unlike the undo, whose flow drops both its reads).
         deps.restoreService.startCheckPending.set(true);
         filterAlreadyPresentForRestore(deps.httpClient, target.emoteSetId, emotes)
           .pipe(

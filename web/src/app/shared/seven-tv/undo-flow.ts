@@ -107,7 +107,7 @@ export function undoRunTarget(
  * `result` is the value frozen when the file step emitted it; nothing here re-reads a live signal.
  */
 export function startUndoFlow(deps: UndoFlowDeps, result: TransferUndoFileResult): void {
-  if (refusedByArbiter(deps) || deps.firstReadPending() || deps.undoService.startCheckPending()) {
+  if (refusedByArbiter(deps) || deps.firstReadPending() || deps.arbiter.startPending()) {
     return;
   }
   withToken(deps, () => readAndConfirm(deps, result));

@@ -10,6 +10,44 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-28 — A confirmed restore or undo locks the start triggers before its run exists, and the announcer speaks that wait
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (+ spec; `SevenTvRunParticipant.startCheckPending`,
+new `startPending` and `startLocked`) · `web/src/app/core/seven-tv/seven-tv-restore.service.ts` and
+`seven-tv-undo.service.ts` (`startCheckPending`, registered with the arbiter) ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `undo-flow.ts`, `mass-delete-panel.ts`, `import-trigger.ts`,
+`import-trigger-gate.ts`, `import-shortcut.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts`
+(`transferButtonDisabled`, `importShortcutLocked`) · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts`
+(`START_CHECK_ANNOUNCE_DELAY_MS`) · `web/public/i18n/de.json`/`en.json` (`restore.startChecking`,
+`undo.startChecking`) · `docs/UI-Designsprache.md` §4.2, §4.5 · every affected spec and
+`web/e2e/emote-import.e2e.spec.ts`.
+
+Issue #280. Between a confirmation closing and its run appearing, a restore's confirm-time
+duplicate check and an undo's freshness read (each up to 20 s) ran with nothing on screen and every
+start trigger free again; a click there only ever led to a refused start.
+
+- **A pre-run lock.** A confirmed restore or undo whose last live read is still out now locks the
+  run triggers before the run exists. The two services register a `startCheckPending` signal with
+  the arbiter; `startPending` is their union and `startLocked` (`activeRun() !== null ||
+  startPending()`) is the one condition every arbiter-gated trigger binds to — the header's
+  "Übertragen", the import trigger, the dock's copy shortcut, the mass-delete CTA and the dock's
+  restore entry — so the running window and the pre-run window lock the same set. A pending start
+  is not a claim: `activeRun` stays `null` and `noteRefusedStart` names nothing on its account.
+- **A named exception to §4.5.** `DockOutcomeAnnouncer` used to speak only what the dock shows. It
+  now also speaks the pre-run wait (`restore.startChecking`, `undo.startChecking`), which no dock
+  shows, because the only visible sign is a disabled button — silent for a screen reader — and
+  §6.1 allows no loading text for an isolated action. The line enters only after the read has been
+  out for `START_CHECK_ANNOUNCE_DELAY_MS` (1 s), so a quick read does not open every start with it;
+  the lock itself is immediate.
+- **The confirm-time restore check is bounded like the open-time one** (the same 20 s); `timeout()`
+  aborts the request, so a timeout is a failed read in the sense of Plan-275 Festlegung 16, which
+  is unchanged.
+- **The confirm-time restore read deliberately has no teardown**: a confirmed restore is started and
+  shown by the root service regardless of the host that opened it, so dropping the read with its
+  host would silently lose a confirmed restore. The undo differs — its flow drops both reads with
+  its caller (`UndoFlowDeps.destroyRef`, `undo-flow.ts`); aligning the two would be a separate
+  product decision.
+
 ### 2026-09-28 — A 7TV run step is `done` only when the answer carries the mutation's result — an unconfirmed 200 is `unknown` or `failed`
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-engine.ts` (+ spec) — new `SevenTvMutation`

@@ -5,6 +5,7 @@ import {
   Component,
   EnvironmentProviders,
   Provider,
+  Signal,
   WritableSignal,
   computed,
   signal,
@@ -219,9 +220,7 @@ describe('MassDeletePanel row composition', () => {
         },
         {
           provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
+          useValue: fakeRunArbiter() as unknown as SevenTvRunArbiter,
         },
         {
           provide: SevenTvTokenService,
@@ -377,9 +376,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
         },
         {
           provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
+          useValue: fakeRunArbiter() as unknown as SevenTvRunArbiter,
         },
         {
           provide: SevenTvTokenService,
@@ -557,6 +554,11 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
 interface RunArbiterFake {
   activeRun: WritableSignal<SevenTvRunKind | null>;
   activeClaim: () => SevenTvRunClaim | null;
+  /** #280: the restore's own start check (linked by `panelProviders`) or any other participant's —
+   *  `otherStartPending` stands in for an undo's freshness read. */
+  startPending: Signal<boolean>;
+  startLocked: Signal<boolean>;
+  otherStartPending: WritableSignal<boolean>;
   noteRefusedStart: ReturnType<typeof vi.fn>;
 }
 
@@ -568,12 +570,22 @@ interface RunArbiterFake {
  *  test below that expects an abort notice asserts on `abortNotice()`, never on this spy. */
 function fakeRunArbiter(
   activeRun: WritableSignal<SevenTvRunKind | null> = signal(null),
+  restoreStartCheckPending: Signal<boolean> = signal(false),
 ): RunArbiterFake {
   const activeClaim = computed<SevenTvRunClaim | null>(() => {
     const kind = activeRun();
     return kind === null ? null : { kind, phase: 'running' };
   });
-  return { activeRun, activeClaim, noteRefusedStart: vi.fn() };
+  const otherStartPending = signal(false);
+  const startPending = computed(() => restoreStartCheckPending() || otherStartPending());
+  return {
+    activeRun,
+    activeClaim,
+    startPending,
+    startLocked: computed(() => activeRun() !== null || startPending()),
+    otherStartPending,
+    noteRefusedStart: vi.fn(),
+  };
 }
 
 /** A resolved target every editable-stub answer carries — irrelevant to the delete confirmation
@@ -619,6 +631,7 @@ function panelProviders(
     emoteSetService?: EmoteSetServiceFake | null;
   } = {},
 ) {
+  const restoreService = options.restoreService ?? fakeRestoreService();
   const providers: (Provider | EnvironmentProviders)[] = [
     provideHttpClient(),
     {
@@ -631,12 +644,16 @@ function panelProviders(
     },
     {
       provide: SevenTvRestoreService,
-      useValue: (options.restoreService ??
-        fakeRestoreService()) as unknown as SevenTvRestoreService,
+      useValue: restoreService as unknown as SevenTvRestoreService,
     },
     {
       provide: SevenTvRunArbiter,
-      useValue: (options.arbiter ?? fakeRunArbiter()) as unknown as SevenTvRunArbiter,
+      // Linked to the restore fake's start check the way the real service registers it (#280).
+      useValue: (options.arbiter ??
+        fakeRunArbiter(
+          signal(null),
+          restoreService.startCheckPending,
+        )) as unknown as SevenTvRunArbiter,
     },
     {
       provide: SevenTvTokenService,
@@ -1576,6 +1593,7 @@ describe('MassDeletePanel — restore latch (#89)', () => {
 describe('MassDeletePanel — delete button lock, three independent sources (#89)', () => {
   let isRunning: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
+  let arbiter: RunArbiterFake;
 
   async function render(
     selectedEmotes: DeletableEmote[],
@@ -1591,7 +1609,7 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
       ],
       providers: panelProviders({
         deleteService: fakeDeleteService({ isRunning }),
-        arbiter: fakeRunArbiter(activeRun),
+        arbiter,
       }),
     }).compileComponents();
 
@@ -1610,6 +1628,7 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
   beforeEach(() => {
     isRunning = signal(false);
     activeRun = signal<SevenTvRunKind | null>(null);
+    arbiter = fakeRunArbiter(activeRun);
   });
 
   it('disables the button when the selection is empty, even with nothing else blocking', async () => {
@@ -1627,6 +1646,15 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
 
   it('disables the button while a different 7TV run is active, even with a selection and this run idle', async () => {
     activeRun.set('import');
+    const button = await render(EMOTES);
+
+    expect(button.disabled).toBe(true);
+  });
+
+  // #280: a confirmed restore or undo whose last live read is still out locks every start trigger
+  // the arbiter gates, this one included — before its run exists and claims the arbiter.
+  it('disables the button while a confirmed restore or undo is still being checked before its start', async () => {
+    arbiter.otherStartPending.set(true);
     const button = await render(EMOTES);
 
     expect(button.disabled).toBe(true);
@@ -3135,7 +3163,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     const providers = panelProviders({
       deleteService: fakeDeleteService({ lastRun }),
       restoreService,
-      arbiter: fakeRunArbiter(activeRun),
+      arbiter: fakeRunArbiter(activeRun, restoreService.startCheckPending),
       dialogOpen,
       emoteAdminService,
       // This block drives resolveEditableSet through the real service and HttpTestingController
@@ -4075,6 +4103,16 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
       expect(startRestore).toHaveBeenCalledTimes(1);
       expect(startCheckPending()).toBe(false);
       expect(restoreEntry()?.disabled).toBe(false);
+    });
+
+    it("keeps the restore entry disabled while an undo's freshness read is out", async () => {
+      await mount([DONE]);
+      expect(restoreEntry()?.disabled).toBe(false);
+
+      (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).otherStartPending.set(true);
+      fixture.detectChanges();
+
+      expect(restoreEntry()?.disabled).toBe(true);
     });
 
     it('ignores a click on the restore entry while a confirmed restore is still being checked', async () => {

@@ -334,9 +334,9 @@ export class SevenTvRestoreService {
    *  the run has not started yet and may still be refused (#280). The counterpart of
    *  {@link restorePreCheckPending} for the window *after* the confirmation, kept apart from it
    *  because only this one is announced (`DockOutcomeAnnouncer`) — the window before the
-   *  confirmation ends in a dialog, which announces itself. Both entries fold it into their buttons'
-   *  disabled state, so neither looks free again while the run is still being prepared. Set and
-   *  cleared by the two entries only, around that one bounded read. */
+   *  confirmation ends in a dialog, which announces itself. Registered with the arbiter, whose
+   *  `startLocked` every 7TV start trigger binds to, so no trigger looks free again while the run
+   *  is still being prepared. Set and cleared by the two entries only, around that one bounded read. */
   readonly startCheckPending: WritableSignal<boolean> = signal(false);
 
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -353,6 +353,7 @@ export class SevenTvRestoreService {
       isRunning: this.isRunning,
       isSettling: this.isSettling,
       destructiveOpen: this.destructiveOpen,
+      startCheckPending: this.startCheckPending,
     });
   }
 

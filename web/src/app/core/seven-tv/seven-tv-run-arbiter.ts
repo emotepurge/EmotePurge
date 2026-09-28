@@ -40,6 +40,10 @@ export interface SevenTvRunParticipant {
   isSettling: Signal<boolean>;
   /** A run of the service with at least one destructive row is not `closed` yet. */
   destructiveOpen: Signal<boolean>;
+  /** A confirmed start of the service is still waiting for its last live read before the run
+   *  exists (#280) — the restore's confirm-time duplicate check, the undo's freshness read. Only
+   *  those two services have such a window; the others leave it out. */
+  startCheckPending?: Signal<boolean>;
 }
 
 /** How long `refusedStart` stays set — the transient status message of `docs/UI-Designsprache.md`
@@ -115,6 +119,21 @@ export class SevenTvRunArbiter {
   /** The kind that runs **or settles** right now, `null` when a start may go ahead. */
   readonly activeRun: Signal<SevenTvRunKind | null> = computed(
     () => this.activeClaim()?.kind ?? null,
+  );
+
+  /** A confirmed start of any participant is still waiting for its last live read (#280): the
+   *  confirmation is closed, the run does not exist yet, and it may still be refused. Not a claim —
+   *  `activeRun` stays `null`, so a start point that runs into it has no blocking run to name and
+   *  refuses nothing on its account; it only keeps the start triggers locked (`startLocked`). */
+  readonly startPending: Signal<boolean> = computed(() =>
+    this.participants().some((participant) => participant.startCheckPending?.() ?? false),
+  );
+
+  /** Whether every 7TV start trigger is locked right now: a run runs or settles (`activeRun`), or
+   *  a confirmed one is about to start (`startPending`). The one condition the triggers bind to
+   *  (docs/UI-Designsprache.md §4.2), so the set of locked buttons is the same in both windows. */
+  readonly startLocked: Signal<boolean> = computed(
+    () => this.activeRun() !== null || this.startPending(),
   );
 
   /** True while any participant has a destructive run open — the union the unload guard reads. */

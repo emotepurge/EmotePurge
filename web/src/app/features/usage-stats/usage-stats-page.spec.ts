@@ -1449,6 +1449,37 @@ describe('UsageStatsPage — header export/transfer locks ask about the union, n
     expect(component['transferButtonDisabled']()).toBe(false);
   });
 
+  // #280: a confirmed restore/undo whose last live read is still out locks every start trigger the
+  // arbiter gates — the header's "Übertragen" and the dock's copy shortcut too, not only the import
+  // trigger and the delete CTA.
+  it('locks the transfer button and the dock copy shortcut while a confirmed start is still being checked', () => {
+    const a = emote('a', 'PeepoA');
+    mount([a]);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    expect(component['transferButtonDisabled']()).toBe(false);
+    expect(component['importShortcutLocked']()).toBe(false);
+
+    const startCheckPending = signal(false);
+    component['arbiter'].register({
+      kind: 'undo',
+      isRunning: signal(false),
+      isSettling: signal(false),
+      destructiveOpen: signal(false),
+      startCheckPending,
+    });
+    startCheckPending.set(true);
+
+    expect(component['arbiter'].activeRun()).toBeNull();
+    expect(component['transferButtonDisabled']()).toBe(true);
+    expect(component['importShortcutLocked']()).toBe(true);
+    // The export writes nothing to 7TV and has no reason to wait.
+    expect(component['exportButtonDisabled']()).toBe(false);
+
+    startCheckPending.set(false);
+    expect(component['transferButtonDisabled']()).toBe(false);
+    expect(component['importShortcutLocked']()).toBe(false);
+  });
+
   it('locks both buttons when the visible list AND the selection are both empty', () => {
     mount([]);
 

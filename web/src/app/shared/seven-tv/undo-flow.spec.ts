@@ -1,7 +1,7 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient, HttpRequest, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { DestroyRef, WritableSignal, signal } from '@angular/core';
+import { DestroyRef, WritableSignal, computed, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { Observable, Subject, firstValueFrom, of, throwError } from 'rxjs';
@@ -169,6 +169,8 @@ interface Harness {
   firstReadPending: WritableSignal<boolean>;
   /** `SevenTvUndoService.startCheckPending` (#280) on the fake service. */
   startCheckPending: WritableSignal<boolean>;
+  /** Another participant's start check on the fake arbiter (a restore's confirm-time check). */
+  otherStartPending: WritableSignal<boolean>;
   destroyRef: FakeDestroyRef;
 }
 
@@ -181,6 +183,7 @@ function setup(): Harness {
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const firstReadPending = signal(false);
   const startCheckPending = signal(false);
+  const otherStartPending = signal(false);
   const destroyRef = fakeDestroyRef();
   return {
     deps: {
@@ -188,7 +191,11 @@ function setup(): Harness {
       httpClient: { post: httpPost } as unknown as HttpClient,
       tokenService: { hasToken } as unknown as SevenTvTokenService,
       undoService: { startUndo, startCheckPending } as unknown as SevenTvUndoService,
-      arbiter: { activeRun, noteRefusedStart } as unknown as SevenTvRunArbiter,
+      arbiter: {
+        activeRun,
+        noteRefusedStart,
+        startPending: computed(() => startCheckPending() || otherStartPending()),
+      } as unknown as SevenTvRunArbiter,
       firstReadPending,
       destroyRef: destroyRef as unknown as DestroyRef,
     },
@@ -200,6 +207,7 @@ function setup(): Harness {
     noteRefusedStart,
     firstReadPending,
     startCheckPending,
+    otherStartPending,
     destroyRef,
   };
 }
@@ -564,6 +572,17 @@ describe('startUndoFlow', () => {
 
       expect(h.startUndo).toHaveBeenCalledTimes(1);
       expect(h.startCheckPending()).toBe(false);
+    });
+
+    it("starts nothing — no prompt, no read — while a confirmed restore's check is still out", () => {
+      const h = setup();
+      h.otherStartPending.set(true);
+      h.hasToken.set(false);
+
+      startUndoFlow(h.deps, result([cand('1')]));
+
+      expect(h.dialogOpen).not.toHaveBeenCalled();
+      expect(h.httpPost).not.toHaveBeenCalled();
     });
 
     it('releases the start check when the freshness read fails, and still hands the full row on as recheckUnavailable', () => {

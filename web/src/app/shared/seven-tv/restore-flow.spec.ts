@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { DestroyRef, signal, WritableSignal } from '@angular/core';
+import { DestroyRef, computed, signal, WritableSignal } from '@angular/core';
 import { of, Subject, throwError } from 'rxjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -237,6 +237,9 @@ interface Harness {
   previewPending: WritableSignal<boolean>;
   /** `SevenTvRestoreService.startCheckPending` (#280) on the fake service. */
   startCheckPending: WritableSignal<boolean>;
+  /** Another participant's start check on the fake arbiter (an undo's freshness read) — the
+   *  arbiter's `startPending` is this or the restore's own flag, as the real one derives it. */
+  otherStartPending: WritableSignal<boolean>;
   /** The fake behind `deps.destroyRef` — `triggerDestroy()` simulates the caller's teardown. */
   destroyRef: FakeDestroyRef;
 }
@@ -260,7 +263,12 @@ function setup(): Harness {
 
   const activeRun = signal<SevenTvRunKind | null>(null);
   const noteRefusedStart = vi.fn();
-  const arbiter = { activeRun, noteRefusedStart } as unknown as SevenTvRunArbiter;
+  const otherStartPending = signal(false);
+  const arbiter = {
+    activeRun,
+    noteRefusedStart,
+    startPending: computed(() => startCheckPending() || otherStartPending()),
+  } as unknown as SevenTvRunArbiter;
 
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const dialog = { open: dialogOpen } as unknown as Dialog;
@@ -286,6 +294,7 @@ function setup(): Harness {
     httpPost,
     previewPending,
     startCheckPending,
+    otherStartPending,
     destroyRef,
     startRestore,
     hasToken,
@@ -1092,15 +1101,21 @@ describe('startRestoreFlow', () => {
       expect(startCheckPending()).toBe(false);
     });
 
-    it('opens nothing for a second restore while a confirmed one is still being checked', () => {
-      const { deps, dialogOpen, httpPost, startCheckPending } = setup();
-      startCheckPending.set(true);
+    it.each([
+      ['restore', (h: Harness) => h.startCheckPending],
+      ['undo', (h: Harness) => h.otherStartPending],
+    ])(
+      'opens nothing for a new restore while a confirmed %s is still being checked',
+      (_kind, flag) => {
+        const h = setup();
+        flag(h).set(true);
 
-      startRestoreFlow(deps, target(), rows());
+        startRestoreFlow(h.deps, target(), rows());
 
-      expect(httpPost).not.toHaveBeenCalled();
-      expect(dialogOpen).not.toHaveBeenCalled();
-    });
+        expect(h.httpPost).not.toHaveBeenCalled();
+        expect(h.dialogOpen).not.toHaveBeenCalled();
+      },
+    );
 
     it('releases the start check when the confirm-time check fails', () => {
       const { deps, dialogOpen, httpPost, startRestore, startCheckPending } = setup();

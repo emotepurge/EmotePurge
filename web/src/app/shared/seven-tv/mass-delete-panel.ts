@@ -213,7 +213,7 @@ export interface DeletableEmote {
             selectedEmotes().length === 0 ||
             deleteLockReasonKey() !== null ||
             deleteService.isRunning() ||
-            arbiter.activeRun() !== null ||
+            arbiter.startLocked() ||
             liveAliasReadPending() ||
             deleteTargetCheckPending()
           "
@@ -302,15 +302,16 @@ export interface DeletableEmote {
                      Disabled while restoreConfirmPending() (#255 P2a): the target check and the
                      open-time duplicate check both run before any dialog is on screen, and a
                      second click in that window must not start a second read racing towards a
-                     second confirmation. Likewise while restoreService.startCheckPending()
-                     (#280): the confirmation is closed but its confirm-time check still decides
-                     whether the run starts, and the button must not look free again meanwhile —
-                     DockOutcomeAnnouncer speaks that wait. -->
+                     second confirmation. Likewise while arbiter.startPending() (#280): a confirmed
+                     restore or undo is closed but its last live read still decides whether the
+                     run starts, and the button must not look free again meanwhile —
+                     DockOutcomeAnnouncer speaks that wait. Hidden only once a run holds the
+                     arbiter, as before; disabled rather than hidden here, so nothing jumps. -->
                 <button
                   type="button"
                   appButton="outline"
                   class="disabled:cursor-not-allowed"
-                  [disabled]="restoreConfirmPending() || restoreService.startCheckPending()"
+                  [disabled]="restoreConfirmPending() || arbiter.startPending()"
                   (click)="openRestoreConfirm()"
                 >
                   {{ 'restore.button' | transloco }}
@@ -733,7 +734,7 @@ export class MassDeletePanel {
     // #255 P2a: refuses a second click while the pre-check chain below (this method's own
     // `resolveEditableSet`, or `openRestoreConfirmDialog`'s open-time duplicate check) is still
     // out — belt and suspenders next to the button's own `[disabled]="restoreConfirmPending()"`.
-    if (this.restoreConfirmPending() || this.restoreService.startCheckPending()) {
+    if (this.restoreConfirmPending() || this.arbiter.startPending()) {
       return;
     }
     const run = this.deleteService.lastRun();
@@ -990,7 +991,9 @@ export class MassDeletePanel {
       // rather than sent into a certain name conflict — see `filterAlreadyPresentForRestore`.
       //
       // #280: held from here until the check has settled, same as `startRestoreFlow`'s own
-      // confirm-time check (see there) — bounded, a timeout reading as a failed check.
+      // confirm-time check (see there) — bounded, a timeout reading as a failed check. No
+      // `takeUntilDestroyed` on purpose: the restore is confirmed and the root service shows it
+      // wherever it runs, so this panel's teardown must not silently drop it.
       this.restoreService.startCheckPending.set(true);
       filterAlreadyPresentForRestore(this.httpClient, target.emoteSetId, emotes)
         .pipe(
