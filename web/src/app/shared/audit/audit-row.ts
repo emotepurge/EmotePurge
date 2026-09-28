@@ -189,6 +189,12 @@ function renderLegacyForm(detail: AuditLogDetail | null): RenderedDetail | null 
  * — never a half-populated line. An `unresolvedReason` outside the known two degrades to `null`,
  * the same forward-compatible drop as an unrecognized detail `kind` or leaderboard sort code: a
  * build older than the backend that wrote the row shows nothing here rather than a raw code.
+ *
+ * No count parameter: `unresolvedSevenTvEmoteIds` is delivered (kept on the wire and the model for
+ * #273's own sake) but not read here — the row's own `emoteCount` in `detail` already names the
+ * quantity, `unresolvedSevenTvEmoteIds.length` always equals it (none of the reported ids matched
+ * in the missed channel), and re-deriving a second, redundant count from a list that could in
+ * principle be absent or malformed (`?? 0`) risked a misleading "0" rather than adding information.
  */
 function renderUnresolvedChannel(detail: AuditLogDetail | null): RenderedDetail | null {
   const targetSet = detail?.targetEmoteSet;
@@ -198,16 +204,15 @@ function renderUnresolvedChannel(detail: AuditLogDetail | null): RenderedDetail 
     return null;
   }
 
-  const baseKey =
+  const key =
     reason === 'notTracked'
       ? UNRESOLVED_CHANNEL_KEYS.notTracked
       : reason === 'activeSetDiffers'
         ? UNRESOLVED_CHANNEL_KEYS.activeSetDiffers
         : null;
-  if (baseKey === null) {
+  if (key === null) {
     return null;
   }
 
-  const count = targetSet?.unresolvedSevenTvEmoteIds?.length ?? 0;
-  return { key: pluralKey(count, baseKey), params: { channelName, count } };
+  return { key, params: { channelName } };
 }

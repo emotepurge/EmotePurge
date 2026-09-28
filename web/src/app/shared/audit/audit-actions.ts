@@ -96,9 +96,11 @@ export const LEGACY_BODY_FORM_KEY = 'audit.details.legacyBodyForm';
  * independent line segment, present whenever a set-scoped `sync-deleted`/`sync-restored` paper
  * entry names a channel it expected to hit (`expectedChannelName`, spec E18) but did not. Keyed by
  * `AuditLogTargetEmoteSet.unresolvedReason` (`UnresolvedChannelReasons` on the server); an
- * unrecognized reason renders nothing, the same degradation as an unrecognized detail `kind`. Both
- * keys carry a `count` and go through `pluralKey` like every other counting detail (CLAUDE.md's
- * "Unpluralised audit count" rule, #255).
+ * unrecognized reason renders nothing, the same degradation as an unrecognized detail `kind`.
+ *
+ * Plain strings, not `{ one, other }` pairs: the addendum names a channel, not a quantity — the
+ * count of unresolved ids is already the row's own `emoteCount` in `detail` above, and repeating it
+ * here would say the same number twice rather than add information.
  */
 export const UNRESOLVED_CHANNEL_KEYS = {
   notTracked: 'audit.details.unresolvedChannelNotTracked',

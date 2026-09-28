@@ -88,15 +88,13 @@ describe('audit action tables', () => {
     expect(lookup(en, LEGACY_BODY_FORM_KEY)).toBeTypeOf('string');
   });
 
+  // Plain strings, not { one, other } pairs (unlike DETAIL_KEYS above): the addendum names a
+  // channel, not a quantity — see UNRESOLVED_CHANNEL_KEYS's own doc.
   it.each(Object.values(UNRESOLVED_CHANNEL_KEYS))(
     'translates the unresolved-channel addendum key %s in both locales (#273)',
     (key) => {
-      for (const bundle of [de, en]) {
-        const entry = lookup(bundle, key);
-        expect(entry).toBeTypeOf('object');
-        expect((entry as { one: unknown }).one).toBeTypeOf('string');
-        expect((entry as { other: unknown }).other).toBeTypeOf('string');
-      }
+      expect(lookup(de, key)).toBeTypeOf('string');
+      expect(lookup(en, key)).toBeTypeOf('string');
     },
   );
 

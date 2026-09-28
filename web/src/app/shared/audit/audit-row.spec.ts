@@ -451,7 +451,7 @@ describe('toAuditRows', () => {
       expect(row.unresolvedChannel).toBeNull();
     });
 
-    it('shows the not-tracked form with the plural count of unresolved ids', () => {
+    it('shows the not-tracked form, naming the channel without a count', () => {
       const [row] = toAuditRows(
         [
           entry({
@@ -475,9 +475,11 @@ describe('toAuditRows', () => {
         IDENTITY_TRANSLATE,
       );
 
+      // No `count` param: the row's own `detail` already names the quantity (`emoteCount: 3`
+      // above), and `unresolvedSevenTvEmoteIds.length` would only repeat it.
       expect(row.unresolvedChannel).toEqual({
-        key: 'audit.details.unresolvedChannelNotTracked.other',
-        params: { channelName: 'strangertv', count: 3 },
+        key: 'audit.details.unresolvedChannelNotTracked',
+        params: { channelName: 'strangertv' },
       });
       // Coexists with the owner form of the target-set addendum — a paper entry without a tracked
       // owner channel names both the owner and the channel the report missed.
@@ -487,7 +489,7 @@ describe('toAuditRows', () => {
       });
     });
 
-    it('shows the active-set-differs form and picks the .one sibling for exactly one id', () => {
+    it('shows the active-set-differs form', () => {
       const [row] = toAuditRows(
         [
           entry({
@@ -512,8 +514,39 @@ describe('toAuditRows', () => {
       );
 
       expect(row.unresolvedChannel).toEqual({
-        key: 'audit.details.unresolvedChannelActiveSetDiffers.one',
-        params: { channelName: 'othertv', count: 1 },
+        key: 'audit.details.unresolvedChannelActiveSetDiffers',
+        params: { channelName: 'othertv' },
+      });
+    });
+
+    it('names the channel even when unresolvedSevenTvEmoteIds is missing', () => {
+      // The field is delivered for #273's own sake but never read by this function (no count is
+      // derived from it any more) — a row missing or malformed on that one field must not lose the
+      // addendum, unlike a genuinely missing unresolvedChannelName/unresolvedReason.
+      const [row] = toAuditRows(
+        [
+          entry({
+            detail: {
+              kind: 'emoteCount',
+              count: 2,
+              text: null,
+              targetEmoteSet: {
+                id: 'set-e',
+                isActiveSetOfChannel: true,
+                ownerLogin: null,
+                unresolvedChannelName: 'othertv',
+                unresolvedReason: 'notTracked',
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.unresolvedChannel).toEqual({
+        key: 'audit.details.unresolvedChannelNotTracked',
+        params: { channelName: 'othertv' },
       });
     });
 
