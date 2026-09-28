@@ -1599,13 +1599,14 @@ export class UsageStatsPage {
   /**
    * Whether the header "Übertragen" button is disabled — same empty-scope reasoning as
    * `exportButtonDisabled` above, plus the two locks the push shares with `app-import-trigger`
-   * (see the template comment above both buttons): any 7TV-writing run active or settling, or
-   * the set status/rows still belonging to the previous channel (`importScopeCurrent`).
+   * (see the template comment above both buttons): any 7TV-writing run active or settling, or a
+   * confirmed one still being checked before its start (`startLocked`, #280), or the set
+   * status/rows still belonging to the previous channel (`importScopeCurrent`).
    */
   protected readonly transferButtonDisabled = computed(
     () =>
       (this.atlasOrder().length === 0 && this.selection.selectedItems().length === 0) ||
-      this.arbiter.activeRun() !== null ||
+      this.arbiter.startLocked() ||
       !this.importScopeCurrent(),
   );
 
@@ -1749,7 +1750,7 @@ export class UsageStatsPage {
     importShortcutDisabled({
       selectionCount: this.importShortcutSelectionCount(),
       importScopeCurrent: this.importScopeCurrent(),
-      hasActiveRun: this.arbiter.activeRun() !== null,
+      hasActiveRun: this.arbiter.startLocked(),
     }),
   );
 
@@ -2560,10 +2561,13 @@ export class UsageStatsPage {
     // The selected set — the one the rows below were loaded for (importScopeCurrent checks exactly
     // that), so the picker disables the right set as "the source" (spec 7.3, 8.6).
     const emoteSetId = this.selectedEmoteSetId();
-    if (emoteSetId === null || !this.importScopeCurrent()) {
-      // The header button is gated on both of these, so this only guards against a click that
-      // outraces a channel switch. The scope check is what keeps a mid-switch capture from pairing
-      // the new channel's name with the previous one's set id and rows — see importScopeIsCurrent.
+    if (emoteSetId === null || !this.importScopeCurrent() || this.arbiter.startLocked()) {
+      // The header button is gated on all three, so this only guards against a click that
+      // outraces a channel switch or the arbiter's lock (`startLocked`: a run running or settling,
+      // or a confirmed start of any run still being checked before its start, #280) — silently, since
+      // nothing has been confirmed yet (Festlegung Nr. 8). The scope check is what keeps a
+      // mid-switch capture from pairing the new channel's name with the previous one's set id and
+      // rows — see importScopeIsCurrent.
       return;
     }
 

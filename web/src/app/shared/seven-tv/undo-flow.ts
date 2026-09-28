@@ -97,7 +97,9 @@ export function undoRunTarget(
  *   (`diffUndoPlans`). What drifted is skipped as `skippedDrift` with its live counterpart; a failed
  *   or incomplete read lets no row with a REMOVE run (`recheckUnavailable`), while the ADD-only rows
  *   run as confirmed (AK 8). The arbiter and the token are checked once more right before the start,
- *   because that read took time.
+ *   because that read took time. While it is out, `SevenTvUndoService.startCheckPending` is set
+ *   (#280): the confirmation is already closed, and the trigger must not look free again before
+ *   the run exists — the flag keeps it disabled and lets the page announce the wait.
  * - **The start** passes the fresh rows, every skipped candidate in file order, and the dialog's
  *   confirmation flag unchanged — the service applies the origin lock itself (spec 17 K2) and shows
  *   its own notice for what it skipped; this flow shows none of its own.
@@ -105,7 +107,7 @@ export function undoRunTarget(
  * `result` is the value frozen when the file step emitted it; nothing here re-reads a live signal.
  */
 export function startUndoFlow(deps: UndoFlowDeps, result: TransferUndoFileResult): void {
-  if (refusedByArbiter(deps) || deps.firstReadPending()) {
+  if (refusedByArbiter(deps) || deps.firstReadPending() || deps.arbiter.startPending()) {
     return;
   }
   withToken(deps, () => readAndConfirm(deps, result));
@@ -169,7 +171,11 @@ function confirmStart(
     if (refusedByArbiter(deps)) {
       return;
     }
-    readTarget(deps, result.target).subscribe({
+    // #280: the confirmation is closed and nothing runs yet — held until the read has settled on
+    // any path (answer, error, timeout, teardown), so the trigger stays disabled and the page's
+    // announcer can say why. A started run takes over from there through the arbiter.
+    deps.undoService.startCheckPending.set(true);
+    readTarget(deps, result.target, () => deps.undoService.startCheckPending.set(false)).subscribe({
       next: (fresh) => startChecked(deps, result, outcome, fresh.complete ? fresh : null),
       error: () => startChecked(deps, result, outcome, null),
     });

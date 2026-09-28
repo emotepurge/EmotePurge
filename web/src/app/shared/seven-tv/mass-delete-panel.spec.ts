@@ -5,6 +5,7 @@ import {
   Component,
   EnvironmentProviders,
   Provider,
+  Signal,
   WritableSignal,
   computed,
   signal,
@@ -195,6 +196,7 @@ describe('MassDeletePanel row composition', () => {
             syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun: signal(null),
+            startCheckPending: signal(false),
           } as unknown as SevenTvDeleteService,
         },
         {
@@ -214,13 +216,12 @@ describe('MassDeletePanel row composition', () => {
             // now aliases — read as soon as the component is constructed, not just once a restore
             // pre-check actually starts.
             restorePreCheckPending: signal(false),
+            startCheckPending: signal(false),
           } as unknown as SevenTvRestoreService,
         },
         {
           provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
+          useValue: fakeRunArbiter() as unknown as SevenTvRunArbiter,
         },
         {
           provide: SevenTvTokenService,
@@ -352,6 +353,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun,
+            startCheckPending: signal(false),
           } as unknown as SevenTvDeleteService,
         },
         {
@@ -371,13 +373,12 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             // now aliases — read as soon as the component is constructed, not just once a restore
             // pre-check actually starts.
             restorePreCheckPending: signal(false),
+            startCheckPending: signal(false),
           } as unknown as SevenTvRestoreService,
         },
         {
           provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
+          useValue: fakeRunArbiter() as unknown as SevenTvRunArbiter,
         },
         {
           provide: SevenTvTokenService,
@@ -487,6 +488,7 @@ type DeleteServiceFake = Pick<
   | 'beginConfirmedRun'
   | 'endConfirmedRun'
   | 'clearConfirmedRun'
+  | 'startCheckPending'
 >;
 
 function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteServiceFake {
@@ -510,6 +512,8 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     beginConfirmedRun: vi.fn(),
     endConfirmedRun: vi.fn(),
     clearConfirmedRun: vi.fn(),
+    // #280: the live alias read's window, aliased by the panel's `liveAliasReadPending`.
+    startCheckPending: signal(false),
     ...overrides,
   };
 }
@@ -527,6 +531,7 @@ type RestoreServiceFake = Pick<
   | 'duplicateCheckAvailable'
   | 'duplicateNoticePending'
   | 'restorePreCheckPending'
+  | 'startCheckPending'
 >;
 
 function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): RestoreServiceFake {
@@ -545,6 +550,8 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
     // test that wants to simulate the *other* restore entry already holding this gate overrides it
     // with a shared instance (see "ignores a click while the other restore entry's own pre-check…").
     restorePreCheckPending: signal(false),
+    // #280: the confirm-time check's window, same default as the gate above.
+    startCheckPending: signal(false),
     ...overrides,
   };
 }
@@ -552,6 +559,11 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
 interface RunArbiterFake {
   activeRun: WritableSignal<SevenTvRunKind | null>;
   activeClaim: () => SevenTvRunClaim | null;
+  /** #280: the restore's and the delete's own start checks (linked by `panelProviders`) or any
+   *  other participant's — `otherStartPending` stands in for an undo's or an import's. */
+  startPending: Signal<boolean>;
+  startLocked: Signal<boolean>;
+  otherStartPending: WritableSignal<boolean>;
   noteRefusedStart: ReturnType<typeof vi.fn>;
 }
 
@@ -563,12 +575,24 @@ interface RunArbiterFake {
  *  test below that expects an abort notice asserts on `abortNotice()`, never on this spy. */
 function fakeRunArbiter(
   activeRun: WritableSignal<SevenTvRunKind | null> = signal(null),
+  ...ownStartChecks: Signal<boolean>[]
 ): RunArbiterFake {
   const activeClaim = computed<SevenTvRunClaim | null>(() => {
     const kind = activeRun();
     return kind === null ? null : { kind, phase: 'running' };
   });
-  return { activeRun, activeClaim, noteRefusedStart: vi.fn() };
+  const otherStartPending = signal(false);
+  const startPending = computed(
+    () => ownStartChecks.some((check) => check()) || otherStartPending(),
+  );
+  return {
+    activeRun,
+    activeClaim,
+    startPending,
+    startLocked: computed(() => activeRun() !== null || startPending()),
+    otherStartPending,
+    noteRefusedStart: vi.fn(),
+  };
 }
 
 /** A resolved target every editable-stub answer carries — irrelevant to the delete confirmation
@@ -614,6 +638,8 @@ function panelProviders(
     emoteSetService?: EmoteSetServiceFake | null;
   } = {},
 ) {
+  const restoreService = options.restoreService ?? fakeRestoreService();
+  const deleteService = options.deleteService ?? fakeDeleteService();
   const providers: (Provider | EnvironmentProviders)[] = [
     provideHttpClient(),
     {
@@ -622,16 +648,22 @@ function panelProviders(
     },
     {
       provide: SevenTvDeleteService,
-      useValue: (options.deleteService ?? fakeDeleteService()) as unknown as SevenTvDeleteService,
+      useValue: deleteService as unknown as SevenTvDeleteService,
     },
     {
       provide: SevenTvRestoreService,
-      useValue: (options.restoreService ??
-        fakeRestoreService()) as unknown as SevenTvRestoreService,
+      useValue: restoreService as unknown as SevenTvRestoreService,
     },
     {
       provide: SevenTvRunArbiter,
-      useValue: (options.arbiter ?? fakeRunArbiter()) as unknown as SevenTvRunArbiter,
+      // Linked to the restore and delete fakes' start checks the way the real services register
+      // them (#280).
+      useValue: (options.arbiter ??
+        fakeRunArbiter(
+          signal(null),
+          restoreService.startCheckPending,
+          deleteService.startCheckPending,
+        )) as unknown as SevenTvRunArbiter,
     },
     {
       provide: SevenTvTokenService,
@@ -1571,6 +1603,7 @@ describe('MassDeletePanel — restore latch (#89)', () => {
 describe('MassDeletePanel — delete button lock, three independent sources (#89)', () => {
   let isRunning: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
+  let arbiter: RunArbiterFake;
 
   async function render(
     selectedEmotes: DeletableEmote[],
@@ -1586,7 +1619,7 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
       ],
       providers: panelProviders({
         deleteService: fakeDeleteService({ isRunning }),
-        arbiter: fakeRunArbiter(activeRun),
+        arbiter,
       }),
     }).compileComponents();
 
@@ -1605,6 +1638,7 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
   beforeEach(() => {
     isRunning = signal(false);
     activeRun = signal<SevenTvRunKind | null>(null);
+    arbiter = fakeRunArbiter(activeRun);
   });
 
   it('disables the button when the selection is empty, even with nothing else blocking', async () => {
@@ -1622,6 +1656,15 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
 
   it('disables the button while a different 7TV run is active, even with a selection and this run idle', async () => {
     activeRun.set('import');
+    const button = await render(EMOTES);
+
+    expect(button.disabled).toBe(true);
+  });
+
+  // #280: a confirmed start (of any run) whose last live read is still out locks every start trigger
+  // the arbiter gates, this one included — before its run exists and claims the arbiter.
+  it('disables the button while a confirmed start of any run is still being checked', async () => {
+    arbiter.otherStartPending.set(true);
     const button = await render(EMOTES);
 
     expect(button.disabled).toBe(true);
@@ -2033,7 +2076,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     const deleteService = { ...fakeDeleteService(), startDelete };
     const providers = panelProviders({
       deleteService,
-      arbiter: fakeRunArbiter(activeRun),
+      arbiter: fakeRunArbiter(activeRun, deleteService.startCheckPending),
       dialogOpen,
       emoteAdminService: {
         getSetWarning: () =>
@@ -2454,6 +2497,83 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     }
   });
 
+  // #280: the live alias read is the delete's own confirm-to-start window — its flag lives on the
+  // root service (the panel's `liveAliasReadPending` aliases it), so every other start trigger locks
+  // and the page can announce it. The confirmed start itself still goes through while that flag,
+  // and with it `startLocked`, is set: `startDelete`'s own re-check reads `activeClaim`.
+  describe('the window before the start (#280)', () => {
+    function startCheckPending(): boolean {
+      return (
+        TestBed.inject(SevenTvDeleteService) as unknown as DeleteServiceFake
+      ).startCheckPending();
+    }
+
+    it('holds the start check exactly while the live read is out, and starts the confirmed delete while it is still set', () => {
+      const lockedAtStart: boolean[] = [];
+      startDelete.mockImplementation(() => {
+        lockedAtStart.push(
+          startCheckPending() &&
+            (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).startLocked(),
+        );
+      });
+      expect(startCheckPending()).toBe(false);
+
+      confirm();
+      expect(startCheckPending()).toBe(true);
+
+      httpMock.expectOne(GQL).flush(
+        entriesPage([
+          { id: '7tv-1', alias: 'PogU' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+      expect(startDelete).toHaveBeenCalledTimes(1);
+      expect(lockedAtStart).toEqual([true]);
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the live read fails, blocking the delete as before', () => {
+      confirm();
+      httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+      fixture.detectChanges();
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(statusText()).toContain('massDelete.memberRead.unavailable');
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the live read hangs past its timeout', () => {
+      vi.useFakeTimers();
+      try {
+        confirm();
+        httpMock.expectOne(GQL);
+        expect(startCheckPending()).toBe(true);
+
+        vi.advanceTimersByTime(20_000);
+
+        expect(startCheckPending()).toBe(false);
+        expect(startDelete).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps the read, and releases the start check once it answers, when the panel is torn down meanwhile', () => {
+      confirm();
+      const req = httpMock.expectOne(GQL);
+
+      fixture.destroy();
+      expect(req.cancelled).toBeFalsy();
+      expect(startCheckPending()).toBe(true);
+
+      req.flush(entriesPage([]));
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(startCheckPending()).toBe(false);
+    });
+  });
+
   it('aborts when the set switched while the read was out', () => {
     confirm();
     fixture.componentRef.setInput('setId', 'set-2');
@@ -2506,6 +2626,19 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
   // the winning run is already visible in the dock.
   it('does not even open the confirmation while another 7TV run holds the arbiter', () => {
     activeRun.set('import');
+
+    fixture.componentInstance['openConfirm']();
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toBeNull();
+  });
+
+  // #280: the same silent guard while a confirmed start of any run is still being checked before its
+  // start — no run holds the arbiter yet, but the button is locked by `startLocked` all the same.
+  it('does not even open the confirmation while a confirmed start of any run is still being checked', () => {
+    (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).otherStartPending.set(true);
 
     fixture.componentInstance['openConfirm']();
 
@@ -3130,7 +3263,7 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     const providers = panelProviders({
       deleteService: fakeDeleteService({ lastRun }),
       restoreService,
-      arbiter: fakeRunArbiter(activeRun),
+      arbiter: fakeRunArbiter(activeRun, restoreService.startCheckPending),
       dialogOpen,
       emoteAdminService,
       // This block drives resolveEditableSet through the real service and HttpTestingController
@@ -4012,6 +4145,101 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
 
     expect(dialogOpen).not.toHaveBeenCalled();
     expect(startRestore).toHaveBeenCalledWith(expect.anything(), [], 1, true, 0);
+  });
+
+  it('gives up on a confirm-time check that hangs past its timeout and starts as for a failed check', async () => {
+    await mount([DONE]);
+    openRestore();
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    vi.useFakeTimers();
+    try {
+      closed.next(true);
+      const req = httpMock.expectOne(GQL);
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(req.cancelled).toBe(true);
+      expect(sentIds()).toEqual(['7tv-1']);
+      expect(startRestore.mock.calls[0][3]).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #280: the window after the confirmation, before anything runs. Here rather than in a block of
+  // its own because this block is the one that puts the restore entry itself on screen.
+  describe('the confirm-time check holds the restore entry (#280)', () => {
+    /** `SevenTvRestoreService.startCheckPending` on the fake `mount` provided — read, not held. */
+    function startCheckPending(): boolean {
+      return startCheckPendingSignal()();
+    }
+
+    function startCheckPendingSignal(): WritableSignal<boolean> {
+      return (TestBed.inject(SevenTvRestoreService) as unknown as RestoreServiceFake)
+        .startCheckPending;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('keeps the restore entry disabled from the confirmation until the confirm-time check has answered', async () => {
+      await mount([DONE]);
+      openRestore();
+      httpMock.expectOne(GQL).flush(entriesPage([]));
+      fixture.detectChanges();
+      expect(restoreEntry()?.disabled).toBe(false);
+
+      closed.next(true);
+      fixture.detectChanges();
+
+      expect(startCheckPending()).toBe(true);
+      expect(restoreEntry()?.disabled).toBe(true);
+      expect(startRestore).not.toHaveBeenCalled();
+
+      httpMock.expectOne(GQL).flush(entriesPage([]));
+      fixture.detectChanges();
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      expect(startCheckPending()).toBe(false);
+      expect(restoreEntry()?.disabled).toBe(false);
+    });
+
+    it("keeps the restore entry disabled while an undo's freshness read is out", async () => {
+      await mount([DONE]);
+      expect(restoreEntry()?.disabled).toBe(false);
+
+      (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).otherStartPending.set(true);
+      fixture.detectChanges();
+
+      expect(restoreEntry()?.disabled).toBe(true);
+    });
+
+    it('ignores a click on the restore entry while a confirmed restore is still being checked', async () => {
+      await mount([DONE]);
+      startCheckPendingSignal().set(true);
+
+      fixture.componentInstance['openRestoreConfirm']();
+
+      httpMock.expectNone('/api/seventv/me/emote-set-targets');
+      expect(dialogOpen).not.toHaveBeenCalled();
+    });
+
+    it('releases the start check when the confirm-time check hangs past its timeout', async () => {
+      await mount([DONE]);
+      openRestore();
+      httpMock.expectOne(GQL).flush(entriesPage([]));
+      vi.useFakeTimers();
+
+      closed.next(true);
+      httpMock.expectOne(GQL);
+      expect(startCheckPending()).toBe(true);
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(startCheckPending()).toBe(false);
+      expect(startRestore).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

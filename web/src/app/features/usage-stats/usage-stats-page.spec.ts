@@ -1449,6 +1449,63 @@ describe('UsageStatsPage — header export/transfer locks ask about the union, n
     expect(component['transferButtonDisabled']()).toBe(false);
   });
 
+  // #280: a confirmed start (of any run) whose last live read is still out locks every start trigger the
+  // arbiter gates — the header's "Übertragen" and the dock's copy shortcut too, not only the import
+  // trigger and the delete CTA.
+  it('locks the transfer button and the dock copy shortcut while a confirmed start is still being checked', () => {
+    const a = emote('a', 'PeepoA');
+    mount([a]);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    expect(component['transferButtonDisabled']()).toBe(false);
+    expect(component['importShortcutLocked']()).toBe(false);
+
+    const startCheckPending = signal(false);
+    component['arbiter'].register({
+      kind: 'undo',
+      isRunning: signal(false),
+      isSettling: signal(false),
+      destructiveOpen: signal(false),
+      startCheckPending,
+    });
+    startCheckPending.set(true);
+
+    expect(component['arbiter'].activeRun()).toBeNull();
+    expect(component['transferButtonDisabled']()).toBe(true);
+    expect(component['importShortcutLocked']()).toBe(true);
+    // The export writes nothing to 7TV and has no reason to wait.
+    expect(component['exportButtonDisabled']()).toBe(false);
+
+    startCheckPending.set(false);
+    expect(component['transferButtonDisabled']()).toBe(false);
+    expect(component['importShortcutLocked']()).toBe(false);
+  });
+
+  // #280, Festlegung Nr. 8: a click outracing that lock opens no target picker and says nothing.
+  it('opens no target picker for a click that outraces the lock while a confirmed start is checked', () => {
+    const a = emote('a', 'PeepoA');
+    mount([a]);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+      closed: new Subject<unknown>(),
+    } as unknown as ReturnType<Dialog['open']>);
+    const startCheckPending = signal(true);
+    component['arbiter'].register({
+      kind: 'restore',
+      isRunning: signal(false),
+      isSettling: signal(false),
+      destructiveOpen: signal(false),
+      startCheckPending,
+    });
+
+    component['openImportTarget']();
+    component['openImportTarget']('selection');
+    expect(openSpy).not.toHaveBeenCalled();
+
+    startCheckPending.set(false);
+    component['openImportTarget']();
+    expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('locks both buttons when the visible list AND the selection are both empty', () => {
     mount([]);
 

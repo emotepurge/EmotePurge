@@ -421,6 +421,14 @@ export class SevenTvUndoService {
   /** The skipped candidates of the last `startUndo` call — what the notice names, by reason. */
   readonly noticeSkipped = signal<readonly UndoSkippedRow[]>([]);
 
+  /** A confirmed undo's freshness check (`startUndoFlow`, E14) is out: the confirmation is closed,
+   *  but the run has not started yet and may still be refused (#280). Set and cleared by the flow
+   *  only, around that one read — on every exit, the caller's teardown included. Registered with
+   *  the arbiter, whose `startLocked` every 7TV start trigger binds to, so none looks free again
+   *  during that window, and `DockOutcomeAnnouncer` speaks it. Root-level rather than the trigger's
+   *  own, because the announcer that speaks it is mounted by the page, not by the trigger. */
+  readonly startCheckPending = signal(false);
+
   private noticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
   /** `true` only for the synchronous span of this service's own `cancel()`: `engine.cancel()` calls
@@ -438,6 +446,7 @@ export class SevenTvUndoService {
       isRunning: this.isRunning,
       isSettling: this.isSettling,
       destructiveOpen: this.destructiveOpen,
+      startCheckPending: this.startCheckPending,
     });
   }
 

@@ -100,9 +100,11 @@
            (`import.source.noTargetSet`/`restore.import.errors.noTargetSetForCopy`, the same
            "disabled explains itself" idiom as every other locked control, §10).
            Both write entry points carry the same two locks. ANY 7TV-writing run being active or
-           settling (arbiter.activeRun(), not just the button's own kind) — the same rule the delete
+           settling, or a confirmed start of any run still being checked before its start
+           (arbiter.startLocked(), not just the button's own kind, #280) — the same rule the delete
            trigger already follows, and the running progress in the dock is the only reason given
-           for it (UI-Designsprache.md §4.2/§7). And the set status or the rows still belonging to
+           for it (UI-Designsprache.md §4.2/§7); the pre-run wait has no dock and is spoken by
+           app-dock-outcome-announcer instead (§4.5). And the set status or the rows still belonging to
            the PREVIOUS channel: a channel switch inside this route (the import summary's "open
            target channel" link) moves channelName() at once and leaves both behind until their
            responses land, so a capture in that window would act on channel A's set under B's name —

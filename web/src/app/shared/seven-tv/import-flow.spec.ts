@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { signal, WritableSignal } from '@angular/core';
+import { computed, signal, WritableSignal } from '@angular/core';
 import { firstValueFrom, Observable, of, Subject, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +18,7 @@ import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportConfirmDialogData, ImportConfirmOutcome } from './import-confirm-dialog';
 import { ImportFlowDeps, recheckTransferPlan, startImportFlow } from './import-flow';
 import { ImportTargetChoice } from './import-target-dialog';
+import { LIVE_READ_TIMEOUT_MS } from './recovery-file-gate';
 
 /**
  * `startImportFlow` opens a dialog through the plain `Dialog` object it is handed and never
@@ -161,6 +162,10 @@ interface Harness {
   startImport: ReturnType<typeof vi.fn>;
   hasToken: WritableSignal<boolean>;
   activeRun: WritableSignal<SevenTvRunKind | null>;
+  /** The arbiter's `startPending` (#280) — another run's confirmed start still being checked. */
+  startPending: WritableSignal<boolean>;
+  /** `SevenTvImportService.startCheckPending` (#280) on the fake service. */
+  importStartCheckPending: WritableSignal<boolean>;
   noteRefusedStart: ReturnType<typeof vi.fn>;
 }
 
@@ -218,14 +223,28 @@ function setup(): Harness {
 
   const startImport = vi.fn();
   const reportTargetCheckBlocked = vi.fn();
+  const importStartCheckPending = signal(false);
   const importService = {
     startImport,
     reportTargetCheckBlocked,
+    startCheckPending: importStartCheckPending,
   } as unknown as SevenTvImportService;
 
   const activeRun = signal<SevenTvRunKind | null>(null);
   const noteRefusedStart = vi.fn();
-  const arbiter = { activeRun, noteRefusedStart } as unknown as SevenTvRunArbiter;
+  // #280: another run's confirmed start still being checked before it begins — the arbiter's
+  // `startPending`; `startLocked` derived from both the way the real arbiter derives it.
+  const startPending = signal(false);
+  const arbiter = {
+    activeRun,
+    noteRefusedStart,
+    startPending,
+    // The import's own start check counts here too, as its registration makes it count in the
+    // real arbiter — which is what the confirmed-start invariant specs below rely on.
+    startLocked: computed(
+      () => activeRun() !== null || startPending() || importStartCheckPending(),
+    ),
+  } as unknown as SevenTvRunArbiter;
 
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const dialog = { open: dialogOpen } as unknown as Dialog;
@@ -251,6 +270,8 @@ function setup(): Harness {
     startImport,
     hasToken,
     activeRun,
+    startPending,
+    importStartCheckPending,
     noteRefusedStart,
   };
 }
@@ -363,6 +384,20 @@ describe('startImportFlow', () => {
     activeRun.set('restore');
 
     expect(data.runBlocked()).toBe(true);
+  });
+
+  // #280: the executor locks for the pre-run wait too, not only for a run that already exists.
+  it("blocks the run while another run's confirmed start is still being checked", () => {
+    const { deps, dialogOpen, startPending } = setup();
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+    const data = confirmData(dialogOpen);
+    expect(data.runBlocked()).toBe(false);
+
+    startPending.set(true);
+    expect(data.runBlocked()).toBe(true);
+
+    startPending.set(false);
+    expect(data.runBlocked()).toBe(false);
   });
 
   it('starts the import immediately when confirmed and a 7TV token is already stored', () => {
@@ -538,6 +573,152 @@ describe('startImportFlow', () => {
       expect(httpPost).toHaveBeenCalled();
       expect(startImport).toHaveBeenCalledTimes(1);
       expect(reportTargetCheckBlocked).not.toHaveBeenCalled();
+    });
+  });
+
+  // #280: from the confirmation closing to the run, the import's last checks run with nothing on
+  // screen — `startCheckPending` spans exactly that, whatever ends it, and the confirmed start
+  // itself still goes through while its own flag (and with it `startLocked`) is set.
+  describe('the window before the start (#280)', () => {
+    const replaceRow: TransferRow = {
+      action: 'replace',
+      source: { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null },
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
+    };
+    const confirmedReplace = {
+      targetSetId: 'set-1',
+      targetSetName: 'set-1',
+      plan: { rows: [replaceRow] },
+    };
+
+    it('holds the start check across the pre-check and the re-check, and starts the confirmed import while it is still set', () => {
+      const h = setup();
+      const preCheck = new Subject<EditableSetResolution>();
+      const recheck = new Subject<unknown>();
+      h.resolveEditableSet.mockReturnValue(preCheck);
+      h.httpPost.mockReturnValue(recheck);
+      const lockedAtStart: boolean[] = [];
+      h.startImport.mockImplementation(() => {
+        lockedAtStart.push(h.importStartCheckPending() && h.deps.arbiter.startLocked());
+      });
+      startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      expect(h.importStartCheckPending()).toBe(false);
+
+      confirmClosed(h.dialogOpen).next(confirmedReplace);
+      expect(h.importStartCheckPending()).toBe(true);
+
+      preCheck.next({
+        status: 'editable',
+        target: {
+          emoteSetId: 'set-1',
+          setName: 'set-1',
+          ownerDisplayName: 'owner',
+          twitchLogin: 'owner',
+          trackedChannelName: 'target-channel',
+          isActiveSet: true,
+        },
+      });
+      preCheck.complete();
+      expect(h.importStartCheckPending()).toBe(true);
+      expect(h.startImport).not.toHaveBeenCalled();
+
+      recheck.next(emoteSetPage());
+      recheck.complete();
+
+      expect(h.startImport).toHaveBeenCalledTimes(1);
+      expect(lockedAtStart).toEqual([true]);
+      expect(h.noteRefusedStart).not.toHaveBeenCalled();
+      expect(h.importStartCheckPending()).toBe(false);
+    });
+
+    it('holds the start check for a plan without a replace row too, across its re-check', () => {
+      const h = setup();
+      const recheck = new Subject<unknown>();
+      h.httpPost.mockReturnValue(recheck);
+      startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(h.dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+      });
+      expect(h.importStartCheckPending()).toBe(true);
+
+      recheck.next(emoteSetPage());
+      recheck.complete();
+      expect(h.startImport).toHaveBeenCalledTimes(1);
+      expect(h.importStartCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the pre-check blocks the start', () => {
+      const h = setup();
+      h.resolveEditableSet.mockReturnValue(of<EditableSetResolution>({ status: 'notEditable' }));
+      startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(h.dialogOpen).next(confirmedReplace);
+
+      expect(h.reportTargetCheckBlocked).toHaveBeenCalledWith('notEditable');
+      expect(h.importStartCheckPending()).toBe(false);
+    });
+
+    it('releases the start check and reports the check unavailable when the pre-check hangs past its timeout', () => {
+      vi.useFakeTimers();
+      try {
+        const h = setup();
+        h.resolveEditableSet.mockReturnValue(new Subject<EditableSetResolution>());
+        startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+        confirmClosed(h.dialogOpen).next(confirmedReplace);
+        expect(h.importStartCheckPending()).toBe(true);
+
+        vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS);
+
+        expect(h.reportTargetCheckBlocked).toHaveBeenCalledWith('unavailable');
+        expect(h.startImport).not.toHaveBeenCalled();
+        expect(h.importStartCheckPending()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('releases the start check when the re-check hangs past its timeout, starting on the failed-read answer', () => {
+      vi.useFakeTimers();
+      try {
+        const h = setup();
+        h.httpPost.mockReturnValue(new Subject<unknown>());
+        startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+        confirmClosed(h.dialogOpen).next(confirmedReplace);
+
+        vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS);
+
+        expect(h.importStartCheckPending()).toBe(false);
+        expect(h.startImport).toHaveBeenCalledTimes(1);
+        // duplicateCheckAvailable false, the replace row held back and counted.
+        expect(h.startImport.mock.calls[0].slice(2)).toEqual([{ rows: [] }, 0, false, 1]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('releases the start check when the arbiter refuses the start after the re-check', () => {
+      const h = setup();
+      const recheck = new Subject<unknown>();
+      h.httpPost.mockReturnValue(recheck);
+      startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      confirmClosed(h.dialogOpen).next(confirmedReplace);
+
+      h.activeRun.set('delete');
+      recheck.next(emoteSetPage());
+      recheck.complete();
+
+      expect(h.noteRefusedStart).toHaveBeenCalledWith('import');
+      expect(h.startImport).not.toHaveBeenCalled();
+      expect(h.importStartCheckPending()).toBe(false);
     });
   });
 
@@ -1215,5 +1396,33 @@ describe('recheckTransferPlan', () => {
       duplicateCheckAvailable: false,
       replaceSkippedDrift: 1,
     });
+  });
+
+  // #280: bounded — a read that hangs past LIVE_READ_TIMEOUT_MS is the failed read above, so a
+  // confirmed import never waits for it forever.
+  it('gives up on a read that hangs past its timeout with exactly the failed-read answer', () => {
+    vi.useFakeTimers();
+    try {
+      const http = httpAnswering(new Subject<unknown>());
+      const answers: unknown[] = [];
+
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog] }).subscribe((result) =>
+        answers.push(result),
+      );
+      vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS - 1);
+      expect(answers).toEqual([]);
+      vi.advanceTimersByTime(1);
+
+      expect(answers).toEqual([
+        {
+          plan: { rows: [addPog] },
+          skippedDuplicates: 0,
+          duplicateCheckAvailable: false,
+          replaceSkippedDrift: 1,
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

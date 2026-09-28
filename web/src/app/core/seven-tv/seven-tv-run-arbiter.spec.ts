@@ -238,6 +238,47 @@ describe('SevenTvRunArbiter with stub participants', () => {
     expect(arbiter.refusedStart()).toBeNull();
   });
 
+  // #280: a confirmed start (of any run) whose last live read is still out locks the start triggers
+  // without being a claim of its own.
+  it('locks starts while a participant checks a confirmed start, without claiming the arbiter', () => {
+    const startCheckPending = signal(false);
+    arbiter.register({ ...stubParticipant('undo'), startCheckPending });
+    arbiter.register(stubParticipant('delete'));
+    expect(arbiter.startPending()).toBe(false);
+    expect(arbiter.startLocked()).toBe(false);
+
+    startCheckPending.set(true);
+
+    expect(arbiter.startPending()).toBe(true);
+    expect(arbiter.startLocked()).toBe(true);
+    expect(arbiter.activeRun()).toBeNull();
+    expect(arbiter.activeClaim()).toBeNull();
+
+    startCheckPending.set(false);
+
+    expect(arbiter.startPending()).toBe(false);
+    expect(arbiter.startLocked()).toBe(false);
+  });
+
+  it('locks starts while a run runs or settles, with no start check anywhere', () => {
+    const participant = stubParticipant('import', { isSettling: true });
+    arbiter.register(participant);
+
+    expect(arbiter.startPending()).toBe(false);
+    expect(arbiter.startLocked()).toBe(true);
+
+    participant.isSettling.set(false);
+    expect(arbiter.startLocked()).toBe(false);
+  });
+
+  it('notes nothing for a refusal while only a start check is pending — no run blocked it', () => {
+    arbiter.register({ ...stubParticipant('restore'), startCheckPending: signal(true) });
+
+    arbiter.noteRefusedStart('undo');
+
+    expect(arbiter.refusedStart()).toBeNull();
+  });
+
   it('notes nothing for a refusal while the arbiter is free — nothing blocked it', () => {
     arbiter.register(stubParticipant('delete'));
 
@@ -417,6 +458,24 @@ describe('SevenTvRunArbiter with the real run services', () => {
 
   it('reports no active run when no service is running', () => {
     expect(arbiter.activeRun()).toBeNull();
+  });
+
+  // #280: all four run services have a confirm-to-start window and register it with the arbiter.
+  it.each([
+    ['delete', () => deleteService.startCheckPending],
+    ['restore', () => restoreService.startCheckPending],
+    ['import', () => importService.startCheckPending],
+    ['undo', () => undoService.startCheckPending],
+  ])("locks starts while the %s service's start check is pending", (_kind, flag) => {
+    expect(arbiter.startLocked()).toBe(false);
+
+    flag().set(true);
+    expect(arbiter.startPending()).toBe(true);
+    expect(arbiter.startLocked()).toBe(true);
+    expect(arbiter.activeRun()).toBeNull();
+
+    flag().set(false);
+    expect(arbiter.startLocked()).toBe(false);
   });
 
   it('reports "delete" while a delete run is active, then null again after it ends', () => {

@@ -213,7 +213,7 @@ export interface DeletableEmote {
             selectedEmotes().length === 0 ||
             deleteLockReasonKey() !== null ||
             deleteService.isRunning() ||
-            arbiter.activeRun() !== null ||
+            arbiter.startLocked() ||
             liveAliasReadPending() ||
             deleteTargetCheckPending()
           "
@@ -302,12 +302,16 @@ export interface DeletableEmote {
                      Disabled while restoreConfirmPending() (#255 P2a): the target check and the
                      open-time duplicate check both run before any dialog is on screen, and a
                      second click in that window must not start a second read racing towards a
-                     second confirmation. -->
+                     second confirmation. Likewise while arbiter.startPending() (#280): a confirmed
+                     start of any run has closed its confirmation, but its last live read still
+                     decides whether the run starts, and the button must not look free meanwhile —
+                     DockOutcomeAnnouncer speaks that wait. Hidden only once a run holds the
+                     arbiter, as before; disabled rather than hidden here, so nothing jumps. -->
                 <button
                   type="button"
                   appButton="outline"
                   class="disabled:cursor-not-allowed"
-                  [disabled]="restoreConfirmPending()"
+                  [disabled]="restoreConfirmPending() || arbiter.startPending()"
                   (click)="openRestoreConfirm()"
                 >
                   {{ 'restore.button' | transloco }}
@@ -499,8 +503,13 @@ export class MassDeletePanel {
 
   /** A confirmed delete is waiting for its live alias read (`readLiveAliasesFromActiveSet` or
    *  `readLiveAliasesFromSet`, see `wantsLiveAliasRead`) — the delete button stays disabled
-   *  meanwhile, so a second click cannot open a second confirmation for the same selection. */
-  protected readonly liveAliasReadPending = signal(false);
+   *  meanwhile, so a second click cannot open a second confirmation for the same selection.
+   *
+   *  Aliases `SevenTvDeleteService.startCheckPending` since #280 rather than holding a flag of its
+   *  own: registered with the arbiter, the same state now also locks every other 7TV start trigger
+   *  and is spoken by the page's `DockOutcomeAnnouncer`. Root-level, so it is released by the read's
+   *  own `finalize`, never by this panel's lifecycle — the read is not dropped with the panel. */
+  protected readonly liveAliasReadPending = this.deleteService.startCheckPending;
 
   /** The shared pre-check (spec 4.6 point 20, AK 31) is out for the delete confirmation about to
    *  open — the delete button stays disabled meanwhile, same idiom as `liveAliasReadPending`, so a
@@ -652,7 +661,9 @@ export class MassDeletePanel {
     // above — nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2), so this stays
     // quiet the same way `openRestoreConfirm`'s own pre-dialog guard does. The re-check in
     // `startDelete` is what covers the far side of the dialog, and it does show a reason (#256 T4).
-    if (this.arbiter.activeRun() !== null) {
+    // `startLocked`, not `activeRun` alone (#280): a confirmed start of any run still being checked
+    // before its start locks this button too, and a click outracing that lock stays quiet as well.
+    if (this.arbiter.startLocked()) {
       return;
     }
     // No stored 7TV token yet: ask for it first. The prompt closes itself with `true` the moment
@@ -730,7 +741,7 @@ export class MassDeletePanel {
     // #255 P2a: refuses a second click while the pre-check chain below (this method's own
     // `resolveEditableSet`, or `openRestoreConfirmDialog`'s open-time duplicate check) is still
     // out — belt and suspenders next to the button's own `[disabled]="restoreConfirmPending()"`.
-    if (this.restoreConfirmPending()) {
+    if (this.restoreConfirmPending() || this.arbiter.startPending()) {
       return;
     }
     const run = this.deleteService.lastRun();
@@ -985,8 +996,19 @@ export class MassDeletePanel {
       // (operator decision 2026-09-22): a row whose id is present only under some of its own
       // aliases re-adds just the missing ones, and an alias another emote now holds is left out
       // rather than sent into a certain name conflict — see `filterAlreadyPresentForRestore`.
-      filterAlreadyPresentForRestore(this.httpClient, target.emoteSetId, emotes).subscribe(
-        (confirmCheck) => {
+      //
+      // #280: held from here until the check has settled, same as `startRestoreFlow`'s own
+      // confirm-time check (see there) — bounded, a timeout reading as a failed check. No
+      // `takeUntilDestroyed` on purpose: the restore is confirmed and the root service shows it
+      // wherever it runs, so this panel's teardown must not silently drop it.
+      this.restoreService.startCheckPending.set(true);
+      filterAlreadyPresentForRestore(this.httpClient, target.emoteSetId, emotes)
+        .pipe(
+          timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS),
+          catchError(() => of(restoreConfirmPreviewUnavailable(emotes))),
+          finalize(() => this.restoreService.startCheckPending.set(false)),
+        )
+        .subscribe((confirmCheck) => {
           // #149 P2 review fix: openRestoreConfirm()'s own arbiter check ran before this dialog
           // even opened — well outside the mutual-exclusion contract (design doc §4.3) it exists
           // to enforce, since a delete or import can start while the confirm dialog is open and
@@ -1031,8 +1053,7 @@ export class MassDeletePanel {
             confirmCheck.available,
             fallOnOpenTime ? preview.skippedNameTaken : confirmCheck.skippedNameTaken,
           );
-        },
-      );
+        });
     });
   }
 
@@ -1222,7 +1243,9 @@ export class MassDeletePanel {
     this.liveAliasReadPending.set(true);
     // The dock claim taken when the confirmation opened (`openConfirmDialog`) is held across this
     // read and released in the subscribe below — the read is the longest stretch in which a
-    // confirmed delete exists without a run for the dock to see.
+    // confirmed delete exists without a run for the dock to see. No `takeUntilDestroyed`, as
+    // before #280: a torn-down panel's `startDelete` starts nothing by contract
+    // (`abortReasonBeforeStart`), and the read is bounded, so its `finalize` always runs.
     loadSevenTvSetEntries(this.httpClient, frozenSetId)
       .pipe(
         // A hung request (7TV accepts the connection but never answers) must not leave the button
@@ -1240,10 +1263,16 @@ export class MassDeletePanel {
         // The service decides from its own `isRunning()` whether the dock still needs holding for
         // the abort notice or the run now carries it, so the ordering (after `startDelete`) is what
         // matters, not the call site.
-        finalize(() => this.deleteService.endConfirmedRun()),
+        //
+        // #280: the start check is released in the same place, for the same reason — and after
+        // `startDelete`, whose run then holds the triggers through the arbiter. `startDelete`'s own
+        // re-check reads `activeClaim`, never `startLocked`, which this very flag would still set.
+        finalize(() => {
+          this.liveAliasReadPending.set(false);
+          this.deleteService.endConfirmedRun();
+        }),
       )
       .subscribe((read) => {
-        this.liveAliasReadPending.set(false);
         this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, read);
       });
   }

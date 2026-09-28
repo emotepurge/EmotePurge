@@ -392,7 +392,11 @@ export const RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS = 20_000;
  *  A caller that reaches for this always still has a confirmation to open, hedged as an upper bound
  *  (`RestoreConfirmDialogData.countIsUpperBound`), never the "everything already there" shortcut —
  *  even when every row was `uncertain` and `rows` ends up empty (`available` is `false` either way,
- *  and the confirmation then names `uncertainDropped` with nothing left to confirm). */
+ *  and the confirmation then names `uncertainDropped` with nothing left to confirm).
+ *
+ *  Since #280 the confirm-time check of both restore entries uses it the same way, under the same
+ *  timeout: a hung check reads as a failed one, so the run starts on the open-time answer
+ *  (`fallOnOpenTime`) with the duplicate check reported unavailable, instead of never starting. */
 export function restoreConfirmPreviewUnavailable<T extends RestoreFilterRow>(
   rows: readonly T[],
 ): RestoreConfirmPreview<T> {

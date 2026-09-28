@@ -30,8 +30,10 @@ export interface SevenTvRefusedStart {
   blockedBy: SevenTvRunClaim;
 }
 
-/** What a run service hands the arbiter when it registers (#256, contract P1/P4). All three
- *  signals are the service's own projections over every run it has open, not only the shown one. */
+/** What a run service hands the arbiter when it registers (#256, contract P1/P4). The three
+ *  required signals are the service's own projections over every run it has open, not only the
+ *  shown one; the optional fourth, `startCheckPending` (#280), is not a run projection at all but
+ *  the window before a run exists. */
 export interface SevenTvRunParticipant {
   kind: SevenTvRunKind;
   /** The service's engine works a queue. */
@@ -40,6 +42,11 @@ export interface SevenTvRunParticipant {
   isSettling: Signal<boolean>;
   /** A run of the service with at least one destructive row is not `closed` yet. */
   destructiveOpen: Signal<boolean>;
+  /** A confirmed start of the service is still waiting for its last live read before the run
+   *  exists (#280): the delete's live alias read, the restore's confirm-time duplicate check, the
+   *  import's pre-check and re-check, the undo's freshness read. All four run services register
+   *  one; optional so a participant without such a window (a spec stub) can leave it out. */
+  startCheckPending?: Signal<boolean>;
 }
 
 /** How long `refusedStart` stays set — the transient status message of `docs/UI-Designsprache.md`
@@ -52,8 +59,9 @@ export const REFUSED_START_FEEDBACK_MS = 4000;
  * `SevenTvRunEngine` instance, so no single engine's `isRunning` can speak for all of them.
  *
  * **Registration, not a service list (#256, contract P4).** Each run service registers itself in
- * its constructor (`register(...)`) with its kind and three signals. The arbiter injects no run
- * service and imports none of their files, so the DI edge now points service → arbiter only — the
+ * its constructor (`register(...)`) with its kind, three run signals and its `startCheckPending`
+ * (#280, optional in the type). The arbiter injects no run service and imports none of
+ * their files, so the DI edge now points service → arbiter only — the
  * reverse of the 2026-09-06 decision (arbiter → services, "the services do not know the arbiter").
  * That is why no cycle arises: the arbiter's only dependency is `@angular/core`. A fourth run kind
  * is one value in `SevenTvRunKind` and one `register(...)` call in its own service. Registration
@@ -115,6 +123,21 @@ export class SevenTvRunArbiter {
   /** The kind that runs **or settles** right now, `null` when a start may go ahead. */
   readonly activeRun: Signal<SevenTvRunKind | null> = computed(
     () => this.activeClaim()?.kind ?? null,
+  );
+
+  /** A confirmed start of any participant is still waiting for its last live read (#280): the
+   *  confirmation is closed, the run does not exist yet, and it may still be refused. Not a claim —
+   *  `activeRun` stays `null`, so a start point that runs into it has no blocking run to name and
+   *  refuses nothing on its account; it only keeps the start triggers locked (`startLocked`). */
+  readonly startPending: Signal<boolean> = computed(() =>
+    this.participants().some((participant) => participant.startCheckPending?.() ?? false),
+  );
+
+  /** Whether every 7TV start trigger is locked right now: a run runs or settles (`activeRun`), or
+   *  a confirmed one is about to start (`startPending`). The one condition the triggers bind to
+   *  (docs/UI-Designsprache.md §4.2), so the set of locked buttons is the same in both windows. */
+  readonly startLocked: Signal<boolean> = computed(
+    () => this.activeRun() !== null || this.startPending(),
   );
 
   /** True while any participant has a destructive run open — the union the unload guard reads. */

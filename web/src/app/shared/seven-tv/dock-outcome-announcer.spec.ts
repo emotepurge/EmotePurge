@@ -2,7 +2,7 @@ import { Component, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ImportRunInfo,
@@ -13,11 +13,13 @@ import {
   ResyncTriggerState,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import { UndoSkippedRow } from '../../core/seven-tv/undo-plan';
 import {
   DockOutcomeAnnouncer,
+  START_CHECK_ANNOUNCE_DELAY_MS,
   copiedNotActiveNotice,
   hiddenByFilterNoticeKey,
   markedCountNoticeKey,
@@ -26,7 +28,11 @@ import {
 } from './dock-outcome-announcer';
 
 const DE_TRANSLATIONS = {
+  massDelete: {
+    startChecking: 'Löschlauf wird geprüft.',
+  },
   undo: {
+    startChecking: 'Rücknahme wird geprüft.',
     confirm: { reason: { nothingToDo: 'nichts zu tun' } },
     summary: { skipped: '{{ count }} übersprungen: {{ reason }}' },
     resync: { backendTriggered: 'Abgleich läuft bereits.' },
@@ -44,6 +50,7 @@ const DE_TRANSLATIONS = {
     },
   },
   restore: {
+    startChecking: 'Wiederherstellung wird geprüft.',
     duplicateCheckUnavailable: 'Restore-Prüfung nicht möglich.',
     skippedDuplicates: {
       one: '{{ count }} Emote ist bereits im Zielset und wurde übersprungen.',
@@ -62,6 +69,7 @@ const DE_TRANSLATIONS = {
     },
   },
   import: {
+    startChecking: 'Übertragung wird geprüft.',
     duplicateCheckUnavailable: 'Import-Prüfung nicht möglich.',
     errors: {
       targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
@@ -112,6 +120,9 @@ interface FakeOutcomeSource {
    *  entry's own pre-check has no notice at all, spec E16, 4.6 point 22). Same reasoning as `run`
    *  and `replaceSkippedDrift` above: shared shape, the restore fake's copy is never read. */
   targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
+  /** Only `SevenTvRestoreService` has this (#280) — the confirm-time check's window. Shared shape,
+   *  the import fake's copy is never read. */
+  startCheckPending: WritableSignal<boolean>;
 }
 
 function createFakeSource(): FakeOutcomeSource {
@@ -124,6 +135,7 @@ function createFakeSource(): FakeOutcomeSource {
     run: signal<ImportRunInfo | null>(null),
     replaceSkippedDrift: signal(0),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
+    startCheckPending: signal(false),
   };
 }
 
@@ -135,6 +147,8 @@ interface FakeUndoSource {
   run: WritableSignal<UndoRunInfo | null>;
   isRunning: WritableSignal<boolean>;
   resyncTrigger: WritableSignal<ResyncTriggerState>;
+  /** The freshness check's window after a confirmed undo (#280). */
+  startCheckPending: WritableSignal<boolean>;
 }
 
 function createFakeUndoSource(): FakeUndoSource {
@@ -144,6 +158,7 @@ function createFakeUndoSource(): FakeUndoSource {
     run: signal<UndoRunInfo | null>(null),
     isRunning: signal(false),
     resyncTrigger: signal<ResyncTriggerState>('idle'),
+    startCheckPending: signal(false),
   };
 }
 
@@ -209,12 +224,15 @@ describe('DockOutcomeAnnouncer', () => {
   let restoreService: FakeOutcomeSource;
   let importService: FakeOutcomeSource;
   let undoService: FakeUndoSource;
+  /** `SevenTvDeleteService.startCheckPending` (#280) — the only delete signal the announcer reads. */
+  let deleteStartCheckPending: WritableSignal<boolean>;
   let fixture: ComponentFixture<HostPage>;
 
   beforeEach(async () => {
     restoreService = createFakeSource();
     importService = createFakeSource();
     undoService = createFakeUndoSource();
+    deleteStartCheckPending = signal(false);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -228,6 +246,10 @@ describe('DockOutcomeAnnouncer', () => {
         { provide: SevenTvRestoreService, useValue: restoreService },
         { provide: SevenTvImportService, useValue: importService },
         { provide: SevenTvUndoService, useValue: undoService },
+        {
+          provide: SevenTvDeleteService,
+          useValue: { startCheckPending: deleteStartCheckPending },
+        },
       ],
     }).compileComponents();
 
@@ -650,5 +672,147 @@ describe('DockOutcomeAnnouncer', () => {
     fixture.componentInstance.withImport.set(false);
     fixture.detectChanges();
     expect(spoken()).toEqual([]);
+  });
+
+  // #280: between a confirmation closing and its run appearing, the only visible sign is a
+  // disabled trigger — this region is what says why, from a region that was already standing, and
+  // only once the read has lasted START_CHECK_ANNOUNCE_DELAY_MS (most answer sooner).
+  describe('a confirmed start still being checked (#280)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Lets `ms` pass with change detection before and after, so the effect that arms the delay
+     *  has run and the line it releases is rendered. */
+    function pass(ms: number): void {
+      fixture.detectChanges();
+      vi.advanceTimersByTime(ms);
+      fixture.detectChanges();
+    }
+
+    it('says nothing while the read is younger than the delay, then speaks the restore wait into the standing region', () => {
+      const regionAtRest = regions()[0];
+
+      restoreService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS - 1);
+      expect(spoken()).toEqual([]);
+
+      pass(1);
+      expect(regions()).toEqual([regionAtRest]);
+      expect(spoken()).toEqual(['Wiederherstellung wird geprüft.']);
+
+      restoreService.startCheckPending.set(false);
+      pass(0);
+      expect(regions()).toEqual([regionAtRest]);
+      expect(spoken()).toEqual([]);
+    });
+
+    it('never speaks a wait whose read answered before the delay ran out', () => {
+      restoreService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS / 2);
+      restoreService.startCheckPending.set(false);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS * 2);
+
+      expect(spoken()).toEqual([]);
+    });
+
+    it('starts the delay afresh for the next read instead of carrying over the last one', () => {
+      restoreService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS - 100);
+      restoreService.startCheckPending.set(false);
+      pass(0);
+      restoreService.startCheckPending.set(true);
+      pass(200);
+
+      expect(spoken()).toEqual([]);
+
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
+      expect(spoken()).toEqual(['Wiederherstellung wird geprüft.']);
+    });
+
+    it('speaks the restore wait on the voting page too', () => {
+      fixture.componentInstance.withImport.set(false);
+      restoreService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
+
+      expect(spoken()).toEqual(['Wiederherstellung wird geprüft.']);
+    });
+
+    it('speaks the undo wait on the usage-stats page only', () => {
+      undoService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
+      expect(spoken()).toEqual(['Rücknahme wird geprüft.']);
+
+      fixture.componentInstance.withImport.set(false);
+      fixture.detectChanges();
+      expect(spoken()).toEqual([]);
+    });
+
+    // The import's checks outlive a navigation, so one confirmed on the usage-stats page can still be
+    // out on a vote-session page, where it locks the mass-delete button — the line is its reason
+    // there too, even though that page shows no import section.
+    it('speaks the delete wait and the import wait on both pages', () => {
+      deleteStartCheckPending.set(true);
+      importService.startCheckPending.set(true);
+      importService.resyncTrigger.set('failed');
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
+      expect(spoken()).toEqual([
+        'Löschlauf wird geprüft.',
+        'Übertragung wird geprüft.',
+        'Abgleich fehlgeschlagen.',
+      ]);
+
+      fixture.componentInstance.withImport.set(false);
+      fixture.detectChanges();
+      expect(spoken()).toEqual(['Löschlauf wird geprüft.', 'Übertragung wird geprüft.']);
+    });
+
+    it('never speaks a delete or import wait whose read answered before the delay ran out', () => {
+      deleteStartCheckPending.set(true);
+      importService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS - 1);
+      deleteStartCheckPending.set(false);
+      importService.startCheckPending.set(false);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS * 2);
+
+      expect(spoken()).toEqual([]);
+    });
+
+    it('speaks each wait before the outcomes of its own family, in the dock reading order', () => {
+      fixture.componentInstance.hiddenSelectedCount.set(2);
+      deleteStartCheckPending.set(true);
+      restoreService.resyncTrigger.set('cooldown');
+      restoreService.startCheckPending.set(true);
+      importService.resyncTrigger.set('failed');
+      importService.startCheckPending.set(true);
+      undoService.resyncTrigger.set('backendTriggered');
+      undoService.startCheckPending.set(true);
+      pass(START_CHECK_ANNOUNCE_DELAY_MS);
+
+      expect(spoken()).toEqual([
+        '2 davon durch den Filter ausgeblendet',
+        'Löschlauf wird geprüft.',
+        'Wiederherstellung wird geprüft.',
+        'Sync-Cooldown aktiv.',
+        'Übertragung wird geprüft.',
+        'Abgleich fehlgeschlagen.',
+        'Rücknahme wird geprüft.',
+        'Abgleich läuft bereits.',
+      ]);
+    });
+
+    it('leaves no timer behind once the announcer is gone', () => {
+      restoreService.startCheckPending.set(true);
+      fixture.detectChanges();
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      fixture.destroy();
+
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 });

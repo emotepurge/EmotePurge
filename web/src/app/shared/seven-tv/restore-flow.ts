@@ -2,7 +2,7 @@ import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
 import { DestroyRef, WritableSignal, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { finalize, timeout } from 'rxjs';
+import { catchError, finalize, of, timeout } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
@@ -134,7 +134,9 @@ export function startRestoreFlow(
     // suspenders next to the caller's own disabled button (`previewPending`, see the field doc),
     // so a click that outraces it, or a caller with no button of its own, still cannot end up with
     // two confirmations racing for the same rows.
-    if (deps.previewPending()) {
+    // #280: nor while a confirmed start of any run is still being checked before its start
+    // (`arbiter.startPending`) — the arbiter would refuse this one at its own start anyway.
+    if (deps.previewPending() || deps.arbiter.startPending()) {
       return;
     }
     deps.previewPending.set(true);
@@ -280,13 +282,36 @@ export function startRestoreFlow(
         // (operator decision 2026-09-22): a row whose id is present only under some of its own
         // aliases re-adds just the missing ones, and an alias another emote now holds is left out
         // rather than sent into a certain name conflict — see `filterAlreadyPresentForRestore`.
-        filterAlreadyPresentForRestore(deps.httpClient, target.emoteSetId, emotes).subscribe(
-          (confirmCheck) => {
+        //
+        // #280: the confirmation is closed and nothing runs yet, so `startCheckPending` holds the
+        // restore buttons disabled and lets the page announce the wait — released by `finalize`
+        // once the check has settled, after the start below (a started run then keeps the buttons
+        // locked through the arbiter). Bounded by the same budget as the open-time check above,
+        // so a hung read cannot hold the flag forever: a timeout reads as the failed check the
+        // filter itself already fails open on (`restoreConfirmPreviewUnavailable`), and the
+        // fallback to the open-time answer below applies to it unchanged. Deliberately no
+        // `takeUntilDestroyed`: the restore is confirmed, and the root service starts and shows it
+        // whether or not the caller that opened it is still mounted — dropping the read on
+        // teardown would silently lose it (unlike the undo, whose flow drops both its reads).
+        deps.restoreService.startCheckPending.set(true);
+        filterAlreadyPresentForRestore(deps.httpClient, target.emoteSetId, emotes)
+          .pipe(
+            timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS),
+            catchError(() => of(restoreConfirmPreviewUnavailable(emotes))),
+            finalize(() => deps.restoreService.startCheckPending.set(false)),
+          )
+          .subscribe((confirmCheck) => {
             // #149 P2 review fix: the arbiter check above ran *before* this fetch, outside the
             // mutual-exclusion contract (design doc §4.3) it is meant to enforce — another run can
             // start in that window. Re-checked here, right before the only remaining call that
             // actually starts anything — same reasoning as the check above (#256 contract P2,
             // Festlegung Nr. 8): a confirmed start finding nothing to start notes why.
+            //
+            // Deliberately `activeRun`, not `startLocked` (#280), here and at every other confirmed
+            // start point: this restore's own `startCheckPending` is still `true` inside this
+            // handler (it is released by `finalize`, after it), so `startLocked` would refuse the
+            // very run being started — and `noteRefusedStart` names nothing without an
+            // `activeClaim`, so that refusal would vanish silently. Only a real run blocks here.
             if (deps.arbiter.activeRun() !== null) {
               deps.arbiter.noteRefusedStart('restore');
               return;
@@ -324,8 +349,7 @@ export function startRestoreFlow(
               confirmCheck.available,
               fallOnOpenTime ? preview.skippedNameTaken : confirmCheck.skippedNameTaken,
             );
-          },
-        );
+          });
       });
     }
   };

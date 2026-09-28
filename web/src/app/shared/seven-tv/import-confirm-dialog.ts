@@ -107,8 +107,11 @@ export interface ImportConfirmDialogData {
    *  `retry` stays what `readFailed` and every other reason asks for; a load that never resolved a
    *  target has nothing yet for this to force live for. */
   reloadLive: () => void;
-  /** True while any 7TV run (delete, restore, import) is active — locks the executor without a
-   *  reason text, because the running progress in the same dock already is the reason (§4.2). */
+  /** `SevenTvRunArbiter.startLocked()`: true while any 7TV run (delete, restore, import, undo) is
+   *  running or settling, or a confirmed start of any run is still being checked before its start
+   *  (#280) — locks the executor without a reason text, the same silent lock as every start trigger
+   *  (docs/UI-Designsprache.md §4.2). A run in progress explains itself in its dock; the pre-run
+   *  wait has no dock and is spoken by `DockOutcomeAnnouncer` instead (§4.5). */
   runBlocked: Signal<boolean>;
   /** For the live read of the target set before a run that removes target entries — the flow's
    *  own client, the same one its last check before the run uses. */

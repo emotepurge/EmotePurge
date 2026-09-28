@@ -193,10 +193,14 @@ export class ImportTrigger {
    *  covers it (unlike `restorePreviewPending` above). */
   private readonly undoReadPending = signal(false);
 
+  /** `startLocked`, not `activeRun` alone (#280): it also covers the window after a confirmation
+   *  in which a confirmed run's last live read still decides whether its run starts. Without
+   *  it this button looked free again for up to that read's timeout, from the confirmation closing
+   *  to the run appearing — and a click there only ever led to a refused start. */
   protected readonly disabled = computed(
     () =>
       importTriggerDisabled({
-        hasActiveRun: this.arbiter.activeRun() !== null,
+        hasActiveRun: this.arbiter.startLocked(),
         importScopeCurrent: this.importScopeCurrent(),
       }) ||
       this.restorePreviewPending() ||
@@ -204,6 +208,14 @@ export class ImportTrigger {
   );
 
   protected openDialog(): void {
+    // Same shape, same reason as `MassDeletePanel.openConfirm`'s guard: the button is disabled while
+    // `startLocked` holds (a run running or settling, or a confirmed start of any run still being
+    // checked before its start, #280), and this catches the click that outraces that lock — CDK
+    // hands focus back to this very button when a confirmation opened from it closes. Silent:
+    // nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2).
+    if (this.arbiter.startLocked()) {
+      return;
+    }
     // Frozen here, at the click — never read again from the live inputs below, so a channel switch
     // (or a set switch, T4.5) while a dialog further down either chain is still open cannot
     // retarget what gets read, validated or restored/imported (plan §1.5).

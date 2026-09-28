@@ -1,7 +1,7 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient, HttpRequest, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { DestroyRef, WritableSignal, signal } from '@angular/core';
+import { DestroyRef, WritableSignal, computed, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { Observable, Subject, firstValueFrom, of, throwError } from 'rxjs';
@@ -167,6 +167,10 @@ interface Harness {
   activeRun: WritableSignal<SevenTvRunKind | null>;
   noteRefusedStart: ReturnType<typeof vi.fn>;
   firstReadPending: WritableSignal<boolean>;
+  /** `SevenTvUndoService.startCheckPending` (#280) on the fake service. */
+  startCheckPending: WritableSignal<boolean>;
+  /** Another participant's start check on the fake arbiter (a restore's confirm-time check). */
+  otherStartPending: WritableSignal<boolean>;
   destroyRef: FakeDestroyRef;
 }
 
@@ -178,14 +182,23 @@ function setup(): Harness {
   const noteRefusedStart = vi.fn();
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const firstReadPending = signal(false);
+  const startCheckPending = signal(false);
+  const otherStartPending = signal(false);
   const destroyRef = fakeDestroyRef();
   return {
     deps: {
       dialog: { open: dialogOpen } as unknown as Dialog,
       httpClient: { post: httpPost } as unknown as HttpClient,
       tokenService: { hasToken } as unknown as SevenTvTokenService,
-      undoService: { startUndo } as unknown as SevenTvUndoService,
-      arbiter: { activeRun, noteRefusedStart } as unknown as SevenTvRunArbiter,
+      undoService: { startUndo, startCheckPending } as unknown as SevenTvUndoService,
+      arbiter: {
+        activeRun,
+        noteRefusedStart,
+        startPending: computed(() => startCheckPending() || otherStartPending()),
+        startLocked: computed(
+          () => activeRun() !== null || startCheckPending() || otherStartPending(),
+        ),
+      } as unknown as SevenTvRunArbiter,
       firstReadPending,
       destroyRef: destroyRef as unknown as DestroyRef,
     },
@@ -196,6 +209,8 @@ function setup(): Harness {
     activeRun,
     noteRefusedStart,
     firstReadPending,
+    startCheckPending,
+    otherStartPending,
     destroyRef,
   };
 }
@@ -538,6 +553,112 @@ describe('startUndoFlow', () => {
 
       expect(h.noteRefusedStart).toHaveBeenCalledWith('undo');
       expect(h.startUndo).not.toHaveBeenCalled();
+    });
+
+    // #280: the confirmation is closed and nothing runs yet while the freshness read is out.
+    it('marks the start check pending exactly while the freshness read is out, and refuses a second flow meanwhile', () => {
+      const h = setup();
+      const fresh = new Subject<unknown>();
+      h.httpPost.mockReturnValueOnce(of(readPage(fullState('1')))).mockReturnValueOnce(fresh);
+      startUndoFlow(h.deps, result([cand('1')]));
+      expect(h.startCheckPending()).toBe(false);
+
+      closedAt<UndoConfirmOutcome>(h.dialogOpen, 0).next(outcomeFor([cand('1')], fullState('1')));
+      expect(h.startCheckPending()).toBe(true);
+
+      startUndoFlow(h.deps, result([cand('1')]));
+      expect(h.httpPost).toHaveBeenCalledTimes(2);
+      expect(h.dialogOpen).toHaveBeenCalledTimes(1);
+
+      fresh.next(readPage(fullState('1')));
+      fresh.complete();
+
+      expect(h.startUndo).toHaveBeenCalledTimes(1);
+      expect(h.startCheckPending()).toBe(false);
+    });
+
+    // Same invariant as the restore's (see `restore-flow.spec.ts`): the confirmed start re-checks
+    // `activeRun`, because its own freshness read still holds `startCheckPending` at that moment.
+    it('still starts the confirmed undo while its own start check is pending at that moment', () => {
+      const h = setup();
+      const pendingAtStart: boolean[] = [];
+      const lockedAtStart: boolean[] = [];
+      h.startUndo.mockImplementation(() => {
+        pendingAtStart.push(h.startCheckPending());
+        lockedAtStart.push(h.deps.arbiter.startLocked());
+      });
+
+      confirmed(h, [cand('1')], fullState('1'));
+
+      expect(h.startUndo).toHaveBeenCalledTimes(1);
+      expect(pendingAtStart).toEqual([true]);
+      expect(lockedAtStart).toEqual([true]);
+      expect(h.noteRefusedStart).not.toHaveBeenCalled();
+    });
+
+    it("starts nothing — no prompt, no read — while a confirmed restore's check is still out", () => {
+      const h = setup();
+      h.otherStartPending.set(true);
+      h.hasToken.set(false);
+
+      startUndoFlow(h.deps, result([cand('1')]));
+
+      expect(h.dialogOpen).not.toHaveBeenCalled();
+      expect(h.httpPost).not.toHaveBeenCalled();
+    });
+
+    it('releases the start check when the freshness read fails, and still hands the full row on as recheckUnavailable', () => {
+      const h = setup();
+      confirmed(h, [cand('1')], fullState('1'), {
+        fresh: throwError(() => new Error('network')),
+      });
+
+      expect(h.startCheckPending()).toBe(false);
+      expect(h.startUndo).toHaveBeenCalledTimes(1);
+      expect(h.startUndo.mock.calls[0][2].map((row: UndoSkippedRow) => row.reason)).toEqual([
+        'recheckUnavailable',
+      ]);
+    });
+
+    it('releases the start check when the freshness read hangs past its timeout', () => {
+      vi.useFakeTimers();
+      try {
+        const h = setup();
+        confirmed(h, [cand('1')], fullState('1'), { fresh: new Subject<unknown>() });
+        expect(h.startCheckPending()).toBe(true);
+
+        vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS);
+
+        expect(h.startCheckPending()).toBe(false);
+        expect(h.startUndo).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('releases the start check and starts nothing when the caller is torn down while the freshness read is out', () => {
+      const h = setup();
+      const fresh = new Subject<unknown>();
+      confirmed(h, [cand('1')], fullState('1'), { fresh });
+
+      h.destroyRef.triggerDestroy();
+      fresh.next(readPage(fullState('1')));
+
+      expect(h.startCheckPending()).toBe(false);
+      expect(h.startUndo).not.toHaveBeenCalled();
+    });
+
+    it('releases the start check when another run claims the arbiter while the freshness read is out', () => {
+      const h = setup();
+      const fresh = new Subject<unknown>();
+      confirmed(h, [cand('1')], fullState('1'), { fresh });
+      h.activeRun.set('delete');
+      fresh.next(readPage(fullState('1')));
+      fresh.complete();
+
+      expect(h.noteRefusedStart).toHaveBeenCalledWith('undo');
+      expect(h.startUndo).not.toHaveBeenCalled();
+      expect(h.startCheckPending()).toBe(false);
     });
 
     it('asks for the token again when it was cleared while the dialog was open, and only then reads fresh', () => {

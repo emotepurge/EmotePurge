@@ -1,7 +1,8 @@
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, Signal, computed, effect, inject, input, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import {
   ResyncTriggerState,
@@ -44,6 +45,11 @@ export function resyncNoticeKey(
 ): string | null {
   return state === 'idle' ? null : `${family}.resync.${state}`;
 }
+
+/** How long a confirmed run's last live read has to be out before the announcer
+ *  speaks the wait (#280). Most reads answer well inside it, and a line on every start that was
+ *  gone again a moment later would only be noise; the triggers lock at once regardless. */
+export const START_CHECK_ANNOUNCE_DELAY_MS = 1000;
 
 /** One line of the undo's skipped candidates: how many were skipped for `reason`. */
 export interface UndoSkippedLine {
@@ -202,12 +208,23 @@ export function markedCountNoticeKey(count: number): string {
  * every gate of the dock (`!isCoarse()` included) — its region always exists, only the text inside
  * comes and goes, mirroring the service signals the visible notices are gated on.
  *
+ * Since #280 it also speaks the one state the dock cannot show at all: a confirmed delete, restore,
+ * import or undo whose last live read is still out, between the confirmation closing and the run
+ * appearing. The
+ * visible side of that window is only the disabled trigger (docs/UI-Designsprache.md §6.1 — a
+ * disabled button, no loading text), which a screen reader does not hear change. That makes it
+ * the one named exception to §4.5's rule that this region says nothing the dock does not show.
+ * The line only enters once the read has been out for `START_CHECK_ANNOUNCE_DELAY_MS`: most
+ * reads answer sooner, and a line on every single start would be noise.
+ *
  * Several messages at once: one paragraph each, in the dock's own reading order — the marked-count
  * row first (it sits at the very top of the marking half), then the hidden-by-filter line (it sits
- * just below), then restore (the marking half) before import, then the undo (#254), and within each
- * the skipped count (for restore followed by its name-taken count, for the undo one line per skip
- * reason), the check-unavailable notice, then the resync acknowledgement. `role="status"` is
- * implicitly
+ * just below), then the delete's pre-run wait (#280, the marking half's own), then restore before
+ * import, then the undo (#254). Within each of those three groups the pre-run wait of that kind
+ * comes first (#280), then the skipped count (for restore followed by its name-taken count, for the
+ * undo one line per skip reason), the check-unavailable notice, then the resync acknowledgement —
+ * in full: marked → hidden → delete wait → restore wait → restore outcomes → import wait → import
+ * outcomes → undo wait → undo outcomes. `role="status"` is implicitly
  * `aria-atomic="true"` (WAI-ARIA 1.2, §status), and Blink/WebKit apply that default — so without an
  * explicit override, a new or changed paragraph would make the whole region, standing ones
  * included, be read again. This multi-message region therefore sets `aria-atomic="false"` on its
@@ -217,7 +234,10 @@ export function markedCountNoticeKey(count: number): string {
  *
  * `withImport`: the import section — and since #254 the undo section — only exists on the
  * usage-stats page. The voting-results page mounts the mass-delete panel alone and must not speak
- * for an import or undo run it does not show.
+ * for an import or undo run it does not show. The two pre-run waits that can outlive a navigation
+ * — the delete's and the import's (#280) — are the exception: both are spoken on either page,
+ * because either can lock that page's mass-delete button. The undo's is not: its reads are dropped
+ * with the trigger that started them.
  *
  * `hiddenSelectedCount` is not a run outcome but a standing condition: how many marked rows a filter
  * currently hides. It does not self-clear the way a run outcome does (docs/UI-Designsprache.md §4.4,
@@ -251,6 +271,19 @@ export function markedCountNoticeKey(count: number): string {
     @if (hiddenSelectedCount(); as hidden) {
       <p>{{ hiddenByFilterKey() | transloco: { count: hidden } }}</p>
     }
+    <!-- #280: a confirmed delete whose live alias read is still out — the marking half's own wait,
+         so after the two marking lines and before the restore group; spoken on both pages, since
+         both mount the mass-delete panel. -->
+    @if (deleteStartCheckAudible()) {
+      <p>{{ 'massDelete.startChecking' | transloco }}</p>
+    }
+    <!-- #280: a confirmed restore whose last live check is still out — the confirmation has
+         closed and nothing in the dock says so yet; the buttons that would start another restore
+         are disabled meanwhile, and this is what says why. First in the restore group: it comes
+         before any outcome of the run it precedes. -->
+    @if (restoreStartCheckAudible()) {
+      <p>{{ 'restore.startChecking' | transloco }}</p>
+    }
     @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
       <p>
         {{ restoreSkippedKey() | transloco: { count: restoreService.skippedDuplicates() } }}
@@ -266,6 +299,14 @@ export function markedCountNoticeKey(count: number): string {
     }
     @if (restoreResyncKey(); as key) {
       <p>{{ key | transloco }}</p>
+    }
+    <!-- #280: a confirmed import whose last checks are still out, first in the import group — the
+         same reasoning as the restore's line above. Outside the withImport() gate, unlike the rest
+         of the group: those checks are not dropped on navigation, so one confirmed on the
+         usage-stats page can still be out on a vote-session page, whose mass-delete button it then
+         locks (startLocked) — this line is the reason given for that lock there too. -->
+    @if (importStartCheckAudible()) {
+      <p>{{ 'import.startChecking' | transloco }}</p>
     }
     @if (withImport()) {
       @if (importService.duplicateNoticePending() && importService.skippedDuplicates() > 0) {
@@ -299,7 +340,11 @@ export function markedCountNoticeKey(count: number): string {
         <p>{{ key | transloco }}</p>
       }
       <!-- The undo (#254) after the import, in the dock's own order: its skipped notice, then its
-           resync acknowledgement — both aria-hidden in UndoProgressSection. -->
+           resync acknowledgement — both aria-hidden in UndoProgressSection. Before them the wait
+           for a confirmed undo's freshness check (#280), same reasoning as the restore's above. -->
+      @if (undoStartCheckAudible()) {
+        <p>{{ 'undo.startChecking' | transloco }}</p>
+      }
       @for (line of undoSkippedNotice(); track line.reason) {
         <p>
           {{
@@ -331,6 +376,7 @@ export class DockOutcomeAnnouncer {
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
   private readonly undoService = inject(SevenTvUndoService);
+  private readonly deleteService = inject(SevenTvDeleteService);
 
   protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>
@@ -377,4 +423,41 @@ export class DockOutcomeAnnouncer {
   protected readonly undoResyncKey = computed(() =>
     resyncNoticeKey(this.undoService.resyncTrigger(), 'undo'),
   );
+  /** Each run service's `startCheckPending`, but only once it has held for
+   *  {@link START_CHECK_ANNOUNCE_DELAY_MS} — see `afterHolding`. */
+  protected readonly deleteStartCheckAudible = afterHolding(
+    this.deleteService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+  protected readonly restoreStartCheckAudible = afterHolding(
+    this.restoreService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+  protected readonly importStartCheckAudible = afterHolding(
+    this.importService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+  protected readonly undoStartCheckAudible = afterHolding(
+    this.undoService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+}
+
+/**
+ * `true` once `source` has been `true` for `delayMs` without a break, `false` again the moment it
+ * turns `false` — the timer is cleared on that change and on the caller's destroy (the effect's own
+ * cleanup), so the line can never appear after the wait it names has ended. Call from an injection
+ * context (a field initializer).
+ */
+function afterHolding(source: Signal<boolean>, delayMs: number): Signal<boolean> {
+  const held = signal(false);
+  effect((onCleanup) => {
+    if (!source()) {
+      held.set(false);
+      return;
+    }
+    const timer = setTimeout(() => held.set(true), delayMs);
+    onCleanup(() => clearTimeout(timer));
+  });
+  return held.asReadonly();
 }
