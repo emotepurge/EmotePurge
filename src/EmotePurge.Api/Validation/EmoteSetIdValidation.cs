@@ -12,11 +12,27 @@ internal static class EmoteSetIdValidation
 {
     private const int MaxLength = 32;
 
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(100);
+
     // \z, not $: without RegexOptions.Multiline, $ also matches before a trailing "\n", and the id is never trimmed.
-    private static readonly Regex Pattern = new(@"^[0-9A-Za-z]{1,32}\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex Pattern = new(
+        @"^[0-9A-Za-z]{1,32}\z", RegexOptions.Compiled | RegexOptions.CultureInvariant, MatchTimeout);
 
     /// <summary>No normalization step, unlike <c>ChannelNameValidation</c> — a set id is compared
     /// ordinally everywhere it is used and carries no canonical casing to fold onto.</summary>
-    public static bool IsValid(string emoteSetId) =>
-        !string.IsNullOrEmpty(emoteSetId) && emoteSetId.Length <= MaxLength && Pattern.IsMatch(emoteSetId);
+    public static bool IsValid(string emoteSetId)
+    {
+        if (string.IsNullOrEmpty(emoteSetId) || emoteSetId.Length > MaxLength)
+            return false;
+
+        try
+        {
+            return Pattern.IsMatch(emoteSetId);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // Cannot realistically happen for a 32-character linear pattern; if it ever does, the id is unfit, not a 500.
+            return false;
+        }
+    }
 }
