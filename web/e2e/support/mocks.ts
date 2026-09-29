@@ -1015,15 +1015,21 @@ export async function mockEmoteSetTargets(
     }
 
     // The **owner** account, never merely the listing one (Codex finding 2, plan decision 10): the
-    // account whose own `sevenTvUserId` equals the set's `ownerSevenTvUserId`. Falls back to the
-    // listing account when no account of the fixture carries that id — every existing usage of
-    // this mock leaves both fields at their `null` default, and `null` never matches `null` here on
-    // purpose, so those 20 callers keep getting exactly the listing account they always did.
+    // account whose own `sevenTvUserId` equals the set's `ownerSevenTvUserId`. A set with an owner
+    // id that no account of the fixture carries answers `notEditable`, like the server. A set
+    // WITHOUT an owner id (`null`, the default) keeps the listing account — a documented legacy
+    // shim for the ~20 older callers that never expressed ownership; the real server would answer
+    // `notEditable` there, so a test that asserts on the owner's Twitch id sets both fields.
     const ownerAccount =
-      accounts.find(
-        (account) =>
-          account.sevenTvUserId != null && account.sevenTvUserId === set.ownerSevenTvUserId,
-      ) ?? listingAccount;
+      set.ownerSevenTvUserId == null
+        ? listingAccount
+        : accounts.find(
+            (account) =>
+              account.sevenTvUserId != null && account.sevenTvUserId === set.ownerSevenTvUserId,
+          );
+    if (ownerAccount === undefined) {
+      return fulfillJson(route, 200, { status: 'notEditable', target: null });
+    }
 
     return fulfillJson(route, 200, {
       status: 'editable',

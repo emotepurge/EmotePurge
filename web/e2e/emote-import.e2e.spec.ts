@@ -54,6 +54,8 @@ import {
 
 const SOURCE_CHANNEL = 'sensitron';
 const TARGET_CHANNEL = 'aatrociity';
+const SOURCE_SEVEN_TV_USER_ID = '01HSOURCEOWNER';
+const TARGET_SEVEN_TV_USER_ID = '01HTARGETOWNER';
 
 const SOURCE_EMOTES: MockEmoteUsage[] = [
   {
@@ -145,15 +147,31 @@ async function mockTargetPicker(page: Page, targetEmoteSetId = 'target-set'): Pr
       twitchLogin: SOURCE_CHANNEL,
       isOwnAccount: true,
       trackedChannelName: SOURCE_CHANNEL,
+      sevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
       activeEmoteSetId: 'set-1',
-      sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      sets: [
+        {
+          id: 'set-1',
+          name: 'Hauptset',
+          isActive: true,
+          ownerSevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
+        },
+      ],
     },
     {
       twitchChannelId: 'target-1',
       twitchLogin: TARGET_CHANNEL,
       trackedChannelName: TARGET_CHANNEL,
+      sevenTvUserId: TARGET_SEVEN_TV_USER_ID,
       activeEmoteSetId: targetEmoteSetId,
-      sets: [{ id: targetEmoteSetId, name: 'Main', isActive: true }],
+      sets: [
+        {
+          id: targetEmoteSetId,
+          name: 'Main',
+          isActive: true,
+          ownerSevenTvUserId: TARGET_SEVEN_TV_USER_ID,
+        },
+      ],
     },
   ]);
 }
@@ -3620,7 +3638,7 @@ test.describe('import replace: a cancelled request is settled (#284)', () => {
       {
         sevenTvEmoteIds: ['target-a'],
         expectedChannelName: TARGET_CHANNEL,
-        targetOwnerTwitchId: null,
+        targetOwnerTwitchId: 'target-1',
       },
     ]);
     await expect.poll(() => unloadPrevented(page)).toBe(false);
@@ -5790,6 +5808,7 @@ test.describe('replace undo (#254)', () => {
         twitchLogin: SOURCE_CHANNEL,
         isOwnAccount: true,
         trackedChannelName: SOURCE_CHANNEL,
+        sevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
         activeEmoteSetId: UNDO_SET_ID,
         sets: [
           {
@@ -5797,6 +5816,7 @@ test.describe('replace undo (#254)', () => {
             name: UNDO_SET_NAME,
             isActive: true,
             ownerDisplayName: 'Sensitron',
+            ownerSevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
             editable: true,
           },
         ],
@@ -7164,8 +7184,8 @@ test.describe('owner hint (#216): the set-scoped pre-check and the reports it fe
     await installLiveStub(page);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
     // `mockTargetPicker`'s default fixture: the source account's own Twitch channel id is
-    // 'source-1', and it owns 'set-1' (the page's own active set) — no other account lists it, so
-    // the pre-check's owner resolution has exactly one candidate to land on.
+    // 'source-1', and both the account and 'set-1' (the page's own active set) carry the same
+    // 7TV user id, so the pre-check's owner resolution lands on it through the real owner match.
     await mockTargetPicker(page);
     await mockSetWarning(page, SOURCE_CHANNEL);
     await mockChannelScopedResync(page, SOURCE_CHANNEL);
@@ -7197,6 +7217,75 @@ test.describe('owner hint (#216): the set-scoped pre-check and the reports it fe
         sevenTvEmoteIds: ['7tv-1'],
         expectedChannelName: SOURCE_CHANNEL,
         targetOwnerTwitchId: 'source-1',
+      },
+    ]);
+  });
+
+  test("a delete run's sync-deleted report carries the OWNER's Twitch id, not the listing account's, on the cold pre-check", async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    // 'set-1' is LISTED under the source account (an editor grant, say) but OWNED by the target
+    // account: its `ownerSevenTvUserId` is the target's 7TV user id. A fresh page reaches the
+    // set-scoped pre-check route, which must name the target's Twitch id, never 'source-1'.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        sevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
+        activeEmoteSetId: 'set-1',
+        sets: [
+          {
+            id: 'set-1',
+            name: 'Hauptset',
+            isActive: true,
+            ownerSevenTvUserId: TARGET_SEVEN_TV_USER_ID,
+          },
+        ],
+      },
+      {
+        twitchChannelId: 'target-1',
+        twitchLogin: TARGET_CHANNEL,
+        trackedChannelName: TARGET_CHANNEL,
+        sevenTvUserId: TARGET_SEVEN_TV_USER_ID,
+        sets: [],
+      },
+    ]);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    await mockChannelScopedResync(page, SOURCE_CHANNEL);
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'set-1');
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload([{ id: '7tv-1', aliases: ['CatJAM'] }]);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+    expect(syncDeletedBodies).toEqual([
+      {
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'target-1',
       },
     ]);
   });
