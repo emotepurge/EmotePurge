@@ -441,8 +441,8 @@ public class ImportTargetOwnershipServiceTests
 
     /// <summary>
     /// A hint on an account that is neither the actor nor a grant — a revoked grant, a forged value —
-    /// is dropped before any list is read: the same requests, in the same order, and the same answer
-    /// as without a hint.
+    /// is dropped before any list is read: the same list requests, in the same order, and the same
+    /// answer as without a hint (the grants are cached here; see the cold-cache case below).
     /// </summary>
     [Fact]
     public async Task AForeignHint_IsDropped_WithTheSameRequestsAndResultAsWithoutOne()
@@ -457,6 +457,37 @@ public class ImportTargetOwnershipServiceTests
         Assert.Equal(Describe(expected), Describe(actual));
         Assert.Equal(withoutHint.ListedTwitchIds.ToArray(), withForeignHint.ListedTwitchIds.ToArray());
         Assert.Equal(withoutHint.Handler.Requests, withForeignHint.Handler.Requests);
+    }
+
+    /// <summary>
+    /// A dropped hint still costs the grants lookup: it has to be resolved against them before any
+    /// list is read. With a cold grant cache and the actor owning the set, a foreign hint therefore
+    /// costs the own list (1), the identity (1) and editor_of (1) — three budgeted requests — where
+    /// the unhinted call skips the grants and costs the own list alone. The answer is the same.
+    /// </summary>
+    [Fact]
+    public async Task AForeignHint_WithAColdGrantCache_AndTheActorOwningTheSet_CostsTheGrantsLookupToo()
+    {
+        var answers = NoSetAnywhere();
+        answers[ActorTwitchId] = ListJson(ActorSevenTvId, null, new ListedSet(EmoteSetId, ActorSevenTvId));
+        var withoutHint = CreateColdChain(answers, grantsCached: false);
+        var withForeignHint = CreateColdChain(answers, grantsCached: false);
+        withForeignHint.Handler
+            .Answer(SevenTvGqlRouteHandler.Identity, HttpStatusCode.OK, IdentityJson)
+            .Answer(SevenTvGqlRouteHandler.EditorOf, HttpStatusCode.OK, EditorOfJson());
+
+        var expected = await withoutHint.Service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+        var actual = await withForeignHint.Service.CheckAsync(
+            ActorTwitchId, ActorLogin, EmoteSetId, ownerHint: new EmoteSetOwnerHint("999", "stranger"));
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, actual.Status);
+        Assert.Equal(Describe(expected), Describe(actual));
+        Assert.Equal(1, withoutHint.Handler.CountOf(SevenTvGqlRouteHandler.List));
+        Assert.Equal(1, withoutHint.RequestBudget.Charges);
+        Assert.Equal(1, withForeignHint.Handler.CountOf(SevenTvGqlRouteHandler.List));
+        Assert.Equal(1, withForeignHint.Handler.CountOf(SevenTvGqlRouteHandler.Identity));
+        Assert.Equal(1, withForeignHint.Handler.CountOf(SevenTvGqlRouteHandler.EditorOf));
+        Assert.Equal(3, withForeignHint.RequestBudget.Charges);
     }
 
     /// <summary>
