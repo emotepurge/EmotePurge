@@ -469,7 +469,7 @@ export function startImportFlow(
     // An add-only run never asks the shared pre-check (spec 4.5 point 17) — the report's owner hint
     // is then whatever the picker's own choice already carried, never re-derived from a login: a
     // tracked target (an `'activeSet'` door, or `import-trigger.ts`'s fabricated choice) reports
-    // channel-bound and reads no hint at all (3.6, "kein Hinweis nötig").
+    // channel-bound and reads no hint at all (3.6, "no hint needed").
     startAfterCheck(outcome, toOwnerTwitchIdHint(target));
   };
 

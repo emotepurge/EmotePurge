@@ -198,7 +198,7 @@ export interface EditableSetTarget {
   trackedChannelName: string | null;
   isActiveSet: boolean;
   /** The Twitch id of the set's **owner** account — always the owner, never the listing account a
-   *  set happened to be found under (Codex finding 2, Festlegung 21). `null` when the owner is not
+   *  set happened to be found under (Codex finding 2, plan decision 21). `null` when the owner is not
    *  one of the checked accounts of this answer (cannot happen for an `editable` result today, but
    *  never assumed). This is the one place the client learns a tracked channel's own Twitch id at
    *  all (`ChannelSummary` carries none) — Delete/Restore/Undo/Import read it from here to hint the

@@ -168,8 +168,8 @@ export interface DeleteRunInfo extends RunRecordBase {
    *  report and every retry name this set, whatever the page's set dropdown shows by then. */
   setId: string;
   /** The set owner's Twitch id, from the pre-check that started this run (owner-hint design 3.6) —
-   *  `null` when the pre-check found none, or when the run started without one (a non-active-set
-   *  delete skips the pre-check entirely). Sent with every report and retry, and carried into the
+   *  `null` when the pre-check found none, or when the run started without one (the pre-check
+   *  always runs in `openConfirmDialog`, so this is the no-owner-found case only). Sent with every report and retry, and carried into the
    *  purge protocol as `PurgeRunMeta.targetOwnerTwitchId`, never re-resolved later. */
   targetOwnerTwitchId: string | null;
   /** `null` while the run is in flight **and while it is `settling`**; set once, to the settled

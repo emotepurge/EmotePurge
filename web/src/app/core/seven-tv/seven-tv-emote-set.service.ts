@@ -69,7 +69,7 @@ interface EditableSetPreCheckWireResponse {
 }
 
 /**
- * Per-set cache entry for the pre-check route (Festlegung 20, operator decision 2026-09-28): keyed
+ * Per-set cache entry for the pre-check route (plan decision 20, operator decision 2026-09-28): keyed
  * by `emoteSetId` alone, never by the hint that produced it — a hint is only an order for *which*
  * lists the backend reads, not part of the answer's identity, and up to three pre-checks (restore,
  * delete, replace) asking about the same set inside one user action must share this entry
@@ -107,7 +107,7 @@ function nonBlank(value: string): string | null {
 
 /** The Twitch id of the account whose 7TV id is `ownerSevenTvUserId`, across every account of
  *  `response` — never merely the account whose list happened to carry the set (Codex finding 2,
- *  Festlegung 21). `null` when there is no owner id at all, or no checked account carries it (the
+ *  plan decision 21). `null` when there is no owner id at all, or no checked account carries it (the
  *  latter cannot happen for a set {@link classifyEditableSet} already called `editable`, since
  *  `EmoteSetEditability.IsEditable` only says so once such an account is among the response's own —
  *  never assumed here all the same). */
@@ -139,10 +139,10 @@ function toEditableSetTarget(
   };
 }
 
-/** {@link toEditableSetTarget}'s counterpart for the pre-check route's cold path (Festlegung 19) —
+/** {@link toEditableSetTarget}'s counterpart for the pre-check route's cold path (plan decision 19) —
  *  same two fallbacks (`nonBlank(name) ?? id`, `ownerDisplayName ?? twitchLogin`), applied to the
  *  route's own raw fields instead of a list entry. The route already names the **owner** account
- *  (design 3.4 Festlegung 10), so `twitchLogin`/`twitchChannelId` need no further resolution here. */
+ *  (design 3.4 plan decision 10), so `twitchLogin`/`twitchChannelId` need no further resolution here. */
 function toEditableSetTargetFromPreCheck(target: EditableSetPreCheckWireTarget): EditableSetTarget {
   const ownerDisplayName =
     target.ownerDisplayName !== null ? nonBlank(target.ownerDisplayName) : null;
@@ -157,9 +157,9 @@ function toEditableSetTargetFromPreCheck(target: EditableSetPreCheckWireTarget):
   };
 }
 
-/** Maps the pre-check route's wire response onto {@link EditableSetResolution} (Festlegung 19),
+/** Maps the pre-check route's wire response onto {@link EditableSetResolution} (plan decision 19),
  *  1:1 except for the fallbacks {@link toEditableSetTargetFromPreCheck} applies. A response that
- *  claims `'editable'` without a target would violate the route's own contract (3.4 Festlegung 15)
+ *  claims `'editable'` without a target would violate the route's own contract (3.4 plan decision 15)
  *  — treated as `unavailable` rather than trusted, the same fail-closed instinct the rest of this
  *  pre-check already follows. */
 function toEditableSetResolutionFromPreCheck(
@@ -263,7 +263,7 @@ export class SevenTvEmoteSetService {
    *  nothing ever varies. */
   private cachedTargets: EmoteSetTargetsCacheEntry | null = null;
 
-  /** Backing store for {@link resolveEditableSet}'s per-set cache (Festlegung 20) — a `Map`, unlike
+  /** Backing store for {@link resolveEditableSet}'s per-set cache (plan decision 20) — a `Map`, unlike
    *  {@link cachedTargets}: unlike the whole target list there is one entry per set id, and several
    *  distinct sets can be pre-checked inside the same 60 s window (restore, delete, replace). Only a
    *  resolution with `status !== 'unavailable'` is ever stored; {@link loadCachedEmoteSetTargets}'s
@@ -314,7 +314,7 @@ export class SevenTvEmoteSetService {
           expiresAtMs: Date.now() + EMOTE_SET_TARGETS_CACHE_TTL_MS,
         };
         if (options.refresh) {
-          // Festlegung 20: a forced reload of the whole list (the picker's retry action) replaces
+          // plan decision 20: a forced reload of the whole list (the picker's retry action) replaces
           // the list copy above and drops every per-set pre-check answer — each was only ever an
           // answer about the list this call just replaced.
           this.cachedPreChecks.clear();
@@ -327,14 +327,14 @@ export class SevenTvEmoteSetService {
    * The one shared pre-check every first mutation into a 7TV set runs before touching it (spec 4.2,
    * 6.2, E19: restore's file step, a delete confirmation, a replace start with a replace row) —
    * classified into the four outcomes {@link EditableSetResolution} distinguishes. It trusts the
-   * backend's own `editable` verdict rather than recomputing it (spec 5.8: "das Frontend liest
-   * `editable`, es berechnet es nicht") — see {@link classifyEditableSet} for the exact decision
+   * backend's own `editable` verdict rather than recomputing it (spec 5.8: "the frontend reads
+   * `editable`, it does not compute it") — see {@link classifyEditableSet} for the exact decision
    * table on the cache-first path below.
    *
-   * **Cache-first (owner-hint design 3.5, Festlegung 19).** A fresh copy of the whole target list
+   * **Cache-first (owner-hint design 3.5, plan decision 19).** A fresh copy of the whole target list
    * (the same freshness test {@link loadCachedEmoteSetTargets} itself uses) answers locally — 0
    * requests, byte-identical to what this method always returned. Otherwise a fresh **per-set**
-   * answer (Festlegung 20, `EMOTE_SET_TARGETS_CACHE_TTL_MS`) is served next. Only once both are
+   * answer (plan decision 20, `EMOTE_SET_TARGETS_CACHE_TTL_MS`) is served next. Only once both are
    * cold does this call the set-scoped pre-check route (`GET
    * /api/seventv/me/emote-set-targets/{emoteSetId}`) — the whole target list is never reloaded by
    * this method again. `hint` is an order for which lists the backend's owner check reads next to

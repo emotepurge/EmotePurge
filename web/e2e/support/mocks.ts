@@ -972,7 +972,7 @@ export async function mockEmoteSetTargets(
   );
 
   // GET /api/seventv/me/emote-set-targets/{emoteSetId} (owner-hint design 3.4) — `resolveEditableSet`'s
-  // cold path (Festlegung 19), answered from the very same fixture so every existing caller of this
+  // cold path (plan decision 19), answered from the very same fixture so every existing caller of this
   // mock stays correct without touching its own spec: a fresh page (or one past the 60 s client
   // copy) reaches this route instead of the list one above. The classification mirrors
   // `classifyEditableSet` exactly (kind !== NORMAL wins over editable; not found or editable:false
@@ -1014,7 +1014,7 @@ export async function mockEmoteSetTargets(
       });
     }
 
-    // The **owner** account, never merely the listing one (Codex finding 2, Festlegung 10): the
+    // The **owner** account, never merely the listing one (Codex finding 2, plan decision 10): the
     // account whose own `sevenTvUserId` equals the set's `ownerSevenTvUserId`. Falls back to the
     // listing account when no account of the fixture carries that id — every existing usage of
     // this mock leaves both fields at their `null` default, and `null` never matches `null` here on

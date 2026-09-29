@@ -73,7 +73,7 @@ function preCheckUrl(emoteSetId: string): string {
 }
 
 /** A wire-shaped `'editable'` answer of the pre-check route — deliberately its own small shape
- *  rather than `targetsResponse()`'s (spec 3.4 Festlegung 15): the route answers about one set
+ *  rather than `targetsResponse()`'s (spec 3.4 plan decision 15): the route answers about one set
  *  directly, it never wraps a whole account list. */
 function preCheckEditableBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -363,9 +363,9 @@ describe('SevenTvEmoteSetService', () => {
 
   // #253/T4, spec 4.2/6.2, E19, owner-hint design 3.5: the one shared pre-check every first
   // mutation into a 7TV set runs (restore's file step, a delete confirmation, a replace start) —
-  // four outcomes. Cache-first (Festlegung 19): a fresh copy of the whole target list answers
+  // four outcomes. Cache-first (plan decision 19): a fresh copy of the whole target list answers
   // locally, 0 requests; only once that copy is cold does this reach the set-scoped pre-check
-  // route, itself cached per set for 60 s (Festlegung 20).
+  // route, itself cached per set for 60 s (plan decision 20).
   describe('resolveEditableSet — 4.2/6.2, E19, owner-hint design 3.5', () => {
     describe('cache-first — a fresh target-list copy answers locally, 0 requests', () => {
       /** Warms {@link SevenTvEmoteSetService}'s own list cache exactly the way the picker or an
@@ -512,7 +512,7 @@ describe('SevenTvEmoteSetService', () => {
         expect(result).toEqual({ status: 'unavailable' });
       });
 
-      // Codex finding 2, Festlegung 21: a set can be *listed* under one account and *owned* by
+      // Codex finding 2, plan decision 21: a set can be *listed* under one account and *owned* by
       // another, checked one of this same response — `ownerTwitchChannelId` must name the owner
       // (B), never the listing account (A); the display fields (`twitchLogin`,
       // `trackedChannelName`, `isActiveSet`) stay the listing account's, unchanged.
@@ -687,7 +687,7 @@ describe('SevenTvEmoteSetService', () => {
         expect(result).toEqual({ status: 'unavailable' });
       });
 
-      // Festlegung 20: distinct from the cache-first list above — a per-set answer, kept 60 s,
+      // plan decision 20: distinct from the cache-first list above — a per-set answer, kept 60 s,
       // so up to three pre-checks about the same set inside one user action (restore, delete,
       // replace) share it even while the whole target list stays cold.
       it('serves a second resolveEditableSet call for the same set within 60 s from the per-set cache — no second request', () => {

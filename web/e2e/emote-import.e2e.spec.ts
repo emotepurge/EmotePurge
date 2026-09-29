@@ -7124,7 +7124,7 @@ test.describe('owner hint (#216): the set-scoped pre-check and the reports it fe
     await cell(page, 'CatJAM').click();
     await copyButton(page).click();
 
-    // Opening the picker is what warms `resolveEditableSet`'s client-side list copy (Festlegung 19)
+    // Opening the picker is what warms `resolveEditableSet`'s client-side list copy (plan decision 19)
     // — the picker's own account/set read (`mockTargetPicker`'s list route).
     const picker = page.getByRole('dialog');
     await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
@@ -7132,7 +7132,7 @@ test.describe('owner hint (#216): the set-scoped pre-check and the reports it fe
 
     const confirm = await waitForImportConfirmDialog(page);
     // 59 s of virtual time between the picker's list load and the replace-carrying start — still
-    // inside the 60 s client copy (Festlegung 19/20, `EMOTE_SET_TARGETS_CACHE_TTL_MS`), so the
+    // inside the 60 s client copy (plan decision 19/20, `EMOTE_SET_TARGETS_CACHE_TTL_MS`), so the
     // pre-check must answer from it rather than asking the backend again. `runFor`, not
     // `fastForward` (CLAUDE.md) — nothing here is a repeating interval, but the convention is one
     // rule for the whole suite.

@@ -386,7 +386,7 @@ describe('parsePurgeRunProtocol', () => {
     }
   });
 
-  // Untrusted input (Regel: Dateiinhalt untrusted) — a non-string or blank value is exactly as
+  // Untrusted input (rule: file content is untrusted) — a non-string or blank value is exactly as
   // absent as a missing field, never an empty-string placeholder.
   it.each([42, '', '   '])('reads a malformed targetOwnerTwitchId (%j) as no hint', (malformed) => {
     const proto = JSON.parse(purgeRunJson(protocol('twitch-42')));
