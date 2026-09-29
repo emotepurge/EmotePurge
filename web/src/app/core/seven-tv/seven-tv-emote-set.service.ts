@@ -373,7 +373,7 @@ export class SevenTvEmoteSetService {
     body: SyncInSetBody,
   ): Observable<SyncDeletedInSetResponse> {
     return this.http.post<SyncDeletedInSetResponse>(
-      `/api/seventv/emote-sets/${emoteSetId}/sync-deleted`,
+      `/api/seventv/emote-sets/${encodeURIComponent(emoteSetId)}/sync-deleted`,
       body,
     );
   }
@@ -385,7 +385,7 @@ export class SevenTvEmoteSetService {
     body: SyncInSetBody,
   ): Observable<SyncRestoredInSetResponse> {
     return this.http.post<SyncRestoredInSetResponse>(
-      `/api/seventv/emote-sets/${emoteSetId}/sync-restored`,
+      `/api/seventv/emote-sets/${encodeURIComponent(emoteSetId)}/sync-restored`,
       body,
     );
   }
@@ -484,7 +484,7 @@ export class SevenTvEmoteSetService {
    * rows into *our* database for a tracked channel, and an untracked target has none to pull into.
    */
   reportImportedToSet(emoteSetId: string, body: SyncImportedToSetBody): Observable<void> {
-    return this.http.post<void>(`/api/seventv/emote-sets/${emoteSetId}/sync-imported`, body);
+    return this.http.post<void>(`/api/seventv/emote-sets/${encodeURIComponent(emoteSetId)}/sync-imported`, body);
   }
 
   /** The pre-check route itself (owner-hint design 3.4) — {@link resolveEditableSet}'s cold path
@@ -504,7 +504,7 @@ export class SevenTvEmoteSetService {
       params = params.set('ownerLogin', hint.twitchLogin);
     }
     return this.http
-      .get<EditableSetPreCheckWireResponse>(`/api/seventv/me/emote-set-targets/${emoteSetId}`, {
+      .get<EditableSetPreCheckWireResponse>(`/api/seventv/me/emote-set-targets/${encodeURIComponent(emoteSetId)}`, {
         params,
       })
       .pipe(map((response) => toEditableSetResolutionFromPreCheck(response)));

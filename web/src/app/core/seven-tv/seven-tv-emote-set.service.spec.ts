@@ -779,6 +779,36 @@ describe('SevenTvEmoteSetService', () => {
     });
   });
 
+  describe('a set id from an untrusted file is encoded into every set-scoped path', () => {
+    const crafted = 'a/b?c#d/../e';
+    const encoded = encodeURIComponent(crafted);
+
+    it('encodes it on the pre-check, sync-deleted, sync-restored and sync-imported routes', () => {
+      service.resolveEditableSet(crafted).subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.url === `/api/seventv/me/emote-set-targets/${encoded}`)
+        .flush(preCheckEditableBody());
+
+      const deleted = { sevenTvEmoteIds: ['7tv-1'], expectedChannelName: null };
+      service.reportDeletedInSet(crafted, { ...deleted, targetOwnerTwitchId: null }).subscribe();
+      httpMock.expectOne(`/api/seventv/emote-sets/${encoded}/sync-deleted`).flush({});
+
+      service.reportRestoredInSet(crafted, { ...deleted, targetOwnerTwitchId: null }).subscribe();
+      httpMock.expectOne(`/api/seventv/emote-sets/${encoded}/sync-restored`).flush({});
+
+      service
+        .reportImportedToSet(crafted, {
+          sevenTvEmoteIds: ['7tv-1'],
+          sourceChannelName: 'handofblood',
+          sourceKind: 'channel',
+          leaderboardSort: null,
+          targetOwnerTwitchId: null,
+        })
+        .subscribe();
+      httpMock.expectOne(`/api/seventv/emote-sets/${encoded}/sync-imported`).flush(null);
+    });
+  });
+
   describe('reportRestoredInSet — 5.1/6.4 set-centric bookkeeping', () => {
     it('POSTs sevenTvEmoteIds and expectedChannelName to the set-scoped sync-restored route', () => {
       let result: SyncRestoredInSetResponse | undefined;
