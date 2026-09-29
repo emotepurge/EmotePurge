@@ -111,11 +111,19 @@ holds inside the lists' 60 s.
   request already in flight is the only extra cost. An unreadable own list is the partial outage it
   always was (a find in G's list is admissible, none is "unavailable"); an unreadable G's list is
   noted and the walk goes on. The two parallel list reads compete for the emote-set-list breaker's
-  single half-open probe and the provider budget's two concurrency slots, so "own list unreadable"
-  becomes somewhat more likely than in the serial walk; in that case the hinted grant's evidence
-  counts under the partial-outage rule exactly as an unreadable own list did before (the
-  `NoSevenTvAccount` guard only applies when the own list reads `NoSevenTvAccount`), and 7TV still
-  enforces write permission itself. Accepted. The early 403 for "listed only under foreign owners" still falls only
+  single half-open probe and the provider budget's two concurrency slots — a race the serial walk
+  never had, because there the own read *is* the probe and its success closes the breaker for the
+  next one. When both cold reads reach a half-open breaker, one of them is denied and the list
+  service holds that denial as `Unavailable` for its one-second minimum. If the own read loses, the
+  hinted grant's evidence counts under the partial-outage rule exactly as an unreadable own list
+  did before (the `NoSevenTvAccount` guard only applies when the own list reads
+  `NoSevenTvAccount`). If the hinted read loses, the walk skips that grant as read, and a set owned
+  only by it ends `Unavailable` for that second — the pre-check says "unavailable", the report
+  answers 503 and its 2-s retry lands on a closed breaker. Accepted over sequencing the two reads:
+  the race is confined to the moment a breaker window ends, fails closed, and never grants
+  anything, while a serial hinted walk would double the worst case under budget contention (two
+  times 5 s wait plus 10 s timeout, beyond the client's 20-s pre-check bound). 7TV still enforces
+  write permission itself. The early 403 for "listed only under foreign owners" still falls only
   after the full walk.
 - **Always the owner's identity, never the listing account's** (finding 2). A match names the
   account whose 7TV id is the set's owner id — the same identity the report writes to the audit row.
