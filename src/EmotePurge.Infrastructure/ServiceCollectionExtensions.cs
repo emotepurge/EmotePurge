@@ -93,6 +93,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAuditLogQueryService, AuditLogQueryService>();
         services.AddScoped<IEmoteService, EmoteService>();
         services.AddScoped<IEmoteSetOwnershipService, EmoteSetOwnershipService>();
+        services.AddScoped<ITrackedEmoteSetMembershipService, TrackedEmoteSetMembershipService>();
         services.AddScoped<IEmoteSetStatusService, EmoteSetStatusService>();
         services.AddScoped<IEmoteListQueryService, EmoteListQueryService>();
 
