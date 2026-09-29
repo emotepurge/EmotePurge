@@ -50,7 +50,7 @@ festgehalten, damit kein Task einer falschen Zeilenangabe hinterherläuft.
 | Tests | `AuthFilterMatrixTests.cs:57-72` (401-Liste), `:454-540` (`EmoteSets_*`-Fälle der Dropdown-Route) | Muster für die neue Filterkette |
 | Tests | `SevenTvForeignEmoteSetEndpointTests.cs:135-175` | 429-Fälle der Foreign-Route (10 Permits spenden, elfter → 429) — bleiben |
 | i18n | `web/public/i18n/de.json:339-346`, `en.json` gleiche Stelle | `admin.rateLimits.policies.names.<PolicyName>`; `admin-monitoring-page.ts:327/426` rendert `'admin.rateLimits.policies.names.' + policy.name` |
-| E2E | `web/e2e/support/mocks.ts:1061-1098` `mockForeignEmoteSetPreview` | mockt `**/api/seventv/channels/{c}/emotes*`; Tracked-Nutzer: `usage-atlas.e2e.spec.ts:1044/1142/1242`, `vote-ballot.e2e.spec.ts:366/611/676/742`; Foreign-Nutzer (bleiben): `emote-import.e2e.spec.ts` (7 Stellen, plus 4 eigene `page.route`) |
+| E2E | `web/e2e/support/mocks.ts:1061-1098` `mockForeignEmoteSetPreview` | mockt `**/api/seventv/channels/{c}/emotes*`; Tracked-Nutzer: `usage-atlas.e2e.spec.ts:1044/1142/1242`, `vote-ballot.e2e.spec.ts:366/611/676/742`; Foreign-Mock bleibt für den Import-Ziel-Loader: `emote-import.e2e.spec.ts` (7 Stellen, plus 4 eigene `page.route`); der K4-Block ab `:3890` (`mockNonActiveSetView` `:3893-3916`, Deep-Link `usage-stats?emoteSetId=set-halloween` `:3919`) braucht zusätzlich den Tracked-Mock |
 
 **Policy-Vorrang Gruppe vs. Route (verifiziert):** `EnableRateLimitingAttribute` „Replaces any
 policies currently applied to the endpoint" (Microsoft Learn, `EnableRateLimitingAttribute`-Remarks;
@@ -68,10 +68,15 @@ gegenstandslos: sie wird wie die Dropdown-Route auf `app` registriert und trägt
 beginnt mit `CanManageChannelAsync` — `canManage` ist eine echte Teilmenge von `canViewUsageStats`
 (`channel.model.ts:11-12` dokumentiert das ebenso). Jeder Aufrufer, der die Vote-Detail-Lesung
 auslöst, passiert also `UsageStatsAccessAuthorizationFilter`. **Kein Risiko, keine Entscheidung
-nötig.** Der Kanalname der Vote-Detail-Seite ist der Routen-Kanal; das Session-Set gehört per
-`VoteSessionService`-Schritt 0 zu genau diesem Kanal, die Mitgliedschaftsprüfung geht also durch.
+nötig.** Der Kanalname der Vote-Detail-Seite ist der Routen-Kanal. Die Mitgliedschaft des Session-Sets
+wurde aber **nur zur Anlagezeit** bewiesen: fällt das Set später aus der 7TV-Liste des Kanals und ist
+nicht das aktive Set, antwortet die neue Route 404 → `sessionSetMembersState` `'unavailable'` →
+das Massenlösch-Panel ist gesperrt (generischer Sperrtext, kein neuer i18n-Text). Das ist gewollt:
+heute kann das Vote-Detail aus einem Set löschen, das nicht mehr zum Kanal gehört (die
+Bestätigungs-Lesung geht direkt an 7TV, `mass-delete-panel.ts:1283`); die neue Route wendet die
+Anlage-Scoping-Regel konsequent auch dort an. Bekannte Grenze, im DECISIONS-Eintrag zu nennen.
 
-**Doppel-Request beim Deep-Link (aus dem Code hergeleitet, im Task 5 nachzuweisen):**
+**Doppel-Request beim Deep-Link (aus dem Code hergeleitet, im Task 4 nachzuweisen):**
 `liveMembersResource.params` (`usage-stats-page.ts:680-685`) liefert bei jedem Neuberechnen ein
 **neues Objekt** `{ channelName, emoteSetId }`. Es liest `selectedEmoteSetId()` **und**
 `activeEmoteSetId()`. Landet beim Deep-Link `?emoteSetId=B` die Set-Liste vor dem Set-Status, ist
@@ -115,6 +120,9 @@ Status zuerst, gibt es nur einen Request. Dieselbe Bug-Klasse wurde am Vote-Deta
   `AddEndpointFilter<UsageStatsAccessAuthorizationFilter>()` →
   `AddEndpointFilter<EmoteSetIdValidationFilter>()` →
   `RequireRateLimiting(RateLimitPolicyNames.TrackedEmoteSetPreview)`.
+  Filterreihenfolge bindend: `ChannelNameValidation` → `UsageStatsAccess` → `EmoteSetIdValidation`;
+  ein Aufrufer ohne Zugriff bekommt also 403 **vor** 400 `invalid_emote_set_id` (Präzedenz der
+  Usage-Stats-Routen).
   Middleware-Reihenfolge wie überall: Auth und Limiter laufen **vor** jedem Endpoint-Filter; ein
   ungültiger Set-ID-Wert bei verbrauchtem Budget antwortet 429, nicht 400 (derselbe dokumentierte
   Vertrag wie AK 14 der Foreign-Route).
@@ -142,10 +150,10 @@ Status zuerst, gibt es nur einen Request. Dieselbe Bug-Klasse wurde am Vote-Deta
 | anonym | 401 | — |
 | Session ohne vollständige Claims | 401 | — |
 | Kanalname formal ungültig | 400 | `invalid_channel_name` (gewinnt vor 403, wie überall) |
-| Aufrufer ohne Usage-Stats-Zugriff | 403 | — (bare, wie die Dropdown-Route) |
-| Set-ID formal ungültig | 400 | `invalid_emote_set_id` — **bevor** ein Service aufgerufen wird |
+| Aufrufer ohne Usage-Stats-Zugriff | 403 | — (bare, wie die Dropdown-Route; gewinnt vor 400 `invalid_emote_set_id`) |
+| Set-ID formal ungültig (Aufrufer mit Zugriff) | 400 | `invalid_emote_set_id` — **bevor** ein Service aufgerufen wird |
 | Kanal nicht getrackt (`GetByNameAsync` null) | 404 | — (bare, exakt wie die Dropdown-Route `EmoteEndpoints.cs:66-69`) |
-| Set gehört nicht zum Kanal (inkl. `TwitchChannelId == null`, `NoSevenTvAccount`, Set nicht `NORMAL` und nicht aktiv) | 404 | `emote_set_not_found` |
+| Set gehört nicht zum Kanal (inkl. `TwitchChannelId == null`, `NoSevenTvAccount`, Set nicht `NORMAL` und nicht aktiv; das aktive Set ist stets Mitglied) | 404 | `emote_set_not_found` |
 | Set-Liste nicht lesbar (`RateLimited`/`Unavailable`/`BudgetExhausted`) | 503 | `foreign_channel_seventv_unavailable` — dieselbe Semantik wie die Dropdown-Route `:88-92` |
 | Mitglied, Vorschau-Lookup ≠ Ok | wie Foreign-Route | **dasselbe Mapping** wie `SevenTvEndpoints.cs:69-91` (NoActiveEmoteSet → 404 `foreign_channel_no_active_emote_set`, SevenTvUnavailable/SevenTvRateLimited/ProviderBudgetExhausted → 503 `foreign_channel_seventv_unavailable`, ChannelNotOnTwitch/TwitchUnavailable/NoSevenTvAccount → wie dort, obwohl der Set-ID-Pfad sie nie liefert) |
 | Budget der neuen Policy verbraucht | 429 | `rate_limit_exceeded` + `Retry-After` (Limiter, unverändert) |
@@ -182,22 +190,32 @@ Routen dieselbe Tabelle antworten und nicht auseinanderlaufen können.
   Anpassung). Die drei Nicht-Ok-Zweige (TwitchChannelId null, NoSevenTvAccount, Fehlerstatus) werden
   **nicht** geteilt, sondern im neuen Service mit derselben Entscheidung nachgebildet — so kann die
   Vote-Anlage nie durch diesen Plan anders antworten als heute.
+- **`VoteSessionService` bleibt unverändert** über den `Ok`-Zweig hinaus (s. o.). Der neue Dienst
+  beantwortet das aktive Set schon vor der Listen-Lesung (erste Zeile der Tabelle unten); die geteilte
+  Regel behält ihre Aktiv-Id-Klausel für die Vote-Anlage.
 - **Infrastructure:** `Infrastructure/Services/TrackedEmoteSetMembershipService.cs`, Konstruktor
   `AppDbContext` + `ISevenTvEmoteSetListService`; Kanal per `db.LoadChannelReadOnlyAsync`
   (`Persistence/ChannelQueries.cs:37`, reiner Lesepfad). Entscheidungstabelle:
   - Kanal null → `ChannelNotFound`
+  - `channel.ActiveEmoteSetId` nicht leer und ordinal gleich der angefragten Set-Id → `Member`,
+    **ohne** den Listen-Dienst aufzurufen. `IsBotActive` und die Ausschlussliste werden bewusst **nicht**
+    geprüft (Geschwister-Semantik: die Dropdown-Route `EmoteEndpoints.cs:64-69` →
+    `ChannelQueries.LoadChannelReadOnlyAsync`, `UsageStatsAccessAuthorizationFilter`/
+    `ChannelAccessService.CanViewUsageStatsAsync` und die Vote-Anlage `VoteSessionService.cs:71-99`
+    bedienen alle ausgeschiedene Kanäle, bis die Retention sie löscht). Das gilt auch für eine veraltete
+    `ActiveEmoteSetId` eines inaktiven Kanals (dieselbe Regel wie bei der Vote-Anlage / E21).
   - `TwitchChannelId == null` → `NotMember` (wie Vote-Anlage: nichts, wonach man 7TV fragen könnte)
   - Liste `Ok` → Regel → `Member`/`NotMember`
   - Liste `NoSevenTvAccount` → `NotMember` (eine Antwort, kein Fehler — aber keine, in der das Set
     zum Kanal gehören kann)
   - Liste `RateLimited`/`Unavailable`/`BudgetExhausted` → `SevenTvUnavailable`
   - unbekannter Status → `UnreachableException` (Muster der Dropdown-Route)
-  - Aktives Set mit `ActiveEmoteSetId == ""` (nie synchronisiert): die Gleichheitsprüfung kann für
-    eine gültige Set-ID nie wahr werden (die Id-Validierung lässt Leerstrings nicht durch), also
-    entscheidet allein die Liste. Kein Sonderfall im Code, aber ein Testfall.
+  - `ActiveEmoteSetId == ""` (nie synchronisiert): zählt nie als Treffer (die Zeile oben verlangt
+    „nicht leer"; die Id-Validierung lässt Leerstrings ohnehin nicht durch), also entscheidet allein
+    die Liste. Ein Testfall.
 - Registrierung **nur** in `ServiceCollectionExtensions.AddEmotePurgeInfrastructure` (Scoped, neben
   `IEmoteSetOwnershipService` :95).
-- Kosten: eine Listen-Lesung je Aufruf, im Normalfall aus dem 60-s-Cache, den das Dropdown derselben
+- Kosten: für das aktive Set keine Listen-Lesung, sonst eine je Aufruf, im Normalfall aus dem 60-s-Cache, den das Dropdown derselben
   Seite gerade erst gefüllt hat; kalt eine gehärtete 7TV-Anfrage je Kanal und Minute — über alle
   Nutzer geteilt, unter Budget/Breaker des Listen-Dienstes.
 
@@ -256,8 +274,8 @@ Routen dieselbe Tabelle antworten und nicht auseinanderlaufen können.
 
 ## 2. Tasks
 
-Reihenfolge ist bindend (Task 2 braucht Task 1; Task 4 braucht Task 2; Task 5 ist von 2–4
-unabhängig, läuft aber nach Task 4, damit sein Test die neue URL benutzt). Jeder Task endet mit den
+Reihenfolge ist bindend: 2 braucht 1, 3 braucht 2, 4 braucht 3 (sein Test benutzt die neue URL),
+5 braucht 4, 6 braucht 5. Jeder Task endet mit den
 in ihm genannten Gates; „grün" ist keine Fertigmeldung ohne Blick auf die Naht (Memory „Grüne
 Suiten keine Fertigmeldung").
 
@@ -282,7 +300,10 @@ Suiten keine Fertigmeldung").
       Fall pro Zeile der Entscheidungstabelle in 1.3 inkl. `ChannelNotFound`, `TwitchChannelId null`,
       `NoSevenTvAccount`, alle drei Fehlerstatus, Normalisierung des Kanalnamens (`HandOfBlood` →
       Treffer), und dass der Listen-Dienst bei `ChannelNotFound`/`TwitchChannelId null` **nicht**
-      aufgerufen wird.
+      aufgerufen wird. Dazu: aktives Set → `Member` und der Listen-Dienst wird **nicht** aufgerufen
+      (`DidNotReceive`); ein deaktivierter Kanal (`IsBotActive = false`) antwortet wie die
+      Dropdown-Route — Set in der Liste → `Member`, aktives Set → `Member` ohne Listen-Aufruf (auch mit
+      veralteter `ActiveEmoteSetId`), nie `ChannelNotFound`.
 - [ ] `VoteSessionServiceTests` unverändert grün.
 - [ ] Gates: `dotnet build EmotePurge.slnx`, `dotnet test EmotePurge.slnx` (Docker läuft),
       `dotnet format EmotePurge.slnx --verify-no-changes`.
@@ -322,9 +343,11 @@ Dienst substituiert werden), `EmoteRoutePolicyTests.cs`, `AuthFilterMatrixTests.
 - [ ] `EmoteRoutePolicyTests`: neue `InlineData`-Zeile → `TrackedEmoteSetPreview`.
 - [ ] `AuthFilterMatrixTests`: neue Route in beide 401-Theorien; 403 ohne Usage-Stats-Zugriff (Dienst
       nicht aufgerufen); 400 `invalid_channel_name` gewinnt vor 403 — eigener Fall für die neue
-      Route nach dem Muster `ChannelNameValidation_Answers400_BeforeAnyAuthorizationFilterRuns`
-      (:1121-1135; die bestehende Theorie deckt nur `GET /api/channels/{channelName}`); 400
-      `invalid_emote_set_id` ohne Dienst-Aufruf; 404 bare bei `ChannelNotFound`.
+            nach dem Muster `ChannelNameValidation_Answers400_BeforeAnyAuthorizationFilterRuns`
+      (:1121-1135; die bestehende Theorie deckt nur `GET /api/channels/{channelName}`); 403 **vor**
+      400 `invalid_emote_set_id` (Aufrufer ohne Zugriff mit formal ungültiger Set-Id → 403, Dienst nicht
+      aufgerufen); 400 `invalid_emote_set_id` für Aufrufer mit Zugriff ohne Dienst-Aufruf; 404 bare bei
+      `ChannelNotFound`.
 - [ ] Neue Datei `TrackedEmoteSetPreviewEndpointTests.cs` (Muster `SevenTvForeignEmoteSetEndpointTests`):
       404 `emote_set_not_found` bei `NotMember` **und** `ForeignEmoteSet.DidNotReceive()`; 503
       `foreign_channel_seventv_unavailable` bei `SevenTvUnavailable` ohne Vorschau-Aufruf; 200 mit
@@ -338,15 +361,18 @@ Dienst substituiert werden), `EmoteRoutePolicyTests.cs`, `AuthFilterMatrixTests.
       noch ≠ 429 — und umgekehrt 10 auf der Foreign-Route, die neue antwortet noch ≠ 429.
 - [ ] `AdminRateLimitsEndpointTests`: Reflection-Test grün; zusätzlich Kapazität 30 und Partition
       `twitch-user` für die neue Policy pinnen (wie :234-238 für `ForeignEmoteLookup`).
-- [ ] `docs/DECISIONS.md`: neuer Eintrag **oben** (englisch, Titel mit Datum 2026-09-29,
-      `**Betrifft:**`-Zeile mit allen berührten Dateien), Inhalt s. Abschnitt 3.
+- [ ] `docs/DECISIONS.md`: neuer Eintrag **oben** (englisch, Titel mit Datum 2026-09-29), Inhalt
+      s. Abschnitt 3 — in diesem Commit die Punkte 1–5 und 7; die `**Betrifft:**`-Zeile nennt nur
+      Dateien, die nach Task 1/2 existieren (Task 3 erweitert sie, Task 4 fügt Punkt 6 hinzu).
 - [ ] `docs/Architectur.md`: Zeile in der Endpoint→Filter-Tabelle für die neue Route (Kette + Policy).
       Optional in derselben Änderung: die veraltete `ExternalApi`-Nennung der Emotes-/Usage-Stats-
       Zeilen korrigieren — **nur, wenn der Betreiber den Offenen Punkt 3 freigibt**.
-- [ ] Gates: `dotnet test EmotePurge.slnx`, `dotnet format EmotePurge.slnx --verify-no-changes`.
+- [ ] Gates: `dotnet test EmotePurge.slnx`, `dotnet format EmotePurge.slnx --verify-no-changes`;
+      da der Task `web/public/i18n/{de,en}.json` ändert, zusätzlich
+      `npm --prefix web run format:check` und `npm --prefix web test -- --watch=false`.
 - [ ] Ein Commit: `feat(api): serve a tracked channel's set preview from its own rate-limit bucket` —
-      enthält Policy, Route, Telemetrie, i18n-Labels, Tests, den DECISIONS-Eintrag und die
-      Architectur-Zeile (Regel 3: Vertragsänderung und Eintrag im selben Commit).
+      enthält Policy, Route, Telemetrie, i18n-Labels, Tests, den DECISIONS-Eintrag (Punkte 1–5, 7) und
+      die Architectur-Zeile (Regel 3: Vertragsänderung und Eintrag im selben Commit).
 
 **Abnahme:** `EmoteRoutePolicyTests` pinnt die Policy, `AuthFilterMatrixTests` deckt 401/403/404/400
 in der richtigen Reihenfolge, die Bucket-Unabhängigkeit ist in beide Richtungen getestet, der
@@ -364,29 +390,41 @@ Reflection-Test der Admin-Deskriptoren ist grün, der DECISIONS-Eintrag steht ga
 - [ ] Service: privater Tracked-Loader + `loadCachedEmoteSetPreview` darauf umstellen;
       `loadEmoteSetPreview` unverändert lassen (Diff darf diese Methode nicht berühren).
 - [ ] `seven-tv-emote-set.service.spec.ts`: alle `loadCachedEmoteSetPreview`-Fälle auf die neue URL
-      (Matcher: Pfad exakt, `refresh` als einziger Query-Parameter bei `refresh: true`, sonst keiner);
+      (Matcher: exakter Pfad bzw. Regex `…/emote-sets/[^/]+/emotes$` — **nicht** das Präfix
+      `/api/channels/a/emote-sets`, das auch die Dropdown-Anfrage träfe; `refresh` als einziger
+      Query-Parameter bei `refresh: true`, sonst keiner);
       neuer Fall: Set-ID mit URL-relevanten Zeichen wird per `encodeURIComponent` encodiert, Kanalname
       normalisiert (`HandOfBlood` → `handofblood` im Pfad); Regressionsfall: `loadEmoteSetPreview`
       ruft weiterhin `/api/seventv/channels/{c}/emotes?emoteSetId=`.
 - [ ] `usage-stats-page.spec.ts` und `vote-session-detail-page.spec.ts`: Request-Matcher auf die neue
-      URL (Pfad enthält die Set-ID, kein `emoteSetId`-Query). Helfer `liveListRequests`/`EMOTE_SET_PATH`
-      zentral umstellen, damit nicht sechs Stellen einzeln driften.
+      URL (Pfad enthält die Set-ID, kein `emoteSetId`-Query; Matcher wie oben exakt, nicht Präfix).
+      Helfer `liveListRequests`/`EMOTE_SET_PATH` zentral umstellen, damit nicht sechs Stellen einzeln
+      driften. Neuer Vitest-Fall in `vote-session-detail-page.spec.ts`: 404 von der neuen Route →
+      Sperrgrund `massDelete.memberRead.lock.unavailable` (Set nachträglich aus der Kanalliste gefallen).
 - [ ] E2E: neuer Helfer `mockTrackedEmoteSetPreview(page, channelName, response)` in `mocks.ts` neben
       `mockForeignEmoteSetPreview` (Route-Glob `**/api/channels/{c}/emote-sets/*/emotes*`, gleiche
       Body-Form; Doc erklärt, welche Seiten ihn nutzen). `usage-atlas.e2e.spec.ts` (3 Stellen + der
       Kommentar :882) und `vote-ballot.e2e.spec.ts` (4 Stellen) wechseln auf den neuen Helfer;
-      `emote-import.e2e.spec.ts` bleibt auf `mockForeignEmoteSetPreview` (Import-Ziel-Loader und K3
-      nutzen die ungecachte Methode). Prüfen, ob ein Tracked-Test daneben noch einen Foreign-Mock
-      braucht (z. B. Import-Dialog auf der Usage-Seite) — dann beide registrieren.
+      `emote-import.e2e.spec.ts`: der Block ab `:3890` (`mockNonActiveSetView` `:3893-3916`, Deep-Link
+      `usage-stats?emoteSetId=set-halloween` `:3919`) registriert **zusätzlich** den Tracked-Mock; der
+      Foreign-Mock bleibt dort für den Import-Ziel-Loader. Prüfen, ob ein Tracked-Test daneben noch
+      einen Foreign-Mock braucht (z. B. Import-Dialog auf der Usage-Seite) — dann beide registrieren.
+      **Suchregel:** jeder E2E, der `usage-stats?emoteSetId=` ansteuert oder im Dropdown das Set wechselt,
+      braucht den Tracked-Mock — dateiunabhängig (`grep -rn "emoteSetId=" web/e2e`, dazu die
+      Dropdown-Wechsel).
 - [ ] Doc-Kommentare (1.6) nachziehen.
 - [ ] Gates: `npm --prefix web test -- --watch=false`, `npm --prefix web run lint`,
       `npm --prefix web run format:check` (bzw. `format` vorher), `npm --prefix web run e2e` — nur
       wenn auf `:5151` und `:4200` nichts lauscht (CLAUDE.md „Tests"); rote E2E zuerst auf
       Speicherdruck prüfen (Memory), Suite allein wiederholen.
+- [ ] `docs/DECISIONS.md`: `**Betrifft:**`-Zeile des Eintrags um die Frontend-Dateien erweitern
+      (im selben Commit).
 - [ ] Commit: `feat(web): read a tracked channel's set preview from the tracked route`.
 
-**Abnahme:** `grep -rn "seventv/channels" web/src/app --include=*.ts` zeigt außerhalb der Specs nur
-noch `listForeignChannelEmoteSets` und `loadEmoteSetPreview`; Vitest und E2E grün.
+**Abnahme:** die Suche nach Aufrufstellen (`http.get`/Request-Aufbau mit `seventv/channels`, **nicht**
+Doc-Kommentare wie `core/seven-tv/foreign-emote-set.model.ts:27`) — z. B.
+`grep -rnE "(http|httpClient)\.get.*seventv/channels" web/src/app --include=*.ts` — zeigt außerhalb der
+Specs nur noch `listForeignChannelEmoteSets` und `loadEmoteSetPreview`; Vitest und E2E grün.
 
 ### Task 4 — Doppel-Request beim Deep-Link: nachweisen, dann beheben
 
@@ -397,22 +435,31 @@ noch `listForeignChannelEmoteSets` und `loadEmoteSetPreview`; Vitest und E2E gr�
 `:3251` (`liveListRequests`) und der `openView`-Helfer (:3255 ff., Reihenfolge der Flushes);
 DECISIONS 2026-09-22 (#227) Absatz (d) als Präzedenz derselben Bug-Klasse; CLAUDE.md Regel 12, 14.
 
-- [ ] **Nachweis zuerst (rot):** Vitest-Fall in `usage-stats-page.spec.ts`: Deep-Link
-      `?emoteSetId=set-b`, Kanal mit aktivem `set-a`; Flush-Reihenfolge **Set-Liste vor Set-Status**;
-      Erwartung: genau **ein** Request an die Tracked-Route, nicht abgebrochen (`TestRequest.cancelled`
-      ist `false`). Der Fall muss vor dem Fix mit zwei Requests (erster `cancelled`) scheitern — das
-      Scheitern im Task-Bericht festhalten (Anzahl, welcher abgebrochen).
-- [ ] Gegenprobe (grün vor und nach dem Fix): Status vor Liste → ein Request. Und: Deep-Link auf
-      das **aktive** Set (`?emoteSetId=set-a`) → **kein** Request an die Tracked-Route, nachdem der
-      Status da ist.
-- [ ] **Fix:** `params` von `liveMembersResource` über ein eigenes `computed()` mit struktureller
-      Gleichheit (`equal` vergleicht `channelName` und `emoteSetId`, `undefined` gleich `undefined`)
-      leiten, sodass ein Wechsel von `activeEmoteSetId()` bei unverändertem Ergebnis kein neues
-      Objekt in die Ressource gibt (Angulars Default-Gleichheit ist Referenzgleichheit; das ist die
-      Objekt-Entsprechung des primitiven `computed()` aus dem #227-Fix). Alternative, falls der
-      Implementer sie für klarer hält: `params` liefert `undefined`, solange
-      `setStatusChannel() !== channelName()` — **nicht** „solange `activeEmoteSetId() === null`",
-      weil ein Kanal ohne aktives Set sonst nie eine Mitgliederliste bekäme.
+- [ ] **Nachweis zuerst (rot):** Vitest-Fälle in `usage-stats-page.spec.ts`, alle über den zentralen
+      Request-Matcher der Tracked-Route (Task 3) und **alle** Requests zählend, auch abgebrochene
+      (`TestRequest.cancelled`) — nicht nur solche nach Eintreffen des Status. Vor dem Fix müssen (a)
+      und (c) scheitern; das Scheitern im Task-Bericht festhalten (Anzahl, welcher abgebrochen).
+      (a) Deep-Link `?emoteSetId=set-b` (nicht aktiv), Kanal mit aktivem `set-a`, Flush-Reihenfolge
+      **Set-Liste vor Set-Status** → genau **ein** Request, nicht abgebrochen.
+      (b) Set-Liste ok, Set-Status **fehlgeschlagen** (`setStatusFailedChannel`) → genau ein Request für
+      `set-b`.
+      (c) Deep-Link auf das **aktive** Set (`?emoteSetId=set-a`): in **keiner** Flush-Reihenfolge ein
+      Request an die Tracked-Route, auch kein abgebrochener. Rot heute, weil `activeEmoteSetId()` bis
+      zum Status `null` ist und `params` dann für das später aktive Set einen (abgebrochenen) Request
+      auslöst — der Test muss deshalb schon vor Eintreffen des Status mitzählen.
+      Gegenprobe (grün vor und nach dem Fix): Status vor Liste → ein Request für `set-b`.
+- [ ] **Fix:** `params` von `liveMembersResource` liefert erst dann ein Objekt, wenn der Status-Ausgang
+      für den Kanal bekannt ist: `setStatusChannel() === channelName() || setStatusFailedChannel() ===
+      channelName()` (Signale `usage-stats-page.ts:1252`/`:1257`; der Fehlerzweig setzt
+      `setStatusFailedChannel` bei `:2781`; dieselbe Bedingung nutzt `rangeResolved` `:1306-1312`).
+      **Zusätzlich** strukturelle Gleichheit (`equal`, vergleicht `channelName` und `emoteSetId`,
+      `undefined` gleich `undefined`) auf den `params`, damit ein späteres Neuberechnen ohne
+      inhaltliche Änderung kein neues Objekt in die Ressource gibt (Objekt-Entsprechung des primitiven
+      `computed()` aus dem #227-Fix). Solange das Tor geschlossen ist („Status ausstehend"), meldet
+      `liveMembersState` (`:726-737`) `'loading'`, **nicht** `'unavailable'` — eigener Test dafür
+      (sonst flackert bei einem Deep-Link kurz der Fehlerzustand). Akzeptierte Restlücke, im
+      DECISIONS-Absatz zu dokumentieren: `setStatusFailedChannel` wird nie zurückgesetzt (X
+      fehlgeschlagen → Y → zurück zu X öffnet das Tor früh).
 - [ ] Prüfen, dass kein anderer Ladezustand schlechter wird: `liveMembersState`, `liveMembersSettling`,
       `viewSwitching`, `reloadLiveMembers` (Refresh-Marke wird weiter nur vom Stream gelesen), der
       Wechsel des aktiven Sets auf das gewählte (`params` → `undefined`), der Kanalwechsel (neuer
@@ -421,12 +468,14 @@ DECISIONS 2026-09-22 (#227) Absatz (d) als Präzedenz derselben Bug-Klasse; CLAU
       (`usage-atlas.e2e.spec.ts`, K4-Block) die Requests an die Tracked-Route zählen (`page.route`
       mit Zähler) und `=== 1` erwarten.
 - [ ] Gates wie Task 3.
+- [ ] `docs/DECISIONS.md`: Punkt 6 (Deep-Link-Befund, Fix, Restlücke) im Eintrag ergänzen und die
+      `**Betrifft:**`-Zeile um `usage-stats-page.ts` (+ spec) erweitern — im selben Commit wie der Fix.
 - [ ] Commit: `fix(web): request a deep-linked set's member list once` — oder, falls der Nachweis
       **nicht** gelingt (ein Request in jeder Flush-Reihenfolge): keine Code-Änderung, den Befund mit
-      Testprotokoll als Absatz in den DECISIONS-Eintrag aus Task 2 anhängen (`docs:`-Commit) und den
+      Testprotokoll als Punkt 6 in den DECISIONS-Eintrag aufnehmen (`docs:`-Commit) und den
       Issue-Kommentar damit beantworten.
 
-**Abnahme:** Der Nachweis-Test existiert und ist grün; der Bericht nennt das Vorher-Ergebnis.
+**Abnahme:** Die Nachweis-Tests (a)–(c) und der `'loading'`-Test existieren und sind grün; der Bericht nennt das Vorher-Ergebnis.
 
 ### Task 5 — Gates, Coverage, PR-Vorbereitung
 
@@ -499,26 +548,40 @@ soll — knapp, im Stil der Nachbarn — festhalten:
    einer Laufzeit-Abfrage.
 3. **Wer im Foreign-Bucket bleibt und warum:** #216-Vorprüfung (`/me/emote-set-targets/{id}`), K2
    (`/me/emote-set-targets`), K3 (`/seventv/channels/{c}/emote-sets` und `…/emotes`), Import-Ziel-
-   Loader und Restore-Slot (beide lesen fremde oder untracked Sets und dürfen den Kanal nicht als
-   Rolle voraussetzen), und die Vote-Session-Anlage (`POST …/vote-sessions`, K6-Review Fable A) —
+   Loader (liest auch getrackte nicht aktive Sets, `import-target-loader.ts:105`, bleibt aber per
+   Umfangsentscheidung auf der Foreign-Route, weil dieser Pfad die Usage-Stats-Rolle nicht voraussetzt)
+   und Restore-Slot, und die Vote-Session-Anlage (`POST …/vote-sessions`, K6-Review Fable A) —
    jeder davon kann 7TV eine paginierte Lesung kosten, ohne dass ein Kanal-Filter davor steht.
 4. **Der Vertrag der neuen Route** (Abschnitt 1.1/1.2 in Kurzform), die Wahl von `emote_set_not_found`,
-   die Mitgliedschaftsregel und ihre Teilung mit der Vote-Anlage, die bekannte Grenze „`refresh`
+   die Mitgliedschaftsregel und ihre Teilung mit der Vote-Anlage (das aktive Set ist ohne Listen-Lesung
+   Mitglied; `IsBotActive` und Ausschlussliste werden bewusst nicht geprüft — Geschwister-Semantik
+   der Dropdown-Route, der Usage-Stats-Filter und der Vote-Anlage, die ausgeschiedene Kanäle bis zur
+   Retention bedienen; die Vote-Anlage bleibt unverändert), die bekannte Grenze „`refresh`
    umgeht die Listen-Frische nicht (60 s)", und dass die Antwortform identisch bleibt, damit das
    Frontend nur die URL wechselt.
 5. **Warum Vote-Detail mit umzieht:** `canManage ⊂ canViewUsageStats`, die Lesung ist auf `canManage`
-   gegated.
-6. **Deep-Link-Doppel-Request:** Befund und Fix aus Task 4 (oder: nicht reproduzierbar, Protokoll).
+   gegated. Bekannte Grenze: die Mitgliedschaft wurde nur zur Anlagezeit bewiesen; fällt das Set später
+   aus der 7TV-Liste und ist nicht aktiv, antwortet die Route 404 und das Massenlösch-Panel ist gesperrt
+   (`'unavailable'`, generischer Text) — gewollt, konsistent mit der Anlage-Scoping-Regel.
+6. **Deep-Link-Doppel-Request** (Task 4, eigener Commit): Befund und Fix (Tor über
+   `setStatusChannel`/`setStatusFailedChannel` plus strukturelle Gleichheit, `'loading'` solange das
+   Tor zu ist) oder: nicht reproduzierbar, Protokoll. Akzeptierte Restlücke:
+   `setStatusFailedChannel` wird nie zurückgesetzt (X fehlgeschlagen → Y → zurück zu X öffnet das Tor
+   früh).
 7. **Konfiguration und Telemetrie:** `RateLimiting__TrackedEmoteSetPreview__PermitLimit`, Deskriptor,
    i18n-Label; Default 30 und die Begründung aus 1.4.
 
-`**Betrifft:**`-Zeile: alle Dateien aus Task 1–4 (Core-Regel, Interface, Dienst, DI,
-`VoteSessionService`, `RateLimitingOptions`, `RateLimitPolicyNames`, `Program.cs`, `EmoteEndpoints`,
-`SevenTvEndpoints` (Mapping-Helfer), `AdminEndpoints`, `ApiErrorCodes` (Kommentar),
-`EmoteSetIdValidationFilter` (Kommentar), die vier Api-Testdateien, die zwei Infrastructure-
-Testdateien, `seven-tv-emote-set.service.ts` (+ spec), `usage-stats-page.ts` (+ spec),
-`vote-session-detail-page.spec.ts`, `web/public/i18n/{de,en}.json`, `web/e2e/support/mocks.ts`,
-`usage-atlas.e2e.spec.ts`, `vote-ballot.e2e.spec.ts`, `docs/Architectur.md`).
+`**Betrifft:**`-Zeile, gestaffelt nach Regel 3:
+
+- **Task 2 (Erstanlage, Punkte 1–5 und 7):** nur Dateien, die nach Task 1/2 existieren — Core-Regel,
+  Interface, Dienst, DI, `VoteSessionService`, `RateLimitingOptions`, `RateLimitPolicyNames`,
+  `Program.cs`, `EmoteEndpoints`, `SevenTvEndpoints` (Mapping-Helfer), `AdminEndpoints`,
+  `ApiErrorCodes` (Kommentar), `EmoteSetIdValidationFilter` (Kommentar), die vier Api-Testdateien, die
+  zwei Infrastructure-Testdateien, `web/public/i18n/{de,en}.json`, `docs/Architectur.md`.
+- **Task 3 (eigener Commit):** ergänzt `seven-tv-emote-set.service.ts` (+ spec),
+  `vote-session-detail-page.spec.ts`, `web/e2e/support/mocks.ts`, `usage-atlas.e2e.spec.ts`,
+  `vote-ballot.e2e.spec.ts`, `emote-import.e2e.spec.ts`, die weiteren angefassten E2E-Dateien.
+- **Task 4 (eigener Commit):** ergänzt Punkt 6 sowie `usage-stats-page.ts` (+ spec).
 
 ---
 
