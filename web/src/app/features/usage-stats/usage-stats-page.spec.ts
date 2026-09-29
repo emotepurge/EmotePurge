@@ -234,6 +234,14 @@ function flushByPath(mock: HttpTestingController, path: string, body: object | u
   mock.match((req) => req.url === path).forEach((testReq) => testReq.flush(body));
 }
 
+// The tracked-channel preview route (#220): the set id is a path segment, so the exact-path
+// regex cannot also catch the dropdown request `/api/channels/a/emote-sets`.
+const LIVE_LIST_URL = /^\/api\/channels\/a\/emote-sets\/[^/]+\/emotes$/;
+
+function liveListUrl(setId: string): string {
+  return `/api/channels/a/emote-sets/${encodeURIComponent(setId)}/emotes`;
+}
+
 describe('UsageStatsPage — refreshSetStatus channel race (#112 regression)', () => {
   let fixture: ComponentFixture<UsageStatsPage>;
   let component: UsageStatsPage;
@@ -2779,9 +2787,7 @@ describe('UsageStatsPage — set dropdown, URL fallback rules and retainAmong (T
     // (see the deferred-reconciliation cases in the set-view block), so it has to be flushed here
     // for the pruning to be real rather than merely postponed.
     httpMock
-      .expectOne(
-        (r) => r.url === '/api/seventv/channels/a/emotes' && r.params.get('emoteSetId') === 'set-b',
-      )
+      .expectOne((r) => r.url === liveListUrl('set-b'))
       .flush({
         channelName: 'a',
         sevenTvUserId: null,
@@ -3248,7 +3254,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   }
 
   function liveListRequests(): TestRequest[] {
-    return httpMock.match((r) => r.url === '/api/seventv/channels/a/emotes');
+    return httpMock.match((r) => LIVE_LIST_URL.test(r.url));
   }
 
   /**
@@ -3497,9 +3503,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       );
     await settle();
 
-    const liveRequest = httpMock.expectOne(
-      (r) => r.url === '/api/seventv/channels/a/emotes' && r.params.get('emoteSetId') === 'set-b',
-    );
+    const liveRequest = httpMock.expectOne((r) => r.url === liveListUrl('set-b'));
     // A params-driven load after choosing the set may use the Api's cache; only a loud reload
     // bypasses it (see the refresh-button case below).
     expect(liveRequest.request.params.get('refresh')).toBeNull();
@@ -3542,7 +3546,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     fixture.detectChanges();
     const reloaded = liveListRequests();
     expect(reloaded).toHaveLength(1);
-    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
     // A loud reload asks the Api to bypass its cache (spec 8.3) — only this one request.
     expect(reloaded[0].request.params.get('refresh')).toBe('true');
   });
@@ -3845,7 +3849,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   }
 
   function liveListRequestsFor(setId: string): TestRequest[] {
-    return liveListRequests().filter((r) => r.request.params.get('emoteSetId') === setId);
+    return liveListRequests().filter((r) => r.request.url === liveListUrl(setId));
   }
 
   it.each([
@@ -3867,7 +3871,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
       const reloaded = liveListRequests();
       expect(reloaded).toHaveLength(1);
-      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
       expect(reloaded[0].request.params.get('refresh')).toBe('true');
     },
   );
@@ -4041,7 +4045,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
       const reloaded = liveListRequests();
       expect(reloaded).toHaveLength(1);
-      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
       expect(reloaded[0].request.params.get('refresh')).toBe('true');
     },
   );
@@ -4065,7 +4069,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
       const reloaded = liveListRequests();
       expect(reloaded).toHaveLength(1);
-      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
       expect(reloaded[0].request.params.get('refresh')).toBe('true');
     },
   );
@@ -4140,7 +4144,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     // the first call had just set, and this request went out without it.
     const reloaded = liveListRequests();
     expect(reloaded).toHaveLength(1);
-    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
     expect(reloaded[0].request.params.get('refresh')).toBe('true');
   });
 
@@ -4790,7 +4794,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
     let requests = liveListRequests();
     expect(requests).toHaveLength(1);
-    expect(requests[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(requests[0].request.url).toBe(liveListUrl('set-b'));
     requests[0].flush(memberList([member('7tv-a', 'PeepoA')], { emoteSetId: 'set-b' }));
     await settle();
 
@@ -4801,7 +4805,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
     requests = liveListRequests();
     expect(requests).toHaveLength(1);
-    expect(requests[0].request.params.get('emoteSetId')).toBe('set-c');
+    expect(requests[0].request.url).toBe(liveListUrl('set-c'));
     requests[0].flush(memberList([member('7tv-z', 'Zulu')], { emoteSetId: 'set-c' }));
     await settle();
 
@@ -4834,8 +4838,346 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
     const reloaded = liveListRequests();
     expect(reloaded).toHaveLength(1);
-    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
     expect(reloaded[0].request.params.get('refresh')).toBe('true');
+  });
+
+  // #220 T4: a deep link must cost one request per set view, not one per recomputed `params`.
+  // Every request to the tracked route is counted, cancelled ones included — a cancelled request
+  // has still passed the Api's limiter, so it is a spent permit.
+  describe('deep link: the member list is requested once (#220)', () => {
+    const STATUS_URL = '/api/channels/a/emotes/active-set';
+    let seen: TestRequest[];
+
+    function collectLiveRequests(): void {
+      seen.push(...liveListRequests());
+    }
+
+    async function mountDeepLink(
+      emoteSetId: string,
+      order: 'list-first' | 'status-first' | 'status-fails',
+    ): Promise<void> {
+      seen = [];
+      configure();
+      router = TestBed.inject(Router);
+      await router.navigate([], { queryParams: { emoteSetId } });
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+      collectLiveRequests();
+
+      const flushList = async (): Promise<void> => {
+        httpMock
+          .expectOne('/api/channels/a/emote-sets')
+          .flush(
+            emoteSetList([
+              emoteSet({ id: 'set-a', isActive: true }),
+              emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+            ]),
+          );
+        await settle();
+        collectLiveRequests();
+      };
+      const flushStatus = async (): Promise<void> => {
+        const request = httpMock.expectOne(STATUS_URL);
+        if (order === 'status-fails') {
+          request.flush({}, { status: 500, statusText: 'Server Error' });
+        } else {
+          request.flush(
+            setStatus({
+              activeEmoteSetId: 'set-a',
+              capacity: 600,
+              occupiedSlots: 10,
+              trackedSince: '2026-01-01T00:00:00Z',
+            }),
+          );
+        }
+        fixture.detectChanges();
+        await settle();
+        collectLiveRequests();
+      };
+
+      if (order === 'status-first') {
+        await flushStatus();
+        await flushList();
+      } else {
+        await flushList();
+        await flushStatus();
+      }
+    }
+
+    function requestsFor(setId: string): TestRequest[] {
+      return seen.filter((r) => r.request.url === liveListUrl(setId));
+    }
+
+    it('(a) a deep link to a non-active set asks once when the set list lands before the status', async () => {
+      await mountDeepLink('set-b', 'list-first');
+
+      expect(seen).toHaveLength(1);
+      expect(requestsFor('set-b')).toHaveLength(1);
+      expect(requestsFor('set-b')[0].cancelled).toBe(false);
+    });
+
+    it('(b) a failed set status still lets the deep-linked set load, once', async () => {
+      await mountDeepLink('set-b', 'status-fails');
+
+      expect(seen).toHaveLength(1);
+      expect(requestsFor('set-b')).toHaveLength(1);
+      expect(requestsFor('set-b')[0].cancelled).toBe(false);
+    });
+
+    it('(c) a deep link to the active set never asks the tracked route, in either order', async () => {
+      await mountDeepLink('set-a', 'list-first');
+      expect(seen).toHaveLength(0);
+
+      await mountDeepLink('set-a', 'status-first');
+      expect(seen).toHaveLength(0);
+    });
+
+    it('control: status before list asks once for the deep-linked set', async () => {
+      await mountDeepLink('set-b', 'status-first');
+
+      expect(seen).toHaveLength(1);
+      expect(requestsFor('set-b')[0].cancelled).toBe(false);
+    });
+
+    it("reports 'loading', not 'unavailable', while the set status is still pending", async () => {
+      seen = [];
+      configure();
+      router = TestBed.inject(Router);
+      await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/emote-sets')
+        .flush(
+          emoteSetList([
+            emoteSet({ id: 'set-a', isActive: true }),
+            emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+          ]),
+        );
+      await settle();
+
+      // The status request is still open: the gate is closed and nothing has been asked.
+      expect(liveListRequests()).toHaveLength(0);
+      expect(component['liveMembersState']()).toBe('loading');
+    });
+  });
+
+  // Review follow-up to the gate above: a status answer belongs to the channel that asked. Without
+  // that, a slow answer for X landing after the switch to Y re-claims `setStatusChannel` for X and
+  // closes Y's gate for good (or, failing, wipes Y's status).
+  describe('the status gate survives an in-route channel switch (#220 review)', () => {
+    const LIVE_B = /^\/api\/channels\/b\/emote-sets\/[^/]+\/emotes$/;
+
+    function liveRequestsForB(): TestRequest[] {
+      return httpMock.match((r) => LIVE_B.test(r.url));
+    }
+
+    function statusFor(channel: string): TestRequest {
+      return httpMock.expectOne(`/api/channels/${channel}/emotes/active-set`);
+    }
+
+    function activeStatus(): EmoteSetStatus {
+      return setStatus({
+        activeEmoteSetId: 'set-a',
+        capacity: 600,
+        occupiedSlots: 10,
+        trackedSince: '2026-01-01T00:00:00Z',
+      });
+    }
+
+    async function flushSetList(channel: string): Promise<void> {
+      httpMock
+        .expectOne(`/api/channels/${channel}/emote-sets`)
+        .flush(
+          emoteSetList([
+            emoteSet({ id: 'set-a', isActive: true }),
+            emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+          ]),
+        );
+      await settle();
+    }
+
+    async function mountOn(channel: string, emoteSetId?: string): Promise<void> {
+      configure();
+      router = TestBed.inject(Router);
+      if (emoteSetId) {
+        await router.navigate([], { queryParams: { emoteSetId } });
+      }
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', channel);
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne(`/api/channels/${channel}/permissions`)
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+    }
+
+    async function switchTo(channel: string): Promise<void> {
+      fixture.componentRef.setInput('channelName', channel);
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne(`/api/channels/${channel}/permissions`)
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+    }
+
+    async function flushStatus(request: TestRequest, ok: boolean): Promise<void> {
+      if (ok) {
+        request.flush(activeStatus());
+      } else {
+        request.flush({}, { status: 500, statusText: 'Server Error' });
+      }
+      fixture.detectChanges();
+      await settle();
+    }
+
+    it("a late answer for the channel left behind does not close the new channel's gate", async () => {
+      await mountOn('a');
+      const late = statusFor('a');
+      await switchTo('b');
+      await flushStatus(statusFor('b'), true);
+
+      await flushStatus(late, true);
+
+      expect(component['setStatusChannel']()).toBe('b');
+      await flushSetList('b');
+      component['onEmoteSetSelected']('set-b');
+      await settle();
+      expect(liveRequestsForB()).toHaveLength(1);
+      expect(component['setStatusOutcomeKnown']()).toBe(true);
+    });
+
+    it("a late failure for the channel left behind leaves the new channel's status alone", async () => {
+      await mountOn('a');
+      const late = statusFor('a');
+      await switchTo('b');
+      await flushStatus(statusFor('b'), true);
+
+      await flushStatus(late, false);
+
+      expect(component['setStatus']()?.activeEmoteSetId).toBe('set-a');
+      expect(component['setStatusChannel']()).toBe('b');
+      // set-a is b's active set: it must not be mistaken for a foreign one and asked for.
+      component['onEmoteSetSelected']('set-a');
+      await settle();
+      expect(liveRequestsForB()).toHaveLength(0);
+    });
+
+    it('a channel switch with a set chosen reports loading, then asks exactly once after the status', async () => {
+      await mountOn('a', 'set-b');
+      await flushSetList('a');
+      await flushStatus(statusFor('a'), true);
+      liveListRequests().forEach((r) => r.flush(memberList([member('7tv-a', 'PeepoA')])));
+
+      await switchTo('b');
+      await flushSetList('b');
+      expect(component['liveMembersState']()).toBe('loading');
+      expect(liveRequestsForB()).toHaveLength(0);
+
+      await flushStatus(statusFor('b'), true);
+
+      const asked = liveRequestsForB();
+      expect(asked).toHaveLength(1);
+      expect(asked[0].request.params.get('refresh')).toBeNull();
+    });
+  });
+
+  describe('a reload while the status gate is closed (#220 review)', () => {
+    async function flushSetList(channel: string): Promise<void> {
+      httpMock
+        .expectOne(`/api/channels/${channel}/emote-sets`)
+        .flush(
+          emoteSetList([
+            emoteSet({ id: 'set-a', isActive: true }),
+            emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+          ]),
+        );
+      await settle();
+    }
+
+    async function mountDeepLinkWithPendingStatus(): Promise<TestRequest> {
+      configure();
+      router = TestBed.inject(Router);
+      await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+      return httpMock.expectOne('/api/channels/a/emotes/active-set');
+    }
+
+    it('asks nothing while closed and exactly one ordinary request once it opens', async () => {
+      const first = await mountDeepLinkWithPendingStatus();
+      await flushSetList('a');
+
+      component['refresh']();
+      await settle();
+      expect(liveListRequests()).toHaveLength(0);
+
+      // The refresh's own status request answers first and opens the gate.
+      const second = httpMock.expectOne('/api/channels/a/emotes/active-set');
+      second.flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+      fixture.detectChanges();
+      await settle();
+      const asked = liveListRequests();
+      expect(asked).toHaveLength(1);
+      expect(asked[0].request.params.get('refresh')).toBeNull();
+
+      // The original status arriving afterwards changes nothing about the params.
+      first.flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+      fixture.detectChanges();
+      await settle();
+      expect(liveListRequests()).toHaveLength(0);
+    });
+
+    it('once open, a refresh asks exactly once with refresh=true despite equal params', async () => {
+      const first = await mountDeepLinkWithPendingStatus();
+      await flushSetList('a');
+      first.flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+      fixture.detectChanges();
+      await settle();
+      liveListRequests().forEach((r) => r.flush(memberList([member('7tv-a', 'PeepoA')])));
+      await settle();
+
+      component['refresh']();
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/emotes/active-set')
+        .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+      fixture.detectChanges();
+      await settle();
+
+      const asked = liveListRequests();
+      expect(asked).toHaveLength(1);
+      expect(asked[0].request.params.get('refresh')).toBe('true');
+    });
   });
 });
 
@@ -4937,7 +5279,7 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
       emotes: [],
     });
     httpMock
-      .match((request) => request.url === '/api/seventv/channels/a/emotes')
+      .match((request) => LIVE_LIST_URL.test(request.url))
       .forEach((request) =>
         request.flush(
           { errorCode: 'foreign_channel_seventv_unavailable' },
@@ -5009,7 +5351,7 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
       emotes: [],
     });
     httpMock
-      .match((request) => request.url === '/api/seventv/channels/a/emotes')
+      .match((request) => LIVE_LIST_URL.test(request.url))
       .forEach((request) =>
         request.flush(
           { errorCode: 'foreign_channel_seventv_unavailable' },
@@ -5241,7 +5583,7 @@ describe('UsageStatsPage — export/import scope capture reads the shown set onc
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [emote('a', 'PumpkinA', 5)]);
     flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
     httpMock
-      .match((r) => r.url === '/api/seventv/channels/a/emotes')
+      .match((r) => LIVE_LIST_URL.test(r.url))
       .forEach((request) => request.flush(memberList([member('7tv-a', 'PumpkinA')])));
     await settle();
   }

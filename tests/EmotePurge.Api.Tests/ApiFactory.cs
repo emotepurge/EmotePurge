@@ -83,6 +83,14 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public IForeignEmoteSetService ForeignEmoteSet { get; } = Substitute.For<IForeignEmoteSetService>();
 
     /// <summary>
+    /// Substituted because the handler's services are resolved before the filter pipeline runs (see
+    /// <see cref="ForeignEmoteSet"/>): the real membership service would need <c>AppDbContext</c>
+    /// and the 7TV set list, and the tracked-channel set preview's tests only need control over its
+    /// verdict.
+    /// </summary>
+    public ITrackedEmoteSetMembershipService TrackedEmoteSetMembership { get; } = Substitute.For<ITrackedEmoteSetMembershipService>();
+
+    /// <summary>
     /// Substituted for the same reason as <see cref="ForeignEmoteSet"/> above: the leaderboard
     /// endpoint's whole filter-matrix test suite never needs a real 7TV round trip, only control over
     /// what <c>GetLeaderboardAsync</c> answers.
@@ -221,6 +229,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddSingleton(_ => WorkerHealth);
             services.AddSingleton(_ => LiveEventStream);
             services.AddScoped(_ => ForeignEmoteSet);
+            services.AddScoped(_ => TrackedEmoteSetMembership);
             services.AddScoped(_ => Leaderboard);
             services.AddScoped(_ => Emotes);
             services.AddScoped(_ => EmoteSetList);

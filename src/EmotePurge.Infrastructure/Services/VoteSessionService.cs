@@ -94,11 +94,7 @@ public class VoteSessionService(
             switch (setListResult.Status)
             {
                 case EmoteSetListStatus.Ok:
-                    var belongsToChannel = setListResult.List!.Sets.Any(set =>
-                        string.Equals(set.Id, request.EmoteSetId, StringComparison.Ordinal)
-                        && string.Equals(set.Kind, "NORMAL", StringComparison.Ordinal))
-                        || string.Equals(request.EmoteSetId, channel.ActiveEmoteSetId, StringComparison.Ordinal);
-                    if (!belongsToChannel)
+                    if (!EmoteSetMembershipRule.BelongsToChannel(setListResult.List!, channel.ActiveEmoteSetId, request.EmoteSetId))
                     {
                         return (CreateVoteSessionResult.EmoteIdsInvalid, null);
                     }

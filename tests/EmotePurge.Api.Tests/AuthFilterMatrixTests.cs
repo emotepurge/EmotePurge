@@ -27,6 +27,7 @@ namespace EmotePurge.Api.Tests;
 public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
 {
     private const string Channel = "testchannel";
+    private const string TrackedPreviewSetId = "01GV88A38G0006FW5TVZVMG507";
 
     private readonly ApiFactory _factory;
 
@@ -43,6 +44,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         factory.ResyncCooldown.ClearReceivedCalls();
         factory.Emotes.ClearReceivedCalls();
         factory.EmoteSetList.ClearReceivedCalls();
+        factory.TrackedEmoteSetMembership.ClearReceivedCalls();
         factory.EmoteSetOwnership.ClearReceivedCalls();
         factory.AccountDeletion.ClearReceivedCalls();
 
@@ -64,6 +66,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
     [InlineData("GET", "/api/channels/testchannel/emotes")]
     [InlineData("GET", "/api/channels/testchannel/emote-sets")]
+    [InlineData("GET", "/api/channels/testchannel/emote-sets/01GV88A38G0006FW5TVZVMG507/emotes")]
     [InlineData("GET", "/api/channels/testchannel/emotes/set-warning")]
     [InlineData("GET", "/api/seventv/me/emote-set-targets")]
     [InlineData("GET", "/api/seventv/me/emote-set-targets/01GV88A38G0006FW5TVZVMG507")]
@@ -105,6 +108,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/testchannel/resync")]
     [InlineData("DELETE", "/api/channels/testchannel/purge")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
+    [InlineData("GET", "/api/channels/testchannel/emote-sets/01GV88A38G0006FW5TVZVMG507/emotes")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions/1/results")]
     [InlineData("POST", "/api/channels/testchannel/vote-sessions/1/votes")]
     public async Task EveryFilter_Answers401_WhenTheSessionIsAuthenticatedButItsClaimsAreIncomplete(string method, string path)
@@ -503,6 +507,79 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Equal(ApiErrorCodes.ForeignChannelSevenTvUnavailable, await ReadErrorCodeAsync(response));
+    }
+
+    // #220: GET /api/channels/{c}/emote-sets/{id}/emotes — the tracked-channel set preview's filter
+    // order: 400 channel name, 403 without usage-stats access, 400 set id, then the handler.
+
+    [Theory]
+    [InlineData("abc")]
+    [InlineData("bad-name")]
+    public async Task TrackedSetPreview_Answers400InvalidChannelName_BeforeTheAccessFilterRuns(string channelName)
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync("GET", $"/api/channels/{channelName}/emote-sets/{TrackedPreviewSetId}/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task TrackedSetPreview_Answers403_ForACallerWithoutUsageStatsAccess_AndNeverCallsTheMembershipService()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets/{TrackedPreviewSetId}/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await _factory.TrackedEmoteSetMembership.DidNotReceive().CheckAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TrackedSetPreview_Answers403_BeforeAnInvalidSetId_Answers400()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets/..x/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await _factory.TrackedEmoteSetMembership.DidNotReceive().CheckAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TrackedSetPreview_Answers400InvalidEmoteSetId_ForACallerWithAccess_WithoutCallingAnyService()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets/..x/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        await _factory.TrackedEmoteSetMembership.DidNotReceive().CheckAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _factory.ForeignEmoteSet.DidNotReceive().GetForeignEmoteSetBySetIdAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TrackedSetPreview_Answers404Bare_ForAnUntrackedChannel()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.TrackedEmoteSetMembership.CheckAsync(Channel, TrackedPreviewSetId, Arg.Any<CancellationToken>())
+            .Returns(TrackedEmoteSetMembership.ChannelNotFound);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets/{TrackedPreviewSetId}/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal(string.Empty, await response.Content.ReadAsStringAsync());
     }
 
     [Fact]

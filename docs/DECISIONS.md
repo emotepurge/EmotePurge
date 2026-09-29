@@ -10,6 +10,109 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-29 — A tracked channel's set preview gets its own route and its own per-user bucket; `ForeignEmoteLookup` keeps guarding only what is foreign (#220)
+
+**Betrifft:** `src/EmotePurge.Core/Services/EmoteSetMembershipRule.cs`,
+`src/EmotePurge.Core/Services/ITrackedEmoteSetMembershipService.cs` and
+`src/EmotePurge.Infrastructure/Services/TrackedEmoteSetMembershipService.cs` (the membership proof;
+the rule is shared with `VoteSessionService`, whose behaviour is unchanged) ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Api/RateLimiting/RateLimitingOptions.cs`, `RateLimitPolicyNames.cs` and
+`src/EmotePurge.Api/Program.cs` (policy `TrackedEmoteSetPreview`) ·
+`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` (new route) ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` (`MapLookupResult`, the shared status mapping) ·
+`src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` (descriptor) ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs` and `EmoteSetIdValidationFilter.cs` (docs) ·
+`src/EmotePurge.Api/Auth/UsageStatsAccessAuthorizationFilter.cs` (docs) ·
+`tests/EmotePurge.Api.Tests/TrackedEmoteSetPreviewEndpointTests.cs`, `AuthFilterMatrixTests.cs`,
+`EmoteRoutePolicyTests.cs`, `AdminRateLimitsEndpointTests.cs` and `ApiFactory.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/TrackedEmoteSetMembershipServiceTests.cs` and
+`Unit/EmoteSetMembershipRuleTests.cs` · `web/public/i18n/de.json` and `en.json`
+(`admin.rateLimits.policies.names.TrackedEmoteSetPreview`) · `docs/Architectur.md` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` and its spec (`loadCachedEmoteSetPreview`
+reads the tracked route; `loadEmoteSetPreview` is unchanged) ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` (+ spec; the deep-link gate, point 6) and
+`vote-session-detail-page.ts` (docs) and its spec · `web/e2e/support/mocks.ts` (`mockTrackedEmoteSetPreview`) ·
+`web/e2e/usage-atlas.e2e.spec.ts`, `vote-ballot.e2e.spec.ts` and `emote-import.e2e.spec.ts`
+
+**1. What `ForeignEmoteLookup` protects, and what it does not.** It is the per-user fairness and
+abuse bound for reads that can cost 7TV up to ten paginated calls. It does not protect 7TV itself:
+that is the job of the provider budget, the coalescer, the breaker and the 60 s cache in the
+hardening decorator (spec E5b). Switching sets on a tracked channel has another load profile — one
+cached preview call per switch, with a client cache in front — and only sat in the same bucket
+because both callers once shared a route. The Set-Vorschau of the usage-stats and vote-detail pages
+spent the foreign import's ten permits, and a deep link showed it as two requests for one answer.
+
+**2. Why a route split (option 1a), not a cache check before the limiter or a higher limit.** A
+partitioner is synchronous and runs before every filter, so it cannot ask a service whether a set is
+cached; moving the cache read into the middleware order would make the limiter depend on Redis state.
+Raising `PermitLimit` weakens the measured bound of the import case for everyone to relieve one
+caller. The route is the only place where "a set of a tracked channel the caller may view" is known
+before the limiter runs — from the path, not from a runtime lookup.
+
+**3. Who stays in the foreign bucket.** The #216 pre-check (`/me/emote-set-targets/{id}`), K2
+(`/me/emote-set-targets`), K3 (`/seventv/channels/{c}/emote-sets` and `…/emotes`), the import-target
+loader (which also reads tracked, non-active sets, but stays on the foreign route by scope decision,
+because that path does not require the usage-stats role), the restore-slot preview, and the
+vote-session creation (`POST …/vote-sessions`, K6 review Fable A). Each of them can cost 7TV a
+paginated read without a tracked-channel filter in front of it.
+
+**4. The contract of the new route.** `GET /api/channels/{channelName}/emote-sets/{emoteSetId}/emotes[?refresh=true]`,
+registered on `app` beside the dropdown route (the `/emotes` group prefix would nest it wrongly).
+Chain: `RequireAuthorization` → `ChannelNameValidationFilter` → `UsageStatsAccessAuthorizationFilter`
+→ `EmoteSetIdValidationFilter` → policy `TrackedEmoteSetPreview`; exactly one policy applies, and the
+route names it itself. A caller without access gets 403 before the set id is checked. Membership is
+proven before the preview and fail-closed: not tracked → 404 (bare), not a member → 404
+`emote_set_not_found` (chosen because its text is true from the tracked channel's point of view;
+`channel_not_found`, `foreign_channel_no_active_emote_set` and `emote_ids_invalid` say something
+else), set list unreadable → 503 `foreign_channel_seventv_unavailable`. A member's preview goes
+through `GetForeignEmoteSetBySetIdAsync` and the status mapping that the foreign route uses, now one
+shared helper (`SevenTvEndpoints.MapLookupResult`), so the two tables cannot drift. The response body
+is identical to the foreign route's, so the frontend switches only the URL. The membership rule: the
+channel's active set is a member without reading the list; otherwise a `NORMAL` set in the 7TV list
+of its Twitch id (no Twitch id or no 7TV account → not a member). `IsBotActive` and the exclusion
+list are deliberately not checked — the same semantics as the dropdown route, the usage-stats filter
+and the vote creation, which serve departed channels until retention deletes them. The vote creation
+keeps its behaviour and shares only the pure rule. Known limit: `refresh=true` reaches only the
+preview read; the membership proof reads the set list through its own 60 s cache and is not bypassed,
+so the proof is exactly as fresh as the dropdown that offered the choice.
+
+**5. Why the vote detail moves along.** `canManage ⊂ canViewUsageStats`, and the members read is gated
+on `canManage`, so every caller that triggers it passes the usage-stats filter. Known limit: the set's
+membership was proven only when the session was created. If the set later leaves the channel's 7TV
+list and is not the active set, the route answers 404, the panel state becomes `'unavailable'` and the
+mass-delete panel stays locked with the generic text — intended, and consistent with the scoping rule
+of the creation.
+
+**6. A deep link no longer requests the member list twice.** Reproduced in `usage-stats-page.spec.ts`
+by counting every request to the tracked route, cancelled ones included (a cancelled request has still
+passed the limiter). With `?emoteSetId=set-b` and the set list landing before the set status, the
+resource's params were first computed while `activeEmoteSetId()` was still `null` (request 1), then
+recomputed as a content-equal but reference-different object when the status landed, so `rxResource`
+cancelled request 1 and issued request 2: two permits, one result. A deep link to the *active* set
+even asked once for a list that is never fetched. Same bug class as the vote detail (2026-09-22, #227
+(d)). The params of `liveMembersResource` are now defined only once the status outcome is known for
+the channel in the URL (`setStatusChannel() === channelName() || setStatusFailedChannel() ===
+channelName()`) and carry structural equality on `channelName` and `emoteSetId`. While the gate is
+closed with a set chosen, `liveMembersState` reports `'loading'` (not `'unavailable'`, which would
+flash the error state). Accepted gap: `setStatusFailedChannel` is never cleared, so X failed → Y →
+back to X opens the gate early; the cost is at most the old double request. A status answer that
+arrives after the page has moved to another channel is discarded (success and failure alike, in
+`load()` as in `refreshSetStatus()`), so a late X can neither re-claim `setStatusChannel` nor wipe Y's
+status and close Y's gate. A status request that never completes keeps the member list in
+`'loading'`; accepted, because such a request ends in an error eventually, and that error opens the
+gate via `setStatusFailedChannel`.
+
+**7. Configuration and telemetry.** `RateLimiting__TrackedEmoteSetPreview__PermitLimit`, default 30
+per 60 s window and user, effective after a restart. The client cache catches A→B→A; what remains are
+first switches plus the `refresh=true` reloads after `channel.synced` and own runs, so 30 covers a
+user opening another set every other second and stays an abuse bound, not a provider surrogate. The
+admin snapshot lists the policy (fixed window, partition `twitch-user`); the label is
+`admin.rateLimits.policies.names.TrackedEmoteSetPreview` in both locales.
+`refresh=true` bypasses the server-side preview cache, so one user can cause up to 30 uncached
+preview reads per minute (it was 10 in the shared bucket). The provider-wide budget, the coalescer and
+the breaker remain the upstream bound; a per-set refresh throttle is out of scope.
+
 ### 2026-09-28 — The owner check reads the hinted owner's list beside the actor's own, the pre-check gets a set-scoped route on the guarded grants path, and "zero requests" becomes the true cost
 
 **Betrifft:** `src/EmotePurge.Core/Services/IImportTargetOwnershipService.cs` (new `EmoteSetOwnerHint`;

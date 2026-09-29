@@ -39,6 +39,7 @@ import {
   mockSyncImported,
   mockSyncImportedToSet,
   mockSyncRestoredInSet,
+  mockTrackedEmoteSetPreview,
   mockUsageTotals,
   mockVoteSessionList,
   mockWorkerHealth,
@@ -3905,14 +3906,18 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
         { id: HALLOWEEN_SET_ID, name: 'Halloween' },
       ],
     });
-    await mockForeignEmoteSetPreview(page, SOURCE_CHANNEL, {
+    // Both routes on purpose (#220): the page's own set view reads the tracked-channel route, the
+    // import dialog's target loader keeps reading the foreign one.
+    const halloweenPreview = {
       channelName: SOURCE_CHANNEL,
       emoteSetId: HALLOWEEN_SET_ID,
       emoteSetName: 'Halloween',
       capacity: 500,
       totalCount: 0,
       emotes: [],
-    });
+    };
+    await mockTrackedEmoteSetPreview(page, SOURCE_CHANNEL, halloweenPreview);
+    await mockForeignEmoteSetPreview(page, SOURCE_CHANNEL, halloweenPreview);
   }
 
   async function gotoHalloweenView(page: Page): Promise<void> {

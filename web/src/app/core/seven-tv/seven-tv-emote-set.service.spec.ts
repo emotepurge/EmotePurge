@@ -1,4 +1,4 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpRequest, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -64,6 +64,16 @@ function targetsResponse(
     sevenTvUnavailable: false,
     ...overrides,
   };
+}
+
+/** Exact-path matcher for the tracked-channel preview route (#220): the path names the set, so the
+ *  matcher can never also catch the dropdown request `…/emote-sets`; `refresh` is the only query. */
+function trackedPreview(channel: string, setId: string, refresh = false) {
+  const path = `/api/channels/${channel}/emote-sets/${encodeURIComponent(setId)}/emotes`;
+  return (candidate: HttpRequest<unknown>): boolean =>
+    candidate.url === path &&
+    candidate.params.keys().length === (refresh ? 1 : 0) &&
+    (!refresh || candidate.params.get('refresh') === 'true');
 }
 
 /** The set-scoped pre-check route's own URL (owner-hint design 3.4) — `resolveEditableSet`'s cold
@@ -195,25 +205,51 @@ describe('SevenTvEmoteSetService', () => {
     });
   });
 
-  // K4 fix round (2026-09-22): a fast A→B→A switch on the usage page hit 429 on the shared
-  // ForeignEmoteLookup limiter even though the backend's own 60 s cache sat behind it — a cache hit
-  // there still spends a permit. loadCachedEmoteSetPreview mirrors that TTL client-side, for this
-  // one caller (K4's usage-stats page) only; K3/K2 keep calling the plain loadEmoteSetPreview above.
+  // K4 fix round (2026-09-22): a fast A→B→A switch on the usage page hit 429 on the limiter even
+  // though the backend's own 60 s cache sat behind it — a cache hit there still spends a permit.
+  // loadCachedEmoteSetPreview mirrors that TTL client-side, for the tracked-channel pages only
+  // (usage stats, vote detail), and since #220 reads the tracked route; K3/K2 keep calling the plain
+  // loadEmoteSetPreview above.
   describe('loadCachedEmoteSetPreview — K4 client-side cache (2026-09-22)', () => {
     afterEach(() => {
       vi.useRealTimers();
     });
 
-    it('serves a fresh entry from the cache without a second request', () => {
-      service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
-      const payload = previewResponse();
+    it('reads the tracked-channel route: exact path, no emoteSetId query, refresh only on demand (#220)', () => {
+      service.loadCachedEmoteSetPreview('HandOfBlood', 'set-halloween').subscribe();
+      const plain = httpMock.expectOne(trackedPreview('handofblood', 'set-halloween'));
+      expect(plain.request.params.keys()).toEqual([]);
+      plain.flush(previewResponse());
+
+      service
+        .loadCachedEmoteSetPreview('HandOfBlood', 'set-halloween', { refresh: true })
+        .subscribe();
+      const refresh = httpMock.expectOne(trackedPreview('handofblood', 'set-halloween', true));
+      expect(refresh.request.params.keys()).toEqual(['refresh']);
+      refresh.flush(previewResponse());
+    });
+
+    it('encodes a set id with URL-relevant characters as a single path segment', () => {
+      service.loadCachedEmoteSetPreview('handofblood', 'a/b?c#d').subscribe();
       httpMock
         .expectOne(
           (candidate) =>
-            candidate.url === '/api/seventv/channels/handofblood/emotes' &&
-            candidate.params.get('emoteSetId') === 'set-halloween',
+            candidate.url === '/api/channels/handofblood/emote-sets/a%2Fb%3Fc%23d/emotes',
         )
-        .flush(payload);
+        .flush(previewResponse());
+    });
+
+    it('does not fall back to the foreign route: the dropdown request path is not matched either', () => {
+      service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
+      httpMock.expectNone((candidate) => candidate.url.startsWith('/api/seventv/'));
+      httpMock.expectNone('/api/channels/handofblood/emote-sets');
+      httpMock.expectOne(trackedPreview('handofblood', 'set-halloween')).flush(previewResponse());
+    });
+
+    it('serves a fresh entry from the cache without a second request', () => {
+      service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
+      const payload = previewResponse();
+      httpMock.expectOne(trackedPreview('handofblood', 'set-halloween')).flush(payload);
 
       let result: ForeignEmoteSetResponse | undefined;
       service
@@ -221,44 +257,31 @@ describe('SevenTvEmoteSetService', () => {
         .subscribe((r) => (result = r));
 
       expect(result).toEqual(payload);
-      httpMock.expectNone(
-        (candidate) =>
-          candidate.url === '/api/seventv/channels/handofblood/emotes' &&
-          candidate.params.get('emoteSetId') === 'set-halloween',
-      );
+      httpMock.expectNone(trackedPreview('handofblood', 'set-halloween'));
     });
 
     it('refetches once the entry has expired', () => {
       vi.useFakeTimers();
       service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
-      httpMock
-        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
-        .flush(previewResponse());
+      httpMock.expectOne(trackedPreview('handofblood', 'set-halloween')).flush(previewResponse());
 
       vi.advanceTimersByTime(60_001);
 
       service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
-      httpMock
-        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
-        .flush(previewResponse());
+      httpMock.expectOne(trackedPreview('handofblood', 'set-halloween')).flush(previewResponse());
     });
 
     it('a refresh:true call bypasses a warm entry, fetches, and replaces it for the next plain read', () => {
       service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
       httpMock
-        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
+        .expectOne(trackedPreview('handofblood', 'set-halloween'))
         .flush(previewResponse({ totalCount: 1 }));
 
       service
         .loadCachedEmoteSetPreview('handofblood', 'set-halloween', { refresh: true })
         .subscribe();
-      const refreshReq = httpMock.expectOne(
-        (candidate) =>
-          candidate.params.get('emoteSetId') === 'set-halloween' &&
-          candidate.params.get('refresh') === 'true',
-      );
       const refreshed = previewResponse({ totalCount: 2 });
-      refreshReq.flush(refreshed);
+      httpMock.expectOne(trackedPreview('handofblood', 'set-halloween', true)).flush(refreshed);
 
       let result: ForeignEmoteSetResponse | undefined;
       service
@@ -266,11 +289,7 @@ describe('SevenTvEmoteSetService', () => {
         .subscribe((r) => (result = r));
 
       expect(result).toEqual(refreshed);
-      httpMock.expectNone(
-        (candidate) =>
-          candidate.url === '/api/seventv/channels/handofblood/emotes' &&
-          candidate.params.get('refresh') !== 'true',
-      );
+      httpMock.expectNone(trackedPreview('handofblood', 'set-halloween'));
     });
 
     it('never caches an error — a retry after a 429 always asks again', () => {
@@ -278,56 +297,42 @@ describe('SevenTvEmoteSetService', () => {
         .loadCachedEmoteSetPreview('handofblood', 'set-halloween')
         .subscribe({ error: () => undefined });
       httpMock
-        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
+        .expectOne(trackedPreview('handofblood', 'set-halloween'))
         .flush({ errorCode: 'rate_limited' }, { status: 429, statusText: 'Too Many Requests' });
 
       service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
-      httpMock
-        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
-        .flush(previewResponse());
+      httpMock.expectOne(trackedPreview('handofblood', 'set-halloween')).flush(previewResponse());
     });
 
     it('keys separately per emote set within the same channel', () => {
       service.loadCachedEmoteSetPreview('handofblood', 'set-a').subscribe();
       httpMock
-        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-a')
+        .expectOne(trackedPreview('handofblood', 'set-a'))
         .flush(previewResponse({ emoteSetId: 'set-a' }));
 
       service.loadCachedEmoteSetPreview('handofblood', 'set-b').subscribe();
       httpMock
-        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-b')
+        .expectOne(trackedPreview('handofblood', 'set-b'))
         .flush(previewResponse({ emoteSetId: 'set-b' }));
     });
 
     it('keys separately per channel for the same emote set id, and normalizes the channel name (rule 9)', () => {
       service.loadCachedEmoteSetPreview('HandOfBlood', 'set-shared').subscribe();
       httpMock
-        .expectOne(
-          (candidate) =>
-            candidate.url === '/api/seventv/channels/handofblood/emotes' &&
-            candidate.params.get('emoteSetId') === 'set-shared',
-        )
+        .expectOne(trackedPreview('handofblood', 'set-shared'))
         .flush(previewResponse({ channelName: 'handofblood', emoteSetId: 'set-shared' }));
 
       // Same emote set id, a different channel — must not be served from handofblood's entry.
       service.loadCachedEmoteSetPreview('otherchannel', 'set-shared').subscribe();
       httpMock
-        .expectOne(
-          (candidate) =>
-            candidate.url === '/api/seventv/channels/otherchannel/emotes' &&
-            candidate.params.get('emoteSetId') === 'set-shared',
-        )
+        .expectOne(trackedPreview('otherchannel', 'set-shared'))
         .flush(previewResponse({ channelName: 'otherchannel', emoteSetId: 'set-shared' }));
 
       // Mixed-case navigation back to the first channel still hits the cached entry.
       let result: ForeignEmoteSetResponse | undefined;
       service.loadCachedEmoteSetPreview('handofblood', 'set-shared').subscribe((r) => (result = r));
       expect(result?.channelName).toBe('handofblood');
-      httpMock.expectNone(
-        (candidate) =>
-          candidate.url === '/api/seventv/channels/handofblood/emotes' &&
-          candidate.params.get('emoteSetId') === 'set-shared',
-      );
+      httpMock.expectNone(trackedPreview('handofblood', 'set-shared'));
     });
   });
 

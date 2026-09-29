@@ -10,7 +10,7 @@ import {
   mockChannelPermissions,
   mockChannelStatus,
   mockEmoteSetTargets,
-  mockForeignEmoteSetPreview,
+  mockTrackedEmoteSetPreview,
   mockSetWarning,
   mockSevenTvGql,
   mockSyncDeletedInSet,
@@ -363,7 +363,7 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
       },
     ]);
     await mockUsageChannelSeries(page, CHANNEL, {});
-    await mockForeignEmoteSetPreview(page, CHANNEL, {
+    await mockTrackedEmoteSetPreview(page, CHANNEL, {
       channelName: CHANNEL,
       emoteSetId: HALLOWEEN_SET_ID,
       emoteSetName: 'Halloween',
@@ -608,7 +608,7 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
     // would stay locked forever (nothing here answers that request otherwise) rather than reach
     // the confirm dialog at all. Registered before the navigation, same reasoning as
     // mockSevenTvGql above.
-    await mockForeignEmoteSetPreview(page, CHANNEL, {
+    await mockTrackedEmoteSetPreview(page, CHANNEL, {
       channelName: CHANNEL,
       emoteSetId: HALLOWEEN_SET_ID,
       emoteSetName: 'Halloween',
@@ -673,7 +673,7 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
     // before the navigation below, same reasoning as mockSevenTvGql above — the page issues this
     // read itself, right after its own initial load, so a route added only after openHalloweenBallot
     // resolves could lose the race against it.
-    await mockForeignEmoteSetPreview(page, CHANNEL, {
+    await mockTrackedEmoteSetPreview(page, CHANNEL, {
       channelName: CHANNEL,
       emoteSetId: HALLOWEEN_SET_ID,
       emoteSetName: 'Halloween',
@@ -739,7 +739,7 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
         },
       };
     });
-    await mockForeignEmoteSetPreview(page, CHANNEL, {
+    await mockTrackedEmoteSetPreview(page, CHANNEL, {
       channelName: CHANNEL,
       emoteSetId: HALLOWEEN_SET_ID,
       emoteSetName: 'Halloween',

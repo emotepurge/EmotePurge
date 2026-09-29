@@ -669,6 +669,42 @@ export class UsageStatsPage {
   );
 
   /**
+   * Whether the set status has come back for the channel in the URL, successfully or not. Until it
+   * has, `activeEmoteSetId()` is `null` and "the chosen set is not the active one" cannot be told
+   * apart from "the active set is not known yet" — a deep link to the active set would then ask
+   * for its member list, and a deep link to another set would ask twice (the status landing
+   * recomputes the params and the resource cancels the first request), each of them a permit spent
+   * at the Api's limiter. `setStatusFailedChannel` is never cleared (accepted gap: X failed → Y →
+   * back to X opens the gate early).
+   */
+  private readonly setStatusOutcomeKnown = computed(
+    () =>
+      this.setStatusChannel() === this.channelName() ||
+      this.setStatusFailedChannel() === this.channelName(),
+  );
+
+  /**
+   * The member list's request key: defined only for a chosen set that is not the active one, and
+   * only once the status outcome is known. Structural equality, so a recompute without a content
+   * change hands the resource the same params and cancels nothing.
+   */
+  private readonly liveMembersParams = computed(
+    () => {
+      if (!this.setStatusOutcomeKnown()) {
+        return undefined;
+      }
+      const emoteSetId = this.selectedEmoteSetId();
+      return emoteSetId !== null && emoteSetId !== this.activeEmoteSetId()
+        ? { channelName: this.channelName(), emoteSetId }
+        : undefined;
+    },
+    {
+      equal: (a, b) =>
+        a === b || (a?.channelName === b?.channelName && a?.emoteSetId === b?.emoteSetId),
+    },
+  );
+
+  /**
    * The chosen non-active set's live 7TV member list (spec 8.3, E16) — requested beside `/totals`
    * and `/series` when a non-active set is selected, never for the active set. Bound to the selected
    * set, not to any reload: a silent `usage.flushed` reload never touches it; the loud ones
@@ -677,12 +713,7 @@ export class UsageStatsPage {
    * in the error state (see `emoteSetList`).
    */
   private readonly liveMembersResource = rxResource({
-    params: () => {
-      const emoteSetId = this.selectedEmoteSetId();
-      return emoteSetId !== null && emoteSetId !== this.activeEmoteSetId()
-        ? { channelName: this.channelName(), emoteSetId }
-        : undefined;
-    },
+    params: () => this.liveMembersParams(),
     stream: ({ params }) => {
       const asked = this.liveMembersRefreshFor;
       this.liveMembersRefreshFor = null;
@@ -690,8 +721,8 @@ export class UsageStatsPage {
         asked?.channelName === params.channelName && asked.emoteSetId === params.emoteSetId;
       // Cached, not the plain method: switching back to a recently-shown set within the cache's
       // TTL must cost no request at all (operator decision 2026-09-22) — see
-      // SevenTvEmoteSetService.loadCachedEmoteSetPreview's doc for the TTL and why this is the one
-      // caller that gets it. `refresh` (channel.synced, the refresh button) still bypasses it.
+      // SevenTvEmoteSetService.loadCachedEmoteSetPreview's doc for the TTL and why these are the only
+      // callers that get it. `refresh` (channel.synced, the refresh button) still bypasses it.
       return this.emoteSetService.loadCachedEmoteSetPreview(params.channelName, params.emoteSetId, {
         refresh,
       });
@@ -724,6 +755,11 @@ export class UsageStatsPage {
    * mid-switch is `viewSwitching`'s business, not this one's.
    */
   protected readonly liveMembersState = computed<LiveMembersState>(() => {
+    // Gate closed with a set chosen: the request has not been allowed to start yet (the status
+    // decides whether the chosen set is the active one), which is neither 'none' nor 'unavailable'.
+    if (!this.setStatusOutcomeKnown() && this.selectedEmoteSetId() !== null) {
+      return 'loading';
+    }
     if (!this.isNonActiveView()) {
       return 'none';
     }
@@ -2761,6 +2797,12 @@ export class UsageStatsPage {
       this.stopAwaitingSync();
       this.emoteAdminService.getSetStatus(channelName).subscribe({
         next: (status) => {
+          // An answer for a channel the page has already left must not land under the current
+          // one's name — it would re-claim `setStatusChannel` and close the current channel's
+          // status gate for good (same guard as refreshSetStatus).
+          if (this.channelName() !== channelName) {
+            return;
+          }
           this.setStatus.set(status);
           this.setStatusChannel.set(channelName);
           // An empty id means SevenTvSyncService has not written a set for this channel. Only worth
@@ -2777,6 +2819,10 @@ export class UsageStatsPage {
         // channel is done asking: a later load() call — most importantly the refresh button, which
         // resets requestedSetStatusFor itself — must still be free to try again.
         error: () => {
+          // Ignored for a channel the page has left: it would wipe the current channel's status.
+          if (this.channelName() !== channelName) {
+            return;
+          }
           this.setStatus.set(null);
           this.setStatusFailedChannel.set(channelName);
           // Un-claims the channel (never claims it — see setStatusChannel's own comment): the
@@ -3007,7 +3053,7 @@ export class UsageStatsPage {
       )
       .subscribe((status) => {
         this.isAwaitingSync.set(false);
-        if (!status) {
+        if (!status || this.channelName() !== channelName) {
           return;
         }
 

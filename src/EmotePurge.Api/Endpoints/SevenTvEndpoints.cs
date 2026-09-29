@@ -60,35 +60,7 @@ public static class SevenTvEndpoints
                 ? await foreignEmoteSetService.GetForeignEmoteSetBySetIdAsync(channelName, emoteSetId, refresh, ct)
                 : await foreignEmoteSetService.GetForeignEmoteSetAsync(channelName, refresh, ct);
 
-            // Mirrors the state table in spec section 5 one-to-one. SevenTvRateLimited and
-            // SevenTvUnavailable deliberately share a branch and a code: the table has one row for
-            // "7TV nicht erreichbar / 429", because the caller cannot act on the two any differently.
-            // NoActiveEmoteSet also covers the set-ID mode's "7TV kennt dieses Set nicht" (spec 6.4,
-            // Vorentscheidung 4) — same code, same reasoning: a caller cannot act on "unknown id"
-            // differently from "no active set configured".
-            return result.Status switch
-            {
-                ForeignEmoteSetLookupStatus.Ok => Results.Ok(result.EmoteSet),
-                ForeignEmoteSetLookupStatus.ChannelNotOnTwitch =>
-                    Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotOnTwitch }),
-                ForeignEmoteSetLookupStatus.TwitchUnavailable => Results.Json(
-                    new { errorCode = ApiErrorCodes.ForeignChannelTwitchUnavailable },
-                    statusCode: StatusCodes.Status503ServiceUnavailable),
-                ForeignEmoteSetLookupStatus.NoSevenTvAccount =>
-                    Results.NotFound(new { errorCode = ApiErrorCodes.ForeignChannelNoSevenTvAccount }),
-                ForeignEmoteSetLookupStatus.NoActiveEmoteSet =>
-                    Results.NotFound(new { errorCode = ApiErrorCodes.ForeignChannelNoActiveEmoteSet }),
-                ForeignEmoteSetLookupStatus.SevenTvUnavailable
-                    or ForeignEmoteSetLookupStatus.SevenTvRateLimited
-                    // Our own provider-wide budget refusing a permit is invisible to the caller by
-                    // design: "try again shortly" is the same advice, and a code of its own would
-                    // leak an internal throttle into the public vocabulary (Regel 7) for no gain.
-                    or ForeignEmoteSetLookupStatus.ProviderBudgetExhausted => Results.Json(
-                    new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
-                    statusCode: StatusCodes.Status503ServiceUnavailable),
-                _ => throw new UnreachableException(
-                    $"Unexpected {nameof(ForeignEmoteSetLookupStatus)} value: {result.Status}.")
-            };
+            return MapLookupResult(result);
         })
         // Spec 6.4/E14: format-validated ahead of the handler, same idiom as ChannelNameValidationFilter
         // above.
@@ -439,6 +411,43 @@ public static class SevenTvEndpoints
                     $"Unexpected {nameof(SevenTvLeaderboardStatus)} value: {result.Status}.")
             };
         });
+    }
+
+    /// <summary>
+    /// Maps a preview lookup to the HTTP answer. Shared by the foreign-channel route above and the
+    /// tracked-channel set preview in <see cref="EmoteEndpoints"/>, so both answer one table.
+    /// </summary>
+    internal static IResult MapLookupResult(ForeignEmoteSetLookupResult result)
+    {
+        // Mirrors the state table in spec section 5 one-to-one. SevenTvRateLimited and
+        // SevenTvUnavailable deliberately share a branch and a code: the table has one row for
+        // "7TV nicht erreichbar / 429", because the caller cannot act on the two any differently.
+        // NoActiveEmoteSet also covers the set-ID mode's "7TV kennt dieses Set nicht" (spec 6.4,
+        // Vorentscheidung 4) — same code, same reasoning: a caller cannot act on "unknown id"
+        // differently from "no active set configured".
+        return result.Status switch
+        {
+            ForeignEmoteSetLookupStatus.Ok => Results.Ok(result.EmoteSet),
+            ForeignEmoteSetLookupStatus.ChannelNotOnTwitch =>
+                Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotOnTwitch }),
+            ForeignEmoteSetLookupStatus.TwitchUnavailable => Results.Json(
+                new { errorCode = ApiErrorCodes.ForeignChannelTwitchUnavailable },
+                statusCode: StatusCodes.Status503ServiceUnavailable),
+            ForeignEmoteSetLookupStatus.NoSevenTvAccount =>
+                Results.NotFound(new { errorCode = ApiErrorCodes.ForeignChannelNoSevenTvAccount }),
+            ForeignEmoteSetLookupStatus.NoActiveEmoteSet =>
+                Results.NotFound(new { errorCode = ApiErrorCodes.ForeignChannelNoActiveEmoteSet }),
+            ForeignEmoteSetLookupStatus.SevenTvUnavailable
+                or ForeignEmoteSetLookupStatus.SevenTvRateLimited
+                // Our own provider-wide budget refusing a permit is invisible to the caller by
+                // design: "try again shortly" is the same advice, and a code of its own would
+                // leak an internal throttle into the public vocabulary (Regel 7) for no gain.
+                or ForeignEmoteSetLookupStatus.ProviderBudgetExhausted => Results.Json(
+                new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                statusCode: StatusCodes.Status503ServiceUnavailable),
+            _ => throw new UnreachableException(
+                $"Unexpected {nameof(ForeignEmoteSetLookupStatus)} value: {result.Status}.")
+        };
     }
 
     /// <summary>

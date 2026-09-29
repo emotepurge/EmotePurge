@@ -206,6 +206,14 @@ builder.Services.AddRateLimiter(options =>
     // IForeignEmoteSetService owns, not a policy here.
     AddFixedWindowPolicy(RateLimitPolicyNames.ForeignEmoteLookup, rateLimits.ForeignEmoteLookup);
 
+    // GET /api/channels/{channelName}/emote-sets/{emoteSetId}/emotes (#220): a tracked channel's set
+    // preview, kept out of ForeignEmoteLookup's bucket on purpose. The load profile differs — one
+    // cached preview call per set switch behind a client cache, versus a foreign import lookup that
+    // can cost up to ten paginated 7TV calls — and the two callers only ever shared a bucket because
+    // they once shared a route. Per-user half only; the provider-wide budget stays with the hardening
+    // decorator, same split as above.
+    AddFixedWindowPolicy(RateLimitPolicyNames.TrackedEmoteSetPreview, rateLimits.TrackedEmoteSetPreview);
+
     // GET /api/seventv/leaderboard (7TV-leaderboard-as-import-source spec 2026-09-13, E16): unlike
     // ForeignEmoteLookup above this call never costs 7TV a round trip directly — it reads an
     // in-process stock guarded by its own window budget and circuit breaker — but its response runs

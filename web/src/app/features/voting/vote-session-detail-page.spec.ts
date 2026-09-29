@@ -667,7 +667,7 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
     expect(component['activeEmoteSetId']()).toBe('set-1');
     expect(component['massDeleteLockReasonKey']()).toBe('massDelete.memberRead.lock.loading');
 
-    flushByPath(httpMock, `/api/seventv/channels/${CHANNEL}/emotes`, {
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/emote-sets/halloween-1/emotes`, {
       channelName: CHANNEL,
       sevenTvUserId: null,
       emoteSetId: 'halloween-1',
@@ -690,7 +690,7 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
  * `selectedForDelete()` now drops such a row once the live-membership read (`sessionSetMembersResource`)
  * confirms it, mirroring the usage page's `membership === 'live'` filter. The read itself is gated on
  * `canSelectForDelete()` (real `rxResource`, hence the same real-timer `settle()` idiom the block
- * above uses) so a plain voter's page view never spends a permit off the shared `ForeignEmoteLookup`
+ * above uses) so a plain voter's page view never spends a permit off the `TrackedEmoteSetPreview`
  * bucket for a check whose only consumer — the mass-delete panel — they cannot even see.
  */
 describe('VoteSessionDetailPage — departed set-session members are excluded from the delete selection (#227)', () => {
@@ -700,7 +700,8 @@ describe('VoteSessionDetailPage — departed set-session members are excluded fr
 
   const CHANNEL = 'sensitron';
   const SESSION_ID = '7';
-  const EMOTE_SET_PATH = `/api/seventv/channels/${CHANNEL}/emotes`;
+  // The tracked-channel preview route (#220), named by the session's set.
+  const EMOTE_SET_PATH = `/api/channels/${CHANNEL}/emote-sets/halloween-1/emotes`;
 
   beforeEach(() => {
     FakeEventSource.instances = [];
@@ -792,9 +793,9 @@ describe('VoteSessionDetailPage — departed set-session members are excluded fr
     });
   }
 
-  /** Predicate-based, unlike a plain-string `httpMock.expectNone(EMOTE_SET_PATH)` would be: the
-   *  request always carries `?emoteSetId=…`, and Angular's string matcher compares against
-   *  `urlWithParams` — a bare path string therefore never matches it and `expectNone`/`expectOne`
+  /** Predicate-based, unlike a plain-string `httpMock.expectNone(EMOTE_SET_PATH)` would be: a
+   *  refresh read carries `?refresh=true`, and Angular's string matcher compares against
+   *  `urlWithParams` — a bare path string would then never match it and `expectNone`/`expectOne`
    *  would trivially "pass" regardless of whether a request actually went out. `req.url` (unlike
    *  `urlWithParams`) excludes the query string, same idiom `flushByPath` already uses below. */
   function matchesEmoteSetPath(req: { url: string }): boolean {
@@ -848,6 +849,23 @@ describe('VoteSessionDetailPage — departed set-session members are excluded fr
     expect(component['departedSevenTvEmoteIds']().size).toBe(0);
   });
 
+  // #220: the tracked route only answers for a set that still belongs to the channel. A session's set
+  // that dropped out of the channel's 7TV list after the session was created answers 404 — the panel
+  // stays locked with the generic reason instead of deleting from a set the channel no longer owns.
+  it('locks deleting when the session set no longer belongs to the channel (404)', async () => {
+    const a = resultEmote('a', { totalUseCount: null });
+    await mount(results([a], { emoteSetId: 'halloween-1' }), true);
+
+    httpMock
+      .match(matchesEmoteSetPath)
+      .forEach((req) =>
+        req.flush({ errorCode: 'emote_set_not_found' }, { status: 404, statusText: 'Not Found' }),
+      );
+    await settle();
+
+    expect(component['massDeleteLockReasonKey']()).toBe('massDelete.memberRead.lock.unavailable');
+  });
+
   it('locks deleting when the live-membership read is truncated', async () => {
     const a = resultEmote('a', { totalUseCount: null });
     await mount(results([a], { emoteSetId: 'halloween-1' }), true);
@@ -883,7 +901,7 @@ describe('VoteSessionDetailPage — departed set-session members are excluded fr
 
   // Opus review P2-a: `sessionSetMembersResource`'s `params` used to read `results()` directly —
   // `results` is replaced wholesale on every reload, a new object reference each time, so the
-  // resource was retriggered (and, past its 60 s cache, spent a fresh ForeignEmoteLookup permit) on
+  // resource was retriggered (and, past its 60 s cache, spent a fresh TrackedEmoteSetPreview permit) on
   // every one of them, not only when the session's own set actually changed (it never does,
   // mid-session). `onDeleted([])` exercises exactly that shape of replacement — its own
   // `results.update()` — without needing the SSE/debounce pipeline at all.

@@ -10,7 +10,7 @@ import {
   mockChannelEmoteSetList,
   mockChannelPermissions,
   mockChannelStatus,
-  mockForeignEmoteSetPreview,
+  mockTrackedEmoteSetPreview,
   mockLegalAvailability,
   mockMyChannels,
   mockUsageChannelSeries,
@@ -879,7 +879,7 @@ test.describe('waiting for the first 7TV sync', () => {
  * page shows, the URL round trip spec 8.1 asks for, and the non-active view's row classes (8.2) —
  * a class-3 "no counts under this set" group, a `'left'` row and a #74 duplicate cell, all unionned
  * from `/totals` and the set's live 7TV membership (`mergeSetView`, mocked here via
- * {@link mockForeignEmoteSetPreview}, the same route the K3/K2 picker tests already mock).
+ * {@link mockTrackedEmoteSetPreview}, the tracked-channel preview route of #220).
  *
  * `mockUsageTotals` answers every request for a channel identically regardless of `emoteSetId`
  * (existing contract, unchanged) — the switch/URL tests below need two DIFFERENT answers for the
@@ -1041,7 +1041,7 @@ test.describe('set view (#200, K4)', () => {
     });
     // The Halloween set's own live membership matches the totals row above 1:1, so it renders as a
     // plain 'live' row (spec 7.1) rather than 'left' — the switch itself is what this test is about.
-    await mockForeignEmoteSetPreview(page, CHANNEL, {
+    await mockTrackedEmoteSetPreview(page, CHANNEL, {
       channelName: CHANNEL,
       emoteSetId: HALLOWEEN_SET_ID,
       emoteSetName: 'Halloween',
@@ -1139,7 +1139,7 @@ test.describe('set view (#200, K4)', () => {
         },
       ],
     });
-    await mockForeignEmoteSetPreview(page, CHANNEL, {
+    await mockTrackedEmoteSetPreview(page, CHANNEL, {
       channelName: CHANNEL,
       emoteSetId: HALLOWEEN_SET_ID,
       emoteSetName: 'Halloween',
@@ -1239,7 +1239,7 @@ test.describe('set view (#200, K4)', () => {
         ]),
       });
     });
-    await mockForeignEmoteSetPreview(page, CHANNEL, {
+    await mockTrackedEmoteSetPreview(page, CHANNEL, {
       channelName: CHANNEL,
       emoteSetId: HALLOWEEN_SET_ID,
       emoteSetName: 'Halloween',
