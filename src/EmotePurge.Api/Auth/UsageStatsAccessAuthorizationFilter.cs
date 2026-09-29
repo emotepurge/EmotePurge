@@ -4,6 +4,7 @@ using EmotePurge.Core.Services;
 namespace EmotePurge.Api.Auth;
 
 // Weaker than ChannelManagementAuthorizationFilter — additionally admits a channel's 7TV editors.
+// Also applied per route to the tracked-channel set preview, GET /api/channels/{name}/emote-sets/{id}/emotes.
 // Applied as a group filter to five endpoints across two groups (UsageStatsEndpoints: usage-stats,
 // usage-stats/totals; EmoteEndpoints: sync-deleted, set-warning, active-set) — not just the two
 // usage-stats read endpoints the name suggests.

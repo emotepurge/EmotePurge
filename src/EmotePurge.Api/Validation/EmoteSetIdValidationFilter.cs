@@ -5,7 +5,8 @@ namespace EmotePurge.Api.Validation;
 /// route that carries one — the set-vorschau's <c>?emoteSetId=</c> (6.4), the three
 /// <c>/usage-stats/*</c> routes (6.5), <c>/emotes/set-warning</c> (6.8), and, as a route value, the
 /// set-centric import's <c>/api/seventv/emote-sets/{emoteSetId}/sync-imported</c> (6.7) and the
-/// editable pre-check's <c>/api/seventv/me/emote-set-targets/{emoteSetId}</c>. Register it
+/// editable pre-check's <c>/api/seventv/me/emote-set-targets/{emoteSetId}</c> and the tracked
+/// channel's <c>/api/channels/{channelName}/emote-sets/{emoteSetId}/emotes</c> (#220). Register it
 /// on the specific route, not the group: unlike <see cref="ChannelNameValidationFilter"/>'s
 /// <c>channelName</c>, which every route in a channel-scoped group carries, <c>emoteSetId</c> is only
 /// ever a handful of routes within a group that otherwise has nothing to do with it.

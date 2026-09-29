@@ -100,6 +100,55 @@ public static class EmoteEndpoints
         .AddEndpointFilter<UsageStatsAccessAuthorizationFilter>()
         .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
 
+        // GET /api/channels/{channelName}/emote-sets/{emoteSetId}/emotes (#220): the set preview of a
+        // tracked channel. Registered on `app` beside the dropdown route above for the same prefix
+        // reason, and it carries its own policy, TrackedEmoteSetPreview, instead of the shared
+        // ForeignEmoteLookup bucket: switching sets on a channel one may view is a different load
+        // profile (one cached preview call per switch) from a foreign-channel import lookup. Exactly
+        // one policy applies to an endpoint — this route names it itself, nothing is inherited.
+        // Filter order is the tested contract: an invalid channel name answers 400 first, a caller
+        // without usage-stats access 403 before the set id is looked at, then 400 invalid_emote_set_id.
+        // Membership comes before the preview and is fail-closed: without a positive proof that the set
+        // belongs to this channel there is no preview, so the route cannot read arbitrary sets.
+        // refresh=true only reaches the preview read; the membership proof reads the set list through
+        // that service's own 60 s cache and is not bypassed by it — the list is the proof, not the
+        // payload, and it is as fresh as the dropdown that offered the choice.
+        app.MapGet("/api/channels/{channelName}/emote-sets/{emoteSetId}/emotes", async (
+            string channelName,
+            string emoteSetId,
+            ITrackedEmoteSetMembershipService membershipService,
+            IForeignEmoteSetService foreignEmoteSetService,
+            CancellationToken ct,
+            bool refresh = false) =>
+        {
+            var membership = await membershipService.CheckAsync(channelName, emoteSetId, ct);
+            switch (membership)
+            {
+                case TrackedEmoteSetMembership.Member:
+                    break;
+                case TrackedEmoteSetMembership.ChannelNotFound:
+                    return Results.NotFound();
+                case TrackedEmoteSetMembership.NotMember:
+                    return Results.NotFound(new { errorCode = ApiErrorCodes.EmoteSetNotFound });
+                case TrackedEmoteSetMembership.SevenTvUnavailable:
+                    return Results.Json(
+                        new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                default:
+                    throw new UnreachableException(
+                        $"Unexpected {nameof(TrackedEmoteSetMembership)} value: {membership}.");
+            }
+
+            var result = await foreignEmoteSetService.GetForeignEmoteSetBySetIdAsync(channelName, emoteSetId, refresh, ct);
+            return SevenTvEndpoints.MapLookupResult(result);
+        })
+        .RequireAuthorization()
+        // Ahead of the authorization filter on purpose — see ChannelNameValidationFilter.
+        .AddEndpointFilter<ChannelNameValidationFilter>()
+        .AddEndpointFilter<UsageStatsAccessAuthorizationFilter>()
+        .AddEndpointFilter<EmoteSetIdValidationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.TrackedEmoteSetPreview);
+
         // The legacy Guid-keyed form (restore-per-set spec 5.6, E4): kept alive until the E3 gate of
         // the spec-200 plan, but no longer changes a row (H4) — it only counts which reported ids are
         // rows of this channel, audits that count with legacyBodyForm: true, and lets stage 7 below

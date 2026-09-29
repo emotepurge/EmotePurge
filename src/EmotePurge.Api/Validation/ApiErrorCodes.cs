@@ -99,7 +99,8 @@ internal static class ApiErrorCodes
     // "Delete, restore and a replace's removals report per emote set", DECISIONS 2026-09-25).
     // EmoteSetIdValidationFilter's format check (E14) — the one code this task's routes return.
     public const string InvalidEmoteSetId = "invalid_emote_set_id";
-    // The set-centric import endpoint only (6.7, T2.4) — 7TV does not know the given set id. Distinct
+    // The set-centric import endpoint (6.7, T2.4) and the tracked-channel set preview (#220, where it
+    // means "this set does not belong to the channel") — 7TV does not know the given set id. Distinct
     // from ForeignChannelNoActiveEmoteSet above, which the query-parameter preview path (6.4) reuses
     // for the very same underlying "unknown set" answer: that path already had a code whose text
     // fits, this one has no existing endpoint to borrow from.
