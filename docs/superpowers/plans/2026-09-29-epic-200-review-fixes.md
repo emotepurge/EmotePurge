@@ -201,7 +201,8 @@ Set*, *genau dieses Set (id)*, *alle Sets*. Sein `default` ist *aktives Set*, da
 Aufrufe mit weggelassenem Parameter unverändert richtig bleiben. `GetTotalsByEmoteIdsAsync` nimmt
 ihn statt des `string` und lehnt *aktives Set* mit `ArgumentException` ab (die Methode hat keinen
 Kanal, gegen den sie „aktiv" auflösen könnte — die heutige Doku `:253-257` sagt das schon).
-`GetDailySeriesAsync` nimmt ihn zusätzlich zum bisherigen Verhalten (Default = aktiv). Die beiden
+`GetDailySeriesAsync` nimmt ihn **anstelle** von `string? emoteSetId` (Default = aktiv; die
+Api-Route übersetzt ihre Parameter mechanisch in den Scope). Die beiden
 Channel-Scope-Methoden bleiben bei `string? emoteSetId` — sie brauchen kein „alle Sets" (Spec E16:
 ein nicht-aktives Set ändert dort auch die Basismenge; „alle Sets" hätte keine definierte
 Basismenge und ist für die Usage-Seite nicht im Umfang).
@@ -245,10 +246,11 @@ Dock-/Panel-Zweig (`html:1085`) ist damit nicht mehr gerendert, `importScopeCurr
 aktive Set selbst auf — ehrliche Zeilen statt Zeilen unter A). Für einen per URL gewählten Satz X
 bleibt die Ansicht stehen und gilt als nicht-aktiv (die Mitgliederliste wird angefragt, ein Permit
 im `TrackedEmoteSetPreview`-Bucket — akzeptiert, wie die dokumentierte #220-Lücke). **Sichtbarer
-Grund:** kein neuer i18n-Text. Der Dock verschwindet zusammen mit der Set-Auswahl, wie heute schon
-beim initialen Status-Fehler (Finding E) — dieselbe Erfahrung für denselben Zustand. Der Task
-prüft, ob der bestehende Hinweis für „kein aktives Set" in dieser Situation erscheint; erscheint
-keiner, ist das ein Punkt für Abschnitt 5, **kein** neuer Text ohne Rückfrage.
+Grund:** *kein neuer i18n-Text* gilt nur für die URL `''`: dort verschwindet der Dock zusammen mit
+der Set-Auswahl, wie heute schon beim initialen Status-Fehler (Finding E) — Verbergen braucht
+keinen Text. Für ein per URL gewähltes X bleibt die Ansicht stehen; dort greift der neue Sperrgrund
+`usageStats.setView.lock.statusUnavailable` (T3, Zielverhalten 3), der Löschen **und** Abstimmen
+sperrt.
 
 **E5 — Flaky: erst Ursache, dann Determinismus.** Kein Task darf `settle`-Runden erhöhen oder
 den Test überspringen. Reihenfolge: CI-Umgebung lokal nachstellen (Node 22, `CI=true`, Coverage,
@@ -300,9 +302,14 @@ neuer Wertetyp unter `src/EmotePurge.Core/Services/` (Name: der Scope einer Nutz
 Emote-Sets; ein `readonly record struct` o. ä. mit statischen Fabriken für die drei Zustände,
 `default` = aktives Set), `src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs`
 (`GetTotalsByEmoteIdsAsync`, `GetDailySeriesAsync`),
+`src/EmotePurge.Api/Endpoints/UsageStatsEndpoints.cs` (`/daily`-Handler `:62-86`, nur die
+mechanische Anpassung an die neue Signatur: `emoteSetId` vorhanden → `Set(id)`, fehlt → Default
+*ActiveSet*; der Filter garantiert, dass ein vorhandener Wert nicht leer ist),
 `src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` (Aufruf `:120-121`, Kommentare
 `:116-117` und `:211-222`), `tests/EmotePurge.Infrastructure.Tests/Integration/
-UsageStatQueryServiceTests.cs` (Aufrufstellen `:253,360,379,390,404,1235`; neue Fälle),
+UsageStatQueryServiceTests.cs` (Aufrufstellen `:253,360,379,390,404,1235` sowie die
+Daily-Aufrufe um `:1179-1200`, die statt `string?` den Scope übergeben; neue Fälle inkl. Fabrik
+*Set* lehnt `null`/`""` ab),
 `tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionQueryServiceTests.cs` (neue Fälle),
 `docs/DECISIONS.md` (neuer Eintrag, englisch, oben einsortiert).
 
@@ -314,7 +321,10 @@ UsageStatQueryServiceTests.cs` (Aufrufstellen `:253,360,379,390,404,1235`; neue 
   `ActiveEmoteSetId` (`""`) spielt keine Rolle mehr.
 - Scope *ActiveSet* für `GetTotalsByEmoteIdsAsync`: `ArgumentException` (nicht auflösbar ohne
   Kanal — Begründung wie heute in `:253-257`).
-- `GetDailySeriesAsync`: *ActiveSet* (Default) und *Set(id)* wie heute; *AllSets* lässt das
+- Fabrik *Set(id)*: lehnt `null`/leer mit `ArgumentException` ab (ein leerer Wert wäre sonst
+  stillschweigend „kein Treffer"; der Wertetyp ist die letzte Verteidigungslinie vor der Query).
+- `GetDailySeriesAsync`: nimmt den Scope **anstelle** von `string? emoteSetId`; *ActiveSet*
+  (Default) und *Set(id)* wie heute; *AllSets* lässt das
   Set-Prädikat in **beiden** Queries weg (Tage `:170` **und** Bounds `:180`) — „first used" heißt
   dann „zuerst im Kanal benutzt". Der Kommentar `:165-168` („the drilldown agrees with the row it
   was opened from") bekommt den Zusatz, dass eine Null-Session-Zeile setagnostisch ist und ihr
@@ -374,8 +384,10 @@ die Summe und der Drilldown 0. Die Usage-Seite bleibt unberührt: sie sendet imm
 Set (`shownSetId()`) oder nichts (= aktiv). Setzt T1 voraus (Scope-Typ, `GetDailySeriesAsync`).
 
 **Dateien:** `src/EmotePurge.Api/Endpoints/UsageStatsEndpoints.cs` (`/daily`-Handler `:62-88`),
-neuer Api-Test (Muster `tests/EmotePurge.Api.Tests/ChannelUsageSeriesWireFormatTests.cs`;
-`IUsageStatQueryService` wird dort substituiert — prüfen, wie `ApiFactory` das macht),
+`src/EmotePurge.Api/Validation/` (neuer statischer Parser für `setScope` + `emoteSetId`),
+`tests/EmotePurge.Api.Tests/ApiFactory.cs` (neues `IUsageStatQueryService`-Substitut), neue
+Api-Tests (Parser-Theory im Stil von `EmoteSetIdValidationTests`; zwei WAF-Fälle nach dem Muster
+von `TrackedEmoteSetPreviewEndpointTests` und `SevenTvForeignEmoteSetEndpointTests`),
 `web/src/app/core/usage-stats/usage-stat.service.ts` (`getDailySeries` `:53-70`, Cache-Schlüssel),
 `web/src/app/shared/emotes/emote-drilldown-dialog.ts` (`EmoteDrilldownData` `:41-48`, Konstruktor
 `:327-335`), `web/src/app/features/voting/vote-session-detail-page.ts` (`openDrilldown` `:819-846`
@@ -387,14 +399,19 @@ T1-Eintrag ergänzen).
 - Route: `GET /api/channels/{channelName}/usage-stats/daily?emoteId=…&from=…&to=…` plus
   **entweder** `emoteSetId=<id>` **oder** `setScope=all` **oder** keins von beiden (= aktives Set).
   Beide zusammen → 400 `invalid_emote_set_id`; unbekannter `setScope`-Wert → 400
-  `invalid_emote_set_id`. Der Handler bleibt dünn: Parameter → Scope-Wert, sonst nichts. Der
+  `invalid_emote_set_id`. `setScope` wird **ordinal** verglichen, nur kleingeschrieben `active` und
+  `all` gelten (`All`, `ALL`, leer → 400); `setScope=active&emoteSetId=x` → 400
+  `invalid_emote_set_id` (Kombination, nicht „x gewinnt"). Der Handler bleibt dünn: Parameter →
+  statischer Parser (unter `Validation/`, Ergebnis: Scope oder Fehler) → Service, sonst nichts. Der
   bestehende `EmoteSetIdValidationFilter` bleibt am Endpoint (er prüft `emoteSetId`, wenn
-  vorhanden); die Kombinationsregel gehört in den Handler, **nicht** in den Filter (der hängt an
+  vorhanden); die Kombinationsregel gehört in den Parser, **nicht** in den Filter (der hängt an
   Routen ohne `setScope`).
 - Frontend-Service: `getDailySeries` drückt die drei Zustände ausdrücklich aus (Typ im Task
   wählen — kein String-Sentinel; z. B. ein kleiner Union-Typ), sendet `setScope=all` nur für
   „alle Sets", und der **Cache-Schlüssel unterscheidet** „aktiv" von „alle" (heute `setId ?? ''`
-  — beide würden auf `''` kollidieren).
+  — beide würden auf `''` kollidieren). Der Marker für „aktiv"/„alle" muss **außerhalb von
+  `[0-9A-Za-z]`** liegen, weil `all` (und `active`) gültige Set-IDs sind — z. B. `*active` und
+  `*all`; ein Marker wie `all` würde mit einem Set dieses Namens kollidieren.
 - `EmoteDrilldownData`: „aktives Set" (Usage-Seite ohne geladenes Set), „dieses Set" (Usage-Seite,
   Set-Session), „alle Sets" (Null-Session) sind drei benannte Zustände; die Doku `:41-47` wird
   entsprechend umgeschrieben. Die Usage-Seite (`openDrilldown` → `shownSetId()`) ändert ihre
@@ -404,12 +421,26 @@ T1-Eintrag ergänzen).
   null-session" ist genau die falsche Aussage).
 
 **Tests:**
-- Api (WebApplicationFactory, Muster Wire-Format-Test): `setScope=all` → Service wird mit *AllSets*
-  gerufen (Substitut prüft den Scope); ohne beides → *ActiveSet*; `emoteSetId=x` → *Set(x)*;
-  `setScope=all&emoteSetId=x` → 400 mit `invalid_emote_set_id`; `setScope=bogus` → 400. Regel 11
-  („Handler bekommen keine Tests") gilt für dünne Delegation — hier wird ein **Drahtvertrag**
-  gepinnt, wofür `ChannelUsageSeriesWireFormatTests` die Präzedenz ist; das im Test-Kommentar
-  sagen.
+- Api, Parser (Theory im Stil von `EmoteSetIdValidationTests`, reine Funktion, kein Host):
+  (`setScope` fehlt, `emoteSetId` fehlt) → *ActiveSet*; (`all`, fehlt) → *AllSets*; (`active`,
+  fehlt) → *ActiveSet*; (fehlt, `x`) → *Set(x)*; (`all`, `x`) → Fehler; (`active`, `x`) → Fehler;
+  (`bogus`/`All`/`ALL`/leer, beliebig) → Fehler.
+- Api, WebApplicationFactory, genau **zwei** Fälle: (1) `setScope=all` → das Substitut wird mit
+  *AllSets* gerufen (Empfangsprüfung am Substitut); (2) `setScope=all&emoteSetId=x` → 400 mit
+  `invalid_emote_set_id`. Das Substitut in `ApiFactory` ist wie `TrackedEmoteSetMembership`
+  (`:86-91`) begründet: die Handler-Services werden vor der Filter-Pipeline aufgelöst, und der Test
+  braucht Kontrolle über das, was der Dienst gefragt wird, nicht eine Datenbank. Regel 11
+  („Handler bekommen keine Tests") gilt für dünne Delegation — die Kombinationslogik liegt im
+  Parser, der Host-Test pinnt nur die Verdrahtung; das im Test-Kommentar sagen.
+- **Nebenwirkung des Substituts prüfen und dokumentieren:** `RateLimitPolicyBudgetTests` (`:111-112`)
+  ruft `/usage-stats/totals` und `/series` heute mit dem **echten** Dienst gegen eine tote
+  Datenbank; `AuthFilterMatrixTests` trifft `/usage-stats/{totals,daily,series}` (`:639-641`, dort
+  mit ungültiger Set-ID, also 400 vor dem Handler) sowie die Basisroute `/usage-stats`. Mit dem
+  Substitut ändern sich die Statuscodes der Rate-Limit-Läufe (vermutlich 500 → 200). Die
+  Assertions (`DoesNotContain`/`NotEqual` gegen 429) bleiben tragfähig — der Task **belegt** das
+  durch einen Lauf beider Klassen und prüft, dass keine Matrix-Erwartung an einem echten Dienst
+  hing (NSubstitute liefert für `Task<T>` ein `default`/leeres Objekt; ein `null` aus
+  `GetDailySeriesAsync` wäre ein 404 statt 500). Ergebnis in den Abschlussbericht.
 - Vitest `usage-stat.service.spec.ts`: „alle Sets" sendet `setScope=all` und kein `emoteSetId`;
   Cache-Schlüssel trennt aktiv/alle (zwei Aufrufe → zwei Requests).
 - Vitest `emote-drilldown-dialog.spec.ts`: dritter Fall neben `:214` und `:226` — Daten mit „alle
@@ -427,7 +458,8 @@ T1-Eintrag ergänzen).
       DECISIONS-Absatz), `fix(web): chart a null-session's drilldown across every emote set`
       (Service, Dialog, Vote-Seite, Specs).
 
-**Abnahme:** Die vier Api-Fälle und die drei Vitest-Ergänzungen grün; die Usage-Seiten-Specs
+**Abnahme:** Parser-Theory, die zwei WAF-Fälle, die unveränderten Rate-Limit-/Filter-Matrix-Klassen
+und die drei Vitest-Ergänzungen grün; die Usage-Seiten-Specs
 (`usage-stats-page.spec.ts`) unverändert grün; kein `setScope` in irgendeinem Request der
 Usage-Seite (grep der Specs/Mocks).
 
@@ -437,28 +469,65 @@ Usage-Seite (grep der Specs/Mocks).
 `liveMembersParams`, Stale-Guards in `load()`/`awaitSync`, `setStatusFailedChannel`) und ihre zehn
 Specs dürfen nicht brechen.
 
-**Datei:** `web/src/app/features/usage-stats/usage-stats-page.ts` (Live-Subscription
-`:2006-2054`, `refreshSetStatus` `:2743-2756`), `usage-stats-page.spec.ts` (neue Fälle; Muster
-`:245-500`, `:4519-4531`, `:3525-3560`).
+**Dateien:** `web/src/app/features/usage-stats/usage-stats-page.ts` (Live-Subscription
+`:2006-2054`, `refreshSetStatus` `:2743-2756`, `sharedSetViewLockReasonKey` `:831-848`,
+Status-Lesepfade `:2798`, `:2066-2090`, `:3062-3063`, Totals-Abschluss `:2767`, `:3145-3147`,
+`:3160`), `web/public/i18n/de.json` und `en.json` (Sperrgründe `:795-799`),
+`usage-stats-page.spec.ts` (neue Fälle; Muster `:245-500`, `:4519-4531`, `:3525-3560`),
+`docs/DECISIONS.md` (englischer Eintrag).
 
 **Zielverhalten:**
-1. `channel.synced` (mit oder ohne gleichzeitiges `usage.flushed`): **zuerst** `stopAwaitingSync()`
-   und der Status-Request. `emoteSetListResource.reload()` darf sofort laufen (hängt nicht an der
-   Aktiv-ID). **Erst im Erfolg** des Status: (i) wenn der Status `selectedEmoteSetId()` bewegt hat
-   (vorher/nachher per `untracked` vergleichen), lädt der Lade-Effekt (`:1807`) die Zeilen unter
-   der neuen ID selbst — dann **kein** zusätzlicher `loadTotals` (sonst zwei Requests für dieselbe
-   ID; `latestOnly` würde den Doppelten zwar entwerten, aber der Permit ist gezahlt); (ii) sonst
-   `loadTotals(selectedEmoteSetId(), preserve + silent)` wie heute; (iii) `reloadLiveMembers()`
-   ebenfalls erst hier (vor dem Status könnte es die Mitgliederliste eines Sets anfragen, das gerade
-   aktiv wurde — ein verschenkter Permit im `TrackedEmoteSetPreview`-Bucket). Die Guards
-   `awaitingEmoteSetId` und der Kanal-Guard aus `refreshSetStatus` gelten weiter.
+1. `channel.synced` (mit oder ohne gleichzeitiges `usage.flushed`): `stopAwaitingSync()`,
+   `reloadLiveMembers()` und `emoteSetListResource.reload()` laufen **sofort**, vor dem Status;
+   dann der Status-Request. `reloadLiveMembers()` bleibt bewusst sofort: AK 52 (Spec `:3543`) und
+   der Fall um `:4834` erwarten den Mitgliederlisten-Reload direkt nach `synced` ohne geflushten
+   Status, und die Resource verwirft ihn ohnehin, sobald der Status `liveMembersParams` auf
+   `undefined` setzt (`:691-706`). **Kein `loadTotals` vor dem Status.**
+   *Fortsetzung bei Status-Erfolg* (hinter dem Kanal-Guard): Totals nur dann anfragen
+   (`preserve + silent`, unter `selectedEmoteSetId()`), wenn der Status **weder**
+   `selectedEmoteSetId()` **noch** `viewKindStale()` bewegt hat (vorher/nachher per `untracked`
+   vergleichen). Hat er eines bewegt, besitzt der jeweilige Effekt den Reload — der Lade-Effekt
+   (`:1807`) für eine neue ID, der Stale-Effekt (`:1858`) für den Stale-Fall —, und die
+   Fortsetzung lädt **nicht** zusätzlich (sonst zwei Requests für dieselbe ID, der Permit ist
+   gezahlt). Bleibt `viewKindStale` unverändert `true` (ein früherer Stale-Reload ist gescheitert),
+   lädt die Fortsetzung — gewollter Retry. Die Guards `awaitingEmoteSetId` und der Kanal-Guard aus
+   `refreshSetStatus` gelten weiter.
+   *Fehlerzweig:* die Fortsetzung stellt **keinen** Totals-Request. Regel für „Totals bei
+   Status-Fehler mit URL-X": der Stale-Effekt lädt nur dann neu, wenn X bis dahin als aktiv galt
+   (das Un-claimen macht X „nicht-aktiv", `viewKindStale` wird wahr, der Stale-Effekt lädt
+   einmal silent unter X); galt X schon vorher als nicht-aktiv, bleibt es bei den vorhandenen
+   Zeilen ohne Reload.
 2. `usage.flushed` **ohne** `synced`: unverändert (Totals silent; Probe-Gate → Status).
 3. `refreshSetStatus` bekommt einen Fehlerzweig nach dem Vorbild `load():2819-2835`, mit der
    Abweichung E4 (DTO behalten, `setStatusChannel` un-claimen, `setStatusFailedChannel` setzen,
    Kanal-Guard). Feldkommentare `:1284-1293` anpassen: `setStatusFailedChannel` wird jetzt auch von
    einem gescheiterten Refresh geschrieben. Der Aufrufer `:2048` (Flush-Probe) bekommt dasselbe
    Verhalten — bewusst: ein Status, den wir nicht lesen können, ist in beiden Fällen unbekannt.
-4. Erholung: der nächste erfolgreiche Status (nächstes `synced`, Refresh-Button, der
+   **Neuer Sperrgrund (E4):** als **erster** Zweig in `sharedSetViewLockReasonKey` (`:831-848`, vor
+   `viewSwitching`): der Status des aktuellen Kanals ist gescheitert und nicht (wieder) geclaimt
+   (`setStatusFailedChannel() === channelName() && setStatusChannel() !== channelName()`) →
+   Schlüssel `usageStats.setView.lock.statusUnavailable`. Weil `deleteLockReasonKey` und
+   `voteLockReasonKey` beide an `sharedSetViewLockReasonKey` hängen (`:857`, `:1546`), sperrt der
+   Grund Löschen **und** Abstimmen. Die Nachprüfung am Verbrauchsort deckt ihn mit ab: das
+   Löschpanel prüft den Schlüssel beim Klick (`mass-delete-panel.ts:655`) und vor dem Start
+   (`:1478`), der Abstimm-Dialog beim Absenden (`lockReasonKey` `:2439`) — ein bereits offener
+   Dialog ist damit erfasst. Neuer i18n-Schlüssel `usageStats.setView.lock.statusUnavailable` in
+   **beiden** Locales (neben `:795-799`), **Wortlaut provisorisch, Betreiberentscheidung
+   ausstehend** (im Task-Kommentar und im Bericht als vorläufig kennzeichnen):
+   de „Löschen und Abstimmen gesperrt: Das aktive Set des Kanals ist gerade nicht bekannt.“ —
+   en „Deleting and voting are locked: the channel's active set is not known right now.“
+4. **Ein gemeinsames `latestOnly` für alle Status-Lesepfade** (Muster `latestTotals` `:1272` /
+   `latestSeries` `:1281`; `core/http/latest-only.ts` lässt Fehler überholter Anfragen still
+   enden): die initiale Abfrage in `load()` (`:2798`), der `synced`-Refresh (`:2745`), der
+   Recheck-Poll (`:2066-2090`) und die Adoption in `awaitSync` (`:3062-3063`) laufen durch **eine**
+   Instanz; die Kanal-Guards bleiben. Grund: mit E4 könnte sonst ein veralteter **Fehler** einen
+   neueren Erfolg wieder un-claimen. Der Poll darf seinen `catchError(() => of(null))` behalten,
+   muss aber hinter dem Operator sitzen, damit eine überholte Antwort nichts schreibt.
+5. **Totals-Abschluss:** die gewinnende Totals-Antwort (`next` **und** `error`) setzt `isLoading`
+   immer zurück; stille Anfragen setzen es nur nicht auf `true`. Behebt das eingefrorene Skeleton,
+   wenn eine stille Anfrage eine laute überholt (`:2767`, `:3145-3147`, `:3160`; der
+   Aktualisieren-Knopf hängt über `viewLoading` `:793` daran).
+6. Erholung: der nächste erfolgreiche Status (nächstes `synced`, Refresh-Button, der
    `requestedSetStatusFor` zurücksetzt) claimt wieder; die Sperre hebt sich damit, der Dock kommt
    zurück, die Auswahl bleibt (kein `clear()`, weil `previousTotalsChannel === channelName`).
 
@@ -471,21 +540,24 @@ Specs dürfen nicht brechen.
   Stale-Effekt lädt aber nur, wenn `shownSetId() === selectedEmoteSetId()` — für `''` ist selected
   `null`, also nicht. Der Lade-Effekt lädt stattdessen (selected hat sich geändert). Kein
   Doppelladen. Für URL-gewähltes X: selected bleibt X, shown ist X, stale → Reload silent unter X
-  — akzeptabel und korrekt (X ist jetzt „nicht-aktiv, weil unbekannt").
+  — akzeptabel und korrekt (X ist jetzt „nicht-aktiv, weil unbekannt"); siehe Regel oben.
 - Der Skeleton beim Set-Wechsel durch den Lade-Effekt ist **Bestandsverhalten** (heute genauso
   nach jedem Status, der die Aktiv-ID bewegt) und nicht Teil dieses Fixes (Abschnitt 5).
 - Ein `channel.synced` für einen Kanal, den die Seite verlassen hat: die Guards in
   `refreshSetStatus` (`:2749`) und die #220-Fälle „a late answer for the channel left behind …"
   bleiben unverändert wirksam — der neue Erfolgs-Kontinuationscode muss **hinter** dem Kanal-Guard
   stehen.
+- Der neue Sperrgrund darf den Sonderfall „Kanal ohne Status, nie gelesen" nicht treffen: er greift
+  nur bei gesetztem `setStatusFailedChannel` für den aktuellen Kanal (Finding-E-Fall inklusive —
+  dort ist der Dock ohne Auswahl ohnehin nicht gerendert; die Reihenfolge der Zweige darf keinen
+  #220-Fall verändern).
 
 **Vitest-Fälle (in einem eigenen `describe` mit dem `FakeEventSource`-Muster von `:245`):**
 - (1) Sync mit Set-Wechsel, Status landet zuerst: nach `channelSynced` gibt es **keinen**
-  `/totals`-Request, bevor `/active-set` beantwortet ist (`httpMock.expectNone` auf die Totals-URL
-  vor dem Flush des Status); nach dem Status mit B kommt genau ein `/totals` mit `emoteSetId`
-  abwesend (URL `''` → aktiv, kein expliziter Parameter) bzw. — je nach heutiger Form von
-  `withEmoteSetId` bei `selectedEmoteSetId() === B` — mit B; eine vorher markierte Auswahl (Emote
-  ohne Nutzung unter A) ist danach **noch markiert**, sofern es in B's Zeilen vorkommt.
+  `/totals` vor der Antwort auf `/active-set`; danach **genau einen** (mit B bzw. — je nach heutiger
+  Form von `withEmoteSetId` bei `selectedEmoteSetId() === B` — ohne expliziten Parameter); eine
+  vorher markierte Auswahl (Emote ohne Nutzung unter A) ist danach **noch markiert**, sofern es in
+  B's Zeilen vorkommt.
 - (2) Sync ohne Set-Wechsel: Status → genau ein `/totals` silent (kein Skeleton: `isLoading()`
   bleibt `false`), Auswahl bleibt.
 - (3) Status-Fehler nach Sync (`/active-set` → 503): `activeEmoteSetId()` ist `null`,
@@ -494,21 +566,45 @@ Specs dürfen nicht brechen.
   `selectedEmoteSetId()` ist `null`; **kein** `/totals`-Request mit `emoteSetId=A`.
 - (4) Erholung: nächstes `channelSynced` → Status B ok → `activeEmoteSetId()` = B, Dock wieder da,
   Auswahl unverändert.
-- (5) Regression #220: die zehn Fälle aus `49cc39cd`/`4b1e8ce5` und AK 52 (`:3525`) laufen
-  unverändert (keine Änderung an ihren Erwartungen erlaubt; wenn einer rot wird, ist der Fix falsch,
-  nicht der Test).
+- (5) Regression #220: die zehn Fälle aus `49cc39cd`/`4b1e8ce5` sowie AK 52 (`:3525`) und der Fall
+  um `:4834` laufen mit **unveränderten Erwartungen** (wenn einer rot wird, ist der Fix falsch,
+  nicht der Test). Die vier Drain-Fälle (`:322`, `:406`, `:486`, `:3051`) dürfen **nur** ihren
+  jetzt toten Drain-Flush (den `/totals`-Flush vor dem Status) entfernen bzw. hinter den Status
+  verschieben und ihre Kommentare korrigieren — Erwartungen unverändert. Beachten: `flushByPath`
+  (`:233-235`) ist bei null Treffern ein No-op, und die Datei ruft nirgends `httpMock.verify()`
+  auf — ein toter Flush fällt also **nicht** von selbst auf, der Task muss die vier Stellen aktiv
+  durchgehen.
 - (6) `usage.flushed` allein: wie heute genau ein `/totals` silent, kein Status (Gate geschlossen).
+- (7) URL-X wird aktiv bzw. hört auf, aktiv zu sein (Statuswechsel A→X, dann X→B): je Übergang
+  **genau ein** `/totals`.
+- (8) Status 503 bei URL-X und fertiger Mitgliederliste: `deleteLockReasonKey()` ist der neue
+  Schlüssel `usageStats.setView.lock.statusUnavailable`, `voteLocked()` ist `true`; nach einem
+  erfolgreichen Status wieder frei.
+- (9) Status-Antworten außer der Reihe für denselben Kanal, Erfolg **und** Fehler: die ältere wird
+  ignoriert (weder Re-Claim durch einen alten Erfolg noch Un-Claim durch einen alten Fehler).
+- (10) `usage.flushed` während eines lauten Reloads: `isLoading` ist `false`, sobald die stille
+  Antwort landet (kein eingefrorenes Skeleton).
 
 **Schritte:**
 - [ ] Live-Subscription umbauen (Reihenfolge), `refreshSetStatus` mit Erfolgs-Kontinuation und
-      Fehlerzweig; Kommentare (englisch) an `:2006-2016` und `:2735-2743` nachziehen.
-- [ ] Specs (1)–(6).
+      Fehlerzweig, gemeinsames `latestOnly` für alle Status-Lesepfade, `isLoading`-Abschluss,
+      Sperrgrund; Kommentare (englisch) an `:2006-2016` und `:2735-2743` nachziehen — der Kommentar
+      um `:2733-2735` („must never take the mass-delete panel away over a transient error")
+      beschreibt genau das Verhalten, das dieser Task umkehrt, und muss umgeschrieben werden.
+- [ ] i18n-Schlüssel in `de.json` und `en.json`.
+- [ ] Specs (1)–(10).
+- [ ] DECISIONS-Eintrag (englisch, oben einsortiert, `**Betrifft:**`-Zeile): die Umkehr des
+      dokumentierten Verhaltens — Kommentar `:2733-2735` und der Eintrag „An unknown active set is
+      not the selected set" (`docs/DECISIONS.md:4401-4410`: ein gescheiterter Status un-claimt nur
+      beim initialen Laden) — samt Begründung (Status-Fehler nach `synced` ist „unbekannt", sperrt
+      Löschen und Abstimmen; Status vor Totals; gemeinsames `latestOnly`).
 - [ ] Gates Frontend (Vitest komplett, Lint, Format).
 - [ ] Commit: `fix(web): read the set status before the rows on channel.synced and treat a failed
-      status as unknown`.
+      status as unknown` (Code, Specs, Locales und DECISIONS in **einem** Commit).
 
-**Abnahme:** (1)–(6) grün; gesamte `usage-stats-page.spec.ts` grün; keine neuen i18n-Schlüssel;
-Prüfergebnis zu E4 („erscheint ein Hinweis?") im Abschlussbericht.
+**Abnahme:** (1)–(10) grün; gesamte `usage-stats-page.spec.ts` grün; **genau ein** neuer
+i18n-Schlüssel, in beiden Locales (`api-error-locales.spec.ts` und ein evtl. Locale-Paritätstest
+grün); Wortlaut als vorläufig gekennzeichnet; DECISIONS-Eintrag vorhanden.
 
 ### T4 — C2: GraphQL-Teilantwort ist `Unavailable`, nicht `NotFound`
 
@@ -531,10 +627,11 @@ Spec §32 für den Besitzer-Lookup). Der Kommentar `:790-795` (Vorentscheidung 4
 - Kontrolle: derselbe Body **ohne** `errors` → weiterhin `NotFound` (bestehender Fall `:147`).
 - Kontrolle: `errors` mit `status: 429` in der Partialform → `RateLimited` (der 429-Zweig läuft
   vor dem NotFound-Check — belegen, nicht annehmen).
-- Breaker-Folge: kein neuer Breaker-Test nötig, wenn die Zuordnung `Unavailable → SevenTvUnavailable
-  → RecordFailure` schon in `HardenedForeignEmoteSetService`-Tests gepinnt ist (grep
-  `RecordFailure` in `tests/…/HardenedForeignEmoteSetServiceTests*`); fehlt sie, einen Fall
-  ergänzen, der eine `Unavailable`-Antwort des inneren Dienstes als Breaker-Fehlschlag verbucht.
+- Breaker-Folge: der Fall „`Unavailable` → `SevenTvUnavailable` → `RecordFailure`" ist **fällig** —
+  `HardenedForeignEmoteSetService.cs` (`ApplyBreakerFeedback`, `:269-270`) ist von keinem Test
+  gepinnt (im Task per grep `RecordFailure`/`SevenTvUnavailable` unter `tests/` gegenprüfen). Einen
+  Fall ergänzen, der eine `Unavailable`-Antwort des inneren Dienstes als Breaker-Fehlschlag
+  (`OtherFailure`) verbucht und — als Gegenprobe — `NoActiveEmoteSet` weiter als Erfolg.
 
 **Schritte:**
 - [ ] Bedingung + Log + Kommentar.
@@ -544,7 +641,7 @@ Spec §32 für den Besitzer-Lookup). Der Kommentar `:790-795` (Vorentscheidung 4
 - [ ] Commit: `fix(infra): treat a partial 7TV preview answer with errors as unavailable, not as an
       unknown set`.
 
-**Abnahme:** die drei neuen Fälle grün; `UnknownSetId_…_IsReportedAsNotFound_NotUnavailable`
+**Abnahme:** die drei neuen Fälle plus der Breaker-Fall grün; `UnknownSetId_…_IsReportedAsNotFound_NotUnavailable`
 unverändert grün.
 
 ### T5 — C3: Set-ID-Regex endet am absoluten Ende
@@ -563,6 +660,7 @@ aus der Inventur.
 | `src/EmotePurge.Api/Validation/EmoteSetIdValidation.cs` | 15 | `^[0-9A-Za-z]{1,32}$` | ja | nein | **nein** | **mitnehmen** |
 | `src/EmotePurge.Api/Validation/ChannelNameValidation.cs` | 8 | `^[a-z0-9_]{4,25}$` | ja | nein | ja — `ChannelName.Normalize()` (`Trim().ToLowerInvariant()`) läuft vorher; `Trim()` entfernt `\n` | nicht mitnehmen (Lücke durch Normalisierung geschlossen; Bestand außerhalb des Diffs) |
 | `src/EmotePurge.Api/Program.cs` | 339 | `-[A-Za-z0-9_-]{8}\.(js\|css)$` auf `Request.Path` | ja | nein | nein | nicht mitnehmen: kein Validierungs-Gate, sondern die Cache-Header-Entscheidung für gehashte Assets; ein Fehlmatch kostet höchstens den `immutable`-Header, und die Zeile ist Bestand außerhalb des Epic-Diffs. Im Task per `git blame`/Diff bestätigen; ist sie wider Erwarten Teil des Diffs, in Abschnitt 5 melden statt still ändern |
+| `src/EmotePurge.Api/Validation/ContactValidation.cs` | 23 | `^[^\s@]+@[^\s@]+\.[^\s@]+$` | ja | nein | ja — Wert wird getrimmt, und die Klasse `\s` enthält `\n` ohnehin (ein abschließendes `\n` kann nach `[^\s@]+` nicht matchen) | nicht mitnehmen |
 | `web/src/app/core/channels/channel-name.ts:9`, `web/src/app/features/contact/contact-page.ts:48` | — | TypeScript | ja | — | — | **nicht betroffen** (JS-Semantik: `$` ohne `m` nur am absoluten Ende) |
 
 **Regel für „mitnehmen":** nur Muster, die (a) mit `$` statt `\z` enden, (b) ohne
@@ -640,7 +738,15 @@ deterministisch — also gibt es einen benennbaren Unterschied, und der ist zuer
 sonarcloud.yml:55-71`, `web/angular.json:81-86`, `web/src/test-setup.ts`.
 
 **Phase A — Unterschied finden (Reihenfolge, Abbruch nach zwei Fehlschlägen je Methode):**
-- [ ] Umgebung spiegeln, in dieser Reihenfolge einzeln und kombiniert: (1) **Node 22** statt 24
+- [ ] **Zuerst festhalten (Befund, kein Arbeitsschritt):** `test-web` (`publish.yml:51`, Node 22,
+      **ohne** Coverage) war für `e1262e5e` auf PR #303 **grün** (`gh pr checks 303` bzw. `gh run
+      list`; im Bericht mit Lauf-ID belegen). Damit ist **Node allein ausgeschlossen** — dieselbe Suite
+      unter Node 22 lief dort durch. **Coverage ist die erste Achse** (Instrumentierung verlangsamt
+      und verschiebt das Timing); Node, Kernzahl und Pool-Belegung kommen danach und kombiniert.
+      Den CI-Aufruf spiegeln, inklusive `npm ci --ignore-scripts` (wie `publish.yml`, Zeile
+      „Install dependencies").
+- [ ] Umgebung spiegeln, in dieser Reihenfolge einzeln und kombiniert (Coverage-Achse zuerst,
+      s. o.): (1) **Node 22** statt 24
       (`npx -y node@22 …` oder `nvm use 22` — `web/.nvmrc` sagt 22; der Aufruf muss `ng test` unter
       Node 22 fahren, nicht nur `npx`), (2) `CI=true` in der Umgebung, (3) exakt der CI-Befehl
       `npm test -- --watch=false --coverage --coverage-reporters=lcov` aus `web/`, (4) volle Suite
@@ -680,12 +786,22 @@ sonarcloud.yml:55-71`, `web/angular.json:81-86`, `web/src/test-setup.ts`.
 - [ ] Der Test muss **ohne** Echtzeitwarten grün sein und unter der in Phase A gefundenen
       Umgebung (Node 22, CI=true, Coverage, volle Suite) ebenfalls.
 
+**Phase C — Nachweis in der einzigen Umgebung, in der es rot war (setzt einen Push voraus — den
+führt der Orchestrator aus, **nicht** der Task):**
+- [ ] Nach dem Push von `fix/epic-200-review`: `workflow_dispatch` von `sonarcloud.yml` (Trigger
+      `:16`; die SARIF-Schritte sind auf `main` beschränkt, `:236`/`:249`, laufen hier also nicht)
+      auf diesem Branch, **3×** hintereinander, alle grün.
+- [ ] Im Log jedes Laufs prüfen, dass der Scanner den Branch als `fix/epic-200-review` analysiert
+      und **nicht** als `main`. Andernfalls Abbruch dieser Phase: das Gate-Urteil bleibt dann bei
+      PR #303 nach dem Merge, und der Bericht sagt das ausdrücklich.
+
 **Abnahme:**
 - Spec-Datei **20×** grün mit Coverage unter `taskset -c 0` plus Last (z. B. `stress`/`yes >
   /dev/null` auf demselben Kern); zusätzlich 3× volle Suite mit Coverage unter Node 22 und
   `CI=true`.
 - Dauer der drei ehemals langsamen Fälle jeweils < 300 ms (Beleg im Bericht).
 - Kein Diff unter `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts`.
+- Phase C: drei grüne `workflow_dispatch`-Läufe auf dem Branch (Branch-Name im Log belegt).
 - Commit: `test(web): drive the conflict step's virtual-scroll cases with fake frames instead of
   real time` (Wortlaut nach tatsächlicher Form (i)/(ii) anpassen).
 
@@ -708,7 +824,7 @@ vorab geschätzt, Zweitmeinung eingeholt und **vorgelegt** (Regel 1/22).
       origin/feat/emote-sets-200` — Ergebnis lesen als Anlass hinzusehen (Näherung), nicht als
       Urteil; unter 80 % je Datei: nachtesten, wo neue Zeilen wirklich ungedeckt sind.
 - [ ] `git log --oneline origin/feat/emote-sets-200..HEAD` gegen die Commit-Liste der Tasks
-      prüfen (ein Commit je Task, DECISIONS in T1/T2).
+      prüfen (ein Commit je Task, DECISIONS in T1/T2/T3).
 - [ ] **Kein Push, kein PR** aus diesem Task — der Orchestrator gibt den Push frei, holt danach die
       Zweitmeinung (`/codex:review --model gpt-6-sol`, `--scope branch`, Memory „Codex-Review-
       Fallen") und legt sie dem Betreiber vor.
@@ -720,10 +836,13 @@ Bericht.
 
 **O1 — Null-Session mit Zeilen unter zwei Sets (lokale Dev-DB, kein Prod):**
 Der Flush-Pfad steht nicht zur Verfügung (kein zweiter Worker gegen die Dev-DB, Messfenster
-#69/#73). Vorschlag ohne Verbiegen echter Daten: auf dem eigenen Kanal `sensitron` (zwei
-NORMAL-Sets) ein Emote wählen, das im Sessionfenster einer **neu angelegten** Null-Session liegt;
-per SQL **eine** zusätzliche `UsageStats`-Zeile für dieses Emote unter der ID des **anderen**
-NORMAL-Sets an einem Datum im Fenster einfügen (eindeutiger `UseCount`, z. B. 4711), Vote-Detail
+#69/#73). Vorschlag ohne Verbiegen echter Daten: **vorab prüfen, dass `sensitron` nicht zur
+Messmenge von #69/#73 gehört** (Runbook in `infra-docs`); gehört er dazu, einen anderen
+Testkanal wählen. Auf dem eigenen Kanal `sensitron` (zwei NORMAL-Sets) ein Emote wählen, das im
+Sessionfenster einer **neu angelegten** Null-Session liegt; per SQL **eine** zusätzliche
+`UsageStats`-Zeile für dieses Emote unter der ID des **anderen** NORMAL-Sets an einem Datum im
+Fenster einfügen — **idempotent** (`ON CONFLICT ("EmoteId","EmoteSetId","Date") DO NOTHING`, damit
+eine Wiederholung nichts verdoppelt; eindeutiger `UseCount`, z. B. 4711), Vote-Detail
 laden: Zahl = bisherige Summe + 4711 (vorher: nur das aktive Set); Drilldown öffnen: Tageskurve
 zeigt den Tag mit 4711, „zuerst benutzt" ggf. früher als vorher; danach die Zeile per SQL wieder
 löschen (Schlüssel `(EmoteId, EmoteSetId, Date)`), Session beenden/löschen. Die Befehle bereitet der
@@ -732,6 +851,11 @@ Betreiber führt sie aus oder gibt sie frei. Alternativ: das echte Umschalten au
 mit dem **Prod**-Worker keine Dev-Zeilen — daher der SQL-Weg.
 
 **O2 — Set-Wechsel per 7TV (eigener Kanal `sensitron`, Browser gegen `dotnet run` + `npm start`):**
+Voraussetzung: **ein Worker mit `sensitron` muss laufen**, sonst gibt es kein `channel.synced`.
+Das ist der Dev-Docker-Worker `emotepurge-dev-worker` aus dem Haupt-Checkout (Api auf `:8080`);
+alternativ ein Worker aus dem Worktree — beides nur nach Absprache mit dem Betreiber (Messfenster
+#69/#73, kein zweiter Worker gegen die Dev-DB). Die Worktree-Api auf `:5151` teilt sich Postgres
+und Redis mit diesem Worker, sieht dessen `channel.synced` also über Redis.
 (1) Usage-Seite öffnen, zwei Emotes markieren, die im **nicht** gleich aktiven Set keine Nutzung
 haben; auf 7TV das andere NORMAL-Set aktivieren; nach `channel.synced`: Auswahl bleibt, Dock nennt
 das neue Set, keine Pruned-Meldung; Netzwerk-Tab: `/active-set` **vor** `/totals`. (2)
@@ -765,18 +889,21 @@ T0 ─┬─ T1 ─ T2
                 ─ T8 ─ T9
 ```
 
-T1→T2 sequenziell (Scope-Typ). T3, T4/T6, T5, T7 sind untereinander unabhängig und können parallel
-in getrennten Subagents laufen — **aber alle im selben Worktree auf demselben Branch**: der
-Orchestrator serialisiert die Commits (jeder Task staged nur seine Dateien; Memory „Parallel
-sessions share git index"). Wer parallel laufen soll, bekommt das ausdrücklich gesagt; sonst
-sequenziell in der Reihenfolge T1, T2, T4, T6, T5, T3, T7, T8.
+**Backend strikt seriell: T1 → T2 → T4 → T6 → T5.** Alle Backend-Tasks teilen `obj/`/`bin/` des
+Worktrees, und `dotnet format --verify-no-changes` scannt die ganze Solution — zwei parallele
+Backend-Läufe stören sich gegenseitig. **Höchstens ein Frontend-Task parallel dazu: T3.** T7
+läuft **allein** (Laufzeitmessungen: Last und `taskset` verfälschen sich sonst gegenseitig und
+die Backend-Läufe). T8 danach, T9 zuletzt. Alle Tasks arbeiten im selben Worktree auf demselben
+Branch: Commits nur per `git add -- <Pfade>` der eigenen Dateien nach vorherigem `git status`
+(Memory „Parallel sessions share git index"). Der Task-Prompt sagt ausdrücklich, ob er parallel
+zu T3 läuft.
 
 ## 4. Commit-Schnitt (Soll)
 
 1. `fix(core): sum a null-session's usage across every emote set` — T1 (+ DECISIONS)
 2. `feat(api): let the daily series be read across every emote set` — T2 (+ DECISIONS-Absatz)
 3. `fix(web): chart a null-session's drilldown across every emote set` — T2
-4. `fix(web): read the set status before the rows on channel.synced and treat a failed status as unknown` — T3
+4. `fix(web): read the set status before the rows on channel.synced and treat a failed status as unknown` — T3 (+ DECISIONS)
 5. `fix(infra): treat a partial 7TV preview answer with errors as unavailable, not as an unknown set` — T4
 6. `chore(infra): write the emote-set log messages in English` — T6
 7. `fix(api): anchor the emote-set id pattern at the absolute end of the input` — T5
@@ -790,22 +917,23 @@ Attribution-Zeile laut Session-Vorgabe ans Ende jeder Commit-Message.
    neuen Aktiv-ID mit Skeleton (`isLoading`), obwohl der Nutzer nichts angefordert hat — das ist
    heutiges Verhalten (der Effekt lief auch bisher, nur *nach* dem falschen silent-Reload). Die
    Regel „neither the selection nor the skeleton may move under the user" gilt damit für den
-   Set-Wechsel-Fall nicht. Fix wäre eine eigene Silent-Variante im Lade-Effekt für „Aktiv-ID hat
-   sich bewegt" — außerhalb des Fix-Pakets. Empfehlung: Folge-Issue.
-2. **Sichtbarer Sperrgrund bei Status-Fehler (E4).** Der Dock verschwindet mit der Set-Auswahl,
-   ein Hinweistext dazu existiert nur, wenn T3 einen findet. Falls nicht: neuer i18n-Text (de/en)
-   „Aktives Set unbekannt — Löschen gesperrt, bis der Status wieder gelesen werden kann" oder
-   Akzeptanz des stillen Verschwindens. Entscheidung erbeten; T3 baut **keinen** Text ohne sie.
-3. **Server-Wahrheit in `/totals` (E3).** Als Folge-Issue vorgeschlagen: `/totals` (und `/series`)
-   liefern die aufgelöste Set-ID und `isActiveSet`; die Seite stempelt Server-Wahrheit statt
-   `activeAtRequest`. Beseitigt die letzte Klasse von Stale-Stempeln, kostet einen
-   Drahtvertrags-Wechsel mit > 40 Mock-Stellen.
+   Set-Wechsel-Fall nicht. T3 behebt nur das **Hängenbleiben** des Skeletons (winning answer setzt
+   `isLoading` zurück), nicht sein Erscheinen. Fix wäre eine eigene Silent-Variante im Lade-Effekt
+   für „Aktiv-ID hat sich bewegt". **Entschieden: Folge-Issue**, nicht im Fix-Paket.
+2. ~~Sichtbarer Sperrgrund bei Status-Fehler (E4).~~ **Entschieden:** neuer Sperrgrund
+   `usageStats.setView.lock.statusUnavailable` (T3, Zielverhalten 3). Offen bleibt nur der
+   **Wortlaut** — provisorisch, Betreiberentscheidung ausstehend (Text in T3).
+3. **Server-Wahrheit in `/totals` (E3).** **Folge-Issue, Priorität P3, nach dem Messlauf**
+   (Betreiberbestätigung ausstehend): `/totals` (und `/series`) liefern die aufgelöste Set-ID und
+   `isActiveSet`; die Seite stempelt Server-Wahrheit statt `activeAtRequest`. Beseitigt die letzte
+   Klasse von Stale-Stempeln, kostet einen Drahtvertrags-Wechsel mit > 40 Mock-Stellen.
 4. **`/daily`-Scope für die Usage-Seite.** `setScope=all` existiert nach T2 auf der Route, die
    Usage-Seite nutzt es nicht. Soll ein Drilldown aus der Usage-Seite je „alle Sets" anbieten
    (z. B. als Umschalter im Dialog), ist das ein eigenes Feature.
 5. **`setStatusFailedChannel` wird nie gelöscht** (dokumentierte #220-Lücke, `:677-678`). T3
-   schreibt das Feld jetzt auch aus `refreshSetStatus`; die Lücke wird dadurch nicht größer, aber
-   häufiger erreichbar. Kein Handlungsbedarf, nur Kenntnisnahme.
+   schreibt das Feld jetzt auch aus `refreshSetStatus`, und der neue Sperrgrund hängt daran; die
+   Lücke wird dadurch nicht größer, aber häufiger erreichbar. Kein Handlungsbedarf, nur
+   Kenntnisnahme.
 6. **Flaky-Ursache könnte außerhalb des Specs liegen** (z. B. `SCROLL_SCHEDULER`-Wahl unter Node 22
    / jsdom). Findet T7 eine Ursache, die ein Spec-Umbau nur umgeht (etwa ein fehlendes
    `requestAnimationFrame` in der Testumgebung), ist zu entscheiden, ob `web/src/test-setup.ts`
