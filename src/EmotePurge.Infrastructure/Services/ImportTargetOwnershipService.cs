@@ -25,7 +25,10 @@ namespace EmotePurge.Infrastructure.Services;
 /// (cache, single-flight, breaker, budget), and within their 60 s the picker's answers are reused
 /// for free. That is not "no request at all": a report more than a minute after the picker reads
 /// the lists again — one request when the actor owns the set, two in parallel with a valid owner
-/// hint on a grant, up to <c>1 + k</c> serial ones without one. Only a set that is in no list, or
+/// hint on a grant, up to <c>1 + k</c> serial ones without one. Reading the grants adds two
+/// (identity, <c>editor_of</c>) when their ten-minute cache is cold — also to a call whose hint
+/// names another account and is then dropped: resolving a hint needs the grants before any list is
+/// read, so a dropped hint costs no list request but may cost that lookup. Only a set that is in no list, or
 /// listed without an owner, is asked about directly by the report — once, under the provider
 /// budget and its own breaker operation; the pre-check (<see cref="ResolveEditableAsync"/>) never
 /// asks.
@@ -170,8 +173,10 @@ public sealed class ImportTargetOwnershipService(
         }
 
         // An actor 7TV knows no account for edits nothing either: editor_of hangs off the same
-        // account. Skipping the grants here also spares the uncached identity request the grants
-        // lookup would otherwise repeat on every call for such an actor.
+        // account. Skipping the grants here also spares the identity request the grants lookup
+        // would otherwise repeat for such an actor once the 60 s NoSevenTvAccount hold has expired.
+        // (Only reached without a hint on another account: resolving such a hint reads the grants
+        // first, so a dropped foreign hint does not get this saving.)
         if (ownList.Status == EmoteSetListStatus.NoSevenTvAccount)
         {
             return null;

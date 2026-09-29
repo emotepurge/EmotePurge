@@ -226,7 +226,7 @@ public static class SevenTvEndpoints
         // +2 for cold grants), never an owner lookup, and its grants through the guarded path rather
         // than the unguarded one the picker reads. Always 200 with a status: "unavailable" answers
         // "may I edit this set?", it is not a transport failure — the list route above degrades with
-        // 200 and flags too — so no 503, no 404 and no new error code (Regel 7). The two optional query
+        // 200 and flags too — so no 503, no 404 and no new error code (rule 7). The two optional query
         // values are an order for that walk, never a permission; a blank or over-long one is no hint.
         // EmoteSetIdValidationFilter validates the route value (400 invalid_emote_set_id).
         meGroup.MapGet("/emote-set-targets/{emoteSetId}", async (
@@ -262,7 +262,9 @@ public static class SevenTvEndpoints
         // (IImportTargetOwnershipService, spec addendum 41): nothing while the set lists are cached
         // (60 s); cold, one list request when the actor owns the set (hinted or not); two, in one
         // round trip, with a valid TargetOwnerTwitchId hint on a grant; up to 1 + k serial ones for k
-        // grants without a valid hint, plus one owner lookup for a set in no list.
+        // grants without a valid hint, plus one owner lookup for a set in no list. Reading cold grants
+        // adds two more (identity, editor_of), also for a hint that names another account and is then
+        // dropped: it makes no list request of its own, but resolving it needs the grants first.
         // EmoteSetIdValidationFilter here validates the *route* value, not a query string — see the
         // filter's own remarks.
         var emoteSetGroup = app.MapGroup("/api/seventv/emote-sets/{emoteSetId}")
@@ -599,10 +601,11 @@ public static class SevenTvEndpoints
     /// Turns an optional owner hint — the reports' <c>targetOwnerTwitchId</c> body field, or the
     /// editable pre-check's <c>ownerTwitchId</c>/<c>ownerLogin</c> query — into an
     /// <see cref="EmoteSetOwnerHint"/>, or drops it. Each value on its own is dropped when blank
-    /// (Regel 7: never a 400) or longer than <see cref="OwnerHintMaxLength"/>; with both dropped there
+    /// (rule 7: never a 400) or longer than <see cref="OwnerHintMaxLength"/>; with both dropped there
     /// is no hint at all. <see cref="IImportTargetOwnershipService"/> only ever resolves a hint
-    /// against the actor and the actor's editor grants, so an implausible or foreign value costs
-    /// nothing but a comparison either way — the cap only keeps a client from handing this class an
+    /// against the actor and the actor's editor grants, so an implausible or foreign value makes
+    /// no list request of its own; resolving it may cost the grants lookup (identity + editor_of)
+    /// when the grant cache is cold — the cap only keeps a client from handing this class an
     /// arbitrarily large string to hold and log.
     /// </summary>
     private static EmoteSetOwnerHint? BuildOwnerHint(string? twitchUserId, string? twitchLogin = null)

@@ -245,7 +245,7 @@ public class SevenTvEmoteSetPreCheckEndpointTests : IClassFixture<ApiFactory>
     public async Task OwnerLoginHint_ResolvesToTheMatchingGrant_AfterNormalization()
     {
         // A login only ever resolves to the grant's Twitch id; case and padding do not matter
-        // (Regel 9).
+        // (rule 9).
         var userId = NewUserId();
         ArrangeOwnerAsSecondOfTwoGrants(userId);
 

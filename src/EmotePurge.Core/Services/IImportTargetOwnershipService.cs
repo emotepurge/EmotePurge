@@ -158,7 +158,8 @@ public sealed class SevenTvEmoteSetOwnershipCheckResult
 /// actor owns the set (hinted or not); two, in a single round trip, with a valid hint on a grant; up
 /// to <c>1 + k</c> serial ones for <c>k</c> grants without a valid hint, plus the report's one owner
 /// lookup for a set in no list. Reading the grants adds two more requests when their ten-minute cache
-/// is cold. Every request is budgeted, behind the breaker and the coalescer.
+/// is cold — also for a hint that names another account and is dropped: it makes no list request of
+/// its own, but resolving it needs the grants first (a hint on the actor does not). Every request is budgeted, behind the breaker and the coalescer.
 /// </para>
 /// </remarks>
 public interface IImportTargetOwnershipService

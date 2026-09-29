@@ -220,7 +220,7 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
     public async Task BodyOwnerHint_ReachesTheOwnerCheck_AndSkipsTheOtherGrantsList(string route)
     {
         // T2: the body's targetOwnerTwitchId reaches PassSyncInSetLadderAsync's CheckAsync call. The
-        // actor's own list is still read (owner-hint design 3.1 Nr. 3), and the hinted grant's list
+        // actor's own list is still read (owner-hint design 3.1 no. 3), and the hinted grant's list
         // is read alongside it; the other grant, earlier in the walk order, is never asked at all —
         // observable proof that the hint reached the service, without substituting the service
         // itself (Api.Tests does not substitute IImportTargetOwnershipService).
@@ -269,7 +269,7 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
     [InlineData(Restored)]
     public async Task BlankBodyOwnerHint_BehavesLikeNoHint_AndWalksEveryGrantsList(string route)
     {
-        // Regel 7 / owner-hint design 3.3 Nr. 12: an empty string is no hint at all, never a 400 —
+        // rule 7 / owner-hint design 3.3 no. 12: an empty string is no hint at all, never a 400 —
         // same grants as above, but without a hint the walk reaches every one of them in order.
         const string OtherTwitchId = "other-twitch-id";
         const string OtherTwitchLogin = "otherlogin";
