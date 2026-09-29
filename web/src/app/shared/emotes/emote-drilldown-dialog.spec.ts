@@ -5,7 +5,7 @@ import { TranslocoTestingModule } from '@jsverse/transloco';
 import { Observable, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
+import { ALL_EMOTE_SETS, EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { VoteType } from '../../core/voting/vote-session.model';
 import { EmoteDrilldownData, EmoteDrilldownDialog } from './emote-drilldown-dialog';
@@ -223,7 +223,7 @@ describe('EmoteDrilldownDialog', () => {
       );
     });
 
-    it("asks for the channel's active set when its data carries no set (the vote page)", () => {
+    it("asks for the channel's active set when its data carries no set", () => {
       render(data(), of());
 
       expect(TestBed.inject(UsageStatService).getDailySeries).toHaveBeenCalledWith(
@@ -232,6 +232,18 @@ describe('EmoteDrilldownDialog', () => {
         '2026-01-15',
         '2026-01-21',
         null,
+      );
+    });
+
+    it('asks for every set when its data says so (a null-session on the vote page)', () => {
+      render(data({ emoteSetId: ALL_EMOTE_SETS }), of());
+
+      expect(TestBed.inject(UsageStatService).getDailySeries).toHaveBeenCalledWith(
+        'sensitron',
+        'emote-1',
+        '2026-01-15',
+        '2026-01-21',
+        ALL_EMOTE_SETS,
       );
     });
   });

@@ -2,7 +2,12 @@ import { HttpClient } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { Observable, shareReplay } from 'rxjs';
 
-import { ChannelUsageSeries, EmoteUsageSeries, EmoteUsageTotalDto } from './usage-stat.model';
+import {
+  ChannelUsageSeries,
+  DailySeriesSetScope,
+  EmoteUsageSeries,
+  EmoteUsageTotalDto,
+} from './usage-stat.model';
 
 /**
  * Adds `emoteSetId` to a params object only when it is a concrete id — `null` means "no explicit
@@ -15,6 +20,30 @@ function withEmoteSetId(
   emoteSetId: string | null,
 ): Record<string, string> {
   return emoteSetId ? { ...params, emoteSetId } : params;
+}
+
+/**
+ * The daily series' query params for a scope. "All sets" is `setScope=all` and never an
+ * `emoteSetId`; the server rejects the pair.
+ */
+function withDailyScope(
+  params: Record<string, string>,
+  scope: DailySeriesSetScope,
+): Record<string, string> {
+  return scope !== null && typeof scope === 'object'
+    ? { ...params, setScope: 'all' }
+    : withEmoteSetId(params, scope);
+}
+
+/**
+ * The cache-key part for a scope. The markers for "active" and "all" start with `*`, outside
+ * `[0-9A-Za-z]`, because `all` and `active` are themselves well-formed set ids.
+ */
+function dailyScopeKey(scope: DailySeriesSetScope): string {
+  if (scope === null) {
+    return '*active';
+  }
+  return typeof scope === 'object' ? '*all' : scope;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -55,16 +84,17 @@ export class UsageStatService {
     emoteId: string,
     from: string,
     to: string,
-    /** `null` omits the parameter (the channel's active set) — see {@link getTotals}. The drilldown
-     *  passes the set frozen into its dialog data, never a live read (spec #200, 7.2, F4). */
-    emoteSetId: string | null,
+    /** `null` omits the parameter (the channel's active set) — see {@link getTotals}; the
+     *  all-sets scope sends `setScope=all`. The drilldown passes the scope frozen into its dialog
+     *  data, never a live read (spec #200, 7.2, F4). */
+    scope: DailySeriesSetScope,
   ): Observable<EmoteUsageSeries> {
-    const key = `${channelName}|${emoteSetId ?? ''}|${emoteId}|${from}|${to}`;
+    const key = `${channelName}|${dailyScopeKey(scope)}|${emoteId}|${from}|${to}`;
     let series$ = this.seriesCache.get(key);
     if (!series$) {
       series$ = this.http
         .get<EmoteUsageSeries>(`/api/channels/${channelName}/usage-stats/daily`, {
-          params: withEmoteSetId({ emoteId, from, to }, emoteSetId),
+          params: withDailyScope({ emoteId, from, to }, scope),
         })
         // refCount:false keeps the replayed value alive with no subscriber — that is the cache.
         .pipe(shareReplay({ bufferSize: 1, refCount: false }));

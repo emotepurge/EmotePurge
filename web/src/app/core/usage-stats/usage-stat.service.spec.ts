@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { EmoteUsageSeries } from './usage-stat.model';
+import { ALL_EMOTE_SETS, EmoteUsageSeries } from './usage-stat.model';
 import { UsageStatService } from './usage-stat.service';
 
 describe('UsageStatService', () => {
@@ -101,6 +101,30 @@ describe('UsageStatService', () => {
           r.params.get('emoteSetId') === 'set-b',
       )
       .flush(SERIES);
+  });
+
+  it('getDailySeries for every set sends setScope=all and no emoteSetId', () => {
+    service
+      .getDailySeries('sensitron', 'e1', '2026-07-01', '2026-07-28', ALL_EMOTE_SETS)
+      .subscribe();
+
+    const req = httpMock.expectOne(
+      (r) =>
+        r.url === '/api/channels/sensitron/usage-stats/daily' &&
+        r.params.get('setScope') === 'all' &&
+        r.params.get('emoteSetId') === null,
+    );
+    req.flush(SERIES);
+  });
+
+  it('keeps the active set, every set and a set literally named all or active apart in the series cache', () => {
+    const args = ['sensitron', 'e1', '2026-07-01', '2026-07-28'] as const;
+    for (const scope of [null, ALL_EMOTE_SETS, 'all', 'active']) {
+      service.getDailySeries(...args, scope).subscribe();
+      httpMock
+        .expectOne((r) => r.url === '/api/channels/sensitron/usage-stats/daily')
+        .flush(SERIES);
+    }
   });
 
   it('clearSeriesCache forces a fresh request', () => {
