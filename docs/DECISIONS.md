@@ -10,11 +10,11 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
-### 2026-09-29 — `channel.synced` reads the set status before the rows, and a failed status refresh makes the active set unknown instead of keeping the old one (#200)
+### 2026-09-29 — `channel.synced` reads the set status before the rows, and a failed status refresh locks deleting and voting instead of passing silently (#200)
 
 **Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (live subscription,
-`refreshSetStatus`, `latestSetStatus`, `setStatusUnavailable`, `sharedSetViewLockReasonKey`,
-`loadTotals`/`endLoadingFor`) · `web/public/i18n/de.json` and `en.json`
+`refreshSetStatus`, `adoptSetStatus`, `latestSetStatus`, `setStatusUnavailableFor`/
+`setStatusUnavailable`, `sharedSetViewLockReasonKey`, `loadTotals`/`endLoadingFor`) · `web/public/i18n/de.json` and `en.json`
 (`usageStats.setView.lock.statusUnavailable`) ·
 `web/src/app/features/usage-stats/usage-stats-page.spec.ts`
 
@@ -34,25 +34,43 @@ triggered the refetch is the one that can swap sets.
   one request per status either way. The member-list reload deliberately stays immediate (AK 52):
   should the status make the chosen set the active one, the resource drops the request itself.
   `usage.flushed` alone is unchanged.
-- **A failed refresh is unknown, not stale.** `refreshSetStatus` now fails like `load()` does:
-  it un-claims `setStatusChannel` and marks `setStatusFailedChannel`. This reverses the rule of
-  the code comment it replaces ("a failed refetch keeps the current value … must never take the
-  mass-delete panel away over a transient error") and extends the bullet "An unknown active set is
-  not the selected set" (fix round 2026-09-22 of the 2026-09-21 K4 entry), which un-claimed only
-  on the initial load. Unlike `load()`
-  it keeps the DTO (`trackedSince` carries the "all time" range; clearing it would re-run the load
-  effect for nothing). With the URL following the active set, the selected set turns `null`, the
-  dock disappears and the rows are reloaded without a set id (the endpoint resolves the active set).
-  With a URL-chosen set the view stays, and a new first lock reason, `setStatusUnavailable`
-  (failed and not re-claimed for the channel on screen), locks deleting **and** voting with its
-  own text (`usageStats.setView.lock.statusUnavailable`, wording approved by the operator
-  2026-09-29). The next successful status lifts it; the selection survives. The flush-probe refresh
-  gets the same failure handling on purpose.
-- **One `latestOnly` for every status read.** `load()`, `refreshSetStatus`, the sync-failure poll
-  and `awaitSync` share `latestSetStatus`. With (b), an out-of-order answer would otherwise do harm
-  both ways: an old failure un-claiming over a newer success, an old success re-claiming over a
-  newer failure. The channel guards stay; they keep another channel's answer out, the shared guard
-  orders answers within one channel.
+- **A failed refresh locks, but keeps the last known set.** `refreshSetStatus` no longer
+  swallows a failure: it marks the channel in its own flag, `setStatusUnavailableFor`, and a new
+  first lock reason, `setStatusUnavailable` (the flag names the channel on screen), locks deleting
+  **and** voting with its own text (`usageStats.setView.lock.statusUnavailable`, wording approved
+  by the operator 2026-09-29) until the next successful status for that channel clears the flag.
+  Nothing else moves: the channel stays claimed (`setStatusChannel`), `activeEmoteSetId()` keeps
+  the last known id, the selected set, the dock and the mass-delete panel stay, no rows are
+  reloaded and the selection is untouched. The first version of this fix un-claimed the channel
+  like a failed initial `load()` does; with the URL following the active set that turned the
+  selected set `null`, unmounted `app-mass-delete-panel` in the middle of a run (the run went on in
+  the service, and the remount could report `deleted` twice) and raised the skeleton through the
+  load effect. So the code comment it had reversed ("a failed refetch … must never take the
+  mass-delete panel away over a transient error") is right again; what changed is that the old id
+  no longer passes unlocked. A failed initial `load()` still un-claims (bullet "An unknown active
+  set is not the selected set", fix round 2026-09-22 of the 2026-09-21 K4 entry) and sets the flag
+  as well. The refresh also marks `setStatusFailedChannel`, which "all time" (`rangeResolved`) and
+  the member-list gate need when the refresh overtook the channel's initial request (that one then
+  never answers); nothing was ever adopted for the channel in that case, so the DTO on hand is the
+  previous channel's and is dropped — its `trackedSince` would otherwise start this channel's "all
+  time". The flush-probe refresh gets the same failure handling on purpose.
+- **One `latestOnly` for every status read, one way to adopt one.** `load()`, `refreshSetStatus`,
+  the sync-failure poll and `awaitSync` share `latestSetStatus`, and every success lands through
+  `adoptSetStatus` (DTO, claim on the channel, lock flag cleared). With (b), an out-of-order answer
+  would otherwise do harm both ways: an old failure locking over a newer success, an old success
+  lifting the lock over a newer failure. The channel guards stay; they keep another channel's
+  answer out, the shared guard orders answers within one channel. The first-sync wait still starts
+  from `load()`'s success only: after a `channel.synced` the sync has just happened, and the poll
+  runs only while a failure reason is known. **`preserveSelection` removed, retain/clear by
+  `totalsChannel` alone:** whether `loadTotals` keeps (and reconciles) the selection now depends
+  only on whether the rows on screen already belong to the requested channel. The option made a
+  pushed reload retain unconditionally, so a reload for channel Y that landed while the rows still
+  showed X carried X's marks into Y — a 7TV id both channels share survived as a delete candidate.
+  **Pushed reloads wait for `rangeResolved`:** `loadTotals` refuses while "all time" is still the
+  placeholder span — one guard at the choke point instead of one per caller. A flush between a
+  channel switch and its status no longer fetches a year of rows or takes `load()`'s skeleton down
+  with it, the load effect asks exactly once after the range correction, and the first-sync wait
+  and the sync-failure poll no longer ask twice under "all time".
 - **The winning `/totals` answer takes the skeleton down.** Before, only an answer to a loud
   request lowered `isLoading`, so a silent `usage.flushed` reload that overtook a loud one left the
   skeleton (and the disabled refresh button) up for good. Now the winning answer lowers it
@@ -65,6 +83,17 @@ the resolved set id and `isActiveSet`, so a second set swap between the status a
 stays possible until the next `channel.synced`; and a sync that moves the selected set still
 reloads it with the skeleton (existing behaviour of the load effect), this fix only stops the
 skeleton from sticking.
+
+Known limits of the lock (second review round, arbitrated 2026-09-29):
+
+- Import and transfer stay available while the channel's set status is unknown after a failed
+  refresh; only deleting and voting lock.
+- A status refresh that overtakes the initial status read skips the first-sync wait; the next
+  `channel.synced` covers it.
+- A failed first-sync probe or sync-failure recheck tick neither locks nor marks the status; the
+  next tick or event answers.
+- After a failed refresh the rows keep the view identity they had; whether they still are the
+  active view is unknown until the next successful status.
 
 ### 2026-09-29 — A null-session's usage is summed across every emote set, through a named `EmoteSetScope` instead of a nullable set id (#200)
 

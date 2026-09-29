@@ -658,7 +658,7 @@ describe('UsageStatsPage — duplicateNames() channel guard and expand-state res
 });
 
 /**
- * #94: a silent reload (`preserveSelection: true`) must reconcile the selection against the
+ * #94: a silent reload of the channel on screen must reconcile the selection against the
  * emotes it actually loaded, not leave a since-deleted emote's key sitting in `selectedKeys()`
  * forever — and it must not overcorrect by dropping a row that only fell out of the *filtered*
  * view, which is a different case entirely and, since the 2026-09-18 "Auswahl überlebt Suche und
@@ -745,9 +745,8 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     });
   }
 
-  /** Fires one `usageFlushed` burst (the silent, `preserveSelection`d reload path) and flushes its
-   *  totals response — the same round trip `loadTotals(..., {preserveSelection: true, silent:
-   *  true})` produces from the live subscription in the constructor. */
+  /** Fires one `usageFlushed` burst (the silent reload path) and flushes its totals response — the
+   *  same round trip the live subscription in the constructor produces through `loadTotals`. */
   function silentReload(totals: EmoteUsageTotalDto[]): void {
     FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
     vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
@@ -2243,7 +2242,7 @@ describe('UsageStatsPage — openCreateVoteSession() (#132)', () => {
     expect(data.emoteIds()).toEqual(['a', 'b']);
 
     // A silent reload that prunes 'b' (e.g. archived on 7TV) after the dialog has already opened —
-    // ListSelection.retainAmong() directly, the same call loadTotals()'s preserveSelection branch
+    // ListSelection.retainAmong() directly, the same call loadTotals()'s same-channel branch
     // makes; the full live-event pipeline that reaches it is #94's own describe block's job.
     component['selection'].retainAmong([asRow(a)]);
 
@@ -5636,11 +5635,13 @@ describe('UsageStatsPage — export/import scope capture reads the shown set onc
 });
 
 /**
- * `channel.synced` reads the set status before the rows, and a status that cannot be read is
- * unknown rather than silently kept (#200 review fix, O2). Before this, the sync's silent `/totals`
- * went out under the page's own, possibly outdated active id — rows for the old set stamped as the
- * active view, a selection pruned against them — and a failed status refetch left that old id
- * standing as "active" for the dock. Same `FakeEventSource` pattern as the #112 block at the top of
+ * `channel.synced` reads the set status before the rows, and a status that cannot be read locks
+ * deleting and voting rather than passing silently (#200 review fix, O2). Before this, the sync's
+ * silent `/totals` went out under the page's own, possibly outdated active id — rows for the old
+ * set stamped as the active view, a selection pruned against them — and a failed status refetch
+ * left that old id standing as "active" for the dock, unlocked. The lock keeps the last known set
+ * (second review round): the channel stays claimed, so neither the dock nor a running delete's
+ * panel is taken away. Same `FakeEventSource` pattern as the #112 block at the top of
  * this file, with fake timers throughout (the live reload is debounced) and the E19 block's
  * fake-timer `settle()` for the `rxResource`s.
  */
@@ -5709,11 +5710,51 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     httpMock.match('/api/channels/a/emote-sets').forEach((request) => request.flush(setList()));
   }
 
-  async function emit(type: string): Promise<void> {
-    FakeEventSource.instances[FakeEventSource.instances.length - 1].emit({ type, channel: 'a' });
+  async function emit(type: string, channel = 'a'): Promise<void> {
+    FakeEventSource.instances[FakeEventSource.instances.length - 1].emit({ type, channel });
     vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
     await settle();
   }
+
+  const STATUS_URL_B = '/api/channels/b/emotes/active-set';
+  const TOTALS_URL_B = '/api/channels/b/usage-stats/totals';
+
+  /** Switches the page from 'a' to 'b' (active set `set-y`) and answers b's permissions and set
+   *  list — b's own status request stays out for the test to drive. */
+  async function switchToB(): Promise<void> {
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/b/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    flushOpenSetListReloadsB();
+    await settle();
+  }
+
+  function flushOpenSetListReloadsB(): void {
+    httpMock
+      .match('/api/channels/b/emote-sets')
+      .forEach((request) =>
+        request.flush(emoteSetList([emoteSet({ id: 'set-y', name: 'Main', isActive: true })])),
+      );
+  }
+
+  function statusForB(): EmoteSetStatus {
+    return setStatus({
+      activeEmoteSetId: 'set-y',
+      trackedSince: '2026-02-01T00:00:00Z',
+      botsExcludedSince: '2026-02-02T00:00:00Z',
+      sharedChatSeparatedSince: '2026-02-02T00:00:00Z',
+    });
+  }
+
+  function totalsRequestsB(): TestRequest[] {
+    return httpMock.match((r) => r.url === TOTALS_URL_B);
+  }
+
+  const UNAVAILABLE = 'usageStats.setView.lock.statusUnavailable';
+  const FAILED = { status: 503, statusText: 'Service Unavailable' };
 
   /** Mounts channel 'a' (active set `set-a`) with the given set in the URL and drives it until its
    *  rows — and, for `set-b`, its member list — are on screen. */
@@ -5721,6 +5762,7 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     emoteSetId?: string;
     totals: EmoteUsageTotalDto[];
     members?: ForeignEmoteSetResponse;
+    status?: EmoteSetStatus;
   }): Promise<void> {
     FakeEventSource.instances = [];
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
@@ -5761,7 +5803,7 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
-    httpMock.expectOne(STATUS_URL).flush(statusFor('set-a'));
+    httpMock.expectOne(STATUS_URL).flush(options.status ?? statusFor('set-a'));
     fixture.detectChanges();
     fixture.detectChanges();
     httpMock.expectOne('/api/channels/a/emote-sets').flush(setList());
@@ -5833,38 +5875,80 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     expect(component['selection'].selectedKeys()).toEqual(['7tv-c']);
   });
 
-  it('(3) a status that fails after a sync leaves no active set, no import scope and no rows asked for the old set', async () => {
+  it('(3) a status that fails after a sync mid delete run keeps the set, its panel and the selection, and only locks', async () => {
     await mount({ totals: [emote('a', 'PeepoA')] });
     mark('7tv-a');
-    expect(component['importScopeCurrent']()).toBe(true);
+    TestBed.inject(SevenTvDeleteService).isRunning.set(true);
 
     await emit(LIVE_EVENT_TYPES.channelSynced);
     flushOpenSetListReloads();
-    httpMock.expectOne(STATUS_URL).flush({}, { status: 503, statusText: 'Service Unavailable' });
+    httpMock.expectOne(STATUS_URL).flush({}, FAILED);
     await settle();
 
-    expect(component['activeEmoteSetId']()).toBeNull();
-    expect(component['importScopeCurrent']()).toBe(false);
-    // The dock and its panel hang on the selected set (usage-stats-page.html) — gone with it.
-    expect(component['selectedEmoteSetId']()).toBeNull();
-    const asked = totalsRequests();
-    expect(asked.map((r) => r.request.params.get('emoteSetId'))).not.toContain('set-a');
-    // The rows are reloaded without a set: the endpoint resolves the active set itself.
-    expect(asked.map((r) => r.request.params.get('emoteSetId'))).toEqual([null]);
+    // Still claimed: the last known set stays the selected one, so the dock — and the
+    // mass-delete panel it renders for the selected set (usage-stats-page.html) — stays mounted
+    // under the running delete.
+    expect(component['setStatusChannel']()).toBe('a');
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+    expect(component['dockVisible']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBe(UNAVAILABLE);
+    expect(component['voteLockReasonKey']()).toBe(UNAVAILABLE);
+    // No rows asked for, no skeleton, no selection change.
+    expect(totalsRequests()).toHaveLength(0);
+    expect(component['isLoading']()).toBe(false);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
   });
 
-  it('(4) the next successful status lifts the lock again: the active set is back, the selection unchanged', async () => {
+  it('(3b) a status that fails after a sync without a run does the same: set kept, lock on, nothing reloaded', async () => {
     await mount({ totals: [emote('a', 'PeepoA')] });
     mark('7tv-a');
 
     await emit(LIVE_EVENT_TYPES.channelSynced);
     flushOpenSetListReloads();
-    httpMock.expectOne(STATUS_URL).flush({}, { status: 503, statusText: 'Service Unavailable' });
+    httpMock.expectOne(STATUS_URL).flush({}, FAILED);
     await settle();
-    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.statusUnavailable');
-    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
-    flushByPath(httpMock, SERIES_URL, SERIES);
+
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+    expect(component['dockVisible']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBe(UNAVAILABLE);
+    expect(totalsRequests()).toHaveLength(0);
+    expect(component['isLoading']()).toBe(false);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
+  });
+
+  it('(3c) a failed flush-probe refresh only locks: the set stays, and the flush reloads its rows once, as always', async () => {
+    // Without sharedChatSeparatedSince the probe gate lets a `usage.flushed` burst ask again.
+    await mount({
+      totals: [emote('a', 'PeepoA')],
+      status: setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }),
+    });
+    mark('7tv-a');
+
+    await emit(LIVE_EVENT_TYPES.usageFlushed);
+    httpMock.expectOne(STATUS_URL).flush({}, FAILED);
     await settle();
+
+    expect(component['setStatusChannel']()).toBe('a');
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+    expect(component['deleteLockReasonKey']()).toBe(UNAVAILABLE);
+    // The flush's own silent reload, nothing on top of it.
+    const asked = totalsRequests();
+    expect(asked.map((r) => r.request.params.get('emoteSetId'))).toEqual(['set-a']);
+    expect(component['isLoading']()).toBe(false);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
+  });
+
+  it('(4) the next successful status lifts the lock; the channel stayed claimed throughout and the selection is unchanged', async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+    mark('7tv-a');
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    flushOpenSetListReloads();
+    httpMock.expectOne(STATUS_URL).flush({}, FAILED);
+    await settle();
+    expect(component['deleteLockReasonKey']()).toBe(UNAVAILABLE);
+    expect(component['setStatusChannel']()).toBe('a');
+    expect(totalsRequests()).toHaveLength(0);
 
     await emit(LIVE_EVENT_TYPES.channelSynced);
     flushOpenSetListReloads();
@@ -5874,12 +5958,34 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     flushByPath(httpMock, SERIES_URL, SERIES);
     await settle();
 
+    expect(component['setStatusChannel']()).toBe('a');
     expect(component['activeEmoteSetId']()).toBe('set-b');
     expect(component['selectedEmoteSetId']()).toBe('set-b');
     expect(component['deleteLockReasonKey']()).toBeNull();
     expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
   });
 
+  it("(5) a refresh that overtakes the initial status after a channel switch and fails drops the previous channel's status: no tracking start, range resolved, locked", async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+
+    await switchToB();
+    const initial = httpMock.expectOne(STATUS_URL_B);
+    await emit(LIVE_EVENT_TYPES.channelSynced, 'b');
+    flushOpenSetListReloadsB();
+    httpMock.expectOne(STATUS_URL_B).flush({}, FAILED);
+    await settle();
+
+    // Channel a's DTO must not keep standing in for b's: "all time" would start at a's date.
+    expect(component['trackedSince']()).toBeNull();
+    expect(component['rangeResolved']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBe(UNAVAILABLE);
+
+    // The overtaken initial answer, landing late, changes nothing.
+    initial.flush(statusForB());
+    await settle();
+    expect(component['trackedSince']()).toBeNull();
+    expect(component['deleteLockReasonKey']()).toBe(UNAVAILABLE);
+  });
   it('(6) usage.flushed alone reloads the rows once, silently, and asks for no status', async () => {
     await mount({ totals: [emote('a', 'PeepoA')] });
 
@@ -5959,7 +6065,7 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     expect(component['voteLocked']()).toBe(false);
   });
 
-  it('(9a) an older failure landing after a newer success does not un-claim the channel', async () => {
+  it('(9a) an older failure landing after a newer success does not lock', async () => {
     await mount({ totals: [emote('a', 'PeepoA')] });
 
     await emit(LIVE_EVENT_TYPES.channelSynced);
@@ -5970,7 +6076,7 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
 
     newer.flush(statusFor('set-a'));
     await settle();
-    older.flush({}, { status: 503, statusText: 'Service Unavailable' });
+    older.flush({}, FAILED);
     await settle();
 
     expect(component['setStatusChannel']()).toBe('a');
@@ -5978,7 +6084,7 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     expect(component['deleteLockReasonKey']()).toBeNull();
   });
 
-  it('(9b) an older success landing after a newer failure does not re-claim the channel', async () => {
+  it('(9b) an older success landing after a newer failure does not lift the lock', async () => {
     await mount({ totals: [emote('a', 'PeepoA')] });
 
     await emit(LIVE_EVENT_TYPES.channelSynced);
@@ -5987,13 +6093,16 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     const newer = httpMock.expectOne(STATUS_URL);
     flushOpenSetListReloads();
 
-    newer.flush({}, { status: 503, statusText: 'Service Unavailable' });
+    newer.flush({}, FAILED);
     await settle();
-    older.flush(statusFor('set-a'));
+    older.flush(statusFor('set-b'));
     await settle();
 
-    expect(component['setStatusChannel']()).toBeNull();
-    expect(component['activeEmoteSetId']()).toBeNull();
+    // The last known set stays (a refresh failure never un-claims); the stale success neither
+    // moves it nor lifts the lock.
+    expect(component['setStatusChannel']()).toBe('a');
+    expect(component['activeEmoteSetId']()).toBe('set-a');
+    expect(component['deleteLockReasonKey']()).toBe(UNAVAILABLE);
   });
 
   it('(9c) an older success landing after a newer success does not overwrite it', async () => {
@@ -6038,5 +6147,59 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     await settle();
     expect(component['isLoading']()).toBe(false);
     expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+  });
+
+  it('(11) under "all time", a flush after a channel switch asks for no rows before the status; then exactly one request with the corrected range', async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+
+    await switchToB();
+    const status = httpMock.expectOne(STATUS_URL_B);
+    expect(component['isLoading']()).toBe(true);
+
+    await emit(LIVE_EVENT_TYPES.usageFlushed, 'b');
+    expect(totalsRequestsB()).toHaveLength(0);
+    expect(component['isLoading']()).toBe(true);
+
+    status.flush(statusForB());
+    await settle();
+    fixture.detectChanges();
+    await settle();
+
+    const asked = totalsRequestsB();
+    expect(asked).toHaveLength(1);
+    expect(asked[0].request.params.get('from')).toBe('2026-02-01');
+    expect(component['isLoading']()).toBe(true);
+    asked[0].flush([emote('b', 'PeepoB')]);
+    await settle();
+    expect(component['isLoading']()).toBe(false);
+  });
+
+  it("(12) a channel.synced reload for the new channel that lands before its loud load clears the previous channel's marks, even for a 7TV id both channels share", async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+    mark('7tv-a');
+
+    await switchToB();
+    httpMock.expectOne(STATUS_URL_B).flush(statusForB());
+    await settle();
+    fixture.detectChanges();
+    await settle();
+    // b's loud load is out; the sync's reload overtakes it.
+    const loud = totalsRequestsB();
+    expect(loud).toHaveLength(1);
+
+    await emit(LIVE_EVENT_TYPES.channelSynced, 'b');
+    flushOpenSetListReloadsB();
+    httpMock.expectOne(STATUS_URL_B).flush(statusForB());
+    await settle();
+    const pushed = totalsRequestsB();
+    expect(pushed).toHaveLength(1);
+    pushed[0].flush([emote('a', 'PeepoA')]);
+    await settle();
+
+    expect(component['selection'].selectedKeys()).toEqual([]);
+
+    loud[0].flush([emote('a', 'PeepoA')]);
+    await settle();
+    expect(component['selection'].selectedKeys()).toEqual([]);
   });
 });
