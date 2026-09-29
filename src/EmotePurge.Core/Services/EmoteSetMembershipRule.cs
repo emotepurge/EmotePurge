@@ -22,6 +22,12 @@ public static class EmoteSetMembershipRule
     {
         ArgumentNullException.ThrowIfNull(list);
 
+        // Without this, an empty or missing id matches an equally empty active-set id.
+        if (string.IsNullOrEmpty(emoteSetId))
+        {
+            return false;
+        }
+
         return list.Sets.Any(set =>
             string.Equals(set.Id, emoteSetId, StringComparison.Ordinal)
             && string.Equals(set.Kind, "NORMAL", StringComparison.Ordinal))

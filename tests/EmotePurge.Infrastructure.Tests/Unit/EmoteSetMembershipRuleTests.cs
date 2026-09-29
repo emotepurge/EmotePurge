@@ -48,6 +48,16 @@ public class EmoteSetMembershipRuleTests
         Assert.False(EmoteSetMembershipRule.BelongsToChannel(ListOf(), "", "set-a"));
     }
 
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", "")]
+    [InlineData(null, "")]
+    [InlineData("", null)]
+    public void EmptyOrMissingSetId_NeverBelongs(string? activeId, string? emoteSetId)
+    {
+        Assert.False(EmoteSetMembershipRule.BelongsToChannel(ListOf(), activeId, emoteSetId));
+    }
+
     [Fact]
     public void IdComparison_IsOrdinal()
     {
