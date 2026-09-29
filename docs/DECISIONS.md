@@ -73,7 +73,10 @@ skeleton from sticking.
 `src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs`
 (`GetTotalsByEmoteIdsAsync`, `GetDailySeriesAsync`) ·
 `src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` ·
-`src/EmotePurge.Api/Endpoints/UsageStatsEndpoints.cs` (mechanical signature change of `/daily`) ·
+`src/EmotePurge.Api/Endpoints/UsageStatsEndpoints.cs` (`/daily`) ·
+`src/EmotePurge.Api/Validation/EmoteSetScopeParser.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteSetScopeParserTests.cs`, `UsageStatsDailyScopeEndpointTests.cs` and
+`ApiFactory.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatQueryServiceTests.cs` and
 `VoteSessionQueryServiceTests.cs`
 
@@ -95,9 +98,19 @@ meaning ("no filter") on the same interface would recreate the ambiguity that ca
 with `ArgumentException` (it takes ids, not a channel, so it cannot resolve "active");
 `EmoteSetScope.Set` rejects a null or empty id. `GetDailySeriesAsync` takes the scope instead of
 `string? emoteSetId`; for all sets it drops the set predicate from both the day query and the
-first/last bounds and groups by day, so the DTO keeps its one-entry-per-day promise. The `/daily`
-route only translates its parameters mechanically here; the wire contract for "all sets" follows
-with the drilldown change.
+first/last bounds and groups by day, so the DTO keeps its one-entry-per-day promise.
+
+The drilldown behind a null-session's row must show the same numbers as the row, so `GET
+/usage-stats/daily` can read every set. The wire contract is an explicit `setScope` query
+parameter, not a reserved set id (`all` is itself a well-formed id): `emoteSetId=<id>` (that set),
+`setScope=all` (every set), or neither (the active set). `setScope` is compared ordinally and only
+lowercase `active` and `all` are words; either word together with an `emoteSetId`, or any other
+value (`All`, empty, ...), is `400 invalid_emote_set_id` — no new error code, and the pair never
+resolves by one parameter silently winning. The rule lives in the static `EmoteSetScopeParser`, not
+in `EmoteSetIdValidationFilter`, which hangs on routes without `setScope`. The usage page never
+sends `setScope`; the vote-detail drilldown sends `setScope=all` for a null-session and keeps its
+own set for a set-session. The client's cache key marks "active" and "all" with a character outside
+`[0-9A-Za-z]`, so neither can collide with a set whose id is literally `all` or `active`.
 
 ### 2026-09-29 — A tracked channel's set preview gets its own route and its own per-user bucket; `ForeignEmoteLookup` keeps guarding only what is foreign (#220)
 
