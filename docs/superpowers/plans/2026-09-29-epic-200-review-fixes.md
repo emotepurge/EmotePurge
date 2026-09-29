@@ -231,8 +231,8 @@ einer Bestandsroute mit Folgen in `usage-stat.service.ts`, allen `/totals`-Mocks
 Refactoring-Paket, kein Review-Fix, und es würde Fall b **nicht** lösen (die Aktiv-ID des Docks
 kommt aus dem Status, nicht aus `/totals`). (3) Das Restfenster — 7TV wechselt zwischen Status-
 und Totals-Antwort erneut — ist dieselbe Klasse wie jede andere Live-Änderung und wird vom nächsten
-`channel.synced` plus `viewKindStale` abgefangen. Die Server-Wahrheit-Variante steht als Vorschlag
-für ein Folge-Issue in Abschnitt 5.
+`channel.synced` plus `viewKindStale` abgefangen. Die Server-Wahrheit-Variante ist als „Known limit“ in PR #303
+festgehalten (Betreiber 2026-09-29, Abschnitt 5).
 
 **E4 — Status-Fehler nach `synced`: un-claimen, nicht löschen.** Der Fehlerzweig in
 `refreshSetStatus` übernimmt aus `load()` das Un-claimen von `setStatusChannel` und das Setzen von
@@ -512,8 +512,8 @@ Status-Lesepfade `:2798`, `:2066-2090`, `:3062-3063`, Totals-Abschluss `:2767`, 
    Löschpanel prüft den Schlüssel beim Klick (`mass-delete-panel.ts:655`) und vor dem Start
    (`:1478`), der Abstimm-Dialog beim Absenden (`lockReasonKey` `:2439`) — ein bereits offener
    Dialog ist damit erfasst. Neuer i18n-Schlüssel `usageStats.setView.lock.statusUnavailable` in
-   **beiden** Locales (neben `:795-799`), **Wortlaut provisorisch, Betreiberentscheidung
-   ausstehend** (im Task-Kommentar und im Bericht als vorläufig kennzeichnen):
+   **beiden** Locales (neben `:795-799`), **Wortlaut vom Betreiber freigegeben
+   (2026-09-29):**
    de „Löschen und Abstimmen gesperrt: Das aktive Set des Kanals ist gerade nicht bekannt.“ —
    en „Deleting and voting are locked: the channel's active set is not known right now.“
 4. **Ein gemeinsames `latestOnly` für alle Status-Lesepfade** (Muster `latestTotals` `:1272` /
@@ -604,7 +604,7 @@ Status-Lesepfade `:2798`, `:2066-2090`, `:3062-3063`, Totals-Abschluss `:2767`, 
 
 **Abnahme:** (1)–(10) grün; gesamte `usage-stats-page.spec.ts` grün; **genau ein** neuer
 i18n-Schlüssel, in beiden Locales (`api-error-locales.spec.ts` und ein evtl. Locale-Paritätstest
-grün); Wortlaut als vorläufig gekennzeichnet; DECISIONS-Eintrag vorhanden.
+grün); Wortlaut wie freigegeben; DECISIONS-Eintrag vorhanden.
 
 ### T4 — C2: GraphQL-Teilantwort ist `Unavailable`, nicht `NotFound`
 
@@ -919,12 +919,13 @@ Attribution-Zeile laut Session-Vorgabe ans Ende jeder Commit-Message.
    Regel „neither the selection nor the skeleton may move under the user" gilt damit für den
    Set-Wechsel-Fall nicht. T3 behebt nur das **Hängenbleiben** des Skeletons (winning answer setzt
    `isLoading` zurück), nicht sein Erscheinen. Fix wäre eine eigene Silent-Variante im Lade-Effekt
-   für „Aktiv-ID hat sich bewegt". **Entschieden: Folge-Issue**, nicht im Fix-Paket.
+   für „Aktiv-ID hat sich bewegt". **Entschieden (Betreiber 2026-09-29): kein Issue**, nur
+   „Known limit“ in PR #303 — unter der Folge-Issue-Schwelle des Epics (kosmetisch, heutiges Verhalten).
 2. ~~Sichtbarer Sperrgrund bei Status-Fehler (E4).~~ **Entschieden:** neuer Sperrgrund
-   `usageStats.setView.lock.statusUnavailable` (T3, Zielverhalten 3). Offen bleibt nur der
-   **Wortlaut** — provisorisch, Betreiberentscheidung ausstehend (Text in T3).
-3. **Server-Wahrheit in `/totals` (E3).** **Folge-Issue, Priorität P3, nach dem Messlauf**
-   (Betreiberbestätigung ausstehend): `/totals` (und `/series`) liefern die aufgelöste Set-ID und
+   `usageStats.setView.lock.statusUnavailable` (T3, Zielverhalten 3). Wortlaut vom Betreiber
+   freigegeben (2026-09-29, Text in T3).
+3. **Server-Wahrheit in `/totals` (E3).** **Entschieden (Betreiber 2026-09-29): kein Issue**, nur
+   „Known limit“ in PR #303 — das Restfenster heilt das nächste `channel.synced`. Idee: `/totals` (und `/series`) liefern die aufgelöste Set-ID und
    `isActiveSet`; die Seite stempelt Server-Wahrheit statt `activeAtRequest`. Beseitigt die letzte
    Klasse von Stale-Stempeln, kostet einen Drahtvertrags-Wechsel mit > 40 Mock-Stellen.
 4. **`/daily`-Scope für die Usage-Seite.** `setScope=all` existiert nach T2 auf der Route, die
