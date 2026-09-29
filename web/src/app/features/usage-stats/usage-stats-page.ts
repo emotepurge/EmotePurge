@@ -669,6 +669,42 @@ export class UsageStatsPage {
   );
 
   /**
+   * Whether the set status has come back for the channel in the URL, successfully or not. Until it
+   * has, `activeEmoteSetId()` is `null` and "the chosen set is not the active one" cannot be told
+   * apart from "the active set is not known yet" — a deep link to the active set would then ask
+   * for its member list, and a deep link to another set would ask twice (the status landing
+   * recomputes the params and the resource cancels the first request), each of them a permit spent
+   * at the Api's limiter. `setStatusFailedChannel` is never cleared (accepted gap: X failed → Y →
+   * back to X opens the gate early).
+   */
+  private readonly setStatusOutcomeKnown = computed(
+    () =>
+      this.setStatusChannel() === this.channelName() ||
+      this.setStatusFailedChannel() === this.channelName(),
+  );
+
+  /**
+   * The member list's request key: defined only for a chosen set that is not the active one, and
+   * only once the status outcome is known. Structural equality, so a recompute without a content
+   * change hands the resource the same params and cancels nothing.
+   */
+  private readonly liveMembersParams = computed(
+    () => {
+      if (!this.setStatusOutcomeKnown()) {
+        return undefined;
+      }
+      const emoteSetId = this.selectedEmoteSetId();
+      return emoteSetId !== null && emoteSetId !== this.activeEmoteSetId()
+        ? { channelName: this.channelName(), emoteSetId }
+        : undefined;
+    },
+    {
+      equal: (a, b) =>
+        a === b || (a?.channelName === b?.channelName && a?.emoteSetId === b?.emoteSetId),
+    },
+  );
+
+  /**
    * The chosen non-active set's live 7TV member list (spec 8.3, E16) — requested beside `/totals`
    * and `/series` when a non-active set is selected, never for the active set. Bound to the selected
    * set, not to any reload: a silent `usage.flushed` reload never touches it; the loud ones
@@ -677,12 +713,7 @@ export class UsageStatsPage {
    * in the error state (see `emoteSetList`).
    */
   private readonly liveMembersResource = rxResource({
-    params: () => {
-      const emoteSetId = this.selectedEmoteSetId();
-      return emoteSetId !== null && emoteSetId !== this.activeEmoteSetId()
-        ? { channelName: this.channelName(), emoteSetId }
-        : undefined;
-    },
+    params: () => this.liveMembersParams(),
     stream: ({ params }) => {
       const asked = this.liveMembersRefreshFor;
       this.liveMembersRefreshFor = null;
@@ -724,6 +755,11 @@ export class UsageStatsPage {
    * mid-switch is `viewSwitching`'s business, not this one's.
    */
   protected readonly liveMembersState = computed<LiveMembersState>(() => {
+    // Gate closed with a set chosen: the request has not been allowed to start yet (the status
+    // decides whether the chosen set is the active one), which is neither 'none' nor 'unavailable'.
+    if (!this.setStatusOutcomeKnown() && this.selectedEmoteSetId() !== null) {
+      return 'loading';
+    }
     if (!this.isNonActiveView()) {
       return 'none';
     }

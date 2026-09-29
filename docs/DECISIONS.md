@@ -31,8 +31,8 @@ the rule is shared with `VoteSessionService`, whose behaviour is unchanged) ·
 (`admin.rateLimits.policies.names.TrackedEmoteSetPreview`) · `docs/Architectur.md` ·
 `web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` and its spec (`loadCachedEmoteSetPreview`
 reads the tracked route; `loadEmoteSetPreview` is unchanged) ·
-`web/src/app/features/usage-stats/usage-stats-page.ts` and `vote-session-detail-page.ts` (docs) and
-their specs · `web/e2e/support/mocks.ts` (`mockTrackedEmoteSetPreview`) ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` (+ spec; the deep-link gate, point 6) and
+`vote-session-detail-page.ts` (docs) and its spec · `web/e2e/support/mocks.ts` (`mockTrackedEmoteSetPreview`) ·
 `web/e2e/usage-atlas.e2e.spec.ts`, `vote-ballot.e2e.spec.ts` and `emote-import.e2e.spec.ts`
 
 **1. What `ForeignEmoteLookup` protects, and what it does not.** It is the per-user fairness and
@@ -83,6 +83,20 @@ membership was proven only when the session was created. If the set later leaves
 list and is not the active set, the route answers 404, the panel state becomes `'unavailable'` and the
 mass-delete panel stays locked with the generic text — intended, and consistent with the scoping rule
 of the creation.
+
+**6. A deep link no longer requests the member list twice.** Reproduced in `usage-stats-page.spec.ts`
+by counting every request to the tracked route, cancelled ones included (a cancelled request has still
+passed the limiter). With `?emoteSetId=set-b` and the set list landing before the set status, the
+resource's params were first computed while `activeEmoteSetId()` was still `null` (request 1), then
+recomputed as a content-equal but reference-different object when the status landed, so `rxResource`
+cancelled request 1 and issued request 2: two permits, one result. A deep link to the *active* set
+even asked once for a list that is never fetched. Same bug class as the vote detail (2026-09-22, #227
+(d)). The params of `liveMembersResource` are now defined only once the status outcome is known for
+the channel in the URL (`setStatusChannel() === channelName() || setStatusFailedChannel() ===
+channelName()`) and carry structural equality on `channelName` and `emoteSetId`. While the gate is
+closed with a set chosen, `liveMembersState` reports `'loading'` (not `'unavailable'`, which would
+flash the error state). Accepted gap: `setStatusFailedChannel` is never cleared, so X failed → Y →
+back to X opens the gate early; the cost is at most the old double request.
 
 **7. Configuration and telemetry.** `RateLimiting__TrackedEmoteSetPreview__PermitLimit`, default 30
 per 60 s window and user, effective after a restart. The client cache catches A→B→A; what remains are

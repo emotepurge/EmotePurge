@@ -4841,6 +4841,143 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
     expect(reloaded[0].request.params.get('refresh')).toBe('true');
   });
+
+  // #220 T4: a deep link must cost one request per set view, not one per recomputed `params`.
+  // Every request to the tracked route is counted, cancelled ones included — a cancelled request
+  // has still passed the Api's limiter, so it is a spent permit.
+  describe('deep link: the member list is requested once (#220)', () => {
+    const STATUS_URL = '/api/channels/a/emotes/active-set';
+    let seen: TestRequest[];
+
+    function collectLiveRequests(): void {
+      seen.push(...liveListRequests());
+    }
+
+    async function mountDeepLink(
+      emoteSetId: string,
+      order: 'list-first' | 'status-first' | 'status-fails',
+    ): Promise<void> {
+      seen = [];
+      configure();
+      router = TestBed.inject(Router);
+      await router.navigate([], { queryParams: { emoteSetId } });
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+      collectLiveRequests();
+
+      const flushList = async (): Promise<void> => {
+        httpMock
+          .expectOne('/api/channels/a/emote-sets')
+          .flush(
+            emoteSetList([
+              emoteSet({ id: 'set-a', isActive: true }),
+              emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+            ]),
+          );
+        await settle();
+        collectLiveRequests();
+      };
+      const flushStatus = async (): Promise<void> => {
+        const request = httpMock.expectOne(STATUS_URL);
+        if (order === 'status-fails') {
+          request.flush({}, { status: 500, statusText: 'Server Error' });
+        } else {
+          request.flush(
+            setStatus({
+              activeEmoteSetId: 'set-a',
+              capacity: 600,
+              occupiedSlots: 10,
+              trackedSince: '2026-01-01T00:00:00Z',
+            }),
+          );
+        }
+        fixture.detectChanges();
+        await settle();
+        collectLiveRequests();
+      };
+
+      if (order === 'status-first') {
+        await flushStatus();
+        await flushList();
+      } else {
+        await flushList();
+        await flushStatus();
+      }
+    }
+
+    function requestsFor(setId: string): TestRequest[] {
+      return seen.filter((r) => r.request.url === liveListUrl(setId));
+    }
+
+    it('(a) a deep link to a non-active set asks once when the set list lands before the status', async () => {
+      await mountDeepLink('set-b', 'list-first');
+
+      expect(seen).toHaveLength(1);
+      expect(requestsFor('set-b')).toHaveLength(1);
+      expect(requestsFor('set-b')[0].cancelled).toBe(false);
+    });
+
+    it('(b) a failed set status still lets the deep-linked set load, once', async () => {
+      await mountDeepLink('set-b', 'status-fails');
+
+      expect(seen).toHaveLength(1);
+      expect(requestsFor('set-b')).toHaveLength(1);
+      expect(requestsFor('set-b')[0].cancelled).toBe(false);
+    });
+
+    it('(c) a deep link to the active set never asks the tracked route, in either order', async () => {
+      await mountDeepLink('set-a', 'list-first');
+      expect(seen).toHaveLength(0);
+
+      await mountDeepLink('set-a', 'status-first');
+      expect(seen).toHaveLength(0);
+    });
+
+    it('control: status before list asks once for the deep-linked set', async () => {
+      await mountDeepLink('set-b', 'status-first');
+
+      expect(seen).toHaveLength(1);
+      expect(requestsFor('set-b')[0].cancelled).toBe(false);
+    });
+
+    it("reports 'loading', not 'unavailable', while the set status is still pending", async () => {
+      seen = [];
+      configure();
+      router = TestBed.inject(Router);
+      await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/emote-sets')
+        .flush(
+          emoteSetList([
+            emoteSet({ id: 'set-a', isActive: true }),
+            emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+          ]),
+        );
+      await settle();
+
+      // The status request is still open: the gate is closed and nothing has been asked.
+      expect(liveListRequests()).toHaveLength(0);
+      expect(component['liveMembersState']()).toBe('loading');
+    });
+  });
 });
 
 /**
