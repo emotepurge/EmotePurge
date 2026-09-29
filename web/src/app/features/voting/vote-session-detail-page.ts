@@ -279,7 +279,7 @@ export class VoteSessionDetailPage {
    * below instead of `results()` itself (Opus review P2-a, #227): `results` is replaced wholesale on
    * every reload (`usage.flushed` roughly every 30 s, every vote, every `onDeleted`), a new object
    * reference each time, and a `params` callback that reads it directly was retriggering the
-   * resource — and, past its 60 s cache, spending a fresh permit off the shared `ForeignEmoteLookup`
+   * resource — and, past its 60 s cache, spending a fresh permit off the `TrackedEmoteSetPreview`
    * bucket — on every one of those, not only when the session's set actually changed (it never does,
    * mid-session). A plain `computed()` memoizes correctly here because its returned *value* is a
    * primitive (`string | null`), so `params` (and `shouldTrackSessionSetMembers` below) only see a

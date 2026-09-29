@@ -344,7 +344,6 @@
           "PublicHealth": "Public health check",
           "ForeignEmoteLookup": "Foreign channel preview (7TV)",
           "TrackedEmoteSetPreview": "Tracked-channel set preview (7TV)",
-          "TrackedEmoteSetPreview": "Tracked-channel set preview (7TV)",
           "SevenTvLeaderboard": "7TV leaderboard"
         }
       },

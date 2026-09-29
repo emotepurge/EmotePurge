@@ -28,7 +28,12 @@ the rule is shared with `VoteSessionService`, whose behaviour is unchanged) ·
 `EmoteRoutePolicyTests.cs`, `AdminRateLimitsEndpointTests.cs` and `ApiFactory.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/TrackedEmoteSetMembershipServiceTests.cs` and
 `Unit/EmoteSetMembershipRuleTests.cs` · `web/public/i18n/de.json` and `en.json`
-(`admin.rateLimits.policies.names.TrackedEmoteSetPreview`) · `docs/Architectur.md`
+(`admin.rateLimits.policies.names.TrackedEmoteSetPreview`) · `docs/Architectur.md` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` and its spec (`loadCachedEmoteSetPreview`
+reads the tracked route; `loadEmoteSetPreview` is unchanged) ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` and `vote-session-detail-page.ts` (docs) and
+their specs · `web/e2e/support/mocks.ts` (`mockTrackedEmoteSetPreview`) ·
+`web/e2e/usage-atlas.e2e.spec.ts`, `vote-ballot.e2e.spec.ts` and `emote-import.e2e.spec.ts`
 
 **1. What `ForeignEmoteLookup` protects, and what it does not.** It is the per-user fairness and
 abuse bound for reads that can cost 7TV up to ten paginated calls. It does not protect 7TV itself:

@@ -19,14 +19,14 @@ import {
 } from './seven-tv-emote-set.model';
 
 /**
- * Mirrors the backend's own cache TTL for the set-ID preview route (6.4's Redis entry, keyed per
+ * Mirrors the backend's own cache TTL for the set-ID preview read (6.4's Redis entry, keyed per
  * set id) — chosen so a client-side hit never claims freshness the server would not also have
  * granted a same-moment second reader. The reason this exists at all (operator decision
- * 2026-09-22): that backend cache sits *behind* the shared `ForeignEmoteLookup` limiter (10
- * permits/60 s), so a cache hit there still spends a permit — quickly switching between sets on the
- * usage page hit 429 on the limiter alone, cache or not. See {@link
- * SevenTvEmoteSetService.loadCachedEmoteSetPreview} for what this actually guards and why it does
- * not cover every caller of {@link SevenTvEmoteSetService.loadEmoteSetPreview}.
+ * 2026-09-22): that backend cache sits *behind* the per-user limiter, so a cache hit there still
+ * spends a permit — quickly switching between sets on the usage page hit 429 on the limiter alone,
+ * cache or not. See {@link SevenTvEmoteSetService.loadCachedEmoteSetPreview} for what this actually
+ * guards and why it does not cover every caller of {@link
+ * SevenTvEmoteSetService.loadEmoteSetPreview}.
  */
 const EMOTE_SET_PREVIEW_CACHE_TTL_MS = 60_000;
 
@@ -421,7 +421,7 @@ export class SevenTvEmoteSetService {
   }
 
   /**
-   * A cached wrapper around {@link loadEmoteSetPreview} for K4's usage-stats page, and since #227
+   * A cached read of the tracked-channel set preview for K4's usage-stats page, and since #227
    * also the vote-session detail page's own live-membership check (K6 follow-up: which ballot rows
    * are no longer members of the session's set) — **not** used by K3's `ForeignChannelStep` or the
    * K2/T4.5 import-target loader, which keep calling the plain method directly. Deliberately scoped
@@ -445,14 +445,12 @@ export class SevenTvEmoteSetService {
    * additionally guards a same-set-id request race (P3-5: an older answer must never overwrite a
    * newer one) — a guarantee this TTL cache does not make, because it caches whatever response
    * arrives, in arrival order, with no notion of which request was issued first. Layering this cache
-   * underneath K3's would risk exactly that: an older, later-arriving response landing here after a
-   * newer one, then being served back on some later switch past the point where K3's own guard would
-   * have discarded it — a correctness regression for a symptom K3 has already fixed on its own, for
-   * no benefit it does not already have (its cache never expires within one dialog session and is
-   * cleared exactly when the data it holds stops being trustworthy). Sharing the same backend TTL
-   * and the same permit bucket between the tracked-channel preview (K4) and the foreign-channel one
-   * (K2/K3) is itself a separate, existing question — splitting `ForeignEmoteLookup` into its own
-   * bucket per use is a follow-up issue.
+   * underneath K3's would risk exactly that, for no benefit K3 does not already have.
+   *
+   * Since #220 this reads the tracked-channel route (`GET /api/channels/{c}/emote-sets/{id}/emotes`),
+   * which the backend answers only for a set that belongs to the tracked channel and counts against
+   * its own per-user bucket (`TrackedEmoteSetPreview`) instead of the foreign-lookup one. A set that
+   * does not belong to the channel answers 404 there — callers treat it like any other failed read.
    */
   loadCachedEmoteSetPreview(
     channelName: string,
@@ -466,7 +464,7 @@ export class SevenTvEmoteSetService {
         return of(cached.response);
       }
     }
-    return this.loadEmoteSetPreview(channelName, emoteSetId, options).pipe(
+    return this.loadTrackedEmoteSetPreview(channelName, emoteSetId, options).pipe(
       tap((response) => {
         this.cachedPreviews.set(key, {
           response,
@@ -487,6 +485,24 @@ export class SevenTvEmoteSetService {
     return this.http.post<void>(
       `/api/seventv/emote-sets/${encodeURIComponent(emoteSetId)}/sync-imported`,
       body,
+    );
+  }
+
+  /** The tracked-channel route behind {@link loadCachedEmoteSetPreview} (#220). The set id is a path
+   *  segment, so it is encoded like the other set-scoped routes; `refresh` is the only query. */
+  private loadTrackedEmoteSetPreview(
+    channelName: string,
+    emoteSetId: string,
+    options: { refresh?: boolean },
+  ): Observable<ForeignEmoteSetResponse> {
+    const normalized = normalizeChannelName(channelName);
+    let params = new HttpParams();
+    if (options.refresh) {
+      params = params.set('refresh', 'true');
+    }
+    return this.http.get<ForeignEmoteSetResponse>(
+      `/api/channels/${normalized}/emote-sets/${encodeURIComponent(emoteSetId)}/emotes`,
+      { params },
     );
   }
 

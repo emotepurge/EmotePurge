@@ -690,8 +690,8 @@ export class UsageStatsPage {
         asked?.channelName === params.channelName && asked.emoteSetId === params.emoteSetId;
       // Cached, not the plain method: switching back to a recently-shown set within the cache's
       // TTL must cost no request at all (operator decision 2026-09-22) — see
-      // SevenTvEmoteSetService.loadCachedEmoteSetPreview's doc for the TTL and why this is the one
-      // caller that gets it. `refresh` (channel.synced, the refresh button) still bypasses it.
+      // SevenTvEmoteSetService.loadCachedEmoteSetPreview's doc for the TTL and why these are the only
+      // callers that get it. `refresh` (channel.synced, the refresh button) still bypasses it.
       return this.emoteSetService.loadCachedEmoteSetPreview(params.channelName, params.emoteSetId, {
         refresh,
       });

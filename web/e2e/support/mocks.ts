@@ -1,4 +1,4 @@
-import { Page } from '@playwright/test';
+import { Page, Route } from '@playwright/test';
 
 export const AUTH_USER = {
   twitchUserId: '1',
@@ -1071,28 +1071,52 @@ export async function mockForeignEmoteSetPreview(
   channelName: string,
   response: MockForeignEmoteSetPreview,
 ): Promise<void> {
-  await page.route(`**/api/seventv/channels/${channelName}/emotes*`, (route) => {
-    if (route.request().method() !== 'GET') {
-      return route.fallback();
-    }
-    const emotes = response.emotes ?? [];
-    return fulfillJson(route, 200, {
-      channelName: response.channelName,
-      sevenTvUserId: response.sevenTvUserId ?? null,
-      emoteSetId: response.emoteSetId,
-      emoteSetName: response.emoteSetName ?? null,
-      capacity: response.capacity ?? 1000,
-      totalCount: response.totalCount ?? emotes.length,
-      truncated: response.truncated ?? false,
-      emotes: emotes.map((emote) => ({
-        sevenTvEmoteId: emote.sevenTvEmoteId,
-        name: emote.name,
-        defaultName: emote.name,
-        imageUrl: `https://cdn.7tv.app/emote/${emote.sevenTvEmoteId}/2x.webp`,
-        topAllTime: null,
-        trending: null,
-      })),
-    });
+  await page.route(`**/api/seventv/channels/${channelName}/emotes*`, (route) =>
+    fulfillEmoteSetPreview(route, response),
+  );
+}
+
+/**
+ * GET /api/channels/{channelName}/emote-sets/{emoteSetId}/emotes (#220) — the tracked-channel set
+ * preview: the usage-stats page's non-active set view (K4, deep link or dropdown switch) and the
+ * vote-detail page's live-membership read of the session's set. Same body shape as
+ * {@link mockForeignEmoteSetPreview}, other route: a page that reads a set through *both* (the
+ * import dialog's target loader stays on the foreign route) registers both. The glob names the
+ * `/emotes` suffix, so the dropdown's `…/emote-sets` list request is never caught by it. Answers
+ * every set id for `channelName` — a test that must tell two sets apart checks
+ * `route.request().url()` itself.
+ */
+export async function mockTrackedEmoteSetPreview(
+  page: Page,
+  channelName: string,
+  response: MockForeignEmoteSetPreview,
+): Promise<void> {
+  await page.route(`**/api/channels/${channelName}/emote-sets/*/emotes*`, (route) =>
+    fulfillEmoteSetPreview(route, response),
+  );
+}
+
+function fulfillEmoteSetPreview(route: Route, response: MockForeignEmoteSetPreview) {
+  if (route.request().method() !== 'GET') {
+    return route.fallback();
+  }
+  const emotes = response.emotes ?? [];
+  return fulfillJson(route, 200, {
+    channelName: response.channelName,
+    sevenTvUserId: response.sevenTvUserId ?? null,
+    emoteSetId: response.emoteSetId,
+    emoteSetName: response.emoteSetName ?? null,
+    capacity: response.capacity ?? 1000,
+    totalCount: response.totalCount ?? emotes.length,
+    truncated: response.truncated ?? false,
+    emotes: emotes.map((emote) => ({
+      sevenTvEmoteId: emote.sevenTvEmoteId,
+      name: emote.name,
+      defaultName: emote.name,
+      imageUrl: `https://cdn.7tv.app/emote/${emote.sevenTvEmoteId}/2x.webp`,
+      topAllTime: null,
+      trending: null,
+    })),
   });
 }
 

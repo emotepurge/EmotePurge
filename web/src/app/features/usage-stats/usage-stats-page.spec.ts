@@ -234,6 +234,14 @@ function flushByPath(mock: HttpTestingController, path: string, body: object | u
   mock.match((req) => req.url === path).forEach((testReq) => testReq.flush(body));
 }
 
+// The tracked-channel preview route (#220): the set id is a path segment, so the exact-path
+// regex cannot also catch the dropdown request `/api/channels/a/emote-sets`.
+const LIVE_LIST_URL = /^\/api\/channels\/a\/emote-sets\/[^/]+\/emotes$/;
+
+function liveListUrl(setId: string): string {
+  return `/api/channels/a/emote-sets/${encodeURIComponent(setId)}/emotes`;
+}
+
 describe('UsageStatsPage — refreshSetStatus channel race (#112 regression)', () => {
   let fixture: ComponentFixture<UsageStatsPage>;
   let component: UsageStatsPage;
@@ -2779,9 +2787,7 @@ describe('UsageStatsPage — set dropdown, URL fallback rules and retainAmong (T
     // (see the deferred-reconciliation cases in the set-view block), so it has to be flushed here
     // for the pruning to be real rather than merely postponed.
     httpMock
-      .expectOne(
-        (r) => r.url === '/api/seventv/channels/a/emotes' && r.params.get('emoteSetId') === 'set-b',
-      )
+      .expectOne((r) => r.url === liveListUrl('set-b'))
       .flush({
         channelName: 'a',
         sevenTvUserId: null,
@@ -3248,7 +3254,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   }
 
   function liveListRequests(): TestRequest[] {
-    return httpMock.match((r) => r.url === '/api/seventv/channels/a/emotes');
+    return httpMock.match((r) => LIVE_LIST_URL.test(r.url));
   }
 
   /**
@@ -3497,9 +3503,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       );
     await settle();
 
-    const liveRequest = httpMock.expectOne(
-      (r) => r.url === '/api/seventv/channels/a/emotes' && r.params.get('emoteSetId') === 'set-b',
-    );
+    const liveRequest = httpMock.expectOne((r) => r.url === liveListUrl('set-b'));
     // A params-driven load after choosing the set may use the Api's cache; only a loud reload
     // bypasses it (see the refresh-button case below).
     expect(liveRequest.request.params.get('refresh')).toBeNull();
@@ -3542,7 +3546,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     fixture.detectChanges();
     const reloaded = liveListRequests();
     expect(reloaded).toHaveLength(1);
-    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
     // A loud reload asks the Api to bypass its cache (spec 8.3) — only this one request.
     expect(reloaded[0].request.params.get('refresh')).toBe('true');
   });
@@ -3845,7 +3849,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   }
 
   function liveListRequestsFor(setId: string): TestRequest[] {
-    return liveListRequests().filter((r) => r.request.params.get('emoteSetId') === setId);
+    return liveListRequests().filter((r) => r.request.url === liveListUrl(setId));
   }
 
   it.each([
@@ -3867,7 +3871,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
       const reloaded = liveListRequests();
       expect(reloaded).toHaveLength(1);
-      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
       expect(reloaded[0].request.params.get('refresh')).toBe('true');
     },
   );
@@ -4041,7 +4045,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
       const reloaded = liveListRequests();
       expect(reloaded).toHaveLength(1);
-      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
       expect(reloaded[0].request.params.get('refresh')).toBe('true');
     },
   );
@@ -4065,7 +4069,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
       const reloaded = liveListRequests();
       expect(reloaded).toHaveLength(1);
-      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
       expect(reloaded[0].request.params.get('refresh')).toBe('true');
     },
   );
@@ -4140,7 +4144,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     // the first call had just set, and this request went out without it.
     const reloaded = liveListRequests();
     expect(reloaded).toHaveLength(1);
-    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
     expect(reloaded[0].request.params.get('refresh')).toBe('true');
   });
 
@@ -4790,7 +4794,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
     let requests = liveListRequests();
     expect(requests).toHaveLength(1);
-    expect(requests[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(requests[0].request.url).toBe(liveListUrl('set-b'));
     requests[0].flush(memberList([member('7tv-a', 'PeepoA')], { emoteSetId: 'set-b' }));
     await settle();
 
@@ -4801,7 +4805,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
     requests = liveListRequests();
     expect(requests).toHaveLength(1);
-    expect(requests[0].request.params.get('emoteSetId')).toBe('set-c');
+    expect(requests[0].request.url).toBe(liveListUrl('set-c'));
     requests[0].flush(memberList([member('7tv-z', 'Zulu')], { emoteSetId: 'set-c' }));
     await settle();
 
@@ -4834,7 +4838,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
     const reloaded = liveListRequests();
     expect(reloaded).toHaveLength(1);
-    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(reloaded[0].request.url).toBe(liveListUrl('set-b'));
     expect(reloaded[0].request.params.get('refresh')).toBe('true');
   });
 });
@@ -4937,7 +4941,7 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
       emotes: [],
     });
     httpMock
-      .match((request) => request.url === '/api/seventv/channels/a/emotes')
+      .match((request) => LIVE_LIST_URL.test(request.url))
       .forEach((request) =>
         request.flush(
           { errorCode: 'foreign_channel_seventv_unavailable' },
@@ -5009,7 +5013,7 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
       emotes: [],
     });
     httpMock
-      .match((request) => request.url === '/api/seventv/channels/a/emotes')
+      .match((request) => LIVE_LIST_URL.test(request.url))
       .forEach((request) =>
         request.flush(
           { errorCode: 'foreign_channel_seventv_unavailable' },
@@ -5241,7 +5245,7 @@ describe('UsageStatsPage — export/import scope capture reads the shown set onc
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [emote('a', 'PumpkinA', 5)]);
     flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
     httpMock
-      .match((r) => r.url === '/api/seventv/channels/a/emotes')
+      .match((r) => LIVE_LIST_URL.test(r.url))
       .forEach((request) => request.flush(memberList([member('7tv-a', 'PumpkinA')])));
     await settle();
   }
