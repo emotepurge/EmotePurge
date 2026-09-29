@@ -112,7 +112,7 @@ Known limits of the lock (second review round, arbitrated 2026-09-29):
 A vote session without a set (`VoteSession.EmoteSetId == null`) used to read its usage column from
 `channel.ActiveEmoteSetId`. After a set switch the session's window lies under the *old* set, so
 every unarchived emote reported a fabricated `0`; a channel that never synced (`ActiveEmoteSetId ==
-""`) reported nothing at all. A null-session has no set of its own, so its usage is now what the
+""`) reported `0` as well (empty dictionary, `GetValueOrDefault(id, 0)`). A null-session has no set of its own, so its usage is now what the
 emote got in the channel during the session window, summed across all sets. A set-session stays
 scoped to its own set, unchanged.
 

@@ -18,13 +18,6 @@ public readonly record struct EmoteSetScope
         this.setId = setId;
     }
 
-    private enum ScopeKind
-    {
-        Active = 0,
-        Set = 1,
-        All = 2
-    }
-
     /// <summary>The channel's currently active set — resolved by the query against the channel.</summary>
     public static EmoteSetScope ActiveSet => default;
 
@@ -50,5 +43,12 @@ public readonly record struct EmoteSetScope
         }
 
         return new EmoteSetScope(ScopeKind.Set, setId);
+    }
+
+    private enum ScopeKind
+    {
+        Active = 0,
+        Set = 1,
+        All = 2
     }
 }

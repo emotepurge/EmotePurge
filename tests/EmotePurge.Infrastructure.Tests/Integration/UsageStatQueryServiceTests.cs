@@ -249,9 +249,35 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var mixedEntry = channelSeries.Emotes.Single(e => e.EmoteId == mixed.Id);
         Assert.Equal([[mixedDay.DayNumber - from.DayNumber, 2]], mixedEntry.Days);
 
+        // GetTotalsByEmoteIdsAsync needs a named set or all sets, which this set-less seed cannot
+        // give it — its side of the marker is GetTotalsByEmoteIdsAsync_ASharedOnlyDayInRange_SumsToZero,
+        // on both paths.
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetTotalsByEmoteIdsAsync_ASharedOnlyDayInRange_SumsToZero(bool acrossAllSets)
+    {
+        // SharedOnlyRow_ReadsAsUnused_LikeBotOnly's seed, under a named set, read through both the
+        // set-session path (that set) and the null-session path (every set).
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, $"sharedchat_totals_{(acrossAllSets ? "all" : "set")}", ActiveSetId);
+        var from = new DateOnly(2026, 7, 10);
+        var to = new DateOnly(2026, 7, 20);
+        var sharedThenHuman = await SeedEmoteAsync(db, channel.Id, "SharedThenHuman");
+        var mixed = await SeedEmoteAsync(db, channel.Id, "MixedHumanAndShared");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = sharedThenHuman.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 1), UseCount = 5 },
+            new UsageStat { EmoteId = sharedThenHuman.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 15), UseCount = 0, BotUseCount = 0, SharedChatUseCount = 3 },
+            new UsageStat { EmoteId = mixed.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 12), UseCount = 2, SharedChatUseCount = 3 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetTotalsByEmoteIdsAsync([sharedThenHuman.Id, mixed.Id], from, to, TotalsScope(acrossAllSets));
+
         // No UseCount > 0 filter here, only the date range — so the shared-only day still forms a
         // group, it just sums to nothing.
-        var totals = await service.GetTotalsByEmoteIdsAsync([sharedThenHuman.Id, mixed.Id], from, to, EmoteSetScope.AllSets);
         Assert.Equal(0, totals[sharedThenHuman.Id]);
         Assert.Equal(2, totals[mixed.Id]);
     }
@@ -345,39 +371,44 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         Assert.Equal("from", exception.ParamName);
     }
 
-    [Fact]
-    public async Task GetTotalsByEmoteIdsAsync_ReturnsOnlyTheRequestedIds()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetTotalsByEmoteIdsAsync_ReturnsOnlyTheRequestedIds(bool acrossAllSets)
     {
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "ballottest1");
+        var channel = await SeedChannelAsync(db, $"ballottest1_{(acrossAllSets ? "all" : "set")}", ActiveSetId);
         var onBallot = await SeedEmoteAsync(db, channel.Id, "OnBallot");
         var offBallot = await SeedEmoteAsync(db, channel.Id, "OffBallot");
         db.UsageStats.AddRange(
-            new UsageStat { EmoteId = onBallot.Id, Date = new DateOnly(2026, 7, 2), UseCount = 9 },
-            new UsageStat { EmoteId = offBallot.Id, Date = new DateOnly(2026, 7, 2), UseCount = 99 });
+            new UsageStat { EmoteId = onBallot.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 9 },
+            new UsageStat { EmoteId = offBallot.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 99 });
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
-        var totals = await service.GetTotalsByEmoteIdsAsync([onBallot.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
+        var totals = await service.GetTotalsByEmoteIdsAsync([onBallot.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), TotalsScope(acrossAllSets));
 
         Assert.Equal(9, Assert.Single(totals).Value);
     }
 
-    [Fact]
-    public async Task GetTotalsByEmoteIdsAsync_OmitsEmotesWithoutUsage()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetTotalsByEmoteIdsAsync_OmitsEmotesWithoutUsage(bool acrossAllSets)
     {
         // No zero-fill here, unlike the context query: the caller already holds the emote rows, so
         // filling in every id would only make the payload bigger. What a missing key means depends
         // on the caller now (T6.3, AK 80): a null-session reads it as zero
         // (VoteSessionQueryService.BuildResultRow's GetValueOrDefault(id, 0)); a set-session reads
         // it as null — "never counted under this set at all" (TryGetValue, no default). This id has
-        // no UsageStat row under the set at all, so it stays absent from the dictionary either way.
+        // no UsageStat row under the set at all, so it stays absent from the dictionary either way —
+        // on the set path and on the every-set path alike.
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "ballottest2");
+        var channel = await SeedChannelAsync(db, $"ballottest2_{(acrossAllSets ? "all" : "set")}", ActiveSetId);
         var unused = await SeedEmoteAsync(db, channel.Id, "Unused");
 
         var service = new UsageStatQueryService(db);
-        var totals = await service.GetTotalsByEmoteIdsAsync([unused.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
+        var totals = await service.GetTotalsByEmoteIdsAsync([unused.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), TotalsScope(acrossAllSets));
 
         Assert.Empty(totals);
     }
@@ -1496,4 +1527,9 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
         return emote;
     }
+
+    /// <summary>The set-session path (the channel's active set, by name) or the null-session path
+    /// (every set) of <see cref="UsageStatQueryService.GetTotalsByEmoteIdsAsync"/>.</summary>
+    private static EmoteSetScope TotalsScope(bool acrossAllSets) =>
+        acrossAllSets ? EmoteSetScope.AllSets : EmoteSetScope.Set(ActiveSetId);
 }
