@@ -12,7 +12,8 @@ internal static class EmoteSetIdValidation
 {
     private const int MaxLength = 32;
 
-    private static readonly Regex Pattern = new("^[0-9A-Za-z]{1,32}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    // \z, not $: without RegexOptions.Multiline, $ also matches before a trailing "\n", and the id is never trimmed.
+    private static readonly Regex Pattern = new(@"^[0-9A-Za-z]{1,32}\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>No normalization step, unlike <c>ChannelNameValidation</c> — a set id is compared
     /// ordinally everywhere it is used and carries no canonical casing to fold onto.</summary>
