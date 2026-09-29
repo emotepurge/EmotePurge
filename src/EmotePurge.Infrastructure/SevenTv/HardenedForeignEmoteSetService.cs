@@ -198,7 +198,7 @@ public sealed class HardenedForeignEmoteSetService(
             // breaker is open, and the one event worth a real log line — the breaker actually opening
             // — is logged exactly once, below, at the point the transition happens.
             logger.LogDebug(
-                "Fremdkanal-Vorschau für {Identifier}: Circuit-Breaker offen, kein Upstream-Aufruf (verbleibende Offenzeit {RemainingSeconds}s).",
+                "Foreign-channel preview for {Identifier}: circuit breaker open, no upstream call (remaining open time {RemainingSeconds}s).",
                 logIdentifier, Math.Ceiling(decision.RemainingOpenTime.TotalSeconds));
             return ForeignEmoteSetLookupResult.Failed(
                 decision.OpenedByRateLimit
@@ -214,7 +214,7 @@ public sealed class HardenedForeignEmoteSetService(
             if (permit is null)
             {
                 logger.LogWarning(
-                    "Fremdkanal-Vorschau für {Identifier}: providerweites 7TV-Budget nach {TimeoutSeconds}s Wartezeit nicht verfügbar.",
+                    "Foreign-channel preview for {Identifier}: provider-wide 7TV budget unavailable after waiting {TimeoutSeconds}s.",
                     logIdentifier, BudgetWaitTimeout.TotalSeconds);
                 // Never reached the inner chain — nothing to tell the breaker about 7TV's health, but
                 // the probe slot (if this was one) still needs releasing.
@@ -290,7 +290,7 @@ public sealed class HardenedForeignEmoteSetService(
                 // rejected request (spec section 6): a transition only ever happens on the call that
                 // causes it, never on the many rejections that follow while it stays open.
                 logger.LogWarning(
-                    "7TV-Circuit-Breaker für Fremdkanal-Vorschauen geöffnet (ausgelöst durch {Identifier}, Status {Status}).",
+                    "7TV circuit breaker for foreign-channel previews opened (triggered by {Identifier}, status {Status}).",
                     logIdentifier, status);
                 break;
             case ForeignSevenTvBreakerTransition.Closed:

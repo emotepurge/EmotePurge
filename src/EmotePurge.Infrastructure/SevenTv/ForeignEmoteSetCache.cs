@@ -61,7 +61,7 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
             // A payload we cannot read is treated the same as a miss — the caller resolves live,
             // which is the safe direction for a read-only preview.
             logger.LogWarning(
-                ex, "Lesen des Fremdkanal-Vorschau-Caches für {Identifier} fehlgeschlagen — behandle als Miss.", logIdentifier);
+                ex, "Reading the foreign-channel preview cache for {Identifier} failed; treating it as a miss.", logIdentifier);
             return null;
         }
     }
@@ -76,7 +76,7 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
         catch (Exception ex) when (ex is RedisException or TimeoutException)
         {
             logger.LogWarning(
-                ex, "Schreiben des Fremdkanal-Vorschau-Caches für {Identifier} fehlgeschlagen — Ergebnis wird nur für diesen Request verwendet.", logIdentifier);
+                ex, "Writing the foreign-channel preview cache for {Identifier} failed; the result is used for this request only.", logIdentifier);
         }
     }
 
