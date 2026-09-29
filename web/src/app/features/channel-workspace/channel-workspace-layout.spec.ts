@@ -74,6 +74,7 @@ function reportingDeleteRun(channelName: string): DeleteRunInfo {
     channelName,
     expectedChannelName: channelName,
     setId: 'set-1',
+    targetOwnerTwitchId: null,
     result: DONE_RESULT,
     syncReport: 'pending',
     syncReportReason: null,
@@ -91,6 +92,7 @@ function reportingRestoreRun(hostChannelName: string): RestoreRunInfo {
     hostChannelName,
     setName: 'set-1',
     ownerOrChannelLabel: hostChannelName,
+    targetOwnerTwitchId: null,
     result: DONE_RESULT,
     syncReport: 'pending',
     syncReportReason: null,
@@ -111,6 +113,7 @@ function reportingUndoRun(hostChannelName: string): UndoRunInfo {
     ownerOrChannelLabel: hostChannelName,
     trackedChannelName: hostChannelName,
     ownerDisplayName: null,
+    targetOwnerTwitchId: null,
     sourceFile: {
       stage: 'finished',
       exportedAt: '2026-09-25T10:00:00.000Z',

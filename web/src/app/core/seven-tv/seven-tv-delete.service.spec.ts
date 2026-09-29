@@ -147,8 +147,8 @@ describe('SevenTvDeleteService', () => {
 
   // Drives one emote all the way through the 7TV queue and returns the closing sync-deleted request,
   // which is what the sync-report tests below are actually about.
-  function runOneDeleteToSyncRequest() {
-    service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+  function runOneDeleteToSyncRequest(targetOwnerTwitchId: string | null = null) {
+    service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', targetOwnerTwitchId);
     flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     return httpMock.expectOne(SYNC_ENDPOINT);
@@ -365,6 +365,20 @@ describe('SevenTvDeleteService', () => {
       httpMock.verify(); // no further attempt was made
     });
 
+    // Owner-hint design 3.6: the pre-check's resolved owner id, frozen onto the run at start, rides
+    // along on the report and survives a manual retry unchanged — never re-resolved by this service.
+    it('carries the target owner hint on the report and on a manual retry', () => {
+      const reportReq = runOneDeleteToSyncRequest('tw-owner');
+      expect(reportReq.request.body.targetOwnerTwitchId).toBe('tw-owner');
+      reportReq.flush(null, { status: 401, statusText: 'Unauthorized' });
+      flushFallbackResync();
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_ENDPOINT);
+      expect(retryReq.request.body.targetOwnerTwitchId).toBe('tw-owner');
+      retryReq.flush(deletedAnswer());
+    });
+
     it('retrySyncReport() re-sends the same ids after a failure', () => {
       runOneDeleteToSyncRequest().flush(null, { status: 401, statusText: 'Unauthorized' });
       flushFallbackResync();
@@ -375,6 +389,7 @@ describe('SevenTvDeleteService', () => {
       expect(retryReq.request.body).toEqual({
         sevenTvEmoteIds: ['7tv-1'],
         expectedChannelName: 'sensitron',
+        targetOwnerTwitchId: null,
       });
       retryReq.flush(deletedAnswer());
 
@@ -400,7 +415,7 @@ describe('SevenTvDeleteService', () => {
       });
 
       it('sends no resync for a set without an expected channel', () => {
-        service.startDelete('set-1', 'sensitron', [EMOTES[0]], null);
+        service.startDelete('set-1', 'sensitron', [EMOTES[0]], null, null);
         flushApplied(httpMock.expectOne(GQL_ENDPOINT));
         vi.advanceTimersByTime(DELETE_DELAY_MS);
         httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 403, statusText: 'Forbidden' });
@@ -460,7 +475,7 @@ describe('SevenTvDeleteService', () => {
     it('holds destructiveOpen from startDelete to closed — every delete row is destructive', () => {
       expect(service.destructiveOpen()).toBe(false);
 
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
       expect(service.destructiveOpen()).toBe(true);
 
       flushApplied(httpMock.expectOne(GQL_ENDPOINT));
@@ -486,7 +501,7 @@ describe('SevenTvDeleteService', () => {
     // already in flight when the display detaches can still be confirmed by 7TV afterwards, and the
     // run must still report it, even though nothing shows it any more.
     it('reset() while running lets the engine finish and still reports a REMOVE that was in flight', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
       const inFlightReq = httpMock.expectOne(GQL_ENDPOINT);
 
       service.reset();
@@ -506,6 +521,7 @@ describe('SevenTvDeleteService', () => {
       expect(syncReq.request.body).toEqual({
         sevenTvEmoteIds: ['7tv-1', '7tv-2'],
         expectedChannelName: 'sensitron',
+        targetOwnerTwitchId: null,
       });
       syncReq.flush(deletedAnswer());
 
@@ -562,7 +578,7 @@ describe('SevenTvDeleteService', () => {
       const syncReq = runOneDeleteToSyncRequest();
       service.reset();
 
-      service.startDelete('set-2', 'other-channel', [EMOTES[1]], 'other-channel');
+      service.startDelete('set-2', 'other-channel', [EMOTES[1]], 'other-channel', null);
       flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       const run2SyncReq = httpMock.expectOne(SYNC_ENDPOINT_SET_2);
@@ -682,6 +698,7 @@ describe('SevenTvDeleteService', () => {
     channelName: 'sensitron',
     expectedChannelName: 'sensitron',
     setId: 'set-2',
+    targetOwnerTwitchId: null,
     result: { doneKeys: ['7tv-9'], items: [], startedAt: 0, finishedAt: 1 },
     syncReport: 'succeeded',
     syncReportReason: null,
@@ -697,7 +714,7 @@ describe('SevenTvDeleteService', () => {
     service.run.set(PREVIOUS_CLOSED_RUN);
     tokenService.clearToken();
 
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
     expect(service.isRunning()).toBe(false);
     expect(service.queue()).toEqual([]);
@@ -710,7 +727,7 @@ describe('SevenTvDeleteService', () => {
     // #256 P3-1 — same reasoning as the no-token case above.
     service.run.set(PREVIOUS_CLOSED_RUN);
 
-    service.startDelete('set-1', 'sensitron', [], 'sensitron');
+    service.startDelete('set-1', 'sensitron', [], 'sensitron', null);
 
     expect(service.isRunning()).toBe(false);
     expect(service.destructiveOpen()).toBe(false);
@@ -719,7 +736,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('keys every queue row by its 7TV id', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
     expect(service.queue().map((item) => item.key)).toEqual(['7tv-1', '7tv-2']);
 
@@ -731,7 +748,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('deletes emotes sequentially with a delay, then syncs the archived ids', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
     expect(service.isRunning()).toBe(true);
     expect(service.queue().map((i) => i.status)).toEqual(['in-progress', 'pending']);
@@ -760,12 +777,13 @@ describe('SevenTvDeleteService', () => {
     expect(syncReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-1', '7tv-2'],
       expectedChannelName: 'sensitron',
+      targetOwnerTwitchId: null,
     });
     syncReq.flush(deletedAnswer());
   });
 
   it('marks a GraphQL error response as failed and continues the queue', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
     httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'emote not found' }] });
 
@@ -781,13 +799,14 @@ describe('SevenTvDeleteService', () => {
     expect(syncReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-2'],
       expectedChannelName: 'sensitron',
+      targetOwnerTwitchId: null,
     });
     syncReq.flush(deletedAnswer());
   });
 
   describe('7TV rate limiting', () => {
     it('waits out the reported reset and retries the same emote instead of failing it', () => {
-      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
 
       httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(30));
 
@@ -810,7 +829,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('re-paces the rest of the run from the reported quota', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
       // limit 100 over a window of 0ms elapsed + 30s remaining => 300ms/request, +10% margin => 330ms.
       httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(30, 100));
@@ -829,7 +848,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('gives up on an emote after the retries are exhausted, without stalling the queue', () => {
-      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
 
       httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(1));
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -843,7 +862,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('backs off a bare HTTP 429 for a full window without mis-learning a pace from it', () => {
-      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
 
       httpMock
         .expectOne(GQL_ENDPOINT)
@@ -862,7 +881,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('reports the achieved rate at the end of a run — the only way we learn 7TVs real quota', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
       flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
@@ -884,7 +903,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('counts only the busiest 60s span, not the whole run', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
       flushApplied(httpMock.expectOne(GQL_ENDPOINT));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
@@ -905,7 +924,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('cancel() during a rate-limit pause stops the run and clears the countdown', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
       httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(30));
 
       service.cancel();
@@ -920,7 +939,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('clears the stored token and reports a friendly message on 401', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
     httpMock.expectOne(GQL_ENDPOINT).flush(null, { status: 401, statusText: 'Unauthorized' });
 
@@ -935,7 +954,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('cancel() marks pending/in-progress items as cancelled and stops the run', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
     flushApplied(httpMock.expectOne(GQL_ENDPOINT));
 
     // Second item is now 'pending', waiting out the inter-request delay — cancel before it fires.
@@ -949,6 +968,7 @@ describe('SevenTvDeleteService', () => {
     expect(syncReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-1'],
       expectedChannelName: 'sensitron',
+      targetOwnerTwitchId: null,
     });
     syncReq.flush(deletedAnswer());
 
@@ -958,7 +978,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('reset() clears the queue', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
     flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     service.cancel();
     httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
@@ -997,7 +1017,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('resetIfChannelChanged() leaves a running run alone, even for another channel', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
     service.resetIfChannelChanged('other-channel');
 
@@ -1020,7 +1040,7 @@ describe('SevenTvDeleteService', () => {
     expect(service.isRunning()).toBe(false); // finish() already flipped this before the follow-up
 
     // A second run starts, for a different channel, before run 1's answer comes back.
-    service.startDelete('set-2', 'other-channel', [EMOTES[1]], 'other-channel');
+    service.startDelete('set-2', 'other-channel', [EMOTES[1]], 'other-channel', null);
     expect(service.isRunning()).toBe(true);
     expect(service.syncReport()).toBe('idle'); // run 2's own state, reset at start
     expect(service.lastRun()).toBeNull(); // run 2 has not finished yet
@@ -1052,6 +1072,7 @@ describe('SevenTvDeleteService', () => {
     expect(retryReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-2'],
       expectedChannelName: 'other-channel',
+      targetOwnerTwitchId: null,
     });
     retryReq.flush(deletedAnswer());
   });
@@ -1064,6 +1085,7 @@ describe('SevenTvDeleteService', () => {
       'sensitron',
       [{ sevenTvEmoteId: '7tv-live', name: 'LiveOnly' }],
       'sensitron',
+      null,
     );
 
     expect(service.queue()[0].key).toBe('7tv-live');
@@ -1074,6 +1096,7 @@ describe('SevenTvDeleteService', () => {
     expect(syncReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-live'],
       expectedChannelName: 'sensitron',
+      targetOwnerTwitchId: null,
     });
     syncReq.flush(deletedAnswer());
     expect(service.lastRun()?.result.doneKeys).toEqual(['7tv-live']);
@@ -1084,8 +1107,8 @@ describe('SevenTvDeleteService', () => {
   // afterwards (modelled here by a refused second start naming another set), the first report and
   // the manual retry both name the run's own set.
   it('reports and retries with the set id frozen at the start of the run', () => {
-    service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
-    service.startDelete('set-2', 'sensitron', [EMOTES[1]], 'sensitron');
+    service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
+    service.startDelete('set-2', 'sensitron', [EMOTES[1]], 'sensitron', null);
     flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(DELETE_DELAY_MS);
 
@@ -1101,6 +1124,7 @@ describe('SevenTvDeleteService', () => {
     expect(retryReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-1'],
       expectedChannelName: 'sensitron',
+      targetOwnerTwitchId: null,
     });
     retryReq.flush(deletedAnswer());
   });
@@ -1108,7 +1132,7 @@ describe('SevenTvDeleteService', () => {
   // Spec 5.1, E3: the legacy `{ emoteIds }` body stays valid on the server for old tabs, but this
   // client never sends it — not even when every row carries a Guid.
   it('sends only the set-centric body form, never the legacy emoteIds', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
     flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     flushApplied(httpMock.expectOne(GQL_ENDPOINT));
@@ -1118,6 +1142,7 @@ describe('SevenTvDeleteService', () => {
     expect(Object.keys(syncReq.request.body).sort()).toEqual([
       'expectedChannelName',
       'sevenTvEmoteIds',
+      'targetOwnerTwitchId',
     ]);
     expect(syncReq.request.body.emoteIds).toBeUndefined();
     syncReq.flush(deletedAnswer());
@@ -1139,6 +1164,7 @@ describe('SevenTvDeleteService', () => {
         },
       ],
       'sensitron',
+      null,
     );
 
     expect(service.queue()).toHaveLength(1);
@@ -1158,7 +1184,7 @@ describe('SevenTvDeleteService', () => {
   // Spec 4.6 point 21 / 6.5: a delete from a set that is not the page's active one expects no
   // channel, and the server's paper-only answer (`channels: []`) is a plain success, not partial.
   it('reports a non-active set with no expected channel and reads the paper-only answer as succeeded', () => {
-    service.startDelete('set-2', 'sensitron', [EMOTES[0]], null);
+    service.startDelete('set-2', 'sensitron', [EMOTES[0]], null, null);
     flushApplied(httpMock.expectOne(GQL_ENDPOINT));
     vi.advanceTimersByTime(DELETE_DELAY_MS);
 
@@ -1166,6 +1192,7 @@ describe('SevenTvDeleteService', () => {
     expect(syncReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-1'],
       expectedChannelName: null,
+      targetOwnerTwitchId: null,
     });
     syncReq.flush(deletedAnswer());
 
@@ -1178,10 +1205,10 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('does not start a second run while one is already in progress', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
     const firstQueueLength = service.queue().length;
 
-    service.startDelete('set-2', 'other-channel', [EMOTES[0]], 'other-channel');
+    service.startDelete('set-2', 'other-channel', [EMOTES[0]], 'other-channel', null);
 
     expect(service.queue()).toHaveLength(firstQueueLength);
 
@@ -1204,7 +1231,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('reports "delete" as the active run while this service runs, then null once it ends', () => {
-      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
 
       expect(arbiter.activeRun()).toBe('delete');
 
@@ -1216,7 +1243,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('clears the active run once a run ended by cancel() has had its report answered', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
       flushApplied(httpMock.expectOne(GQL_ENDPOINT));
 
       service.cancel();
@@ -1234,7 +1261,7 @@ describe('SevenTvDeleteService', () => {
     it('leaves no active run when the engine refuses the start for a cleared token', () => {
       tokenService.clearToken();
 
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
 
       expect(service.isRunning()).toBe(false);
       expect(arbiter.activeRun()).toBeNull();
@@ -1254,7 +1281,7 @@ describe('SevenTvDeleteService', () => {
 
     /** Starts a one-row run and cancels it while its REMOVE is in flight. */
     function cancelOneRowInFlight(expectedChannelName: string | null = 'sensitron') {
-      service.startDelete('set-1', 'sensitron', [EMOTES[0]], expectedChannelName);
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], expectedChannelName, null);
       const remove = httpMock.expectOne(isRemove);
       service.cancel();
       expect(remove.cancelled).toBe(true);
@@ -1295,6 +1322,7 @@ describe('SevenTvDeleteService', () => {
       expect(syncReq.request.body).toEqual({
         sevenTvEmoteIds: ['7tv-1'],
         expectedChannelName: 'sensitron',
+        targetOwnerTwitchId: null,
       });
       syncReq.flush(deletedAnswer());
 
@@ -1405,7 +1433,7 @@ describe('SevenTvDeleteService', () => {
     ])(
       'makes %s mid-run unknown, keeps the run going and reads right after it without a grace period',
       (_label, answer) => {
-        service.startDelete('set-1', 'sensitron', THREE_EMOTES, 'sensitron');
+        service.startDelete('set-1', 'sensitron', THREE_EMOTES, 'sensitron', null);
         flushApplied(httpMock.expectOne(isRemove));
         vi.advanceTimersByTime(DELETE_DELAY_MS);
         answer(httpMock.expectOne(isRemove));
@@ -1428,7 +1456,7 @@ describe('SevenTvDeleteService', () => {
     );
 
     it('reports only the confirmed rows of a mixed run and leaves the rest to the report’s backend resync — no client resync', () => {
-      service.startDelete('set-1', 'sensitron', THREE_EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', THREE_EMOTES, 'sensitron', null);
       flushApplied(httpMock.expectOne(isRemove));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       httpMock.expectOne(isRemove).flush('boom', { status: 502, statusText: 'Bad Gateway' });
@@ -1452,7 +1480,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('settles a cancel in flight after already confirmed rows into one report, not two', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
       flushApplied(httpMock.expectOne(isRemove));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       httpMock.expectOne(isRemove);
@@ -1469,7 +1497,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('also waits out the grace period when a cancel between rows ends a run with an older transport loss', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
       httpMock.expectOne(isRemove).flush('boom', { status: 500, statusText: 'Server Error' });
       service.cancel(); // between rows: nothing in flight
 
@@ -1482,7 +1510,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('sends no read for a cancel between rows without any unknown row', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
       flushApplied(httpMock.expectOne(isRemove));
       service.cancel();
 
@@ -1569,7 +1597,7 @@ describe('SevenTvDeleteService', () => {
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
       expect(service.run()?.phase).toBe('closed');
 
-      service.startDelete('set-2', 'sensitron', [EMOTES[1]], 'sensitron');
+      service.startDelete('set-2', 'sensitron', [EMOTES[1]], 'sensitron', null);
       httpMock.expectOne(isRemove).flush('boom', { status: 503, statusText: 'Unavailable' });
       vi.advanceTimersByTime(DELETE_DELAY_MS);
 
@@ -1587,7 +1615,7 @@ describe('SevenTvDeleteService', () => {
       const runA = service.run()?.runId;
       service.reset();
 
-      service.startDelete('set-2', 'sensitron', [EMOTES[1]], 'sensitron');
+      service.startDelete('set-2', 'sensitron', [EMOTES[1]], 'sensitron', null);
       const runB = service.run()?.runId;
       expect(runB).not.toBe(runA);
       const removeB = httpMock.expectOne(isRemove);
@@ -1615,7 +1643,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('resyncs exactly once when a mixed run’s report fails for good', () => {
-      service.startDelete('set-1', 'sensitron', THREE_EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', THREE_EMOTES, 'sensitron', null);
       flushApplied(httpMock.expectOne(isRemove));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       httpMock.expectOne(isRemove).flush('boom', { status: 502, statusText: 'Bad Gateway' });
@@ -1673,7 +1701,7 @@ describe('SevenTvDeleteService', () => {
 
     it('is dropped at once once the confirmed delete actually became a run', () => {
       service.beginConfirmedRun();
-      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', null);
       flushApplied(httpMock.expectOne(GQL_ENDPOINT));
 
       service.endConfirmedRun();

@@ -203,6 +203,7 @@ describe('startForeignChannelImportFlow', () => {
         ownerDisplayName: null,
         setName: 'set-target',
         isActiveSet: true,
+        targetOwnerTwitchId: null,
       },
       { kind: 'seventv-channel', channelName: 'handofblood' },
       {
@@ -248,6 +249,7 @@ describe('startForeignChannelImportFlow', () => {
         emoteSetId: 'set-halloween',
         channelName: 'my_channel',
         ownerDisplayName: 'my_channel',
+        ownerTwitchChannelId: null,
         setName: 'Halloween',
         isTracked: true,
         twitchLogin: 'my_channel',
@@ -366,6 +368,7 @@ describe('startLeaderboardImportFlow', () => {
         ownerDisplayName: null,
         setName: 'set-target',
         isActiveSet: true,
+        targetOwnerTwitchId: null,
       },
       { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
       {

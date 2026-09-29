@@ -46,6 +46,12 @@ function resolveActiveSetId(setId: string, activeSetId: string | null | undefine
  * tracked choice with a `channelName` (every choice this builds has one) — see that function's own
  * doc for why. `setName` falls back to the id, the same convention `targetSetLabel`
  * (`import-confirm-dialog.ts`) already uses for every other unnamed set.
+ *
+ * `ownerTwitchChannelId` is explicitly `null` (owner-hint design 3.6, Codex finding 4) — this
+ * fabricated choice never asked a picker, so it never learned the set's owner id the way
+ * `import-target-choices.ts`'s `resolveOwnerTwitchChannelId` does. `import-flow.ts` falls back to a
+ * *login* hint (`channelName`, this trigger's own tracked channel) whenever a choice's id is `null`,
+ * so the owner check still gets an order to follow — just not one carrying a Twitch id.
  */
 function toImportTarget(
   channelName: string,
@@ -59,6 +65,7 @@ function toImportTarget(
       emoteSetId: setId,
       channelName,
       ownerDisplayName: channelName,
+      ownerTwitchChannelId: null,
       setName: setName ?? setId,
       isTracked: true,
       twitchLogin: channelName,

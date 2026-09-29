@@ -515,7 +515,11 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
     // Guids — and, the set not being the channel's active one, expects no channel (AK 8).
     await expect
       .poll(() => syncDeletedBodies[0])
-      .toEqual({ sevenTvEmoteIds: ['7tv-pump'], expectedChannelName: null });
+      .toEqual({
+        sevenTvEmoteIds: ['7tv-pump'],
+        expectedChannelName: null,
+        targetOwnerTwitchId: 'sensitron-1',
+      });
   });
 });
 

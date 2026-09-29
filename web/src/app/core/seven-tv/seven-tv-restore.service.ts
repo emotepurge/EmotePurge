@@ -127,6 +127,8 @@ export type ResyncTriggerState =
  *   `resetIfChannelChanged` compares against it (F7).
  * - `setName`, `ownerOrChannelLabel` — display only, never compared (the dock's target line, 4.4
  *   point 12).
+ * - `targetOwnerTwitchId` — the set owner's Twitch id the pre-check resolved (owner-hint design
+ *   3.6), `null` when it found none; sent with the report and every retry, never re-resolved here.
  */
 export interface RestoreStartTarget {
   setId: string;
@@ -135,6 +137,7 @@ export interface RestoreStartTarget {
   hostChannelName: string;
   setName: string;
   ownerOrChannelLabel: string;
+  targetOwnerTwitchId: string | null;
 }
 
 /**
@@ -165,6 +168,9 @@ export interface RestoreRunInfo extends RunRecordBase {
   setName: string;
   /** Display only (the dock's target line): the tracked channel or the owner's display name. */
   ownerOrChannelLabel: string;
+  /** See `RestoreStartTarget.targetOwnerTwitchId` — sent with every report and retry, carried into
+   *  the restore's own protocol builders unchanged. */
+  targetOwnerTwitchId: string | null;
   /** `null` while the run is in flight **and while it is `settling`**; set once, to the settled
    *  outcome, in the same update that moves the run to `reporting` (Plan-275 Festlegung 10) — so
    *  every reader (`run()`, `RestoreProgressSection`'s summary) only ever sees the one final
@@ -390,6 +396,7 @@ export class SevenTvRestoreService {
       hostChannelName: target.hostChannelName,
       setName: target.setName,
       ownerOrChannelLabel: target.ownerOrChannelLabel,
+      targetOwnerTwitchId: target.targetOwnerTwitchId,
       result: null,
       syncReport: 'idle',
       syncReportReason: null,
@@ -621,6 +628,7 @@ export class SevenTvRestoreService {
       .reportRestoredInSet(run.targetSetId, {
         sevenTvEmoteIds,
         expectedChannelName: run.expectedChannelName,
+        targetOwnerTwitchId: run.targetOwnerTwitchId,
       })
       .pipe(
         timeoutReportAttempt(),

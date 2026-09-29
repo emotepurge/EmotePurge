@@ -370,6 +370,7 @@ export class ImportProgressSection {
       startedAt: run.result.startedAt,
       finishedAt: run.result.finishedAt,
       items: run.result.items,
+      targetOwnerTwitchId: run.targetOwnerTwitchId,
     });
     // The filename label: the target channel, or the target set id for an untracked target —
     // never the owner display name, which can be absent.

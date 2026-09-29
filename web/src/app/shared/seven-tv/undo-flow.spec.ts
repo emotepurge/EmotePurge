@@ -47,6 +47,7 @@ function target(overrides: Partial<ResolvedRestoreTarget> = {}): ResolvedRestore
     twitchLogin: CHANNEL,
     trackedChannelName: CHANNEL,
     isActiveSet: true,
+    ownerTwitchChannelId: 'tw-olaf',
     hostChannelName: 'host_channel',
     hostSelectedSetId: SET_ID,
     ...overrides,
@@ -775,6 +776,7 @@ describe('startUndoFlow', () => {
         trackedChannelName: CHANNEL,
         ownerDisplayName: 'Olaf',
         sourceFile: SOURCE_FILE,
+        targetOwnerTwitchId: 'tw-olaf',
       });
     });
 
@@ -794,6 +796,14 @@ describe('startUndoFlow', () => {
         trackedChannelName: null,
         ownerOrChannelLabel: 'Olaf',
         ownerDisplayName: 'Olaf',
+      });
+    });
+
+    // Owner-hint design 3.6: the target's own resolved owner id is what reaches both the reports
+    // and the protocol, never a placeholder when it is unknown.
+    it('carries no owner hint when the resolved target names none', () => {
+      expect(undoRunTarget(target({ ownerTwitchChannelId: null }), SOURCE_FILE)).toMatchObject({
+        targetOwnerTwitchId: null,
       });
     });
   });

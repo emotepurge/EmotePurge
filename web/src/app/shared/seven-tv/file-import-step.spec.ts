@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EditableSetResolution,
   EditableSetTarget,
+  OwnerHint,
 } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
@@ -101,6 +102,7 @@ const RESOLVED_TARGET: EditableSetTarget = {
   twitchLogin: 'somechannel',
   trackedChannelName: CURRENT_CHANNEL,
   isActiveSet: true,
+  ownerTwitchChannelId: 'tw-somechannel',
 };
 
 /** The restore rows `purgeRunText()` (with its default single done row) yields. */
@@ -127,6 +129,7 @@ function purgeRunText(
     emoteSetId?: string;
     formatVersion?: number;
     items?: (RunQueueItem & { emoteId: string })[];
+    targetOwnerTwitchId?: string | null;
   } = {},
 ): string {
   const protocol = buildPurgeRunProtocol({
@@ -134,6 +137,7 @@ function purgeRunText(
     emoteSetId: overrides.emoteSetId ?? CURRENT_SET,
     startedAt: Date.parse('2026-09-01T10:00:00Z'),
     finishedAt: Date.parse('2026-09-01T10:05:00Z'),
+    targetOwnerTwitchId: overrides.targetOwnerTwitchId ?? null,
     items: overrides.items ?? [
       {
         key: 'e1',
@@ -204,6 +208,7 @@ function transferRunText(
     targetChannelName: options.channelName ?? CURRENT_CHANNEL,
     targetOwnerDisplayName: null,
     origin: { kind: 'channel' as const, channelName: 'quellkanal' },
+    targetOwnerTwitchId: null,
   };
   if (stage === 'planned') {
     return transferRunJson(
@@ -282,6 +287,7 @@ function transferUndoText(stage: 'planned' | 'finished', set = CURRENT_SET): str
       origin: null,
     },
     acknowledgedUnproven: false,
+    targetOwnerTwitchId: null,
   };
   if (stage === 'planned') {
     return transferUndoJson(
@@ -386,7 +392,7 @@ describe('FileImportStep', () => {
   /** The shared pre-check (spec 6.2) — `editable` for the file's own set unless a test says
    *  otherwise. Every call is one would-be request to the target list. */
   let resolveEditableSet: ReturnType<
-    typeof vi.fn<(emoteSetId: string) => Observable<EditableSetResolution>>
+    typeof vi.fn<(emoteSetId: string, hint?: OwnerHint) => Observable<EditableSetResolution>>
   >;
 
   beforeEach(async () => {
@@ -623,6 +629,7 @@ describe('FileImportStep', () => {
         twitchLogin: 'stranger',
         trackedChannelName: null,
         isActiveSet: false,
+        ownerTwitchChannelId: 'tw-stranger',
       };
       resolveEditableSet.mockReturnValue(of({ status: 'editable', target: untracked }));
       const dialog = render();
@@ -681,6 +688,80 @@ describe('FileImportStep', () => {
       expect(closed.map((result) => result.kind)).toEqual(['restore']);
     });
 
+    // Owner-hint design 3.7: the file's own id hint wins over its login fallback.
+    it("hints the pre-check with the file's own owner id when it carries one", async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(purgeRunText({ targetOwnerTwitchId: 'tw-file-owner' })));
+
+      expect(resolveEditableSet).toHaveBeenCalledWith(CURRENT_SET, {
+        twitchChannelId: 'tw-file-owner',
+        twitchLogin: CURRENT_CHANNEL,
+      });
+    });
+
+    // Owner-hint design 3.7, grenzfall: an untracked transfer target has neither an id nor an
+    // envelope channel to fall back to — both fields `null`, which `resolveEditableSet` reads as no
+    // hint at all, the same walk as omitting the argument entirely.
+    it('sends no hint at all for an untracked transfer-undo target', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(
+        file(
+          transferUndoJson(
+            buildTransferUndoProtocol({
+              targetEmoteSetId: 'set-undo',
+              targetChannelName: null,
+              targetOwnerDisplayName: 'Some Owner',
+              sourceFile: {
+                stage: 'finished',
+                exportedAt: '2026-09-01T10:00:00Z',
+                verifiedAt: null,
+                finishedAt: '2026-09-01T10:05:00Z',
+                origin: null,
+              },
+              startedAt: 0,
+              finishedAt: 1,
+              acknowledgedUnproven: false,
+              targetOwnerTwitchId: null,
+              executed: [
+                {
+                  candidate: {
+                    sourceSevenTvEmoteId: 'src-1',
+                    sourceName: 'Kappa',
+                    alias: 'Kappa',
+                    fileStatus: 'done',
+                    target: {
+                      sevenTvEmoteId: 'tgt-1',
+                      entries: [{ alias: 'KappaOld' }],
+                      defaultName: null,
+                    },
+                    provenance: 'confirmed',
+                  },
+                  mode: 'full',
+                  adds: [{ alias: 'KappaOld' }],
+                  omittedEntries: [],
+                  notes: [],
+                  status: 'done',
+                  failedStep: null,
+                  completedSteps: 2,
+                  errorMessage: null,
+                  skippedReason: null,
+                  sourceEntriesAtRemove: [{ alias: 'Kappa' }],
+                },
+              ],
+              skipped: [],
+            }),
+          ),
+        ),
+      );
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-undo', {
+        twitchChannelId: null,
+        twitchLogin: null,
+      });
+    });
+
     // Spec 4.1 point 2, E12: a transfer-undo file restores the source emotes its run removed, with
     // no switch — there is no undo of an undo. Its own set is checked like every restore file's.
     it.each(['planned', 'finished'] as const)(
@@ -690,7 +771,10 @@ describe('FileImportStep', () => {
 
         await dialog.selectFile(file(transferUndoText(stage, 'set-undo')));
 
-        expect(resolveEditableSet).toHaveBeenCalledWith('set-undo');
+        expect(resolveEditableSet).toHaveBeenCalledWith('set-undo', {
+          twitchChannelId: null,
+          twitchLogin: CURRENT_CHANNEL,
+        });
         expect(dialog.choiceGroup()).toBeNull();
         expect(closed).toEqual([
           {
@@ -728,6 +812,7 @@ describe('FileImportStep', () => {
             twitchLogin: 'besitzerin',
             trackedChannelName: null,
             isActiveSet: false,
+            ownerTwitchChannelId: 'tw-besitzerin',
           },
         }),
       );
@@ -738,7 +823,10 @@ describe('FileImportStep', () => {
       );
 
       expect(resolveEditableSet).toHaveBeenCalledTimes(1);
-      expect(resolveEditableSet).toHaveBeenCalledWith('set-halloween');
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-halloween', {
+        twitchChannelId: null,
+        twitchLogin: 'OtherChannel',
+      });
       expect(closed).toEqual([
         {
           kind: 'restore',
@@ -750,6 +838,7 @@ describe('FileImportStep', () => {
             twitchLogin: 'besitzerin',
             trackedChannelName: null,
             isActiveSet: false,
+            ownerTwitchChannelId: 'tw-besitzerin',
             hostChannelName: CURRENT_CHANNEL,
             hostSelectedSetId: CURRENT_SET,
           },

@@ -48,7 +48,13 @@ const SYNC_RESTORED_SET_2 = '/api/seventv/emote-sets/set-2/sync-restored';
  *  `RestoreProgressSection`'s target line only — no request follows any more); `untracked: true` a
  *  set with no channel at all. */
 function target(
-  overrides: { setId?: string; channel?: string; active?: boolean; untracked?: boolean } = {},
+  overrides: {
+    setId?: string;
+    channel?: string;
+    active?: boolean;
+    untracked?: boolean;
+    targetOwnerTwitchId?: string | null;
+  } = {},
 ): RestoreStartTarget {
   const setId = overrides.setId ?? 'set-1';
   const channel = overrides.channel ?? 'sensitron';
@@ -61,6 +67,7 @@ function target(
     hostChannelName: channel,
     setName: `Name of ${setId}`,
     ownerOrChannelLabel: tracked ? channel : 'Some Owner',
+    targetOwnerTwitchId: overrides.targetOwnerTwitchId ?? null,
   };
 }
 
@@ -99,6 +106,7 @@ const PREVIOUS_CLOSED_RUN: RestoreRunInfo = {
   hostChannelName: 'sensitron',
   setName: 'set-2',
   ownerOrChannelLabel: 'sensitron',
+  targetOwnerTwitchId: null,
   result: { doneKeys: ['7tv-9'], items: [], startedAt: 0, finishedAt: 1 },
   syncReport: 'succeeded',
   syncReportReason: null,
@@ -227,6 +235,7 @@ describe('SevenTvRestoreService', () => {
     expect(reportReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-1', '7tv-2'],
       expectedChannelName: null,
+      targetOwnerTwitchId: null,
     });
     expect(service.syncReport()).toBe('pending');
     reportReq.flush(restoredAnswer());
@@ -234,6 +243,24 @@ describe('SevenTvRestoreService', () => {
     expect(service.syncReport()).toBe('succeeded');
     // #255: a non-active tracked target no longer triggers its own resync.
     httpMock.expectNone(RESYNC_ENDPOINT);
+  });
+
+  // Owner-hint design 3.6: the pre-check's resolved owner id, frozen onto the run at start, rides
+  // along on the report and survives a manual retry unchanged — never re-resolved by this service.
+  it('carries the target owner hint on the report and on a manual retry', () => {
+    service.startRestore(target({ active: false, targetOwnerTwitchId: 'tw-owner' }), [EMOTES[0]]);
+    flushApplied(httpMock.expectOne(GQL_ENDPOINT));
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+    expect(reportReq.request.body.targetOwnerTwitchId).toBe('tw-owner');
+    // 401 is not retried automatically, and a non-active target gets no N1 fallback resync either.
+    reportReq.flush(null, { status: 401, statusText: 'Unauthorized' });
+
+    service.retrySyncReport();
+    const retryReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+    expect(retryReq.request.body.targetOwnerTwitchId).toBe('tw-owner');
+    retryReq.flush(restoredAnswer());
   });
 
   // AK 15, F8: a touched channel whose count falls short of the reported ids is partial/shortfall.
@@ -272,6 +299,7 @@ describe('SevenTvRestoreService', () => {
     expect(retryReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-1'],
       expectedChannelName: null,
+      targetOwnerTwitchId: null,
     });
     retryReq.flush(restoredAnswer());
 
@@ -312,6 +340,7 @@ describe('SevenTvRestoreService', () => {
     expect(reportReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-1'],
       expectedChannelName: null,
+      targetOwnerTwitchId: null,
     });
     reportReq.flush(restoredAnswer());
     expect(service.syncReport()).toBe('succeeded');
@@ -339,6 +368,7 @@ describe('SevenTvRestoreService', () => {
     expect(retryReq.request.body).toEqual({
       sevenTvEmoteIds: ['7tv-1'],
       expectedChannelName: null,
+      targetOwnerTwitchId: null,
     });
     retryReq.flush(restoredAnswer());
   });
@@ -353,6 +383,7 @@ describe('SevenTvRestoreService', () => {
     expect(Object.keys(reportReq.request.body).sort()).toEqual([
       'expectedChannelName',
       'sevenTvEmoteIds',
+      'targetOwnerTwitchId',
     ]);
     expect(reportReq.request.body.sevenTvEmoteIds).toEqual(['7tv-live']);
     reportReq.flush(restoredAnswer());
@@ -612,6 +643,7 @@ describe('SevenTvRestoreService', () => {
       expect(report.request.body).toEqual({
         sevenTvEmoteIds: ['7tv-1'],
         expectedChannelName: 'sensitron',
+        targetOwnerTwitchId: null,
       });
       report.flush(
         restoredAnswer({
@@ -1014,6 +1046,7 @@ describe('SevenTvRestoreService', () => {
       expect(reportReq.request.body).toEqual({
         sevenTvEmoteIds: ['7tv-1', '7tv-2'],
         expectedChannelName: 'sensitron',
+        targetOwnerTwitchId: null,
       });
       reportReq.flush(restoredAnswer());
 
@@ -1349,7 +1382,7 @@ describe('SevenTvRestoreService', () => {
 
       expect(arbiter.activeRun()).toBeNull();
 
-      deleteService.startDelete('set-1', 'sensitron', [EMOTES[1]], 'sensitron');
+      deleteService.startDelete('set-1', 'sensitron', [EMOTES[1]], 'sensitron', null);
 
       expect(arbiter.activeRun()).toBe('delete');
 
@@ -1447,6 +1480,7 @@ describe('SevenTvRestoreService', () => {
       expect(syncReq.request.body).toEqual({
         sevenTvEmoteIds: ['7tv-1'],
         expectedChannelName: 'sensitron',
+        targetOwnerTwitchId: null,
       });
       syncReq.flush(restoredAnswer());
 

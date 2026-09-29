@@ -177,6 +177,15 @@ export interface ImportRunInfo extends RunRecordBase {
    *  channel" link both need a different, channel-free way to say what this run wrote into. */
   targetOwnerDisplayName: string | null;
   targetSetId: string;
+  /** The Twitch id of the target's probable **owner** account (owner-hint design 3.6) — frozen at
+   *  `startImport` from whatever the flow already knew (the picker's own choice for an add-only run,
+   *  the shared pre-check's answer for a run with a replace row); `null` when neither ever resolved
+   *  one (a channel-bound target reports without it, `import-trigger.ts`'s fabricated choice, or an
+   *  untracked choice whose owner was never resolved). Carried onto `reportImported`'s
+   *  `reportImportedToSet` body and, unchanged, onto the removal report and the `finished`
+   *  transfer-run protocol — a retry of either report sends this same value, never a freshly
+   *  re-derived one. */
+  targetOwnerTwitchId: string | null;
   /** Resolved display name of `targetSetId` (falls back to the id) — what the dock's own "Ziel: …"
    *  line names alongside the channel/owner (finding 2, Live-Verifikation K2 2026-09-21), instead of
    *  the earlier untracked branch's raw `targetSetId`. */
@@ -467,6 +476,10 @@ export class SevenTvImportService {
       ownerDisplayName?: string | null;
       setName?: string;
       isActiveSet?: boolean;
+      /** Owner-hint design 3.6 — a required field (unlike its siblings above), so no caller can
+       *  forget to pass it: pass `null` explicitly when nothing resolved an owner (an add-only run
+       *  into a channel-bound target, or an untracked choice with no known owner). */
+      targetOwnerTwitchId: string | null;
     },
     origin: ImportOrigin,
     plan: TransferPlan,
@@ -505,6 +518,7 @@ export class SevenTvImportService {
       targetChannelName: target.channelName,
       targetOwnerDisplayName: target.ownerDisplayName ?? null,
       targetSetId: target.setId,
+      targetOwnerTwitchId: target.targetOwnerTwitchId,
       targetSetName: target.setName ?? target.setId,
       targetIsActiveSet: target.isActiveSet ?? true,
       origin,
@@ -864,7 +878,10 @@ export class SevenTvImportService {
             ...bodyBase,
             targetEmoteSetId: run.targetSetId,
           })
-        : this.emoteSetService.reportImportedToSet(run.targetSetId, bodyBase);
+        : this.emoteSetService.reportImportedToSet(run.targetSetId, {
+            ...bodyBase,
+            targetOwnerTwitchId: run.targetOwnerTwitchId,
+          });
 
     report$.pipe(timeoutReportAttempt(), retryTransientSyncFailures()).subscribe({
       next: () => this.endReport(runId, 'sync-imported', { syncReport: 'succeeded' }),
@@ -892,6 +909,7 @@ export class SevenTvImportService {
       .reportDeletedInSet(run.targetSetId, {
         sevenTvEmoteIds,
         expectedChannelName: run.targetIsActiveSet ? run.targetChannelName : null,
+        targetOwnerTwitchId: run.targetOwnerTwitchId,
       })
       .pipe(
         timeoutReportAttempt(),

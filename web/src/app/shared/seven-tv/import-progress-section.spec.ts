@@ -118,6 +118,7 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
     targetChannelName: 'zielkanal',
     targetOwnerDisplayName: null,
     targetSetId: 'set-1',
+    targetOwnerTwitchId: null,
     targetSetName: 'Set-1',
     // Active by default so the existing "Ziel: zielkanal" behaviour keeps working unchanged —
     // findings 2/3 tests below override this explicitly.
@@ -716,6 +717,50 @@ describe('ImportProgressSection', () => {
 
       const data = openSpy.mock.calls[0][1].data as { options: { id: string }[] };
       expect(data.options.map((option) => option.id)).toEqual(['json', 'csv']);
+    });
+
+    // Owner-hint design 3.6/3.7: the `finished`-stage protocol carries the run's own frozen owner
+    // id straight through — never re-derived, since a retry of either report already sent this same
+    // value.
+    it('writes the run’s own targetOwnerTwitchId onto the downloaded finished-stage protocol', async () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          targetOwnerTwitchId: 'owner-tw-7',
+          result: { doneKeys: ['7tv-a'], items: [doneItem()], startedAt: 0, finishedAt: 1000 },
+        }),
+      );
+      const fixture = render();
+      const openSpy = TestBed.inject(Dialog).open as ReturnType<typeof vi.fn>;
+      openSpy.mockReturnValue({ closed: of({ optionId: 'json' }) });
+
+      if (!('createObjectURL' in URL)) {
+        Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
+      }
+      let downloadedBlob: Blob | null = null;
+      vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
+        downloadedBlob = blob as Blob;
+        return 'blob:test';
+      });
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+      const originalCreateElement = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+        const element = originalCreateElement(tag);
+        if (tag === 'a') {
+          vi.spyOn(element as HTMLAnchorElement, 'click').mockImplementation(() => undefined);
+        }
+        return element;
+      });
+
+      findButton(fixture, 'Protokoll herunterladen')!.click();
+
+      expect(downloadedBlob).not.toBeNull();
+      const record = JSON.parse(await downloadedBlob!.text());
+      expect(record.meta.targetOwnerTwitchId).toBe('owner-tw-7');
+
+      vi.restoreAllMocks();
     });
 
     it('shows no download-protocol button while the run is still pending settlement', () => {

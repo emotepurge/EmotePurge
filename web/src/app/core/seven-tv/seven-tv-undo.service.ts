@@ -121,6 +121,11 @@ const PROCEED: StepGate = { kind: 'proceed' };
  *   untracked): the protocol's `meta.targetChannelName` and its filename part.
  * - `ownerDisplayName` — the protocol's `meta.targetOwnerDisplayName`.
  * - `sourceFile` — the transfer-run file this undo reverses, the protocol's `meta.undoneFile` (F6).
+ *
+ * A fourth field beyond spec 6.5: `targetOwnerTwitchId` — the set owner's Twitch id the pre-check
+ * resolved (owner-hint design 3.6), `null` when it found none — sent with both reports and every
+ * retry, and carried into `meta.targetOwnerTwitchId` of both the `planned` back-out file and the
+ * `finished` protocol.
  */
 export interface UndoRunTarget {
   setId: string;
@@ -131,6 +136,7 @@ export interface UndoRunTarget {
   trackedChannelName: string | null;
   ownerDisplayName: string | null;
   sourceFile: UndoSourceFileInfo;
+  targetOwnerTwitchId: string | null;
 }
 
 /** The two reasons the run itself skips a row, both through the recheck before a REMOVE (E19). */
@@ -208,6 +214,9 @@ export interface UndoRunInfo extends RunRecordBase {
   trackedChannelName: string | null;
   ownerDisplayName: string | null;
   sourceFile: UndoSourceFileInfo;
+  /** See `UndoRunTarget.targetOwnerTwitchId` — sent with both reports and every retry, carried into
+   *  both stages of the undo's own protocol builder unchanged. */
+  targetOwnerTwitchId: string | null;
   /** Whether the dialog's confirmation for an unproven file was given (spec 17 K2) — the paper trail
    *  in the protocol's `meta`. */
   acknowledgedUnproven: boolean;
@@ -502,6 +511,7 @@ export class SevenTvUndoService {
       trackedChannelName: target.trackedChannelName,
       ownerDisplayName: target.ownerDisplayName,
       sourceFile: target.sourceFile,
+      targetOwnerTwitchId: target.targetOwnerTwitchId,
       acknowledgedUnproven: acknowledgedUnproven && ranUnprovenFull,
       rows,
       skipped: allSkipped,
@@ -874,7 +884,11 @@ export class SevenTvUndoService {
     if (run === null) {
       return;
     }
-    const body = { sevenTvEmoteIds, expectedChannelName: run.expectedChannelName };
+    const body = {
+      sevenTvEmoteIds,
+      expectedChannelName: run.expectedChannelName,
+      targetOwnerTwitchId: run.targetOwnerTwitchId,
+    };
     const request$: Observable<SyncDeletedInSetResponse | SyncRestoredInSetResponse> =
       kind === 'removal'
         ? this.emoteSetService.reportDeletedInSet(run.targetSetId, body)

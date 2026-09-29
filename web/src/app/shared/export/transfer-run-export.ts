@@ -15,7 +15,7 @@ import type {
 import { CsvColumn, toCsv } from './csv';
 import { ExportEnvelope, buildEnvelope } from './export-envelope';
 import { sanitizeFilenamePart } from './file-download';
-import { RestoreFileTarget, RestoreRow } from './purge-run-export';
+import { readNonBlankStringHint, RestoreFileTarget, RestoreRow } from './purge-run-export';
 import { readEnvelope } from './read-envelope';
 
 /**
@@ -91,6 +91,10 @@ interface TransferRunMetaBase {
   targetChannelName: string | null;
   targetOwnerDisplayName: string | null;
   origin: ImportOrigin;
+  /** The set owner's Twitch id the run's pre-check hinted, or `null` when there was none — same owner
+   *  hint `PurgeRunMeta.targetOwnerTwitchId` carries, additive to format version 1 (no bump; plan
+   *  #216, 3.7). */
+  targetOwnerTwitchId: string | null;
 }
 
 export interface TransferRunCountsPlanned {
@@ -225,6 +229,10 @@ export function buildTransferPlanRecord(input: {
   plan: TransferPlan;
   entries: SevenTvSetEntries;
   defaultNameById: ReadonlyMap<string, string>;
+  /** The owner hint the import's pre-check resolved, or `null` when there was none — required so no
+   *  caller forgets it; plan #216's callers other than the import path pass `null` until they carry a
+   *  hint of their own. */
+  targetOwnerTwitchId: string | null;
 }): TransferPlanRecord {
   const removals = input.plan.rows.filter((row) => row.action === 'replace').length;
   const envelope = buildEnvelope<TransferRunRow, TransferRunMetaPlanned>({
@@ -239,6 +247,7 @@ export function buildTransferPlanRecord(input: {
       origin: input.origin,
       verifiedAt: new Date(input.verifiedAt).toISOString(),
       counts: { planned: input.plan.rows.length, removals },
+      targetOwnerTwitchId: input.targetOwnerTwitchId,
     },
     rows: input.plan.rows.map((row) =>
       transferRunRowFromPlanRow(row, input.entries, input.defaultNameById),
@@ -263,6 +272,10 @@ export function buildTransferRunProtocol(input: {
   startedAt: number;
   finishedAt: number;
   items: readonly ImportRunItem[];
+  /** The owner hint the import's pre-check resolved, or `null` when there was none — required so no
+   *  caller forgets it; plan #216's callers other than the import path pass `null` until they carry a
+   *  hint of their own. */
+  targetOwnerTwitchId: string | null;
 }): TransferRunProtocol {
   const rows = input.items.map(transferRunRowFromRunItem);
   const statuses = input.items.map((item) => item.status);
@@ -288,6 +301,7 @@ export function buildTransferRunProtocol(input: {
         removed,
         unknown,
       },
+      targetOwnerTwitchId: input.targetOwnerTwitchId,
     },
     rows,
   });
@@ -501,7 +515,17 @@ export function parseTransferRunForUndo(text: string): TransferRunUndoParseResul
     origin: readImportOrigin(untypedMeta['origin']),
   };
 
-  return { ok: true, candidates, stage, target: { emoteSetId: targetEmoteSetId }, sourceFile };
+  return {
+    ok: true,
+    candidates,
+    stage,
+    target: {
+      emoteSetId: targetEmoteSetId,
+      ownerTwitchId: readNonBlankStringHint(meta.targetOwnerTwitchId),
+      ownerLogin: readNonBlankStringHint(meta.targetChannelName),
+    },
+    sourceFile,
+  };
 }
 
 /** The undo candidate for one untrusted transfer-run row, or `null` when it names nothing an undo
@@ -628,7 +652,16 @@ export function parseTransferRunForRestore(text: string): TransferRunRestorePars
   if (rows.length === 0) {
     return { ok: false, errorKey: 'restore.import.errors.transferRunNoRows' };
   }
-  return { ok: true, rows, stage, target: { emoteSetId: targetEmoteSetId } };
+  return {
+    ok: true,
+    rows,
+    stage,
+    target: {
+      emoteSetId: targetEmoteSetId,
+      ownerTwitchId: readNonBlankStringHint(meta.targetOwnerTwitchId),
+      ownerLogin: readNonBlankStringHint(meta.targetChannelName),
+    },
+  };
 }
 
 /** The restore row for one untrusted file row, or `null` when it names no target to restore: not a

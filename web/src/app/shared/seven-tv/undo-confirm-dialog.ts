@@ -731,6 +731,7 @@ export class UndoConfirmDialog {
       acknowledgedUnproven: stampedPlan.acknowledgedUnproven,
       read,
       rows: stampedPlan.runnable,
+      targetOwnerTwitchId: target.ownerTwitchChannelId,
     });
     downloadFile(
       transferUndoPlanFilename(

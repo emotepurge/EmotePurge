@@ -37,10 +37,18 @@ const DE_TRANSLATIONS = {
 };
 
 const GQL_ENDPOINT = 'https://7tv.io/v4/gql';
-const TARGET_B = { setId: 'set-b', channelName: 'kanal_b' };
-const TARGET_C = { setId: 'set-c', channelName: 'kanal_c' };
+// `targetOwnerTwitchId: null` on every base target below — none of these tests is about the
+// owner-hint design (#216); the field is a required `startImport` input (owner-hint design 3.6)
+// with its own dedicated coverage further down (`targetOwnerTwitchId`).
+const TARGET_B = { setId: 'set-b', channelName: 'kanal_b', targetOwnerTwitchId: null };
+const TARGET_C = { setId: 'set-c', channelName: 'kanal_c', targetOwnerTwitchId: null };
 // An untracked target (spec 8.6, T2.6) — `channelName: null`, no `Channel` of ours to resync.
-const TARGET_UNTRACKED = { setId: 'set-u', channelName: null, ownerDisplayName: 'Stranger' };
+const TARGET_UNTRACKED = {
+  setId: 'set-u',
+  channelName: null,
+  ownerDisplayName: 'Stranger',
+  targetOwnerTwitchId: null,
+};
 const SYNC_IMPORTED_B = '/api/channels/kanal_b/emotes/sync-imported';
 const RESYNC_B = '/api/channels/kanal_b/resync';
 const SYNC_IMPORTED_C = '/api/channels/kanal_c/emotes/sync-imported';
@@ -375,6 +383,7 @@ describe('SevenTvImportService', () => {
       sourceChannelName: 'brudivoeller_tv',
       sourceKind: 'channel',
       leaderboardSort: null,
+      targetOwnerTwitchId: null,
     });
     reportReq.flush(null, { status: 204, statusText: 'No Content' });
 
@@ -389,7 +398,12 @@ describe('SevenTvImportService', () => {
   // set — firing it for a copy into a tracked but non-active set would read the wrong set, succeed,
   // and tell the user a channel page that will never show these emotes just did.
   it('reports a tracked non-active target through the channel-scoped endpoint but never resyncs', () => {
-    const targetNonActive = { setId: 'set-b', channelName: 'kanal_b', isActiveSet: false };
+    const targetNonActive = {
+      setId: 'set-b',
+      channelName: 'kanal_b',
+      isActiveSet: false,
+      targetOwnerTwitchId: null,
+    };
     service.startImport(targetNonActive, CHANNEL_ORIGIN, addPlan(ROWS));
     expect(service.run()?.targetIsActiveSet).toBe(false);
     runTwoRowsToDone();
@@ -984,6 +998,7 @@ describe('SevenTvImportService', () => {
       expect(removal.request.body).toEqual({
         sevenTvEmoteIds: ['tgt-x'],
         expectedChannelName: 'kanal_b',
+        targetOwnerTwitchId: null,
       });
       expect(service.removalReport()).toBe('pending');
       // F15: the resync waits for the removal report's answer.
@@ -1029,6 +1044,7 @@ describe('SevenTvImportService', () => {
       expect(removal.request.body).toEqual({
         sevenTvEmoteIds: ['tgt-x'],
         expectedChannelName: null,
+        targetOwnerTwitchId: null,
       });
       removal.flush(deletedAnswer());
 
@@ -1137,6 +1153,7 @@ describe('SevenTvImportService', () => {
       expect(removal.request.body).toEqual({
         sevenTvEmoteIds: ['tgt-x'],
         expectedChannelName: null,
+        targetOwnerTwitchId: null,
       });
       removal.flush(deletedAnswer());
 
@@ -1213,6 +1230,7 @@ describe('SevenTvImportService', () => {
       expect(retry.request.body).toEqual({
         sevenTvEmoteIds: ['tgt-x'],
         expectedChannelName: 'kanal_b',
+        targetOwnerTwitchId: null,
       });
       retry.flush(deletedAnswer());
       expect(service.removalReport()).toBe('succeeded');

@@ -19,6 +19,15 @@ namespace EmotePurge.Api.Endpoints;
 /// </summary>
 public static class SevenTvEndpoints
 {
+    /// <summary>
+    /// The cap on each owner-hint value, whether it arrives in a report's body or on the editable
+    /// pre-check's query (owner-hint design 3.4).
+    /// </summary>
+    private const int OwnerHintMaxLength = 64;
+
+    /// <summary>The one 7TV <c>EmoteSetKind</c> a caller may pick as a target (spec 8.6).</summary>
+    private const string SelectableEmoteSetKind = "NORMAL";
+
     public static void MapSevenTvEndpoints(this WebApplication app)
     {
         // No /api/seventv/... group existed before this spec. Filter order here is a tested contract
@@ -209,14 +218,53 @@ public static class SevenTvEndpoints
             return Results.Ok(new EmoteSetTargetsResponse(accountsWithEditability, sevenTvUnavailable));
         });
 
+        // GET /api/seventv/me/emote-set-targets/{emoteSetId} (owner-hint design 3.4): the editable
+        // pre-check for one set, so the client no longer reloads the whole target list above to ask
+        // about a single set. Same group, so the same ForeignEmoteLookup permit per call: a cold answer
+        // reads set lists like the picker does (IImportTargetOwnershipService.ResolveEditableAsync — 0
+        // warm; cold 1 for the actor, 2 in one round trip with a valid grant hint, up to 1 + k without;
+        // +2 for cold grants), never an owner lookup, and its grants through the guarded path rather
+        // than the unguarded one the picker reads. Always 200 with a status: "unavailable" answers
+        // "may I edit this set?", it is not a transport failure — the list route above degrades with
+        // 200 and flags too — so no 503, no 404 and no new error code (rule 7). The two optional query
+        // values are an order for that walk, never a permission; a blank or over-long one is no hint.
+        // EmoteSetIdValidationFilter validates the route value (400 invalid_emote_set_id).
+        meGroup.MapGet("/emote-set-targets/{emoteSetId}", async (
+            string emoteSetId,
+            HttpContext httpContext,
+            IImportTargetOwnershipService ownershipService,
+            IChannelService channelService,
+            CancellationToken ct,
+            string? ownerTwitchId = null, // query string; the C# defaults keep both optional
+            string? ownerLogin = null) =>
+        {
+            var principal = httpContext.User.TryBuildTwitchPrincipal();
+            if (principal is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var resolution = await ownershipService.ResolveEditableAsync(
+                principal.TwitchUserId, principal.TwitchLogin, emoteSetId, ct, BuildOwnerHint(ownerTwitchId, ownerLogin));
+
+            return Results.Ok(await ToEditableSetPreCheckResponseAsync(emoteSetId, resolution, channelService, ct));
+        })
+        .AddEndpointFilter<EmoteSetIdValidationFilter>();
+
         // POST /api/seventv/emote-sets/{emoteSetId}/sync-imported (spec 6.7/E22, F7): the set-centric
         // counterpart of EmoteEndpoints' own /sync-imported — exists because a target set's account
         // need not be a channel EmotePurge tracks at all, and the channel-scoped route 404s without a
         // Channel row (F7). Bookkeeping, not ForeignEmoteLookup: like its channel-scoped sibling, the
         // 7TV mutation already happened by the time this call runs, so a spent read budget must not
-        // drop the paper trail. That policy only fits because the owner check below costs no
-        // unguarded 7TV request (spec section 32): it answers from the cached, budgeted set lists,
-        // and its one direct lookup runs under the provider budget and breaker.
+        // drop the paper trail. That policy only fits because the owner check below never makes an
+        // unguarded 7TV request (spec section 32): every list and lookup it reads runs under the
+        // provider budget, the coalescer and the breaker — not because it is free. Its true cost
+        // (IImportTargetOwnershipService, spec addendum 41): nothing while the set lists are cached
+        // (60 s); cold, one list request when the actor owns the set (hinted or not); two, in one
+        // round trip, with a valid TargetOwnerTwitchId hint on a grant; up to 1 + k serial ones for k
+        // grants without a valid hint, plus one owner lookup for a set in no list. Reading cold grants
+        // adds two more (identity, editor_of), also for a hint that names another account and is then
+        // dropped: it makes no list request of its own, but resolving it needs the grants first.
         // EmoteSetIdValidationFilter here validates the *route* value, not a query string — see the
         // filter's own remarks.
         var emoteSetGroup = app.MapGroup("/api/seventv/emote-sets/{emoteSetId}")
@@ -248,7 +296,8 @@ public static class SevenTvEndpoints
             }
 
             // Step 4: does the actor own emoteSetId, or hold a 7TV editor grant on its owner?
-            var ownership = await ownershipService.CheckAsync(actor.TwitchUserId, actor.Login, emoteSetId, ct);
+            var ownership = await ownershipService.CheckAsync(
+                actor.TwitchUserId, actor.Login, emoteSetId, ct, BuildOwnerHint(request.TargetOwnerTwitchId));
 
             switch (ownership.Status)
             {
@@ -494,6 +543,84 @@ public static class SevenTvEndpoints
     }
 
     /// <summary>
+    /// Maps the editable pre-check's ownership answer onto its wire response (owner-hint design 3.4,
+    /// 15). The decision itself is <see cref="IImportTargetOwnershipService.ResolveEditableAsync"/>'s;
+    /// this only adds what the route owes on top of it: a non-<c>NORMAL</c> set is
+    /// <c>notSelectable</c> even for its owner (the client's own classification checks the kind
+    /// first, too), and an editable target names its tracked channel and whether the set is active
+    /// by the same rule as <see cref="ResolveEmoteSetTargetAccountAsync"/> — the owner account's
+    /// tracked <c>Channel</c> row wins over 7TV's opinion of "active". Every identity on the target
+    /// is the <b>owner</b> account's, never merely the account whose list carried the set.
+    /// </summary>
+    private static async Task<EditableSetPreCheckResponse> ToEditableSetPreCheckResponseAsync(
+        string emoteSetId,
+        SevenTvEmoteSetOwnershipCheckResult resolution,
+        IChannelService channelService,
+        CancellationToken cancellationToken)
+    {
+        switch (resolution.Status)
+        {
+            case SevenTvEmoteSetOwnershipStatus.Owner:
+                break;
+            case SevenTvEmoteSetOwnershipStatus.SetNotFound:
+            case SevenTvEmoteSetOwnershipStatus.Forbidden:
+                // The client cannot act on "unknown" any differently from "not yours" — both mean
+                // "pick another set".
+                return new EditableSetPreCheckResponse(EditableSetPreCheckStatus.NotEditable, null);
+            case SevenTvEmoteSetOwnershipStatus.Unavailable:
+                return new EditableSetPreCheckResponse(EditableSetPreCheckStatus.Unavailable, null);
+            default:
+                throw new UnreachableException(
+                    $"Unexpected {nameof(SevenTvEmoteSetOwnershipStatus)} value: {resolution.Status}.");
+        }
+
+        var emoteSet = resolution.EmoteSet
+            ?? throw new UnreachableException("ResolveEditableAsync answered Owner without the set it found.");
+        if (!string.Equals(emoteSet.Kind, SelectableEmoteSetKind, StringComparison.Ordinal))
+        {
+            return new EditableSetPreCheckResponse(EditableSetPreCheckStatus.NotSelectable, null);
+        }
+
+        var ownerTwitchUserId = resolution.OwnerTwitchUserId!;
+        var trackedChannel = await channelService.GetActiveByTwitchChannelIdAsync(ownerTwitchUserId, cancellationToken);
+        var activeEmoteSetId = trackedChannel?.ActiveEmoteSetId ?? resolution.SevenTvActiveEmoteSetId;
+
+        return new EditableSetPreCheckResponse(
+            EditableSetPreCheckStatus.Editable,
+            new EditableSetPreCheckTarget(
+                emoteSetId,
+                emoteSet.Name,
+                emoteSet.OwnerDisplayName,
+                resolution.OwnerTwitchLogin!,
+                ownerTwitchUserId,
+                trackedChannel?.ChannelName,
+                string.Equals(activeEmoteSetId, emoteSetId, StringComparison.Ordinal)));
+    }
+
+    /// <summary>
+    /// Turns an optional owner hint — the reports' <c>targetOwnerTwitchId</c> body field, or the
+    /// editable pre-check's <c>ownerTwitchId</c>/<c>ownerLogin</c> query — into an
+    /// <see cref="EmoteSetOwnerHint"/>, or drops it. Each value on its own is dropped when blank
+    /// (rule 7: never a 400) or longer than <see cref="OwnerHintMaxLength"/>; with both dropped there
+    /// is no hint at all. <see cref="IImportTargetOwnershipService"/> only ever resolves a hint
+    /// against the actor and the actor's editor grants, so an implausible or foreign value makes
+    /// no list request of its own; resolving it may cost the grants lookup (identity + editor_of)
+    /// when the grant cache is cold — the cap only keeps a client from handing this class an
+    /// arbitrarily large string to hold and log.
+    /// </summary>
+    private static EmoteSetOwnerHint? BuildOwnerHint(string? twitchUserId, string? twitchLogin = null)
+    {
+        var usableTwitchUserId = UsableOwnerHintValue(twitchUserId);
+        var usableTwitchLogin = UsableOwnerHintValue(twitchLogin);
+        return usableTwitchUserId is null && usableTwitchLogin is null
+            ? null
+            : new EmoteSetOwnerHint(usableTwitchUserId, usableTwitchLogin);
+    }
+
+    private static string? UsableOwnerHintValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) || value.Length > OwnerHintMaxLength ? null : value;
+
+    /// <summary>
     /// Stages 3-4 of the set-centric <c>sync-deleted</c>/<c>sync-restored</c> ladder (restore-per-set
     /// spec 5.1): the body, then the owner check. A non-null <see cref="SyncInSetLadder.Rejection"/>
     /// is the answer; nothing was reported, audited or resynced on any of those exits. Otherwise the
@@ -524,7 +651,8 @@ public static class SevenTvEndpoints
 
         // The same owner check and the same three exits as sync-imported: 404 with a code, a bare
         // 403, and 503 when 7TV could not be asked.
-        var ownership = await ownershipService.CheckAsync(actor.TwitchUserId, actor.Login, emoteSetId, ct);
+        var ownership = await ownershipService.CheckAsync(
+            actor.TwitchUserId, actor.Login, emoteSetId, ct, BuildOwnerHint(request.TargetOwnerTwitchId));
         switch (ownership.Status)
         {
             case SevenTvEmoteSetOwnershipStatus.SetNotFound:
@@ -734,13 +862,74 @@ internal sealed record EmoteSetTargetSummaryDto(
     string? OwnerSevenTvUserId, bool Editable);
 
 /// <summary>
+/// Wire shape of <c>GET /api/seventv/me/emote-set-targets/{emoteSetId}</c> (owner-hint design 3.4).
+/// </summary>
+/// <param name="Status">One of <see cref="EditableSetPreCheckStatus"/>'s values.</param>
+/// <param name="Target">Non-null exactly when <see cref="Status"/> is <see cref="EditableSetPreCheckStatus.Editable"/>.</param>
+internal sealed record EditableSetPreCheckResponse(string Status, EditableSetPreCheckTarget? Target);
+
+/// <summary>
+/// The editable set of <see cref="EditableSetPreCheckResponse"/>, named by its <b>owner</b> account —
+/// the account whose 7TV id owns the set, never merely the account whose list carried it.
+/// </summary>
+/// <param name="SetName">7TV's name for the set, raw — possibly blank; the client applies its own fallback.</param>
+/// <param name="OwnerDisplayName">The set's <c>owner.mainConnection.platformDisplayName</c>, raw; <c>null</c> when 7TV named none.</param>
+/// <param name="TwitchLogin">The owner account's Twitch login — the actor's own, or the matching grant's.</param>
+/// <param name="TwitchChannelId">
+/// The owner account's Twitch id — what the client carries on as the owner hint of the report that
+/// follows (<c>targetOwnerTwitchId</c>).
+/// </param>
+/// <param name="TrackedChannelName">
+/// The owner account's tracked, bot-active channel, or <c>null</c> — the same rule as
+/// <see cref="EmoteSetTargetAccount.TrackedChannelName"/>.
+/// </param>
+/// <param name="IsActiveSet">
+/// Whether the set is the owner account's active one: the tracked channel's observed
+/// <c>ActiveEmoteSetId</c> when there is one, otherwise the owner's 7TV list's own opinion (E7/E21).
+/// </param>
+internal sealed record EditableSetPreCheckTarget(
+    string EmoteSetId,
+    string SetName,
+    string? OwnerDisplayName,
+    string TwitchLogin,
+    string TwitchChannelId,
+    string? TrackedChannelName,
+    bool IsActiveSet);
+
+/// <summary>
+/// The four answers of the editable pre-check route — string constants on the wire, never enum
+/// ordinals, mirroring the client's <c>EditableSetResolution</c> one to one.
+/// </summary>
+internal static class EditableSetPreCheckStatus
+{
+    /// <summary>The actor may edit the set; the response carries its target.</summary>
+    public const string Editable = "editable";
+
+    /// <summary>The actor may edit the set, but its kind is not <c>NORMAL</c>, so it is no target.</summary>
+    public const string NotSelectable = "notSelectable";
+
+    /// <summary>The set is not the actor's to edit, or no readable list knows it.</summary>
+    public const string NotEditable = "notEditable";
+
+    /// <summary>7TV could not be asked about every account that might own the set.</summary>
+    public const string Unavailable = "unavailable";
+}
+
+/// <summary>
 /// Body of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-imported</c> (spec 6.7) — the same
 /// shape as <c>EmoteEndpoints.SyncImportedRequest</c> minus <c>TargetEmoteSetId</c>: the route
 /// already carries the target set, so repeating it in the body would just be a second, potentially
 /// disagreeing source of truth for the same value.
 /// </summary>
+/// <param name="TargetOwnerTwitchId">
+/// Optional order for the owner check (owner-hint design 3.3): the probable owner's Twitch id, as
+/// the client's own editable pre-check already resolved it. Never a login — every set-centric
+/// report follows a pre-check whose answer already carries the owner's Twitch id. Missing, blank or
+/// implausibly long is no hint at all (see <see cref="SevenTvEndpoints.BuildOwnerHint"/>), never 400.
+/// </param>
 internal sealed record SyncImportedToSetRequest(
-    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null);
+    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null,
+    string? TargetOwnerTwitchId = null);
 
 /// <summary>
 /// Body of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted</c> and <c>…/sync-restored</c>
@@ -753,7 +942,8 @@ internal sealed record SyncImportedToSetRequest(
 /// set is its active one — or <c>null</c> when it expects none. Validated with
 /// <c>ChannelNameValidation.IsValid</c> and normalized before it reaches the service (Regel 9).
 /// </param>
-internal sealed record SyncInSetRequest(IReadOnlyList<string>? SevenTvEmoteIds, string? ExpectedChannelName);
+/// <param name="TargetOwnerTwitchId">Same order for the owner check as <see cref="SyncImportedToSetRequest.TargetOwnerTwitchId"/>.</param>
+internal sealed record SyncInSetRequest(IReadOnlyList<string>? SevenTvEmoteIds, string? ExpectedChannelName, string? TargetOwnerTwitchId = null);
 
 /// <summary>
 /// Answer of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted</c> (restore-per-set spec 5.3).

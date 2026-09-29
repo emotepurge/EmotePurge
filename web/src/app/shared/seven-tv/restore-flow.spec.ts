@@ -105,6 +105,7 @@ function undoProtocolRows(outcome: 'done' | 'failedAtAdd'): RestoreRow[] {
     startedAt: 0,
     finishedAt: 1,
     acknowledgedUnproven: false,
+    targetOwnerTwitchId: null,
     executed: [
       {
         candidate: {
@@ -186,6 +187,7 @@ function target(overrides: Partial<ResolvedRestoreTarget> = {}): ResolvedRestore
     twitchLogin: CHANNEL,
     trackedChannelName: CHANNEL,
     isActiveSet: true,
+    ownerTwitchChannelId: 'tw-owner',
     hostChannelName: CHANNEL,
     hostSelectedSetId: SET_ID,
     ...overrides,
@@ -387,6 +389,7 @@ describe('startRestoreFlow', () => {
         hostChannelName: CHANNEL,
         setName: SET_NAME,
         ownerOrChannelLabel: CHANNEL,
+        targetOwnerTwitchId: 'tw-owner',
       });
     });
 
@@ -403,6 +406,7 @@ describe('startRestoreFlow', () => {
         hostChannelName: CHANNEL,
         setName: SET_ID,
         ownerOrChannelLabel: CHANNEL,
+        targetOwnerTwitchId: 'tw-owner',
       });
     });
 
@@ -423,7 +427,19 @@ describe('startRestoreFlow', () => {
         hostChannelName: CHANNEL,
         setName: SET_NAME,
         ownerOrChannelLabel: 'SomeOwner',
+        targetOwnerTwitchId: 'tw-owner',
       });
+    });
+
+    // Owner-hint design 3.6: the target's own resolved owner id is what reaches the report, never
+    // a placeholder when it is unknown.
+    it('carries no owner hint when the resolved target names none', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(deps, target({ ownerTwitchChannelId: null }), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0].targetOwnerTwitchId).toBeNull();
     });
   });
 

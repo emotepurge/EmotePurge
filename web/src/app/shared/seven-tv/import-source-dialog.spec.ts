@@ -441,6 +441,7 @@ describe('ImportSourceDialog', () => {
           twitchLogin: 'jemand',
           trackedChannelName: null,
           isActiveSet: false,
+          ownerTwitchChannelId: 'tw-jemand',
           hostChannelName: 'somechannel',
           hostSelectedSetId: 'set-current',
         },

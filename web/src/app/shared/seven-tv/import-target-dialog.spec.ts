@@ -314,6 +314,7 @@ describe('ImportTargetDialog', () => {
           emoteSetId: 'set-a',
           channelName: 'chan',
           ownerDisplayName: 'SomeOwner',
+          ownerTwitchChannelId: '1',
           setName: 'Main',
           isTracked: true,
           twitchLogin: 'someone',
@@ -962,6 +963,10 @@ describe('ImportTargetDialog', () => {
           emoteSetId: 'set-2',
           channelName: 'chan2',
           ownerDisplayName: 'Chan2Owner',
+          // Both accounts share this fixture's default sevenTvUserId ('owner-1') — the first
+          // account of the response that carries it wins (chan1's own id), not chan2's own, since
+          // resolution keys purely on the 7TV id, never on which account happened to list the set.
+          ownerTwitchChannelId: '1',
           setName: 'Main2',
           isTracked: true,
           twitchLogin: 'someone',
@@ -1102,12 +1107,49 @@ describe('ImportTargetDialog', () => {
           emoteSetId: 'set-a',
           channelName: 'somechannel',
           ownerDisplayName: 'SomeChannel',
+          ownerTwitchChannelId: '1',
           setName: 'Main',
           isTracked: true,
           twitchLogin: 'someone',
           activeEmoteSetId: null,
         },
       ]);
+    });
+
+    // Owner-hint design 3.6, Codex finding 2: `selectSet` must read the owner id off the *set*
+    // (`ImportTargetSetChoice.ownerTwitchChannelId`), never off the group's own `twitchChannelId` —
+    // the two disagree exactly when the set is listed under one account (A) but owned by another (B).
+    it('closes with the set’s own owner id, not the listing account’s id, when they differ (A-listed, B-owned)', async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: 'tw-a',
+              twitchLogin: 'accounta',
+              trackedChannelName: 'accounta',
+              sevenTvUserId: 'sevenTv-a',
+              sets: [set({ id: 'shared-set', name: 'Shared', ownerSevenTvUserId: 'sevenTv-b' })],
+            }),
+            account({
+              twitchChannelId: 'tw-b',
+              twitchLogin: 'accountb',
+              trackedChannelName: 'accountb',
+              sevenTvUserId: 'sevenTv-b',
+              sets: [],
+            }),
+          ],
+        }),
+      );
+
+      dialog.setInput('Shared')?.click();
+      dialog.detect();
+      dialog.button(SUBMIT).click();
+
+      expect(closed[0]?.ownerTwitchChannelId).toBe('tw-b');
+      expect(closed[0]?.channelName).toBe('accounta');
     });
 
     it('closes empty-handed on cancel, even with a target already chosen', async () => {
@@ -1281,6 +1323,7 @@ describe('ImportTargetDialog', () => {
           emoteSetId: 'set-tracked',
           channelName: 'chan',
           ownerDisplayName: 'SomeOwner',
+          ownerTwitchChannelId: '1',
           setName: 'Main',
           isTracked: true,
           twitchLogin: 'someone',
@@ -1304,6 +1347,7 @@ describe('ImportTargetDialog', () => {
           emoteSetId: 'set-a',
           channelName: null,
           ownerDisplayName: 'Stranger',
+          ownerTwitchChannelId: '1',
           setName: 'Halloween',
           isTracked: false,
           twitchLogin: 'stranger',

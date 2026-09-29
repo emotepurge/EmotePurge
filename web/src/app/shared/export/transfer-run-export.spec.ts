@@ -27,7 +27,13 @@ const TARGET: {
   targetEmoteSetId: string;
   targetChannelName: string | null;
   targetOwnerDisplayName: string | null;
-} = { targetEmoteSetId: 'set-1', targetChannelName: 'zielkanal', targetOwnerDisplayName: null };
+  targetOwnerTwitchId: string | null;
+} = {
+  targetEmoteSetId: 'set-1',
+  targetChannelName: 'zielkanal',
+  targetOwnerDisplayName: null,
+  targetOwnerTwitchId: null,
+};
 
 function setEntries(overrides: Partial<SevenTvSetEntries> = {}): SevenTvSetEntries {
   return {
@@ -203,6 +209,7 @@ describe('buildTransferPlanRecord', () => {
       targetEmoteSetId: 'set-u',
       targetChannelName: null,
       targetOwnerDisplayName: 'Stranger',
+      targetOwnerTwitchId: null,
       origin: ORIGIN,
       verifiedAt: 0,
       plan: { rows: [] },
@@ -548,7 +555,7 @@ describe('parseTransferRunForRestore', () => {
     expect(parseTransferRunForRestore(text)).toEqual({
       ok: true,
       stage: 'planned',
-      target: { emoteSetId: 'set-1' },
+      target: { emoteSetId: 'set-1', ownerTwitchId: null, ownerLogin: 'zielkanal' },
       rows: [
         {
           emoteId: null,
@@ -664,7 +671,13 @@ describe('parseTransferRunForRestore', () => {
 
       const parsed = parseTransferRunForRestore(disguised);
 
-      expect(parsed.ok && parsed.target).toEqual({ emoteSetId: 'set-1' });
+      // The login fallback comes from `meta.targetChannelName`, never the envelope's own
+      // `channelName` (F2) — the disguised value above must not leak into it.
+      expect(parsed.ok && parsed.target).toEqual({
+        emoteSetId: 'set-1',
+        ownerTwitchId: null,
+        ownerLogin: 'zielkanal',
+      });
       expect(parsed.ok && parsed.stage).toBe(stage);
     },
   );
@@ -680,7 +693,12 @@ describe('parseTransferRunForRestore', () => {
 
     const parsed = parseTransferRunForRestore(text);
 
-    expect(parsed.ok && parsed.target).toEqual({ emoteSetId: 'set-1' });
+    // An untracked target has no channel login to fall back to either.
+    expect(parsed.ok && parsed.target).toEqual({
+      emoteSetId: 'set-1',
+      ownerTwitchId: null,
+      ownerLogin: null,
+    });
     expect(parsed.ok && parsed.rows.map((row) => row.sevenTvEmoteId)).toEqual(['tgt-1']);
   });
 
@@ -741,6 +759,60 @@ describe('parseTransferRunForRestore', () => {
       errorKey: 'restore.import.errors.transferRunNoRows',
     });
   });
+
+  // Plan #216, 3.7: the owner hint a `planned`/`finished` file's own run started with round-trips
+  // through `meta.targetOwnerTwitchId`; the login fallback (`meta.targetChannelName`, never the
+  // envelope's own `channelName` — F2) stands ready behind it regardless.
+  it('round-trips a run that started with an owner hint', () => {
+    const text = transferRunJson(
+      buildTransferPlanRecord({
+        ...TARGET,
+        targetOwnerTwitchId: 'twitch-42',
+        origin: ORIGIN,
+        verifiedAt: 0,
+        plan: { rows: [replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa'])] },
+        entries: setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) }),
+        defaultNameById: new Map(),
+      }),
+    );
+
+    const parsed = parseTransferRunForRestore(text);
+
+    expect(parsed.ok && parsed.target).toEqual({
+      emoteSetId: 'set-1',
+      ownerTwitchId: 'twitch-42',
+      ownerLogin: 'zielkanal',
+    });
+  });
+
+  // A file written before this field existed (#216) has no `meta.targetOwnerTwitchId` at all — it
+  // must read exactly like one that explicitly carries `null`.
+  it('reads a file without targetOwnerTwitchId as no id hint, falling back to the channel login', () => {
+    const record = JSON.parse(
+      plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) })),
+    ) as { meta: Record<string, unknown> };
+    delete record.meta['targetOwnerTwitchId'];
+
+    const parsed = parseTransferRunForRestore(JSON.stringify(record));
+
+    expect(parsed.ok && parsed.target).toEqual({
+      emoteSetId: 'set-1',
+      ownerTwitchId: null,
+      ownerLogin: 'zielkanal',
+    });
+  });
+
+  // Untrusted input — a non-string or blank value is exactly as absent as a missing field.
+  it.each([42, '', '   '])('reads a malformed targetOwnerTwitchId (%j) as no hint', (malformed) => {
+    const record = JSON.parse(
+      plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) })),
+    ) as { meta: Record<string, unknown> };
+    record.meta['targetOwnerTwitchId'] = malformed;
+
+    const parsed = parseTransferRunForRestore(JSON.stringify(record));
+
+    expect(parsed.ok && parsed.target.ownerTwitchId).toBeNull();
+  });
 });
 
 // #254: the mirror image of parseTransferRunForRestore — a replace row's *source*, not its target.
@@ -760,7 +832,11 @@ describe('parseTransferRunForUndo', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.stage).toBe('planned');
-    expect(result.target).toEqual({ emoteSetId: 'set-1' });
+    expect(result.target).toEqual({
+      emoteSetId: 'set-1',
+      ownerTwitchId: null,
+      ownerLogin: 'zielkanal',
+    });
     expect(result.candidates.map((candidate) => candidate.sourceSevenTvEmoteId)).toEqual([
       'src-kappa',
       'src-pog',
@@ -1232,5 +1308,43 @@ describe('parseTransferRunForUndo', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.candidates[0].fileStatus).toBe('pending');
+  });
+
+  // Plan #216, 3.7 — same owner hint contract as `parseTransferRunForRestore`, read by the undo
+  // side of this same file format.
+  it('round-trips a run that started with an owner hint', () => {
+    const text = transferRunJson(
+      buildTransferPlanRecord({
+        ...TARGET,
+        targetOwnerTwitchId: 'twitch-42',
+        origin: ORIGIN,
+        verifiedAt: 0,
+        plan: { rows: [replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa'])] },
+        entries: setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) }),
+        defaultNameById: new Map(),
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok && result.target).toEqual({
+      emoteSetId: 'set-1',
+      ownerTwitchId: 'twitch-42',
+      ownerLogin: 'zielkanal',
+    });
+  });
+
+  it('reads a file without targetOwnerTwitchId as no id hint, falling back to the channel login', () => {
+    const text = plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) }));
+    const record = JSON.parse(text) as { meta: Record<string, unknown> };
+    delete record.meta['targetOwnerTwitchId'];
+
+    const result = parseTransferRunForUndo(JSON.stringify(record));
+
+    expect(result.ok && result.target).toEqual({
+      emoteSetId: 'set-1',
+      ownerTwitchId: null,
+      ownerLogin: 'zielkanal',
+    });
   });
 });

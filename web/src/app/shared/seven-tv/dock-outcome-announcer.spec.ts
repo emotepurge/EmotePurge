@@ -399,6 +399,7 @@ describe('DockOutcomeAnnouncer', () => {
       targetChannelName: 'zielkanal',
       targetOwnerDisplayName: null,
       targetSetId: 'set-1',
+      targetOwnerTwitchId: null,
       targetSetName: 'wegwerf',
       targetIsActiveSet: false,
       origin: { kind: 'channel', channelName: 'quellkanal' },

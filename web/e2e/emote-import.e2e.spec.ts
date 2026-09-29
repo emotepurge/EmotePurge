@@ -54,6 +54,8 @@ import {
 
 const SOURCE_CHANNEL = 'sensitron';
 const TARGET_CHANNEL = 'aatrociity';
+const SOURCE_SEVEN_TV_USER_ID = '01HSOURCEOWNER';
+const TARGET_SEVEN_TV_USER_ID = '01HTARGETOWNER';
 
 const SOURCE_EMOTES: MockEmoteUsage[] = [
   {
@@ -145,15 +147,31 @@ async function mockTargetPicker(page: Page, targetEmoteSetId = 'target-set'): Pr
       twitchLogin: SOURCE_CHANNEL,
       isOwnAccount: true,
       trackedChannelName: SOURCE_CHANNEL,
+      sevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
       activeEmoteSetId: 'set-1',
-      sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      sets: [
+        {
+          id: 'set-1',
+          name: 'Hauptset',
+          isActive: true,
+          ownerSevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
+        },
+      ],
     },
     {
       twitchChannelId: 'target-1',
       twitchLogin: TARGET_CHANNEL,
       trackedChannelName: TARGET_CHANNEL,
+      sevenTvUserId: TARGET_SEVEN_TV_USER_ID,
       activeEmoteSetId: targetEmoteSetId,
-      sets: [{ id: targetEmoteSetId, name: 'Main', isActive: true }],
+      sets: [
+        {
+          id: targetEmoteSetId,
+          name: 'Main',
+          isActive: true,
+          ownerSevenTvUserId: TARGET_SEVEN_TV_USER_ID,
+        },
+      ],
     },
   ]);
 }
@@ -685,6 +703,7 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
       sourceChannelName: SOURCE_CHANNEL,
       sourceKind: 'channel',
       leaderboardSort: null,
+      targetOwnerTwitchId: null,
     });
   });
 
@@ -3035,7 +3054,11 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
     await expect(deleteDock(page).getByText(/Unklar, ob gelöscht/)).toHaveCount(0);
     await expect(deleteDock(page).getByText(/ist unklar, ob 7TV/)).toHaveCount(0);
     expect(syncDeletedBodies).toEqual([
-      { sevenTvEmoteIds: ['7tv-1'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     await expect.poll(() => unloadPrevented(page)).toBe(false);
     await expect(cell(page, 'CatJAM')).toHaveCount(0);
@@ -3225,7 +3248,13 @@ test.describe('delete/restore: a cancelled request is settled (#275)', () => {
     await expect(restoreDock(page).getByText(/ist unklar, ob 7TV/)).toHaveCount(0);
     await expect
       .poll(() => syncRestoredBodies)
-      .toEqual([{ sevenTvEmoteIds: ['7tv-spooky'], expectedChannelName: SOURCE_CHANNEL }]);
+      .toEqual([
+        {
+          sevenTvEmoteIds: ['7tv-spooky'],
+          expectedChannelName: SOURCE_CHANNEL,
+          targetOwnerTwitchId: 'source-1',
+        },
+      ]);
     expect(await unloadPrevented(page)).toBe(false);
   });
 
@@ -3606,7 +3635,11 @@ test.describe('import replace: a cancelled request is settled (#284)', () => {
     expect(syncImportedBodies).toHaveLength(1);
     expect(syncImportedBodies[0]?.['sevenTvEmoteIds']).toEqual(['7tv-1']);
     expect(syncDeletedBodies).toEqual([
-      { sevenTvEmoteIds: ['target-a'], expectedChannelName: TARGET_CHANNEL },
+      {
+        sevenTvEmoteIds: ['target-a'],
+        expectedChannelName: TARGET_CHANNEL,
+        targetOwnerTwitchId: 'target-1',
+      },
     ]);
     await expect.poll(() => unloadPrevented(page)).toBe(false);
   });
@@ -4841,7 +4874,11 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     // target's tracked channel expected, since the set is its active one.
     await expect
       .poll(() => syncRestoredBodies[0])
-      .toEqual({ sevenTvEmoteIds: ['target-b'], expectedChannelName: TARGET_CHANNEL });
+      .toEqual({
+        sevenTvEmoteIds: ['target-b'],
+        expectedChannelName: TARGET_CHANNEL,
+        targetOwnerTwitchId: 'target-1',
+      });
     // The dock's own "name taken" notice for the row the restore itself could not bring back
     // (target-a, since 7tv-1 already holds 'CatJAM') — lives in the mass-delete panel + its
     // announcer, not import-progress-section (adjustment G row 5). Two elements carry this text by
@@ -5198,7 +5235,13 @@ test.describe('restore per set: the file names the target (#253)', () => {
     // ours expected for an untracked target.
     await expect
       .poll(() => syncRestoredBodies)
-      .toEqual([{ sevenTvEmoteIds: ['target-catjam'], expectedChannelName: null }]);
+      .toEqual([
+        {
+          sevenTvEmoteIds: ['target-catjam'],
+          expectedChannelName: null,
+          targetOwnerTwitchId: 'untracked-1',
+        },
+      ]);
     // No client resync for an untracked target (AK 21) — nothing of ours could show the change.
     expect(resyncPosts).toEqual([]);
   });
@@ -5306,7 +5349,13 @@ test.describe('restore per set: the file names the target (#253)', () => {
     // The target is its tracked channel's active set: that channel is the expected hit (E18).
     await expect
       .poll(() => syncRestoredBodies)
-      .toEqual([{ sevenTvEmoteIds: ['target-catjam'], expectedChannelName: TARGET_CHANNEL }]);
+      .toEqual([
+        {
+          sevenTvEmoteIds: ['target-catjam'],
+          expectedChannelName: TARGET_CHANNEL,
+          targetOwnerTwitchId: 'target-1',
+        },
+      ]);
     // The backend already resynced it (`resyncTriggered`), and an active set never needs the
     // client's own (E12).
     expect(resyncPosts).toEqual([]);
@@ -5759,6 +5808,7 @@ test.describe('replace undo (#254)', () => {
         twitchLogin: SOURCE_CHANNEL,
         isOwnAccount: true,
         trackedChannelName: SOURCE_CHANNEL,
+        sevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
         activeEmoteSetId: UNDO_SET_ID,
         sets: [
           {
@@ -5766,6 +5816,7 @@ test.describe('replace undo (#254)', () => {
             name: UNDO_SET_NAME,
             isActive: true,
             ownerDisplayName: 'Sensitron',
+            ownerSevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
             editable: true,
           },
         ],
@@ -6057,10 +6108,18 @@ test.describe('replace undo (#254)', () => {
     // Both set-centric, the tracked channel expected.
     expect(reports.reportOrder).toEqual(['sync-deleted', 'sync-restored']);
     expect(reports.syncDeleted).toEqual([
-      { sevenTvEmoteIds: ['src-catjam', 'src-kekw'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['src-catjam', 'src-kekw'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     expect(reports.syncRestored).toEqual([
-      { sevenTvEmoteIds: ['tgt-catjam', 'tgt-kekw'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['tgt-catjam', 'tgt-kekw'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     // AK 14 (request half): the backend resynced; the client sends no resync of its own.
     expect(reports.strayRequests).toEqual([]);
@@ -6193,10 +6252,18 @@ test.describe('replace undo (#254)', () => {
     await expect(dock.getByText(ONE_GAP_LINE)).toBeVisible();
     // The REMOVE and the first ADD were confirmed: both reports carry their id.
     expect(reports.syncDeleted).toEqual([
-      { sevenTvEmoteIds: ['src-hype'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['src-hype'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     expect(reports.syncRestored).toEqual([
-      { sevenTvEmoteIds: ['tgt-hype'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['tgt-hype'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     const firstRun = fake.calls.length;
     expect(trace(fake.calls)).toEqual([
@@ -6238,6 +6305,7 @@ test.describe('replace undo (#254)', () => {
     expect(reports.syncRestored[1]).toEqual({
       sevenTvEmoteIds: ['tgt-hype'],
       expectedChannelName: SOURCE_CHANNEL,
+      targetOwnerTwitchId: 'source-1',
     });
     expectUndoRequestInvariants(fake.calls);
   });
@@ -6716,7 +6784,11 @@ test.describe('replace undo (#254)', () => {
       dock.getByText(/^GG: Das Quell-Emote wurde entfernt, das Ziel aber nicht vollständig/),
     ).toBeVisible();
     expect(reports.syncDeleted).toEqual([
-      { sevenTvEmoteIds: ['src-gg'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['src-gg'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
     expect(reports.syncRestored).toEqual([]);
 
@@ -6792,7 +6864,13 @@ test.describe('replace undo (#254)', () => {
     expect(trace(mutations)).toEqual(['add tgt-bye Bye']);
     await expect
       .poll(() => reports.syncRestored)
-      .toEqual([{ sevenTvEmoteIds: ['tgt-bye'], expectedChannelName: SOURCE_CHANNEL }]);
+      .toEqual([
+        {
+          sevenTvEmoteIds: ['tgt-bye'],
+          expectedChannelName: SOURCE_CHANNEL,
+          targetOwnerTwitchId: 'source-1',
+        },
+      ]);
     expect(reports.syncDeleted).toEqual([]);
     // The undo's dock stays empty: no undo ran.
     await expect(undoDock(page)).toBeEmpty();
@@ -6885,7 +6963,11 @@ test.describe('replace undo (#254)', () => {
     expect(fake.entriesOf('src-first')).toEqual(['First']);
     expect(reports.syncDeleted).toEqual([]);
     expect(reports.syncRestored).toEqual([
-      { sevenTvEmoteIds: ['tgt-second'], expectedChannelName: SOURCE_CHANNEL },
+      {
+        sevenTvEmoteIds: ['tgt-second'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
     ]);
 
     const protocol = await downloadUndoProtocol(page);
@@ -6927,3 +7009,284 @@ interface UndoFileJson {
     omittedEntries?: { alias: string | null; reason: string }[];
   }[];
 }
+
+/**
+ * Plan-216 T7 (owner-hint design 3.4/3.5, spec 6.4): the set-scoped pre-check route this plan adds
+ * (`GET /api/seventv/me/emote-set-targets/{emoteSetId}`), and the owner id it feeds onward into a
+ * report. `mockEmoteSetTargets` (support/mocks.ts) answers both this route and the plain list route
+ * from the same fixture, so every case below only needs the one helper the rest of this file already
+ * uses.
+ */
+test.describe('owner hint (#216): the set-scoped pre-check and the reports it feeds', () => {
+  const deleteDock = (page: Page) => page.locator('app-mass-delete-panel');
+
+  /** Every request against the set-scoped pre-check route (one path segment after
+   *  `emote-set-targets/`, never the bare list route — mocks.ts's own trailing `/*` already keeps
+   *  the two from ever matching the same request), kept as a `URL` so a case can inspect the query
+   *  string as well as the path. */
+  function recordSetScopedPreCheckRequests(page: Page): URL[] {
+    const requests: URL[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (/^\/api\/seventv\/me\/emote-set-targets\/[^/]+$/.test(url.pathname)) {
+        requests.push(url);
+      }
+    });
+    return requests;
+  }
+
+  /** Every request against the plain list route — used to prove a fresh page's pre-check goes
+   *  straight to the set-scoped route instead of falling back to loading the whole list (E19). */
+  function recordListRequests(page: Page): string[] {
+    const paths: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === '/api/seventv/me/emote-set-targets') {
+        paths.push(url.pathname);
+      }
+    });
+    return paths;
+  }
+
+  test('a delete pre-check on a fresh page hits only the set-scoped route, exactly once, with the channel login as its hint', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockTargetPicker(page);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    await mockChannelScopedResync(page, SOURCE_CHANNEL);
+    await mockSyncDeletedInSet(page, 'set-1');
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload([{ id: '7tv-1', aliases: ['CatJAM'] }]);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+
+    const setScopedRequests = recordSetScopedPreCheckRequests(page);
+    const listRequests = recordListRequests(page);
+
+    // Nothing has warmed `resolveEditableSet`'s client-side list copy yet on a fresh page (E19) —
+    // the picker was never opened — so the delete button's own pre-check
+    // (`MassDeletePanel.openConfirmDialog`) is the very first thing to ask about this set, and it
+    // must ask the set-scoped route directly rather than loading the whole list first.
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    await expect(
+      page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }),
+    ).toBeVisible();
+
+    expect(listRequests).toHaveLength(0);
+    expect(setScopedRequests).toHaveLength(1);
+    expect(setScopedRequests[0]?.pathname).toBe('/api/seventv/me/emote-set-targets/set-1');
+    expect(setScopedRequests[0]?.searchParams.get('ownerLogin')).toBe(SOURCE_CHANNEL);
+    // No id hint on this door (3.6, third row): the page only ever knows its own channel's login.
+    expect(setScopedRequests[0]?.searchParams.get('ownerTwitchId')).toBeNull();
+  });
+
+  test('a replace-carrying import started within 60 s of opening the picker resolves from the cached list, never the set-scoped route', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    // The target already holds a CatJAM, so importing the source's CatJAM is a name collision and
+    // "Ziel ersetzen" is offered — the only shape of import whose start runs the shared pre-check
+    // at all (spec 4.5 point 17); an add-only run never reaches `resolveEditableSet`.
+    await mockEmoteList(page, TARGET_CHANNEL, [{ sevenTvEmoteId: 'target-a', name: 'CatJAM' }]);
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockSyncDeletedInSet(page, 'target-set');
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload([{ id: 'target-a', aliases: ['CatJAM'] }]);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        case 'addEmote':
+          return {
+            data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+
+    const setScopedRequests = recordSetScopedPreCheckRequests(page);
+
+    // Installed before goto (CLAUDE.md): the zoneless app must boot against the fake clock from its
+    // first tick, not have it swapped in underneath a running change-detection cycle.
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await copyButton(page).click();
+
+    // Opening the picker is what warms `resolveEditableSet`'s client-side list copy (plan decision 19)
+    // — the picker's own account/set read (`mockTargetPicker`'s list route).
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    // 59 s of virtual time between the picker's list load and the replace-carrying start — still
+    // inside the 60 s client copy (plan decision 19/20, `EMOTE_SET_TARGETS_CACHE_TTL_MS`), so the
+    // pre-check must answer from it rather than asking the backend again. `runFor`, not
+    // `fastForward` (CLAUDE.md) — nothing here is a repeating interval, but the convention is one
+    // rule for the whole suite.
+    await page.clock.runFor(59_000);
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    const downloadPromise = page.waitForEvent('download');
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+    await downloadPromise;
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(2_000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+
+    expect(setScopedRequests).toHaveLength(0);
+  });
+
+  test("a delete run's sync-deleted report carries the owning account's Twitch id from the fixture", async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    // `mockTargetPicker`'s default fixture: the source account's own Twitch channel id is
+    // 'source-1', and both the account and 'set-1' (the page's own active set) carry the same
+    // 7TV user id, so the pre-check's owner resolution lands on it through the real owner match.
+    await mockTargetPicker(page);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    await mockChannelScopedResync(page, SOURCE_CHANNEL);
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'set-1');
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload([{ id: '7tv-1', aliases: ['CatJAM'] }]);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+    expect(syncDeletedBodies).toEqual([
+      {
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'source-1',
+      },
+    ]);
+  });
+
+  test("a delete run's sync-deleted report carries the OWNER's Twitch id, not the listing account's, on the cold pre-check", async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    // 'set-1' is LISTED under the source account (an editor grant, say) but OWNED by the target
+    // account: its `ownerSevenTvUserId` is the target's 7TV user id. A fresh page reaches the
+    // set-scoped pre-check route, which must name the target's Twitch id, never 'source-1'.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        sevenTvUserId: SOURCE_SEVEN_TV_USER_ID,
+        activeEmoteSetId: 'set-1',
+        sets: [
+          {
+            id: 'set-1',
+            name: 'Hauptset',
+            isActive: true,
+            ownerSevenTvUserId: TARGET_SEVEN_TV_USER_ID,
+          },
+        ],
+      },
+      {
+        twitchChannelId: 'target-1',
+        twitchLogin: TARGET_CHANNEL,
+        trackedChannelName: TARGET_CHANNEL,
+        sevenTvUserId: TARGET_SEVEN_TV_USER_ID,
+        sets: [],
+      },
+    ]);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    await mockChannelScopedResync(page, SOURCE_CHANNEL);
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'set-1');
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload([{ id: '7tv-1', aliases: ['CatJAM'] }]);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+    expect(syncDeletedBodies).toEqual([
+      {
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: SOURCE_CHANNEL,
+        targetOwnerTwitchId: 'target-1',
+      },
+    ]);
+  });
+});

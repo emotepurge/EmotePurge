@@ -353,6 +353,10 @@ interface RenderOptions {
   titleSetName?: string | null;
   target?: ImportTargetLoadState;
   runBlocked?: boolean;
+  /** Defaults to `null` — most tests here are indifferent to the owner-hint design (#216); the
+   *  dedicated coverage for `data.targetOwnerTwitchId` reaching the planned file's meta sets this
+   *  explicitly. */
+  targetOwnerTwitchId?: string | null;
 }
 
 interface Harness {
@@ -450,6 +454,7 @@ describe('ImportConfirmDialog', () => {
       },
       runBlocked,
       httpClient: TestBed.inject(HttpClient),
+      targetOwnerTwitchId: options.targetOwnerTwitchId ?? null,
     };
 
     const fixture = TestBed.createComponent(ImportConfirmDialog);
@@ -1799,6 +1804,43 @@ describe('ImportConfirmDialog', () => {
 
       dialog.button('Starten').click();
       expect(closed[0]?.plan.rows.map((each) => each.action)).toEqual(['replace', 'add']);
+    });
+
+    // Owner-hint design 3.6/3.7: the planned transfer-run file's meta carries whatever owner id the
+    // flow already knew when this dialog opened — this save runs before the shared pre-check
+    // (`resolveEditableSet`) ever does, so `data.targetOwnerTwitchId` is the only answer there is yet.
+    it('writes data.targetOwnerTwitchId onto the planned file, and null when the flow had none (owner-hint design 3.7)', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({
+        source: conflictSource(),
+        target: conflictTarget(),
+        targetOwnerTwitchId: 'owner-tw-9',
+      });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(LIVE_UNCHANGED));
+
+      expect(downloads).toHaveLength(1);
+      const record = JSON.parse(await downloads[0].blob.text());
+      expect(record.meta.targetOwnerTwitchId).toBe('owner-tw-9');
+    });
+
+    it('writes null onto the planned file when the flow resolved no owner id', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(LIVE_UNCHANGED));
+
+      expect(downloads).toHaveLength(1);
+      const record = JSON.parse(await downloads[0].blob.text());
+      expect(record.meta.targetOwnerTwitchId).toBeNull();
     });
 
     it('carries the live-read aliases and default name on each replace target of the closed plan (AK 17)', async () => {

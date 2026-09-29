@@ -71,6 +71,7 @@ export function undoRunTarget(
     trackedChannelName: channel,
     ownerDisplayName: target.ownerDisplayName,
     sourceFile,
+    targetOwnerTwitchId: target.ownerTwitchChannelId,
   };
 }
 

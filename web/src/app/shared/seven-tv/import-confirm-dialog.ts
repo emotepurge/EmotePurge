@@ -116,6 +116,14 @@ export interface ImportConfirmDialogData {
   /** For the live read of the target set before a run that removes target entries — the flow's
    *  own client, the same one its last check before the run uses. */
   httpClient: HttpClient;
+  /** Owner-hint design 3.6/3.7: the Twitch id of the target's probable owner, as the flow already
+   *  knew it when this dialog opened (`import-flow.ts`'s `toOwnerTwitchIdHint`) — `null` for an
+   *  `'activeSet'` door or a choice with no resolved owner. Carried onto the `planned` transfer-run
+   *  file's `meta.targetOwnerTwitchId` (3.7): this dialog's own recovery-file save runs *before* the
+   *  shared pre-check (`resolveEditableSet`) ever does, so there is no more-authoritative owner id to
+   *  reach for yet — a restore reading this file back gets the same hint the flow itself would have
+   *  used. */
+  targetOwnerTwitchId: string | null;
 }
 
 /** What the caller starts a run with — the plan as of the moment the user confirmed. */
@@ -1267,6 +1275,7 @@ export class ImportConfirmDialog {
       plan: stampedPlan,
       entries: read,
       defaultNameById: read.defaultNameById,
+      targetOwnerTwitchId: this.data.targetOwnerTwitchId,
     });
     downloadFile(
       transferPlanFilename(

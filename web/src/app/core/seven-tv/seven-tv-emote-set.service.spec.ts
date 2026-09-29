@@ -8,6 +8,7 @@ import {
   EditableSetResolution,
   EmoteSetListResponse,
   EmoteSetTargetsResponse,
+  OwnerHint,
   SyncDeletedInSetResponse,
   SyncRestoredInSetResponse,
 } from './seven-tv-emote-set.model';
@@ -62,6 +63,31 @@ function targetsResponse(
     ],
     sevenTvUnavailable: false,
     ...overrides,
+  };
+}
+
+/** The set-scoped pre-check route's own URL (owner-hint design 3.4) — `resolveEditableSet`'s cold
+ *  path, once the whole target list above is not fresh. */
+function preCheckUrl(emoteSetId: string): string {
+  return `/api/seventv/me/emote-set-targets/${emoteSetId}`;
+}
+
+/** A wire-shaped `'editable'` answer of the pre-check route — deliberately its own small shape
+ *  rather than `targetsResponse()`'s (spec 3.4 plan decision 15): the route answers about one set
+ *  directly, it never wraps a whole account list. */
+function preCheckEditableBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    status: 'editable',
+    target: {
+      emoteSetId: 'set-1',
+      setName: 'Main',
+      ownerDisplayName: 'HandOfBlood',
+      twitchLogin: 'handofblood',
+      twitchChannelId: '1',
+      trackedChannelName: 'handofblood',
+      isActiveSet: true,
+      ...overrides,
+    },
   };
 }
 
@@ -316,6 +342,7 @@ describe('SevenTvEmoteSetService', () => {
           sourceChannelName: 'handofblood',
           sourceKind: 'channel',
           leaderboardSort: null,
+          targetOwnerTwitchId: null,
         })
         .subscribe(() => (completed = true));
 
@@ -326,6 +353,7 @@ describe('SevenTvEmoteSetService', () => {
         sourceChannelName: 'handofblood',
         sourceKind: 'channel',
         leaderboardSort: null,
+        targetOwnerTwitchId: null,
       });
       req.flush(null, { status: 204, statusText: 'No Content' });
 
@@ -333,165 +361,377 @@ describe('SevenTvEmoteSetService', () => {
     });
   });
 
-  // #253/T4, spec 4.2/6.2, E19: the one shared pre-check every first mutation into a 7TV set runs
-  // (restore's file step, a delete confirmation, a replace start) — four outcomes, read from the
-  // same 60 s-cached target list the picker itself reads (AK 3-6).
-  describe('resolveEditableSet — 4.2/6.2, E19', () => {
-    it('resolves a found, NORMAL, editable set to status "editable" with the resolved target', () => {
-      let result: EditableSetResolution | undefined;
-      service.resolveEditableSet('set-active').subscribe((r) => (result = r));
+  // #253/T4, spec 4.2/6.2, E19, owner-hint design 3.5: the one shared pre-check every first
+  // mutation into a 7TV set runs (restore's file step, a delete confirmation, a replace start) —
+  // four outcomes. Cache-first (plan decision 19): a fresh copy of the whole target list answers
+  // locally, 0 requests; only once that copy is cold does this reach the set-scoped pre-check
+  // route, itself cached per set for 60 s (plan decision 20).
+  describe('resolveEditableSet — 4.2/6.2, E19, owner-hint design 3.5', () => {
+    describe('cache-first — a fresh target-list copy answers locally, 0 requests', () => {
+      /** Warms {@link SevenTvEmoteSetService}'s own list cache exactly the way the picker or an
+       *  earlier pre-check would — every test below then calls `resolveEditableSet` expecting no
+       *  further request at all. */
+      function warmList(response: EmoteSetTargetsResponse = targetsResponse()): void {
+        service.loadCachedEmoteSetTargets().subscribe();
+        httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(response);
+      }
 
-      httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(targetsResponse());
+      it('resolves a found, NORMAL, editable set to status "editable" with the resolved target, spending no request', () => {
+        warmList();
 
-      expect(result).toEqual({
-        status: 'editable',
-        target: {
-          emoteSetId: 'set-active',
-          setName: 'Main',
-          ownerDisplayName: 'HandOfBlood',
-          twitchLogin: 'handofblood',
-          trackedChannelName: 'handofblood',
-          isActiveSet: true,
-        },
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-active').subscribe((r) => (result = r));
+
+        expect(result).toEqual({
+          status: 'editable',
+          target: {
+            emoteSetId: 'set-active',
+            setName: 'Main',
+            ownerDisplayName: 'HandOfBlood',
+            twitchLogin: 'handofblood',
+            trackedChannelName: 'handofblood',
+            isActiveSet: true,
+            ownerTwitchChannelId: '1',
+          },
+        });
+        httpMock.expectNone(preCheckUrl('set-active'));
+      });
+
+      it('resolves a found set with kind !== NORMAL to "notSelectable", even when it is editable', () => {
+        warmList(
+          targetsResponse({
+            accounts: [
+              {
+                twitchChannelId: '1',
+                twitchLogin: 'handofblood',
+                isOwnAccount: true,
+                trackedChannelName: 'handofblood',
+                activeEmoteSetId: 'set-active',
+                sevenTvUserId: 'user-1',
+                setsUnavailable: false,
+                sets: [
+                  {
+                    id: 'set-global',
+                    name: 'Global',
+                    capacity: null,
+                    kind: 'GLOBAL',
+                    isActive: false,
+                    isPersonal: false,
+                    ownerDisplayName: null,
+                    ownerSevenTvUserId: 'user-1',
+                    editable: true,
+                  },
+                ],
+              },
+            ],
+          }),
+        );
+
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-global').subscribe((r) => (result = r));
+
+        expect(result).toEqual({ status: 'notSelectable' });
+      });
+
+      it('resolves a set that is in no account\'s list, with the list otherwise complete, to "notEditable"', () => {
+        warmList();
+
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-unknown').subscribe((r) => (result = r));
+
+        expect(result).toEqual({ status: 'notEditable' });
+      });
+
+      it('resolves a not-found set to "unavailable" when the list itself was incomplete (sevenTvUnavailable)', () => {
+        warmList(targetsResponse({ sevenTvUnavailable: true }));
+
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-unknown').subscribe((r) => (result = r));
+
+        expect(result).toEqual({ status: 'unavailable' });
+      });
+
+      it('resolves a found, NORMAL set with editable false to "notEditable" (AK 3)', () => {
+        warmList(
+          targetsResponse({
+            accounts: [
+              {
+                twitchChannelId: '1',
+                twitchLogin: 'handofblood',
+                isOwnAccount: true,
+                trackedChannelName: 'handofblood',
+                activeEmoteSetId: 'set-active',
+                sevenTvUserId: 'user-1',
+                setsUnavailable: false,
+                sets: [
+                  {
+                    id: 'set-active',
+                    name: 'Main',
+                    capacity: 250,
+                    kind: 'NORMAL',
+                    isActive: true,
+                    isPersonal: false,
+                    ownerDisplayName: 'HandOfBlood',
+                    ownerSevenTvUserId: 'user-1',
+                    editable: false,
+                  },
+                ],
+              },
+            ],
+          }),
+        );
+
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-active').subscribe((r) => (result = r));
+
+        expect(result).toEqual({ status: 'notEditable' });
+      });
+
+      it('resolves a not-found set to "unavailable" when the owning account\'s own list was unreadable (setsUnavailable, AK 4)', () => {
+        warmList(
+          targetsResponse({
+            sevenTvUnavailable: false,
+            accounts: [
+              {
+                twitchChannelId: '1',
+                twitchLogin: 'handofblood',
+                isOwnAccount: true,
+                trackedChannelName: 'handofblood',
+                activeEmoteSetId: 'set-active',
+                sevenTvUserId: 'user-1',
+                setsUnavailable: true,
+                sets: [],
+              },
+            ],
+          }),
+        );
+
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-unknown').subscribe((r) => (result = r));
+
+        expect(result).toEqual({ status: 'unavailable' });
+      });
+
+      // Codex finding 2, plan decision 21: a set can be *listed* under one account and *owned* by
+      // another, checked one of this same response — `ownerTwitchChannelId` must name the owner
+      // (B), never the listing account (A); the display fields (`twitchLogin`,
+      // `trackedChannelName`, `isActiveSet`) stay the listing account's, unchanged.
+      it('resolves ownerTwitchChannelId to the owning account B, not the listing account A, when a set is listed under A but owned by B', () => {
+        warmList(
+          targetsResponse({
+            accounts: [
+              {
+                twitchChannelId: 'tw-a',
+                twitchLogin: 'accounta',
+                isOwnAccount: true,
+                trackedChannelName: 'accounta',
+                activeEmoteSetId: null,
+                sevenTvUserId: 'user-a',
+                setsUnavailable: false,
+                sets: [
+                  {
+                    id: 'set-shared',
+                    name: 'Shared',
+                    capacity: null,
+                    kind: 'NORMAL',
+                    isActive: false,
+                    isPersonal: false,
+                    ownerDisplayName: 'AccountB',
+                    ownerSevenTvUserId: 'user-b',
+                    editable: true,
+                  },
+                ],
+              },
+              {
+                twitchChannelId: 'tw-b',
+                twitchLogin: 'accountb',
+                isOwnAccount: false,
+                trackedChannelName: 'accountb',
+                activeEmoteSetId: 'set-shared',
+                sevenTvUserId: 'user-b',
+                setsUnavailable: false,
+                sets: [],
+              },
+            ],
+          }),
+        );
+
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-shared').subscribe((r) => (result = r));
+
+        expect(result).toMatchObject({
+          status: 'editable',
+          target: { twitchLogin: 'accounta', ownerTwitchChannelId: 'tw-b' },
+        });
+      });
+
+      it("resolves ownerTwitchChannelId to null when no checked account carries the set's owner id", () => {
+        warmList(
+          targetsResponse({
+            accounts: [
+              {
+                twitchChannelId: '1',
+                twitchLogin: 'handofblood',
+                isOwnAccount: true,
+                trackedChannelName: 'handofblood',
+                activeEmoteSetId: 'set-active',
+                sevenTvUserId: 'user-1',
+                setsUnavailable: false,
+                sets: [
+                  {
+                    id: 'set-active',
+                    name: 'Main',
+                    capacity: 250,
+                    kind: 'NORMAL',
+                    isActive: true,
+                    isPersonal: false,
+                    ownerDisplayName: 'Somebody Else',
+                    ownerSevenTvUserId: 'user-unknown',
+                    editable: true,
+                  },
+                ],
+              },
+            ],
+          }),
+        );
+
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-active').subscribe((r) => (result = r));
+
+        expect(result).toMatchObject({
+          status: 'editable',
+          target: { ownerTwitchChannelId: null },
+        });
       });
     });
 
-    it('resolves a found set with kind !== NORMAL to "notSelectable", even when it is editable', () => {
-      let result: EditableSetResolution | undefined;
-      service.resolveEditableSet('set-global').subscribe((r) => (result = r));
+    describe('cold — the set-scoped pre-check route, once the list copy is not fresh', () => {
+      it('calls the route with no hint query when none is given', () => {
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-1').subscribe((r) => (result = r));
 
-      httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(
-        targetsResponse({
-          accounts: [
-            {
-              twitchChannelId: '1',
-              twitchLogin: 'handofblood',
-              isOwnAccount: true,
-              trackedChannelName: 'handofblood',
-              activeEmoteSetId: 'set-active',
-              sevenTvUserId: 'user-1',
-              setsUnavailable: false,
-              sets: [
-                {
-                  id: 'set-global',
-                  name: 'Global',
-                  capacity: null,
-                  kind: 'GLOBAL',
-                  isActive: false,
-                  isPersonal: false,
-                  ownerDisplayName: null,
-                  ownerSevenTvUserId: 'user-1',
-                  editable: true,
-                },
-              ],
-            },
-          ],
-        }),
-      );
+        const req = httpMock.expectOne((candidate) => candidate.url === preCheckUrl('set-1'));
+        expect(req.request.method).toBe('GET');
+        expect(req.request.params.has('ownerTwitchId')).toBe(false);
+        expect(req.request.params.has('ownerLogin')).toBe(false);
+        req.flush(preCheckEditableBody());
 
-      expect(result).toEqual({ status: 'notSelectable' });
-    });
+        expect(result).toEqual({
+          status: 'editable',
+          target: {
+            emoteSetId: 'set-1',
+            setName: 'Main',
+            ownerDisplayName: 'HandOfBlood',
+            twitchLogin: 'handofblood',
+            trackedChannelName: 'handofblood',
+            isActiveSet: true,
+            ownerTwitchChannelId: '1',
+          },
+        });
+      });
 
-    it('resolves a set that is in no account\'s list, with the list otherwise complete, to "notEditable"', () => {
-      let result: EditableSetResolution | undefined;
-      service.resolveEditableSet('set-unknown').subscribe((r) => (result = r));
+      it('sends ownerTwitchId as a query parameter when the hint carries a twitchChannelId', () => {
+        const hint: OwnerHint = { twitchChannelId: 'tw-9', twitchLogin: null };
+        service.resolveEditableSet('set-1', hint).subscribe();
 
-      httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(targetsResponse());
+        const req = httpMock.expectOne((candidate) => candidate.url === preCheckUrl('set-1'));
+        expect(req.request.params.get('ownerTwitchId')).toBe('tw-9');
+        expect(req.request.params.has('ownerLogin')).toBe(false);
+        req.flush(preCheckEditableBody());
+      });
 
-      expect(result).toEqual({ status: 'notEditable' });
-    });
+      it('sends ownerLogin as a query parameter when the hint only carries a login', () => {
+        const hint: OwnerHint = { twitchChannelId: null, twitchLogin: 'somechannel' };
+        service.resolveEditableSet('set-1', hint).subscribe();
 
-    it('resolves a not-found set to "unavailable" when the list itself was incomplete (sevenTvUnavailable)', () => {
-      let result: EditableSetResolution | undefined;
-      service.resolveEditableSet('set-unknown').subscribe((r) => (result = r));
+        const req = httpMock.expectOne((candidate) => candidate.url === preCheckUrl('set-1'));
+        expect(req.request.params.get('ownerLogin')).toBe('somechannel');
+        expect(req.request.params.has('ownerTwitchId')).toBe(false);
+        req.flush(preCheckEditableBody());
+      });
 
-      httpMock
-        .expectOne('/api/seventv/me/emote-set-targets')
-        .flush(targetsResponse({ sevenTvUnavailable: true }));
+      it('sends both query parameters when the hint carries both', () => {
+        const hint: OwnerHint = { twitchChannelId: 'tw-9', twitchLogin: 'somechannel' };
+        service.resolveEditableSet('set-1', hint).subscribe();
 
-      expect(result).toEqual({ status: 'unavailable' });
-    });
+        const req = httpMock.expectOne((candidate) => candidate.url === preCheckUrl('set-1'));
+        expect(req.request.params.get('ownerTwitchId')).toBe('tw-9');
+        expect(req.request.params.get('ownerLogin')).toBe('somechannel');
+        req.flush(preCheckEditableBody());
+      });
 
-    it('resolves a found, NORMAL set with editable false to "notEditable" (AK 3)', () => {
-      let result: EditableSetResolution | undefined;
-      service.resolveEditableSet('set-active').subscribe((r) => (result = r));
+      it('maps status "notSelectable" to { status: "notSelectable" }, no target', () => {
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-1').subscribe((r) => (result = r));
 
-      httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(
-        targetsResponse({
-          accounts: [
-            {
-              twitchChannelId: '1',
-              twitchLogin: 'handofblood',
-              isOwnAccount: true,
-              trackedChannelName: 'handofblood',
-              activeEmoteSetId: 'set-active',
-              sevenTvUserId: 'user-1',
-              setsUnavailable: false,
-              sets: [
-                {
-                  id: 'set-active',
-                  name: 'Main',
-                  capacity: 250,
-                  kind: 'NORMAL',
-                  isActive: true,
-                  isPersonal: false,
-                  ownerDisplayName: 'HandOfBlood',
-                  ownerSevenTvUserId: 'user-1',
-                  editable: false,
-                },
-              ],
-            },
-          ],
-        }),
-      );
+        httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notSelectable', target: null });
 
-      expect(result).toEqual({ status: 'notEditable' });
-    });
+        expect(result).toEqual({ status: 'notSelectable' });
+      });
 
-    it('resolves a not-found set to "unavailable" when the owning account\'s own list was unreadable (setsUnavailable, AK 4)', () => {
-      let result: EditableSetResolution | undefined;
-      service.resolveEditableSet('set-unknown').subscribe((r) => (result = r));
+      it('maps status "notEditable" to { status: "notEditable" }, no target', () => {
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-1').subscribe((r) => (result = r));
 
-      httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(
-        targetsResponse({
-          sevenTvUnavailable: false,
-          accounts: [
-            {
-              twitchChannelId: '1',
-              twitchLogin: 'handofblood',
-              isOwnAccount: true,
-              trackedChannelName: 'handofblood',
-              activeEmoteSetId: 'set-active',
-              sevenTvUserId: 'user-1',
-              setsUnavailable: true,
-              sets: [],
-            },
-          ],
-        }),
-      );
+        httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notEditable', target: null });
 
-      expect(result).toEqual({ status: 'unavailable' });
-    });
+        expect(result).toEqual({ status: 'notEditable' });
+      });
 
-    it('serves a second resolveEditableSet call within 60 s from the cache — no second request goes out', () => {
-      service.resolveEditableSet('set-active').subscribe();
-      httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(targetsResponse());
+      it('maps status "unavailable" to { status: "unavailable" }, no target', () => {
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-1').subscribe((r) => (result = r));
 
-      let result: EditableSetResolution | undefined;
-      service.resolveEditableSet('set-active').subscribe((r) => (result = r));
+        httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'unavailable', target: null });
 
-      expect(result).toMatchObject({ status: 'editable' });
-      httpMock.expectNone('/api/seventv/me/emote-set-targets');
-    });
+        expect(result).toEqual({ status: 'unavailable' });
+      });
 
-    it('never caches a failed load — a retry after a 429 always asks again', () => {
-      service.resolveEditableSet('set-active').subscribe({ error: () => undefined });
-      httpMock
-        .expectOne('/api/seventv/me/emote-set-targets')
-        .flush({ errorCode: 'rate_limited' }, { status: 429, statusText: 'Too Many Requests' });
+      // plan decision 20: distinct from the cache-first list above — a per-set answer, kept 60 s,
+      // so up to three pre-checks about the same set inside one user action (restore, delete,
+      // replace) share it even while the whole target list stays cold.
+      it('serves a second resolveEditableSet call for the same set within 60 s from the per-set cache — no second request', () => {
+        service.resolveEditableSet('set-1').subscribe();
+        httpMock.expectOne(preCheckUrl('set-1')).flush(preCheckEditableBody());
 
-      service.resolveEditableSet('set-active').subscribe();
-      httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(targetsResponse());
+        let result: EditableSetResolution | undefined;
+        service.resolveEditableSet('set-1').subscribe((r) => (result = r));
+
+        expect(result).toMatchObject({ status: 'editable' });
+        httpMock.expectNone(preCheckUrl('set-1'));
+      });
+
+      it('never caches an "unavailable" answer — a second call asks the route again', () => {
+        service.resolveEditableSet('set-1').subscribe();
+        httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'unavailable', target: null });
+
+        service.resolveEditableSet('set-1').subscribe();
+        httpMock.expectOne(preCheckUrl('set-1')).flush(preCheckEditableBody());
+      });
+
+      it('never caches a failed request — a retry after a 429 asks the route again', () => {
+        service.resolveEditableSet('set-1').subscribe({ error: () => undefined });
+        httpMock
+          .expectOne(preCheckUrl('set-1'))
+          .flush({ errorCode: 'rate_limited' }, { status: 429, statusText: 'Too Many Requests' });
+
+        service.resolveEditableSet('set-1').subscribe();
+        httpMock.expectOne(preCheckUrl('set-1')).flush(preCheckEditableBody());
+      });
+
+      // Every caller wraps this call in its own `timeout()` (`LIVE_READ_TIMEOUT_MS`/
+      // `LIVE_ALIAS_READ_TIMEOUT_MS`, unchanged by this design) — this service applies none of
+      // its own, so a timed-out route read surfaces as a plain Observable error here, exactly
+      // like a 429 above; each caller's own `error:` branch (tested in its own spec) is what
+      // turns that into "unavailable", fail-closed.
+      it('surfaces a route error as an Observable error, same as a failed HTTP response', () => {
+        let error: unknown;
+        service.resolveEditableSet('set-1').subscribe({ error: (e) => (error = e) });
+
+        httpMock.expectOne(preCheckUrl('set-1')).error(new ProgressEvent('error'));
+
+        expect(error).toBeDefined();
+      });
     });
   });
 
@@ -515,6 +755,7 @@ describe('SevenTvEmoteSetService', () => {
         .reportDeletedInSet('set-x', {
           sevenTvEmoteIds: ['7tv-1', '7tv-2'],
           expectedChannelName: 'handofblood',
+          targetOwnerTwitchId: null,
         })
         .subscribe((r) => (result = r));
 
@@ -523,6 +764,7 @@ describe('SevenTvEmoteSetService', () => {
       expect(req.request.body).toEqual({
         sevenTvEmoteIds: ['7tv-1', '7tv-2'],
         expectedChannelName: 'handofblood',
+        targetOwnerTwitchId: null,
       });
 
       const payload: SyncDeletedInSetResponse = {
@@ -537,16 +779,54 @@ describe('SevenTvEmoteSetService', () => {
     });
   });
 
+  describe('a set id from an untrusted file is encoded into every set-scoped path', () => {
+    const crafted = 'a/b?c#d/../e';
+    const encoded = encodeURIComponent(crafted);
+
+    it('encodes it on the pre-check, sync-deleted, sync-restored and sync-imported routes', () => {
+      service.resolveEditableSet(crafted).subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.url === `/api/seventv/me/emote-set-targets/${encoded}`)
+        .flush(preCheckEditableBody());
+
+      const deleted = { sevenTvEmoteIds: ['7tv-1'], expectedChannelName: null };
+      service.reportDeletedInSet(crafted, { ...deleted, targetOwnerTwitchId: null }).subscribe();
+      httpMock.expectOne(`/api/seventv/emote-sets/${encoded}/sync-deleted`).flush({});
+
+      service.reportRestoredInSet(crafted, { ...deleted, targetOwnerTwitchId: null }).subscribe();
+      httpMock.expectOne(`/api/seventv/emote-sets/${encoded}/sync-restored`).flush({});
+
+      service
+        .reportImportedToSet(crafted, {
+          sevenTvEmoteIds: ['7tv-1'],
+          sourceChannelName: 'handofblood',
+          sourceKind: 'channel',
+          leaderboardSort: null,
+          targetOwnerTwitchId: null,
+        })
+        .subscribe();
+      httpMock.expectOne(`/api/seventv/emote-sets/${encoded}/sync-imported`).flush(null);
+    });
+  });
+
   describe('reportRestoredInSet — 5.1/6.4 set-centric bookkeeping', () => {
     it('POSTs sevenTvEmoteIds and expectedChannelName to the set-scoped sync-restored route', () => {
       let result: SyncRestoredInSetResponse | undefined;
       service
-        .reportRestoredInSet('set-x', { sevenTvEmoteIds: ['7tv-1'], expectedChannelName: null })
+        .reportRestoredInSet('set-x', {
+          sevenTvEmoteIds: ['7tv-1'],
+          expectedChannelName: null,
+          targetOwnerTwitchId: null,
+        })
         .subscribe((r) => (result = r));
 
       const req = httpMock.expectOne('/api/seventv/emote-sets/set-x/sync-restored');
       expect(req.request.method).toBe('POST');
-      expect(req.request.body).toEqual({ sevenTvEmoteIds: ['7tv-1'], expectedChannelName: null });
+      expect(req.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: null,
+        targetOwnerTwitchId: null,
+      });
 
       const payload: SyncRestoredInSetResponse = {
         reportedCount: 1,

@@ -99,6 +99,13 @@ export interface PurgeRunMeta {
     cancelled: number;
     unknown: number;
   };
+  /** The set owner's Twitch id at run time, from the pre-check that started this run — an owner
+   *  *hint* for a later restore's own target check (plan #216, 3.1 Nr. 2/Nr. 8), never a permission by
+   *  itself: a hint outside `{actor} ∪ grants` is discarded there before any request, same as every
+   *  other carrier of this hint. `null` when the run started without one. Additive to format version 3
+   *  (no bump) — a file written before this field existed reads exactly like one that explicitly
+   *  carries `null` (`parsePurgeRunProtocol` below). */
+  targetOwnerTwitchId: string | null;
 }
 
 export type PurgeRunProtocol = ExportEnvelope<PurgeRunRow, PurgeRunMeta>;
@@ -113,6 +120,10 @@ export function buildPurgeRunProtocol(input: {
   // missing row would make that emote's removal irreversible without anyone noticing. `counts`
   // below is derived from the same list, so it cannot drift from `rows`.
   items: readonly RunQueueItem[];
+  /** The owner hint the run started with, or `null` when there was none — required so no caller
+   *  forgets it; plan #216's callers other than the pre-check itself pass `null` until they carry a
+   *  hint of their own. */
+  targetOwnerTwitchId: string | null;
 }): PurgeRunProtocol {
   const statuses = input.items.map((item) => item.status);
   const envelope = buildEnvelope({
@@ -130,6 +141,7 @@ export function buildPurgeRunProtocol(input: {
         cancelled: statuses.filter((status) => status === 'cancelled').length,
         unknown: statuses.filter((status) => status === 'unknown').length,
       },
+      targetOwnerTwitchId: input.targetOwnerTwitchId,
     },
     rows: input.items.map((item) => ({
       emoteId: item.emoteId ?? null,
@@ -181,11 +193,31 @@ const FOREIGN_KIND_ERROR_KEYS: Partial<Record<ExportKind, string>> = {
   voting: 'restore.import.errors.votingExport',
 };
 
+/** A value from untrusted JSON, kept only when it is a non-blank string — a wrong-typed or
+ *  whitespace-only value counts as no hint at all, never an empty placeholder. Shared by all three
+ *  run-protocol parsers (`purge-run` here; `transfer-run-export.ts`/`transfer-undo-export.ts` import
+ *  it) for both halves of the owner hint they carry: the file's own `targetOwnerTwitchId`, and the
+ *  channel-login fallback each derives differently (plan #216, 3.7). */
+export function readNonBlankStringHint(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
 /** The set a restore file names as its target — read from the file's `meta` and nothing else
  *  (spec #253, 6.1/E1). Untrusted until `resolveEditableSet` has found it in the target list; the
- *  file step never hands it on unchecked. */
+ *  file step never hands it on unchecked.
+ *
+ *  `ownerTwitchId`/`ownerLogin` are the owner hint plan #216 adds: an *order* hint for that check,
+ *  never a permission by themselves — a hint outside `{actor} ∪ grants` is discarded there before any
+ *  request, exactly like every other carrier of this hint. `ownerTwitchId` is the file's own
+ *  `targetOwnerTwitchId` when it reads as a non-blank string, else `null` — an old file, a malformed
+ *  value and an untracked target all read the same way. `ownerLogin` is the operator-approved
+ *  fallback the file step tries only when `ownerTwitchId` is `null`: `readNonBlankStringHint`'s
+ *  input differs per format (this parser's own `envelope.channelName`; the transfer parsers'
+ *  `meta.targetChannelName`, `null` for an untracked target) but the read itself is the same. */
 export interface RestoreFileTarget {
   emoteSetId: string;
+  ownerTwitchId: string | null;
+  ownerLogin: string | null;
 }
 
 export type ProtocolParseResult =
@@ -291,7 +323,16 @@ export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
     rows: restorable,
     meta,
     channelName: envelope.channelName,
-    target: { emoteSetId: meta.emoteSetId },
+    target: {
+      emoteSetId: meta.emoteSetId,
+      // `meta.targetOwnerTwitchId` comes back `undefined` at runtime for a file older than this
+      // field, despite the field's non-optional type — same situation the `meta`/`counts` doc above
+      // already calls out; `readNonBlankStringHint` treats that the same as an explicit `null`.
+      ownerTwitchId: readNonBlankStringHint(meta.targetOwnerTwitchId),
+      // The login fallback: the page whose account owns every set it shows, already validated as a
+      // string above — blank still counts as no hint.
+      ownerLogin: readNonBlankStringHint(envelope.channelName),
+    },
   };
 }
 

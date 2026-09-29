@@ -69,6 +69,7 @@ function restoreResult(target: Partial<ResolvedRestoreTarget> = {}): FileImportR
       twitchLogin: CURRENT_CHANNEL,
       trackedChannelName: CURRENT_CHANNEL,
       isActiveSet: true,
+      ownerTwitchChannelId: 'tw-currentchannel',
       hostChannelName: CURRENT_CHANNEL,
       hostSelectedSetId: CURRENT_SET,
       ...target,
@@ -150,6 +151,10 @@ describe('ImportTrigger', () => {
   let startImport: ReturnType<typeof vi.fn>;
   let startUndo: ReturnType<typeof vi.fn>;
   let loadEmoteSetPreview: ReturnType<typeof vi.fn>;
+  /** The shared pre-check (spec 4.2, 6.2, E19) a replace-carrying plan runs before `startImport` —
+   *  only exercised by the owner-hint design 3.6 tests below (Codex finding 4); every other test in
+   *  this file confirms an add-only plan, which never reaches it. */
+  let resolveEditableSet: ReturnType<typeof vi.fn>;
   let hasToken: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
   let dialogOpen: ReturnType<typeof vi.fn>;
@@ -177,6 +182,20 @@ describe('ImportTrigger', () => {
     // the 'trackedActive' fast path (see `resolveActiveSetId`). Only the non-active-set and the
     // unknown-active-set describe blocks below override this.
     loadEmoteSetPreview = vi.fn();
+    resolveEditableSet = vi.fn(() =>
+      of({
+        status: 'editable',
+        target: {
+          emoteSetId: CURRENT_SET,
+          setName: CURRENT_SET,
+          ownerDisplayName: CURRENT_CHANNEL,
+          twitchLogin: CURRENT_CHANNEL,
+          trackedChannelName: CURRENT_CHANNEL,
+          isActiveSet: true,
+          ownerTwitchChannelId: 'tw-currentchannel',
+        },
+      }),
+    );
     hasToken = signal(true);
     activeRun = signal<SevenTvRunKind | null>(null);
     dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
@@ -228,7 +247,10 @@ describe('ImportTrigger', () => {
         },
         {
           provide: SevenTvEmoteSetService,
-          useValue: { loadEmoteSetPreview } as unknown as SevenTvEmoteSetService,
+          useValue: {
+            loadEmoteSetPreview,
+            resolveEditableSet,
+          } as unknown as SevenTvEmoteSetService,
         },
         { provide: SevenTvTokenService, useValue: { hasToken } as unknown as SevenTvTokenService },
         {
@@ -748,6 +770,9 @@ describe('ImportTrigger', () => {
           ownerDisplayName: null,
           setName: CURRENT_SET,
           isActiveSet: true,
+          // import-trigger.ts's fabricated choice always has ownerTwitchChannelId: null (Codex
+          // finding 4) — this tracked target reports channel-bound and needs no hint at all.
+          targetOwnerTwitchId: null,
         },
         expect.objectContaining({ kind: 'file' }),
         addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
@@ -791,6 +816,46 @@ describe('ImportTrigger', () => {
 
       expect(startImport).not.toHaveBeenCalled();
       expect(dialogOpen).toHaveBeenCalledTimes(2);
+    });
+
+    // Owner-hint design 3.6, Codex finding 4: this trigger's fabricated choice carries no owner id
+    // (`toImportTarget`'s `ownerTwitchChannelId: null`), so a replace-carrying plan — the one case
+    // that actually asks the shared pre-check — must fall back to a *login* hint (this trigger's own
+    // frozen channel), not go hintless.
+    it('hints the shared pre-check with this trigger’s own channel login for a replace-carrying plan', () => {
+      hasToken.set(true);
+      const dialog = render();
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next({
+        kind: 'import',
+        source: importSource(),
+      });
+
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
+        targetSetId: CURRENT_SET,
+        targetSetName: CURRENT_SET,
+        plan: {
+          rows: [
+            {
+              action: 'replace',
+              source: { sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null },
+              alias: 'Kappa',
+              target: {
+                sevenTvEmoteId: 'tgt-1',
+                aliases: ['Kappa'],
+                hasAliaslessEntry: false,
+                defaultName: null,
+              },
+            },
+          ],
+        },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith(CURRENT_SET, {
+        twitchChannelId: null,
+        twitchLogin: CURRENT_CHANNEL,
+      });
     });
   });
 
@@ -837,6 +902,9 @@ describe('ImportTrigger', () => {
           ownerDisplayName: null,
           setName: CURRENT_SET,
           isActiveSet: true,
+          // import-trigger.ts's fabricated choice always has ownerTwitchChannelId: null (Codex
+          // finding 4) — this tracked target reports channel-bound and needs no hint at all.
+          targetOwnerTwitchId: null,
         },
         { kind: 'seventv-channel', channelName: 'handofblood' },
         addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
@@ -888,6 +956,9 @@ describe('ImportTrigger', () => {
           ownerDisplayName: null,
           setName: CURRENT_SET,
           isActiveSet: true,
+          // import-trigger.ts's fabricated choice always has ownerTwitchChannelId: null (Codex
+          // finding 4) — this tracked target reports channel-bound and needs no hint at all.
+          targetOwnerTwitchId: null,
         },
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
         addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
@@ -985,6 +1056,7 @@ describe('ImportTrigger', () => {
           ownerDisplayName: null,
           setName: 'Halloween',
           isActiveSet: false,
+          targetOwnerTwitchId: null,
         },
         expect.objectContaining({ kind: 'file' }),
         addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),

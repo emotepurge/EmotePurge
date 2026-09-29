@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.SevenTv;
@@ -21,10 +22,24 @@ namespace EmotePurge.Infrastructure.Services;
 /// </para>
 /// <para>
 /// <b>Why lists and not a direct question.</b> The lists sit behind the full guard chain of 6.1
-/// (cache, single-flight, breaker, budget) and are the ones the picker has just loaded, so the
-/// ordinary report costs no upstream request at all. Only a set that is in no list, or listed
-/// without an owner, is asked about directly — once, under the provider budget and its own breaker
-/// operation.
+/// (cache, single-flight, breaker, budget), and within their 60 s the picker's answers are reused
+/// for free. That is not "no request at all": a report more than a minute after the picker reads
+/// the lists again — one request when the actor owns the set, two in parallel with a valid owner
+/// hint on a grant, up to <c>1 + k</c> serial ones without one. Reading the grants adds two
+/// (identity, <c>editor_of</c>) when their ten-minute cache is cold — also to a call whose hint
+/// names another account and is then dropped: resolving a hint needs the grants before any list is
+/// read, so a dropped hint costs no list request but may cost that lookup. Only a set that is in no list, or
+/// listed without an owner, is asked about directly by the report — once, under the provider
+/// budget and its own breaker operation; the pre-check (<see cref="ResolveEditableAsync"/>) never
+/// asks.
+/// </para>
+/// <para>
+/// <b>The hint is an order, never a permission.</b> A hint resolves only against the actor and the
+/// actor's grants, before any list is read; anything else is dropped. The actor's own list is always
+/// read: with a hint on grant G, G's list is read in parallel with it, and G's evidence counts only
+/// once the own list has not said <see cref="EmoteSetListStatus.NoSevenTvAccount"/> — the grant
+/// cache outlives the actor's 7TV connection by up to ten minutes, and a stale positive grant must
+/// never widen what is admissible.
 /// </para>
 /// <para>
 /// <b>The grants take the guarded way (second review round).</b> Which accounts to check comes from
@@ -52,23 +67,16 @@ public sealed class ImportTargetOwnershipService(
     private static readonly TimeSpan BudgetWaitTimeout = TimeSpan.FromSeconds(5);
 
     public async Task<SevenTvEmoteSetOwnershipCheckResult> CheckAsync(
-        string actorTwitchUserId, string actorTwitchLogin, string emoteSetId, CancellationToken cancellationToken = default)
+        string actorTwitchUserId,
+        string actorTwitchLogin,
+        string emoteSetId,
+        CancellationToken cancellationToken = default,
+        EmoteSetOwnerHint? ownerHint = null)
     {
         var evidence = new OwnershipEvidence(emoteSetId);
-
-        var ownList = await emoteSetListService.ListByTwitchIdAsync(actorTwitchUserId, cancellationToken);
-        if (evidence.Inspect(ownList, actorTwitchLogin, actorTwitchUserId) is { } ownMatch)
+        if (await WalkListsAsync(evidence, actorTwitchUserId, actorTwitchLogin, ownerHint, cancellationToken) is { } listMatch)
         {
-            return ownMatch;
-        }
-
-        // An actor 7TV knows no account for edits nothing either: editor_of hangs off the same
-        // account. Skipping the grants here also spares the uncached identity request the grants
-        // lookup would otherwise repeat on every call for such an actor.
-        if (ownList.Status != EmoteSetListStatus.NoSevenTvAccount
-            && await InspectEditorAccountsAsync(evidence, actorTwitchUserId, cancellationToken) is { } grantMatch)
-        {
-            return grantMatch;
+            return listMatch;
         }
 
         // Listed, but only ever under a foreign owner: no lookup needed to say no — unless an
@@ -103,10 +111,128 @@ public sealed class ImportTargetOwnershipService(
         }
     }
 
-    private async Task<SevenTvEmoteSetOwnershipCheckResult?> InspectEditorAccountsAsync(
-        OwnershipEvidence evidence, string actorTwitchUserId, CancellationToken cancellationToken)
+    public async Task<SevenTvEmoteSetOwnershipCheckResult> ResolveEditableAsync(
+        string actorTwitchUserId,
+        string actorTwitchLogin,
+        string emoteSetId,
+        CancellationToken cancellationToken = default,
+        EmoteSetOwnerHint? ownerHint = null)
     {
-        var grants = await grantsService.GetEditorGrantsAsync(actorTwitchUserId, cancellationToken);
+        var evidence = new OwnershipEvidence(emoteSetId);
+        if (await WalkListsAsync(evidence, actorTwitchUserId, actorTwitchLogin, ownerHint, cancellationToken) is { } listMatch)
+        {
+            return listMatch;
+        }
+
+        // No owner lookup here (F16: never looser than the report's list rule): an unreadable
+        // source may have been the owner's, a listing without an admissible owner id says no, and
+        // a set no readable list knows is not one the actor can pick.
+        if (evidence.AnyListUnreadable)
+        {
+            return SevenTvEmoteSetOwnershipCheckResult.Unavailable();
+        }
+
+        return evidence.ListedAnywhere
+            ? SevenTvEmoteSetOwnershipCheckResult.Forbidden()
+            : SevenTvEmoteSetOwnershipCheckResult.SetNotFound();
+    }
+
+    /// <summary>
+    /// The list walk both modes share: the hint's resolution, the order of the reads, and the
+    /// evidence they leave behind. Returns the admissible match, or <c>null</c> with
+    /// <paramref name="evidence"/> filled for the caller's own verdict.
+    /// </summary>
+    private async Task<SevenTvEmoteSetOwnershipCheckResult?> WalkListsAsync(
+        OwnershipEvidence evidence,
+        string actorTwitchUserId,
+        string actorTwitchLogin,
+        EmoteSetOwnerHint? ownerHint,
+        CancellationToken cancellationToken)
+    {
+        SevenTvEditorGrantsLookupResult? grants = null;
+        if (NamesAnotherAccount(ownerHint, actorTwitchUserId, actorTwitchLogin))
+        {
+            // Only the grants can vouch for a hint on another account — and they are cached for ten
+            // minutes, so this read is almost always free.
+            grants = await grantsService.GetEditorGrantsAsync(actorTwitchUserId, cancellationToken);
+            if (FindHintedGrant(ownerHint!, grants, actorTwitchUserId) is { } hintedGrant)
+            {
+                return await WalkFromHintedGrantAsync(
+                    evidence, actorTwitchUserId, actorTwitchLogin, grants, hintedGrant, cancellationToken);
+            }
+
+            logger.LogDebug(
+                "Owner hint for 7TV emote set {SetId} names neither the actor nor one of their editor grants; ignored.",
+                evidence.EmoteSetId);
+        }
+
+        var ownList = await emoteSetListService.ListByTwitchIdAsync(actorTwitchUserId, cancellationToken);
+        if (evidence.Inspect(ownList, actorTwitchLogin, actorTwitchUserId) is { } ownMatch)
+        {
+            return ownMatch;
+        }
+
+        // An actor 7TV knows no account for edits nothing either: editor_of hangs off the same
+        // account. Skipping the grants here also spares the identity request the grants lookup
+        // would otherwise repeat for such an actor once the 60 s NoSevenTvAccount hold has expired.
+        // (Only reached without a hint on another account: resolving such a hint reads the grants
+        // first, so a dropped foreign hint does not get this saving.)
+        if (ownList.Status == EmoteSetListStatus.NoSevenTvAccount)
+        {
+            return null;
+        }
+
+        grants ??= await grantsService.GetEditorGrantsAsync(actorTwitchUserId, cancellationToken);
+        return await InspectEditorAccountsAsync(evidence, grants, actorTwitchUserId, null, cancellationToken);
+    }
+
+    /// <summary>
+    /// The hinted order: the actor's own list and the hinted grant's list in one round trip, then
+    /// the remaining grants serially as without a hint.
+    /// </summary>
+    private async Task<SevenTvEmoteSetOwnershipCheckResult?> WalkFromHintedGrantAsync(
+        OwnershipEvidence evidence,
+        string actorTwitchUserId,
+        string actorTwitchLogin,
+        SevenTvEditorGrantsLookupResult grants,
+        SevenTvEditorGrantEntry hintedGrant,
+        CancellationToken cancellationToken)
+    {
+        var ownListRead = emoteSetListService.ListByTwitchIdAsync(actorTwitchUserId, cancellationToken);
+        var hintedListRead = emoteSetListService.ListByTwitchIdAsync(hintedGrant.TwitchChannelId, cancellationToken);
+        await Task.WhenAll(ownListRead, hintedListRead);
+        var ownList = await ownListRead;
+        var hintedList = await hintedListRead;
+
+        // The grants may be a stale positive from before the actor lost their 7TV account. The
+        // own list is the fresher word: the hinted list's evidence is dropped unread, and the walk
+        // ends exactly where it ends without a hint.
+        if (ownList.Status == EmoteSetListStatus.NoSevenTvAccount)
+        {
+            return null;
+        }
+
+        if (evidence.Inspect(ownList, actorTwitchLogin, actorTwitchUserId) is { } ownMatch)
+        {
+            return ownMatch;
+        }
+
+        if (evidence.Inspect(hintedList, hintedGrant.ChannelLogin, hintedGrant.TwitchChannelId) is { } hintedMatch)
+        {
+            return hintedMatch;
+        }
+
+        return await InspectEditorAccountsAsync(
+            evidence, grants, actorTwitchUserId, hintedGrant.TwitchChannelId, cancellationToken);
+    }
+
+    private async Task<SevenTvEmoteSetOwnershipCheckResult?> InspectEditorAccountsAsync(
+        OwnershipEvidence evidence,
+        SevenTvEditorGrantsLookupResult grants,
+        string actorTwitchUserId,
+        string? alreadyReadTwitchUserId,
+        CancellationToken cancellationToken)
+    {
         if (grants.Status == SevenTvLookupStatus.Unavailable)
         {
             evidence.MarkUnreadable();
@@ -121,7 +247,8 @@ public sealed class ImportTargetOwnershipService(
 
         foreach (var entry in grants.Grants!.Entries)
         {
-            if (string.Equals(entry.TwitchChannelId, actorTwitchUserId, StringComparison.Ordinal))
+            if (string.Equals(entry.TwitchChannelId, actorTwitchUserId, StringComparison.Ordinal)
+                || string.Equals(entry.TwitchChannelId, alreadyReadTwitchUserId, StringComparison.Ordinal))
             {
                 continue;
             }
@@ -245,21 +372,73 @@ public sealed class ImportTargetOwnershipService(
     }
 
     /// <summary>
+    /// Whether the hint points past the actor — the only case that needs the grants to resolve it.
+    /// A hint on the actor, or no usable hint at all, walks the lists exactly as without one.
+    /// </summary>
+    private static bool NamesAnotherAccount(EmoteSetOwnerHint? hint, string actorTwitchUserId, string actorTwitchLogin)
+    {
+        if (hint is null)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(hint.TwitchUserId))
+        {
+            return !string.Equals(hint.TwitchUserId, actorTwitchUserId, StringComparison.Ordinal);
+        }
+
+        return !string.IsNullOrWhiteSpace(hint.TwitchLogin)
+            && !string.Equals(
+                ChannelName.Normalize(hint.TwitchLogin), ChannelName.Normalize(actorTwitchLogin), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The grant a hint names — by Twitch id if it carries one, otherwise by normalised login — or
+    /// <c>null</c>, which drops the hint. A grant on the actor's own id is never a hinted grant: that
+    /// account is the actor, whose list is read anyway.
+    /// </summary>
+    private static SevenTvEditorGrantEntry? FindHintedGrant(
+        EmoteSetOwnerHint hint, SevenTvEditorGrantsLookupResult grants, string actorTwitchUserId)
+    {
+        if (grants.Status != SevenTvLookupStatus.Ok)
+        {
+            return null;
+        }
+
+        var candidates = grants.Grants!.Entries
+            .Where(entry => !string.Equals(entry.TwitchChannelId, actorTwitchUserId, StringComparison.Ordinal));
+        if (!string.IsNullOrWhiteSpace(hint.TwitchUserId))
+        {
+            return candidates.FirstOrDefault(
+                entry => string.Equals(entry.TwitchChannelId, hint.TwitchUserId, StringComparison.Ordinal));
+        }
+
+        var login = ChannelName.Normalize(hint.TwitchLogin!);
+        return candidates.FirstOrDefault(
+            entry => string.Equals(ChannelName.Normalize(entry.ChannelLogin), login, StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// What the inspected lists have said about one set so far: which 7TV ids belong to checked
-    /// accounts (with the Twitch login the paper trail records for each, and the Twitch id the
-    /// owner's tracked channel is resolved by), under which owner ids the set was listed, and whether
-    /// any list could not be read.
+    /// accounts (with the Twitch login the paper trail records for each, the Twitch id the owner's
+    /// tracked channel is resolved by, and what that account's own list said about the set), under
+    /// which owner ids the set was listed, and whether any list could not be read.
     /// </summary>
     private sealed class OwnershipEvidence(string emoteSetId)
     {
         private readonly Dictionary<string, CheckedAccount> _accountBySevenTvId = new(StringComparer.Ordinal);
-        private readonly List<string> _listedOwnerIds = [];
+        private readonly List<EmoteSetSummary> _listingsWithOwner = [];
         private bool _listedWithoutOwner;
+
+        public string EmoteSetId => emoteSetId;
 
         public bool AnyListUnreadable { get; private set; }
 
         /// <summary>The set turned up, every time with an owner id, and no such owner was a checked account.</summary>
-        public bool ListedOnlyUnderForeignOwners => _listedOwnerIds.Count > 0 && !_listedWithoutOwner;
+        public bool ListedOnlyUnderForeignOwners => _listingsWithOwner.Count > 0 && !_listedWithoutOwner;
+
+        /// <summary>The set turned up in at least one readable list, with or without an owner id.</summary>
+        public bool ListedAnywhere => _listingsWithOwner.Count > 0 || _listedWithoutOwner;
 
         public void MarkUnreadable() => AnyListUnreadable = true;
 
@@ -272,19 +451,23 @@ public sealed class ImportTargetOwnershipService(
             switch (result.Status)
             {
                 case EmoteSetListStatus.Ok when !string.IsNullOrEmpty(result.List!.SevenTvUserId):
-                    _accountBySevenTvId.TryAdd(result.List.SevenTvUserId, new CheckedAccount(accountTwitchLogin, accountTwitchUserId));
+                    EmoteSetSummary? ownListing = null;
                     foreach (var set in result.List.Sets.Where(set => string.Equals(set.Id, emoteSetId, StringComparison.Ordinal)))
                     {
+                        ownListing ??= set;
                         if (string.IsNullOrEmpty(set.OwnerSevenTvUserId))
                         {
                             _listedWithoutOwner = true;
                         }
                         else
                         {
-                            _listedOwnerIds.Add(set.OwnerSevenTvUserId);
+                            _listingsWithOwner.Add(set);
                         }
                     }
 
+                    _accountBySevenTvId.TryAdd(
+                        result.List.SevenTvUserId,
+                        new CheckedAccount(accountTwitchLogin, accountTwitchUserId, ownListing, result.List.SevenTvActiveEmoteSetId));
                     return MatchAgainstAllKnownAccounts();
                 case EmoteSetListStatus.NoSevenTvAccount:
                     // An answer: this account owns nothing and cannot be anyone's owner.
@@ -301,12 +484,20 @@ public sealed class ImportTargetOwnershipService(
         {
             // The shared rule (EmoteSetEditability, spec 5.8/AK 30): editable iff the owner id is
             // one of the readable accounts' ids — _accountBySevenTvId's keys are exactly that set.
-            foreach (var ownerId in _listedOwnerIds)
+            foreach (var listing in _listingsWithOwner)
             {
+                var ownerId = listing.OwnerSevenTvUserId!;
                 if (EmoteSetEditability.IsEditable(ownerId, _accountBySevenTvId.Keys))
                 {
+                    // Always the owner account's identity, never the listing account's; the active
+                    // set only counts from the owner's own list (null if the set was not on it).
                     var owner = _accountBySevenTvId[ownerId];
-                    return SevenTvEmoteSetOwnershipCheckResult.Owner(ownerId, owner.TwitchLogin, owner.TwitchUserId);
+                    return SevenTvEmoteSetOwnershipCheckResult.Owner(
+                        ownerId,
+                        owner.TwitchLogin,
+                        owner.TwitchUserId,
+                        owner.Listing ?? listing,
+                        owner.Listing is null ? null : owner.SevenTvActiveEmoteSetId);
                 }
             }
 
@@ -314,6 +505,10 @@ public sealed class ImportTargetOwnershipService(
         }
     }
 
-    /// <summary>One checked account's Twitch identity: the actor's own, or an <c>editor_of</c> grant's.</summary>
-    private sealed record CheckedAccount(string TwitchLogin, string TwitchUserId);
+    /// <summary>
+    /// One checked account's Twitch identity — the actor's own, or an <c>editor_of</c> grant's — plus
+    /// what its own list said: the set as listed there (<c>null</c> if it was not), and its active set.
+    /// </summary>
+    private sealed record CheckedAccount(
+        string TwitchLogin, string TwitchUserId, EmoteSetSummary? Listing, string? SevenTvActiveEmoteSetId);
 }
