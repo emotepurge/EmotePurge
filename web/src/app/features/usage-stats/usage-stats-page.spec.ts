@@ -323,10 +323,8 @@ describe('UsageStatsPage — refreshSetStatus channel race (#112 regression)', (
     vi.advanceTimersByTime(1000); // CHANNEL_RELOAD_DEBOUNCE_MS
     fixture.detectChanges();
 
-    // The liveReload burst also re-triggers a quiet totals reload for A — drain it, it is not part
-    // of what this test is pinning down.
-    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
-
+    // No totals to drain here: since the O2 review fix a sync asks for the rows only once its
+    // status has answered, and this status never answers for A.
     const staleStatusReq = httpMock.expectOne('/api/channels/a/emotes/active-set');
 
     // --- Switch channels within the same route before A's refresh answers. ---
@@ -407,8 +405,7 @@ describe('UsageStatsPage — refreshSetStatus channel race (#112 regression)', (
     vi.advanceTimersByTime(1000); // CHANNEL_RELOAD_DEBOUNCE_MS
     fixture.detectChanges();
 
-    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
-
+    // As above: the sync's rows wait for its status, which never answers for A.
     const staleStatusReq = httpMock.expectOne('/api/channels/a/emotes/active-set');
 
     // --- Switch channels within the same route before A's refresh answers. ---
@@ -487,9 +484,8 @@ describe('UsageStatsPage — refreshSetStatus channel race (#112 regression)', (
     vi.advanceTimersByTime(1000); // CHANNEL_RELOAD_DEBOUNCE_MS
     fixture.detectChanges();
 
-    // The same burst also re-triggers a quiet totals reload — drain it, it is not part of what
-    // this test is pinning down.
-    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    // No totals before the status (O2 review fix): the rows this sync causes are the explicit
+    // set-a request below, issued by the load effect once the status has moved the selected set.
 
     // --- The silent refresh succeeds this time. ---
     httpMock
@@ -3052,7 +3048,6 @@ describe('UsageStatsPage — usage.flushed never reloads the set list, channel.s
     vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
     fixture.detectChanges();
 
-    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
     httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
       setStatus({
         activeEmoteSetId: 'set-a',
@@ -3061,6 +3056,9 @@ describe('UsageStatsPage — usage.flushed never reloads the set list, channel.s
         sharedChatSeparatedSince: '2026-01-01T00:00:00Z',
       }),
     );
+    // The sync's own totals refetch, which since the O2 review fix follows the status rather than
+    // preceding it — draining it is not what this test is about.
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
     // The loud reload's own re-fetch — E19: channel.synced DOES reload the set list, unlike
     // usage.flushed above.
     httpMock
@@ -5634,5 +5632,411 @@ describe('UsageStatsPage — export/import scope capture reads the shown set onc
 
     // Still the set the dialog was opened for — the capture never re-reads a live signal.
     expect(data.sourceEmoteSetId).toBe('set-b');
+  });
+});
+
+/**
+ * `channel.synced` reads the set status before the rows, and a status that cannot be read is
+ * unknown rather than silently kept (#200 review fix, O2). Before this, the sync's silent `/totals`
+ * went out under the page's own, possibly outdated active id — rows for the old set stamped as the
+ * active view, a selection pruned against them — and a failed status refetch left that old id
+ * standing as "active" for the dock. Same `FakeEventSource` pattern as the #112 block at the top of
+ * this file, with fake timers throughout (the live reload is debounced) and the E19 block's
+ * fake-timer `settle()` for the `rxResource`s.
+ */
+describe('UsageStatsPage — channel.synced reads the set status before the rows (#200 review, O2)', () => {
+  const STATUS_URL = '/api/channels/a/emotes/active-set';
+  const TOTALS_URL = '/api/channels/a/usage-stats/totals';
+  const SERIES_URL = '/api/channels/a/usage-stats/series';
+  const SERIES = { from: '2026-01-01', to: '2026-09-08', liveDays: [], emotes: [] };
+
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  function member(sevenTvEmoteId: string, name: string): ForeignEmoteRow {
+    return {
+      sevenTvEmoteId,
+      name,
+      defaultName: name,
+      imageUrl: '',
+      topAllTime: null,
+      trending: null,
+    };
+  }
+
+  function memberList(emotes: ForeignEmoteRow[]): ForeignEmoteSetResponse {
+    return {
+      channelName: 'a',
+      sevenTvUserId: null,
+      emoteSetId: 'set-b',
+      emoteSetName: 'Halloween',
+      capacity: 1000,
+      totalCount: emotes.length,
+      truncated: false,
+      emotes,
+    };
+  }
+
+  /** Both "since" dates set, so `SetStatusFlushProbeGate` stays closed and a `usage.flushed` burst
+   *  never asks for the status on its own — every status request below is one the test caused. */
+  function statusFor(activeEmoteSetId: string): EmoteSetStatus {
+    return setStatus({
+      activeEmoteSetId,
+      trackedSince: '2026-01-01T00:00:00Z',
+      botsExcludedSince: '2026-01-02T00:00:00Z',
+      sharedChatSeparatedSince: '2026-01-02T00:00:00Z',
+    });
+  }
+
+  function setList(): EmoteSetListResponse {
+    return emoteSetList([
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+    ]);
+  }
+
+  async function settle(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+  }
+
+  function totalsRequests(): TestRequest[] {
+    return httpMock.match((r) => r.url === TOTALS_URL);
+  }
+
+  function flushOpenSetListReloads(): void {
+    httpMock.match('/api/channels/a/emote-sets').forEach((request) => request.flush(setList()));
+  }
+
+  async function emit(type: string): Promise<void> {
+    FakeEventSource.instances[FakeEventSource.instances.length - 1].emit({ type, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    await settle();
+  }
+
+  /** Mounts channel 'a' (active set `set-a`) with the given set in the URL and drives it until its
+   *  rows — and, for `set-b`, its member list — are on screen. */
+  async function mount(options: {
+    emoteSetId?: string;
+    totals: EmoteUsageTotalDto[];
+    members?: ForeignEmoteSetResponse;
+  }): Promise<void> {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+    if (options.emoteSetId) {
+      await TestBed.inject(Router).navigate([], {
+        queryParams: { emoteSetId: options.emoteSetId },
+      });
+    }
+    vi.useFakeTimers();
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne(STATUS_URL).flush(statusFor('set-a'));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(setList());
+    await settle();
+
+    flushByPath(httpMock, TOTALS_URL, options.totals);
+    flushByPath(httpMock, SERIES_URL, SERIES);
+    if (options.members) {
+      const members = options.members;
+      httpMock.match((r) => LIVE_LIST_URL.test(r.url)).forEach((r) => r.flush(members));
+    }
+    await settle();
+  }
+
+  function mark(sevenTvEmoteId: string): void {
+    const row = component['emotes']().find(
+      (candidate) => candidate.sevenTvEmoteId === sevenTvEmoteId,
+    )!;
+    component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('(1) a sync that moves the active set asks for no rows before the status, then exactly once for the new set — the selection survives', async () => {
+    await mount({ totals: [emote('a', 'PeepoA'), emote('c', 'PeepoC')] });
+    mark('7tv-c');
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    expect(totalsRequests()).toHaveLength(0);
+    flushOpenSetListReloads();
+
+    httpMock.expectOne(STATUS_URL).flush(statusFor('set-b'));
+    await settle();
+
+    const asked = totalsRequests();
+    expect(asked).toHaveLength(1);
+    expect(asked[0].request.params.get('emoteSetId')).toBe('set-b');
+    asked[0].flush([emote('a', 'PeepoA'), emote('c', 'PeepoC')]);
+    flushByPath(httpMock, SERIES_URL, SERIES);
+    await settle();
+
+    expect(component['activeEmoteSetId']()).toBe('set-b');
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-c']);
+    expect(component['isLoading']()).toBe(false);
+  });
+
+  it('(2) a sync that keeps the active set asks for the rows once, silently, after the status', async () => {
+    await mount({ totals: [emote('a', 'PeepoA'), emote('c', 'PeepoC')] });
+    mark('7tv-c');
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    expect(totalsRequests()).toHaveLength(0);
+    flushOpenSetListReloads();
+
+    httpMock.expectOne(STATUS_URL).flush(statusFor('set-a'));
+    await settle();
+
+    const asked = totalsRequests();
+    expect(asked).toHaveLength(1);
+    expect(asked[0].request.params.get('emoteSetId')).toBe('set-a');
+    expect(component['isLoading']()).toBe(false);
+    asked[0].flush([emote('a', 'PeepoA'), emote('c', 'PeepoC')]);
+    await settle();
+
+    expect(component['isLoading']()).toBe(false);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-c']);
+  });
+
+  it('(3) a status that fails after a sync leaves no active set, no import scope and no rows asked for the old set', async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+    mark('7tv-a');
+    expect(component['importScopeCurrent']()).toBe(true);
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    flushOpenSetListReloads();
+    httpMock.expectOne(STATUS_URL).flush({}, { status: 503, statusText: 'Service Unavailable' });
+    await settle();
+
+    expect(component['activeEmoteSetId']()).toBeNull();
+    expect(component['importScopeCurrent']()).toBe(false);
+    // The dock and its panel hang on the selected set (usage-stats-page.html) — gone with it.
+    expect(component['selectedEmoteSetId']()).toBeNull();
+    const asked = totalsRequests();
+    expect(asked.map((r) => r.request.params.get('emoteSetId'))).not.toContain('set-a');
+    // The rows are reloaded without a set: the endpoint resolves the active set itself.
+    expect(asked.map((r) => r.request.params.get('emoteSetId'))).toEqual([null]);
+  });
+
+  it('(4) the next successful status lifts the lock again: the active set is back, the selection unchanged', async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+    mark('7tv-a');
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    flushOpenSetListReloads();
+    httpMock.expectOne(STATUS_URL).flush({}, { status: 503, statusText: 'Service Unavailable' });
+    await settle();
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.statusUnavailable');
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, SERIES_URL, SERIES);
+    await settle();
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    flushOpenSetListReloads();
+    httpMock.expectOne(STATUS_URL).flush(statusFor('set-b'));
+    await settle();
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, SERIES_URL, SERIES);
+    await settle();
+
+    expect(component['activeEmoteSetId']()).toBe('set-b');
+    expect(component['selectedEmoteSetId']()).toBe('set-b');
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
+  });
+
+  it('(6) usage.flushed alone reloads the rows once, silently, and asks for no status', async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+
+    await emit(LIVE_EVENT_TYPES.usageFlushed);
+
+    const asked = totalsRequests();
+    expect(asked).toHaveLength(1);
+    expect(component['isLoading']()).toBe(false);
+    httpMock.expectNone(STATUS_URL);
+  });
+
+  it('(7) a URL-chosen set that becomes active, then stops being active, reloads its rows exactly once per change', async () => {
+    await mount({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+
+    // set-a → set-b: the viewed set is now the active one.
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    flushOpenSetListReloads();
+    httpMock.expectOne(STATUS_URL).flush(statusFor('set-b'));
+    await settle();
+    let asked = totalsRequests();
+    expect(asked).toHaveLength(1);
+    expect(asked[0].request.params.get('emoteSetId')).toBe('set-b');
+    asked[0].flush([emote('a', 'PeepoA')]);
+    httpMock.match((r) => LIVE_LIST_URL.test(r.url)).forEach((r) => r.flush(memberList([])));
+    await settle();
+    expect(component['isNonActiveView']()).toBe(false);
+
+    // set-b → set-a: the viewed set stops being the active one.
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    flushOpenSetListReloads();
+    httpMock.expectOne(STATUS_URL).flush(statusFor('set-a'));
+    await settle();
+    asked = totalsRequests();
+    expect(asked).toHaveLength(1);
+    expect(asked[0].request.params.get('emoteSetId')).toBe('set-b');
+  });
+
+  it('(8) a failed status over a URL-chosen set with its member list in locks deleting and voting with its own reason, until a status succeeds', async () => {
+    await mount({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(component['voteLocked']()).toBe(false);
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    flushOpenSetListReloads();
+    httpMock.expectOne(STATUS_URL).flush({}, { status: 503, statusText: 'Service Unavailable' });
+    httpMock
+      .match((r) => LIVE_LIST_URL.test(r.url))
+      .forEach((r) => r.flush(memberList([member('7tv-a', 'PeepoA')])));
+    await settle();
+
+    expect(component['selectedEmoteSetId']()).toBe('set-b');
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.statusUnavailable');
+    expect(component['voteLocked']()).toBe(true);
+    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.statusUnavailable');
+    // set-b was already a non-active view: nothing about the rows on screen changed kind.
+    expect(totalsRequests()).toHaveLength(0);
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    flushOpenSetListReloads();
+    httpMock.expectOne(STATUS_URL).flush(statusFor('set-a'));
+    await settle();
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    httpMock
+      .match((r) => LIVE_LIST_URL.test(r.url))
+      .forEach((r) => r.flush(memberList([member('7tv-a', 'PeepoA')])));
+    await settle();
+
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(component['voteLocked']()).toBe(false);
+  });
+
+  it('(9a) an older failure landing after a newer success does not un-claim the channel', async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    const older = httpMock.expectOne(STATUS_URL);
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    const newer = httpMock.expectOne(STATUS_URL);
+    flushOpenSetListReloads();
+
+    newer.flush(statusFor('set-a'));
+    await settle();
+    older.flush({}, { status: 503, statusText: 'Service Unavailable' });
+    await settle();
+
+    expect(component['setStatusChannel']()).toBe('a');
+    expect(component['activeEmoteSetId']()).toBe('set-a');
+    expect(component['deleteLockReasonKey']()).toBeNull();
+  });
+
+  it('(9b) an older success landing after a newer failure does not re-claim the channel', async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    const older = httpMock.expectOne(STATUS_URL);
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    const newer = httpMock.expectOne(STATUS_URL);
+    flushOpenSetListReloads();
+
+    newer.flush({}, { status: 503, statusText: 'Service Unavailable' });
+    await settle();
+    older.flush(statusFor('set-a'));
+    await settle();
+
+    expect(component['setStatusChannel']()).toBeNull();
+    expect(component['activeEmoteSetId']()).toBeNull();
+  });
+
+  it('(9c) an older success landing after a newer success does not overwrite it', async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    const older = httpMock.expectOne(STATUS_URL);
+    await emit(LIVE_EVENT_TYPES.channelSynced);
+    const newer = httpMock.expectOne(STATUS_URL);
+    flushOpenSetListReloads();
+
+    newer.flush(statusFor('set-b'));
+    await settle();
+    older.flush(statusFor('set-a'));
+    await settle();
+
+    expect(component['activeEmoteSetId']()).toBe('set-b');
+  });
+
+  it('(10) a silent reload that overtakes a loud one takes the skeleton down when it lands', async () => {
+    await mount({ totals: [emote('a', 'PeepoA')] });
+
+    // A loud reload: the refresh button (status, rows and curve, skeleton up).
+    component['refresh']();
+    await settle();
+    expect(component['isLoading']()).toBe(true);
+    httpMock.expectOne(STATUS_URL).flush(statusFor('set-a'));
+    await settle();
+
+    // A flush burst while the loud rows are still out — its silent request is now the latest.
+    await emit(LIVE_EVENT_TYPES.usageFlushed);
+    const asked = totalsRequests();
+    expect(asked.length).toBeGreaterThanOrEqual(2);
+    asked[asked.length - 1].flush([emote('a', 'PeepoA')]);
+    await settle();
+
+    expect(component['isLoading']()).toBe(false);
+
+    // The superseded loud answer, landing late, changes nothing.
+    asked.slice(0, -1).forEach((request) => request.flush([]));
+    flushByPath(httpMock, SERIES_URL, SERIES);
+    await settle();
+    expect(component['isLoading']()).toBe(false);
+    expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
   });
 });

@@ -10,6 +10,62 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-29 — `channel.synced` reads the set status before the rows, and a failed status refresh makes the active set unknown instead of keeping the old one (#200)
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (live subscription,
+`refreshSetStatus`, `latestSetStatus`, `setStatusUnavailable`, `sharedSetViewLockReasonKey`,
+`loadTotals`/`endLoadingFor`) · `web/public/i18n/de.json` and `en.json`
+(`usageStats.setView.lock.statusUnavailable`) ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts`
+
+Two holes around a 7TV set swap on the usage page. (a) On `channel.synced` the page reloaded
+`/totals` silently under its *own* active id before refetching the status. When the sync had moved
+the active set from A to B, the rows came back for A stamped as the active view, and the #94
+reconciliation pruned every marked emote without counts in A — deletion candidates the user had
+picked — before the status even named B. Whether that happened depended on which answer arrived
+first. (b) A failed status refetch was swallowed (`error: () => undefined`), so A stayed "active":
+the dock kept offering a delete into A, labelled as the active set, although the very event that
+triggered the refetch is the one that can swap sets.
+
+- **Status first.** A burst containing `channel.synced` stops the sync wait, reloads the set list
+  and (loudly) the member list at once, then asks for the status — and no rows. Once the status is
+  in, the rows are reloaded silently under the selected set, unless the status itself moved the
+  selected set (the load effect reloads then) or flipped `viewKindStale` (the stale effect does);
+  one request per status either way. The member-list reload deliberately stays immediate (AK 52):
+  should the status make the chosen set the active one, the resource drops the request itself.
+  `usage.flushed` alone is unchanged.
+- **A failed refresh is unknown, not stale.** `refreshSetStatus` now fails like `load()` does:
+  it un-claims `setStatusChannel` and marks `setStatusFailedChannel`. This reverses the rule of
+  the code comment it replaces ("a failed refetch keeps the current value … must never take the
+  mass-delete panel away over a transient error") and extends the bullet "An unknown active set is
+  not the selected set" (fix round 2026-09-22 of the 2026-09-21 K4 entry), which un-claimed only
+  on the initial load. Unlike `load()`
+  it keeps the DTO (`trackedSince` carries the "all time" range; clearing it would re-run the load
+  effect for nothing). With the URL following the active set, the selected set turns `null`, the
+  dock disappears and the rows are reloaded without a set id (the endpoint resolves the active set).
+  With a URL-chosen set the view stays, and a new first lock reason, `setStatusUnavailable`
+  (failed and not re-claimed for the channel on screen), locks deleting **and** voting with its
+  own text (`usageStats.setView.lock.statusUnavailable`, wording approved by the operator
+  2026-09-29). The next successful status lifts it; the selection survives. The flush-probe refresh
+  gets the same failure handling on purpose.
+- **One `latestOnly` for every status read.** `load()`, `refreshSetStatus`, the sync-failure poll
+  and `awaitSync` share `latestSetStatus`. With (b), an out-of-order answer would otherwise do harm
+  both ways: an old failure un-claiming over a newer success, an old success re-claiming over a
+  newer failure. The channel guards stay; they keep another channel's answer out, the shared guard
+  orders answers within one channel.
+- **The winning `/totals` answer takes the skeleton down.** Before, only an answer to a loud
+  request lowered `isLoading`, so a silent `usage.flushed` reload that overtook a loud one left the
+  skeleton (and the disabled refresh button) up for good. Now the winning answer lowers it
+  whoever asked, unless a later `load()` has raised it since the request went out (`loadStarts`),
+  so a request older than the current load cannot drop the skeleton that load still owns. The
+  `silent` option of `loadTotals` only ever guarded that lowering and is removed.
+
+Not done, recorded as known limits in PR #303 (operator 2026-09-29): `/totals` still does not echo
+the resolved set id and `isActiveSet`, so a second set swap between the status and the rows answer
+stays possible until the next `channel.synced`; and a sync that moves the selected set still
+reloads it with the skeleton (existing behaviour of the load effect), this fix only stops the
+skeleton from sticking.
+
 ### 2026-09-29 — A null-session's usage is summed across every emote set, through a named `EmoteSetScope` instead of a nullable set id (#200)
 
 **Betrifft:** `src/EmotePurge.Core/Services/EmoteSetScope.cs`,
