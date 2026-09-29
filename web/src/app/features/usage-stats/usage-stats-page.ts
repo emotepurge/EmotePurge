@@ -2797,6 +2797,12 @@ export class UsageStatsPage {
       this.stopAwaitingSync();
       this.emoteAdminService.getSetStatus(channelName).subscribe({
         next: (status) => {
+          // An answer for a channel the page has already left must not land under the current
+          // one's name — it would re-claim `setStatusChannel` and close the current channel's
+          // status gate for good (same guard as refreshSetStatus).
+          if (this.channelName() !== channelName) {
+            return;
+          }
           this.setStatus.set(status);
           this.setStatusChannel.set(channelName);
           // An empty id means SevenTvSyncService has not written a set for this channel. Only worth
@@ -2813,6 +2819,10 @@ export class UsageStatsPage {
         // channel is done asking: a later load() call — most importantly the refresh button, which
         // resets requestedSetStatusFor itself — must still be free to try again.
         error: () => {
+          // Ignored for a channel the page has left: it would wipe the current channel's status.
+          if (this.channelName() !== channelName) {
+            return;
+          }
           this.setStatus.set(null);
           this.setStatusFailedChannel.set(channelName);
           // Un-claims the channel (never claims it — see setStatusChannel's own comment): the
@@ -3043,7 +3053,7 @@ export class UsageStatsPage {
       )
       .subscribe((status) => {
         this.isAwaitingSync.set(false);
-        if (!status) {
+        if (!status || this.channelName() !== channelName) {
           return;
         }
 

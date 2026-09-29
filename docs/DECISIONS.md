@@ -96,7 +96,12 @@ the channel in the URL (`setStatusChannel() === channelName() || setStatusFailed
 channelName()`) and carry structural equality on `channelName` and `emoteSetId`. While the gate is
 closed with a set chosen, `liveMembersState` reports `'loading'` (not `'unavailable'`, which would
 flash the error state). Accepted gap: `setStatusFailedChannel` is never cleared, so X failed → Y →
-back to X opens the gate early; the cost is at most the old double request.
+back to X opens the gate early; the cost is at most the old double request. A status answer that
+arrives after the page has moved to another channel is discarded (success and failure alike, in
+`load()` as in `refreshSetStatus()`), so a late X can neither re-claim `setStatusChannel` nor wipe Y's
+status and close Y's gate. A status request that never completes keeps the member list in
+`'loading'`; accepted, because such a request ends in an error eventually, and that error opens the
+gate via `setStatusFailedChannel`.
 
 **7. Configuration and telemetry.** `RateLimiting__TrackedEmoteSetPreview__PermitLimit`, default 30
 per 60 s window and user, effective after a restart. The client cache catches A→B→A; what remains are
@@ -104,6 +109,9 @@ first switches plus the `refresh=true` reloads after `channel.synced` and own ru
 user opening another set every other second and stays an abuse bound, not a provider surrogate. The
 admin snapshot lists the policy (fixed window, partition `twitch-user`); the label is
 `admin.rateLimits.policies.names.TrackedEmoteSetPreview` in both locales.
+`refresh=true` bypasses the server-side preview cache, so one user can cause up to 30 uncached
+preview reads per minute (it was 10 in the shared bucket). The provider-wide budget, the coalescer and
+the breaker remain the upstream bound; a per-set refresh throttle is out of scope.
 
 ### 2026-09-28 — The owner check reads the hinted owner's list beside the actor's own, the pre-check gets a set-scoped route on the guarded grants path, and "zero requests" becomes the true cost
 

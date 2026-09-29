@@ -4978,6 +4978,207 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(component['liveMembersState']()).toBe('loading');
     });
   });
+
+  // Review follow-up to the gate above: a status answer belongs to the channel that asked. Without
+  // that, a slow answer for X landing after the switch to Y re-claims `setStatusChannel` for X and
+  // closes Y's gate for good (or, failing, wipes Y's status).
+  describe('the status gate survives an in-route channel switch (#220 review)', () => {
+    const LIVE_B = /^\/api\/channels\/b\/emote-sets\/[^/]+\/emotes$/;
+
+    function liveRequestsForB(): TestRequest[] {
+      return httpMock.match((r) => LIVE_B.test(r.url));
+    }
+
+    function statusFor(channel: string): TestRequest {
+      return httpMock.expectOne(`/api/channels/${channel}/emotes/active-set`);
+    }
+
+    function activeStatus(): EmoteSetStatus {
+      return setStatus({
+        activeEmoteSetId: 'set-a',
+        capacity: 600,
+        occupiedSlots: 10,
+        trackedSince: '2026-01-01T00:00:00Z',
+      });
+    }
+
+    async function flushSetList(channel: string): Promise<void> {
+      httpMock
+        .expectOne(`/api/channels/${channel}/emote-sets`)
+        .flush(
+          emoteSetList([
+            emoteSet({ id: 'set-a', isActive: true }),
+            emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+          ]),
+        );
+      await settle();
+    }
+
+    async function mountOn(channel: string, emoteSetId?: string): Promise<void> {
+      configure();
+      router = TestBed.inject(Router);
+      if (emoteSetId) {
+        await router.navigate([], { queryParams: { emoteSetId } });
+      }
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', channel);
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne(`/api/channels/${channel}/permissions`)
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+    }
+
+    async function switchTo(channel: string): Promise<void> {
+      fixture.componentRef.setInput('channelName', channel);
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne(`/api/channels/${channel}/permissions`)
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+    }
+
+    async function flushStatus(request: TestRequest, ok: boolean): Promise<void> {
+      if (ok) {
+        request.flush(activeStatus());
+      } else {
+        request.flush({}, { status: 500, statusText: 'Server Error' });
+      }
+      fixture.detectChanges();
+      await settle();
+    }
+
+    it("a late answer for the channel left behind does not close the new channel's gate", async () => {
+      await mountOn('a');
+      const late = statusFor('a');
+      await switchTo('b');
+      await flushStatus(statusFor('b'), true);
+
+      await flushStatus(late, true);
+
+      expect(component['setStatusChannel']()).toBe('b');
+      await flushSetList('b');
+      component['onEmoteSetSelected']('set-b');
+      await settle();
+      expect(liveRequestsForB()).toHaveLength(1);
+      expect(component['setStatusOutcomeKnown']()).toBe(true);
+    });
+
+    it("a late failure for the channel left behind leaves the new channel's status alone", async () => {
+      await mountOn('a');
+      const late = statusFor('a');
+      await switchTo('b');
+      await flushStatus(statusFor('b'), true);
+
+      await flushStatus(late, false);
+
+      expect(component['setStatus']()?.activeEmoteSetId).toBe('set-a');
+      expect(component['setStatusChannel']()).toBe('b');
+      // set-a is b's active set: it must not be mistaken for a foreign one and asked for.
+      component['onEmoteSetSelected']('set-a');
+      await settle();
+      expect(liveRequestsForB()).toHaveLength(0);
+    });
+
+    it('a channel switch with a set chosen reports loading, then asks exactly once after the status', async () => {
+      await mountOn('a', 'set-b');
+      await flushSetList('a');
+      await flushStatus(statusFor('a'), true);
+      liveListRequests().forEach((r) => r.flush(memberList([member('7tv-a', 'PeepoA')])));
+
+      await switchTo('b');
+      await flushSetList('b');
+      expect(component['liveMembersState']()).toBe('loading');
+      expect(liveRequestsForB()).toHaveLength(0);
+
+      await flushStatus(statusFor('b'), true);
+
+      const asked = liveRequestsForB();
+      expect(asked).toHaveLength(1);
+      expect(asked[0].request.params.get('refresh')).toBeNull();
+    });
+  });
+
+  describe('a reload while the status gate is closed (#220 review)', () => {
+    async function flushSetList(channel: string): Promise<void> {
+      httpMock
+        .expectOne(`/api/channels/${channel}/emote-sets`)
+        .flush(
+          emoteSetList([
+            emoteSet({ id: 'set-a', isActive: true }),
+            emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+          ]),
+        );
+      await settle();
+    }
+
+    async function mountDeepLinkWithPendingStatus(): Promise<TestRequest> {
+      configure();
+      router = TestBed.inject(Router);
+      await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      await settle();
+      return httpMock.expectOne('/api/channels/a/emotes/active-set');
+    }
+
+    it('asks nothing while closed and exactly one ordinary request once it opens', async () => {
+      const first = await mountDeepLinkWithPendingStatus();
+      await flushSetList('a');
+
+      component['refresh']();
+      await settle();
+      expect(liveListRequests()).toHaveLength(0);
+
+      // The refresh's own status request answers first and opens the gate.
+      const second = httpMock.expectOne('/api/channels/a/emotes/active-set');
+      second.flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+      fixture.detectChanges();
+      await settle();
+      const asked = liveListRequests();
+      expect(asked).toHaveLength(1);
+      expect(asked[0].request.params.get('refresh')).toBeNull();
+
+      // The original status arriving afterwards changes nothing about the params.
+      first.flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+      fixture.detectChanges();
+      await settle();
+      expect(liveListRequests()).toHaveLength(0);
+    });
+
+    it('once open, a refresh asks exactly once with refresh=true despite equal params', async () => {
+      const first = await mountDeepLinkWithPendingStatus();
+      await flushSetList('a');
+      first.flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+      fixture.detectChanges();
+      await settle();
+      liveListRequests().forEach((r) => r.flush(memberList([member('7tv-a', 'PeepoA')])));
+      await settle();
+
+      component['refresh']();
+      await settle();
+      httpMock
+        .expectOne('/api/channels/a/emotes/active-set')
+        .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+      fixture.detectChanges();
+      await settle();
+
+      const asked = liveListRequests();
+      expect(asked).toHaveLength(1);
+      expect(asked[0].request.params.get('refresh')).toBe('true');
+    });
+  });
 });
 
 /**
