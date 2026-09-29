@@ -301,6 +301,46 @@ public class HardenedForeignEmoteSetServiceTests(RedisFixture fixture)
     }
 
     /// <summary>
+    /// The breaker feedback for the two "7TV said something" outcomes that look alike: an
+    /// <c>Unavailable</c> answer from the inner chain is a failure (five in a row open the breaker, so
+    /// the next lookup never reaches the inner chain), whereas <c>NoActiveEmoteSet</c> is a legitimate
+    /// answer and counts as a success no matter how often it repeats.
+    /// </summary>
+    [Fact]
+    public async Task SevenTvUnavailable_CountsAsABreakerFailure_WhileNoActiveEmoteSetStaysASuccess()
+    {
+        var unavailableInner = Substitute.For<IForeignEmoteSetService>();
+        unavailableInner.GetForeignEmoteSetAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable));
+        var failing = CreateService(unavailableInner);
+
+        for (var i = 0; i < ForeignSevenTvBreakerPolicy.FailureThreshold; i++)
+        {
+            var failed = await failing.GetForeignEmoteSetAsync(NewChannel());
+            Assert.Equal(ForeignEmoteSetLookupStatus.SevenTvUnavailable, failed.Status);
+        }
+
+        var channelAfterOpen = NewChannel();
+        var turnedAway = await failing.GetForeignEmoteSetAsync(channelAfterOpen);
+        Assert.Equal(ForeignEmoteSetLookupStatus.SevenTvUnavailable, turnedAway.Status);
+        await unavailableInner.DidNotReceive().GetForeignEmoteSetAsync(channelAfterOpen, Arg.Any<bool>(), Arg.Any<CancellationToken>());
+
+        var noSetInner = Substitute.For<IForeignEmoteSetService>();
+        noSetInner.GetForeignEmoteSetAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.NoActiveEmoteSet));
+        var healthy = CreateService(noSetInner);
+
+        for (var i = 0; i < ForeignSevenTvBreakerPolicy.FailureThreshold + 1; i++)
+        {
+            var answer = await healthy.GetForeignEmoteSetAsync(NewChannel());
+            Assert.Equal(ForeignEmoteSetLookupStatus.NoActiveEmoteSet, answer.Status);
+        }
+
+        await noSetInner.Received(ForeignSevenTvBreakerPolicy.FailureThreshold + 1)
+            .GetForeignEmoteSetAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
     /// AK 26 / E12: the set-ID mode reads and writes a second Redis key space
     /// (<c>7tvforeign:set:{setId}</c>), never the channel-login key space
     /// <c>7tvforeign:{login}</c> the other method above uses — an entry for a channel's currently

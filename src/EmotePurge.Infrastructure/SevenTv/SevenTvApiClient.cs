@@ -792,11 +792,22 @@ public class SevenTvApiClient(
         // whose nested emoteSet is null is 7TV's own "no such set" answer, not a failure to reach or
         // parse 7TV — the set id simply does not exist. Checked ahead of the generic "no usable data"
         // branch below on purpose: that branch's Unavailable would otherwise swallow this distinction,
-        // the same way a confirmed 429 has to be checked ahead of it (see the comment above).
+        // the same way a confirmed 429 has to be checked ahead of it (see the comment above). "Well-formed"
+        // includes "and no errors block": a partial GraphQL answer (emoteSet: null next to a non-429
+        // errors block) is 7TV failing, not 7TV naming no such set, and must not be booked as a
+        // breaker success — same shape as the list path's userByConnection check (F17).
         if (pageResult.Status == V4PageStatus.Ok && setsRoot is not null && setDto is null)
         {
+            if (pageResult.Dto?.Errors is { Count: > 0 })
+            {
+                logger.LogWarning(
+                    "7TV preview fetch for set {SetId} returned emoteSet: null together with a non-rate-limit GraphQL error, page {Page}.",
+                    emoteSetId, page);
+                return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.Unavailable));
+            }
+
             logger.LogInformation(
-                "7TV-Vorschau-Abruf für Set {SetId}: 7TV kennt dieses Set nicht (emoteSet: null), Seite {Page}.",
+                "7TV preview fetch for set {SetId}: 7TV does not know this set (emoteSet: null), page {Page}.",
                 emoteSetId, page);
             return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.NotFound));
         }
