@@ -108,7 +108,7 @@ null Requests" wird in Spec und Code durch die wahre Aussage ersetzt.
 | 5 | **Fehlende Hinweis-Liste ist kein Ende.** Ist die Liste von G nicht lesbar (`Unavailable`, `RateLimited`, `BudgetExhausted`, offener Breaker), wird sie wie jede andere als unlesbar vermerkt (`AnyListUnreadable`) und der Gang läuft weiter. Enthält sie das Set nicht, oder unter fremdem Besitz: Gang läuft weiter (die Liste ist danach 60 s im Cache, ein zweiter Blick kostet nichts). | Auftrag; Teilausfall-Regel §32 unverändert. |
 | 6 | **Das frühe 403 („nur unter fremdem Besitzer gelistet") fällt erst nach dem vollständigen Gang**, wie heute (`:74-81` steht nach `InspectEditorAccountsAsync`). Ein Set, das in der Hinweis-Liste unter Besitzer B steht, kann von B selbst — einem später gelesenen Konto — zulässig werden (`MatchAgainstAllKnownAccounts`, `:136-138`). | Auftrag; §32 „X steht in einer Liste, aber unter fremdem Besitzer". |
 | 7 | **Kein Bypass.** Die Hinweis-Liste wird ausschließlich über `ISevenTvEmoteSetListService.ListByTwitchIdAsync` gelesen — Cache, Coalescer, Breaker-Operation `emote-set-list` (je Operation gezählt), Provider-Budget. Offener Breaker ⇒ die Liste ist unlesbar ⇒ ohne anderweitigen Fund `Unavailable` (fail-closed). | Auftrag; F14 („ein Request, der das Budget nicht belastet, ist einer zu viel"). |
-| 8 | **Der Hinweis erzeugt nie eine Schreiberlaubnis.** Owner-Ausgang nur über `EmoteSetEditability.IsEditable(ownerId, readableAccountIds)` wie heute. Der Test „fremder Hinweis wird verworfen" prüft: null zusätzliche Requests und ein Ergebnis, das byte-gleich dem ohne Hinweis ist. | Leitplanke. |
+| 8 | **Der Hinweis erzeugt nie eine Schreiberlaubnis.** Owner-Ausgang nur über `EmoteSetEditability.IsEditable(ownerId, readableAccountIds)` wie heute. Der Test „fremder Hinweis wird verworfen" prüft: null zusätzliche Listen-Requests (bei kaltem Grant-Cache +2 Grant-Requests) und ein Ergebnis, das byte-gleich dem ohne Hinweis ist. | Leitplanke. |
 
 ### 3.2 Der gemeinsame Kern
 
@@ -182,6 +182,7 @@ heute (Ist-Stand); der Test macht es fest. Die Reihenfolge der Auflösung (ID vo
 |---|---|---|
 | Warm (Listen ≤ 60 s alt) | 0 | 0 |
 | Kalt, Hinweis ⇒ Akteur | **1** (die eigene Liste) | 0 (Grants werden nicht gelesen) |
+| Kalt, Hinweis auf ein fremdes Konto (verworfen), Akteur besitzt das Set | **1** (die eigene Liste) | +2, wenn der Grant-Cache kalt ist — der Hinweis wird zuerst gegen die Grants aufgelöst (Review-Runde: verworfen heißt kein Listen-Request, nicht kein Grant-Request) |
 | Kalt, gültiger Grant-Hinweis | **2** (eigene Liste + Hinweis-Liste, **parallel, ein Round-Trip**) | +2 (Identität, `editor_of`), wenn der Grant-Cache (10 min) kalt ist |
 | Kalt, ohne/ungültiger Hinweis | bis zu **1 + k** (Akteur + k Grants, seriell) | + 1 Owner-Lookup, wenn das Set in keiner Liste steht; +2 wie oben |
 
@@ -204,7 +205,7 @@ Eintrag nennt sie.
 | **Veralteter positiver Grant-Cache** + eigene Liste `NoSevenTvAccount` + gültiger Grant-Hinweis, Set in der Hinweis-Liste mit passendem Besitzer | Hinweis-Evidenz verworfen (3.1 Nr. 4c); Ergebnis und Request-Zahl **wie ohne Hinweis** (Bericht: Owner-Lookup ⇒ `Forbidden`; Vorprüfung: `SetNotFound`) — die Annahme wird nie erweitert | T1 Unit (Pflichtfall, Codex-Befund 1) |
 | Eigene Liste unlesbar + gültiger Grant-Hinweis mit Fund | `Owner` (Teilausfall mit Fund anderswo, wie heute); ohne Fund: Gang weiter, am Ende `Unavailable` | T1 Unit |
 | Konto ist zugleich eigen und gegrantet | der Grant wird übersprungen (`:124-127`, Bestand); ein Hinweis auf diese ID löst als „Akteur" auf | T1 Unit |
-| Hinweis auf einen widerrufenen Grant | nicht in `Grants.Entries` ⇒ verworfen vor jedem Request, heutiger Gang; Ergebnis identisch mit „ohne Hinweis" | T1 Unit („foreign hint dropped, zero extra requests") |
+| Hinweis auf einen widerrufenen Grant | nicht in `Grants.Entries` ⇒ verworfen vor jedem Listen-Request (die Grant-Abfrage kann bei kaltem Cache +2 kosten), heutiger Gang; Ergebnis identisch mit „ohne Hinweis" | T1 Unit („foreign hint dropped, zero extra requests") |
 | Besitzer hat gewechselt (Set in Hinweis-Liste, Besitzer-ID ≠ Hinweis-Konto) | kein früher 403; Gang läuft, Besitzer wird ggf. später als zulässiges Konto gefunden | T1 Unit („set in hinted list but owned by another account") |
 | Umbenannter Login (Login-Hinweis passt zu keinem Grant-Login) | verworfen ⇒ heutiger Gang; Grants-Cache erneuert Logins alle 10 min, danach passt er wieder | T1 Unit (Login-Fall negativ) |
 | Login-Hinweis passt (Groß-/Kleinschreibung, Whitespace) | `ChannelName.Normalize` beidseitig; Auflösung auf die Twitch-ID des Grants | T1 Unit („login hint") |

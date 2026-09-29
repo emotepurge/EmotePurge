@@ -33,10 +33,10 @@ cost replaces the "no unguarded request" comment) ·
 `tests/EmotePurge.Api.Tests/SevenTvEmoteSetPreCheckEndpointTests.cs`, `EmoteRoutePolicyTests.cs` and
 `AuthFilterMatrixTests.cs` ·
 `web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` (new `OwnerHint`;
-`EditableSetTarget.ownerTwitchChannelId`; `SyncInSetBody.targetOwnerTwitchId`, optional) ·
+`EditableSetTarget.ownerTwitchChannelId`; `SyncInSetBody.targetOwnerTwitchId`, required, `string | null`) ·
 `web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` (+ spec; `resolveEditableSet` gains an
 optional `hint`, cache-first over the list copy then a per-set 60 s cache before the new route;
-`SyncImportedToSetBody.targetOwnerTwitchId`, optional) ·
+`SyncImportedToSetBody.targetOwnerTwitchId`, required, `string | null`) ·
 `web/src/app/shared/seven-tv/restore-flow.ts` (`ResolvedRestoreTarget.ownerTwitchChannelId`, carried
 mechanically) and the `EditableSetTarget`/`ResolvedRestoreTarget` literals of
 `web/src/app/shared/seven-tv/file-import-step.spec.ts`, `import-flow.spec.ts`,
@@ -59,8 +59,8 @@ dialog with the choice's owner id or its login, carries the pre-check's or the c
 the run's own frozen id) · `web/src/app/core/seven-tv/seven-tv-import.service.ts` (+ spec;
 `ImportRunInfo.targetOwnerTwitchId`, `startImport`'s target gains a required field, both reports
 carry it) · `web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` and `seven-tv-emote-set.service.ts`
-(`SyncImportedToSetBody.targetOwnerTwitchId` made required — its one caller is now wired;
-`SyncInSetBody`'s stays optional for T6b) · `seven-tv-emote-set.service.spec.ts`,
+(`SyncImportedToSetBody.targetOwnerTwitchId` made required, `string | null`, once its one caller
+was wired; `SyncInSetBody`'s followed with T6b, so both bodies now require it) · `seven-tv-emote-set.service.spec.ts`,
 `seven-tv-run-arbiter.spec.ts`, `foreign-import-flow.spec.ts` and `dock-outcome-announcer.spec.ts`
 (mechanical field addition only, following the new required fields) · **T6b** (delete/restore/undo):
 `web/src/app/shared/seven-tv/mass-delete-panel.ts` (+ spec; hints the delete pre-check with the
@@ -96,7 +96,10 @@ holds inside the lists' 60 s.
   is read: the Twitch id wins (actor, else the grant with that `TwitchChannelId`); a login is only
   consulted without an id, normalised on both sides (`ChannelName.Normalize`), and only ever yields
   the matching grant's id. Anything else is dropped (logged at Debug), never answered with 400,
-  never echoed. Admissibility is still `EmoteSetEditability.IsEditable` over the verified accounts'
+  never echoed. A dropped hint makes no list request, but resolving it may cost the grants lookup
+  (identity + `editor_of`) when the grant cache is cold — before the own list is read, so also when
+  the actor owns the set, and for an actor without a 7TV account once per 60 s hold, where the
+  unhinted call skips the grants. Bounded, guarded and budgeted like every other grant read. Admissibility is still `EmoteSetEditability.IsEditable` over the verified accounts'
   lists alone.
 - **The actor's own list is always read** (Codex adversarial review, finding 1). A hint on the
   actor, or none, walks exactly as before. A hint on grant G reads the grants (cached ten minutes;
@@ -107,7 +110,12 @@ holds inside the lists' 60 s.
   case G's list is discarded and the outcome equals the one without a hint; the one hinted list
   request already in flight is the only extra cost. An unreadable own list is the partial outage it
   always was (a find in G's list is admissible, none is "unavailable"); an unreadable G's list is
-  noted and the walk goes on. The early 403 for "listed only under foreign owners" still falls only
+  noted and the walk goes on. The two parallel list reads compete for the emote-set-list breaker's
+  single half-open probe and the provider budget's two concurrency slots, so "own list unreadable"
+  becomes somewhat more likely than in the serial walk; in that case the hinted grant's evidence
+  counts under the partial-outage rule exactly as an unreadable own list did before (the
+  `NoSevenTvAccount` guard only applies when the own list reads `NoSevenTvAccount`), and 7TV still
+  enforces write permission itself. Accepted. The early 403 for "listed only under foreign owners" still falls only
   after the full walk.
 - **Always the owner's identity, never the listing account's** (finding 2). A match names the
   account whose 7TV id is the set's owner id — the same identity the report writes to the audit row.
@@ -129,10 +137,15 @@ holds inside the lists' 60 s.
   `/me` group under `ForeignEmoteLookup`, answering 200 with a `status` (`editable`, `notSelectable`,
   `notEditable`, `unavailable`) and the target on `editable`; `resolveEditableSet` answers from the
   client's fresh target-list copy first (0 requests), then from a per-set answer cached 60 s, and
-  only then asks the route — it never reloads the whole target list again.
+  only then asks the route — it never reloads the whole target list again. For a set listed under
+  account A but owned by B, the client's cache-first path keeps the listing account's display fields
+  (`twitchLogin`, `trackedChannelName`, `isActiveSet`) while the set-scoped route returns the owner's;
+  `ownerTwitchChannelId` is the owner on both paths, so an `expectedChannelName` derived from those
+  display fields can differ by cache warmth. Accepted as planned (plan decision 21).
 - **The true cost replaces "zero requests"** in `ImportTargetOwnershipService`,
   `IImportTargetOwnershipService`, `GuardedSevenTvEditorGrantsService`, `SevenTvEndpoints` and the
-  spec (§41): lists warm ⇒ 0; cold with the actor as owner ⇒ 1; cold with a valid grant hint ⇒ 2 in
+  spec (§41): lists warm ⇒ 0; cold with the actor as owner ⇒ 1 (with a hint naming another account that is then dropped, plus the
+  grants lookup below when cold); cold with a valid grant hint ⇒ 2 in
   one round trip; cold without a valid hint ⇒ up to `1 + k` serially, plus the report's one owner
   lookup for a set in no list; reading cold grants adds 2 (identity, `editor_of`). All budgeted,
   behind breaker and coalescer; an open list breaker is "unavailable" with or without a hint.

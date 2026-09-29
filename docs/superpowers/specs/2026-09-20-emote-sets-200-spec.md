@@ -3383,7 +3383,8 @@ ohne Hinweis die eigene und dann die jedes `editor_of`-Kontos, seriell bis zum T
 | Fall | Listen-Requests | dazu |
 |---|---|---|
 | Warm (Listen ≤ 60 s alt) | 0 | 0 |
-| Kalt, Besitzer ist der Akteur (mit oder ohne Hinweis) | 1 (die eigene Liste) | 0 — die Grants werden nicht gelesen |
+| Kalt, Besitzer ist der Akteur, ohne Hinweis oder mit Hinweis auf den Akteur | 1 (die eigene Liste) | 0 — die Grants werden nicht gelesen |
+| Kalt, Besitzer ist der Akteur, Hinweis auf ein fremdes Konto (wird verworfen) | 1 (die eigene Liste) | +2 (Identität, `editor_of`), wenn der Grant-Cache kalt ist — der Hinweis wird zuerst gegen die Grants aufgelöst |
 | Kalt, gültiger Hinweis auf einen Grant | 2 (eigene Liste und Hinweis-Liste **parallel**, ein Round-Trip) | +2 (Identität, `editor_of`), wenn der Grant-Cache kalt ist |
 | Kalt, ohne oder mit ungültigem Hinweis | bis zu `1 + k` (Akteur + k Grants, seriell) | +1 Owner-Lookup des Berichts, wenn das Set in keiner Liste steht; +2 wie oben |
 
@@ -3394,7 +3395,11 @@ Hinweis „nicht verfügbar", ohne Listen-Request.
 Login). Er ist eine **Reihenfolge, nie eine Erlaubnis**: Er wird nur gegen `{Akteur} ∪ Grants` der
 Session aufgelöst, bevor eine Liste gelesen wird; die ID gewinnt, ein Login zählt nur ohne ID und
 wird beidseitig über `ChannelName.Normalize` verglichen; alles andere wird verworfen (kein 400, keine
-Spiegelung). Ob das Set zulässig ist, entscheidet weiter allein `EmoteSetEditability.IsEditable` über
+Spiegelung). Ein verworfener Hinweis löst keinen Listen-Request aus; ihn aufzulösen kann aber die
+Grant-Abfrage (Identität + `editor_of`) kosten, wenn der Grant-Cache kalt ist — vor der eigenen Liste,
+also auch, wenn der Akteur das Set besitzt, und bei einem Akteur ohne 7TV-Konto einmal je 60-s-Haltefrist,
+wo der Aufruf ohne Hinweis die Grants überspringt. Begrenzt, geschützt und budgetiert wie jede
+Grant-Abfrage. Ob das Set zulässig ist, entscheidet weiter allein `EmoteSetEditability.IsEditable` über
 die Listen der verifizierten Konten.
 
 **Die eigene Liste wird immer gelesen.** Ein Hinweis auf einen Grant G liest die Grants (meist aus
