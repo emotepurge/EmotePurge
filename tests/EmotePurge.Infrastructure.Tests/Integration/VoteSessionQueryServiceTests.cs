@@ -310,6 +310,82 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetResultsAsync_NullSession_SumsUsageAcrossSets_AfterTheActiveSetChanged()
+    {
+        // The window lies before a set switch: its rows sit under the old set while the channel now
+        // points at a new one. A null-session has no set, so the old rows must still count.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_vote1", "new-set");
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "old-set", Date = today, UseCount = 13 });
+        var session = await SeedActiveSessionAsync(db, channel.Id);
+        await SeedBallotAsync(db, session.Id, emote.Id);
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
+
+        Assert.Equal(13, Assert.Single(results!.Emotes).TotalUseCount);
+    }
+
+    [Fact]
+    public async Task GetResultsAsync_NullSession_SumsUsageOfTwoSetsInTheWindow()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_vote2", "set-b");
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "set-a", Date = today, UseCount = 5 });
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "set-b", Date = today, UseCount = 8 });
+        var session = await SeedActiveSessionAsync(db, channel.Id);
+        await SeedBallotAsync(db, session.Id, emote.Id);
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
+
+        Assert.Equal(13, Assert.Single(results!.Emotes).TotalUseCount);
+    }
+
+    [Fact]
+    public async Task GetResultsAsync_NullSession_ForAChannelWithoutActiveSet_StillSumsUsage()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_vote3");
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "some-set", Date = today, UseCount = 4 });
+        var session = await SeedActiveSessionAsync(db, channel.Id);
+        await SeedBallotAsync(db, session.Id, emote.Id);
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
+
+        Assert.Equal(4, Assert.Single(results!.Emotes).TotalUseCount);
+    }
+
+    [Fact]
+    public async Task GetResultsAsync_NullSession_CountsTheStartDay_ButNotTheDayBefore()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_vote4", "set-x");
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "set-x", Date = today, UseCount = 3 });
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "set-y", Date = today.AddDays(-1), UseCount = 50 });
+        var session = await SeedActiveSessionAsync(db, channel.Id);
+        await SeedBallotAsync(db, session.Id, emote.Id);
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
+
+        Assert.Equal(3, Assert.Single(results!.Emotes).TotalUseCount);
+    }
+
+    [Fact]
     public async Task GetResultsAsync_SetSession_ReportsNullUsage_ForAMemberWithNoUsageStatUnderThatSet()
     {
         // AK 80: missing entirely from the set's UsageStats (not merely summing to 0) reports null,
@@ -602,9 +678,9 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         Assert.Single(secondPage.Items);
     }
 
-    private static async Task<Channel> SeedChannelAsync(AppDbContext db, string channelName)
+    private static async Task<Channel> SeedChannelAsync(AppDbContext db, string channelName, string activeEmoteSetId = "")
     {
-        var channel = new Channel { ChannelName = channelName, IsBotActive = true };
+        var channel = new Channel { ChannelName = channelName, IsBotActive = true, ActiveEmoteSetId = activeEmoteSetId };
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         return channel;

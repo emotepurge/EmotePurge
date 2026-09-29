@@ -81,7 +81,8 @@ public static class UsageStatsEndpoints
 
             // Null covers both "unknown id" and "someone else's emote" — a bare 404 either way, so
             // the response does not confirm that a guessed id exists elsewhere.
-            var series = await usageStatQueryService.GetDailySeriesAsync(channelName, emoteId, fromDate, toDate, emoteSetId, ct);
+            var series = await usageStatQueryService.GetDailySeriesAsync(
+                channelName, emoteId, fromDate, toDate, emoteSetId is null ? EmoteSetScope.ActiveSet : EmoteSetScope.Set(emoteSetId), ct);
             return series is null ? Results.NotFound() : Results.Ok(series);
         })
         .AddEndpointFilter<EmoteSetIdValidationFilter>();

@@ -1,4 +1,5 @@
 using EmotePurge.Core.Entities;
+using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fixtures;
@@ -250,7 +251,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
 
         // No UseCount > 0 filter here, only the date range — so the shared-only day still forms a
         // group, it just sums to nothing.
-        var totals = await service.GetTotalsByEmoteIdsAsync([sharedThenHuman.Id, mixed.Id], from, to, channel.ActiveEmoteSetId);
+        var totals = await service.GetTotalsByEmoteIdsAsync([sharedThenHuman.Id, mixed.Id], from, to, EmoteSetScope.AllSets);
         Assert.Equal(0, totals[sharedThenHuman.Id]);
         Assert.Equal(2, totals[mixed.Id]);
     }
@@ -357,7 +358,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
-        var totals = await service.GetTotalsByEmoteIdsAsync([onBallot.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), channel.ActiveEmoteSetId);
+        var totals = await service.GetTotalsByEmoteIdsAsync([onBallot.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
 
         Assert.Equal(9, Assert.Single(totals).Value);
     }
@@ -376,7 +377,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var unused = await SeedEmoteAsync(db, channel.Id, "Unused");
 
         var service = new UsageStatQueryService(db);
-        var totals = await service.GetTotalsByEmoteIdsAsync([unused.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), channel.ActiveEmoteSetId);
+        var totals = await service.GetTotalsByEmoteIdsAsync([unused.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
 
         Assert.Empty(totals);
     }
@@ -387,7 +388,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
 
         var service = new UsageStatQueryService(db);
-        var totals = await service.GetTotalsByEmoteIdsAsync([], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), "irrelevant-set");
+        var totals = await service.GetTotalsByEmoteIdsAsync([], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.Set("irrelevant-set"));
 
         Assert.Empty(totals);
     }
@@ -401,7 +402,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var service = new UsageStatQueryService(db);
 
         var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
-            service.GetTotalsByEmoteIdsAsync(["irrelevant-id"], new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1), "irrelevant-set"));
+            service.GetTotalsByEmoteIdsAsync(["irrelevant-id"], new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1), EmoteSetScope.Set("irrelevant-set")));
 
         Assert.Equal("from", exception.ParamName);
     }
@@ -1190,7 +1191,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
 
         var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
-            channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), PreviousSetId);
+            channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.Set(PreviousSetId));
 
         Assert.NotNull(series);
         var day = Assert.Single(series.Days);
@@ -1233,9 +1234,87 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
 
         var service = new UsageStatQueryService(db);
         var totals = await service.GetTotalsByEmoteIdsAsync(
-            [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), PreviousSetId);
+            [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.Set(PreviousSetId));
 
         Assert.Equal(2, Assert.Single(totals).Value);
+    }
+
+    [Fact]
+    public async Task GetTotalsByEmoteIdsAsync_AllSets_SumsEverySetInTheWindow()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_totals", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 9 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 2 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 6, 3), UseCount = 100 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetTotalsByEmoteIdsAsync(
+            [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
+
+        Assert.Equal(11, Assert.Single(totals).Value);
+    }
+
+    [Fact]
+    public async Task GetTotalsByEmoteIdsAsync_AllSets_KeepsAnEmoteWithRowsOnlyOutsideTheWindowAtZero()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_zero", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 6, 3), UseCount = 5 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetTotalsByEmoteIdsAsync(
+            [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
+
+        Assert.Equal(0, Assert.Single(totals).Value);
+    }
+
+    [Fact]
+    public async Task GetTotalsByEmoteIdsAsync_ActiveSetScope_Throws()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new UsageStatQueryService(db);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetTotalsByEmoteIdsAsync(
+            ["some-id"], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.ActiveSet));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void EmoteSetScope_Set_RejectsAnEmptyId(string? id)
+    {
+        Assert.ThrowsAny<ArgumentException>(() => EmoteSetScope.Set(id!));
+    }
+
+    [Fact]
+    public async Task GetDailySeriesAsync_AllSets_SumsSetsPerDay_AndBoundsAcrossSets()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_daily", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 6 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var series = await service.GetDailySeriesAsync(
+            channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
+
+        Assert.NotNull(series);
+        Assert.Equal(
+            [(new DateOnly(2026, 7, 3), 10), (new DateOnly(2026, 7, 5), 7)],
+            series.Days.Select(d => (d.Date, d.UseCount)).ToArray());
+        Assert.Equal(17, series.TotalUseCount);
+        Assert.Equal(new DateOnly(2026, 7, 3), series.FirstUsedDate);
+        Assert.Equal(new DateOnly(2026, 7, 5), series.LastUsedDate);
     }
 
     [Fact]

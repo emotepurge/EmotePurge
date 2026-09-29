@@ -10,6 +10,39 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-29 — A null-session's usage is summed across every emote set, through a named `EmoteSetScope` instead of a nullable set id (#200)
+
+**Betrifft:** `src/EmotePurge.Core/Services/EmoteSetScope.cs`,
+`src/EmotePurge.Core/Services/IUsageStatQueryService.cs` and
+`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs`
+(`GetTotalsByEmoteIdsAsync`, `GetDailySeriesAsync`) ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` ·
+`src/EmotePurge.Api/Endpoints/UsageStatsEndpoints.cs` (mechanical signature change of `/daily`) ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatQueryServiceTests.cs` and
+`VoteSessionQueryServiceTests.cs`
+
+A vote session without a set (`VoteSession.EmoteSetId == null`) used to read its usage column from
+`channel.ActiveEmoteSetId`. After a set switch the session's window lies under the *old* set, so
+every unarchived emote reported a fabricated `0`; a channel that never synced (`ActiveEmoteSetId ==
+""`) reported nothing at all. A null-session has no set of its own, so its usage is now what the
+emote got in the channel during the session window, summed across all sets. A set-session stays
+scoped to its own set, unchanged.
+
+Summing cannot double count: the flush writes exactly one row per (emote, set, day), under the set
+that was active at chat time, so one chat message never lands under two sets.
+
+The scope is a small Core value type (`EmoteSetScope`: active set, one named set, all sets;
+`default` is the active set) rather than a `null` set id. On the channel-scoped reads of
+`IUsageStatQueryService`, `null` already means "the channel's active set"; giving it a second
+meaning ("no filter") on the same interface would recreate the ambiguity that caused this bug.
+`GetTotalsByEmoteIdsAsync` takes the scope instead of a `string` and rejects the active-set scope
+with `ArgumentException` (it takes ids, not a channel, so it cannot resolve "active");
+`EmoteSetScope.Set` rejects a null or empty id. `GetDailySeriesAsync` takes the scope instead of
+`string? emoteSetId`; for all sets it drops the set predicate from both the day query and the
+first/last bounds and groups by day, so the DTO keeps its one-entry-per-day promise. The `/daily`
+route only translates its parameters mechanically here; the wire contract for "all sets" follows
+with the drilldown change.
+
 ### 2026-09-29 — A tracked channel's set preview gets its own route and its own per-user bucket; `ForeignEmoteLookup` keeps guarding only what is foreign (#220)
 
 **Betrifft:** `src/EmotePurge.Core/Services/EmoteSetMembershipRule.cs`,

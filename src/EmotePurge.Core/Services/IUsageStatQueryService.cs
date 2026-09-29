@@ -211,13 +211,16 @@ public interface IUsageStatQueryService
     /// emotes deliberately keep their series: they are unreachable from the usage grid, but a
     /// subset vote session still lists them as ballot members, and their history is real.
     /// </summary>
-    /// <param name="emoteSetId">
-    /// Which emote set's counts the series reports; <c>null</c> is the channel's active set. The
-    /// emote is still addressed by its <c>Emote.Id</c> guid — the drilldown opens from a row the
-    /// caller already holds, so nothing is gained by making it name the 7TV id instead.
+    /// <param name="setScope">
+    /// Which emote sets' counts the series reports; the default is the channel's active set,
+    /// <see cref="EmoteSetScope.Set"/> one named set, and <see cref="EmoteSetScope.AllSets"/> the
+    /// sum over every set (one entry per day, "first used" meaning first used in the channel) — the
+    /// drilldown of a null-session's row, whose usage is set-agnostic. The emote is still addressed
+    /// by its <c>Emote.Id</c> guid — the drilldown opens from a row the caller already holds, so
+    /// nothing is gained by making it name the 7TV id instead.
     /// </param>
     Task<EmoteUsageSeriesDto?> GetDailySeriesAsync(
-        string channelName, string emoteId, DateOnly from, DateOnly to, string? emoteSetId = null, CancellationToken cancellationToken = default);
+        string channelName, string emoteId, DateOnly from, DateOnly to, EmoteSetScope setScope = default, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Every unarchived emote's daily usage for the channel and range at once. An unknown channel
@@ -237,7 +240,7 @@ public interface IUsageStatQueryService
     /// <summary>
     /// Range totals for a known set of emote ids, keyed by id. An id is present with its
     /// range-summed <c>UseCount</c> whenever it has at least one <c>UsageStat</c> row under
-    /// <paramref name="emoteSetId"/> at all, in any date — the sum itself can legitimately be
+    /// <paramref name="setScope"/> at all, in any date — the sum itself can legitimately be
     /// <c>0</c> two different ways: every such row falls outside <paramref name="from"/>–
     /// <paramref name="to"/>, or a row does fall inside the range but carries
     /// <c>UseCount = 0</c> (a bot-only or shared-chat-only day). A <c>WHERE</c>-level date filter
@@ -250,13 +253,17 @@ public interface IUsageStatQueryService
     /// session's ballot) may hold twenty emotes out of a thousand. Each total is <c>UseCount</c>
     /// alone — see <see cref="EmoteUsageContextDto.TotalUseCount"/>.
     /// </summary>
-    /// <param name="emoteSetId">
-    /// Which emote set's counts to sum. Required rather than nullable, unlike the channel-scoped
-    /// reads: this method takes ids, not a channel, so it has nothing to resolve a "the active one"
-    /// default against — the caller holds the session and decides which set its ballot is about.
+    /// <param name="setScope">
+    /// Which emote sets' counts to sum: <see cref="EmoteSetScope.Set"/> restricts to one set (a
+    /// set-session's ballot), <see cref="EmoteSetScope.AllSets"/> applies no set predicate at all
+    /// (a null-session, which has no set of its own; the flush writes one row per emote, set and
+    /// day, so summing across sets counts nothing twice, and an empty active set id no longer
+    /// matters). <see cref="EmoteSetScope.ActiveSet"/> is rejected with
+    /// <see cref="ArgumentException"/>: this method takes ids, not a channel, so it has nothing to
+    /// resolve "the active one" against.
     /// </param>
     Task<IReadOnlyDictionary<string, int>> GetTotalsByEmoteIdsAsync(
-        IReadOnlyCollection<string> emoteIds, DateOnly from, DateOnly to, string emoteSetId, CancellationToken cancellationToken = default);
+        IReadOnlyCollection<string> emoteIds, DateOnly from, DateOnly to, EmoteSetScope setScope, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The earliest day across all of the channel's emotes — including archived ones — with a

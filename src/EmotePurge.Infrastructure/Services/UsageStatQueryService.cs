@@ -133,7 +133,7 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
     }
 
     public async Task<EmoteUsageSeriesDto?> GetDailySeriesAsync(
-        string channelName, string emoteId, DateOnly from, DateOnly to, string? emoteSetId = null, CancellationToken cancellationToken = default)
+        string channelName, string emoteId, DateOnly from, DateOnly to, EmoteSetScope setScope = default, CancellationToken cancellationToken = default)
     {
         if (from > to)
         {
@@ -158,26 +158,33 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
             return null;
         }
 
-        var setId = emoteSetId ?? emote.ActiveEmoteSetId;
+        // AllSets drops the set predicate from both queries below: a null-session's row is
+        // set-agnostic, so the drilldown opened from it has to be too.
+        var allSets = setScope.IsAllSets;
+        var setId = setScope.SetId ?? emote.ActiveEmoteSetId;
 
         // Sparse on purpose (only days with usage). Value and predicate both run over UseCount
         // alone, same reasoning as GetUsageContextAsync — a bot-only and a shared-only day are
         // equally absent from this series, because neither is a day this channel used the emote.
         // The set filter is what makes the drilldown agree with the row it was opened from: the
         // grid's total is one set's counts, so the days behind it have to be the same set's.
+        // Grouped by day: across sets the same day can carry one row per set, and the DTO promises
+        // one entry per day. Single-table GroupBy, so rule 10 is untouched.
         var days = await db.UsageStats
-            .Where(u => u.EmoteId == emote.Id && u.EmoteSetId == setId && u.Date >= from && u.Date <= to && u.UseCount > 0)
-            .OrderBy(u => u.Date)
-            .Select(u => new EmoteDailyUsageDto(u.Date, u.UseCount))
+            .Where(u => u.EmoteId == emote.Id && (allSets || u.EmoteSetId == setId) && u.Date >= from && u.Date <= to && u.UseCount > 0)
+            .GroupBy(u => u.Date)
+            .Select(g => new { Date = g.Key, UseCount = g.Sum(u => u.UseCount) })
+            .OrderBy(d => d.Date)
             .ToListAsync(cancellationToken);
+        var dailyUsage = days.Select(d => new EmoteDailyUsageDto(d.Date, d.UseCount)).ToList();
 
         // First/last use ever, unbounded in time — same reasoning as LastUsedDate in
         // GetUsageContextAsync, including the UseCount > 0 predicate against rows with no own
         // usage. Bounded by the set, though, and deliberately so: "first used" next to a set's
-        // numbers must mean first used under that set. Single-table GroupBy, so rule 10 is not
+        // numbers must mean first used under that set (under AllSets: first used in the channel). Single-table GroupBy, so rule 10 is not
         // even touched.
         var bounds = await db.UsageStats
-            .Where(u => u.EmoteId == emote.Id && u.EmoteSetId == setId && u.UseCount > 0)
+            .Where(u => u.EmoteId == emote.Id && (allSets || u.EmoteSetId == setId) && u.UseCount > 0)
             .GroupBy(u => u.EmoteId)
             .Select(g => new
             {
@@ -200,10 +207,10 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
             emote.Name,
             from,
             to,
-            days.Sum(d => d.UseCount),
+            dailyUsage.Sum(d => d.UseCount),
             bounds?.First,
             bounds?.Last,
-            days,
+            dailyUsage,
             liveDays);
     }
 
@@ -283,11 +290,16 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
     }
 
     public async Task<IReadOnlyDictionary<string, int>> GetTotalsByEmoteIdsAsync(
-        IReadOnlyCollection<string> emoteIds, DateOnly from, DateOnly to, string emoteSetId, CancellationToken cancellationToken = default)
+        IReadOnlyCollection<string> emoteIds, DateOnly from, DateOnly to, EmoteSetScope setScope, CancellationToken cancellationToken = default)
     {
         if (from > to)
         {
             throw new ArgumentException(FromMustPrecedeToMessage, nameof(from));
+        }
+
+        if (setScope.IsActiveSet)
+        {
+            throw new ArgumentException("The active set cannot be resolved without a channel; pass a set or all sets.", nameof(setScope));
         }
 
         if (emoteIds.Count == 0)
@@ -309,8 +321,10 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         // here, with a possibly-zero sum, so the interface doc's "missing = never observed under
         // this set at all" distinction actually holds. Same conditional-sum shape
         // GetUsageContextAsync's own aggregates query already uses for the identical reason.
+        var allSets = setScope.IsAllSets;
+        var setId = setScope.SetId;
         return await db.UsageStats
-            .Where(u => ids.Contains(u.EmoteId) && u.EmoteSetId == emoteSetId)
+            .Where(u => ids.Contains(u.EmoteId) && (allSets || u.EmoteSetId == setId))
             .GroupBy(u => u.EmoteId)
             .Select(g => new { EmoteId = g.Key, TotalUseCount = g.Sum(u => u.Date >= from && u.Date <= to ? u.UseCount : 0) })
             .ToDictionaryAsync(g => g.EmoteId, g => g.TotalUseCount, cancellationToken);
