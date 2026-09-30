@@ -17,7 +17,20 @@ import {
 import { rxResource } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { Subscription, catchError, first, merge, of, switchMap, timer } from 'rxjs';
+import {
+  EMPTY,
+  MonoTypeOperatorFunction,
+  Observable,
+  Subscription,
+  catchError,
+  defer,
+  finalize,
+  first,
+  merge,
+  of,
+  switchMap,
+  timer,
+} from 'rxjs';
 
 import { ChannelService } from '../../core/channels/channel.service';
 import { botsExcludedCaptionKey } from '../../core/emotes/bots-excluded-caption';
@@ -1312,8 +1325,18 @@ export class UsageStatsPage {
    * an old failure would lock over a newer success, an old success lift the lock over a newer
    * failure. The channel guards at each call site stay — they keep another channel's answer out,
    * this orders the answers within one channel.
+   *
+   * The two background reads (the recheck poll, the first-sync probes) never take a generation
+   * while a load() or `refreshSetStatus` read is in flight — see `requestBackgroundSetStatus`.
    */
   private readonly latestSetStatus = latestOnly<EmoteSetStatus>();
+
+  /**
+   * How many load()/`refreshSetStatus` status reads are in flight — the reads that lock on failure
+   * and, after a sync, reload the rows. A background read skips while this is above zero, so it can
+   * never supersede one of them (Codex review, O2). A plain field: nothing reads it reactively.
+   */
+  private statusReadsInFlight = 0;
 
   /**
    * How many times load() has raised the skeleton (`isLoading`). A `/totals` answer takes it down
@@ -2127,16 +2150,7 @@ export class UsageStatsPage {
       const channelName = this.channelName();
 
       const recheck = timer(SYNC_FAILURE_RECHECK_INTERVAL_MS, SYNC_FAILURE_RECHECK_INTERVAL_MS)
-        .pipe(
-          // `latestSetStatus` before the catch: a poll answer overtaken by a newer status request
-          // (a sync's refresh, the refresh button) must write nothing.
-          switchMap(() =>
-            this.emoteAdminService.getSetStatus(channelName).pipe(
-              this.latestSetStatus,
-              catchError(() => of(null)),
-            ),
-          ),
-        )
+        .pipe(switchMap(() => this.requestBackgroundSetStatus(channelName)))
         .subscribe((status) => {
           if (!status || this.channelName() !== channelName) {
             return;
@@ -2820,7 +2834,7 @@ export class UsageStatsPage {
     const channelName = this.channelName();
     this.emoteAdminService
       .getSetStatus(channelName)
-      .pipe(this.latestSetStatus)
+      .pipe(this.latestSetStatus, this.countStatusRead())
       .subscribe({
         next: (status) => {
           if (this.channelName() !== channelName) {
@@ -2863,6 +2877,41 @@ export class UsageStatsPage {
             this.setStatus.set(null);
           }
         },
+      });
+  }
+
+  /**
+   * One read for the two best-effort background paths — a sync-failure recheck tick and a
+   * first-sync probe: `null` for a failed read (they swallow failures and lock nothing), no value at
+   * all for one superseded by a newer status request (`latestSetStatus` sits before the catch).
+   *
+   * Skipped outright while a load()/`refreshSetStatus` read is in flight (`statusReadsInFlight`).
+   * Taking a generation then would supersede that read: its failure would never lock, its success
+   * never reload a sync's rows — and a failed background read would put nothing in their place
+   * (Codex review, O2). Skipping rather than giving the background reads an ordering of their own:
+   * the in-flight read answers the very same question, and only it knows how to apply a failure;
+   * a separate ordering would let an older background success land over a newer failure's lock.
+   * What a skip costs is one tick or one probe; the next one asks again. The flush probe is not a
+   * background read in this sense — it is a `refreshSetStatus` like a sync's, locks on failure, and
+   * its burst reloads the rows itself — so it keeps sharing the ordering.
+   */
+  private requestBackgroundSetStatus(channelName: string): Observable<EmoteSetStatus | null> {
+    if (this.statusReadsInFlight > 0) {
+      return EMPTY;
+    }
+    return this.emoteAdminService.getSetStatus(channelName).pipe(
+      this.latestSetStatus,
+      catchError(() => of(null)),
+    );
+  }
+
+  /** Counts a load()/`refreshSetStatus` read in `statusReadsInFlight` from subscribe until it ends
+   *  — answered, failed, or superseded (latestOnly completes a superseded read silently). */
+  private countStatusRead(): MonoTypeOperatorFunction<EmoteSetStatus> {
+    return (source) =>
+      defer(() => {
+        this.statusReadsInFlight++;
+        return source.pipe(finalize(() => this.statusReadsInFlight--));
       });
   }
 
@@ -2921,7 +2970,7 @@ export class UsageStatsPage {
       this.stopAwaitingSync();
       this.emoteAdminService
         .getSetStatus(channelName)
-        .pipe(this.latestSetStatus)
+        .pipe(this.latestSetStatus, this.countStatusRead())
         .subscribe({
           next: (status) => {
             // An answer for a channel the page has already left must not land under the current
@@ -3175,14 +3224,9 @@ export class UsageStatsPage {
         // catchError sits on the inner request, not on the outer pipe: out here it would replace the
         // whole probe stream on the first hiccup and end the wait. Inside, one failed probe just
         // counts as "still empty" and the next probe tries again.
-        // `latestSetStatus` sits before the catch, so a probe overtaken by a newer status request
-        // (a sync's refresh, the refresh button) ends without a value rather than as "empty".
-        switchMap(() =>
-          this.emoteAdminService.getSetStatus(channelName).pipe(
-            this.latestSetStatus,
-            catchError(() => of(null)),
-          ),
-        ),
+        // A probe overtaken by a newer status request, or skipped for one already in flight (see
+        // requestBackgroundSetStatus), ends without a value rather than as "empty".
+        switchMap(() => this.requestBackgroundSetStatus(channelName)),
         // Completes on the first status that settles the question — a set id (the sync landed) or a
         // reason (it cannot land). Probing on against a known reason would spend the rest of the
         // window arriving at an answer the first probe already had.

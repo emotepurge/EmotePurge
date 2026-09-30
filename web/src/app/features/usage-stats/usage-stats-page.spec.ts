@@ -6122,6 +6122,64 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     expect(component['activeEmoteSetId']()).toBe('set-b');
   });
 
+  describe('(9d) a sync-failure recheck tick never overtakes a sync status read in flight', () => {
+    const RECHECK_INTERVAL_MS = 60000; // SYNC_FAILURE_RECHECK_INTERVAL_MS
+
+    /** An old active set plus a failure reason: the recheck poll runs. */
+    function failingStatus(): EmoteSetStatus {
+      return { ...statusFor('set-a'), syncFailureReason: 'seventv_unavailable' };
+    }
+
+    /** channel.synced → its status read goes out; then a recheck tick fires before it answers and
+     *  whatever poll request that produced is answered first. Returns the sync's own request. */
+    async function syncThenTick(pollAnswer: 'fail' | 'succeed'): Promise<TestRequest> {
+      await mount({ totals: [emote('a', 'PeepoA')], status: failingStatus() });
+      await emit(LIVE_EVENT_TYPES.channelSynced);
+      flushOpenSetListReloads();
+      const refresh = httpMock.expectOne(STATUS_URL);
+
+      vi.advanceTimersByTime(RECHECK_INTERVAL_MS);
+      await settle();
+      httpMock
+        .match(STATUS_URL)
+        .forEach((poll) =>
+          pollAnswer === 'fail' ? poll.flush({}, FAILED) : poll.flush(failingStatus()),
+        );
+      await settle();
+      return refresh;
+    }
+
+    it('a failed tick, then a failed sync read: the sync read still locks', async () => {
+      const refresh = await syncThenTick('fail');
+      refresh.flush({}, FAILED);
+      await settle();
+
+      expect(component['deleteLockReasonKey']()).toBe(UNAVAILABLE);
+      expect(component['voteLockReasonKey']()).toBe(UNAVAILABLE);
+      expect(totalsRequests()).toHaveLength(0);
+    });
+
+    it('a failed tick, then a successful sync read: adopted, and its rows reloaded once', async () => {
+      const refresh = await syncThenTick('fail');
+      refresh.flush(failingStatus());
+      await settle();
+
+      expect(component['setStatusUnavailableFor']()).toBeNull();
+      const asked = totalsRequests();
+      expect(asked.map((r) => r.request.params.get('emoteSetId'))).toEqual(['set-a']);
+    });
+
+    it('a successful tick, then a successful sync read: the rows are reloaded exactly once', async () => {
+      const refresh = await syncThenTick('succeed');
+      refresh.flush(failingStatus());
+      await settle();
+
+      expect(component['setStatusUnavailableFor']()).toBeNull();
+      const asked = totalsRequests();
+      expect(asked.map((r) => r.request.params.get('emoteSetId'))).toEqual(['set-a']);
+    });
+  });
+
   it('(10) a silent reload that overtakes a loud one takes the skeleton down when it lands', async () => {
     await mount({ totals: [emote('a', 'PeepoA')] });
 

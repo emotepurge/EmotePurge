@@ -13,8 +13,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 ### 2026-09-29 — `channel.synced` reads the set status before the rows, and a failed status refresh locks deleting and voting instead of passing silently (#200)
 
 **Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (live subscription,
-`refreshSetStatus`, `adoptSetStatus`, `latestSetStatus`, `setStatusUnavailableFor`/
-`setStatusUnavailable`, `sharedSetViewLockReasonKey`, `loadTotals`/`endLoadingFor`) · `web/public/i18n/de.json` and `en.json`
+`refreshSetStatus`, `adoptSetStatus`, `latestSetStatus`, `requestBackgroundSetStatus`,
+`setStatusUnavailableFor`/`setStatusUnavailable`, `sharedSetViewLockReasonKey`, `loadTotals`/`endLoadingFor`) · `web/public/i18n/de.json` and `en.json`
 (`usageStats.setView.lock.statusUnavailable`) ·
 `web/src/app/features/usage-stats/usage-stats-page.spec.ts`
 
@@ -59,7 +59,10 @@ triggered the refetch is the one that can swap sets.
   `adoptSetStatus` (DTO, claim on the channel, lock flag cleared). With (b), an out-of-order answer
   would otherwise do harm both ways: an old failure locking over a newer success, an old success
   lifting the lock over a newer failure. The channel guards stay; they keep another channel's
-  answer out, the shared guard orders answers within one channel. The first-sync wait still starts
+  answer out, the shared guard orders answers within one channel. Background reads (a recheck tick,
+  a first-sync probe) never supersede an in-flight `load()`/`refreshSetStatus` read: they skip
+  while one is out (`statusReadsInFlight`), so that read's failure still locks and a sync's row
+  reload still follows its success (Codex review). The first-sync wait still starts
   from `load()`'s success only: after a `channel.synced` the sync has just happened, and the poll
   runs only while a failure reason is known. **`preserveSelection` removed, retain/clear by
   `totalsChannel` alone:** whether `loadTotals` keeps (and reconciles) the selection now depends
@@ -91,7 +94,8 @@ Known limits of the lock (second review round, arbitrated 2026-09-29):
 - A status refresh that overtakes the initial status read skips the first-sync wait; the next
   `channel.synced` covers it.
 - A failed first-sync probe or sync-failure recheck tick neither locks nor marks the status; the
-  next tick or event answers.
+  next tick or event answers. It can no longer swallow another read's failure that way: a tick or
+  probe is skipped while a `load()`/`refreshSetStatus` read is in flight.
 - After a failed refresh the rows keep the view identity they had; whether they still are the
   active view is unknown until the next successful status.
 
