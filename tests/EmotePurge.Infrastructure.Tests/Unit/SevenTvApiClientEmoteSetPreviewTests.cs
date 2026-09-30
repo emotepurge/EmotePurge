@@ -157,6 +157,38 @@ public class SevenTvApiClientEmoteSetPreviewTests
     }
 
     /// <summary>
+    /// A partial GraphQL answer — <c>emoteSet: null</c> next to a non-429 <c>errors</c> block — is 7TV
+    /// failing, not 7TV naming no such set. Reading it as NotFound would book a breaker success for
+    /// an error response.
+    /// </summary>
+    [Fact]
+    public async Task PartialAnswer_WithNullSetAndAnErrorsBlock_IsUnavailable_NotNotFound()
+    {
+        const string partialPayload =
+            """{"data":{"emote_sets":{"emote_set":null}},"errors":[{"message":"boom","extensions":{"code":"INTERNAL","status":500}}]}""";
+        var client = CreateClient(new PagedStubHandler(_ => partialPayload));
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(SevenTvPreviewLookupStatus.Unavailable, result.Status);
+        Assert.Null(result.Preview);
+    }
+
+    /// <summary>The confirmed-429 branch runs ahead of the NotFound check, also in the partial shape.</summary>
+    [Fact]
+    public async Task PartialAnswer_WithNullSetAndA429Error_IsRateLimited()
+    {
+        const string partialPayload =
+            """{"data":{"emote_sets":{"emote_set":null}},"errors":[{"message":"too many requests","extensions":{"code":"RATE_LIMITED","status":429}}]}""";
+        var client = CreateClient(new PagedStubHandler(_ => partialPayload));
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(SevenTvPreviewLookupStatus.RateLimited, result.Status);
+        Assert.Null(result.Preview);
+    }
+
+    /// <summary>
     /// The set-local alias and the emote's global default name are two different fields with two
     /// different meanings (spec DTO contract, section 4) and must never collapse into one — a
     /// regression here would silently make every renamed-in-this-set emote look like it kept its

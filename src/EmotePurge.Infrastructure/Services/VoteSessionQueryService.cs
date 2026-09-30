@@ -113,12 +113,15 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
         // skipped entirely for everyone else. Scoped to the ballot rather than to the channel: a
         // subset session may hold twenty emotes out of a thousand, and asking for the channel's
         // totals meant zero-filling all thousand only to discard the rest here.
-        // A set-session's own set (its ballot was drawn from it, spec section 9); a null-session
-        // reads the channel's active set, exactly as before set-sessions existed.
+        // A set-session's own set (its ballot was drawn from it, spec section 9). A null-session has
+        // no set: its usage is what the emote got in the channel during the session's window,
+        // summed across every set — the channel's active set may have changed since (or be empty),
+        // and the rows behind the window sit under whichever set was active at chat time.
         var usageByEmoteId = !includeRawUsage || candidateEmotes.Count == 0
             ? new Dictionary<string, int>()
             : await usageStatQueryService.GetTotalsByEmoteIdsAsync(
-                candidateEmotes.Select(e => e.Id).ToList(), from, to, session.EmoteSetId ?? channel.ActiveEmoteSetId, cancellationToken);
+                candidateEmotes.Select(e => e.Id).ToList(), from, to,
+                session.EmoteSetId is null ? EmoteSetScope.AllSets : EmoteSetScope.Set(session.EmoteSetId), cancellationToken);
 
         // Same as the usage totals above: not computed at all for a viewer who may not see them.
         var voteTallies = !includeTallies

@@ -120,7 +120,7 @@ public class ForeignEmoteSetService(
             // 4): the caller cannot act on "unknown" versus "none configured" any differently.
             case SevenTvPreviewLookupStatus.NotFound:
                 logger.LogInformation(
-                    "Fremdkanal-Vorschau für {ChannelName}: 7TV kennt das zuvor aufgelöste Set nicht mehr.", normalized);
+                    "Foreign-channel preview for {ChannelName}: 7TV no longer knows the previously resolved set.", normalized);
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.NoActiveEmoteSet);
             case SevenTvPreviewLookupStatus.BudgetExhausted:
                 // Our own throttle, not 7TV's — kept apart all the way up so the circuit breaker never
@@ -160,12 +160,12 @@ public class ForeignEmoteSetService(
         {
             case SevenTvPreviewLookupStatus.RateLimited:
                 logger.LogWarning(
-                    "Set-Vorschau für {SetId} (Kanal {ChannelName}): 7TV meldet Überlast (429).", emoteSetId, normalized);
+                    "Set preview for {SetId} (channel {ChannelName}): 7TV reports overload (429).", emoteSetId, normalized);
                 return ForeignEmoteSetLookupResult.Failed(
                     ForeignEmoteSetLookupStatus.SevenTvRateLimited, previewResult.RetryAfter);
             case SevenTvPreviewLookupStatus.Unavailable:
                 logger.LogInformation(
-                    "Set-Vorschau für {SetId} (Kanal {ChannelName}): 7TV-Set-Abruf fehlgeschlagen.", emoteSetId, normalized);
+                    "Set preview for {SetId} (channel {ChannelName}): 7TV set fetch failed.", emoteSetId, normalized);
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable);
             // Vorentscheidung 4 (spec 6.4): 7TV answered, the set simply does not exist. Reuses the
             // existing NoActiveEmoteSet status/404 code rather than minting a fifth one — the caller
@@ -173,13 +173,13 @@ public class ForeignEmoteSetService(
             // a query with a manipulated emoteSetId is the only way to reach this branch at all.
             case SevenTvPreviewLookupStatus.NotFound:
                 logger.LogInformation(
-                    "Set-Vorschau für {SetId} (Kanal {ChannelName}): 7TV kennt dieses Set nicht.", emoteSetId, normalized);
+                    "Set preview for {SetId} (channel {ChannelName}): 7TV does not know this set.", emoteSetId, normalized);
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.NoActiveEmoteSet);
             case SevenTvPreviewLookupStatus.BudgetExhausted:
                 // Our own throttle, not 7TV's — kept apart all the way up so the circuit breaker never
                 // counts it as evidence about the provider.
                 logger.LogWarning(
-                    "Set-Vorschau für {SetId} (Kanal {ChannelName}): providerweites Request-Budget während der Seitenabfrage erschöpft.",
+                    "Set preview for {SetId} (channel {ChannelName}): provider-wide request budget exhausted during the page fetch.",
                     emoteSetId, normalized);
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.ProviderBudgetExhausted);
             case SevenTvPreviewLookupStatus.Ok:

@@ -150,3 +150,14 @@ export interface ChannelUsageSeries {
   liveDays: number[];
   emotes: EmoteSeriesEntry[];
 }
+
+/**
+ * The "every emote set" scope of a daily series (`setScope=all`): a null-session has no set of its
+ * own, and the usage on its rows is what the emote got across all of them. A named object rather
+ * than a string, because every string is a valid set id — `null` stays "the channel's active set".
+ */
+export const ALL_EMOTE_SETS = { allSets: true } as const;
+export type AllEmoteSets = typeof ALL_EMOTE_SETS;
+
+/** Which sets a daily series reads: one set (its id), the channel's active set (`null`), or all. */
+export type DailySeriesSetScope = string | null | AllEmoteSets;

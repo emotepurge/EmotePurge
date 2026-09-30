@@ -26,6 +26,7 @@ import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { VoteSessionResult, VoteSessionResults } from '../../core/voting/vote-session.model';
+import { ALL_EMOTE_SETS } from '../../core/usage-stats/usage-stat.model';
 import { EmoteDrilldownData } from '../../shared/emotes/emote-drilldown-dialog';
 import { VoteSessionDetailPage } from './vote-session-detail-page';
 
@@ -642,7 +643,7 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
     expect(data.emoteSetId).toBe('halloween-1');
   });
 
-  it('openDrilldown omits emoteSetId for a null-session (falls back to the active set inside the dialog)', async () => {
+  it('openDrilldown asks for every set for a null-session (its row sums usage across all of them)', async () => {
     await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
     const openSpy = vi
       .spyOn(TestBed.inject(Dialog), 'open')
@@ -651,7 +652,7 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
     component['openDrilldown'](component['results']()!.emotes[0]);
 
     const data = openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
-    expect(data.emoteSetId).toBeNull();
+    expect(data.emoteSetId).toBe(ALL_EMOTE_SETS);
   });
 
   it("targets a set-session's own NON-active set with the real active set beside it, unlocked once its live membership read lands clean (K5's set-scoped sync-deleted lifted Ruling D)", async () => {

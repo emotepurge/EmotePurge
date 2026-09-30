@@ -10,6 +10,141 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-29 — `channel.synced` reads the set status before the rows, and a failed status refresh locks deleting and voting instead of passing silently (#200)
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (live subscription,
+`refreshSetStatus`, `adoptSetStatus`, `latestSetStatus`, `requestBackgroundSetStatus`,
+`setStatusUnavailableFor`/`setStatusUnavailable`, `sharedSetViewLockReasonKey`, `loadTotals`/`endLoadingFor`) · `web/public/i18n/de.json` and `en.json`
+(`usageStats.setView.lock.statusUnavailable`) ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts`
+
+Two holes around a 7TV set swap on the usage page. (a) On `channel.synced` the page reloaded
+`/totals` silently under its *own* active id before refetching the status. When the sync had moved
+the active set from A to B, the rows came back for A stamped as the active view, and the #94
+reconciliation pruned every marked emote without counts in A — deletion candidates the user had
+picked — before the status even named B. Whether that happened depended on which answer arrived
+first. (b) A failed status refetch was swallowed (`error: () => undefined`), so A stayed "active":
+the dock kept offering a delete into A, labelled as the active set, although the very event that
+triggered the refetch is the one that can swap sets.
+
+- **Status first.** A burst containing `channel.synced` stops the sync wait, reloads the set list
+  and (loudly) the member list at once, then asks for the status — and no rows. Once the status is
+  in, the rows are reloaded silently under the selected set, unless the status itself moved the
+  selected set (the load effect reloads then) or flipped `viewKindStale` (the stale effect does);
+  one request per status either way. The member-list reload deliberately stays immediate (AK 52):
+  should the status make the chosen set the active one, the resource drops the request itself.
+  `usage.flushed` alone is unchanged.
+- **A failed refresh locks, but keeps the last known set.** `refreshSetStatus` no longer
+  swallows a failure: it marks the channel in its own flag, `setStatusUnavailableFor`, and a new
+  first lock reason, `setStatusUnavailable` (the flag names the channel on screen), locks deleting
+  **and** voting with its own text (`usageStats.setView.lock.statusUnavailable`, wording approved
+  by the operator 2026-09-29) until the next successful status for that channel clears the flag.
+  Nothing else moves: the channel stays claimed (`setStatusChannel`), `activeEmoteSetId()` keeps
+  the last known id, the selected set, the dock and the mass-delete panel stay, no rows are
+  reloaded and the selection is untouched. The first version of this fix un-claimed the channel
+  like a failed initial `load()` does; with the URL following the active set that turned the
+  selected set `null`, unmounted `app-mass-delete-panel` in the middle of a run (the run went on in
+  the service, and the remount could report `deleted` twice) and raised the skeleton through the
+  load effect. So the code comment it had reversed ("a failed refetch … must never take the
+  mass-delete panel away over a transient error") is right again; what changed is that the old id
+  no longer passes unlocked. A failed initial `load()` still un-claims (bullet "An unknown active
+  set is not the selected set", fix round 2026-09-22 of the 2026-09-21 K4 entry) and sets the flag
+  as well. The refresh also marks `setStatusFailedChannel`, which "all time" (`rangeResolved`) and
+  the member-list gate need when the refresh overtook the channel's initial request (that one then
+  never answers); nothing was ever adopted for the channel in that case, so the DTO on hand is the
+  previous channel's and is dropped — its `trackedSince` would otherwise start this channel's "all
+  time". The flush-probe refresh gets the same failure handling on purpose.
+- **One `latestOnly` for every status read, one way to adopt one.** `load()`, `refreshSetStatus`,
+  the sync-failure poll and `awaitSync` share `latestSetStatus`, and every success lands through
+  `adoptSetStatus` (DTO, claim on the channel, lock flag cleared). With (b), an out-of-order answer
+  would otherwise do harm both ways: an old failure locking over a newer success, an old success
+  lifting the lock over a newer failure. The channel guards stay; they keep another channel's
+  answer out, the shared guard orders answers within one channel. Background reads (a recheck tick,
+  a first-sync probe) never supersede an in-flight `load()`/`refreshSetStatus` read: they skip
+  while one is out (`statusReadsInFlight`), so that read's failure still locks and a sync's row
+  reload still follows its success (Codex review). The first-sync wait still starts
+  from `load()`'s success only: after a `channel.synced` the sync has just happened, and the poll
+  runs only while a failure reason is known. **`preserveSelection` removed, retain/clear by
+  `totalsChannel` alone:** whether `loadTotals` keeps (and reconciles) the selection now depends
+  only on whether the rows on screen already belong to the requested channel. The option made a
+  pushed reload retain unconditionally, so a reload for channel Y that landed while the rows still
+  showed X carried X's marks into Y — a 7TV id both channels share survived as a delete candidate.
+  **Pushed reloads wait for `rangeResolved`:** `loadTotals` refuses while "all time" is still the
+  placeholder span — one guard at the choke point instead of one per caller. A flush between a
+  channel switch and its status no longer fetches a year of rows or takes `load()`'s skeleton down
+  with it, the load effect asks exactly once after the range correction, and the first-sync wait
+  and the sync-failure poll no longer ask twice under "all time".
+- **The winning `/totals` answer takes the skeleton down.** Before, only an answer to a loud
+  request lowered `isLoading`, so a silent `usage.flushed` reload that overtook a loud one left the
+  skeleton (and the disabled refresh button) up for good. Now the winning answer lowers it
+  whoever asked, unless a later `load()` has raised it since the request went out (`loadStarts`),
+  so a request older than the current load cannot drop the skeleton that load still owns. The
+  `silent` option of `loadTotals` only ever guarded that lowering and is removed.
+
+Not done, recorded as known limits in PR #303 (operator 2026-09-29): `/totals` still does not echo
+the resolved set id and `isActiveSet`, so a second set swap between the status and the rows answer
+stays possible until the next `channel.synced`; and a sync that moves the selected set still
+reloads it with the skeleton (existing behaviour of the load effect), this fix only stops the
+skeleton from sticking.
+
+Known limits of the lock (second review round, arbitrated 2026-09-29):
+
+- Import and transfer stay available while the channel's set status is unknown after a failed
+  refresh; only deleting and voting lock.
+- A status refresh that overtakes the initial status read skips the first-sync wait; the next
+  `channel.synced` covers it.
+- A failed first-sync probe or sync-failure recheck tick neither locks nor marks the status; the
+  next tick or event answers. It can no longer swallow another read's failure that way: a tick or
+  probe is skipped while a `load()`/`refreshSetStatus` read is in flight.
+- After a failed refresh the rows keep the view identity they had; whether they still are the
+  active view is unknown until the next successful status.
+
+### 2026-09-29 — A null-session's usage is summed across every emote set, through a named `EmoteSetScope` instead of a nullable set id (#200)
+
+**Betrifft:** `src/EmotePurge.Core/Services/EmoteSetScope.cs`,
+`src/EmotePurge.Core/Services/IUsageStatQueryService.cs` and
+`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs`
+(`GetTotalsByEmoteIdsAsync`, `GetDailySeriesAsync`) ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` ·
+`src/EmotePurge.Api/Endpoints/UsageStatsEndpoints.cs` (`/daily`) ·
+`src/EmotePurge.Api/Validation/EmoteSetScopeParser.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteSetScopeParserTests.cs`, `UsageStatsDailyScopeEndpointTests.cs` and
+`ApiFactory.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatQueryServiceTests.cs` and
+`VoteSessionQueryServiceTests.cs`
+
+A vote session without a set (`VoteSession.EmoteSetId == null`) used to read its usage column from
+`channel.ActiveEmoteSetId`. After a set switch the session's window lies under the *old* set, so
+every unarchived emote reported a fabricated `0`; a channel that never synced (`ActiveEmoteSetId ==
+""`) reported `0` as well (empty dictionary, `GetValueOrDefault(id, 0)`). A null-session has no set of its own, so its usage is now what the
+emote got in the channel during the session window, summed across all sets. A set-session stays
+scoped to its own set, unchanged.
+
+Summing cannot double count: the flush writes exactly one row per (emote, set, day), under the set
+that was active at chat time, so one chat message never lands under two sets.
+
+The scope is a small Core value type (`EmoteSetScope`: active set, one named set, all sets;
+`default` is the active set) rather than a `null` set id. On the channel-scoped reads of
+`IUsageStatQueryService`, `null` already means "the channel's active set"; giving it a second
+meaning ("no filter") on the same interface would recreate the ambiguity that caused this bug.
+`GetTotalsByEmoteIdsAsync` takes the scope instead of a `string` and rejects the active-set scope
+with `ArgumentException` (it takes ids, not a channel, so it cannot resolve "active");
+`EmoteSetScope.Set` rejects a null or empty id. `GetDailySeriesAsync` takes the scope instead of
+`string? emoteSetId`; for all sets it drops the set predicate from both the day query and the
+first/last bounds and groups by day, so the DTO keeps its one-entry-per-day promise.
+
+The drilldown behind a null-session's row must show the same numbers as the row, so `GET
+/usage-stats/daily` can read every set. The wire contract is an explicit `setScope` query
+parameter, not a reserved set id (`all` is itself a well-formed id): `emoteSetId=<id>` (that set),
+`setScope=all` (every set), or neither (the active set). `setScope` is compared ordinally and only
+lowercase `active` and `all` are words; either word together with an `emoteSetId`, or any other
+value (`All`, empty, ...), is `400 invalid_emote_set_id` — no new error code, and the pair never
+resolves by one parameter silently winning. The rule lives in the static `EmoteSetScopeParser`, not
+in `EmoteSetIdValidationFilter`, which hangs on routes without `setScope`. The usage page never
+sends `setScope`; the vote-detail drilldown sends `setScope=all` for a null-session and keeps its
+own set for a set-session. The client's cache key marks "active" and "all" with a character outside
+`[0-9A-Za-z]`, so neither can collide with a set whose id is literally `all` or `active`.
+
 ### 2026-09-29 — A tracked channel's set preview gets its own route and its own per-user bucket; `ForeignEmoteLookup` keeps guarding only what is foreign (#220)
 
 **Betrifft:** `src/EmotePurge.Core/Services/EmoteSetMembershipRule.cs`,

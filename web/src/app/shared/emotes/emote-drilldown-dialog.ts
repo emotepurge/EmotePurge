@@ -7,7 +7,7 @@ import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
-import { EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
+import { DailySeriesSetScope, EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { VoteType } from '../../core/voting/vote-session.model';
 import { Button } from '../ui/button';
@@ -40,12 +40,13 @@ export interface EmoteDrilldownData {
   imageUrl: string;
   /**
    * The set the host page's numbers are counted under, frozen when the dialog opens (spec #200,
-   * 7.2/F4, AK 64): a dropdown switch behind an open dialog must not re-point its request. `null` or
-   * absent means "the channel's active set" — a null-session's case on the vote page (T6.3): a
-   * set-session passes its own `emoteSetId` instead, so its drilldown charts the ballot's set, not
-   * whatever the channel happens to be showing as active right now.
+   * 7.2/F4, AK 64): a dropdown switch behind an open dialog must not re-point its request. Three
+   * named states: a set id (a set-session on the vote page charts the ballot's set, and the usage
+   * page its shown set); `ALL_EMOTE_SETS` (a null-session, whose numbers are summed across every
+   * set — the chart must agree with the card); `null` or absent, "the channel's active set" (the
+   * usage page before any rows have loaded).
    */
-  emoteSetId?: string | null;
+  emoteSetId?: DailySeriesSetScope;
   /** Usage page only — trend and time-in-set need these. */
   firstSeenAt?: string | null;
   previousWindowUseCount?: number;

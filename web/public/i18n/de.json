@@ -795,7 +795,8 @@
       "lock": {
         "membersUnavailable": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
         "truncated": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
-        "switching": "Löschen und Abstimmen gesperrt, bis das gewählte Set geladen ist."
+        "switching": "Löschen und Abstimmen gesperrt, bis das gewählte Set geladen ist.",
+        "statusUnavailable": "Löschen und Abstimmen gesperrt: Das aktive Set des Kanals ist gerade nicht bekannt."
       },
       "loadFailedTitle": "Das gewählte Set konnte nicht geladen werden",
       "retry": "Erneut versuchen"

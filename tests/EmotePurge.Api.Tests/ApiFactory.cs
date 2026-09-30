@@ -91,6 +91,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public ITrackedEmoteSetMembershipService TrackedEmoteSetMembership { get; } = Substitute.For<ITrackedEmoteSetMembershipService>();
 
     /// <summary>
+    /// Substituted so the <c>/usage-stats/daily</c> wire test can read back which set scope the
+    /// endpoint forwarded; the handler's services are resolved before the filter pipeline runs (see
+    /// <see cref="ForeignEmoteSet"/>), and the real service would go to Postgres.
+    /// </summary>
+    public IUsageStatQueryService UsageStats { get; } = Substitute.For<IUsageStatQueryService>();
+
+    /// <summary>
     /// Substituted for the same reason as <see cref="ForeignEmoteSet"/> above: the leaderboard
     /// endpoint's whole filter-matrix test suite never needs a real 7TV round trip, only control over
     /// what <c>GetLeaderboardAsync</c> answers.
@@ -231,6 +238,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => ForeignEmoteSet);
             services.AddScoped(_ => TrackedEmoteSetMembership);
             services.AddScoped(_ => Leaderboard);
+            services.AddScoped(_ => UsageStats);
             services.AddScoped(_ => Emotes);
             services.AddScoped(_ => EmoteSetList);
             services.AddScoped(_ => EmoteSetObservations);

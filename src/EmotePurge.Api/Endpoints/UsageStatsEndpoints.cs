@@ -65,6 +65,7 @@ public static class UsageStatsEndpoints
             string from,
             string to,
             string? emoteSetId,
+            string? setScope,
             IUsageStatQueryService usageStatQueryService,
             CancellationToken ct) =>
         {
@@ -79,9 +80,16 @@ public static class UsageStatsEndpoints
                 return rangeError;
             }
 
+            // emoteSetId (one set) and setScope=all (every set) are alternatives; the parser owns the combination rule.
+            if (!EmoteSetScopeParser.TryParse(setScope, emoteSetId, out var scope))
+            {
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidEmoteSetId });
+            }
+
             // Null covers both "unknown id" and "someone else's emote" — a bare 404 either way, so
             // the response does not confirm that a guessed id exists elsewhere.
-            var series = await usageStatQueryService.GetDailySeriesAsync(channelName, emoteId, fromDate, toDate, emoteSetId, ct);
+            var series = await usageStatQueryService.GetDailySeriesAsync(
+                channelName, emoteId, fromDate, toDate, scope, ct);
             return series is null ? Results.NotFound() : Results.Ok(series);
         })
         .AddEndpointFilter<EmoteSetIdValidationFilter>();

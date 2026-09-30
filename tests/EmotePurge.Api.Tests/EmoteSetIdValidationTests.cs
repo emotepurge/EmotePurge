@@ -50,6 +50,9 @@ public class EmoteSetIdValidationTests
     [InlineData("has space")]
     [InlineData("quote\"here")]
     [InlineData("dash-not-allowed")]
+    [InlineData("abc\n")] // a trailing LF must not slip past an end anchor
+    [InlineData("abc\r\n")]
+    [InlineData("abc\r")]
     public void IsValid_RejectsAnythingOutsideTheAlphanumericAllowlist(string emoteSetId)
     {
         Assert.False(EmoteSetIdValidation.IsValid(emoteSetId));

@@ -17,7 +17,20 @@ import {
 import { rxResource } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { Subscription, catchError, first, merge, of, switchMap, timer } from 'rxjs';
+import {
+  EMPTY,
+  MonoTypeOperatorFunction,
+  Observable,
+  Subscription,
+  catchError,
+  defer,
+  finalize,
+  first,
+  merge,
+  of,
+  switchMap,
+  timer,
+} from 'rxjs';
 
 import { ChannelService } from '../../core/channels/channel.service';
 import { botsExcludedCaptionKey } from '../../core/emotes/bots-excluded-caption';
@@ -810,16 +823,31 @@ export class UsageStatsPage {
   );
 
   /**
+   * The channel's latest set-status read has failed and nothing has read it successfully since —
+   * neither the initial request (load()) nor a later refresh (`channel.synced`, the flush probe).
+   * Whether the set on screen is still the active one is then unknown, and every 7TV write that
+   * would have to know locks (`sharedSetViewLockReasonKey`). Only the lock follows from it: after a
+   * failed *refresh* the channel stays claimed and the last known active set stays the selected one
+   * (see `refreshSetStatus`), so neither the dock nor a running delete's panel is taken away, and
+   * nothing is reloaded. Read from its own flag (`setStatusUnavailableFor`) rather than derived
+   * from `setStatusChannel`, which a failed refresh no longer touches.
+   */
+  private readonly setStatusUnavailable = computed(
+    () => this.setStatusUnavailableFor() === this.channelName(),
+  );
+
+  /**
    * The "objective" reasons a non-active set view blocks a writer, independent of *which* writer:
-   * the view is switching (`viewSwitching`: the chosen set's rows are not on screen yet, or their
+   * the channel's set status could not be read (`setStatusUnavailable` — a reason for the active view
+   * too), the view is switching (`viewSwitching`: the chosen set's rows are not on screen yet, or their
    * request failed), the member list could not be read (503/429), the member list came back
    * `truncated`, or the member list is still loading for the first time in a settled,
    * non-switching view (same "not loaded yet" reason as switching — a list not yet confirmed
    * readable must not be trusted either way). A *loud* reload (`channel.synced`, the refresh
    * button) does not hit that last case: it keeps serving the previous list as `'ready'` while it
    * refetches (spec's own "second review round" addendum in DECISIONS), so it locks only if that
-   * previous list was itself `truncated` — never merely for being mid-reload. `null` for the
-   * active view and for a non-active view whose member list loaded clean.
+   * previous list was itself `truncated` — never merely for being mid-reload. `null` for a settled
+   * active view and for a non-active view whose member list loaded clean, both under a known status.
    *
    * Shared by `deleteLockReasonKey` (spec #200, 8.3/8.8) and `voteLockReasonKey` (spec 9, K6) —
    * identically since K6: a plain non-active view with a good member list locks neither. Deleting
@@ -829,6 +857,15 @@ export class UsageStatsPage {
    * the page cannot read in full cannot back a trustworthy ballot either.
    */
   private readonly sharedSetViewLockReasonKey = computed<string | null>(() => {
+    // First, ahead of `viewSwitching`: without a readable status the page cannot tell which set is
+    // active, so neither "the view is switching" nor anything about the member list is the real
+    // reason. After a failed refresh the dock stays with the last known set, whether the URL
+    // follows the active set or names one, and this is what it says. (After a failed *initial*
+    // read with the URL following the active set, the selected set is `null` and the dock's
+    // marking half is not rendered at all.)
+    if (this.setStatusUnavailable()) {
+      return 'usageStats.setView.lock.statusUnavailable';
+    }
     if (this.viewSwitching()) {
       return 'usageStats.setView.lock.switching';
     }
@@ -1280,17 +1317,60 @@ export class UsageStatsPage {
   private readonly selectionReconcilePending = signal(false);
   private readonly latestSeries = latestOnly<ChannelUsageSeries>();
 
+  /**
+   * "Last asked wins" for the set status — ONE instance shared by every path that reads it: load()'s
+   * own request, `refreshSetStatus` (channel.synced and the flush probe), the sync-failure recheck
+   * poll and the first-sync wait (`awaitSync`). Since a failed read locks deleting and voting
+   * (`setStatusUnavailableFor`), an answer that arrives out of order is harmful in both directions:
+   * an old failure would lock over a newer success, an old success lift the lock over a newer
+   * failure. The channel guards at each call site stay — they keep another channel's answer out,
+   * this orders the answers within one channel.
+   *
+   * The two background reads (the recheck poll, the first-sync probes) never take a generation
+   * while a load() or `refreshSetStatus` read is in flight — see `requestBackgroundSetStatus`.
+   */
+  private readonly latestSetStatus = latestOnly<EmoteSetStatus>();
+
+  /**
+   * How many load()/`refreshSetStatus` status reads are in flight — the reads that lock on failure
+   * and, after a sync, reload the rows. A background read skips while this is above zero, so it can
+   * never supersede one of them (Codex review, O2). A plain field: nothing reads it reactively.
+   */
+  private statusReadsInFlight = 0;
+
+  /**
+   * How many times load() has raised the skeleton (`isLoading`). A `/totals` answer takes it down
+   * again only if no later load() has started since its request went out (see loadTotals) — the
+   * winning answer lowers it whether it was silent or not, so a silent reload that overtakes a loud
+   * one no longer leaves the skeleton up for good; an answer to a request older than the current
+   * load() leaves it to that load. A plain field: nothing reads it reactively.
+   */
+  private loadStarts = 0;
+
   /** The channel whose set status has come back *successfully*. Held as a channel rather than a
    *  flag so that navigating to another one makes the range provisional again. Deliberately not
    *  written on a failed attempt (see load()) — that used to make a transient failure permanent by
    *  making this equal the channel anyway, which silenced every later retry for it, refresh button
-   *  included. */
+   *  included. A failed *initial* attempt (load()) un-claims it instead: nothing was known for the
+   *  channel yet. A failed *refresh* (`refreshSetStatus`) leaves it alone — the last known set stays
+   *  the selected one, and only `setStatusUnavailableFor` records the failure. Un-claiming there
+   *  turned the selected set `null` when the URL follows the active set and tore the mass-delete
+   *  panel down in the middle of a run (O2 review, second round). */
   private readonly setStatusChannel = signal<string | null>(null);
 
   /** The channel whose set status request has *failed* — narrower than setStatusChannel above: it
-   *  only exists to unblock the "all time" placeholder (see rangeResolved) once a failed attempt
-   *  makes it clear no tracking start is coming, without also gating load()'s own retry guard. */
+   *  unblocks the "all time" placeholder (see rangeResolved) once a failed attempt makes it clear no
+   *  tracking start is coming, without also gating load()'s own retry guard, and opens the
+   *  member-list gate (`setStatusOutcomeKnown`). Written by every failed read of the status, load()'s
+   *  and `refreshSetStatus`' alike — the latter matters when a refresh overtook a channel's initial
+   *  request, which then never answers. Never cleared (accepted gap: X failed → Y → back to X). */
   private readonly setStatusFailedChannel = signal<string | null>(null);
+
+  /** The channel whose latest set-status read failed, until a successful read for it
+   *  (`adoptSetStatus`) clears it — the lock `setStatusUnavailable`. Written by every failed read
+   *  (load() and `refreshSetStatus`); the first-sync probes and the sync-failure poll swallow their
+   *  failures and write nothing. */
+  private readonly setStatusUnavailableFor = signal<string | null>(null);
 
   /** The channel the rows in `emotes()` were loaded for — the totals counterpart to
    *  setStatusChannel above, and written in the very same place the rows are (loadTotals' success
@@ -1863,10 +1943,7 @@ export class UsageStatsPage {
         !this.awaitingEmoteSetId()
       ) {
         untracked(() =>
-          this.loadTotals(this.channelName(), this.from(), this.to(), this.selectedEmoteSetId(), {
-            preserveSelection: true,
-            silent: true,
-          }),
+          this.loadTotals(this.channelName(), this.from(), this.to(), this.selectedEmoteSetId()),
         );
       }
     });
@@ -2002,39 +2079,46 @@ export class UsageStatsPage {
     // Live refresh after the worker's usage flush and after real emote-inventory changes
     // (`channel.synced` only fires when a sync actually changed something — add/remove on 7TV,
     // set swap, mass delete).
-    // The reload is deliberately quiet: neither the selection nor the skeleton may move under a
-    // user who did not ask for anything — this update arrives unrequested.
+    // The row reload is deliberately quiet: neither the selection nor the skeleton may move under a
+    // user who did not ask for anything — this update arrives unrequested. (The one exception is a
+    // sync that moves the selected set itself: the load effect reloads loudly then, see below.)
     liveReload(this.liveUrl, {
       accept: [LIVE_EVENT_TYPES.usageFlushed, LIVE_EVENT_TYPES.channelSynced],
       debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
     }).subscribe((seen) => {
-      // Not while a URL-carried set is still unconfirmed: `selectedEmoteSetId()` answers with the
-      // active set as a placeholder until the set list is in (see `awaitingEmoteSetId`), and rows
-      // requested for that placeholder would briefly claim to be the chosen set's.
-      if (!this.awaitingEmoteSetId()) {
-        this.loadTotals(this.channelName(), this.from(), this.to(), this.selectedEmoteSetId(), {
-          preserveSelection: true,
-          silent: true,
-        });
-      }
       // A sync can move the active set id, its capacity or the occupied-slot count — nothing else in
-      // EmoteSetStatus moves on a sync, so it always earns a refetch.
+      // EmoteSetStatus moves on a sync, so it always earns a refetch. And the rows wait for it, a
+      // flush in the same burst included: asked under the page's own active id, they would be
+      // requested for a set the sync may just have replaced — stamped as the active view, and
+      // reconciled against, so a marked emote without counts in the old set would drop out of the
+      // selection before the status even named the new one (O2 review fix). refreshSetStatus
+      // reloads the rows once the status is in (`reloadRowsAfter`).
       if (seen.has(LIVE_EVENT_TYPES.channelSynced)) {
         // This event is what awaitSync is really waiting for — the probes are only there for the
-        // case where it never shows up. The totals have just been refetched above, so letting the
+        // case where it never shows up. The status is refetched right below, so letting the
         // remaining probes run would only ask the same question again. This path is unconditional
         // and does not touch setStatusFlushProbeGate — a sync is a real inventory change, not the
         // bounded "did the flush catch up yet" question the gate answers.
         this.stopAwaitingSync();
-        this.refreshSetStatus();
         // The set LIST changes far less often than status/totals, but it does change (a new set
         // created on 7TV, one renamed) — and this is the one loud signal spec E19 ties a re-fetch
         // to. Never on the silent `usage.flushed` branch below.
         this.emoteSetListResource.reload();
         // Same rule one level down (spec 8.3): a non-active view's member list follows the loud
-        // reload, never the silent one. A no-op while no non-active set is selected.
+        // reload, never the silent one. A no-op while no non-active set is selected. Deliberately
+        // not held back for the status (AK 52): should the status make the chosen set the active
+        // one, `liveMembersParams` turns `undefined` and the resource drops this request itself.
         this.reloadLiveMembers();
-      } else if (
+        this.refreshSetStatus({ reloadRowsAfter: true });
+        return;
+      }
+      // Not while a URL-carried set is still unconfirmed: `selectedEmoteSetId()` answers with the
+      // active set as a placeholder until the set list is in (see `awaitingEmoteSetId`), and rows
+      // requested for that placeholder would briefly claim to be the chosen set's.
+      if (!this.awaitingEmoteSetId()) {
+        this.loadTotals(this.channelName(), this.from(), this.to(), this.selectedEmoteSetId());
+      }
+      if (
         seen.has(LIVE_EVENT_TYPES.usageFlushed) &&
         this.setStatusFlushProbeGate.shouldRefreshOn(this.setStatus())
       ) {
@@ -2044,7 +2128,9 @@ export class UsageStatsPage {
         // date, but most channels never take part in a shared-chat session at all, so
         // sharedChatSeparatedSince alone staying null must not license asking forever — the gate
         // caps this at the first few bursts after a mount/channel switch (see its own doc) instead
-        // of deriving "still worth asking" from the data.
+        // of deriving "still worth asking" from the data. A failure here locks deleting and voting
+        // just like a sync's failed refresh does — deliberately: a status we cannot read is unknown,
+        // whichever event asked for it. Nothing else follows (see refreshSetStatus).
         this.refreshSetStatus();
       }
     });
@@ -2064,28 +2150,19 @@ export class UsageStatsPage {
       const channelName = this.channelName();
 
       const recheck = timer(SYNC_FAILURE_RECHECK_INTERVAL_MS, SYNC_FAILURE_RECHECK_INTERVAL_MS)
-        .pipe(
-          switchMap(() =>
-            this.emoteAdminService.getSetStatus(channelName).pipe(catchError(() => of(null))),
-          ),
-        )
+        .pipe(switchMap(() => this.requestBackgroundSetStatus(channelName)))
         .subscribe((status) => {
           if (!status || this.channelName() !== channelName) {
             return;
           }
-          this.setStatus.set(status);
-          // A successful status for this channel — it may claim it, same as refreshSetStatus().
-          this.setStatusChannel.set(channelName);
+          this.adoptSetStatus(channelName, status);
           // Mirrors awaitSync's own resolution: a resolved set id needs the grid filled in, which a
           // status refresh alone does not do. Read now rather than closed over at effect start,
           // because the range can change while this keeps polling (see the comment above — range
           // changes do not re-run this effect) and a stale from/to would fetch the wrong window.
           // Not while a URL-carried set is unconfirmed (see the live-reload subscription above).
           if (status.activeEmoteSetId && !this.awaitingEmoteSetId()) {
-            this.loadTotals(channelName, this.from(), this.to(), this.selectedEmoteSetId(), {
-              preserveSelection: true,
-              silent: true,
-            });
+            this.loadTotals(channelName, this.from(), this.to(), this.selectedEmoteSetId());
           }
         });
       onCleanup(() => recheck.unsubscribe());
@@ -2730,28 +2807,123 @@ export class UsageStatsPage {
     startImportFlow(deps, source, { kind: 'chosen', choice });
   }
 
-  // Quiet counterpart to the set-status fetch in load(): no sync-poll, and a failed refetch keeps
-  // the current value — this runs unrequested, so it must never take the mass-delete panel away
-  // over a transient error.
+  // Quiet counterpart to the set-status fetch in load(): no sync-poll, no skeleton. A failed refetch
+  // locks, but keeps the last known set: the channel stays claimed, `activeEmoteSetId()` keeps the
+  // id on hand, the dock and its mass-delete panel stay mounted, nothing is reloaded, and deleting
+  // and voting lock with their own reason (`setStatusUnavailable`) until the next successful read.
+  // That makes the older rule — "this runs unrequested, so it must never take the mass-delete panel
+  // away over a transient error" — right again. The first O2 fix un-claimed the channel here instead:
+  // with the URL following the active set that turned the selected set `null`, which unmounted the
+  // panel in the middle of a delete run (the run went on in the service, and the remount could
+  // report `deleted` twice) and raised the skeleton through the load effect. The lock alone keeps
+  // the dock from deleting into a set that 7TV may already have swapped out, which is what the
+  // un-claim was for.
   //
   // The channel is frozen at request time because a live event can fire this while the user has
   // already navigated to another channel within the same route (the import summary's "open target
   // channel" link, see importScopeIsCurrent) — a late answer for the old channel must not land
-  // under the new one's name. setStatusChannel is written alongside setStatus on success, mirroring
-  // load()'s own success branch: a channel that only just recovered from a failed status fetch
-  // needs exactly this write to finally be allowed to claim it.
-  private refreshSetStatus(): void {
+  // under the new one's name, neither as a success nor as a failure. A success is adopted like
+  // load()'s own (`adoptSetStatus`): a channel that only just recovered from a failed status fetch
+  // needs exactly that to finally claim it. No first-sync wait starts here — see adoptSetStatus.
+  //
+  // `reloadRowsAfter` (channel.synced only): once the status is in, reload the rows silently under
+  // the selected set — unless the status itself moved the selected set (the load effect reloads
+  // then) or flipped `viewKindStale` (the stale effect does). Either way exactly one request per
+  // status. A stale flag that stays `true` (an earlier stale reload failed) reloads here: a retry.
+  private refreshSetStatus(options: { reloadRowsAfter?: boolean } = {}): void {
     const channelName = this.channelName();
-    this.emoteAdminService.getSetStatus(channelName).subscribe({
-      next: (status) => {
-        if (this.channelName() !== channelName) {
-          return;
-        }
-        this.setStatus.set(status);
-        this.setStatusChannel.set(channelName);
-      },
-      error: () => undefined,
-    });
+    this.emoteAdminService
+      .getSetStatus(channelName)
+      .pipe(this.latestSetStatus, this.countStatusRead())
+      .subscribe({
+        next: (status) => {
+          if (this.channelName() !== channelName) {
+            return;
+          }
+          const before = untracked(() => ({
+            selected: this.selectedEmoteSetId(),
+            stale: this.viewKindStale(),
+          }));
+          this.adoptSetStatus(channelName, status);
+          if (!options.reloadRowsAfter) {
+            return;
+          }
+          untracked(() => {
+            const selected = this.selectedEmoteSetId();
+            if (
+              selected !== before.selected ||
+              this.viewKindStale() !== before.stale ||
+              this.awaitingEmoteSetId()
+            ) {
+              return;
+            }
+            this.loadTotals(channelName, this.from(), this.to(), selected);
+          });
+        },
+        error: () => {
+          if (this.channelName() !== channelName) {
+            return;
+          }
+          // `setStatusFailedChannel` as in load(): when this refresh overtook the channel's initial
+          // request, that one never answers, and without this mark "all time" (`rangeResolved`) and
+          // the member-list gate (`setStatusOutcomeKnown`) would wait forever.
+          this.setStatusFailedChannel.set(channelName);
+          this.setStatusUnavailableFor.set(channelName);
+          // Nothing was ever adopted for this channel (the overtaken initial request never
+          // answered): the DTO on hand is the previous channel's, and `trackedSince` would carry its
+          // start date into this channel's "all time". Once the channel has been claimed, the DTO is
+          // its own last known status and stays.
+          if (this.setStatusChannel() !== channelName) {
+            this.setStatus.set(null);
+          }
+        },
+      });
+  }
+
+  /**
+   * One read for the two best-effort background paths — a sync-failure recheck tick and a
+   * first-sync probe: `null` for a failed read (they swallow failures and lock nothing), no value at
+   * all for one superseded by a newer status request (`latestSetStatus` sits before the catch).
+   *
+   * Skipped outright while a load()/`refreshSetStatus` read is in flight (`statusReadsInFlight`).
+   * Taking a generation then would supersede that read: its failure would never lock, its success
+   * never reload a sync's rows — and a failed background read would put nothing in their place
+   * (Codex review, O2). Skipping rather than giving the background reads an ordering of their own:
+   * the in-flight read answers the very same question, and only it knows how to apply a failure;
+   * a separate ordering would let an older background success land over a newer failure's lock.
+   * What a skip costs is one tick or one probe; the next one asks again. The flush probe is not a
+   * background read in this sense — it is a `refreshSetStatus` like a sync's, locks on failure, and
+   * its burst reloads the rows itself — so it keeps sharing the ordering.
+   */
+  private requestBackgroundSetStatus(channelName: string): Observable<EmoteSetStatus | null> {
+    if (this.statusReadsInFlight > 0) {
+      return EMPTY;
+    }
+    return this.emoteAdminService.getSetStatus(channelName).pipe(
+      this.latestSetStatus,
+      catchError(() => of(null)),
+    );
+  }
+
+  /** Counts a load()/`refreshSetStatus` read in `statusReadsInFlight` from subscribe until it ends
+   *  — answered, failed, or superseded (latestOnly completes a superseded read silently). */
+  private countStatusRead(): MonoTypeOperatorFunction<EmoteSetStatus> {
+    return (source) =>
+      defer(() => {
+        this.statusReadsInFlight++;
+        return source.pipe(finalize(() => this.statusReadsInFlight--));
+      });
+  }
+
+  /**
+   * The one way a successful set-status read lands — load()'s own request, `refreshSetStatus`, the
+   * sync-failure poll and the first-sync wait (`awaitSync`) all adopt through here: the DTO, the
+   * claim on the channel, and the end of a lock a failed read left for it.
+   */
+  private adoptSetStatus(channelName: string, status: EmoteSetStatus): void {
+    this.setStatus.set(status);
+    this.setStatusChannel.set(channelName);
+    this.setStatusUnavailableFor.update((failed) => (failed === channelName ? null : failed));
   }
 
   private load(
@@ -2764,12 +2936,13 @@ export class UsageStatsPage {
   ): void {
     // A drilldown series cached against the previous channel or range must not survive into this one.
     this.usageStatService.clearSeriesCache();
+    this.loadStarts++;
     this.isLoading.set(true);
     this.errorMessage.set(null);
     // A selection-pruned notice (#94) names emotes from the *previous* channel/range's selection —
     // this method is the constructor effect's only entry point, so it runs on every channel switch
     // and every date-range change. A channel switch clears the selection outright in `loadTotals`
-    // below (see its non-`preserveSelection` branch), which would otherwise misattribute a standing
+    // below (see its channel-switch branch), which would otherwise misattribute a standing
     // notice to whatever channel happens to be on screen when its timeout fires (#94 follow-up P3).
     // A date-range change or the refresh button does NOT clear since the Konzept "Auswahl überlebt
     // Suche und Filter" (überarbeitet 2026-09-19): a narrower or wider range is exactly how a user
@@ -2777,9 +2950,9 @@ export class UsageStatsPage {
     // payload instead — resetting the notice here first still matters, because that reconciliation
     // may leave nothing pruned (the old notice would otherwise linger for a range it no longer
     // describes) or produce its own fresh one.
-    // The two callers that must NOT lose a just-set notice — the live-reload subscription and the
-    // sync-failure recheck poll — both call `loadTotals(..., { preserveSelection: true })` directly
-    // and never go through this method, so they are unaffected.
+    // The callers that must NOT lose a just-set notice — the live-reload subscription, the
+    // sync-failure recheck poll and the stale-view reload — call `loadTotals` directly and never go
+    // through this method, so they are unaffected.
     this.resetSelectionPrunedFeedback();
 
     // The set status is bound to the channel, not to the range: requestedSetStatusFor already names
@@ -2795,45 +2968,53 @@ export class UsageStatsPage {
       this.requestedSetStatusFor = channelName;
       this.setStatusFlushProbeGate.reset();
       this.stopAwaitingSync();
-      this.emoteAdminService.getSetStatus(channelName).subscribe({
-        next: (status) => {
-          // An answer for a channel the page has already left must not land under the current
-          // one's name — it would re-claim `setStatusChannel` and close the current channel's
-          // status gate for good (same guard as refreshSetStatus).
-          if (this.channelName() !== channelName) {
-            return;
-          }
-          this.setStatus.set(status);
-          this.setStatusChannel.set(channelName);
-          // An empty id means SevenTvSyncService has not written a set for this channel. Only worth
-          // waiting on while there is no reason: with one, the answer is already final — no sync will
-          // ever produce an id until the cause is fixed on 7TV, and channel.synced brings us back
-          // (see the live subscription in the constructor) the moment it is.
-          if (!status.activeEmoteSetId && !status.syncFailureReason) {
-            this.awaitSync(channelName);
-          }
-        },
-        // setStatusChannel is deliberately left as-is here — see its own comment. Marking only
-        // setStatusFailedChannel keeps "all time" from waiting forever (the honest placeholder
-        // fallback, unchanged) without also telling requestedSetStatusFor's guard above that this
-        // channel is done asking: a later load() call — most importantly the refresh button, which
-        // resets requestedSetStatusFor itself — must still be free to try again.
-        error: () => {
-          // Ignored for a channel the page has left: it would wipe the current channel's status.
-          if (this.channelName() !== channelName) {
-            return;
-          }
-          this.setStatus.set(null);
-          this.setStatusFailedChannel.set(channelName);
-          // Un-claims the channel (never claims it — see setStatusChannel's own comment): the
-          // status on hand is gone, so nothing may still read as "this channel's set is known" —
-          // importScopeCurrent() above all, which would otherwise keep the push and the import
-          // doors open with no active set to reason about.
-          if (this.setStatusChannel() === channelName) {
-            this.setStatusChannel.set(null);
-          }
-        },
-      });
+      this.emoteAdminService
+        .getSetStatus(channelName)
+        .pipe(this.latestSetStatus, this.countStatusRead())
+        .subscribe({
+          next: (status) => {
+            // An answer for a channel the page has already left must not land under the current
+            // one's name — it would re-claim `setStatusChannel` and close the current channel's
+            // status gate for good (same guard as refreshSetStatus).
+            if (this.channelName() !== channelName) {
+              return;
+            }
+            this.adoptSetStatus(channelName, status);
+            // An empty id means SevenTvSyncService has not written a set for this channel. Only worth
+            // waiting on while there is no reason: with one, the answer is already final — no sync will
+            // ever produce an id until the cause is fixed on 7TV, and channel.synced brings us back
+            // (see the live subscription in the constructor) the moment it is.
+            //
+            // The wait starts here and nowhere else among the four paths that adopt a status: after
+            // a `channel.synced` the sync it would wait for has just happened (refreshSetStatus), the
+            // sync-failure poll only runs while a failure reason is known (and a reason ends the wait
+            // anyway), and awaitSync is the wait itself.
+            if (!status.activeEmoteSetId && !status.syncFailureReason) {
+              this.awaitSync(channelName);
+            }
+          },
+          // setStatusChannel is deliberately left as-is here — see its own comment. Marking only
+          // setStatusFailedChannel keeps "all time" from waiting forever (the honest placeholder
+          // fallback, unchanged) without also telling requestedSetStatusFor's guard above that this
+          // channel is done asking: a later load() call — most importantly the refresh button, which
+          // resets requestedSetStatusFor itself — must still be free to try again.
+          error: () => {
+            // Ignored for a channel the page has left: it would wipe the current channel's status.
+            if (this.channelName() !== channelName) {
+              return;
+            }
+            this.setStatus.set(null);
+            this.setStatusFailedChannel.set(channelName);
+            this.setStatusUnavailableFor.set(channelName);
+            // Un-claims the channel (never claims it — see setStatusChannel's own comment): the
+            // status on hand is gone, so nothing may still read as "this channel's set is known" —
+            // importScopeCurrent() above all, which would otherwise keep the push and the import
+            // doors open with no active set to reason about.
+            if (this.setStatusChannel() === channelName) {
+              this.setStatusChannel.set(null);
+            }
+          },
+        });
     }
 
     // Under "all time" the range is still the placeholder span until the status above names the
@@ -3043,9 +3224,9 @@ export class UsageStatsPage {
         // catchError sits on the inner request, not on the outer pipe: out here it would replace the
         // whole probe stream on the first hiccup and end the wait. Inside, one failed probe just
         // counts as "still empty" and the next probe tries again.
-        switchMap(() =>
-          this.emoteAdminService.getSetStatus(channelName).pipe(catchError(() => of(null))),
-        ),
+        // A probe overtaken by a newer status request, or skipped for one already in flight (see
+        // requestBackgroundSetStatus), ends without a value rather than as "empty".
+        switchMap(() => this.requestBackgroundSetStatus(channelName)),
         // Completes on the first status that settles the question — a set id (the sync landed) or a
         // reason (it cannot land). Probing on against a known reason would spend the rest of the
         // window arriving at an answer the first probe already had.
@@ -3059,8 +3240,7 @@ export class UsageStatsPage {
 
         // Adopted even without a set id: the reason is the whole payload in that case, and the
         // empty state below renders from it.
-        this.setStatus.set(status);
-        this.setStatusChannel.set(channelName);
+        this.adoptSetStatus(channelName, status);
         // Range read now rather than closed over when the wait started: a range change keeps the
         // wait alive (see load()), and a stale from/to would fetch the wrong window — the same
         // reasoning as in the failure-reason recheck. Not while a URL-carried set is unconfirmed.
@@ -3071,26 +3251,45 @@ export class UsageStatsPage {
   }
 
   /**
-   * `preserveSelection` and `silent` are what separates a *pushed* load (live reload, sync-failure
-   * recheck) from everything else: a pushed update must not throw away a half-built delete
-   * selection, and must not flash the skeleton over numbers the user is currently reading. Neither
-   * flag distinguishes a channel switch from a date-range change/refresh among the *user-triggered*
-   * callers (initial load, range change, refresh button) that leave both unset — see the
-   * `previousTotalsChannel` comparison below for that, and Konzept "Auswahl überlebt Suche und
-   * Filter" (überarbeitet 2026-09-19) Abschnitt 2.3 for why it needs to exist at all.
+   * The one place `/totals` is asked — load() and every *pushed* reload (live reload, sync-failure
+   * recheck, first-sync wait, the stale-view reload, a sync's rows after its status) alike.
+   *
+   * Whether the selection survives the answer is decided by the answer alone: retained (and
+   * reconciled) when the rows on screen already belong to the same channel, cleared otherwise — see
+   * the `previousTotalsChannel` comparison below, and Konzept "Auswahl überlebt Suche und Filter"
+   * (überarbeitet 2026-09-19) Abschnitt 2.3 for why it needs to exist at all. There used to be a
+   * `preserveSelection` option that made a pushed reload retain unconditionally; after a channel
+   * switch that carried the previous channel's marks into the new one whenever a pushed reload
+   * landed first (a 7TV id both channels share survived the reconciliation — a wrong delete
+   * candidate), so it is gone (O2 review, second round).
+   *
+   * A pushed load is also silent, but that needs no flag: this method never raises the skeleton —
+   * only load() does — and the answer that wins takes it down whoever asked (`endLoadingFor`). The
+   * `silent` option that used to say so only guarded the lowering, which is what left the skeleton
+   * up when a silent reload overtook a loud one (O2 review fix).
+   *
+   * Refuses while "all time" is still the placeholder span (`rangeResolved`): load() never asks then
+   * anyway, and a pushed reload in that window — a flush between a channel switch and its status —
+   * would fetch a year of rows under the wrong range and take load()'s skeleton down with them. One
+   * guard here instead of one per pushed caller; the load effect asks once the range is corrected.
    */
   private loadTotals(
     channelName: string,
     from: string,
     to: string,
     emoteSetId: string | null,
-    options: { preserveSelection?: boolean; silent?: boolean } = {},
   ): void {
+    // Untracked — this runs inside the load effect, which reads `rangeResolved` itself already.
+    if (!untracked(() => this.rangeResolved())) {
+      return;
+    }
     // The kind of view these rows are requested for, frozen now: a sync can move the active id
     // before they land, and `viewKindStale` has to notice exactly that. Untracked — this runs
     // inside the load effect, which must not start re-running on every active-id change.
     const activeAtRequest = untracked(() => this.activeEmoteSetId());
     const nonActive = emoteSetId !== null && emoteSetId !== activeAtRequest;
+    // Which load() this request belongs to — see `loadStarts`.
+    const loadAtRequest = this.loadStarts;
     this.usageStatService
       .getTotals(channelName, from, to, emoteSetId)
       .pipe(this.latestTotals)
@@ -3098,9 +3297,9 @@ export class UsageStatsPage {
         next: (emotes) => {
           // Read before totalsChannel is overwritten below: this is the last channel whose totals
           // actually landed, which is exactly what tells a same-channel reload (date-range change,
-          // refresh button — retain) apart from a genuine channel switch (clear) once
-          // `preserveSelection` is off. `null` on the very first load for this component instance
-          // always takes the channel-switch branch, which is correct: there is nothing to retain yet.
+          // refresh button, any pushed reload — retain) apart from a genuine channel switch (clear),
+          // whoever asked. `null` on the very first load for this component instance always takes
+          // the channel-switch branch, which is correct: there is nothing to retain yet.
           const previousTotalsChannel = this.totalsChannel();
           this.totalsRows.set(emotes);
           this.totalsSetId.set(emoteSetId ?? activeAtRequest);
@@ -3113,7 +3312,7 @@ export class UsageStatsPage {
           // earlier one (a failed set switch that a later reload recovered from) no longer describes
           // them, and would otherwise keep `setSwitchFailed` and the banner up over good rows.
           this.errorMessage.set(null);
-          if (options.preserveSelection || previousTotalsChannel === channelName) {
+          if (previousTotalsChannel === channelName) {
             // Reconciles against the freshly loaded, UNFILTERED view — not atlasOrder()/
             // retainVisible(), which read the filtered view and would wrongly drop a row that
             // merely fell outside the current min/max-usage or name filter this reload changed the
@@ -3121,8 +3320,8 @@ export class UsageStatsPage {
             // non-active set's view a marked live member without a counted row exists only there
             // (spec #200, 7.1) — see reconcileSelection for the one case that has to wait.
             //
-            // The `previousTotalsChannel === channelName` arm is what makes a date-range change and
-            // the refresh button reconcile too, not just a pushed reload: both are a different SIGHT
+            // This is what makes a date-range change and the refresh button reconcile too, not
+            // just a pushed reload: both are a different SIGHT
             // of the same channel, not a different context, and changing the range is precisely how
             // a mod checks whether a marked-dead emote is still dead under a wider or narrower
             // window (live-test finding, 2026-09-19 — the Konzept originally kept these on `clear()`
@@ -3139,9 +3338,7 @@ export class UsageStatsPage {
             this.selectionReconcilePending.set(false);
             this.selection.clear();
           }
-          if (!options.silent) {
-            this.isLoading.set(false);
-          }
+          this.endLoadingFor(loadAtRequest);
         },
         // 401 is not handled here — apiAuthInterceptor resets the session and redirects for every
         // /api/ call in the app.
@@ -3156,10 +3353,20 @@ export class UsageStatsPage {
               ? apiErrorTranslationKey(error)
               : 'usageStats.errors.loadFailed',
           );
-          if (!options.silent) {
-            this.isLoading.set(false);
-          }
+          this.endLoadingFor(loadAtRequest);
         },
       });
+  }
+
+  /**
+   * Takes the skeleton down for the answer that won `latestTotals`, whichever caller asked. Before,
+   * only an answer to a loud request lowered it, so a silent reload (`usage.flushed`) that overtook
+   * a loud one left it up for good, the refresh button disabled with it (`viewLoading`). An answer to a request older than the current load() leaves it standing:
+   * that load() is still to answer, or still waiting to ask (`rangeResolved`, `awaitingEmoteSetId`).
+   */
+  private endLoadingFor(loadAtRequest: number): void {
+    if (loadAtRequest === this.loadStarts) {
+      this.isLoading.set(false);
+    }
   }
 }
