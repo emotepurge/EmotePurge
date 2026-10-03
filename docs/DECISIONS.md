@@ -36,14 +36,29 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   path only). No antiforgery token: the repo defends cookie-authenticated mutations through the
   `SameSite=Lax` session cookie and Minimal API's JSON-only binding, and a `DELETE` is never sent
   cross-site under `Lax`; this endpoint follows that convention rather than inventing its own.
-- **`NotFound` answers 204, not 404 — but a retry answers 401.** The row being gone is the state the
-  caller asked for, so a deletion that finds the row vanished between the session check and the
-  delete (a concurrent admin deletion) signs out and answers 204 for both `Deleted` and `NotFound`.
-  That branch is a narrow race, though: once the row is gone, the cookie scheme's
-  `OnValidatePrincipal` rejects the session before the handler runs, so a retry, a double submit or
-  a concurrent deletion that completed earlier answers **401**. `apiAuthInterceptor` exempts
-  `/api/auth/me` from its expiry handling, so `AuthService.deleteAccount()` treats a 401 as "already
-  gone" itself: same client-session reset and navigation to `/welcome` as for a 204.
+- **The deletion answers 204, 410 or 401 — and only 204/410 mean "gone".** The row being gone is the
+  state the caller asked for, so a deletion that finds the row vanished between the session check and
+  the delete (a concurrent admin deletion) signs out and answers 204 for both `Deleted` and
+  `NotFound`. That branch is a narrow race: once the row is gone, `OnValidatePrincipal` rejects the
+  session before the handler runs, so a retry or double submit never reaches it. A 401 in front of
+  this route has four causes: (1) the user row is gone, (2) the session was revoked
+  (`issuedAt < SessionsValidFromUtc` — logout in *any* tab revokes globally, as does the admin
+  session revoke), (3) the cookie is absent or expired, (4) a legacy cookie without the
+  `SessionIssuedAtUtc` claim. Only (1) means the account no longer exists, so the client must not
+  infer deletion from a 401: in (2)-(4) the account is still there, and showing "deleted" would be
+  false. `OnValidatePrincipal` therefore flags `HttpContext.Items` when `CheckSessionAsync` returns
+  null, and `OnRedirectToLogin` answers **410 Gone** only for that flag on `DELETE /api/auth/me`
+  (decision in the pure `SessionRejection.ChallengeStatusCode`); every other rejection and every
+  other route keeps 401. The scoping is deliberate: 410 elsewhere would turn a status code that
+  every other client treats as "sign in again" into something new, for no gain. Client:
+  `AuthService.deleteAccount()` resets to `/welcome` on 204 and 410; a 401 propagates, and the
+  account menu sends the user to `/login` with a one-shot notice that the deletion could not be
+  confirmed and nothing was deleted (`AuthService.handleDeletionUnconfirmed`/`takeLoginNotice`;
+  the menu is unmounted by the reset, so the notice lives on the login page). A "sign in to check"
+  hint would be the wrong remedy for the user *without* that wording: `UpsertLoginAsync` recreates a
+  deleted account on login, so signing in cannot distinguish the cases and would silently create a
+  fresh account — the message instead says to repeat the deletion if still wanted. The interceptor
+  keeps `/api/auth/me` in its expected-401 paths so the error reaches the caller.
 - **Twitch token revocation, after the commit.** `ITwitchAuthClient.RevokeTokenAsync` posts
   `client_id` and `token` as a form to `https://id.twitch.tv/oauth2/revoke` through the existing typed
   client. The handler reads the stored tokens *before* the deletion (the row, and the encrypted tokens

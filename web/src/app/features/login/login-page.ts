@@ -1,5 +1,5 @@
 import { NgOptimizedImage } from '@angular/common';
-import { Component, inject } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 
@@ -9,6 +9,7 @@ import { LOGO_SRC } from '../../shared/branding/logo';
 import { AccountMenu } from '../../shared/ui/account-menu';
 import { Button } from '../../shared/ui/button';
 import { LegalFooterLinks } from '../../shared/ui/legal-footer-links';
+import { NoticeBanner } from '../../shared/ui/notice-banner';
 
 /**
  * Exactly what `TwitchOAuthDefaults.RequestedScopes` sends to id.twitch.tv/oauth2/authorize
@@ -60,6 +61,12 @@ const SCOPES = [
             <p class="text-fg-muted">{{ 'login.subtitle' | transloco }}</p>
           </div>
 
+          @if (notice(); as noticeKey) {
+            <app-notice-banner variant="error">
+              {{ 'login.notice.' + noticeKey | transloco }}
+            </app-notice-banner>
+          }
+
           <button
             type="button"
             appButton="primary"
@@ -104,12 +111,22 @@ const SCOPES = [
       }
     </div>
   `,
-  imports: [AccountMenu, Button, LegalFooterLinks, NgOptimizedImage, RouterLink, TranslocoPipe],
+  imports: [
+    AccountMenu,
+    Button,
+    LegalFooterLinks,
+    NgOptimizedImage,
+    NoticeBanner,
+    RouterLink,
+    TranslocoPipe,
+  ],
 })
 export class LoginPage {
   private readonly authService = inject(AuthService);
   private readonly legalService = inject(LegalService);
 
+  /** One-shot: read once at creation, so reloading the page or coming back later shows none. */
+  protected readonly notice = signal(this.authService.takeLoginNotice()).asReadonly();
   protected readonly scopes = SCOPES;
   protected readonly logoSrc = LOGO_SRC;
   protected readonly hasLegalLinks = this.legalService.hasAnyDocument;

@@ -173,7 +173,7 @@ describe('AuthService', () => {
       expect(navigateSpy).toHaveBeenCalledWith('/welcome');
     });
 
-    it('treats a 401 as already deleted: resets the session and navigates to the landing page', () => {
+    it('treats 410 as confirmed gone: resets the session and navigates to the landing page', () => {
       service.currentUser.set(USER);
       const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
 
@@ -183,12 +183,25 @@ describe('AuthService', () => {
         complete: () => (completed = true),
         error: () => (failed = true),
       });
-      httpMock.expectOne('/api/auth/me').flush(null, { status: 401, statusText: 'Unauthorized' });
+      httpMock.expectOne('/api/auth/me').flush(null, { status: 410, statusText: 'Gone' });
 
       expect(completed).toBe(true);
       expect(failed).toBe(false);
       expect(service.currentUser()).toBeNull();
       expect(navigateSpy).toHaveBeenCalledWith('/welcome');
+    });
+
+    it('propagates a 401 as an error: no reset, no navigation (a 401 does not prove deletion)', () => {
+      service.currentUser.set(USER);
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+
+      let status: number | undefined;
+      service.deleteAccount().subscribe({ error: (error) => (status = error.status) });
+      httpMock.expectOne('/api/auth/me').flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      expect(status).toBe(401);
+      expect(service.currentUser()).toEqual(USER);
+      expect(navigateSpy).not.toHaveBeenCalled();
     });
 
     it('keeps the session and does not navigate when the server fails, and surfaces the error', () => {
@@ -204,6 +217,20 @@ describe('AuthService', () => {
       expect(status).toBe(500);
       expect(service.currentUser()).toEqual(USER);
       expect(navigateSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleDeletionUnconfirmed', () => {
+    it('resets the session, goes to /login and leaves a notice that is handed out exactly once', () => {
+      service.currentUser.set(USER);
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+
+      service.handleDeletionUnconfirmed();
+
+      expect(service.currentUser()).toBeNull();
+      expect(navigateSpy).toHaveBeenCalledWith('/login');
+      expect(service.takeLoginNotice()).toBe('deletionUnconfirmed');
+      expect(service.takeLoginNotice()).toBeNull();
     });
   });
 

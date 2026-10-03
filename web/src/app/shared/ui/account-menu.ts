@@ -305,7 +305,8 @@ export class AccountMenu {
    * The panel closes first, so the dialog is not stacked on top of a popover that outside-click
    * rules could dismiss mid-confirmation. Typing the login is the lock (TypedConfirmDialog). Only a
    * confirmed, server-acknowledged deletion resets the client (AuthService.deleteAccount); a failure
-   * reopens the panel with the reason, because nothing was deleted and the user may try again.
+   * reopens the panel with the reason, because nothing was deleted and the user may try again; a
+   * 401 (session already ended) cannot be retried from here and goes to the login page instead.
    */
   protected deleteAccount(): void {
     const user = this.currentUser();
@@ -328,7 +329,16 @@ export class AccountMenu {
       this.authService.deleteAccount().subscribe({
         error: (error: HttpErrorResponse) => {
           this.isDeleting.set(false);
+          if (error.status === 401) {
+            // The session had already ended (signed out elsewhere, expired): nothing was deleted,
+            // and a 401 does not prove otherwise. Not retryable from here — signing in again is.
+            this.authService.handleDeletionUnconfirmed();
+            return;
+          }
           this.deleteErrorKey.set(apiErrorTranslationKey(error));
+          // The notice lives in the root view only; the user may have wandered into preferences
+          // while the request was pending.
+          this.view.set('root');
           this.isOpen.set(true);
           // The dialog that held focus is gone and the panel is new: without this the caret sits on
           // <body>. The alert is the thing to read, so it gets the focus.

@@ -104,21 +104,35 @@ test.describe('account deletion from the account menu', () => {
     await expect(page).toHaveURL(/\/my-votings$/);
   });
 
-  test('a 401 on the deletion means the account is already gone and ends on the public page', async ({
+  test('a 401 on the deletion is not read as deleted: login page says nothing was deleted', async ({
     page,
   }) => {
-    // Retry, double submit or a concurrent admin deletion: the session is rejected before the
-    // handler runs, so the answer is 401, not 204.
+    // Signed out in another tab or expired: the session is rejected before the handler runs.
     await mockSession(page, 401);
     const dialog = await openDeleteDialog(page);
 
     await dialog.getByLabel('Zur Bestätigung deinen Twitch-Login eingeben').fill('sensitron');
     await dialog.getByRole('button', { name: 'Konto endgültig löschen' }).click();
 
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'konnte nicht bestätigt werden' }),
+    ).toBeVisible();
+    await expect(page.getByText('Es wurde nichts gelöscht.')).toBeVisible();
+  });
+
+  test('a 410 on the deletion confirms the account is gone and ends on the public page', async ({
+    page,
+  }) => {
+    // Retry or double submit after the user row vanished: the route-scoped 410.
+    await mockSession(page, 410);
+    const dialog = await openDeleteDialog(page);
+
+    await dialog.getByLabel('Zur Bestätigung deinen Twitch-Login eingeben').fill('sensitron');
+    await dialog.getByRole('button', { name: 'Konto endgültig löschen' }).click();
+
     await expect(page).toHaveURL(/\/welcome$/);
-    await expect(page.getByRole('alert').filter({ hasText: 'konnte nicht gelöscht' })).toHaveCount(
-      0,
-    );
+    await expect(page.getByRole('alert')).toHaveCount(0);
   });
 
   test('cancelling sends nothing', async ({ page }) => {

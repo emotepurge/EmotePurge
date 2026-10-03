@@ -43,6 +43,9 @@
   "login": {
     "title": "Anmelden",
     "subtitle": "Melde dich mit deinem Twitch-Account an, um den Bot für deinen Channel zu verwalten.",
+    "notice": {
+      "deletionUnconfirmed": "Das Löschen deines Kontos konnte nicht bestätigt werden, weil deine Sitzung bereits beendet war (anderswo abgemeldet oder abgelaufen). Es wurde nichts gelöscht. Melde dich erneut an und wiederhole die Löschung, wenn du sie weiterhin möchtest."
+    },
     "loginButton": "Mit Twitch einloggen",
     "scopes": {
       "title": "Was Twitch dabei freigibt",

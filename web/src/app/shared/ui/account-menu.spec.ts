@@ -495,6 +495,50 @@ describe('AccountMenu', () => {
       expect(alert?.textContent).toContain('Serverfehler.');
     });
 
+    it('resets to the root view when the deletion fails, even if the user had moved to preferences', async () => {
+      const menu = render();
+      vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      const pending = new Subject<void>();
+      vi.spyOn(authService, 'deleteAccount').mockReturnValue(pending);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      menu.detect();
+
+      // Reopen while pending and wander into the preferences view.
+      menu.trigger().click();
+      menu.detect();
+      menu.button('Einstellungen').click();
+      menu.detect();
+      expect(menu.hasButton('Konto löschen')).toBe(false);
+
+      pending.error(new HttpErrorResponse({ status: 500 }));
+      menu.detect();
+      await menu.fixture.whenStable();
+
+      expect(menu.hasButton('Konto löschen')).toBe(true);
+      const alert = menu.panel()!.querySelector<HTMLElement>('[role="alert"]');
+      expect(alert?.textContent).toContain('Dein Konto konnte nicht gelöscht werden.');
+      expect(document.activeElement).toBe(alert);
+    });
+
+    it('on a 401 resets the client for the login page and shows no deletion-failed notice', () => {
+      const menu = render();
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      TestBed.inject(HttpTestingController)
+        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+        .flush(null, { status: 401, statusText: 'Unauthorized' });
+      menu.detect();
+
+      expect(authService.currentUser()).toBeNull();
+      expect(navigate).toHaveBeenCalledWith('/login');
+      expect(authService.takeLoginNotice()).toBe('deletionUnconfirmed');
+      expect(menu.panel()).toBeNull();
+    });
+
     it('moves focus to the alert when the deletion fails', async () => {
       const menu = render();
       vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
@@ -531,22 +575,6 @@ describe('AccountMenu', () => {
       pending.error(new HttpErrorResponse({ status: 500 }));
       menu.detect();
       expect(menu.button('Konto löschen').disabled).toBe(false);
-    });
-
-    it('does not show the failure notice when the server answers 401 (account already gone)', () => {
-      const menu = render();
-      const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
-      openDialog(menu);
-      type('sensitron');
-      dialogButton('Konto endgültig löschen').click();
-      TestBed.inject(HttpTestingController)
-        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
-        .flush(null, { status: 401, statusText: 'Unauthorized' });
-      menu.detect();
-
-      expect(menu.panel()).toBeNull();
-      expect(authService.currentUser()).toBeNull();
-      expect(navigate).toHaveBeenCalledWith('/welcome');
     });
 
     it('clears the failure notice once the panel is closed and opened again', () => {

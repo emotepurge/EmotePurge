@@ -43,6 +43,9 @@
   "login": {
     "title": "Sign in",
     "subtitle": "Log in with your Twitch account to manage the bot for your channel.",
+    "notice": {
+      "deletionUnconfirmed": "Your account deletion could not be confirmed because your session had already ended (signed out elsewhere or expired). Nothing was deleted. Sign in again and repeat the deletion if you still want it."
+    },
     "loginButton": "Log in with Twitch",
     "scopes": {
       "title": "What Twitch shares",

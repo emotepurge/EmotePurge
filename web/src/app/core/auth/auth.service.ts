@@ -7,6 +7,8 @@ import { ChannelService } from '../channels/channel.service';
 import { SevenTvTokenService } from '../seven-tv/seven-tv-token.service';
 import { AuthUser } from './auth.model';
 
+export type LoginNotice = 'deletionUnconfirmed';
+
 const RETURN_URL_STORAGE_KEY = 'ep_return_url';
 
 @Injectable({ providedIn: 'root' })
@@ -24,6 +26,7 @@ export class AuthService {
 
   readonly currentUser = signal<AuthUser | null>(null);
   private readonly isLoaded = signal(false);
+  private readonly loginNotice = signal<LoginNotice | null>(null);
 
   /**
    * False until /api/auth/me has answered once, whichever way it answered. `currentUser()` alone
@@ -94,20 +97,39 @@ export class AuthService {
    * landing page rather than /login afterwards — there is no account left to log in to, and /welcome
    * is the public page that explains what the app is.
    *
-   * A 401 counts as success: once the user row is gone the cookie scheme rejects the session before
-   * the handler runs, so a retry, a double submit or a concurrent admin/retention deletion answers
-   * 401 instead of 204. The interceptor exempts `/api/auth/me` from its expiry handling, so the
-   * error reaches this method — and "not signed in any more" is exactly the state the user asked for.
+   * Only 204 and 410 confirm the account is gone (410 is the server's answer to a retry or
+   * double submit once the user row has vanished, scoped to this route). A 401 is **not** inferred
+   * to mean "deleted": it can equally mean the session was revoked (logout in another tab, admin
+   * revoke), the cookie expired, or it predates session tracking — in all of those the account
+   * still exists. It propagates like any other error; the caller decides how to tell the user. The
+   * interceptor exempts `/api/auth/me` from its expiry handling, so the error reaches here.
    */
   deleteAccount(): Observable<void> {
     return this.http.delete<void>('/api/auth/me').pipe(
       catchError((error: unknown) =>
-        error instanceof HttpErrorResponse && error.status === 401
+        error instanceof HttpErrorResponse && error.status === 410
           ? of(undefined as void)
           : throwError(() => error),
       ),
       tap(() => this.resetClientSession('/welcome')),
     );
+  }
+
+  /**
+   * The deletion could not be confirmed because the session had already ended: resets the client
+   * like an expired session and leaves a one-shot notice for the login page, which is where the
+   * user lands — the account menu that asked is unmounted by the reset.
+   */
+  handleDeletionUnconfirmed(): void {
+    this.loginNotice.set('deletionUnconfirmed');
+    this.resetClientSession('/login');
+  }
+
+  /** Returns the pending login-page notice and clears it, so a reload or later visit shows none. */
+  takeLoginNotice(): LoginNotice | null {
+    const notice = this.loginNotice();
+    this.loginNotice.set(null);
+    return notice;
   }
 
   /** Called when a request 401s mid-session (cookie expired) — resets state and sends the user back to /login. */
