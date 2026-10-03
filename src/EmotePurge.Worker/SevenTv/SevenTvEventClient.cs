@@ -382,7 +382,7 @@ public class SevenTvEventClient(
                 // Per channel, not per dispatch: the channels sharing this set are independent rows,
                 // so one failing must not skip the deltas for the ones after it. The periodic resync
                 // reconciles whatever was skipped (issue #59).
-                logger.LogWarning(ex, "7TV-Delta für {Channel} eines geteilten Sets fehlgeschlagen, die übrigen Channels werden weiter bedient.", channelName);
+                logger.LogWarning(ex, "7TV delta for {Channel} of a shared set failed, continuing with the other channels.", channelName);
             }
         }
     }
