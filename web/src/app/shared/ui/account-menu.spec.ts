@@ -1,10 +1,11 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { Dialog } from '@angular/cdk/dialog';
 import { Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { Subject, firstValueFrom, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthUser } from '../../core/auth/auth.model';
@@ -21,7 +22,24 @@ const DE_TRANSLATIONS = {
   account: {
     trigger: 'Konto-Menü von {{ name }}',
     preferencesTrigger: 'Einstellungen',
+    delete: {
+      trigger: 'Konto löschen',
+      title: 'Dein Konto unwiderruflich löschen',
+      message: 'Das lässt sich nicht rückgängig machen.',
+      inputLabel: 'Login eingeben',
+      confirm: 'Konto endgültig löschen',
+      pending: 'Konto wird gelöscht …',
+      failed: 'Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert.',
+      mismatch: 'Anderes Konto in einem anderen Tab.',
+      unconfirmed:
+        'Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde. Lade die Seite neu.',
+    },
   },
+  common: {
+    cancel: 'Abbrechen',
+    typedConfirmHint: 'Zum Fortfahren exakt „{{text}}“ eingeben.',
+  },
+  errors: { status: { forbidden: 'Nicht erlaubt.' } },
   shell: {
     admin: 'Admin',
     logout: 'Logout',
@@ -385,6 +403,260 @@ describe('AccountMenu', () => {
 
       expect(menu.panel()).toBeNull();
       expect(logout).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('delete account', () => {
+    // The dialog lives in the CDK overlay container on <body>, outside the fixture's host element.
+    const dialogEl = () => document.querySelector<HTMLElement>('app-typed-confirm-dialog');
+    const dialogInput = () => document.querySelector<HTMLInputElement>('#typed-confirm-input')!;
+    const dialogButton = (label: string) =>
+      Array.from(dialogEl()!.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === label,
+      )!;
+
+    function type(value: string): void {
+      const input = dialogInput();
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+      TestBed.tick();
+    }
+
+    function openDialog(menu: Harness): void {
+      menu.resolve(USER);
+      menu.trigger().click();
+      menu.detect();
+      menu.button('Konto löschen').click();
+      menu.detect();
+      TestBed.tick();
+    }
+
+    afterEach(() => {
+      // A dialog left open by a failing assertion would leak into the next spec through <body>.
+      TestBed.inject(Dialog).closeAll();
+    });
+
+    it('closes the panel and opens a dialog that is locked until the login is retyped exactly', () => {
+      const menu = render();
+      openDialog(menu);
+
+      expect(menu.panel()).toBeNull();
+      expect(dialogEl()).not.toBeNull();
+      expect(dialogButton('Konto endgültig löschen').disabled).toBe(true);
+
+      type('Sensitron'); // display name, wrong case of nothing the user is asked for
+      expect(dialogButton('Konto endgültig löschen').disabled).toBe(true);
+
+      type('sensitron');
+      expect(dialogButton('Konto endgültig löschen').disabled).toBe(false);
+    });
+
+    it('sends nothing and keeps the session when the dialog is cancelled', () => {
+      const menu = render();
+      const deleteAccount = vi.spyOn(authService, 'deleteAccount');
+      openDialog(menu);
+
+      dialogButton('Abbrechen').click();
+      menu.detect();
+
+      expect(deleteAccount).not.toHaveBeenCalled();
+      expect(authService.currentUser()).toEqual(USER);
+    });
+
+    it('deletes through AuthService on confirmation and does not reopen the panel', () => {
+      const menu = render();
+      const deleteAccount = vi
+        .spyOn(authService, 'deleteAccount')
+        .mockReturnValue(of(undefined as void));
+      openDialog(menu);
+
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      menu.detect();
+
+      expect(deleteAccount).toHaveBeenCalledOnce();
+      expect(menu.panel()).toBeNull();
+    });
+
+    it('reopens the panel with an alert and keeps the session when the deletion fails', () => {
+      const menu = render();
+      const router = TestBed.inject(Router);
+      const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+      openDialog(menu);
+
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      TestBed.inject(HttpTestingController)
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
+        .flush(null, { status: 403, statusText: 'Forbidden' });
+      menu.detect();
+
+      expect(authService.currentUser()).toEqual(USER);
+      expect(navigate).not.toHaveBeenCalled();
+      const alert = menu.panel()!.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain('Dein Konto konnte nicht gelöscht werden.');
+      expect(alert?.textContent).toContain('Nicht erlaubt.');
+    });
+
+    it('resets to the root view when the deletion fails, even if the user had moved to preferences', async () => {
+      const menu = render();
+      vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      const pending = new Subject<void>();
+      vi.spyOn(authService, 'deleteAccount').mockReturnValue(pending);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      menu.detect();
+
+      // Reopen while pending and wander into the preferences view.
+      menu.trigger().click();
+      menu.detect();
+      menu.button('Einstellungen').click();
+      menu.detect();
+      expect(menu.hasButton('Konto löschen')).toBe(false);
+
+      pending.error(new HttpErrorResponse({ status: 403 }));
+      menu.detect();
+      await menu.fixture.whenStable();
+
+      expect(menu.hasButton('Konto löschen')).toBe(true);
+      const alert = menu.panel()!.querySelector<HTMLElement>('[role="alert"]');
+      expect(alert?.textContent).toContain('Dein Konto konnte nicht gelöscht werden.');
+      expect(document.activeElement).toBe(alert);
+    });
+
+    it('on a 401 resets the client for the login page and shows no deletion-failed notice', () => {
+      const menu = render();
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      TestBed.inject(HttpTestingController)
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
+        .flush(null, { status: 401, statusText: 'Unauthorized' });
+      menu.detect();
+
+      expect(authService.currentUser()).toBeNull();
+      expect(navigate).toHaveBeenCalledWith('/login');
+      expect(authService.takeLoginNotice()).toBe('deletionSessionEnded');
+      expect(menu.panel()).toBeNull();
+    });
+
+    function confirmDeletion(menu: Harness): void {
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+    }
+
+    it.each([0, 500, 502, 503, 504, 520, 524])(
+      'on status %i says the outcome is unknown, never "nothing has changed", and keeps the session',
+      async (status) => {
+        const menu = render();
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+        confirmDeletion(menu);
+        TestBed.inject(HttpTestingController)
+          .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
+          .error(new ProgressEvent('error'), { status, statusText: 'x' });
+        menu.detect();
+        await menu.fixture.whenStable();
+
+        expect(authService.currentUser()).toEqual(USER);
+        expect(navigate).not.toHaveBeenCalled();
+        const alert = menu.panel()!.querySelector<HTMLElement>('[role="alert"]')!;
+        expect(alert.textContent).toContain('nicht bestätigen');
+        expect(alert.textContent).not.toContain('unverändert');
+        expect(document.activeElement).toBe(alert);
+      },
+    );
+
+    it('keeps the outcome after the menu is destroyed mid-request and shows it on a recreated menu', async () => {
+      const menu = render();
+      const pending = new Subject<void>();
+      vi.spyOn(authService, 'deleteAccount').mockReturnValue(pending);
+      confirmDeletion(menu);
+      menu.detect();
+
+      menu.fixture.destroy(); // the visitor navigated to another page
+      expect(() => pending.error(new HttpErrorResponse({ status: 0 }))).not.toThrow();
+
+      const second = render(); // the next page's menu; /me is cached, so no request
+      second.detect();
+      await second.fixture.whenStable();
+      expect(second.panel()!.querySelector('[role="alert"]')?.textContent).toContain(
+        'nicht bestätigen',
+      );
+    });
+
+    it('on a 409 account mismatch keeps the cached account, deletes nothing and asks for a reload', async () => {
+      const menu = render();
+      confirmDeletion(menu);
+      const http = TestBed.inject(HttpTestingController);
+      http
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
+        .flush({ errorCode: 'account_mismatch' }, { status: 409, statusText: 'Conflict' });
+      menu.detect();
+      await menu.fixture.whenStable();
+
+      http.expectNone('/api/auth/me');
+      expect(authService.currentUser()).toEqual(USER);
+      expect(menu.panel()!.querySelector('[role="alert"]')?.textContent).toContain('Anderes Konto');
+    });
+
+    it('moves focus to the alert when the deletion fails', async () => {
+      const menu = render();
+      vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      TestBed.inject(HttpTestingController)
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
+        .flush(null, { status: 403, statusText: 'Forbidden' });
+      menu.detect();
+      await menu.fixture.whenStable();
+
+      const alert = menu.panel()!.querySelector<HTMLElement>('[role="alert"]');
+      expect(document.activeElement).toBe(alert);
+    });
+
+    it('shows progress and blocks a second submission while the request is in flight', () => {
+      const menu = render();
+      const pending = new Subject<void>();
+      const deleteAccount = vi.spyOn(authService, 'deleteAccount').mockReturnValue(pending);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      menu.detect();
+
+      menu.trigger().click(); // reopen while the request runs
+      menu.detect();
+      const row = menu.button('Konto wird gelöscht …');
+      expect(row.disabled).toBe(true);
+      expect(row.getAttribute('aria-busy')).toBe('true');
+      row.click();
+      expect(deleteAccount).toHaveBeenCalledOnce();
+
+      pending.error(new HttpErrorResponse({ status: 403 }));
+      menu.detect();
+      expect(menu.button('Konto löschen').disabled).toBe(false);
+    });
+
+    it('clears the failure notice once the panel is closed and opened again', () => {
+      const menu = render();
+      vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      TestBed.inject(HttpTestingController)
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
+        .flush(null, { status: 403, statusText: 'Forbidden' });
+      menu.detect();
+
+      menu.trigger().click(); // close
+      menu.detect();
+      menu.trigger().click(); // reopen
+      menu.detect();
+
+      expect(menu.panel()!.querySelector('[role="alert"]')).toBeNull();
     });
   });
 });

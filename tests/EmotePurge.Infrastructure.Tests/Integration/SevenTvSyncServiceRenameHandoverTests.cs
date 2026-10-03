@@ -2,6 +2,8 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.SevenTv;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -191,12 +193,12 @@ public class SevenTvSyncServiceRenameHandoverTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(twitchUserId, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(SetId, liveEmotes))));
         return new SevenTvSyncService(
-            db, apiClient, cache, new DuplicateEmoteNameTracker(), gate, Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), gate, Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
     }
 
     private static async Task<Channel> SeedChannelAsync(AppDbContext db, string name)
     {
-        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = SetId };
+        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = SetId, IsBotActive = true };
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         return channel;

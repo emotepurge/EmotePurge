@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using EmotePurge.Api.Auth;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.Twitch;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -123,6 +124,16 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public IAccountDeletionService AccountDeletion { get; } = Substitute.For<IAccountDeletionService>();
 
     /// <summary>
+    /// Substituted for the self-service deletion endpoint: its handler reads the stored Twitch tokens
+    /// (Postgres) before the deletion. Everything else that asks for <c>IUserService</c> only ever
+    /// reaches it past a short-circuiting filter, so the substitute changes no existing case.
+    /// </summary>
+    public IUserService Users { get; } = Substitute.For<IUserService>();
+
+    /// <summary>Substituted so the self-deletion tests can see which tokens get revoked, without a Twitch round trip.</summary>
+    public ITwitchAuthClient TwitchAuth { get; } = Substitute.For<ITwitchAuthClient>();
+
+    /// <summary>
     /// Substituted so the paging tests can read back the page and page size an endpoint forwarded
     /// after correcting a missing or out-of-range query value; the real implementation would go to
     /// Postgres.
@@ -180,6 +191,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddSingleton(_ => LegalContent);
             services.AddScoped(_ => AccountDeletion);
             services.AddScoped(_ => Contact);
+            services.AddScoped(_ => Users);
+            services.AddScoped(_ => TwitchAuth);
             services.AddScoped(_ => AuditLogQuery);
             services.AddScoped(_ => AdminUserQuery);
 
