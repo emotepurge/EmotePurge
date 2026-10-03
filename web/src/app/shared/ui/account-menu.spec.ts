@@ -1,10 +1,11 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { Dialog } from '@angular/cdk/dialog';
 import { Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthUser } from '../../core/auth/auth.model';
@@ -21,7 +22,20 @@ const DE_TRANSLATIONS = {
   account: {
     trigger: 'Konto-Menü von {{ name }}',
     preferencesTrigger: 'Einstellungen',
+    delete: {
+      trigger: 'Konto löschen',
+      title: 'Dein Konto unwiderruflich löschen',
+      message: 'Das lässt sich nicht rückgängig machen.',
+      inputLabel: 'Login eingeben',
+      confirm: 'Konto endgültig löschen',
+      failed: 'Dein Konto konnte nicht gelöscht werden.',
+    },
   },
+  common: {
+    cancel: 'Abbrechen',
+    typedConfirmHint: 'Zum Fortfahren exakt „{{text}}“ eingeben.',
+  },
+  errors: { status: { server: 'Serverfehler.' } },
   shell: {
     admin: 'Admin',
     logout: 'Logout',
@@ -385,6 +399,118 @@ describe('AccountMenu', () => {
 
       expect(menu.panel()).toBeNull();
       expect(logout).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('delete account', () => {
+    // The dialog lives in the CDK overlay container on <body>, outside the fixture's host element.
+    const dialogEl = () => document.querySelector<HTMLElement>('app-typed-confirm-dialog');
+    const dialogInput = () => document.querySelector<HTMLInputElement>('#typed-confirm-input')!;
+    const dialogButton = (label: string) =>
+      Array.from(dialogEl()!.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === label,
+      )!;
+
+    function type(value: string): void {
+      const input = dialogInput();
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+      TestBed.tick();
+    }
+
+    function openDialog(menu: Harness): void {
+      menu.resolve(USER);
+      menu.trigger().click();
+      menu.detect();
+      menu.button('Konto löschen').click();
+      menu.detect();
+      TestBed.tick();
+    }
+
+    afterEach(() => {
+      // A dialog left open by a failing assertion would leak into the next spec through <body>.
+      TestBed.inject(Dialog).closeAll();
+    });
+
+    it('closes the panel and opens a dialog that is locked until the login is retyped exactly', () => {
+      const menu = render();
+      openDialog(menu);
+
+      expect(menu.panel()).toBeNull();
+      expect(dialogEl()).not.toBeNull();
+      expect(dialogButton('Konto endgültig löschen').disabled).toBe(true);
+
+      type('Sensitron'); // display name, wrong case of nothing the user is asked for
+      expect(dialogButton('Konto endgültig löschen').disabled).toBe(true);
+
+      type('sensitron');
+      expect(dialogButton('Konto endgültig löschen').disabled).toBe(false);
+    });
+
+    it('sends nothing and keeps the session when the dialog is cancelled', () => {
+      const menu = render();
+      const deleteAccount = vi.spyOn(authService, 'deleteAccount');
+      openDialog(menu);
+
+      dialogButton('Abbrechen').click();
+      menu.detect();
+
+      expect(deleteAccount).not.toHaveBeenCalled();
+      expect(authService.currentUser()).toEqual(USER);
+    });
+
+    it('deletes through AuthService on confirmation and does not reopen the panel', () => {
+      const menu = render();
+      const deleteAccount = vi
+        .spyOn(authService, 'deleteAccount')
+        .mockReturnValue(of(undefined as void));
+      openDialog(menu);
+
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      menu.detect();
+
+      expect(deleteAccount).toHaveBeenCalledOnce();
+      expect(menu.panel()).toBeNull();
+    });
+
+    it('reopens the panel with an alert and keeps the session when the deletion fails', () => {
+      const menu = render();
+      const router = TestBed.inject(Router);
+      const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+      openDialog(menu);
+
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      TestBed.inject(HttpTestingController)
+        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+        .flush(null, { status: 500, statusText: 'Internal Server Error' });
+      menu.detect();
+
+      expect(authService.currentUser()).toEqual(USER);
+      expect(navigate).not.toHaveBeenCalled();
+      const alert = menu.panel()!.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain('Dein Konto konnte nicht gelöscht werden.');
+      expect(alert?.textContent).toContain('Serverfehler.');
+    });
+
+    it('clears the failure notice once the panel is closed and opened again', () => {
+      const menu = render();
+      vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      TestBed.inject(HttpTestingController)
+        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+        .flush(null, { status: 500, statusText: 'Internal Server Error' });
+      menu.detect();
+
+      menu.trigger().click(); // close
+      menu.detect();
+      menu.trigger().click(); // reopen
+      menu.detect();
+
+      expect(menu.panel()!.querySelector('[role="alert"]')).toBeNull();
     });
   });
 });

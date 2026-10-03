@@ -15,7 +15,15 @@
   "account": {
     "trigger": "Konto-Menü von {{ name }}",
     "preferencesTrigger": "Einstellungen",
-    "back": "Zurück"
+    "back": "Zurück",
+    "delete": {
+      "trigger": "Konto löschen",
+      "title": "Dein Konto unwiderruflich löschen",
+      "message": "Dein Konto und alle Daten, die zu dir gehören, werden gelöscht: deine gespeicherten Twitch-Zugangsdaten, deine Anmeldung und jede Stimme, die du abgegeben hast – auch in laufenden Abstimmungen, deren Stand sich dadurch ändert. Einträge im Audit-Log, die dich nennen, bleiben erhalten, werden aber anonymisiert.\n\nDas lässt sich nicht rückgängig machen. Du wirst sofort abgemeldet.",
+      "inputLabel": "Zur Bestätigung deinen Twitch-Login eingeben",
+      "confirm": "Konto endgültig löschen",
+      "failed": "Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen."
+    }
   },
   "shell": {
     "workerStatus": {

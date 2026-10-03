@@ -155,6 +155,40 @@ describe('AuthService', () => {
     });
   });
 
+  describe('deleteAccount', () => {
+    it('sends DELETE /api/auth/me, then clears the user and navigates to the landing page', () => {
+      service.currentUser.set(USER);
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+
+      let completed = false;
+      service.deleteAccount().subscribe({ complete: () => (completed = true) });
+      const req = httpMock.expectOne('/api/auth/me');
+      expect(req.request.method).toBe('DELETE');
+      expect(service.currentUser()).toEqual(USER); // nothing is reset before the server answers
+      req.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(completed).toBe(true);
+      expect(service.currentUser()).toBeNull();
+      expect(service.isResolved()).toBe(true);
+      expect(navigateSpy).toHaveBeenCalledWith('/welcome');
+    });
+
+    it('keeps the session and does not navigate when the server fails, and surfaces the error', () => {
+      service.currentUser.set(USER);
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+
+      let status: number | undefined;
+      service.deleteAccount().subscribe({ error: (error) => (status = error.status) });
+      httpMock
+        .expectOne('/api/auth/me')
+        .flush(null, { status: 500, statusText: 'Internal Server Error' });
+
+      expect(status).toBe(500);
+      expect(service.currentUser()).toEqual(USER);
+      expect(navigateSpy).not.toHaveBeenCalled();
+    });
+  });
+
   describe('handleSessionExpired', () => {
     it('resets state and navigates to /login without a server call', () => {
       service.currentUser.set(USER);

@@ -87,16 +87,29 @@ export class AuthService {
     });
   }
 
+  /**
+   * Self-service account deletion (GDPR Art. 17). Unlike logout, the client state is reset only once
+   * the server confirmed: a failed deletion leaves the account, the session and the user's data
+   * exactly where they were, so the caller must be able to show the error and let them retry. The
+   * landing page rather than /login afterwards — there is no account left to log in to, and /welcome
+   * is the public page that explains what the app is.
+   */
+  deleteAccount(): Observable<void> {
+    return this.http
+      .delete<void>('/api/auth/me')
+      .pipe(tap(() => this.resetClientSession('/welcome')));
+  }
+
   /** Called when a request 401s mid-session (cookie expired) — resets state and sends the user back to /login. */
   handleSessionExpired(): void {
     this.resetClientSession();
   }
 
-  private resetClientSession(): void {
+  private resetClientSession(target = '/login'): void {
     this.currentUser.set(null);
     this.isLoaded.set(true);
     this.sevenTvTokenService.clearToken();
     this.channelService.invalidatePermissions();
-    this.router.navigateByUrl('/login');
+    this.router.navigateByUrl(target);
   }
 }

@@ -1,3 +1,4 @@
+import { Dialog } from '@angular/cdk/dialog';
 import { DOCUMENT } from '@angular/common';
 import {
   Component,
@@ -9,14 +10,17 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
+import { HttpErrorResponse } from '@angular/common/http';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { AuthService } from '../../core/auth/auth.service';
+import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { Avatar } from './avatar';
 import { DisplayPreferences } from './display-preferences';
 import { Popover } from './popover';
+import { openTypedConfirmDialog } from './typed-confirm-dialog';
 
 /**
  * Everything personal in the app frame behind one trigger: who you are, where your own pages are,
@@ -167,6 +171,29 @@ import { Popover } from './popover';
                 >
                   {{ 'shell.logout' | transloco }}
                 </button>
+
+                <!-- Last and set apart by colour alone: the rarest, least reversible entry of the
+                     panel. Trigger tier of the destructive ladder (UI-Designsprache §4.2) — the
+                     confirmation, and with it the solid button, is the typed dialog behind it. -->
+                <button
+                  type="button"
+                  class="flex min-h-11 items-center sm:min-h-9 border-t border-border px-3 text-left text-sm text-danger-fg transition hover:bg-danger-wash"
+                  (click)="deleteAccount()"
+                >
+                  {{ 'account.delete.trigger' | transloco }}
+                </button>
+
+                @if (deleteErrorKey(); as errorKey) {
+                  <!-- The panel is reopened for this: the dialog is gone by the time the request
+                       fails, and the account being still there is the thing to say. -->
+                  <div
+                    role="alert"
+                    class="flex flex-col gap-1 border-t border-border bg-danger-wash px-3 py-3 text-xs text-danger-fg"
+                  >
+                    <span>{{ 'account.delete.failed' | transloco }}</span>
+                    <span>{{ errorKey | transloco }}</span>
+                  </div>
+                }
               }
             } @else {
               <!-- Logged out the panel holds nothing but these two, so a row that opens a subview
@@ -182,6 +209,7 @@ import { Popover } from './popover';
 export class AccountMenu {
   private readonly authService = inject(AuthService);
   private readonly transloco = inject(TranslocoService);
+  private readonly dialog = inject(Dialog);
   private readonly document = inject(DOCUMENT);
   private readonly elementRef = inject(ElementRef<HTMLElement>);
   private readonly injector = inject(Injector);
@@ -197,6 +225,8 @@ export class AccountMenu {
    * left in the visitor's mind — at the top — rather than in a subview they last saw minutes ago.
    */
   protected readonly view = signal<'root' | 'preferences'>('root');
+  /** Translation key of why the last account deletion failed; cleared whenever the panel closes. */
+  protected readonly deleteErrorKey = signal<string | null>(null);
 
   /**
    * Translated imperatively rather than through the pipe, because it carries an interpolated name
@@ -237,6 +267,7 @@ export class AccountMenu {
     const hadFocus = this.elementRef.nativeElement.contains(this.document.activeElement);
     this.isOpen.set(false);
     this.view.set('root');
+    this.deleteErrorKey.set(null);
     if (hadFocus) {
       this.trigger()?.nativeElement.focus();
     }
@@ -255,6 +286,38 @@ export class AccountMenu {
   protected logout(): void {
     this.close();
     this.authService.logout();
+  }
+
+  /**
+   * The panel closes first, so the dialog is not stacked on top of a popover that outside-click
+   * rules could dismiss mid-confirmation. Typing the login is the lock (TypedConfirmDialog). Only a
+   * confirmed, server-acknowledged deletion resets the client (AuthService.deleteAccount); a failure
+   * reopens the panel with the reason, because nothing was deleted and the user may try again.
+   */
+  protected deleteAccount(): void {
+    const user = this.currentUser();
+    if (!user) {
+      return;
+    }
+    this.close();
+
+    openTypedConfirmDialog(this.dialog, {
+      title: this.transloco.translate('account.delete.title'),
+      message: this.transloco.translate('account.delete.message'),
+      requiredText: user.login,
+      inputLabel: this.transloco.translate('account.delete.inputLabel'),
+      confirmLabel: this.transloco.translate('account.delete.confirm'),
+    }).closed.subscribe((confirmed) => {
+      if (!confirmed) {
+        return;
+      }
+      this.authService.deleteAccount().subscribe({
+        error: (error: HttpErrorResponse) => {
+          this.deleteErrorKey.set(apiErrorTranslationKey(error));
+          this.isOpen.set(true);
+        },
+      });
+    });
   }
 
   /**
