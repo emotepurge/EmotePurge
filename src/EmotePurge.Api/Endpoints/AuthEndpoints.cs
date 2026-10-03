@@ -179,14 +179,15 @@ public static class AuthEndpoints
             {
                 stored = await userService.GetTwitchTokensAsync(actor.TwitchUserId, ct);
             }
-            catch (InvalidOperationException)
+            catch (InvalidOperationException ex)
             {
                 // The cipher cannot decrypt the stored tokens (rotated or lost key). Narrow on purpose:
                 // a database failure or a cancellation still fails the request, since nothing has been
                 // deleted yet. Here the ciphertext is about to be deleted anyway, so the user must not
                 // be locked into an account they cannot erase; only the revocation of those two tokens
-                // is skipped. Nothing about the tokens is logged.
+                // is skipped. The exception is the cipher's own and carries no token or ciphertext.
                 logger.LogWarning(
+                    ex,
                     "Stored Twitch tokens could not be read; account deletion proceeds, token revocation skipped (Twitch user {TwitchUserId})",
                     actor.TwitchUserId);
             }
