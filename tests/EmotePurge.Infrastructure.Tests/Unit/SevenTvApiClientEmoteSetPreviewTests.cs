@@ -400,6 +400,7 @@ public class SevenTvApiClientEmoteSetPreviewTests
             httpClient,
             new RecordingRateLimitTelemetry(),
             requestBudget ?? new RecordingForeignUpstreamRequestBudget(),
+            new RecordingSevenTvSearchBudget(),
             new RecordingLogger<SevenTvApiClient>());
     }
 

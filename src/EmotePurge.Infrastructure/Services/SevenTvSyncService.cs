@@ -3,6 +3,7 @@ using EmotePurge.Core.Matching;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
+using EmotePurge.Infrastructure.SevenTv;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -15,9 +16,16 @@ public class SevenTvSyncService(
     IDuplicateEmoteNameTracker duplicateNameTracker,
     ChannelSyncGate channelSyncGate,
     IExcludedChannelFilter excludedChannelFilter,
+    ISevenTvSearchBudget searchBudget,
+    TwitchIdResolutionBackoff resolutionBackoff,
     ILogger<SevenTvSyncService> logger)
     : ISevenTvSyncService
 {
+    // From the third miss in a row on, every further one gets an Information line: by then the
+    // channel is not a transient hiccup, and the backoff itself keeps the line rare (24 a day at the
+    // one-hour ceiling).
+    private const int MissesBeforeLogging = 3;
+
     public async Task<SevenTvSyncResult?> SyncChannelAsync(string channelName, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
@@ -340,7 +348,9 @@ public class SevenTvSyncService(
     /// abort the sync — either the resolution itself failed (recorded via
     /// <see cref="RecordFailedAttemptAsync(Channel, SevenTvLookupStatus, CancellationToken)"/>) or the
     /// resolved id belongs to a different, already-tracked row (a rename duplicate — logged, not
-    /// recorded as a failure, since nothing about this attempt actually failed).
+    /// recorded as a failure, since nothing about this attempt actually failed), or the search was
+    /// held back by the channel's backoff or refused by the shared 7TV search budget (neither
+    /// recorded: no search was made).
     /// </summary>
     private async Task<string?> ResolveTwitchUserIdAsync(Channel channel, string normalized, CancellationToken cancellationToken)
     {
@@ -349,6 +359,48 @@ public class SevenTvSyncService(
             return knownTwitchUserId;
         }
 
+        // The id-less path costs a search from 7TV's shared search bucket, so it runs behind two
+        // gates (design note docs/Konzept-7TV-Such-Budget-2026-10-03.md). Neither writes a failure
+        // reason when it holds the sync back: nothing was asked, so the last real answer stands.
+        if (!resolutionBackoff.IsDue(channel.Id, out var retryIn))
+        {
+            logger.LogDebug(
+                "Twitch id resolution for {Channel} ({ChannelId}) backed off, next attempt in {RetrySeconds}s.",
+                channel.ChannelName, channel.Id, Math.Ceiling(retryIn.TotalSeconds));
+            return null;
+        }
+
+        var permit = await searchBudget.TryChargeAsync(SevenTvSearchConsumer.ChannelIdentity, cancellationToken);
+        if (!permit.Granted)
+        {
+            // Debug: this repeats on every tick for as long as the bucket is blocked, and the block
+            // itself has already been announced once, at Warning, by whoever observed it.
+            logger.LogDebug(
+                "Twitch id resolution for {Channel} ({ChannelId}) skipped: 7TV search budget refused ({Refusal}).",
+                channel.ChannelName, channel.Id, permit.Refusal);
+            return null;
+        }
+
+        var (twitchUserId, excluded) = await ResolveWithChargedSearchAsync(channel, normalized, cancellationToken);
+        if (twitchUserId is null)
+        {
+            RecordResolutionMiss(channel, excluded);
+        }
+        else
+        {
+            resolutionBackoff.RecordSuccess(channel.Id);
+        }
+
+        return twitchUserId;
+    }
+
+    /// <summary>
+    /// The resolution proper, once a search has been paid for. A null id for every way it can end
+    /// without an id this row may store — the caller turns each of them into one backoff step.
+    /// <c>Excluded</c> marks the one of them that must stay out of the default log level.
+    /// </summary>
+    private async Task<(string? TwitchUserId, bool Excluded)> ResolveWithChargedSearchAsync(Channel channel, string normalized, CancellationToken cancellationToken)
+    {
         // channel.ChannelName, not `normalized`: this runs after the row gate re-read the row, so
         // asking 7TV about the caller's name would ask about a login the rename has already retired.
         // Same root cause as the propagation issue #60 fixes for the callers.
@@ -356,7 +408,7 @@ public class SevenTvSyncService(
         if (resolved.Status != SevenTvLookupStatus.Ok || resolved.TwitchUserId is null)
         {
             await RecordFailedAttemptAsync(channel, resolved.Status, cancellationToken);
-            return null;
+            return (null, false);
         }
 
         var twitchUserId = resolved.TwitchUserId;
@@ -369,7 +421,7 @@ public class SevenTvSyncService(
         if (excludedChannelFilter.IsExcluded(twitchUserId))
         {
             RefuseExcludedChannel(channel);
-            return null;
+            return (null, true);
         }
 
         // A rename leaves this exact shape: a second row under the new name, still without its own
@@ -383,10 +435,24 @@ public class SevenTvSyncService(
             logger.LogWarning(
                 "SyncChannelAsync: {Channel} ({ChannelId}) löst dieselbe Twitch-ID {TwitchId} auf wie bereits getrackter Channel {ExistingChannel} ({ExistingChannelId}) — vermutlich ein Rename-Duplikat, Sync übersprungen.",
                 normalized, channel.Id, twitchUserId, existingOwner.ChannelName, existingOwner.Id);
-            return null;
+            return (null, false);
         }
 
-        return twitchUserId;
+        return (twitchUserId, false);
+    }
+
+    private void RecordResolutionMiss(Channel channel, bool excluded)
+    {
+        var (misses, delay) = resolutionBackoff.RecordMiss(channel.Id);
+
+        // An excluded channel backs off like any other, but silently: a recurring line naming it
+        // would tie the block to that channel, which RefuseExcludedChannel keeps at Debug for.
+        if (misses >= MissesBeforeLogging && !excluded)
+        {
+            logger.LogInformation(
+                "Twitch id of {Channel} ({ChannelId}) still unresolved after {Misses} attempts in a row, next 7TV search in {DelaySeconds}s.",
+                channel.ChannelName, channel.Id, misses, (long)delay.TotalSeconds);
+        }
     }
 
     /// <summary>

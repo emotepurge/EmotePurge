@@ -164,6 +164,65 @@ public class SevenTvLeaderboardServiceTests
         Assert.True(harness.Breaker.TryAcquire().Allowed);
     }
 
+    [Theory]
+    [InlineData(SevenTvSearchRefusal.WindowFull)]
+    [InlineData(SevenTvSearchRefusal.ConsumerShareFull)]
+    [InlineData(SevenTvSearchRefusal.StoreUnavailable)]
+    public async Task ASharedBudgetRefusal_MakesNoUpstreamRequest_SpendsNoLidPermit_AndAnswersBudgetRefused(
+        SevenTvSearchRefusal refusal)
+    {
+        // The shared 7TV search budget sits in front of this feature's own lid (design note
+        // docs/Konzept-7TV-Such-Budget-2026-10-03.md): a refusal there must leave the lid untouched,
+        // because a lid permit only ages out after an hour.
+        var harness = new Harness(maxRequests: 1, window: TimeSpan.FromHours(1));
+        harness.SearchBudget.NextRefusal = refusal;
+
+        var refused = await harness.Service.GetLeaderboardAsync(Trending);
+
+        Assert.Equal(SevenTvLeaderboardStatus.BudgetRefused, refused.Status);
+        Assert.Equal(0, harness.UpstreamRequests);
+        Assert.Equal([SevenTvSearchConsumer.Leaderboard], harness.SearchBudget.Charges);
+        Assert.True(harness.Budget.TryCharge(out _));
+        // Nothing reached 7TV, so the breaker learnt nothing and its probe slot is free again.
+        Assert.True(harness.Breaker.TryAcquire().Allowed);
+    }
+
+    [Fact]
+    public async Task ABlockSeenByAnotherProcess_AnswersAsARateLimit_ForTheRemainingBlock()
+    {
+        // The Worker walked into 7TV's lockout; the leaderboard must say "7TV is rate limiting"
+        // without asking 7TV itself, and keep saying it for as long as the block lasts.
+        var harness = new Harness();
+        harness.SearchBudget.NextRefusal = SevenTvSearchRefusal.Blocked;
+        harness.SearchBudget.BlockedFor = TimeSpan.FromMinutes(30);
+        harness.Answer(Trending, 1, OkPage(1, 1, "e1"));
+
+        Assert.Equal(SevenTvLeaderboardStatus.SevenTvRateLimited, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
+        Assert.Equal(0, harness.UpstreamRequests);
+        Assert.True(harness.Breaker.TryAcquire().Allowed);
+
+        // Stocked for the remaining block, not for the thirty seconds of an ordinary refusal.
+        harness.SearchBudget.NextRefusal = SevenTvSearchRefusal.None;
+        harness.Clock.Advance(TimeSpan.FromMinutes(29));
+        Assert.Equal(SevenTvLeaderboardStatus.SevenTvRateLimited, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
+        harness.Clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.Equal(SevenTvLeaderboardStatus.Ok, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
+        Assert.Equal(1, harness.UpstreamRequests);
+    }
+
+    [Fact]
+    public async Task EveryUpstreamPage_IsChargedToTheSharedBudget_AsTheLeaderboard()
+    {
+        var harness = new Harness();
+        harness.Answer(Trending, 1, OkPage(500, 2, "e1"));
+        harness.Answer(Trending, 2, OkPage(500, 2, "e2"));
+
+        await harness.Service.GetLeaderboardAsync(Trending);
+
+        Assert.Equal([SevenTvSearchConsumer.Leaderboard, SevenTvSearchConsumer.Leaderboard], harness.SearchBudget.Charges);
+        Assert.Equal(2, harness.UpstreamRequests);
+    }
+
     [Fact]
     public async Task TwentyFillAttemptsWithinAnHour_ProduceExactlyTenUpstreamRequests()
     {
@@ -448,9 +507,11 @@ public class SevenTvLeaderboardServiceTests
             Budget = new SevenTvLeaderboardRequestBudget(
                 maxRequests, window ?? SevenTvLeaderboardRequestBudget.DefaultWindow, Clock);
             Logger = new RecordingLogger<SevenTvLeaderboardService>();
+            SearchBudget = new RecordingSevenTvSearchBudget();
             Service = new SevenTvLeaderboardService(
                 Client,
                 new SevenTvLeaderboardStore<SevenTvLeaderboardResult>(Clock),
+                SearchBudget,
                 Budget,
                 Breaker,
                 new SevenTvLeaderboardBudgetAlarm(),
@@ -464,6 +525,8 @@ public class SevenTvLeaderboardServiceTests
         public ForeignSevenTvBreakerPolicy Breaker { get; }
 
         public SevenTvLeaderboardRequestBudget Budget { get; }
+
+        public RecordingSevenTvSearchBudget SearchBudget { get; }
 
         public RecordingLogger<SevenTvLeaderboardService> Logger { get; }
 

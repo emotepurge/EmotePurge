@@ -64,6 +64,7 @@ namespace EmotePurge.Infrastructure.Services;
 public sealed class SevenTvLeaderboardService(
     ISevenTvApiClient client,
     SevenTvLeaderboardStore<SevenTvLeaderboardResult> stock,
+    ISevenTvSearchBudget searchBudget,
     SevenTvLeaderboardRequestBudget budget,
     ForeignSevenTvBreakerPolicy breaker,
     SevenTvLeaderboardBudgetAlarm alarm,
@@ -190,6 +191,32 @@ public sealed class SevenTvLeaderboardService(
         var breakerResolved = false;
         try
         {
+            // The shared search budget before this feature's own lid (design note
+            // docs/Konzept-7TV-Such-Budget-2026-10-03.md): a slot taken there and then left unused
+            // ages out within a minute, one taken from the lid only after an hour. It is the only
+            // guard that sees the Worker's searches, and the only one that honours a lockout another
+            // process observed.
+            var sharedPermit = await searchBudget.TryChargeAsync(SevenTvSearchConsumer.Leaderboard, cancellationToken);
+            if (!sharedPermit.Granted)
+            {
+                logger.LogDebug(
+                    "7TV leaderboard fill for sort {SortBy}, page {Page}: shared 7TV search budget refused ({Refusal}), no upstream request.",
+                    sortBy.ToWireCode(), page, sharedPermit.Refusal);
+
+                // Same as the lid's refusal below: nothing reached 7TV, the breaker learns nothing.
+                breaker.ReleaseProbeWithoutOutcome(decision.Generation);
+                breakerResolved = true;
+
+                // A block is 7TV's own lockout seen by someone else, so it answers as a rate limit
+                // with the remaining block as shelf-life; anything else is congestion on our side.
+                return sharedPermit.Refusal == SevenTvSearchRefusal.Blocked
+                    ? PageAttempt.Failed(
+                        SevenTvLeaderboardStatus.SevenTvRateLimited,
+                        SevenTvLeaderboardFillOutcome.RateLimited(sharedPermit.BlockedFor))
+                    : PageAttempt.Failed(
+                        SevenTvLeaderboardStatus.BudgetRefused, SevenTvLeaderboardFillOutcome.BudgetRefused());
+            }
+
             if (!budget.TryCharge(out var usedInWindow))
             {
                 logger.LogDebug(

@@ -105,6 +105,26 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ChannelSyncGate>();
         services.AddScoped<ISevenTvSyncService, SevenTvSyncService>();
 
+        // 7TV's search bucket (design note docs/Konzept-7TV-Such-Budget-2026-10-03.md): one budget
+        // in Redis shared by the Api's leaderboard and the Worker's Twitch-id resolution, plus the
+        // Worker's per-channel backoff for ids that never resolve. Options bound and validated
+        // eagerly, like the channel cap above. The budget is built through a factory so its key
+        // prefix keeps its production default, and with TimeProvider.System rather than the DI
+        // clock: its window is compared across two processes, so it must run on the wall clock both
+        // of them share (same reasoning as RateLimitTelemetryStore below). The backoff is a
+        // singleton because its table must outlive the scoped sync service that consults it.
+        var searchBudgetOptions = new SevenTvSearchBudgetOptions();
+        configuration.GetSection(SevenTvSearchBudgetOptions.SectionName).Bind(searchBudgetOptions);
+        searchBudgetOptions.Validate();
+        services.AddSingleton(searchBudgetOptions);
+        services.AddSingleton<ISevenTvSearchBudget>(sp => new RedisSevenTvSearchBudget(
+            sp.GetRequiredService<IConnectionMultiplexer>(),
+            searchBudgetOptions,
+            TimeProvider.System,
+            sp.GetRequiredService<ILogger<RedisSevenTvSearchBudget>>()));
+        services.AddSingleton(sp => new TwitchIdResolutionBackoff(
+            searchBudgetOptions, sp.GetRequiredService<TimeProvider>()));
+
         // Foreign-channel-import read path (spec 2026-09-09). The raw resolution chain (T1) is
         // registered under a key so the hardening decorator (T2, below) can depend on
         // IForeignEmoteSetService for its inner collaborator without resolving itself — the two
@@ -159,6 +179,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISevenTvLeaderboardService>(sp => new SevenTvLeaderboardService(
             sp.GetRequiredService<ISevenTvApiClient>(),
             sp.GetRequiredService<SevenTvLeaderboardStore<SevenTvLeaderboardResult>>(),
+            sp.GetRequiredService<ISevenTvSearchBudget>(),
             sp.GetRequiredService<SevenTvLeaderboardRequestBudget>(),
             sp.GetRequiredKeyedService<ForeignSevenTvBreakerPolicy>(LeaderboardBreakerKey),
             sp.GetRequiredService<SevenTvLeaderboardBudgetAlarm>(),
