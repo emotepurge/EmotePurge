@@ -48,6 +48,42 @@ operational figure outside every gate (#69, T10).
 
 ---
 
+### 2026-10-03 — Harness: the byte cap bites while the bytes arrive, not after a whole line is buffered (#83)
+
+**Betrifft:** `src/EmotePurge.Core/ChatLogArchive/IChatLogArchiveClient.cs` ·
+`src/EmotePurge.Infrastructure/ChatLogArchive/ChatLogArchiveClient.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ChatLogArchiveClientTests.cs`
+
+`ChatLogArchiveClient` checked `maxBytes` after `reader.ReadLineAsync(...)` returned. A
+`StreamReader` assembles a whole line before it returns one, and its `bufferSize: 1024` bounds only
+each read from the stream, not that accumulation. A successful response with an overlong or
+newline-free line — after a format change on the archive's side, say — was therefore pulled and
+buffered in full before `ByteCapExceeded` could fire, and a single such body could exhaust the
+harness container's 512 MB long before. Not the "one chunk of slack" accepted when the client was
+built, but an unbounded body.
+
+**The cap now sits in the counting stream.** `CountingHashStream` takes `maxBytes`; once more than
+`maxBytes` bytes have been read, every further read reports end of body without touching the wire,
+so the reader cannot keep accumulating. `ScanLinesAsync` checks `CountingHashStream.CapExceeded`
+right after each `ReadLineAsync`, **before** the end-of-body test — past the cap a `null` line can
+mean "cap reached" as well as "done", and only the flag tells them apart. The overshoot is at most
+one `StreamReader` read buffer (1024 bytes), and every byte that did arrive is still reported in
+`BytesReceived` and booked by the runner, as before.
+
+End-of-body instead of a dedicated exception from inside the stream: the existing flow already ends
+at a `null` line and every abort already returns a result rather than throwing, so this needs no new
+exception type that the `IOException`/`HttpRequestException` catch beside it would have to be kept
+from swallowing.
+
+**The boundary does not move, and nothing below it changes.** A body of exactly `maxBytes` is
+`Complete`, one byte more is `ByteCapExceeded` — before and after, both now pinned by a test. For
+every body within the cap the stream behaves exactly as before (it only answers differently once
+the cap is crossed), so the bytes, the lines, the digest and the counts of every `Complete` day are
+identical. Days over the cap were aborted before and are aborted now; they never produce a day
+line. **Count-neutral, no `AlgorithmVersion` bump.**
+
+---
+
 ### 2026-09-24 — robots.txt stays closed after the legal launch
 
 **Betrifft:** `web/public/robots.txt` · `PRODUCT.md` · `CLAUDE.md`

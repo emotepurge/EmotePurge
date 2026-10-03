@@ -16,8 +16,8 @@ public interface IChatLogArchiveClient
     /// <summary>
     /// Fetches one channel-day and invokes <paramref name="onMessage"/> once per PRIVMSG line, in
     /// the order the lines appear in the archive. <paramref name="maxBytes"/> is a hard cap on the
-    /// response body; exceeding it aborts the read with
-    /// <see cref="ChatLogDayStatus.ByteCapExceeded"/> instead of continuing. Cancelling
+    /// response body, enforced while the bytes arrive rather than per line; exceeding it aborts the
+    /// read with <see cref="ChatLogDayStatus.ByteCapExceeded"/> instead of continuing. Cancelling
     /// <paramref name="ct"/> while the body is being read returns
     /// <see cref="ChatLogDayStatus.Cancelled"/> with the bytes received so far; cancelling it before
     /// the body throws <see cref="OperationCanceledException"/>.

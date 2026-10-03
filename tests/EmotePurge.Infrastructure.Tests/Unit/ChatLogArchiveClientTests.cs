@@ -144,6 +144,60 @@ public class ChatLogArchiveClientTests
     }
 
     [Fact]
+    public async Task ReadDayAsync_WithANewlineFreeBodyFarLargerThanTheCap_StopsReadingWithinOneBufferOfTheCap()
+    {
+        // A body that never ends a line (e.g. after a format change on the archive's side): the
+        // StreamReader would accumulate the whole thing into one line before a check after
+        // ReadLineAsync ever ran. The cap has to bite where the bytes arrive.
+        const long maxBytes = 64 * 1024;
+        const int bodyBytes = 8 * 1024 * 1024;
+        var source = new NewlineFreeStream(bodyBytes);
+        var client = CreateClient(new StreamStubHandler(HttpStatusCode.OK, () => source), new ChatLogArchiveOptions());
+        var callbackInvoked = false;
+
+        var result = await client.ReadDayAsync(
+            "1", new DateOnly(2026, 1, 1), maxBytes, _ => { callbackInvoked = true; return ValueTask.CompletedTask; }, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.ByteCapExceeded, result.Status);
+        Assert.Null(result.BodySha256Hex);
+        Assert.False(callbackInvoked);
+        // Every byte that arrived is reported (the caller books it against the budget), and at most
+        // one StreamReader buffer (1024 bytes) arrived beyond the cap — not the 8 MB body.
+        Assert.Equal(source.BytesServed, result.BytesReceived);
+        Assert.True(result.BytesReceived > maxBytes, $"expected the cap to be crossed, got {result.BytesReceived}");
+        Assert.True(result.BytesReceived <= maxBytes + 1024, $"expected at most one buffer beyond the cap, got {result.BytesReceived}");
+    }
+
+    [Fact]
+    public async Task ReadDayAsync_WithABodyExactlyAsLargeAsTheCap_IsComplete()
+    {
+        // The boundary stays where it was: a body of exactly maxBytes is within the cap, one byte
+        // more is not.
+        var fixtureBytes = await File.ReadAllBytesAsync(FixturePath);
+        var client = CreateClient(new StreamStubHandler(HttpStatusCode.OK, () => new LineChunkedStream(fixtureBytes)), new ChatLogArchiveOptions());
+
+        var result = await client.ReadDayAsync(
+            "1", new DateOnly(2026, 1, 1), fixtureBytes.Length, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.Complete, result.Status);
+        Assert.Equal(fixtureBytes.Length, result.BytesReceived);
+        Assert.Equal(6, result.MessageCount);
+    }
+
+    [Fact]
+    public async Task ReadDayAsync_WithABodyOneByteLargerThanTheCap_ReturnsByteCapExceeded()
+    {
+        var fixtureBytes = await File.ReadAllBytesAsync(FixturePath);
+        var client = CreateClient(new StreamStubHandler(HttpStatusCode.OK, () => new LineChunkedStream(fixtureBytes)), new ChatLogArchiveOptions());
+
+        var result = await client.ReadDayAsync(
+            "1", new DateOnly(2026, 1, 1), fixtureBytes.Length - 1, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.ByteCapExceeded, result.Status);
+        Assert.Equal(fixtureBytes.Length, result.BytesReceived);
+    }
+
+    [Fact]
     public async Task ReadDayAsync_CalledTwiceInARow_WaitsAtLeastRequestDelayBetweenStarts()
     {
         var options = new ChatLogArchiveOptions { RequestDelay = TimeSpan.FromMilliseconds(300) };
@@ -396,6 +450,49 @@ public class ChatLogArchiveClientTests
             body.AsSpan(_position, toCopy).CopyTo(buffer.Span);
             _position += toCopy;
             return toCopy;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    // A body of `length` bytes without a single newline, served in whatever chunk size the reader
+    // asks for. BytesServed records how much of it was actually pulled, so a test can tell "stopped
+    // near the cap" apart from "read everything, then noticed".
+    private sealed class NewlineFreeStream(long length) : Stream
+    {
+        public long BytesServed { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var toServe = (int)Math.Min(buffer.Length, length - BytesServed);
+            buffer.Span[..toServe].Fill((byte)'a');
+            BytesServed += toServe;
+            return ValueTask.FromResult(toServe);
         }
 
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
