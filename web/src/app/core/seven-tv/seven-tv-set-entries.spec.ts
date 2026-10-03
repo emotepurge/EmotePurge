@@ -96,6 +96,12 @@ describe('loadSevenTvSetEntries', () => {
       expect(req.request.body.variables.page).toBe(requested);
       req.flush(page([], 10));
     }
+    // Pages 1..9 are re-read for the shift check.
+    for (let requested = 1; requested <= 9; requested++) {
+      const req = httpMock.expectOne(GQL_ENDPOINT);
+      expect(req.request.body.variables.page).toBe(requested);
+      req.flush(page([], 10));
+    }
 
     expect((await result$).complete).toBe(true);
   });
@@ -139,6 +145,15 @@ describe('loadSevenTvSetEntries', () => {
         emoteSets: {
           emoteSet: {
             emotes: { totalCount: 2, pageCount: 2, items: [{ emote: { id: '7tv-2' } }] },
+          },
+        },
+      },
+    });
+    httpMock.expectOne(GQL_ENDPOINT).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: { totalCount: 2, pageCount: 2, items: [{ emote: { id: '7tv-1' } }] },
           },
         },
       },
@@ -250,5 +265,160 @@ describe('loadSevenTvSetEntries', () => {
     httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'rate limited' }] });
 
     await expect(result$).rejects.toThrow();
+  });
+
+  // Another editor changing the set between two page requests shifts entries across the page
+  // boundary (offset paging). `flushPages` answers the main pass (and optionally the re-reads of
+  // every page but the last) in order.
+  describe('entries shifting between page requests', () => {
+    const A = { id: 'a', alias: 'A' };
+    const B = { id: 'b', alias: 'B' };
+    const C = { id: 'c', alias: 'C' };
+    const D = { id: 'd', alias: 'D' };
+    const E = { id: 'e', alias: 'E' };
+
+    function flushNext(response: ReturnType<typeof page>, expectedPage: number) {
+      const req = httpMock.expectOne(GQL_ENDPOINT);
+      expect(req.request.body.variables.page).toBe(expectedPage);
+      req.flush(response);
+    }
+
+    it('is incomplete when an insert before the boundary repeats the last entry of page 1 on page 2', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 4), 1);
+      flushNext(page([B, C], 2, 5), 2);
+
+      expect((await result$).complete).toBe(false);
+    });
+
+    it('is incomplete when a removal before the boundary skips an entry, though the count matches', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 4), 1);
+      flushNext(page([D], 2, 3), 2);
+
+      expect((await result$).complete).toBe(false);
+    });
+
+    it('is incomplete without re-reads when an insert and a removal leave a duplicate pair and an equal totalCount', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 4), 1);
+      flushNext(page([B, D], 2, 4), 2);
+
+      expect((await result$).complete).toBe(false);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('detects a swap (remove on page 1, append at the end) only through the re-read', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 4), 1);
+      flushNext(page([C, D], 2, 4), 2);
+      // A was removed, E appended: page 1 is now [B, C] — C slid over and was never read.
+      flushNext(page([B, C], 2, 4), 1);
+
+      expect((await result$).complete).toBe(false);
+    });
+
+    it('is incomplete when totalCount changes during the verification re-read', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 4), 1);
+      flushNext(page([C, D], 2, 4), 2);
+      flushNext(page([A, B], 2, 5), 1);
+
+      expect((await result$).complete).toBe(false);
+    });
+
+    it('is incomplete when totalCount differs between pages of the main pass', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 5), 1);
+      // The count matches the last page's totalCount, so only the drift can flag this read.
+      flushNext(page([C, D], 2, 4), 2);
+
+      expect((await result$).complete).toBe(false);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('is incomplete when only page 2 of three differs on the re-read', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 3, 6), 1);
+      flushNext(page([C, D], 3, 6), 2);
+      flushNext(page([E, { id: 'f', alias: 'F' }], 3, 6), 3);
+      flushNext(page([A, B], 3, 6), 1);
+      flushNext(page([C, E], 3, 6), 2);
+
+      expect((await result$).complete).toBe(false);
+    });
+
+    it('stops re-reading once totalCount drifts during the verification', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 3, 6), 1);
+      flushNext(page([C, D], 3, 6), 2);
+      flushNext(page([E, { id: 'f', alias: 'F' }], 3, 6), 3);
+      flushNext(page([A, B], 3, 7), 1);
+
+      expect((await result$).complete).toBe(false);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('starts fresh on every subscription of the same observable', async () => {
+      const read$ = loadSevenTvSetEntries(httpClient, 'set-1');
+      for (let run = 0; run < 2; run++) {
+        const result$ = firstValueFrom(read$);
+        flushNext(page([A, B], 2, 4), 1);
+        flushNext(page([C, D], 2, 4), 2);
+        flushNext(page([A, B], 2, 4), 1);
+        const result = await result$;
+        expect(result.complete).toBe(true);
+        expect(result.aliasesById.size).toBe(4);
+      }
+    });
+
+    it('re-reads page 1 once for an unchanged two-page set and stays complete', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 4), 1);
+      flushNext(page([C, D], 2, 4), 2);
+      flushNext(page([A, B], 2, 4), 1);
+
+      const result = await result$;
+      expect(result.complete).toBe(true);
+      expect([...result.aliasesById.keys()]).toEqual(['a', 'b', 'c', 'd']);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('ignores the order within a page when comparing the re-read', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 4), 1);
+      flushNext(page([C, D], 2, 4), 2);
+      flushNext(page([B, A], 2, 4), 1);
+
+      expect((await result$).complete).toBe(true);
+    });
+
+    it('sends no extra request for a single-page set', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 1, 2), 1);
+
+      expect((await result$).complete).toBe(true);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('errors when a verification re-read fails', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 4), 1);
+      flushNext(page([C, D], 2, 4), 2);
+      httpMock
+        .expectOne(GQL_ENDPOINT)
+        .flush('boom', { status: 500, statusText: 'Internal Server Error' });
+
+      await expect(result$).rejects.toThrow();
+    });
+
+    it('errors when a verification re-read answers with a GraphQL rejection', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 2, 4), 1);
+      flushNext(page([C, D], 2, 4), 2);
+      httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'rate limited' }] });
+
+      await expect(result$).rejects.toThrow();
+    });
   });
 });
