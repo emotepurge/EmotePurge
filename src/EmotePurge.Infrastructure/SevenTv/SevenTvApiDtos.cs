@@ -131,11 +131,16 @@ internal sealed class SevenTvEmoteSetJsonDto
 {
     public string Id { get; set; } = string.Empty;
 
-    // Slot limit of the set. Present in the response we already fetch (verified live 2026-08-01);
-    // emote_count is deliberately not read — it is emotes.Length of this same payload, so it can
-    // never tell us anything the list itself doesn't.
+    // Slot limit of the set. Present in the response we already fetch (verified live 2026-08-01).
     public int Capacity { get; set; }
-    public List<SevenTvEmoteJsonDto> Emotes { get; set; } = [];
+
+    // Both fields below are OMITTED by 7TV for a genuinely empty set (its compat model skips an
+    // empty `emotes` list and a default `emote_count`), so "missing" must stay an empty list and
+    // is the real empty shape. Only an explicit `emotes: null` is nullable-visible, and
+    // emote_count is the cross-check: a positive count next to no emotes is a lost list, not an
+    // empty set.
+    public int? EmoteCount { get; set; }
+    public List<SevenTvEmoteJsonDto>? Emotes { get; set; } = [];
 }
 
 internal sealed class SevenTvEmoteJsonDto

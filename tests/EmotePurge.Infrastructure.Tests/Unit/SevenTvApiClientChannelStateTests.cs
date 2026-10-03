@@ -197,6 +197,56 @@ public class SevenTvApiClientChannelStateTests
         Assert.Contains(logger.Entries, e => e.Message.Contains("lade Set separat", StringComparison.Ordinal));
     }
 
+    // Pins the REAL shape of a genuinely empty 7TV set: the upstream compat model skips an empty
+    // `emotes` list and a default `emote_count`, so both keys are simply absent. This must stay Ok
+    // with zero emotes (the sync's wipe guard decides what to do with it) — "fixing" a missing
+    // list into Unavailable would make a truly empty set unsyncable forever (issue #76).
+    [Fact]
+    public async Task EmoteSetWithoutEmotesAndCount_IsOk_WithZeroEmotes()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600},"user":{"id":"USER1","connections":[]}}""";
+        var client = CreateClient(CreateHandler(userPayload));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Ok, result.Status);
+        Assert.Empty(result.State!.EmoteSet.Emotes);
+    }
+
+    [Fact]
+    public async Task PositiveEmoteCountWithEmptyEmotes_IsUnavailable()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600,"emote_count":5,"emotes":[]},"user":{"id":"USER1","connections":[]}}""";
+        var client = CreateClient(CreateHandler(userPayload));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Unavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task ExplicitNullEmotes_IsUnavailable()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600,"emotes":null},"user":{"id":"USER1","connections":[]}}""";
+        var client = CreateClient(CreateHandler(userPayload));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Unavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task ReloadedSetWithPositiveEmoteCountAndNoEmotes_IsUnavailable()
+    {
+        const string userPayload = """{"emote_set":null,"emote_set_id":"SET2","user":{"id":"USER1","connections":[]}}""";
+        const string emoteSetPayload = """{"id":"SET2","capacity":700,"emote_count":3}""";
+        var client = CreateClient(CreateHandler(userPayload, ("emote-sets", emoteSetPayload)));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Unavailable, result.Status);
+    }
+
     private static RoutingStubHandler CreateHandler(
         string userPayload,
         (string PathPrefix, string Payload)? emoteSetRoute = null,

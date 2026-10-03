@@ -679,6 +679,19 @@ public class SevenTvApiClient(
     private async Task<SevenTvChannelStateResult> BuildChannelStateResultAsync(
         SevenTvEmoteSetJsonDto emoteSetDto, SevenTvUserRestUserDto? user, CancellationToken cancellationToken)
     {
+        // Two shapes that are not "an empty set" and must not be taken for one. An explicit
+        // `emotes: null` is a broken payload. A positive emote_count next to no emotes means the
+        // list was lost on the way, and answering Ok(0) would feed the sync's wipe guard a zero
+        // that 7TV itself contradicts. A MISSING `emotes` (and missing emote_count) is different
+        // and stays an empty list: that is how 7TV serialises a genuinely empty set.
+        if (emoteSetDto.Emotes is null || (emoteSetDto.EmoteCount is > 0 && emoteSetDto.Emotes.Count == 0))
+        {
+            logger.LogWarning(
+                "7TV-Emote-Set {SetId} ist widersprüchlich (emotes {Emotes}, emote_count {Count}) — als nicht verfügbar behandelt.",
+                emoteSetDto.Id, emoteSetDto.Emotes is null ? "null" : "leer", emoteSetDto.EmoteCount);
+            return SevenTvChannelStateResult.Failed(SevenTvLookupStatus.Unavailable);
+        }
+
         var emotes = emoteSetDto.Emotes.Select(SevenTvEmoteJsonMapper.MapDto).ToList();
 
         // Overlay the real set-entry dates from v4. Null (lookup failed) simply leaves every
@@ -808,32 +821,16 @@ public class SevenTvApiClient(
     // truthful failure reason. Same exact-id contract ResolveSevenTvIdentityAsync already holds.
     private static string? ResolveFallbackEmoteSetId(SevenTvUserRestDto dto, string twitchUserId)
     {
-        if (IsUsableSevenTvId(dto.EmoteSetId))
+        if (SevenTvIds.IsUsable(dto.EmoteSetId))
         {
             return dto.EmoteSetId;
         }
 
         var ownConnection = (dto.User?.Connections ?? []).FirstOrDefault(c =>
-            c.Platform == TwitchPlatform && c.Id == twitchUserId && IsUsableSevenTvId(c.EmoteSetId));
+            c.Platform == TwitchPlatform && c.Id == twitchUserId && SevenTvIds.IsUsable(c.EmoteSetId));
 
         return ownConnection?.EmoteSetId;
     }
-
-    // 7TV represents "no id" two different ways depending on the endpoint: sometimes a genuine
-    // absence (null/empty), sometimes a placeholder sentinel of all-zero characters — proven live for
-    // a different lookup on this same client (ResolveSevenTvIdentityAsync's
-    // "00000000000000000000000000" placeholder account id, measured 2026-08-31). Both must read as
-    // "not present" here, or a sentinel would be mistaken for a real emote-set id and forwarded to
-    // GET emote-sets/{id}. Checking "every character is '0'" rather than a fixed-length literal
-    // survives 7TV changing the sentinel's length or format.
-    //
-    // For this particular field the sentinel has not been observed: 62 accounts without an active
-    // set, sampled live 2026-09-01, all answered with a plain null emote_set_id (top level and in
-    // connections[]). The all-zero branch is therefore unproven defence, not a fix for a known
-    // behaviour — the null case, which keeps NoActiveEmoteSet reachable after the rollout, is the
-    // measured one.
-    private static bool IsUsableSevenTvId(string? id) =>
-        !string.IsNullOrWhiteSpace(id) && id.Any(c => c != '0');
 
     // 7TV wraps a GraphQL-level failure as HTTP 200 (see GqlEmoteSetPreviewQuery's comment and
     // SevenTvGqlEmoteSetPreviewResponseDto); a rate limit is one specific `errors[].extensions.status`
