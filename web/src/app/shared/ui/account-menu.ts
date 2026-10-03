@@ -177,17 +177,23 @@ import { openTypedConfirmDialog } from './typed-confirm-dialog';
                      confirmation, and with it the solid button, is the typed dialog behind it. -->
                 <button
                   type="button"
-                  class="flex min-h-11 items-center sm:min-h-9 border-t border-border px-3 text-left text-sm text-danger-fg transition hover:bg-danger-wash"
+                  class="flex min-h-11 items-center sm:min-h-9 border-t border-border px-3 text-left text-sm text-danger-fg transition hover:bg-danger-wash disabled:cursor-progress disabled:opacity-60 disabled:hover:bg-transparent"
+                  [disabled]="isDeleting()"
+                  [attr.aria-busy]="isDeleting() ? 'true' : null"
                   (click)="deleteAccount()"
                 >
-                  {{ 'account.delete.trigger' | transloco }}
+                  {{
+                    (isDeleting() ? 'account.delete.pending' : 'account.delete.trigger') | transloco
+                  }}
                 </button>
 
                 @if (deleteErrorKey(); as errorKey) {
                   <!-- The panel is reopened for this: the dialog is gone by the time the request
                        fails, and the account being still there is the thing to say. -->
                   <div
+                    #deleteAlert
                     role="alert"
+                    tabindex="-1"
                     class="flex flex-col gap-1 border-t border-border bg-danger-wash px-3 py-3 text-xs text-danger-fg"
                   >
                     <span>{{ 'account.delete.failed' | transloco }}</span>
@@ -216,6 +222,7 @@ export class AccountMenu {
   private readonly trigger = viewChild<ElementRef<HTMLButtonElement>>('trigger');
   private readonly back = viewChild<ElementRef<HTMLButtonElement>>('back');
   private readonly preferencesRow = viewChild<ElementRef<HTMLButtonElement>>('preferencesRow');
+  private readonly deleteAlert = viewChild<ElementRef<HTMLElement>>('deleteAlert');
 
   protected readonly currentUser = this.authService.currentUser;
   protected readonly authResolved = this.authService.isResolved;
@@ -227,6 +234,12 @@ export class AccountMenu {
   protected readonly view = signal<'root' | 'preferences'>('root');
   /** Translation key of why the last account deletion failed; cleared whenever the panel closes. */
   protected readonly deleteErrorKey = signal<string | null>(null);
+  /**
+   * True from the confirmation until the server answers. The request can take a while (the server
+   * revokes tokens at Twitch before it responds), and the panel can be reopened meanwhile — the row
+   * is disabled and says what is happening, so a second submission is not possible.
+   */
+  protected readonly isDeleting = signal(false);
 
   /**
    * Translated imperatively rather than through the pipe, because it carries an interpolated name
@@ -296,7 +309,7 @@ export class AccountMenu {
    */
   protected deleteAccount(): void {
     const user = this.currentUser();
-    if (!user) {
+    if (!user || this.isDeleting()) {
       return;
     }
     this.close();
@@ -311,11 +324,17 @@ export class AccountMenu {
       if (!confirmed) {
         return;
       }
+      this.isDeleting.set(true);
       this.authService.deleteAccount().subscribe({
         error: (error: HttpErrorResponse) => {
+          this.isDeleting.set(false);
           this.deleteErrorKey.set(apiErrorTranslationKey(error));
           this.isOpen.set(true);
+          // The dialog that held focus is gone and the panel is new: without this the caret sits on
+          // <body>. The alert is the thing to read, so it gets the focus.
+          this.focusAfterRender(() => this.deleteAlert());
         },
+        complete: () => this.isDeleting.set(false),
       });
     });
   }

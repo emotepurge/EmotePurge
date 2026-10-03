@@ -173,6 +173,24 @@ describe('AuthService', () => {
       expect(navigateSpy).toHaveBeenCalledWith('/welcome');
     });
 
+    it('treats a 401 as already deleted: resets the session and navigates to the landing page', () => {
+      service.currentUser.set(USER);
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+
+      let completed = false;
+      let failed = false;
+      service.deleteAccount().subscribe({
+        complete: () => (completed = true),
+        error: () => (failed = true),
+      });
+      httpMock.expectOne('/api/auth/me').flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      expect(completed).toBe(true);
+      expect(failed).toBe(false);
+      expect(service.currentUser()).toBeNull();
+      expect(navigateSpy).toHaveBeenCalledWith('/welcome');
+    });
+
     it('keeps the session and does not navigate when the server fails, and surfaces the error', () => {
       service.currentUser.set(USER);
       const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);

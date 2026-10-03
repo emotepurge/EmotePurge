@@ -1,7 +1,7 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { inject, Injectable, signal } from '@angular/core';
 import { Router } from '@angular/router';
-import { catchError, Observable, of, tap } from 'rxjs';
+import { catchError, Observable, of, tap, throwError } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import { SevenTvTokenService } from '../seven-tv/seven-tv-token.service';
@@ -93,11 +93,21 @@ export class AuthService {
    * exactly where they were, so the caller must be able to show the error and let them retry. The
    * landing page rather than /login afterwards — there is no account left to log in to, and /welcome
    * is the public page that explains what the app is.
+   *
+   * A 401 counts as success: once the user row is gone the cookie scheme rejects the session before
+   * the handler runs, so a retry, a double submit or a concurrent admin/retention deletion answers
+   * 401 instead of 204. The interceptor exempts `/api/auth/me` from its expiry handling, so the
+   * error reaches this method — and "not signed in any more" is exactly the state the user asked for.
    */
   deleteAccount(): Observable<void> {
-    return this.http
-      .delete<void>('/api/auth/me')
-      .pipe(tap(() => this.resetClientSession('/welcome')));
+    return this.http.delete<void>('/api/auth/me').pipe(
+      catchError((error: unknown) =>
+        error instanceof HttpErrorResponse && error.status === 401
+          ? of(undefined as void)
+          : throwError(() => error),
+      ),
+      tap(() => this.resetClientSession('/welcome')),
+    );
   }
 
   /** Called when a request 401s mid-session (cookie expired) — resets state and sends the user back to /login. */
@@ -110,6 +120,8 @@ export class AuthService {
     this.isLoaded.set(true);
     this.sevenTvTokenService.clearToken();
     this.channelService.invalidatePermissions();
-    this.router.navigateByUrl(target);
+    // Fire-and-forget on purpose: nothing here depends on the navigation having finished, and a
+    // rejected navigation (guard cancel) is not an error worth surfacing.
+    void this.router.navigateByUrl(target);
   }
 }

@@ -1,11 +1,11 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Dialog } from '@angular/cdk/dialog';
 import { Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { firstValueFrom, of } from 'rxjs';
+import { Subject, firstValueFrom, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthUser } from '../../core/auth/auth.model';
@@ -28,6 +28,7 @@ const DE_TRANSLATIONS = {
       message: 'Das lässt sich nicht rückgängig machen.',
       inputLabel: 'Login eingeben',
       confirm: 'Konto endgültig löschen',
+      pending: 'Konto wird gelöscht …',
       failed: 'Dein Konto konnte nicht gelöscht werden.',
     },
   },
@@ -492,6 +493,60 @@ describe('AccountMenu', () => {
       const alert = menu.panel()!.querySelector('[role="alert"]');
       expect(alert?.textContent).toContain('Dein Konto konnte nicht gelöscht werden.');
       expect(alert?.textContent).toContain('Serverfehler.');
+    });
+
+    it('moves focus to the alert when the deletion fails', async () => {
+      const menu = render();
+      vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      TestBed.inject(HttpTestingController)
+        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+        .flush(null, { status: 500, statusText: 'Internal Server Error' });
+      menu.detect();
+      await menu.fixture.whenStable();
+
+      const alert = menu.panel()!.querySelector<HTMLElement>('[role="alert"]');
+      expect(document.activeElement).toBe(alert);
+    });
+
+    it('shows progress and blocks a second submission while the request is in flight', () => {
+      const menu = render();
+      const pending = new Subject<void>();
+      const deleteAccount = vi.spyOn(authService, 'deleteAccount').mockReturnValue(pending);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      menu.detect();
+
+      menu.trigger().click(); // reopen while the request runs
+      menu.detect();
+      const row = menu.button('Konto wird gelöscht …');
+      expect(row.disabled).toBe(true);
+      expect(row.getAttribute('aria-busy')).toBe('true');
+      row.click();
+      expect(deleteAccount).toHaveBeenCalledOnce();
+
+      pending.error(new HttpErrorResponse({ status: 500 }));
+      menu.detect();
+      expect(menu.button('Konto löschen').disabled).toBe(false);
+    });
+
+    it('does not show the failure notice when the server answers 401 (account already gone)', () => {
+      const menu = render();
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+      TestBed.inject(HttpTestingController)
+        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+        .flush(null, { status: 401, statusText: 'Unauthorized' });
+      menu.detect();
+
+      expect(menu.panel()).toBeNull();
+      expect(authService.currentUser()).toBeNull();
+      expect(navigate).toHaveBeenCalledWith('/welcome');
     });
 
     it('clears the failure notice once the panel is closed and opened again', () => {

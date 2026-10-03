@@ -22,6 +22,7 @@
       "message": "Your account and all data that belongs to you will be deleted: your stored Twitch credentials, your login and every vote you cast – including in running votings, whose standings change as a result. Audit-log entries that name you are kept, but anonymised.\n\nThis cannot be undone. You will be signed out immediately.",
       "inputLabel": "Enter your Twitch login to confirm",
       "confirm": "Delete account permanently",
+      "pending": "Deleting account …",
       "failed": "Your account could not be deleted. Nothing has changed, you can try again."
     }
   },

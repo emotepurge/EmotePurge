@@ -36,9 +36,14 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   path only). No antiforgery token: the repo defends cookie-authenticated mutations through the
   `SameSite=Lax` session cookie and Minimal API's JSON-only binding, and a `DELETE` is never sent
   cross-site under `Lax`; this endpoint follows that convention rather than inventing its own.
-- **`NotFound` answers 204, not 404.** The row being gone is the state the caller asked for (a
-  concurrent admin deletion, a retry after a lost response), and the cookie still has to be cleared,
-  so the handler signs out and answers 204 for both `Deleted` and `NotFound`.
+- **`NotFound` answers 204, not 404 — but a retry answers 401.** The row being gone is the state the
+  caller asked for, so a deletion that finds the row vanished between the session check and the
+  delete (a concurrent admin deletion) signs out and answers 204 for both `Deleted` and `NotFound`.
+  That branch is a narrow race, though: once the row is gone, the cookie scheme's
+  `OnValidatePrincipal` rejects the session before the handler runs, so a retry, a double submit or
+  a concurrent deletion that completed earlier answers **401**. `apiAuthInterceptor` exempts
+  `/api/auth/me` from its expiry handling, so `AuthService.deleteAccount()` treats a 401 as "already
+  gone" itself: same client-session reset and navigation to `/welcome` as for a 204.
 - **Twitch token revocation, after the commit.** `ITwitchAuthClient.RevokeTokenAsync` posts
   `client_id` and `token` as a form to `https://id.twitch.tv/oauth2/revoke` through the existing typed
   client. The handler reads the stored tokens *before* the deletion (the row, and the encrypted tokens
@@ -46,7 +51,18 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   leave the user signed in with tokens Twitch has already invalidated. It revokes the distinct set of
   cookie-claim access token, stored access token and stored refresh token. Revocation is best-effort:
   the client never throws, logs a warning (never the token), and the outcome cannot change the
-  response — an unrevoked token simply expires on its own.
+  response. Revocation is best-effort and the stored ciphertext is deleted with the row either way,
+  but a token Twitch was never told about stays valid on its side: refresh tokens do not expire on
+  their own (Twitch's documentation covers revoking access tokens). The up-to-three revocations run
+  in parallel, each isolated, so the request waits for the slowest rather than the sum (bounded by
+  the client's 10 s timeout). If the stored tokens cannot be decrypted (`InvalidOperationException`
+  from the cipher, e.g. a lost key), the handler logs a warning with the Twitch user id only, skips
+  revoking those two and still deletes: a user must not be locked into an account they cannot erase,
+  while a database failure or cancellation (nothing deleted yet) still fails the request.
+- **Known audit gap, accepted for self-deletion too.** An audit entry with the deleted user as
+  *actor*, written by that user's own in-flight request after the commit, can survive un-pseudonymised
+  (the row lock cannot close it). `AccountDeletionService` already accepted this for an admin
+  request; self-deletion is the same case and accepted likewise.
 - **Votes are deleted, not anonymised (operator decision).** Anonymising was estimated at two to four
   days against about one for deletion: a nullable `Vote.UserId` plus a manual production migration,
   NULL semantics in roughly eight queries, all three deletion paths changing together, and a residual
@@ -58,7 +74,9 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   the Twitch login); the copy names irreversibility, the removed votes (also in running votings) and
   that audit entries stay, pseudonymised. `AuthService.deleteAccount()` resets the client session only
   after the server answered and then navigates to `/welcome` (there is no account to log in to any
-  more). On failure nothing is reset and the menu reopens with the reason, since nothing was deleted.
+  more). On failure nothing is reset and the menu reopens with the reason, since nothing was deleted,
+  and focus moves to the notice. While the request runs the menu's delete row is disabled, carries
+  `aria-busy` and reads "Deleting account …", so it cannot be submitted twice.
 - **Not in the repo.** The privacy policy is operator-owned markdown outside the repository; its
   deletion section has to be updated by the operator (suggested wording is in the PR description).
 
