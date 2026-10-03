@@ -882,6 +882,26 @@ public class HarnessRunnerTests : IDisposable
         Assert.Equal(jsonlBefore, File.ReadAllBytes(files[0]));
     }
 
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("42")]
+    public async Task ARerunOfAClosedRunWhoseReportRootIsNotAnObject_RewritesTheFullReport_WithoutFetching(string reportJson)
+    {
+        // Valid JSON, but no object to look a "run" property up in. TryReadExistingReport throws on
+        // that rather than returning null; the closed-run path must still take the repair, not exit 6.
+        var files = await CloseAThreeDayRun();
+        var jsonlBefore = File.ReadAllBytes(files[0]);
+        File.WriteAllText(files[1], reportJson);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        AssertIsTheFullReportOfTheThreeDayWindow(ReadReport(files[1]));
+        Assert.Equal(jsonlBefore, File.ReadAllBytes(files[0]));
+    }
+
     [Fact]
     public async Task ARerunOfAClosedRunWithAHollowReport_RewritesTheFullReport_WithoutFetching()
     {

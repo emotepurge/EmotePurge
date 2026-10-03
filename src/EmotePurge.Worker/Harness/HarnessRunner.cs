@@ -765,8 +765,23 @@ public sealed class HarnessRunner(
         // Only the JSON report is checked. The Markdown is deliberately not validated: it is a
         // rendering for humans with no parseable contract, so checking it would mean parsing our own
         // prose; IsClosed asks for its presence and nothing more.
-        var closedReport = file.TryReadExistingReport();
-        var defect = DescribeReportDefect(closedReport, identity);
+        ReplayFinalReport? closedReport;
+        string? defect;
+        try
+        {
+            closedReport = file.TryReadExistingReport();
+            defect = DescribeReportDefect(closedReport, identity);
+        }
+        catch (InvalidOperationException)
+        {
+            // Valid JSON whose root is not an object (`null`, `[]`, `42`): TryReadExistingReport looks
+            // up "run" on it without checking the root's kind and throws. Caught here, on the
+            // closed-run path only, rather than tightened there — the report-only recompute (#119)
+            // depends on that method's current behaviour. It is just another unreadable report.
+            closedReport = null;
+            defect = "the JSON root is not an object";
+        }
+
         if (closedReport is null || defect is not null)
         {
             logger.LogWarning(

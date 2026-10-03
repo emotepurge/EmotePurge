@@ -110,9 +110,12 @@ A "finished report" is one that describes this run: `TryReadExistingReport` retu
 `gate`, `plausibility` and `diagnostics` are all present, `run.runComplete` is `true`, and
 `run.windowFrom`/`run.windowTo` equal the identity's window. `TryReadExistingReport` itself stays as
 tolerant as it was — the recompute's fail-closed inheritance of `run.diagnostic` (#119) depends on
-that — so the stricter check is a separate predicate in the runner. The `.report.md` is deliberately
-not validated: it is a rendering for humans with no parseable contract, and `IsClosed` asks only for
-its presence.
+that — so the stricter check is a separate predicate in the runner. A report whose JSON root is not
+an object (`null`, `[]`, `42`) makes `TryReadExistingReport` throw rather than return `null`; the
+closed-run path catches that and treats it as unreadable. The method itself is left alone, so the
+report-only recompute still ends such a file with exit 6 — a known, pre-existing gap of #119, not
+changed here. The `.report.md` is deliberately not validated: it is a rendering for humans with no
+parseable contract, and `IsClosed` asks only for its presence.
 
 The outcomes for a rerun, in the order they are decided:
 
@@ -120,7 +123,7 @@ The outcomes for a rerun, in the order they are decided:
 | --- | --- |
 | Damaged evidence: an interior day line that does not parse, or a header that no longer matches | exit 3 (the existing `HarnessReportFileException` path), nothing written, nothing fetched |
 | Damaged evidence: a window day without a day line, or a day with two | exit 3, nothing written, nothing fetched — the same coverage check the recompute uses, now shared. An ordinary run cannot close with either, so the file was altered afterwards; the archive is never asked again for a closed run |
-| Unreadable or hollow `.report.json` (missing, unparsable, no boolean `run.diagnostic`, a missing section, `runComplete` not `true`, a foreign window) | repaired: a warning naming what was wrong, then the old path — resume over the day lines, rewrite both reports, no fetch. The rewrite writes the invocation's run mode, since the report's own is not trustworthy |
+| Unreadable or hollow `.report.json` (missing, unparsable, a JSON root that is not an object, no boolean `run.diagnostic`, a missing section, `runComplete` not `true`, a foreign window) | repaired: a warning naming what was wrong, then the old path — resume over the day lines, rewrite both reports, no fetch. The rewrite writes the invocation's run mode, since the report's own is not trustworthy |
 | Finished report, same run mode | exit 0, all three files untouched, nothing fetched, log line `Harness run for channel '…' is already complete; …` |
 | Finished **diagnostic** report, binding invocation | **refused, exit 3**, nothing written, nothing fetched |
 | Finished **binding** report, `--diagnostic` invocation | **refused, exit 3**, nothing written, nothing fetched; the error names both reports and points to `--report-only` |
