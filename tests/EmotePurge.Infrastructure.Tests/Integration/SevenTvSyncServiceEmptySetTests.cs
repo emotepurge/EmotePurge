@@ -3,6 +3,7 @@ using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.SevenTv;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
@@ -346,6 +347,38 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         Assert.True(await IsArchivedAsync(db, channel));
     }
 
+    // End to end with the real client: v3 lists nothing, v4 page 1 lists an entry, page 2 fails.
+    // The partial count still vetoes the zero, for the same set and for a new set id alike.
+    [Theory]
+    [InlineData(OldSetId)]
+    [InlineData(NewSetId)]
+    public async Task ZeroWithPartialV4Evidence_IsHeldBack(string setId)
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, $"emptyset_v4part_{setId[..4].ToLowerInvariant()}", confirmations: 1);
+        var v4Calls = 0;
+        var handler = new DelegatingStub(request =>
+            request.RequestUri!.AbsolutePath.Contains("/v4/gql", StringComparison.Ordinal)
+                ? v4Calls++ == 0
+                    ? Json("""{"data":{"emote_sets":{"emote_set":{"emotes":{"page_count":2,"items":[{"added_at":null,"emote":{"id":"e1"}}]}}}}}""")
+                    : new HttpResponseMessage(System.Net.HttpStatusCode.InternalServerError)
+                : Json($$$"""{"emote_set":{"id":"{{{setId}}}","capacity":600},"user":{"id":"7tv-user","connections":[]}}"""));
+        var apiClient = new SevenTvApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
+            new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingLogger<SevenTvApiClient>());
+        var service = new SevenTvSyncService(
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            tracker, new RecordingLogger<SevenTvSyncService>());
+
+        var result = await service.SyncChannelAsync(channel.ChannelName);
+
+        Assert.False(result!.HasChanges);
+        Assert.False(await IsArchivedAsync(db, channel));
+        var row = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
+        Assert.Equal(OldSetId, row.ActiveEmoteSetId);
+        Assert.Null(row.LastSyncFailureReason);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData(0)]
@@ -391,5 +424,14 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
             db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
             tracker, new RecordingLogger<SevenTvSyncService>());
         return service.ApplyEmoteSetUpdateAsync(channel.ChannelName, OldSetId, delta);
+    }
+
+    private static HttpResponseMessage Json(string payload) =>
+        new(System.Net.HttpStatusCode.OK) { Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json") };
+
+    private sealed class DelegatingStub(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(respond(request));
     }
 }

@@ -31,7 +31,10 @@ contradicts it (below):
 **v4 veto.** Every v3 channel read already asks v4 for the same set id (the `AddedToSetAt` overlay,
 on every sync and also when v3 lists nothing). That read now also returns how many entries v4 lists
 with a resolved emote, summed over its pages, as `SevenTvEmoteSet.RemoteEntryCount` (null when the v4
-read fails: HTTP error, timeout, malformed JSON, `emoteSet: null`). When v3 says 0 and v4 lists more
+read fails: HTTP error, timeout, malformed JSON, `emoteSet: null`). When paging fails part-way after
+at least one resolved entry, that count is kept as a lower bound, since entries already seen are
+positive evidence and dropping them would let a stale v3 zero through; the dates stay all-or-nothing
+and are dropped as before. When v3 says 0 and v4 lists more
 than 0, the zero is rejected: Warning log, nothing written, the held-back result goes back to the
 caller as for any held-back zero (so the EventAPI subscription is still ensured), and the streak is
 reset. The check runs **before** the set-switch acceptance, so a new set id that v4 contradicts is

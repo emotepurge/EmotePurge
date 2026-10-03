@@ -701,10 +701,10 @@ public class SevenTvApiClient(
         // just named, on every sync and also when v3 lists nothing, so it is the cross-check the
         // sync's wipe guard holds a v3 zero against (issue #76).
         var setEntries = await GetSetEntriesAsync(emoteSetDto.Id, cancellationToken);
-        if (setEntries is not null)
+        if (setEntries?.AddedAtByEmoteId is { } addedAtByEmoteId)
         {
             emotes = emotes
-                .Select(e => setEntries.AddedAtByEmoteId.TryGetValue(e.Id, out var addedAt)
+                .Select(e => addedAtByEmoteId.TryGetValue(e.Id, out var addedAt)
                     ? e with { AddedToSetAt = addedAt }
                     : e)
                 .ToList();
@@ -758,14 +758,18 @@ public class SevenTvApiClient(
         }
     }
 
-    // Null on any failure (HTTP error, timeout, malformed JSON, or a set v4 does not know), so the
-    // caller can tell "v4 could not be asked" apart from "v4 lists 0 entries".
+    // The dates are all-or-nothing: a failure on any page (HTTP error, timeout, malformed JSON, a set
+    // v4 does not know, a GraphQL error) drops every date, as before. The entry count is not: entries
+    // already seen on earlier pages are positive evidence that the set is not empty, and throwing
+    // them away would let a stale v3 zero through the sync's v4 veto. So a part-way failure after at
+    // least one resolved entry still reports that count as a lower bound; null only when no page
+    // yielded one, so the caller can tell "no v4 evidence" apart from "v4 lists 0 entries".
     private async Task<SetEntriesOverlay?> GetSetEntriesAsync(string emoteSetId, CancellationToken cancellationToken)
     {
+        var entryCount = 0;
         try
         {
             var result = new Dictionary<string, DateTime>();
-            var entryCount = 0;
             for (var page = 1; page <= MaxSetEntryPages; page++)
             {
                 var payload = new
@@ -785,7 +789,7 @@ public class SevenTvApiClient(
                     logger.LogWarning(
                         "7TV-v4-addedAt-Abruf für Set {SetId} lieferte keine Daten — Beitrittsdaten bleiben vorerst unbekannt.",
                         emoteSetId);
-                    return null;
+                    return PartialCountOnly(entryCount);
                 }
 
                 // An entry whose emote did not resolve (`emote: null`, e.g. a deleted emote still
@@ -818,9 +822,14 @@ public class SevenTvApiClient(
             logger.LogWarning(ex,
                 "7TV-v4-addedAt-Abruf für Set {SetId} fehlgeschlagen — Beitrittsdaten bleiben vorerst unbekannt.",
                 emoteSetId);
-            return null;
+            return PartialCountOnly(entryCount);
         }
     }
+
+    // What a v4 read that failed part-way still yields: no dates, and the entries counted so far
+    // when there was at least one (see GetSetEntriesAsync).
+    private static SetEntriesOverlay? PartialCountOnly(int entryCount) =>
+        entryCount > 0 ? new SetEntriesOverlay(null, entryCount) : null;
 
     // Resolution order for issue #43: the top-level id — this whole response *is* the requested
     // Twitch connection — and otherwise that same connection found by its exact Twitch user id in
@@ -1006,6 +1015,7 @@ public class SevenTvApiClient(
     }
 
     // What one v4 read of a set's entries yields (GetSetEntriesAsync): the dates for the AddedToSetAt
-    // overlay, and the number of entries with a resolved emote, which becomes RemoteEntryCount.
-    private sealed record SetEntriesOverlay(Dictionary<string, DateTime> AddedAtByEmoteId, int EntryCount);
+    // overlay (null when paging failed part-way), and the number of entries with a resolved emote,
+    // which becomes RemoteEntryCount (a lower bound in that case).
+    private sealed record SetEntriesOverlay(Dictionary<string, DateTime>? AddedAtByEmoteId, int EntryCount);
 }

@@ -12,7 +12,9 @@ public record SevenTvEmote(string Id, string Name, string ImageUrl, DateTime? Ad
 // instead of being hard-coded anywhere downstream.
 //
 // RemoteEntryCount is how many entries 7TV's v4 API lists for the same set (entries whose emote
-// resolved, summed over all pages), null when that lookup failed or 7TV did not know the set. It is
+// resolved, summed over all pages). When v4 paging failed part-way it is a lower bound: the entries
+// counted before the failure, reported only if there was at least one. Null means no v4 evidence
+// (the lookup failed before any resolved entry, or 7TV did not know the set). It is
 // a cross-check, not a second inventory: v3's REST answer can lag the set by 10-30 min
 // (SevenTV/SevenTV#81), so a v3 zero that v4 contradicts is held back by the sync's wipe guard.
 public record SevenTvEmoteSet(string Id, IReadOnlyList<SevenTvEmote> Emotes, int? Capacity = null, int? RemoteEntryCount = null);

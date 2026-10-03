@@ -301,6 +301,43 @@ public class SevenTvApiClientChannelStateTests
         Assert.Null(result.State!.EmoteSet.RemoteEntryCount);
     }
 
+    // Codex P1 on the veto: entries seen on page 1 are positive evidence even when a later page
+    // fails, so the count survives as a lower bound. The dates stay all-or-nothing as before: none of
+    // them is applied, not even the one page 1 delivered.
+    [Theory]
+    [MemberData(nameof(FailedV4Answers))]
+    public async Task V4PagingThatFailsAfterPageOne_ReportsTheCountSoFar_ButNoDates(HttpStatusCode status, string payload)
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600,"emotes":[{"id":"a","name":"Foo"}]},"user":{"id":"USER1","connections":[]}}""";
+        const string firstPage =
+            """{"data":{"emote_sets":{"emote_set":{"emotes":{"page_count":2,"items":[{"added_at":"2026-09-01T10:00:00Z","emote":{"id":"a"}},{"added_at":"2026-09-01T11:00:00Z","emote":{"id":"b"}}]}}}}}""";
+        var page = 0;
+        var client = CreateClient(CreateHandler(
+            userPayload,
+            v4Response: () => page++ == 0 ? JsonResponse(HttpStatusCode.OK, firstPage) : JsonResponse(status, payload)));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Ok, result.Status);
+        Assert.Equal(2, result.State!.EmoteSet.RemoteEntryCount);
+        Assert.Null(Assert.Single(result.State.EmoteSet.Emotes).AddedToSetAt);
+    }
+
+    [Fact]
+    public async Task V4PagingThatFailsAfterAnEmptyFirstPage_StaysUnknown()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600},"user":{"id":"USER1","connections":[]}}""";
+        const string firstPage = """{"data":{"emote_sets":{"emote_set":{"emotes":{"page_count":2,"items":[{"added_at":null,"emote":null}]}}}}}""";
+        var page = 0;
+        var client = CreateClient(CreateHandler(
+            userPayload,
+            v4Response: () => page++ == 0 ? JsonResponse(HttpStatusCode.OK, firstPage) : new HttpResponseMessage(HttpStatusCode.InternalServerError)));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Null(result.State!.EmoteSet.RemoteEntryCount);
+    }
+
     private static RoutingStubHandler CreateHandler(
         string userPayload,
         (string PathPrefix, string Payload)? emoteSetRoute = null,
