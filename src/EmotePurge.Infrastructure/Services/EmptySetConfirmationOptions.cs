@@ -1,7 +1,7 @@
 namespace EmotePurge.Infrastructure.Services;
 
 /// <summary>
-/// Bound from configuration section <c>SevenTv:*</c> (only the two keys below; the section is shared
+/// Bound from configuration section <c>SevenTv:*</c> (only the keys below; the section is shared
 /// with the resync and EventAPI settings). Read once at startup.
 /// </summary>
 public sealed class EmptySetConfirmationOptions
@@ -21,6 +21,13 @@ public sealed class EmptySetConfirmationOptions
     /// within a few seconds counts once in total.
     /// </summary>
     public int EmptySetConfirmationSpacingSeconds { get; set; } = 45;
+
+    /// <summary>
+    /// The periodic resync interval, bound from the same key the resync worker reads
+    /// (<c>SevenTv:ResyncIntervalSeconds</c>, default 60). Not a setting of this guard: it only
+    /// widens the streak's maximum age so a slow resync cadence cannot outrun it.
+    /// </summary>
+    public int ResyncIntervalSeconds { get; set; } = 60;
 
     /// <summary>Throws unless both values are usable; called at startup like the other options.</summary>
     public void Validate()

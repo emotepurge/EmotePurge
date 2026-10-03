@@ -11,11 +11,12 @@ public class EmptySetConfirmationTrackerTests
 
     private readonly HandWoundTimeProvider _clock = new();
 
-    private EmptySetConfirmationTracker Create(int confirmations = 3, int spacingSeconds = 45) =>
+    private EmptySetConfirmationTracker Create(int confirmations = 3, int spacingSeconds = 45, int resyncSeconds = 60) =>
         new(new EmptySetConfirmationOptions
         {
             EmptySetConfirmations = confirmations,
-            EmptySetConfirmationSpacingSeconds = spacingSeconds
+            EmptySetConfirmationSpacingSeconds = spacingSeconds,
+            ResyncIntervalSeconds = resyncSeconds
         }, _clock);
 
     [Fact]
@@ -165,5 +166,38 @@ public class EmptySetConfirmationTrackerTests
         var third = tracker.ObserveZero("c1", "setA");
 
         Assert.True(third.Accept);
+    }
+
+    [Theory]
+    [InlineData(45, 600)]
+    [InlineData(5, 60)]
+    public void ZerosOnTheResyncCadence_AreAcceptedOnTheThird_EvenWhenSlowerThanTenSpacings(int spacingSeconds, int resyncSeconds)
+    {
+        var tracker = Create(spacingSeconds: spacingSeconds, resyncSeconds: resyncSeconds);
+        var tick = TimeSpan.FromSeconds(resyncSeconds);
+
+        tracker.ObserveZero("c1", "setA");
+        _clock.Advance(tick);
+        tracker.ObserveZero("c1", "setA");
+        _clock.Advance(tick);
+        var third = tracker.ObserveZero("c1", "setA");
+
+        Assert.True(third.Accept);
+        Assert.Equal(3, third.Streak);
+    }
+
+    [Fact]
+    public void GapBeyondThreeResyncTicks_RestartsTheStreak()
+    {
+        var tracker = Create(spacingSeconds: 45, resyncSeconds: 600);
+
+        tracker.ObserveZero("c1", "setA");
+        _clock.Advance(TimeSpan.FromSeconds(600));
+        tracker.ObserveZero("c1", "setA");
+        _clock.Advance(TimeSpan.FromSeconds(1801));
+        var third = tracker.ObserveZero("c1", "setA");
+
+        Assert.False(third.Accept);
+        Assert.Equal(1, third.Streak);
     }
 }

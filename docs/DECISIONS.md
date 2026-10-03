@@ -45,9 +45,15 @@ Review follow-ups, same change (unmerged, so amended here):
   `Reset(channel.Id)` — after the active-set check and the plausibility return, regardless of
   Applied vs NoChange. Pull-only dispatches, skipped-implausible ones, `SetNotActive` and
   `ChannelUnknown` leave the streak alone.
-- **Max age.** A zero whose last counted predecessor is older than 10 x the spacing (450 s by
-  default) restarts the streak at 1: "N zeros in a row" must not be satisfied by zeros hours apart.
-  Derived from the spacing, no new setting; with spacing 0 the bound is skipped.
+- **Max age.** A zero whose last counted predecessor is older than
+  `max(10 x spacing, 3 x SevenTv:ResyncIntervalSeconds)` (450 s with the defaults) restarts the
+  streak at 1: "N zeros in a row" must not be satisfied by zeros hours apart. Both cadences are in
+  the formula because either alone fails: 10 x spacing is shorter than one periodic tick with a
+  slow resync (600 s vs 450 s) or a small spacing (5 s vs a 60 s tick), and a permanently empty
+  set would then restart its streak on every zero and never reconcile. The interval is bound into
+  `EmptySetConfirmationOptions` from the same key the resync worker reads (Infrastructure must not
+  reference Worker); no new setting, and every combination stays valid, so no extra startup
+  validation. With spacing 0 the bound is skipped.
 - **Sentinel set ids.** The sync now rejects an all-zero set id with the same predicate the API
   client uses (`SevenTvIds.IsUsable`) as `ResponseUnusable`, before the switch detection — a
   placeholder id must neither count as "a new set" (which would accept a zero at once) nor be

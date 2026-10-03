@@ -11,6 +11,7 @@ public sealed class EmptySetConfirmationTracker(EmptySetConfirmationOptions opti
     : IEmptySetConfirmationTracker
 {
     private const int MaxAgeSpacings = 10;
+    private const int MaxAgeResyncTicks = 3;
 
     private readonly object _lock = new();
     private readonly Dictionary<string, Streak> _streaks = [];
@@ -30,10 +31,10 @@ public sealed class EmptySetConfirmationTracker(EmptySetConfirmationOptions opti
             }
 
             // A streak is "repeated zeros in a row", not "zeros ever seen": once the last counted zero
-            // is older than a generous multiple of the spacing, the earlier ones no longer vouch for
-            // this one and the streak starts over. Derived from the spacing so there is no knob to
+            // is older than the max age (see MaxAge), the earlier ones no longer vouch for
+            // this one and the streak starts over. Derived from the configured cadences so there is no knob to
             // tune; with spacing 0 there is no cadence to measure against and the bound is skipped.
-            if (spacing > TimeSpan.Zero && now - streak.LastCountedAt > spacing * MaxAgeSpacings)
+            if (spacing > TimeSpan.Zero && now - streak.LastCountedAt > MaxAge(spacing))
             {
                 streak = new Streak(emoteSetId, 1, now);
                 _streaks[channelId] = streak;
@@ -58,6 +59,15 @@ public sealed class EmptySetConfirmationTracker(EmptySetConfirmationOptions opti
             _streaks.Remove(channelId);
         }
     }
+
+    // The longer of 10 spacings and 3 periodic ticks: derived from both cadences, because a bound
+    // built from the spacing alone is shorter than one tick whenever the resync interval is slow
+    // (600 s vs 450 s) or the spacing small (5 s vs a 60 s tick), and a permanently empty set would
+    // then restart its streak on every zero and never reconcile.
+    private TimeSpan MaxAge(TimeSpan spacing) =>
+        TimeSpan.FromTicks(Math.Max(
+            spacing.Ticks * MaxAgeSpacings,
+            TimeSpan.FromSeconds(Math.Max(0, options.ResyncIntervalSeconds)).Ticks * MaxAgeResyncTicks));
 
     private EmptySetVerdict Verdict(int count, bool counted) =>
         new(count >= options.EmptySetConfirmations, count, options.EmptySetConfirmations, counted);
