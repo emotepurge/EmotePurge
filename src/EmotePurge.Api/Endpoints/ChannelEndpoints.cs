@@ -44,8 +44,8 @@ public static class ChannelEndpoints
         // (SevenTV/Extension#267), so the audience is the mod team itself.
         group.MapGet("/{channelName}/audit-log", async (
             string channelName,
-            int page,
-            int pageSize,
+            string? page,
+            string? pageSize,
             string? action,
             string? actor,
             IAuditLogQueryService auditLogQueryService,

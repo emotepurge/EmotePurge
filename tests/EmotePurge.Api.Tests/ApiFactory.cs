@@ -133,6 +133,16 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// <summary>Substituted so the self-deletion tests can see which tokens get revoked, without a Twitch round trip.</summary>
     public ITwitchAuthClient TwitchAuth { get; } = Substitute.For<ITwitchAuthClient>();
 
+    /// <summary>
+    /// Substituted so the paging tests can read back the page and page size an endpoint forwarded
+    /// after correcting a missing or out-of-range query value; the real implementation would go to
+    /// Postgres.
+    /// </summary>
+    public IAuditLogQueryService AuditLogQuery { get; } = Substitute.For<IAuditLogQueryService>();
+
+    /// <summary>Substituted for the same reason as <see cref="AuditLogQuery"/>.</summary>
+    public IAdminUserQueryService AdminUserQuery { get; } = Substitute.For<IAdminUserQueryService>();
+
     public ApiFactory()
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
@@ -183,6 +193,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => Contact);
             services.AddScoped(_ => Users);
             services.AddScoped(_ => TwitchAuth);
+            services.AddScoped(_ => AuditLogQuery);
+            services.AddScoped(_ => AdminUserQuery);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about
