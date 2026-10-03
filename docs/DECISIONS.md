@@ -56,7 +56,9 @@ header line 1 (`"diagnostic":true|false`), which is an attestation by the operat
 verifies. `FindFrozenWindow` logs the skip when the file would otherwise have been inherited, and
 always for a legacy file seen by a binding run. A `--report-only` recompute whose header and
 original report disagree on the mode gets the warning code `run-mode-disagreement` (a new value in
-`Recomputation.Warnings`, no new field).
+`Recomputation.Warnings`, no new field) and a prominent banner of its own in the recompute
+Markdown, separate from the snapshot-drift block; the "Herkunft" line there says whether the mode
+came from the header or from the original report.
 
 **Alternatives.** Putting the mode into the identity would have renamed every file and made a mode
 mismatch a silent fresh start instead of a refusal. Treating a legacy file as binding would have let

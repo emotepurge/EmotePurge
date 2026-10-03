@@ -1919,6 +1919,10 @@ public class HarnessRunnerTests : IDisposable
         Assert.True(recomputed.Run.Diagnostic);
         Assert.Equal("inherited", recomputed.Recomputation!.DiagnosticSource);
         Assert.Contains("run-mode-disagreement", recomputed.Recomputation.Warnings);
+        var markdown = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.md")));
+        Assert.Contains("Lauf-Modus widersprüchlich", markdown);
+        Assert.Contains("als **Diagnose** fest", markdown);
+        Assert.Contains("aus dem Kopf des ursprünglichen Laufs", markdown);
         Assert.Contains(_log.Entries, e => e.Level == Microsoft.Extensions.Logging.LogLevel.Warning && e.Message.Contains("the recompute uses the header"));
     }
 
@@ -1931,6 +1935,7 @@ public class HarnessRunnerTests : IDisposable
 
         var recomputed = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
         Assert.DoesNotContain("run-mode-disagreement", recomputed.Recomputation!.Warnings);
+        Assert.DoesNotContain("Lauf-Modus widersprüchlich", File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.md"))));
     }
 
     [Fact]

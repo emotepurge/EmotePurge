@@ -1135,8 +1135,20 @@ public sealed class HarnessRunner(
                 $"> - Bot-Split-Stichtag: ursprünglich `{Iso(recomputation.OriginalBotSplitCutover)}`, aktuell `{Iso(recomputation.CurrentBotSplitCutover)}` (Übereinstimmung: {(recomputation.BotSplitCutoverMatches ? "ja" : "nein")})\n\n"));
         }
 
+        if (recomputation.Warnings.Contains("run-mode-disagreement"))
+        {
+            var headerMode = report.Run.Diagnostic ? "Diagnose" : "bindend";
+            var reportMode = report.Run.Diagnostic ? "bindend" : "Diagnose";
+            text.Append(
+                "> **⚠ Achtung: Lauf-Modus widersprüchlich.** "
+                + $"Zeile 1 der `.jsonl` hält den Lauf als **{headerMode}** fest, der ursprüngliche "
+                + $"`.report.json` sagt **{reportMode}**. Die Neuberechnung folgt dem Kopf; "
+                + "ein von Hand bearbeiteter Kopf wird durch nichts geprüft. Vor jeder Verwendung "
+                + "als bindender Lauf muss der Betreiber klären, welche Angabe stimmt.\n\n");
+        }
+
         text.Append(Invariant(
-            $"Herkunft des Diagnose-Kennzeichens: {(recomputation.DiagnosticSource == "inherited" ? "übernommen aus dem Kopf bzw. Bericht des ursprünglichen Laufs" : "keiner vorhanden, fail-closed auf 'Diagnose' (kein Gate-Urteil) zurückgefallen")}.\n\n"));
+            $"Herkunft des Diagnose-Kennzeichens: {(recomputation.DiagnosticSource == "inherited" ? (header.Diagnostic is not null ? "übernommen aus dem Kopf des ursprünglichen Laufs" : "übernommen aus dem ursprünglichen Bericht") : "keiner vorhanden, fail-closed auf 'Diagnose' (kein Gate-Urteil) zurückgefallen")}.\n\n"));
         text.Append("---\n\n");
 
         text.Append(BuildMarkdown(
