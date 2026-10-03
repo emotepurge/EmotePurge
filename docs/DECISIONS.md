@@ -10,6 +10,95 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — One fail-closed Redis budget for 7TV's search bucket, shared by Api and Worker, plus a per-channel backoff for Twitch ids that never resolve (#165)
+
+**Betrifft:** `src/EmotePurge.Core/Services/ISevenTvSearchBudget.cs` ·
+`src/EmotePurge.Infrastructure/Redis/RedisSevenTvSearchBudget.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/{SevenTvSearchBudgetOptions,SevenTvSearchBlockPolicy,TwitchIdResolutionBackoff}.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/{SevenTvApiClient,SevenTvApiDtos}.cs` ·
+`src/EmotePurge.Infrastructure/Services/{SevenTvSyncService,SevenTvLeaderboardService}.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Api/appsettings.json` · `src/EmotePurge.Worker/appsettings.json` · `docs/Architectur.md` ·
+`docs/Konzept-7TV-Such-Budget-2026-10-03.md`
+
+7TV's GraphQL search bucket (`x-ratelimit-search-*`: 100 per ~60 s, shared across v3 and v4, about an
+hour of lockout on overdraft, disguised as HTTP 200 with `extensions.status: 429`) has two consumers in
+two processes: the Worker's Twitch-id resolution (`users(query:)`, for channels without a stored
+`TwitchChannelId`) and the Api's leaderboard (`emotes.search`). Only the leaderboard was capped (its
+in-process lid of 10 per rolling hour, 2026-09-14); a channel whose id never resolved cost a search on
+every 60-second resync tick, without bound. Design note: `docs/Konzept-7TV-Such-Budget-2026-10-03.md`.
+
+- **One budget in Redis, charged by the consumer before every search.** `ISevenTvSearchBudget`
+  (Core) / `RedisSevenTvSearchBudget` (Infrastructure, singleton in both hosts): a rolling window kept
+  as two sorted sets of timestamps (all consumers, this consumer), trimmed, checked and recorded in one
+  Lua script, so concurrent Api and Worker charges can never overshoot. Defaults: 50 per 60 s in all
+  (half of 7TV's 100), at most 40 for the resolution, so the leaderboard keeps a reserve of ten. The
+  consumer charges because only it knows who it is and what a refusal means; a refusal is an answer,
+  never a wait. Leaderboard order: breaker → shared budget → its own lid → request (a shared slot
+  wasted on a lid refusal ages out in a minute, the reverse would waste a lid slot for an hour).
+- **The client reports every search answer back** (`ObserveResponseAsync`), because only it sees the
+  headers and the GraphQL error payload. A 429 in either form blocks every consumer until 7TV's reset
+  (hint order: search-reset header, GraphQL hint, Retry-After, else 3600 s; clamped to [60 s, 6 h]);
+  a reported `remaining` at or below `LowWatermark` (10) blocks until the reset, because our ceiling is
+  half the bucket and seeing it that low means traffic we do not count. The two are **separate blocks,
+  one key per cause**, each an absolute instant in Redis and only ever extended; a charge reports the
+  rate-limit block first while both run, so a longer precautionary block never relabels a lockout.
+  The observation writes the block **before** the minimum-remaining telemetry, each in its own
+  try — a failing telemetry write can never cost a block. `ResolveTwitchUserIdAsync` now reads the search headers, detects
+  both 429 forms and reports every answer it got, a 5xx and an unparseable 200 included; to its caller it still answers `Unavailable` — `SevenTvLookupStatus` gets no
+  rate-limit member, because the UI's failure reasons hang off it.
+- **Fail-closed for charging, fail-open for observing.** Redis unreachable refuses the search
+  (`StoreUnavailable`) — the opposite of the resync cooldown's fail-open choice, because this guards a
+  bucket whose overdraft costs every consumer an hour. **Slow counts as down:** StackExchange.Redis
+  takes no cancellation token, so every round trip is awaited with a 1 s timeout (and, for a charge,
+  the caller's token, whose cancellation propagates rather than turning into a refusal); a stalled
+  Redis costs the leaderboard one second and a refusal, never a hung request. Observing ignores the
+  caller's token on purpose — 7TV has already answered, and dropping a lockout because a browser went
+  away would let the next charge walk into it. Nothing else depends on the budget: channels with a
+  stored id sync without a search. A lost observation lets nothing through while the store is down,
+  since every charge is refused then.
+- **The clock is the callers'.** "Now" goes into the Lua scripts from `TimeProvider.System` in each
+  process (not the DI clock, and not Redis' `TIME`), and the window and both blocks are compared
+  against it. That is sound while Api and Worker share a host, as they do today; split across
+  machines, their clock skew would shift the window and the blocks by as much, and the scripts should
+  then read Redis' own `TIME` instead.
+- **A refused or backed-off resolution writes nothing.** No failure reason, no attempt timestamp, no
+  backoff step: no search was made, so the last real answer stands. The leaderboard answers only a
+  **429-caused** block as `SevenTvRateLimited`, stocked for the remaining block (at least 60 s by its
+  shelf-life policy); a low-watermark block is our own precaution and answers `BudgetRefused` (30 s),
+  like every other refusal. The refusal carries the cause (`SevenTvSearchPermit.BlockCause`). Neither
+  reaches the leaderboard's breaker.
+- **Per-channel backoff for ids that never resolve.** `TwitchIdResolutionBackoff` (in-process
+  singleton, keyed by `Channel.Id`): every resolution that spent a search and stored no id —
+  no 7TV account, unavailable, rename duplicate, excluded channel, and also a resolved id the sync
+  then could not store (the set lookup failed, the implausible-wipe guard stopped it, or the row
+  vanished under #59's re-read) — is a miss. The miss is therefore recorded as soon as the permit
+  is granted, before the request, and only the successful save of the id clears it, so an attempt
+  that throws (a cancelled save, say) still leaves the channel backed off; `WarmChannelAsync` (boot recovery) never
+  resolves and never charges; the next attempt waits
+  `min(60 s × 2^(n−1), 1 h)`, a success forgets the entry. A stuck channel settles at 24 searches a day
+  instead of 1440. In-process on purpose: only the Worker runs this path, a restart costs at most one
+  search per stuck channel, and persisting it would need a migration for nothing. Entries for rows
+  whose id arrives another way (Helix backfill, rename merge) or that are deleted stay until the next
+  restart — bounded by the row count and never consulted again. It applies to every trigger,
+  including a manual RESYNC. A concrete class like `SevenTvLeaderboardRequestBudget`, not an
+  interface: pure state with no external dependency, injected only where it is tested directly.
+- **Telemetry:** the lowest `remaining` observed per UTC hour across all consumers, as
+  `seventv:search-budget:min-remaining:{yyyyMMddHH}` (TTL 25 h); a Warning whenever a block is set or
+  extended, and on every Redis failure. Not on the admin page yet.
+- **Configuration** `SevenTv:SearchBudget:*` (`MaxRequestsPerWindow`, `WindowSeconds`,
+  `ChannelIdentityMaxRequestsPerWindow`, `LowWatermark`, `DefaultLockoutSeconds`,
+  `ResolutionBackoffBaseSeconds`, `ResolutionBackoffMaxSeconds`), defaults in the options type and in
+  both `appsettings.json`, validated at startup — including `ChannelIdentityMaxRequestsPerWindow <
+  MaxRequestsPerWindow` (the leaderboard always keeps a reserve) and `LowWatermark < 100 −
+  MaxRequestsPerWindow` (our own permitted traffic can never trip it). Api and Worker must carry the
+  same values: each checks the shared window against the ceiling it knows. All defaults confirmed by
+  the operator on 2026-10-03.
+- **The 2026-09-14 entry's point 2 still holds.** The leaderboard's lid and stock stay per process,
+  and a second Api replica still needs them distributed first; what is coordinated across processes
+  now is only the leaderboard's share of the search bucket. Out of scope: an admin view of the budget,
+  a failure reason of its own for rename duplicates, the v3 telemetry handler's `Ratelimit-*` spelling.
+
 ### 2026-10-03 — Channel rename/leave/purge during an in-flight 7TV sync: convergence net plus a narrowing re-read, no row lock, no concurrency token (#59)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·

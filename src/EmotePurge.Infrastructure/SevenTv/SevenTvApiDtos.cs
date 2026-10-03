@@ -3,9 +3,13 @@ using System.Text.Json;
 namespace EmotePurge.Infrastructure.SevenTv;
 
 // GQL: POST gql, query { users(query: $q) { id username connections { platform username id } } }
-internal sealed class SevenTvGqlUsersResponseDto
+internal sealed class SevenTvGqlUsersResponseDto : ISevenTvGqlErrorEnvelope
 {
     public SevenTvGqlDataDto? Data { get; set; }
+
+    // users(query:) draws from 7TV's search bucket, and an overdraft there arrives as HTTP 200 with
+    // an entry here carrying extensions.status 429 — the same disguise as on the v4 queries.
+    public List<SevenTvGqlErrorDto>? Errors { get; set; }
 }
 
 internal sealed class SevenTvGqlDataDto

@@ -3,6 +3,8 @@ using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.SevenTv;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -168,7 +170,7 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(following.TwitchChannelId!, Arg.Any<CancellationToken>()).Returns(state);
         var service = new SevenTvSyncService(
             db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(),
-            Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
+            Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         var first = service.SyncChannelAsync("inflight_ctx_gone");
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -206,7 +208,7 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
 
         var service = new SevenTvSyncService(
             db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(),
-            Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
+            Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
         return (service, entered, release);
     }
 
