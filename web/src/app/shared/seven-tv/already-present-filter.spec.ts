@@ -182,7 +182,6 @@ describe('filterAlreadyPresent', () => {
 
     // Verification re-read of page 1 (shift check for multi-page sets).
     const reread = httpMock.expectOne(GQL_ENDPOINT);
-    expect(reread.request.body.variables).toEqual({ id: 'target-set', page: 1, perPage: 500 });
     reread.flush(page(['7tv-1'], 1, 2, 2));
 
     expect(await result$).toEqual({

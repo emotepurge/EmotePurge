@@ -1,5 +1,5 @@
 import { HttpClient } from '@angular/common/http';
-import { map, Observable, of, switchMap, throwError } from 'rxjs';
+import { defer, map, Observable, of, switchMap, throwError } from 'rxjs';
 
 /** Host-absolute, same endpoint the write mutations already use (`seven-tv-run-engine.ts`) —
  *  reading a set's contents is public on `v4`, so unlike the mutations this needs no
@@ -101,6 +101,10 @@ export interface SevenTvSetEntries {
   complete: boolean;
 }
 
+function memberKey(item: { alias?: string | null; emote: { id: string } }): string {
+  return `${item.emote.id}\u0000${item.alias ?? ''}`;
+}
+
 function fetchEmoteSetEntriesPage(
   httpClient: HttpClient,
   setId: string,
@@ -135,83 +139,83 @@ function fetchEmoteSetEntriesPage(
  * Only when all of that is clean and the set spans several pages, pages 1..n-1 are fetched once
  * more and compared by membership: an editor swapping an emote (removing one on an early page,
  * adding one at the end) keeps `totalCount` equal and creates no duplicate, yet the first entry of
- * the next page slides onto the earlier one after it was read and would otherwise go unnoticed.
- * The returned maps come from the first pass only; single-page sets cost no extra request.
+ * the next page slides onto the earlier page after that page was read and would otherwise go
+ * unnoticed. A remove-and-re-add sequence fully contained between a page's first read and its
+ * re-read cannot be detected by any finite re-read (it needs 7TV to order entries other than by
+ * insertion, plus several edits within about a second). The returned maps come from the first pass only; single-page sets cost no extra request.
  */
 export function loadSevenTvSetEntries(
   httpClient: HttpClient,
   setId: string,
 ): Observable<SevenTvSetEntries> {
-  const aliasesById = new Map<string, string[]>();
-  const aliaslessIds = new Set<string>();
-  const defaultNameById = new Map<string, string>();
-  const animatedById = new Map<string, boolean>();
-  let collected = 0;
-  // Consistency bookkeeping for `complete` (see its doc): totalCount per response, the members of
-  // every main-pass page, and whether a pair already seen on an earlier page came back again.
-  const totalCounts = new Set<number>();
-  const pageMembers: string[][] = [];
-  const seenMembers = new Set<string>();
-  let repeatedAcrossPages = false;
+  // Deferred so every subscription accumulates into its own state.
+  return defer(() => {
+    const aliasesById = new Map<string, string[]>();
+    const aliaslessIds = new Set<string>();
+    const defaultNameById = new Map<string, string>();
+    const animatedById = new Map<string, boolean>();
+    let collected = 0;
+    // Consistency bookkeeping for `complete` (see its doc): totalCount per response, the members of
+    // every main-pass page, and whether a pair already seen on an earlier page came back again.
+    const totalCounts = new Set<number>();
+    const pageMembers: string[][] = [];
+    const seenMembers = new Set<string>();
+    let repeatedAcrossPages = false;
 
-  function memberKey(item: { alias?: string | null; emote: { id: string } }): string {
-    return `${item.emote.id}\u0000${item.alias ?? ''}`;
-  }
-
-  function readPage(page: number): Observable<NonNullable<EmotesPayload>> {
-    return fetchEmoteSetEntriesPage(httpClient, setId, page).pipe(
-      switchMap((response) => {
-        const emotes = response.data?.emoteSets?.emoteSet?.emotes;
-        if ((response.errors?.length ?? 0) > 0 || !emotes) {
-          return throwError(() => new Error('7TV emote set read failed'));
-        }
-        totalCounts.add(emotes.totalCount);
-        return of(emotes);
-      }),
-    );
-  }
-
-  // Re-reads pages 1..lastPage-1 and resolves `false` as soon as one differs from the main pass.
-  function verifyPage(page: number, lastPage: number): Observable<boolean> {
-    return readPage(page).pipe(
-      switchMap((emotes) => {
-        const again = emotes.items.map(memberKey).sort();
-        const first = [...pageMembers[page - 1]].sort();
-        if (again.length !== first.length || again.some((key, index) => key !== first[index])) {
-          return of(false);
-        }
-        return page + 1 < lastPage ? verifyPage(page + 1, lastPage) : of(true);
-      }),
-    );
-  }
-
-  function loadPage(page: number): Observable<SevenTvSetEntries> {
-    return readPage(page).pipe(
-      switchMap((emotes) => {
-        const members = emotes.items.map(memberKey);
-        pageMembers.push(members);
-        // Checked against earlier pages only — a repeat within one page is not a shift.
-        if (members.some((key) => seenMembers.has(key))) {
-          repeatedAcrossPages = true;
-        }
-        members.forEach((key) => seenMembers.add(key));
-        for (const item of emotes.items) {
-          const aliases = aliasesById.get(item.emote.id) ?? [];
-          if (item.alias) {
-            if (!aliases.includes(item.alias)) {
-              aliases.push(item.alias);
-            }
-          } else {
-            aliaslessIds.add(item.emote.id);
+    function readPage(page: number): Observable<NonNullable<EmotesPayload>> {
+      return fetchEmoteSetEntriesPage(httpClient, setId, page).pipe(
+        switchMap((response) => {
+          const emotes = response.data?.emoteSets?.emoteSet?.emotes;
+          if ((response.errors?.length ?? 0) > 0 || !emotes) {
+            return throwError(() => new Error('7TV emote set read failed'));
           }
-          aliasesById.set(item.emote.id, aliases);
-          defaultNameById.set(item.emote.id, item.emote.defaultName ?? '');
-          animatedById.set(item.emote.id, item.emote.flags?.animated ?? false);
-        }
-        collected += emotes.items.length;
-        if (page >= emotes.pageCount) {
-          const consistent =
-            collected === emotes.totalCount && totalCounts.size === 1 && !repeatedAcrossPages;
+          totalCounts.add(emotes.totalCount);
+          return of(emotes);
+        }),
+      );
+    }
+
+    // Re-reads pages 1..lastPage-1 and resolves `false` as soon as one differs from the main pass.
+    function verifyPage(page: number, lastPage: number): Observable<boolean> {
+      return readPage(page).pipe(
+        switchMap((emotes) => {
+          if (totalCounts.size > 1) {
+            return of(false);
+          }
+          const again = emotes.items.map(memberKey).sort();
+          const first = [...pageMembers[page - 1]].sort();
+          if (again.length !== first.length || again.some((key, index) => key !== first[index])) {
+            return of(false);
+          }
+          return page + 1 < lastPage ? verifyPage(page + 1, lastPage) : of(true);
+        }),
+      );
+    }
+
+    function loadPage(page: number): Observable<SevenTvSetEntries> {
+      return readPage(page).pipe(
+        switchMap((emotes) => {
+          const members = emotes.items.map(memberKey);
+          pageMembers.push(members);
+          // Checked against earlier pages only — a repeat within one page is not a shift.
+          if (members.some((key) => seenMembers.has(key))) {
+            repeatedAcrossPages = true;
+          }
+          members.forEach((key) => seenMembers.add(key));
+          for (const item of emotes.items) {
+            const aliases = aliasesById.get(item.emote.id) ?? [];
+            if (item.alias) {
+              if (!aliases.includes(item.alias)) {
+                aliases.push(item.alias);
+              }
+            } else {
+              aliaslessIds.add(item.emote.id);
+            }
+            aliasesById.set(item.emote.id, aliases);
+            defaultNameById.set(item.emote.id, item.emote.defaultName ?? '');
+            animatedById.set(item.emote.id, item.emote.flags?.animated ?? false);
+          }
+          collected += emotes.items.length;
           const result = (complete: boolean): SevenTvSetEntries => ({
             aliasesById,
             aliaslessIds,
@@ -220,27 +224,24 @@ export function loadSevenTvSetEntries(
             occupiedSlots: emotes.totalCount,
             complete,
           });
-          if (!consistent || page === 1) {
-            return of(result(consistent));
+          if (page >= emotes.pageCount) {
+            const consistent =
+              collected === emotes.totalCount && totalCounts.size === 1 && !repeatedAcrossPages;
+            if (!consistent || page === 1) {
+              return of(result(consistent));
+            }
+            return verifyPage(1, page).pipe(
+              map((unchanged) => result(unchanged && totalCounts.size === 1)),
+            );
           }
-          return verifyPage(1, page).pipe(
-            map((unchanged) => result(unchanged && totalCounts.size === 1)),
-          );
-        }
-        if (page >= MAX_SET_ENTRY_PAGES) {
-          return of({
-            aliasesById,
-            aliaslessIds,
-            defaultNameById,
-            animatedById,
-            occupiedSlots: emotes.totalCount,
-            complete: false,
-          });
-        }
-        return loadPage(page + 1);
-      }),
-    );
-  }
+          if (page >= MAX_SET_ENTRY_PAGES) {
+            return of(result(false));
+          }
+          return loadPage(page + 1);
+        }),
+      );
+    }
 
-  return loadPage(1);
+    return loadPage(1);
+  });
 }

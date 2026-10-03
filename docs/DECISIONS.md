@@ -10,6 +10,36 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-set-entries.ts` ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.spec.ts`
+
+`loadSevenTvSetEntries` reads a set page by page (500 per page, offset paging). If another editor
+changes the set between two page requests, entries shift across the page boundary and one can be
+skipped or seen twice. The K5 fix round (2026-09-22) claimed the count check
+(`collected === totalCount`) catches this; it does not, since an insert before the boundary plus a
+removal after it, or a swap, leaves the count intact. This entry supersedes that claim; the old
+entry stays as written.
+
+`complete` now also turns `false` when:
+
+- **(a)** `totalCount` is not identical across every response of the read (re-reads included);
+- **(b)** the same `(emoteId, alias)` pair appears on two different pages of the main pass (7TV keeps
+  aliases unique per set, so a repeat means a shift);
+- **(c)** after a clean multi-page main pass, re-reading pages 1..n-1 returns different membership
+  (compared per page, ignoring order within the page) than the main pass. This is needed for the swap
+  case: remove one entry on page 1 and append one at the end keeps `totalCount` equal, creates no
+  duplicate and keeps the count matching, yet the first entry of page 2 slides onto page 1 unread.
+
+Cost: n-1 extra requests per multi-page read against 7TV's global bucket, none for single-page sets;
+(c) is skipped as soon as (a), (b) or the count mismatch already prove incompleteness, and stops at
+the first differing page or drift. A failing re-read throws like a main-pass failure. Residual limit:
+a remove-and-re-add fully contained between a page's first read and its re-read is undetectable by any
+finite re-read; it needs several edits within about a second and an ordering other than insertion.
+
+---
+
 ### 2026-09-29 — `channel.synced` reads the set status before the rows, and a failed status refresh locks deleting and voting instead of passing silently (#200)
 
 **Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (live subscription,

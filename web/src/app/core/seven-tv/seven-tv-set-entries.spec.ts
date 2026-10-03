@@ -329,11 +329,47 @@ describe('loadSevenTvSetEntries', () => {
 
     it('is incomplete when totalCount differs between pages of the main pass', async () => {
       const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
-      flushNext(page([A, B], 2, 4), 1);
-      flushNext(page([C, E], 2, 5), 2);
+      flushNext(page([A, B], 2, 5), 1);
+      // The count matches the last page's totalCount, so only the drift can flag this read.
+      flushNext(page([C, D], 2, 4), 2);
 
       expect((await result$).complete).toBe(false);
       httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('is incomplete when only page 2 of three differs on the re-read', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 3, 6), 1);
+      flushNext(page([C, D], 3, 6), 2);
+      flushNext(page([E, { id: 'f', alias: 'F' }], 3, 6), 3);
+      flushNext(page([A, B], 3, 6), 1);
+      flushNext(page([C, E], 3, 6), 2);
+
+      expect((await result$).complete).toBe(false);
+    });
+
+    it('stops re-reading once totalCount drifts during the verification', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([A, B], 3, 6), 1);
+      flushNext(page([C, D], 3, 6), 2);
+      flushNext(page([E, { id: 'f', alias: 'F' }], 3, 6), 3);
+      flushNext(page([A, B], 3, 7), 1);
+
+      expect((await result$).complete).toBe(false);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('starts fresh on every subscription of the same observable', async () => {
+      const read$ = loadSevenTvSetEntries(httpClient, 'set-1');
+      for (let run = 0; run < 2; run++) {
+        const result$ = firstValueFrom(read$);
+        flushNext(page([A, B], 2, 4), 1);
+        flushNext(page([C, D], 2, 4), 2);
+        flushNext(page([A, B], 2, 4), 1);
+        const result = await result$;
+        expect(result.complete).toBe(true);
+        expect(result.aliasesById.size).toBe(4);
+      }
     });
 
     it('re-reads page 1 once for an unchanged two-page set and stays complete', async () => {
