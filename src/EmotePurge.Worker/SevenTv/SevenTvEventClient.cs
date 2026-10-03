@@ -67,6 +67,8 @@ public class SevenTvEventClient(
         }
     }
 
+    public IReadOnlyList<string> DesiredChannels => registry.DesiredChannels;
+
     public void Unsubscribe(string channelName)
     {
         if (registry.TryRemove(channelName))

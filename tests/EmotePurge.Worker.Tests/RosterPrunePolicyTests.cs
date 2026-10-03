@@ -122,4 +122,60 @@ public class RosterPrunePolicyTests
         Assert.Empty(toPrune.ChannelsToPrune);
         Assert.Empty(toPrune.StaleChannels);
     }
+
+    // Issue #59: a sync in flight across a rename or deactivation re-creates a match-cache entry or
+    // a registry subscription under the retired login after its LEAVE already ran — the name is on
+    // no roster, so a roster-only walk never sees it.
+    [Fact]
+    public void DetermineChannelsToPrune_GhostOnlyInCache_IsPrunedAfterTwoTicks()
+    {
+        var firstTick = RosterPrunePolicy.DetermineChannelsToPrune(["current"], roster: [], previouslyStaleChannels: [], ghostCandidates: ["oldlogin"]);
+        Assert.Empty(firstTick.ChannelsToPrune);
+
+        var secondTick = RosterPrunePolicy.DetermineChannelsToPrune(["current"], roster: [], firstTick.StaleChannels, ghostCandidates: ["oldlogin"]);
+
+        Assert.Equal(["oldlogin"], secondTick.ChannelsToPrune);
+    }
+
+    [Fact]
+    public void DetermineChannelsToPrune_GhostOnlyInRegistry_IsPrunedAfterTwoTicks()
+    {
+        // Registry keys keep the casing they were registered with; the comparison must not care.
+        var firstTick = RosterPrunePolicy.DetermineChannelsToPrune([], roster: [], previouslyStaleChannels: [], ghostCandidates: ["GhostLogin"]);
+        var secondTick = RosterPrunePolicy.DetermineChannelsToPrune([], roster: [], firstTick.StaleChannels, ghostCandidates: ["ghostlogin"]);
+
+        Assert.Equal(["ghostlogin"], secondTick.ChannelsToPrune);
+    }
+
+    [Fact]
+    public void DetermineChannelsToPrune_ActiveChannelHeldInMemory_IsNeverPruned()
+    {
+        var firstTick = RosterPrunePolicy.DetermineChannelsToPrune(["handofblood"], roster: [], previouslyStaleChannels: [], ghostCandidates: ["handofblood"]);
+        var secondTick = RosterPrunePolicy.DetermineChannelsToPrune(["handofblood"], roster: [], firstTick.StaleChannels, ghostCandidates: ["HandOfBlood"]);
+
+        Assert.Empty(secondTick.ChannelsToPrune);
+        Assert.Empty(secondTick.StaleChannels);
+    }
+
+    [Fact]
+    public void DetermineChannelsToPrune_FreshlyJoinedChannelHeldInMemory_StaysWithinTheGrace()
+    {
+        // Join committed after this tick's DB snapshot: the cache already holds it, the snapshot
+        // does not. One stale tick must not prune it.
+        var result = RosterPrunePolicy.DetermineChannelsToPrune([], roster: [], previouslyStaleChannels: [], ghostCandidates: ["justjoined"]);
+
+        Assert.Empty(result.ChannelsToPrune);
+        Assert.Equal(["justjoined"], result.StaleChannels);
+    }
+
+    [Fact]
+    public void DetermineChannelsToPrune_NameOnRosterAndInMemory_IsReportedOnce()
+    {
+        var roster = new[] { new TwitchRosterEntry("leftbehind", JoinConfirmed: true, LastMessageUtc: null) };
+        var firstTick = RosterPrunePolicy.DetermineChannelsToPrune([], roster, previouslyStaleChannels: [], ghostCandidates: ["leftbehind", "LeftBehind"]);
+
+        var secondTick = RosterPrunePolicy.DetermineChannelsToPrune([], roster, firstTick.StaleChannels, ghostCandidates: ["leftbehind", "LeftBehind"]);
+
+        Assert.Equal(["leftbehind"], secondTick.ChannelsToPrune);
+    }
 }
