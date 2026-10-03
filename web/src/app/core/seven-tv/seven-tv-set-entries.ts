@@ -1,5 +1,5 @@
 import { HttpClient } from '@angular/common/http';
-import { Observable, of, switchMap, throwError } from 'rxjs';
+import { map, Observable, of, switchMap, throwError } from 'rxjs';
 
 /** Host-absolute, same endpoint the write mutations already use (`seven-tv-run-engine.ts`) —
  *  reading a set's contents is public on `v4`, so unlike the mutations this needs no
@@ -48,6 +48,10 @@ interface SevenTvGqlEmoteSetEntriesResponse {
   errors?: unknown[];
 }
 
+type EmotesPayload = NonNullable<
+  NonNullable<NonNullable<SevenTvGqlEmoteSetEntriesResponse['data']>['emoteSets']>['emoteSet']
+>['emotes'];
+
 /** What one full read of a set's entries found. */
 export interface SevenTvSetEntries {
   /** Every 7TV emote id in the set, mapped to every *aliased* entry it sits under there — two for
@@ -85,11 +89,15 @@ export interface SevenTvSetEntries {
    *  than only ever showing the number the picker loaded the dialog with. */
   occupiedSlots: number;
   /** `false` when the read stopped at the runaway guard while 7TV still reported more pages, or
-   *  when the last page's cumulative item count did not match the query's own `totalCount` — offset
-   *  pagination shifting between page fetches can silently drop or duplicate an entry across the
-   *  page boundary even when every page individually looked complete. The map then only knows part
-   *  of the set (or misrepresents it). A caller for which "part" is not good enough (the delete
-   *  run's alias read, spec #200 8.3: a list that only knows half must not delete) checks this. */
+   *  when the pages do not add up to one consistent snapshot of the set: the cumulative item count
+   *  differs from the query's own `totalCount`, `totalCount` changed between two responses of the
+   *  read, the same (emote id, alias) pair showed up on two different pages, or — for a multi-page
+   *  read — re-reading every page but the last one afterwards returned different members than the
+   *  first pass. Offset pagination shifting between page fetches (another editor changing the set)
+   *  can silently drop or duplicate an entry across a page boundary even when every page
+   *  individually looked complete. The map then only knows part of the set (or misrepresents it).
+   *  A caller for which "part" is not good enough (the delete run's alias read, spec #200 8.3: a
+   *  list that only knows half must not delete) checks this. */
   complete: boolean;
 }
 
@@ -118,13 +126,17 @@ function fetchEmoteSetEntriesPage(
  * set switches is not refused by our own budget.
  *
  * Errors (network, HTTP, or a GraphQL-level rejection) all become a thrown error — callers decide
- * whether that fails open (the restore check) or blocks (the delete alias read). Stops early once a
- * page reports it was the last one (`page >= pageCount`), and unconditionally at
- * `MAX_SET_ENTRY_PAGES`, reporting `complete: false` if 7TV still promised more — or, even when
- * pagination ended "normally" (`page >= pageCount`), if the cumulative item count across every page
- * does not match the last page's own `totalCount` (K5 fix round): offset pagination shifting
- * between two fetches of the same set can silently miss (or double-count) an entry at a page
- * boundary without ever tripping the runaway guard.
+ * whether that fails open (the restore check) or blocks (the delete alias read); this includes the
+ * verification re-reads. Stops early once a page reports it was the last one (`page >= pageCount`),
+ * and unconditionally at `MAX_SET_ENTRY_PAGES`, reporting `complete: false` if 7TV still promised
+ * more. Even when pagination ended "normally" the read is `complete: false` if the cumulative item
+ * count does not match `totalCount`, if `totalCount` differs between responses, or if an (emote id,
+ * alias) pair repeats across pages (7TV keeps aliases unique per set, so a repeat means a shift).
+ * Only when all of that is clean and the set spans several pages, pages 1..n-1 are fetched once
+ * more and compared by membership: an editor swapping an emote (removing one on an early page,
+ * adding one at the end) keeps `totalCount` equal and creates no duplicate, yet the first entry of
+ * the next page slides onto the earlier one after it was read and would otherwise go unnoticed.
+ * The returned maps come from the first pass only; single-page sets cost no extra request.
  */
 export function loadSevenTvSetEntries(
   httpClient: HttpClient,
@@ -135,14 +147,54 @@ export function loadSevenTvSetEntries(
   const defaultNameById = new Map<string, string>();
   const animatedById = new Map<string, boolean>();
   let collected = 0;
+  // Consistency bookkeeping for `complete` (see its doc): totalCount per response, the members of
+  // every main-pass page, and whether a pair already seen on an earlier page came back again.
+  const totalCounts = new Set<number>();
+  const pageMembers: string[][] = [];
+  const seenMembers = new Set<string>();
+  let repeatedAcrossPages = false;
 
-  function loadPage(page: number): Observable<SevenTvSetEntries> {
+  function memberKey(item: { alias?: string | null; emote: { id: string } }): string {
+    return `${item.emote.id}\u0000${item.alias ?? ''}`;
+  }
+
+  function readPage(page: number): Observable<NonNullable<EmotesPayload>> {
     return fetchEmoteSetEntriesPage(httpClient, setId, page).pipe(
       switchMap((response) => {
         const emotes = response.data?.emoteSets?.emoteSet?.emotes;
         if ((response.errors?.length ?? 0) > 0 || !emotes) {
           return throwError(() => new Error('7TV emote set read failed'));
         }
+        totalCounts.add(emotes.totalCount);
+        return of(emotes);
+      }),
+    );
+  }
+
+  // Re-reads pages 1..lastPage-1 and resolves `false` as soon as one differs from the main pass.
+  function verifyPage(page: number, lastPage: number): Observable<boolean> {
+    return readPage(page).pipe(
+      switchMap((emotes) => {
+        const again = emotes.items.map(memberKey).sort();
+        const first = [...pageMembers[page - 1]].sort();
+        if (again.length !== first.length || again.some((key, index) => key !== first[index])) {
+          return of(false);
+        }
+        return page + 1 < lastPage ? verifyPage(page + 1, lastPage) : of(true);
+      }),
+    );
+  }
+
+  function loadPage(page: number): Observable<SevenTvSetEntries> {
+    return readPage(page).pipe(
+      switchMap((emotes) => {
+        const members = emotes.items.map(memberKey);
+        pageMembers.push(members);
+        // Checked against earlier pages only — a repeat within one page is not a shift.
+        if (members.some((key) => seenMembers.has(key))) {
+          repeatedAcrossPages = true;
+        }
+        members.forEach((key) => seenMembers.add(key));
         for (const item of emotes.items) {
           const aliases = aliasesById.get(item.emote.id) ?? [];
           if (item.alias) {
@@ -158,14 +210,22 @@ export function loadSevenTvSetEntries(
         }
         collected += emotes.items.length;
         if (page >= emotes.pageCount) {
-          return of({
+          const consistent =
+            collected === emotes.totalCount && totalCounts.size === 1 && !repeatedAcrossPages;
+          const result = (complete: boolean): SevenTvSetEntries => ({
             aliasesById,
             aliaslessIds,
             defaultNameById,
             animatedById,
             occupiedSlots: emotes.totalCount,
-            complete: collected === emotes.totalCount,
+            complete,
           });
+          if (!consistent || page === 1) {
+            return of(result(consistent));
+          }
+          return verifyPage(1, page).pipe(
+            map((unchanged) => result(unchanged && totalCounts.size === 1)),
+          );
         }
         if (page >= MAX_SET_ENTRY_PAGES) {
           return of({

@@ -180,6 +180,11 @@ describe('filterAlreadyPresent', () => {
     expect(second.request.body.variables).toEqual({ id: 'target-set', page: 2, perPage: 500 });
     second.flush(page(['7tv-999'], 2, 2, 2));
 
+    // Verification re-read of page 1 (shift check for multi-page sets).
+    const reread = httpMock.expectOne(GQL_ENDPOINT);
+    expect(reread.request.body.variables).toEqual({ id: 'target-set', page: 1, perPage: 500 });
+    reread.flush(page(['7tv-1'], 1, 2, 2));
+
     expect(await result$).toEqual({
       rows: [],
       skipped: 1,
