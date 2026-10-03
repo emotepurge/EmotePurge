@@ -70,7 +70,11 @@ every 60-second resync tick, without bound. Design note: `docs/Konzept-7TV-Such-
   reaches the leaderboard's breaker.
 - **Per-channel backoff for ids that never resolve.** `TwitchIdResolutionBackoff` (in-process
   singleton, keyed by `Channel.Id`): every resolution that spent a search and stored no id —
-  no 7TV account, unavailable, rename duplicate, excluded channel — is a miss; the next attempt waits
+  no 7TV account, unavailable, rename duplicate, excluded channel, and also a resolved id the sync
+  then could not store (the set lookup failed, the implausible-wipe guard stopped it, or the row
+  vanished under #59's re-read) — is a miss. A fresh resolution therefore records a provisional
+  miss that only the successful save of the id clears; `WarmChannelAsync` (boot recovery) never
+  resolves and never charges; the next attempt waits
   `min(60 s × 2^(n−1), 1 h)`, a success forgets the entry. A stuck channel settles at 24 searches a day
   instead of 1440. In-process on purpose: only the Worker runs this path, a restart costs at most one
   search per stuck channel, and persisting it would need a migration for nothing. Entries for rows
@@ -93,6 +97,118 @@ every 60-second resync tick, without bound. Design note: `docs/Konzept-7TV-Such-
   and a second Api replica still needs them distributed first; what is coordinated across processes
   now is only the leaderboard's share of the search bucket. Out of scope: an admin view of the budget,
   a failure reason of its own for rename duplicates, the v3 telemetry handler's `Ratelimit-*` spelling.
+
+### 2026-10-03 — Channel rename/leave/purge during an in-flight 7TV sync: convergence net plus a narrowing re-read, no row lock, no concurrency token (#59)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteMatchCache.cs` · `src/EmotePurge.Core/Services/IEmoteMatchCache.cs` ·
+`src/EmotePurge.Worker/RosterPrunePolicy.cs` · `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` ·
+`src/EmotePurge.Worker/SevenTv/SevenTvEventClient.cs` · `src/EmotePurge.Worker/SevenTv/ISevenTvEventClient.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelSyncGate.cs`
+
+`ChannelSyncGate` coordinates `SevenTvSyncService` callers with each other, nothing more. The entry of
+2026-09-04 ("Der Rename-Handover bekommt zwei Sperren") says that whoever writes a `Channel` row holds
+the row gate; that is true of the sync callers only. `ChannelIdentityService.RenameAsync`/`MergeAsync`,
+the rename path of `ChannelService.JoinAsync`, `ChannelDeactivation` and the purge (the last two partly
+in the **Api**, another process) never take it. Those entries are not edited; this one corrects the
+claim. The process boundary is an accepted limit: an in-process semaphore cannot span it.
+
+The window: a sync loads the row, then sits in the 7TV REST call. A rename commits and publishes
+LEAVE old / JOIN new, the worker processes the LEAVE (cache, registry, IRC), and the old sync then saves
+(disjoint columns, it succeeds) and re-creates the match-cache entry under the old login, after which
+its caller re-subscribes the registry under it. Deactivation looks the same (the row still exists, just
+inactive). Purge and merge-loser delete the row first, so the save fails with
+`DbUpdateConcurrencyException` or an FK violation (23503). The damage is worker memory only: no data
+is lost, but the ghost used to stay until restart, because the prune step only walked the IRC roster
+and the old login had already left it — so the "heals within 3 minutes" claim in issue #54/#59 was
+false for ghosts. A registry ghost could also win `TryGetChannelForUser` over the real entry.
+
+Decided:
+
+- **Convergence net covers ghosts.** `RosterPrunePolicy` now takes the union of the IRC roster, the
+  registry's desired channels and the match-cache keys as candidates, with the unchanged two-tick grace
+  and case-insensitive comparison. The worker cleans cache and registry for each, and calls
+  `LeaveChannelAsync` only for names actually on the roster. With this the 3-minute healing claim is
+  true.
+- **Narrowing re-read.** After `SaveChangesAsync`, before touching the cache, the sync re-reads name,
+  `IsBotActive` and existence by id (no tracking). Renamed: it continues under the new name and drops
+  any entry under the old one (the warm-up may have written it). Inactive or gone: it removes the
+  entry and returns `null`. All callers already treat `null` as "nothing to follow up on".
+- **Vanished row on save** (`DbUpdateConcurrencyException`, or `DbUpdateException` over a
+  `PostgresException` with SQLSTATE 23503) is an expected interleaving: change tracker cleared,
+  logged at Information, `null` returned. Any other `DbUpdateException` still propagates.
+- **Per-channel catch** in the EventAPI shared-set loop, so one failing channel no longer skips the
+  deltas for the channels after it.
+
+Rejected: `SELECT ... FOR UPDATE` across the sync, because it would hold a row lock over an HTTP call
+for every channel every 60 s and still leave the caller's `EnsureSubscribed` outside the lock. A
+concurrency token such as `xmin` on `Channel`, because it applies to every writer including the Api,
+creating new 500 paths and requiring an audit of all of them — for a defect whose damage is
+worker memory that now converges anyway.
+
+Follow-up hardening of the same change: the re-read only removes the old-login cache entry when no
+other *active* row carries that login now (a login swap must not wipe the other row's live entry);
+the "row vanished" catch applies only when every entry of the failed save belongs to this channel
+(the `DbContext` is shared across a resync tick, so an earlier channel's failure is not blamed on
+this one); and `RecordFailedAttemptAsync` tolerates a vanished row the same way.
+
+Residual, stated honestly: early returns *before* the save (the implausible-wipe guard, which returns
+under the loaded name so the caller subscribes under the old login; the failed-attempt and
+unusable-response paths) are not narrowed by the re-read, so a warm-up or registry ghost can still
+survive them. A ghost can also still appear between the re-read and the cache write. All of these are
+covered by the prune within two ticks, not by the sync.
+
+### 2026-10-03 — Boot recovery warms and joins every channel first, live channels leading, and syncs 7TV afterwards
+
+**Betrifft:** `src/EmotePurge.Worker/Worker.cs` · `src/EmotePurge.Worker/BootRecoveryOrderPolicy.cs` ·
+`src/EmotePurge.Core/Services/ISevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`tests/EmotePurge.Worker.Tests/BootRecoveryOrderPolicyTests.cs` · `tests/EmotePurge.Worker.Tests/WorkerBootSequenceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` · `docs/Architectur.md` (principle 3)
+
+Boot recovery used to join a channel and await its full 7TV sync before joining the next one, in
+alphabetical order. A local measurement (40 live channels, 5 restarts) showed the gap growing by
+830-940 ms per join position instead of the 600 ms join throttle, and the order ignored whether anyone
+was chatting. It now runs in two phases: phase 1 warms and joins every active channel through the
+existing throttle, phase 2 runs the serial 7TV syncs.
+
+- **Per-channel warm-up and join before any sync.** `TwitchChatManager` drops the messages of a
+  channel whose match cache is empty, and the #116 warm start used to happen only inside
+  `SyncChannelAsync`. Phase 1 therefore calls the new `ISevenTvSyncService.WarmChannelAsync` (cache
+  seeded from Postgres if empty; same name/row gates and excluded-channel check as the sync; no 7TV or
+  Twitch call, no database write; returns nothing; silent no-op for an unknown or merged row; an
+  excluded row has its cache entry removed and a Debug line written, as in the sync) and then joins,
+  per channel. A failed warm-up is caught and the join still happens. The chat-join gap no longer
+  includes sync time, and a channel with a warmed cache counts from its join. **A restart-gap
+  measurement measures to the join line**, since the warm-up precedes it; a channel without a warm-up
+  line (never synced, nothing to warm from) counts only from its sync.
+- **Phase 2 syncs cold channels first.** Channels whose cache is still empty after phase 1 (never-synced
+  rows, a warm-up that found nothing or failed) count nothing until their sync, so
+  `BootRecoveryOrderPolicy.ColdFirst` puts them ahead of the channels already counting; both groups
+  keep the phase-1 order. The syncs stay serial, which keeps `ChannelSyncGate` and the shared 7TV
+  quota untouched.
+- **Live channels first in phase 1.** `BootRecoveryOrderPolicy.LiveFirst` is a pure, stable partition
+  of the roster by the `ITwitchLiveStatusReader` snapshot (read once at boot, normalized through
+  `ChannelName.Normalize`, names not on the roster and null or blank entries ignored). A missing,
+  expired or unreadable snapshot, a throwing read, or a read slower than 2 s leaves the roster order
+  unchanged and never blocks the boot. Staleness is bounded by the key's TTL (twice the poll interval,
+  at most ~10 minutes at the default cadence); `GeneratedAtUtc` is not checked on top. Live-first moves
+  non-live channels back by design; that only costs something if the snapshot missed a channel that
+  just went live (TTL ~ 2 poll intervals).
+- **Failure isolation and shutdown.** A throwing join or warm-up does not stop later joins or the sync
+  phase; a throwing sync (JsonException, DbUpdateException) does not stop later syncs and never
+  escapes `ExecuteAsync` (StopHost crash loop). On shutdown the loops stop and one Information line is
+  written instead of a warning per remaining channel. `BootRecoveryGate.MarkCompleted()` stays in the
+  outer `finally`, after both phases: the gate keeps the periodic resync from syncing the same channels
+  concurrently with boot recovery.
+- **The reconnect rejoin path needs no change.** `TwitchChatManager.RejoinDesiredChannelsAsync` only
+  re-issues JOINs through the same throttle and waits for confirmations; it never calls a 7TV sync, so
+  there is no interleaving to split.
+- **Measurement.** Local, 2026-10-03, 40 live channels (22 with 7TV emotes), 4 interleaved SIGTERM
+  restarts per build: join-gap slope 1.10-1.33 s/channel (main) -> 0.60 s (new), last channel joined
+  ~44-50 s -> ~26 s, median lost messages across all 40 channels ~830 -> ~510. The warm-up preceded
+  the join in every run; live-first was not observable (all channels were live). Data in
+  `~/projects/gaptest-2026-10-03/` (local, not in the repo).
+- **Measurement window.** Under Epic #118 this Worker change must not be deployed before 2026-10-08.
 
 ### 2026-10-03 — Self-service account deletion: `DELETE /api/auth/me`, `SelfRequest`, best-effort Twitch token revocation after the commit (#243)
 

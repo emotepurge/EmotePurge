@@ -71,7 +71,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
     {
         // Channels.TwitchChannelId carries a unique index — derive it from the (unique) test
         // channel name instead of sharing one literal across tests.
-        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = SetId };
+        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = SetId, IsBotActive = true };
         db.Channels.Add(channel);
         foreach (var (sevenTvId, emoteName, archived) in emotes)
         {
@@ -290,7 +290,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
-        db.Channels.Add(new Channel { ChannelName = "wstest_syncresult", TwitchChannelId = "77", ActiveEmoteSetId = "" });
+        db.Channels.Add(new Channel { ChannelName = "wstest_syncresult", TwitchChannelId = "77", ActiveEmoteSetId = "", IsBotActive = true });
         await db.SaveChangesAsync();
 
         var apiClient = Substitute.For<ISevenTvApiClient>();
@@ -872,7 +872,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         // row holds this id yet), so the ordinary first-time backfill must still go through.
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
-        var channel = new Channel { ChannelName = "wstest_dup_nomatch", TwitchChannelId = null, ActiveEmoteSetId = "" };
+        var channel = new Channel { ChannelName = "wstest_dup_nomatch", TwitchChannelId = null, ActiveEmoteSetId = "", IsBotActive = true };
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
 
@@ -971,6 +971,58 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
     }
 
     // ---- Warm start: the match cache is seeded from Postgres before the first 7TV call ----
+
+    [Fact]
+    public async Task WarmChannel_EmptyCache_IsWarmedFromPostgres_WithoutTouching7Tv()
+    {
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var channel = await SeedChannelAsync(db, "wstest_warmonly", ("e1", "active", false), ("e2", "archived", true));
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
+
+        await service.WarmChannelAsync("WSTEST_WarmOnly");
+
+        var cached = cache.GetChannelEmotes(channel.ChannelName);
+        Assert.Single(cached);
+        Assert.True(cached.ContainsKey("active"));
+        Assert.Empty(apiClient.ReceivedCalls());
+    }
+
+    [Fact]
+    public async Task WarmChannel_FilledCache_IsLeftUntouched()
+    {
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var channel = await SeedChannelAsync(db, "wstest_warmonly_filled", ("e1", "postgresonly", false));
+        cache.ReplaceChannel(channel.ChannelName, new Dictionary<string, string> { ["markeronly"] = "marker-id" });
+        var service = new SevenTvSyncService(db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
+
+        await service.WarmChannelAsync(channel.ChannelName);
+
+        var cached = cache.GetChannelEmotes(channel.ChannelName);
+        Assert.Single(cached);
+        Assert.True(cached.ContainsKey("markeronly"));
+    }
+
+    [Fact]
+    public async Task WarmChannel_ExcludedChannel_StaysCold_AndUnknownChannelIsANoOp()
+    {
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var channel = await SeedChannelAsync(db, "wstest_warmonly_excluded", ("e1", "active", false));
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded(channel.TwitchChannelId).Returns(true);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), excludedChannelFilter, new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
+
+        await service.WarmChannelAsync(channel.ChannelName);
+        await service.WarmChannelAsync("wstest_warmonly_nosuchchannel");
+
+        Assert.Empty(cache.GetChannelEmotes(channel.ChannelName));
+        Assert.Empty(apiClient.ReceivedCalls());
+    }
+
 
     [Theory]
     [InlineData(true)]
@@ -1077,7 +1129,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         db.Channels.Add(new Channel { ChannelName = "wstest_dup_original", TwitchChannelId = "111", ActiveEmoteSetId = SetId });
-        var renamed = new Channel { ChannelName = "wstest_dup_renamed", TwitchChannelId = null, ActiveEmoteSetId = "" };
+        var renamed = new Channel { ChannelName = "wstest_dup_renamed", TwitchChannelId = null, ActiveEmoteSetId = "", IsBotActive = true };
         db.Channels.Add(renamed);
         await db.SaveChangesAsync();
 

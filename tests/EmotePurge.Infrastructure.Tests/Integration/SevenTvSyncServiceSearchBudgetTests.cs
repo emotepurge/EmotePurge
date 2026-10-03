@@ -142,10 +142,46 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task AResolvedIdThatIsNeverStored_StillCountsAsAMiss()
+    {
+        // 7TV knows the account but it has no active set: the sync stops before the id is saved, so
+        // without the provisional miss every tick would spend a fresh search on the same answer.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedIdLessChannelAsync(db, "wstest_budget_noset");
+        var harness = new Harness(db);
+        harness.Client.ResolveTwitchUserIdAsync(channel.ChannelName, Arg.Any<CancellationToken>())
+            .Returns(SevenTvTwitchUserIdResult.Ok("tw_wstest_budget_noset"));
+        harness.Client.GetChannelStateForTwitchUserAsync("tw_wstest_budget_noset", Arg.Any<CancellationToken>())
+            .Returns(SevenTvChannelStateResult.Failed(SevenTvLookupStatus.NoActiveEmoteSet));
+
+        await harness.Service.SyncChannelAsync(channel.ChannelName);
+        await harness.Service.SyncChannelAsync(channel.ChannelName);
+
+        await harness.Client.Received(1).ResolveTwitchUserIdAsync(channel.ChannelName, Arg.Any<CancellationToken>());
+        Assert.False(harness.Backoff.IsDue(channel.Id, out _));
+        Assert.Null(await db.Channels.AsNoTracking().Where(c => c.Id == channel.Id).Select(c => c.TwitchChannelId).SingleAsync());
+    }
+
+    [Fact]
+    public async Task WarmingAnIdLessChannel_SpendsNoSearch()
+    {
+        // Boot recovery warms every channel before the first sync; the warm-up reads Postgres only.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedIdLessChannelAsync(db, "wstest_budget_warm");
+        var harness = new Harness(db);
+
+        await harness.Service.WarmChannelAsync(channel.ChannelName);
+
+        Assert.Empty(harness.Budget.Charges);
+        Assert.Empty(harness.Client.ReceivedCalls());
+        Assert.True(harness.Backoff.IsDue(channel.Id, out _));
+    }
+
+    [Fact]
     public async Task AChannelWithAStoredId_NeverTouchesTheSearchBudget()
     {
         await using var db = fixture.CreateDbContext();
-        var channel = new Channel { ChannelName = "wstest_budget_hasid", TwitchChannelId = "tw_wstest_budget_hasid", ActiveEmoteSetId = SetId };
+        var channel = new Channel { ChannelName = "wstest_budget_hasid", TwitchChannelId = "tw_wstest_budget_hasid", ActiveEmoteSetId = SetId, IsBotActive = true };
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         var harness = new Harness(db);
@@ -160,7 +196,7 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
 
     private static async Task<Channel> SeedIdLessChannelAsync(AppDbContext db, string name)
     {
-        var channel = new Channel { ChannelName = name, TwitchChannelId = null, ActiveEmoteSetId = SetId };
+        var channel = new Channel { ChannelName = name, TwitchChannelId = null, ActiveEmoteSetId = SetId, IsBotActive = true };
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         return channel;

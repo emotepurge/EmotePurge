@@ -55,6 +55,7 @@ public class SevenTvEventClient(
     public bool IsEnabled => _enabled;
     public int? SubscriptionLimit => _subscriptionLimit > 0 ? _subscriptionLimit : null;
     public bool IsConnected => _isConnected;
+    public IReadOnlyList<string> DesiredChannels => registry.DesiredChannels;
     public DateTime? LastFrameReceivedUtc => ReadUtc(ref _lastFrameTicks);
     public DateTime? LastDispatchReceivedUtc => ReadUtc(ref _lastDispatchTicks);
     public DateTime? ConnectAttemptedUtc => ReadUtc(ref _connectAttemptedTicks);
@@ -366,41 +367,44 @@ public class SevenTvEventClient(
 
         // Sequential per channel: two channels sharing the set touch different rows, but staying
         // sequential keeps this loop free of any parallel-writer questions.
-        foreach (var channelName in channels)
+        await PerChannelFanOut.ApplyAsync(
+            channels, channelName => ApplyDeltaToChannelAsync(channelName, emoteSetId, delta, ct), logger, ct);
+    }
+
+    private async Task ApplyDeltaToChannelAsync(string channelName, string emoteSetId, SevenTvEmoteSetDelta delta, CancellationToken ct)
+    {
+        SevenTvDeltaResult result;
+        using (var scope = scopeFactory.CreateScope())
         {
-            SevenTvDeltaResult result;
-            using (var scope = scopeFactory.CreateScope())
-            {
-                var syncService = scope.ServiceProvider.GetRequiredService<ISevenTvSyncService>();
-                result = await syncService.ApplyEmoteSetUpdateAsync(channelName, emoteSetId, delta, ct);
-            }
+            var syncService = scope.ServiceProvider.GetRequiredService<ISevenTvSyncService>();
+            result = await syncService.ApplyEmoteSetUpdateAsync(channelName, emoteSetId, delta, ct);
+        }
 
-            // The registry keyed this dispatch under channelName, but the row may have been renamed
-            // out from under it while the call sat at the row gate — every follow-up that addresses
-            // the *channel* therefore goes to result.ChannelName (issue #60). The one exception is
-            // the ChannelUnknown arm below, which removes a registry entry and so has to name the
-            // key the registry actually holds.
-            var currentName = result.ChannelName ?? channelName;
+        // The registry keyed this dispatch under channelName, but the row may have been renamed
+        // out from under it while the call sat at the row gate — every follow-up that addresses
+        // the *channel* therefore goes to result.ChannelName (issue #60). The one exception is
+        // the ChannelUnknown arm below, which removes a registry entry and so has to name the
+        // key the registry actually holds.
+        var currentName = result.ChannelName ?? channelName;
 
-            switch (result.Outcome)
-            {
-                case SevenTvDeltaOutcome.Applied:
-                    // The one outcome that persisted a write — everything else changed nothing and
-                    // must stay silent (open pages would refetch for nothing).
-                    await redisPublisher.PublishChannelSyncedAsync(logger, currentName, ct);
-                    break;
+        switch (result.Outcome)
+        {
+            case SevenTvDeltaOutcome.Applied:
+                // The one outcome that persisted a write — everything else changed nothing and
+                // must stay silent (open pages would refetch for nothing).
+                await redisPublisher.PublishChannelSyncedAsync(logger, currentName, ct);
+                break;
 
-                case SevenTvDeltaOutcome.SetNotActive:
-                case SevenTvDeltaOutcome.ImplausibleSkipped:
-                    // Outside the gate by design — see the interface remark on ApplyEmoteSetUpdateAsync.
-                    await ResyncChannelAsync(currentName, adoptResult: true, ct);
-                    break;
+            case SevenTvDeltaOutcome.SetNotActive:
+            case SevenTvDeltaOutcome.ImplausibleSkipped:
+                // Outside the gate by design — see the interface remark on ApplyEmoteSetUpdateAsync.
+                await ResyncChannelAsync(currentName, adoptResult: true, ct);
+                break;
 
-                case SevenTvDeltaOutcome.ChannelUnknown:
-                    registry.TryRemove(channelName);
-                    RequestSync();
-                    break;
-            }
+            case SevenTvDeltaOutcome.ChannelUnknown:
+                registry.TryRemove(channelName);
+                RequestSync();
+                break;
         }
     }
 

@@ -198,7 +198,7 @@ public class SevenTvSyncServiceRenameHandoverTests(PostgresFixture fixture)
 
     private static async Task<Channel> SeedChannelAsync(AppDbContext db, string name)
     {
-        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = SetId };
+        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = SetId, IsBotActive = true };
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         return channel;
