@@ -10,6 +10,60 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — Harness: the run mode is recorded in the .jsonl header and checked on every existing file
+
+**Betrifft:** `src/EmotePurge.Worker/Harness/HarnessReportFile.cs` ·
+`src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessReportFileTests.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
+
+The run mode (`--diagnostic` or binding) was not part of the run identity (D4) and was recorded
+nowhere in the `.jsonl`, so only a *closed* run could be checked against it, through its report.
+An unfinished diagnostic file could be resumed and closed as a binding run, or its older window
+inherited by `FindFrozenWindow`. A run is binding only if it ran binding from the start (#69), so
+this is the same rule the closed-run refusal already enforced, now extended to files with no report.
+
+**File format.** `HarnessReportHeader` gets an optional `diagnostic` field (`true`/`false`). It sits
+beside the identity, not in it: `BuildFileName` and the byte-for-byte identity comparison are
+unchanged, so existing files keep their names and still match. A `null` is not written, so a header
+without the field is byte-identical to the old format, and that is how a legacy file reads: mode
+unknown.
+
+**Rules.**
+
+- A file whose recorded mode differs from the current invocation's is refused with exit 3, before
+  anything is written or fetched, in both directions. A diagnostic file is never continued as
+  binding, and a binding file is never continued by a diagnostic invocation.
+- A legacy file without a recorded mode is read as diagnostic. That can only lower a run's standing:
+  a diagnostic run may continue it, a binding run may not (exit 3, move the file aside).
+- `FindFrozenWindow` skips candidates of another mode, legacy ones included for a binding run, so a
+  binding run derives its own window instead of measuring an older diagnostic one.
+- The repair of a closed run's unreadable report uses the file's recorded mode; a legacy closed file
+  whose report is unreadable is repaired by a diagnostic invocation only. A closed legacy file with a
+  readable report is still decided by that report, as before.
+- `--report-only` takes the mode from the header, falling back to the original report and then to
+  diagnostic (D4) only for legacy files. The command line cannot combine `--report-only` with
+  `--diagnostic`, so there is no flag to disagree with; if the original report's `run.diagnostic`
+  disagrees with the header, the recompute logs a warning and uses the header.
+
+**Mixed images.** An unfinished binding file written by an image without this change has no
+recorded mode. The new image refuses it with exit 3 on the same UTC day (same identity, so it
+would be resumed) and, on a later day, derives a new window instead of resuming it, with a warning
+naming the file. A binding run therefore must either start on an image that already contains this
+change, or keep its image pinned until its last report is closed. The warning also names the
+operator action: move the file aside for a deliberate fresh start, or record the mode by hand in
+header line 1 (`"diagnostic":true|false`), which is an attestation by the operator that nothing
+verifies. `FindFrozenWindow` logs the skip when the file would otherwise have been inherited, and
+always for a legacy file seen by a binding run. A `--report-only` recompute whose header and
+original report disagree on the mode gets the warning code `run-mode-disagreement` (a new value in
+`Recomputation.Warnings`, no new field) and a prominent banner of its own in the recompute
+Markdown, separate from the snapshot-drift block; the "Herkunft" line there says whether the mode
+came from the header or from the original report.
+
+**Alternatives.** Putting the mode into the identity would have renamed every file and made a mode
+mismatch a silent fresh start instead of a refusal. Treating a legacy file as binding would have let
+exactly the files this change exists to catch (diagnostic runs written before it) pass as binding.
+
 ### 2026-10-03 — Harness: a transfer cancelled mid-body books its bytes against the cap (#82)
 
 **Betrifft:** `src/EmotePurge.Core/ChatLogArchive/ChatLogArchiveModels.cs` ·

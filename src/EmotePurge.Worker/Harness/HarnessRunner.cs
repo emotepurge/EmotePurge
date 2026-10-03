@@ -79,7 +79,8 @@ public sealed class HarnessRunner(
 
     /// <summary>
     /// A precondition was violated; the question could not be asked at all. Also the refusal for a
-    /// rerun of a closed run in the other run mode, or of a closed run with damaged day lines (#87):
+    /// rerun of an existing file (closed or unfinished) in the other run mode, for a binding run
+    /// reaching a file with no recorded mode (#314), or of a closed run with damaged day lines (#87):
     /// nothing is written and nothing is fetched.
     /// </summary>
     public const int ExitPreconditionViolated = 3;
@@ -265,7 +266,7 @@ public sealed class HarnessRunner(
         var trackedSince = TrackingCoverage.TrackedSince(channel.TrackingResumedAt, channel.CreatedAt);
         var firstFullyTrackedDay = DateOnly.FromDateTime(trackedSince).AddDays(1);
 
-        var frozen = FindFrozenWindow(channel.Id, channel.ChannelName, days, freshTo);
+        var frozen = FindFrozenWindow(channel.Id, channel.ChannelName, days, freshTo, diagnostic);
         var to = frozen?.To ?? freshTo;
         var from = frozen?.From ?? Later(firstFullyTrackedDay, to.AddDays(-(days - 1)));
 
@@ -302,12 +303,13 @@ public sealed class HarnessRunner(
 
         var file = new HarnessReportFile(Path.Combine(options.OutputDirectory, HarnessReportFile.BuildFileName(identity)));
         HarnessReportContent existing;
+        HarnessReportHeader header;
         bool resumed;
         if (file.Exists)
         {
             try
             {
-                file.ReadHeader(identity);
+                header = file.ReadHeader(identity);
                 existing = file.ReadDays();
             }
             catch (HarnessReportFileException ex)
@@ -320,10 +322,30 @@ public sealed class HarnessRunner(
                 return ExitPreconditionViolated;
             }
 
+            // The file's recorded mode against this run's, before anything is written or fetched. A closed
+            // file with an unrecorded mode is left to DecideClosedRun, which can read the mode from its
+            // report; for every other file the header is all there is.
+            if (!(file.IsClosed && header.Diagnostic is null) && !ModeAllowsContinuing(header.Diagnostic, diagnostic))
+            {
+                logger.LogError(
+                    "Harness run file '{File}' was collected {Recorded}, this invocation is {Current}; a run is binding only if it ran binding from the start, so the file is neither resumed nor rewritten. Nothing was written and nothing was fetched. {Hint}",
+                    file.Path,
+                    header.Diagnostic is null ? "without a recorded mode (written before the mode was recorded)" : header.Diagnostic.Value ? "as a diagnostic run" : "as a binding run",
+                    diagnostic ? "as a diagnostic run" : "as a binding run",
+                    header.Diagnostic is null
+                        ? "A binding run needs a fresh start: move the file aside, per the runbook."
+                        : header.Diagnostic.Value
+                            ? "A binding run needs a fresh start on a new window: move the file aside, per the runbook."
+                            : file.IsClosed
+                                ? "Use '--report-only' to recompute a binding run; a diagnostic invocation never continues it."
+                                : "Resume it without '--diagnostic'; a diagnostic invocation never continues a binding run.");
+                return ExitPreconditionViolated;
+            }
+
             // Decided only now, after the header and every day line have been read (#87): a closed
             // run whose evidence is damaged is refused above or inside DecideClosedRun, never waved
             // through on the strength of a report that happens to sit beside it.
-            if (file.IsClosed && DecideClosedRun(file, identity, existing, diagnostic, channel.ChannelName) is { } closedExitCode)
+            if (file.IsClosed && DecideClosedRun(file, identity, existing, diagnostic, header.Diagnostic, channel.ChannelName) is { } closedExitCode)
             {
                 return closedExitCode;
             }
@@ -332,7 +354,7 @@ public sealed class HarnessRunner(
         }
         else
         {
-            file.WriteHeader(new HarnessReportHeader(identity, loadedAtUtc));
+            file.WriteHeader(new HarnessReportHeader(identity, loadedAtUtc, diagnostic));
             existing = new HarnessReportContent([], []);
             resumed = false;
         }
@@ -657,9 +679,20 @@ public sealed class HarnessRunner(
         // recompute defaults to true (no gate verdict) rather than false (a binding one) — a missing,
         // unparsable or otherwise unreadable .report.json must never silently upgrade a diagnostic
         // run into a binding verdict just because nothing was left to say it was one.
-        var diagnostic = originalReport?.Run.Diagnostic ?? true;
-        var diagnosticSource = originalReport is not null ? "inherited" : "defaulted";
-        if (originalReport is null)
+        // The header records how the data was collected and is the truth about it (#314); the original
+        // report is only the fallback for a file written before the header carried the mode.
+        var modeDisagreement = false;
+        if (header.Diagnostic is { } headerMode && originalReport is not null && originalReport.Run.Diagnostic != headerMode)
+        {
+            logger.LogWarning(
+                "'{File}' recorded its run mode as {HeaderMode} but its report says {ReportMode}; the recompute uses the header.",
+                sourceFile.Path, headerMode ? "diagnostic" : "binding", originalReport.Run.Diagnostic ? "diagnostic" : "binding");
+            modeDisagreement = true;
+        }
+
+        var diagnostic = header.Diagnostic ?? originalReport?.Run.Diagnostic ?? true;
+        var diagnosticSource = header.Diagnostic is not null || originalReport is not null ? "inherited" : "defaulted";
+        if (header.Diagnostic is null && originalReport is null)
         {
             logger.LogInformation(
                 "'{File}' has no readable '{JsonPath}' to inherit the diagnostic flag from; the recompute defaults it to true (no gate verdict), per the D4 fail-closed rule.",
@@ -684,6 +717,11 @@ public sealed class HarnessRunner(
             logger.LogWarning(
                 "Recompute of '{File}' sees a different bot-split cutover than the original run (original '{Original}', current '{Current}').",
                 sourceFile.Path, Iso(identity.BotSplitCutover), Iso(currentBotSplitCutover));
+        }
+
+        if (modeDisagreement)
+        {
+            warnings.Add("run-mode-disagreement");
         }
 
         var recomputation = new HarnessRecomputation(
@@ -747,7 +785,7 @@ public sealed class HarnessRunner(
     /// </para>
     /// </summary>
     private int? DecideClosedRun(
-        HarnessReportFile file, HarnessRunIdentity identity, HarnessReportContent content, bool diagnostic, string channelName)
+        HarnessReportFile file, HarnessRunIdentity identity, HarnessReportContent content, bool diagnostic, bool? recordedDiagnostic, string channelName)
     {
         // Ordinary runs cannot close with a gap or a duplicate — the day loop writes each day of the
         // window exactly once before the report — so either one means the evidence was altered after
@@ -784,6 +822,18 @@ public sealed class HarnessRunner(
 
         if (closedReport is null || defect is not null)
         {
+            // The repair rewrites both reports in one mode, and that must be the file's own. With a
+            // recorded mode the caller has already refused any other; without one (legacy) only a
+            // diagnostic invocation may repair, since a binding rewrite would invent a verdict for
+            // data whose mode nobody recorded.
+            if (recordedDiagnostic is null && !diagnostic)
+            {
+                logger.LogError(
+                    "Harness run for channel '{Channel}' is closed, but '{ReportJson}' does not describe this run and the file recorded no run mode; a binding invocation will not rewrite it. Nothing was written and nothing was fetched. Repair it with a '--diagnostic' invocation or recompute it with '--report-only {File}'.",
+                    channelName, file.ReportJsonPath, Path.GetFileName(file.Path));
+                return ExitPreconditionViolated;
+            }
+
             logger.LogWarning(
                 "Harness run for channel '{Channel}' is closed, but '{ReportJson}' does not describe this run ({Defect}); both reports are rewritten from the day lines without fetching anything.",
                 channelName, file.ReportJsonPath, defect);
@@ -834,7 +884,7 @@ public sealed class HarnessRunner(
     /// </para>
     /// </summary>
     private (DateOnly From, DateOnly To)? FindFrozenWindow(
-        string channelId, string channelName, int days, DateOnly freshTo)
+        string channelId, string channelName, int days, DateOnly freshTo, bool diagnostic)
     {
         if (!Directory.Exists(options.OutputDirectory))
         {
@@ -864,6 +914,28 @@ public sealed class HarnessRunner(
             }
 
             var age = freshTo.DayNumber - header.Identity.WindowTo.DayNumber;
+
+            // A file collected in the other run mode is not this run's to inherit (#69: a run is
+            // binding only if it ran binding from the start). A legacy header without a recorded
+            // mode counts as diagnostic for a diagnostic run and is never inherited by a binding one.
+            // The skip is announced when it changes the outcome (the file would have been inherited)
+            // and always for a legacy file seen by a binding run, since that one is easy to miss.
+            if (!ModeAllowsContinuing(header.Diagnostic, diagnostic))
+            {
+                var wouldHaveBeenInherited = age >= 0 && age <= MaxResumeAgeInDays;
+                if (wouldHaveBeenInherited || (header.Diagnostic is null && !diagnostic))
+                {
+                    logger.LogWarning(
+                        "Unfinished harness run file '{File}' (window {From}..{To}) is not continued: it was collected {Recorded}, this invocation is {Current}, and a run is binding only if it ran binding from the start. This invocation derives its own window. To start fresh deliberately, move the file aside. If the file is known to have been collected in this invocation's mode, record that by hand in header line 1 (add \"diagnostic\":{Flag} to the header object); that is an attestation by the operator, nothing verifies it.",
+                        path, Iso(header.Identity.WindowFrom), Iso(header.Identity.WindowTo),
+                        header.Diagnostic is null ? "without a recorded mode (written before the mode was recorded)" : header.Diagnostic.Value ? "as a diagnostic run" : "as a binding run",
+                        diagnostic ? "as a diagnostic run" : "as a binding run",
+                        diagnostic ? "true" : "false");
+                }
+
+                continue;
+            }
+
             if (age < 0)
             {
                 // A window ending after the last complete UTC day cannot have been frozen by this
@@ -916,6 +988,14 @@ public sealed class HarnessRunner(
             "Harness-Lauf bei Tag {Tag} beendet ({Grund}). Letzter vollständiger Tag: {Wiederaufnahme}. Ein erneuter Aufruf mit denselben Argumenten setzt dort fort.",
             Iso(day), reason, resumePoint is { } value ? Iso(value) : "keiner");
     }
+
+    /// <summary>
+    /// Whether a run in mode <paramref name="diagnostic"/> may continue or inherit a file whose header
+    /// recorded <paramref name="recorded"/>. An unrecorded (legacy) mode is read as diagnostic: that
+    /// can only ever lower a run's standing, never raise it, so a diagnostic run may continue such a
+    /// file and a binding run may not.
+    /// </summary>
+    private static bool ModeAllowsContinuing(bool? recorded, bool diagnostic) => (recorded ?? true) == diagnostic;
 
     private static DateOnly Later(DateOnly left, DateOnly right) => left > right ? left : right;
 
@@ -1055,8 +1135,20 @@ public sealed class HarnessRunner(
                 $"> - Bot-Split-Stichtag: ursprünglich `{Iso(recomputation.OriginalBotSplitCutover)}`, aktuell `{Iso(recomputation.CurrentBotSplitCutover)}` (Übereinstimmung: {(recomputation.BotSplitCutoverMatches ? "ja" : "nein")})\n\n"));
         }
 
+        if (recomputation.Warnings.Contains("run-mode-disagreement"))
+        {
+            var headerMode = report.Run.Diagnostic ? "Diagnose" : "bindend";
+            var reportMode = report.Run.Diagnostic ? "bindend" : "Diagnose";
+            text.Append(
+                "> **⚠ Achtung: Lauf-Modus widersprüchlich.** "
+                + $"Zeile 1 der `.jsonl` hält den Lauf als **{headerMode}** fest, der ursprüngliche "
+                + $"`.report.json` sagt **{reportMode}**. Die Neuberechnung folgt dem Kopf; "
+                + "ein von Hand bearbeiteter Kopf wird durch nichts geprüft. Vor jeder Verwendung "
+                + "als bindender Lauf muss der Betreiber klären, welche Angabe stimmt.\n\n");
+        }
+
         text.Append(Invariant(
-            $"Herkunft des Diagnose-Kennzeichens: {(recomputation.DiagnosticSource == "inherited" ? "übernommen aus dem ursprünglichen Bericht" : "keiner vorhanden, fail-closed auf 'Diagnose' (kein Gate-Urteil) zurückgefallen")}.\n\n"));
+            $"Herkunft des Diagnose-Kennzeichens: {(recomputation.DiagnosticSource == "inherited" ? (header.Diagnostic is not null ? "übernommen aus dem Kopf des ursprünglichen Laufs" : "übernommen aus dem ursprünglichen Bericht") : "keiner vorhanden, fail-closed auf 'Diagnose' (kein Gate-Urteil) zurückgefallen")}.\n\n"));
         text.Append("---\n\n");
 
         text.Append(BuildMarkdown(
