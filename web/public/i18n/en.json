@@ -19,7 +19,7 @@
     "delete": {
       "trigger": "Delete account",
       "title": "Delete your account irreversibly",
-      "message": "Your account and all data that belongs to you will be deleted: your stored Twitch credentials, your login and every vote you cast – including in running votings, whose standings change as a result. Audit-log entries that name you are kept, but anonymised.\n\nThis cannot be undone. You will be signed out immediately.",
+      "message": "Your account and all data that belongs to you will be deleted: your stored Twitch credentials, your login and every vote you cast – including in running votings, whose standings change as a result. Audit-log entries that name you are kept, but your name and Twitch ID in them are replaced by a placeholder.\n\nThis cannot be undone. You will be signed out immediately.",
       "inputLabel": "Enter your Twitch login to confirm",
       "confirm": "Delete account permanently",
       "pending": "Deleting account …",
@@ -548,7 +548,7 @@
       "delete": {
         "button": "Delete account",
         "title": "Delete account irreversibly",
-        "message": "The account of {{name}} will be deleted: every vote they cast is removed, and audit-log entries naming them are anonymised instead of deleted.\n\nThis cannot be undone.",
+        "message": "The account of {{name}} will be deleted: every vote they cast is removed, and audit-log entries naming them are kept, with their name and Twitch ID replaced by a placeholder.\n\nThis cannot be undone.",
         "selfHint": "This is your own account: you will be signed out immediately, because the account it belongs to is gone.",
         "inputLabel": "Twitch login to confirm",
         "confirm": "Delete permanently"

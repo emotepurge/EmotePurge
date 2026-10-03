@@ -19,7 +19,7 @@
     "delete": {
       "trigger": "Konto löschen",
       "title": "Dein Konto unwiderruflich löschen",
-      "message": "Dein Konto und alle Daten, die zu dir gehören, werden gelöscht: deine gespeicherten Twitch-Zugangsdaten, deine Anmeldung und jede Stimme, die du abgegeben hast – auch in laufenden Abstimmungen, deren Stand sich dadurch ändert. Einträge im Audit-Log, die dich nennen, bleiben erhalten, werden aber anonymisiert.\n\nDas lässt sich nicht rückgängig machen. Du wirst sofort abgemeldet.",
+      "message": "Dein Konto und alle Daten, die zu dir gehören, werden gelöscht: deine gespeicherten Twitch-Zugangsdaten, deine Anmeldung und jede Stimme, die du abgegeben hast – auch in laufenden Abstimmungen, deren Stand sich dadurch ändert. Einträge im Audit-Log, die dich nennen, bleiben erhalten; dein Name und deine Twitch-ID werden darin durch einen Platzhalter ersetzt.\n\nDas lässt sich nicht rückgängig machen. Du wirst sofort abgemeldet.",
       "inputLabel": "Zur Bestätigung deinen Twitch-Login eingeben",
       "confirm": "Konto endgültig löschen",
       "pending": "Konto wird gelöscht …",
@@ -548,7 +548,7 @@
       "delete": {
         "button": "Account löschen",
         "title": "Account unwiderruflich löschen",
-        "message": "Der Account von {{name}} wird gelöscht: jede von ihm abgegebene Stimme wird entfernt, und Audit-Log-Einträge, die ihn nennen, werden anonymisiert statt gelöscht.\n\nDas lässt sich nicht rückgängig machen.",
+        "message": "Der Account von {{name}} wird gelöscht: jede von ihm abgegebene Stimme wird entfernt, und Audit-Log-Einträge, die ihn nennen, bleiben erhalten; Name und Twitch-ID werden darin durch einen Platzhalter ersetzt.\n\nDas lässt sich nicht rückgängig machen.",
         "selfHint": "Das ist dein eigener Account: Du wirst damit sofort abgemeldet, weil der Account dahinter nicht mehr existiert.",
         "inputLabel": "Twitch-Login zur Bestätigung",
         "confirm": "Endgültig löschen"
