@@ -112,7 +112,20 @@ skipped as `ImplausibleSkipped`) unchanged: it already answers with a full resyn
 logic above, so a really emptied set converges through the same confirmed path and a malformed
 delta alone still cannot wipe a channel. Out of scope and unchanged: matching/counting code.
 
----
+### 2026-10-03 — Paging query parameters bind as strings, so binding cannot fail
+
+**Betrifft:** `src/EmotePurge.Api/Validation/PagingQuery.cs` · `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` · `ChannelEndpoints.cs` · `VoteSessionEndpoints.cs` · `tests/EmotePurge.Api.Tests/PagingBindingTests.cs`
+
+The five paged list routes (admin audit log, admin users, channel audit log, channel vote sessions,
+`/api/vote-sessions/mine`) declared `int page, int pageSize`. A minimal-API parameter that is absent
+or not a number fails to bind, and binding runs before the endpoint filters: the request answered 400
+(500 in Development, where `ThrowOnBadRequest` is on and the exception handler flattens it) even for a
+caller the authorization filter would have refused with 403. The paging contract was already "corrected
+silently, no error code" (`PagingQuery`), so the fix extends it instead of adding an error code: both
+parameters are bound as `string?` and `PagingQuery.Clamp` parses them, treating missing, non-numeric and
+out-of-int32-range values like an out-of-range one (page 1, page size 20). Binding can no longer fail, so
+the filter order (401/403 first) holds for any query string. A new paged route must take `string? page,
+string? pageSize` and call `PagingQuery.Clamp`, not declare `int` parameters.
 
 ### 2026-09-24 — robots.txt stays closed after the legal launch
 
