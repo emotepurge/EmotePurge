@@ -85,13 +85,19 @@ describe('CreateVoteSessionDialog', () => {
    * page's `ListSelection.selectedKeys` — so a test can shrink it exactly the way a live reload would
    * while the dialog is open, without needing the whole `UsageStatsPage` mounted.
    */
-  function render(initialIds: readonly string[]): Harness {
+  function render(
+    initialIds: readonly string[],
+    lockReasonKey?: WritableSignal<string | null>,
+    setSession?: { emoteSetId: string },
+  ): Harness {
     const emoteIds = signal<readonly string[]>(initialIds);
 
     dialogData = {
       channelName: 'sensitron',
       emoteIds,
       usageFromDate: '2026-08-01',
+      lockReasonKey,
+      setSession,
     };
 
     const fixture = TestBed.createComponent(CreateVoteSessionDialog);
@@ -273,6 +279,14 @@ describe('CreateVoteSessionDialog', () => {
       httpMock.expectNone('/api/channels/sensitron/vote-sessions');
     });
 
+    it('reports the empty-ballot reason itself, not just the disabled effect, once the live list is empty and no host lock applies (K6 whole-branch review)', () => {
+      const dialog = render([]);
+
+      expect(dialog.fixture.componentInstance['blockedReasonKey']()).toBe(
+        'voting.create.selectionEmpty',
+      );
+    });
+
     it('connects the submit button to a text explanation once blocked, and drops it again once re-enabled (docs/UI-Designsprache.md §7)', () => {
       const dialog = render(['a']);
 
@@ -302,6 +316,81 @@ describe('CreateVoteSessionDialog', () => {
       dialog.detect();
 
       expect(dialog.submitButton().disabled).toBe(false);
+    });
+  });
+
+  describe("the host's live lock (#200, K4)", () => {
+    it('blocks the submit with the host reason once the host locks behind the open dialog, and does not submit if clicked anyway', () => {
+      const lock = signal<string | null>(null);
+      const dialog = render(['a'], lock);
+      dialog.fillTitle('Test session');
+      expect(dialog.submitButton().disabled).toBe(false);
+
+      // A set switch lands behind the open dialog.
+      lock.set('usageStats.setView.lock.switching');
+      dialog.detect();
+
+      const button = dialog.submitButton();
+      expect(button.disabled).toBe(true);
+      const hint = dialog.fixture.nativeElement.querySelector(
+        `#${button.getAttribute('aria-describedby')}`,
+      );
+      expect(hint?.textContent).toContain('usageStats.setView.lock.switching');
+
+      button.click();
+      dialog.fixture.componentInstance['create']();
+      httpMock.expectNone('/api/channels/sensitron/vote-sessions');
+    });
+
+    it('submits again once the host lock lifts', () => {
+      const lock = signal<string | null>('usageStats.setView.lock.switching');
+      const dialog = render(['a'], lock);
+      dialog.fillTitle('Test session');
+      expect(dialog.submitButton().disabled).toBe(true);
+
+      lock.set(null);
+      dialog.detect();
+      dialog.submitButton().click();
+
+      httpMock.expectOne('/api/channels/sensitron/vote-sessions');
+    });
+  });
+
+  describe('set-session body (spec 6.9, K6)', () => {
+    it('sends emoteSetId and sevenTvEmoteIds instead of emoteIds once the dialog data names a set session', () => {
+      const dialog = render(['7tv-a', '7tv-b'], undefined, { emoteSetId: 'halloween-1' });
+      dialog.fillTitle('Halloween-Wahl');
+
+      dialog.submitButton().click();
+
+      const req = httpMock.expectOne('/api/channels/sensitron/vote-sessions');
+      expect(req.request.body.emoteSetId).toBe('halloween-1');
+      expect(req.request.body.sevenTvEmoteIds).toEqual(['7tv-a', '7tv-b']);
+      expect(req.request.body.emoteIds).toBeUndefined();
+      req.flush({
+        id: 2,
+        title: 'Halloween-Wahl',
+        allowedVoterRoles: 1,
+        isActive: true,
+        startedAt: '2026-08-01T00:00:00Z',
+        endedAt: null,
+        emoteCount: 2,
+        hideResultsUntilEnd: false,
+        emoteSetId: 'halloween-1',
+      });
+      expect(closed).toHaveLength(1);
+    });
+
+    it('still sends the plain emoteIds body, with no emoteSetId/sevenTvEmoteIds, when no set session is named', () => {
+      const dialog = render(['a', 'b']);
+      dialog.fillTitle('Test session');
+
+      dialog.submitButton().click();
+
+      const req = httpMock.expectOne('/api/channels/sensitron/vote-sessions');
+      expect(req.request.body.emoteIds).toEqual(['a', 'b']);
+      expect(req.request.body.emoteSetId).toBeUndefined();
+      expect(req.request.body.sevenTvEmoteIds).toBeUndefined();
     });
   });
 

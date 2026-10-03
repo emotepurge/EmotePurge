@@ -28,6 +28,7 @@ public class ChannelIdentityService(
     ITwitchHelixClient helixClient,
     ITwitchAppTokenProvider appTokenProvider,
     IRedisPublisher redisPublisher,
+    IChannelEmoteSetObservationService emoteSetObservationService,
     ChannelIdentityWarningState warningState,
     IExcludedChannelFilter excludedChannelFilter,
     ILogger<ChannelIdentityService> logger) : IChannelIdentityService
@@ -438,7 +439,8 @@ public class ChannelIdentityService(
 
         try
         {
-            await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, AuditActor.System, forExclusion: true, ct);
+            await ChannelDeactivation.DeactivateAsync(
+                db, redisPublisher, emoteSetObservationService, channel, AuditActor.System, forExclusion: true, ct);
         }
         catch (DbUpdateException ex)
         {
@@ -531,6 +533,11 @@ public class ChannelIdentityService(
         // no longer answered, so nothing was counted. That gap is exactly what TrackingResumedAt
         // makes honest; CreatedAt stays, because the row is the same channel it always was.
         channel.TrackingResumedAt = DateTime.UtcNow;
+        // Closes the open observation interval (spec 4.3) — tracked only, riding the
+        // SaveChangesAsync a few lines below together with the rename's audit entry. The next
+        // successful sync opens a fresh interval.
+        await emoteSetObservationService.CloseOpenIntervalAsync(
+            channel.Id, ChannelEmoteSetObservationClosedBy.Rename, ct);
         db.AddAuditEntry(
             AuditActor.System,
             AuditActions.ChannelRename,
@@ -730,6 +737,12 @@ public class ChannelIdentityService(
 
         survivor.ChannelName = newLogin;
         survivor.TrackingResumedAt = DateTime.UtcNow;
+        // Closes the survivor's open observation interval (spec 4.3) — tracked only, riding the
+        // SaveChangesAsync below together with the merge's audit entry. The loser's own interval, if
+        // any, needs no code: db.Channels.Remove(loser) a few lines down cascades it away, same as
+        // the loser's emotes. The next successful sync on the survivor opens a fresh interval.
+        await emoteSetObservationService.CloseOpenIntervalAsync(
+            survivor.Id, ChannelEmoteSetObservationClosedBy.Merge, ct);
         db.AddAuditEntry(
             AuditActor.System,
             AuditActions.ChannelMerge,

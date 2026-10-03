@@ -223,6 +223,7 @@ describe('VoteSessionService', () => {
       voterCount: 0,
       hideResultsUntilEnd: false,
       emotes: [],
+      emoteSetId: null,
     };
 
     it('takeGuardResults returns what stashGuardResults stashed, once', () => {

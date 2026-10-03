@@ -441,7 +441,20 @@ public enum SevenTvPreviewLookupStatus
     /// 7TV's health. Reported rather than silently returning a short list — a partial set answered as
     /// if it were whole is exactly what F3 forbids.
     /// </summary>
-    BudgetExhausted
+    BudgetExhausted,
+
+    /// <summary>
+    /// 7TV answered the query (HTTP 200, no GraphQL error, no rate-limit signal) but named
+    /// <c>emoteSet: null</c> — a well-formed "this id does not exist" answer, not a failure to reach
+    /// or parse 7TV (spec 2026-09-20, 6.4, Vorentscheidung 4). Kept apart from
+    /// <see cref="Unavailable"/> for the same reason <see cref="SevenTvLookupStatus.NoSevenTvAccount"/>
+    /// is kept apart from that family's failures: this is evidence 7TV is healthy, not that it is
+    /// not. Before this status existed, an unknown set id and a genuine outage were indistinguishable
+    /// — both fell into <see cref="Unavailable"/>, which answered 503 for a query that should have
+    /// answered 404 and, worse, fed the circuit breaker a failure for an id nobody controls but the
+    /// caller.
+    /// </summary>
+    NotFound
 }
 
 /// <summary>
@@ -500,7 +513,21 @@ public sealed class SevenTvEmoteSetPreviewResult
 /// <see cref="TotalCount"/> is what 7TV itself reports, which can exceed <see cref="Items"/>.Count —
 /// <see cref="Truncated"/> says so explicitly rather than letting a caller find out by subtracting.
 /// </summary>
-public sealed record SevenTvEmoteSetPreview(int TotalCount, bool Truncated, IReadOnlyList<SevenTvEmoteSetPreviewItem> Items);
+/// <param name="Name">
+/// The set's own name as 7TV reports it (spec 2026-09-20, F6); <c>null</c> when 7TV omits it.
+/// Trailing and optional so the pre-existing positional constructions of this record — none of
+/// which knew this field existed — keep compiling unchanged (AK 28).
+/// </param>
+/// <param name="Capacity">
+/// The set's slot limit; <c>0</c> is already normalised to <c>null</c> here, the same idiom
+/// <see cref="SevenTvEmoteSet"/> and <see cref="SevenTvEmoteSetListEntry"/> already use.
+/// </param>
+public sealed record SevenTvEmoteSetPreview(
+    int TotalCount,
+    bool Truncated,
+    IReadOnlyList<SevenTvEmoteSetPreviewItem> Items,
+    string? Name = null,
+    int? Capacity = null);
 
 /// <summary>
 /// One emote as it appears in a specific foreign set: <see cref="Alias"/> is the name used within
@@ -623,5 +650,278 @@ public sealed class SevenTvEmoteSearchPageResult
         }
 
         return new SevenTvEmoteSearchPageResult(status, null, retryAfter, rateLimitLimit, rateLimitRemaining, rateLimitReset);
+    }
+}
+
+/// <summary>
+/// Why <see cref="ISevenTvApiClient.GetEmoteSetListForTwitchUserAsync"/> produced no usable answer.
+/// Mirrors <see cref="SevenTvPreviewLookupStatus"/> — same four failure shapes, plus the one state
+/// that is not a failure at all.
+/// </summary>
+public enum SevenTvEmoteSetListLookupStatus
+{
+    Ok,
+
+    /// <summary>
+    /// <c>userByConnection: null</c> at HTTP 200 <b>without</b> an <c>errors</c> block — measured
+    /// 2026-09-20 against <c>platformId: 999999999999</c>. An answer, not a failure: 7TV knows the
+    /// connection and carries no account for it. Anything else that leaves <c>userByConnection</c>
+    /// empty (an <c>errors</c> block, a missing body) is <see cref="Unavailable"/> instead.
+    /// </summary>
+    NoSevenTvAccount,
+
+    /// <summary>A confirmed 7TV overload — HTTP 429, or HTTP 200 with <c>extensions.status: 429</c>.</summary>
+    RateLimited,
+
+    /// <summary>
+    /// Any other upstream failure: transport error, 5xx, unparseable body, a GraphQL error, or an
+    /// answer carrying <c>userByConnection</c> but no <c>emoteSets</c> member at all. Never an empty
+    /// list: a set list we could not read must not look like an account with no sets.
+    /// </summary>
+    Unavailable,
+
+    /// <summary>
+    /// The provider-wide request budget refused a permit, so nothing was requested. Kept apart from
+    /// <see cref="Unavailable"/> for the same reason the preview keeps it apart: it is our own
+    /// throttle, and feeding it to the circuit breaker would let self-inflicted congestion open a
+    /// breaker meant for 7TV's health (F14).
+    /// </summary>
+    BudgetExhausted
+}
+
+/// <summary>
+/// One entry of a 7TV account's emote-set list, exactly as v4 reports it (E7, Sonde 7). The raw
+/// read; <c>EmoteSetSummary</c> in <c>EmotePurge.Core.Services</c> is what the rest of the system
+/// consumes.
+/// </summary>
+/// <param name="Capacity"><c>0</c> is already normalised to <c>null</c> here, as on the preview path.</param>
+/// <param name="Kind">7TV's <c>EmoteSetKind</c> verbatim: <c>NORMAL</c>, <c>PERSONAL</c>, <c>GLOBAL</c>, <c>SPECIAL</c>.</param>
+/// <param name="OwnerDisplayName"><c>owner.mainConnection.platformDisplayName</c> — a display name, never a login.</param>
+/// <param name="OwnerSevenTvUserId">
+/// <c>owner.id</c> of the same answer — the id the set-centric import's owner check compares
+/// against (spec 2026-09-20, section 32). <c>null</c> when 7TV reported no owner for the set.
+/// </param>
+public record SevenTvEmoteSetListEntry(
+    string Id, string Name, int? Capacity, string Kind, string? OwnerDisplayName, string? OwnerSevenTvUserId = null);
+
+/// <summary>
+/// One v4 <c>userByConnection</c> answer: the account's sets, and the set 7TV considers active for
+/// it (<c>style.activeEmoteSetId</c>) — both from the same single request (E7), which is why the
+/// list path costs one permit per account rather than two.
+/// </summary>
+/// <param name="SevenTvUserId">
+/// <c>userByConnection.id</c> — the 7TV account id behind the Twitch connection that was asked
+/// about. The client always fills it on a successful read; the parameter defaults only so that a
+/// test building a listing by hand need not invent one.
+/// </param>
+public sealed record SevenTvEmoteSetListing(
+    string? ActiveEmoteSetId, IReadOnlyList<SevenTvEmoteSetListEntry> Sets, string? SevenTvUserId = null);
+
+/// <summary>
+/// <see cref="Listing"/> is non-null if and only if <see cref="Status"/> is
+/// <see cref="SevenTvEmoteSetListLookupStatus.Ok"/>. Same invariant-by-construction shape as the
+/// other result types in this file, for the same reason.
+/// </summary>
+public sealed class SevenTvEmoteSetListResult
+{
+    private SevenTvEmoteSetListResult(
+        SevenTvEmoteSetListLookupStatus status, SevenTvEmoteSetListing? listing, TimeSpan? retryAfter)
+    {
+        Status = status;
+        Listing = listing;
+        RetryAfter = retryAfter;
+    }
+
+    public SevenTvEmoteSetListLookupStatus Status { get; }
+
+    /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="SevenTvEmoteSetListLookupStatus.Ok"/>.</summary>
+    public SevenTvEmoteSetListing? Listing { get; }
+
+    /// <summary>
+    /// What 7TV asked us to wait, on the answer that produced
+    /// <see cref="SevenTvEmoteSetListLookupStatus.RateLimited"/> and only when it said so — the
+    /// circuit breaker's open duration and the negative cache's shelf-life both read it, and both
+    /// fall back to their own defaults when it is <c>null</c>.
+    /// </summary>
+    public TimeSpan? RetryAfter { get; }
+
+    public static SevenTvEmoteSetListResult Ok(SevenTvEmoteSetListing listing)
+    {
+        ArgumentNullException.ThrowIfNull(listing);
+        return new SevenTvEmoteSetListResult(SevenTvEmoteSetListLookupStatus.Ok, listing, null);
+    }
+
+    public static SevenTvEmoteSetListResult Failed(
+        SevenTvEmoteSetListLookupStatus status, TimeSpan? retryAfter = null)
+    {
+        if (status == SevenTvEmoteSetListLookupStatus.Ok)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Failed() cannot carry a success status — Ok(listing) is for that.");
+        }
+
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Unknown SevenTvEmoteSetListLookupStatus.");
+        }
+
+        return new SevenTvEmoteSetListResult(status, null, retryAfter);
+    }
+}
+
+/// <summary>
+/// Why <see cref="ISevenTvApiClient.LookUpEmoteSetOwnerAsync"/> produced what it produced — the
+/// budgeted twin of <see cref="ISevenTvApiClient.GetEmoteSetOwnerIdAsync"/>, which folds every
+/// failure into <c>null</c>. The set-centric import's owner check needs the difference: "7TV knows
+/// no such set" is a 404, "7TV did not answer" is a 503 (spec 2026-09-20, section 32).
+/// </summary>
+public enum SevenTvEmoteSetOwnerLookupStatus
+{
+    Ok,
+
+    /// <summary>
+    /// A readable answer that names no owner — an unknown set id, as far as this query can tell.
+    /// The same "one outcome for a missing owner" reading the set-warning check's Tier 1 makes.
+    /// </summary>
+    NotFound,
+
+    /// <summary>A confirmed 7TV overload — HTTP 429, or HTTP 200 with <c>extensions.status: 429</c>.</summary>
+    RateLimited,
+
+    /// <summary>
+    /// Transport failure, a non-success status other than 429, an unreadable body — or an answer
+    /// without an <c>emote_set</c> field at all (<c>data: null</c> next to a GraphQL error), which is
+    /// 7TV failing, not 7TV saying "no such set".
+    /// </summary>
+    Unavailable,
+
+    /// <summary>
+    /// The provider-wide request budget refused a permit, so nothing was requested. Kept apart
+    /// from <see cref="Unavailable"/> for the circuit breaker's sake, as on the list path (F14).
+    /// </summary>
+    BudgetExhausted
+}
+
+/// <summary>
+/// <see cref="OwnerSevenTvUserId"/> is non-null if and only if <see cref="Status"/> is
+/// <see cref="SevenTvEmoteSetOwnerLookupStatus.Ok"/> — the same invariant-by-construction shape as
+/// the other result types in this file.
+/// </summary>
+public sealed class SevenTvEmoteSetOwnerLookupResult
+{
+    private SevenTvEmoteSetOwnerLookupResult(
+        SevenTvEmoteSetOwnerLookupStatus status, string? ownerSevenTvUserId, TimeSpan? retryAfter)
+    {
+        Status = status;
+        OwnerSevenTvUserId = ownerSevenTvUserId;
+        RetryAfter = retryAfter;
+    }
+
+    public SevenTvEmoteSetOwnerLookupStatus Status { get; }
+
+    /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="SevenTvEmoteSetOwnerLookupStatus.Ok"/>.</summary>
+    public string? OwnerSevenTvUserId { get; }
+
+    /// <summary>What 7TV asked us to wait, on a <see cref="SevenTvEmoteSetOwnerLookupStatus.RateLimited"/> answer that said so.</summary>
+    public TimeSpan? RetryAfter { get; }
+
+    public static SevenTvEmoteSetOwnerLookupResult Ok(string ownerSevenTvUserId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(ownerSevenTvUserId);
+        return new SevenTvEmoteSetOwnerLookupResult(SevenTvEmoteSetOwnerLookupStatus.Ok, ownerSevenTvUserId, null);
+    }
+
+    public static SevenTvEmoteSetOwnerLookupResult Failed(
+        SevenTvEmoteSetOwnerLookupStatus status, TimeSpan? retryAfter = null)
+    {
+        if (status == SevenTvEmoteSetOwnerLookupStatus.Ok)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Failed() cannot carry a success status — Ok(ownerSevenTvUserId) is for that.");
+        }
+
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Unknown SevenTvEmoteSetOwnerLookupStatus.");
+        }
+
+        return new SevenTvEmoteSetOwnerLookupResult(status, null, retryAfter);
+    }
+}
+
+/// <summary>
+/// Why <see cref="ISevenTvApiClient.LookUpEditorGrantsAsync"/> produced what it produced — the
+/// budgeted twin of the identity-then-<c>editor_of</c> chain the authorization path runs unbudgeted
+/// (<see cref="ISevenTvApiClient.ResolveSevenTvIdentityAsync"/> followed by
+/// <see cref="ISevenTvApiClient.GetEditorOfChannelsAsync"/>). The set-centric import's owner check
+/// needs what that chain folds away: a confirmed overload apart from any other failure, and a
+/// refused permit apart from both (spec 2026-09-20, section 32, second review round).
+/// </summary>
+public enum SevenTvEditorGrantsLookupStatus
+{
+    Ok,
+
+    /// <summary>No 7TV account carries the Twitch connection — an answer, not a failure.</summary>
+    NoSevenTvAccount,
+
+    /// <summary>A confirmed 7TV overload — HTTP 429, or HTTP 200 with <c>extensions.status: 429</c>.</summary>
+    RateLimited,
+
+    /// <summary>Transport failure, a non-success status other than 429, or an unusable body.</summary>
+    Unavailable,
+
+    /// <summary>
+    /// The provider-wide request budget refused a permit before one of the two requests, so that
+    /// request was never sent. Kept apart from <see cref="Unavailable"/> for the breaker's sake (F14).
+    /// </summary>
+    BudgetExhausted
+}
+
+/// <summary>
+/// <see cref="Grants"/> is non-null if and only if <see cref="Status"/> is
+/// <see cref="SevenTvEditorGrantsLookupStatus.Ok"/> — an account that edits nothing answers Ok with
+/// an empty list. Same invariant-by-construction shape as the other result types in this file.
+/// </summary>
+public sealed class SevenTvEditorGrantsLookup
+{
+    private SevenTvEditorGrantsLookup(
+        SevenTvEditorGrantsLookupStatus status, IReadOnlyList<SevenTvEditorGrant>? grants, TimeSpan? retryAfter)
+    {
+        Status = status;
+        Grants = grants;
+        RetryAfter = retryAfter;
+    }
+
+    public SevenTvEditorGrantsLookupStatus Status { get; }
+
+    /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="SevenTvEditorGrantsLookupStatus.Ok"/>.</summary>
+    public IReadOnlyList<SevenTvEditorGrant>? Grants { get; }
+
+    /// <summary>What 7TV asked us to wait, on a <see cref="SevenTvEditorGrantsLookupStatus.RateLimited"/> answer that said so.</summary>
+    public TimeSpan? RetryAfter { get; }
+
+    public static SevenTvEditorGrantsLookup Ok(IReadOnlyList<SevenTvEditorGrant> grants)
+    {
+        ArgumentNullException.ThrowIfNull(grants);
+        return new SevenTvEditorGrantsLookup(SevenTvEditorGrantsLookupStatus.Ok, grants, null);
+    }
+
+    public static SevenTvEditorGrantsLookup Failed(SevenTvEditorGrantsLookupStatus status, TimeSpan? retryAfter = null)
+    {
+        if (status == SevenTvEditorGrantsLookupStatus.Ok)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Failed() cannot carry a success status — Ok(grants) is for that.");
+        }
+
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Unknown SevenTvEditorGrantsLookupStatus.");
+        }
+
+        return new SevenTvEditorGrantsLookup(status, null, retryAfter);
     }
 }

@@ -1,4 +1,4 @@
-import { Page, expect, test } from '@playwright/test';
+import { Page, expect, test } from './support/test';
 
 import {
   AUTH_USER,
@@ -76,7 +76,7 @@ async function mockWorkspace(page: Page): Promise<void> {
   await mockChannelPermissions(page, 'sensitron');
   await mockChannelStatus(page, 'sensitron');
   await mockUsageTotals(page, 'sensitron', EMOTES);
-  await mockUsageChannelSeries(page, 'sensitron', { e1: [[2, 900]] });
+  await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[2, 900]] });
 }
 
 test.describe('"all time" range resolution', () => {

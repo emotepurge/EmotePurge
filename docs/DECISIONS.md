@@ -10,6 +10,36 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-set-entries.ts` ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.spec.ts`
+
+`loadSevenTvSetEntries` reads a set page by page (500 per page, offset paging). If another editor
+changes the set between two page requests, entries shift across the page boundary and one can be
+skipped or seen twice. The K5 fix round (2026-09-22) claimed the count check
+(`collected === totalCount`) catches this; it does not, since an insert before the boundary plus a
+removal after it, or a swap, leaves the count intact. This entry supersedes that claim; the old
+entry stays as written.
+
+`complete` now also turns `false` when:
+
+- **(a)** `totalCount` is not identical across every response of the read (re-reads included);
+- **(b)** the same `(emoteId, alias)` pair appears on two different pages of the main pass (7TV keeps
+  aliases unique per set, so a repeat means a shift);
+- **(c)** after a clean multi-page main pass, re-reading pages 1..n-1 returns different membership
+  (compared per page, ignoring order within the page) than the main pass. This is needed for the swap
+  case: remove one entry on page 1 and append one at the end keeps `totalCount` equal, creates no
+  duplicate and keeps the count matching, yet the first entry of page 2 slides onto page 1 unread.
+
+Cost: n-1 extra requests per multi-page read against 7TV's global bucket, none for single-page sets;
+(c) is skipped as soon as (a), (b) or the count mismatch already prove incompleteness, and stops at
+the first differing page or drift. A failing re-read throws like a main-pass failure. Residual limit:
+a remove-and-re-add fully contained between a page's first read and its re-read is undetectable by any
+finite re-read; it needs several edits within about a second and an ordering other than insertion.
+
+---
+
 ### 2026-10-03 — Harness: the run mode is recorded in the .jsonl header and checked on every existing file
 
 **Betrifft:** `src/EmotePurge.Worker/Harness/HarnessReportFile.cs` ·
@@ -583,6 +613,2208 @@ parameters are bound as `string?` and `PagingQuery.Clamp` parses them, treating 
 out-of-int32-range values like an out-of-range one (page 1, page size 20). Binding can no longer fail, so
 the filter order (401/403 first) holds for any query string. A new paged route must take `string? page,
 string? pageSize` and call `PagingQuery.Clamp`, not declare `int` parameters.
+
+---
+
+### 2026-09-29 — `channel.synced` reads the set status before the rows, and a failed status refresh locks deleting and voting instead of passing silently (#200)
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (live subscription,
+`refreshSetStatus`, `adoptSetStatus`, `latestSetStatus`, `requestBackgroundSetStatus`,
+`setStatusUnavailableFor`/`setStatusUnavailable`, `sharedSetViewLockReasonKey`, `loadTotals`/`endLoadingFor`) · `web/public/i18n/de.json` and `en.json`
+(`usageStats.setView.lock.statusUnavailable`) ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts`
+
+Two holes around a 7TV set swap on the usage page. (a) On `channel.synced` the page reloaded
+`/totals` silently under its *own* active id before refetching the status. When the sync had moved
+the active set from A to B, the rows came back for A stamped as the active view, and the #94
+reconciliation pruned every marked emote without counts in A — deletion candidates the user had
+picked — before the status even named B. Whether that happened depended on which answer arrived
+first. (b) A failed status refetch was swallowed (`error: () => undefined`), so A stayed "active":
+the dock kept offering a delete into A, labelled as the active set, although the very event that
+triggered the refetch is the one that can swap sets.
+
+- **Status first.** A burst containing `channel.synced` stops the sync wait, reloads the set list
+  and (loudly) the member list at once, then asks for the status — and no rows. Once the status is
+  in, the rows are reloaded silently under the selected set, unless the status itself moved the
+  selected set (the load effect reloads then) or flipped `viewKindStale` (the stale effect does);
+  one request per status either way. The member-list reload deliberately stays immediate (AK 52):
+  should the status make the chosen set the active one, the resource drops the request itself.
+  `usage.flushed` alone is unchanged.
+- **A failed refresh locks, but keeps the last known set.** `refreshSetStatus` no longer
+  swallows a failure: it marks the channel in its own flag, `setStatusUnavailableFor`, and a new
+  first lock reason, `setStatusUnavailable` (the flag names the channel on screen), locks deleting
+  **and** voting with its own text (`usageStats.setView.lock.statusUnavailable`, wording approved
+  by the operator 2026-09-29) until the next successful status for that channel clears the flag.
+  Nothing else moves: the channel stays claimed (`setStatusChannel`), `activeEmoteSetId()` keeps
+  the last known id, the selected set, the dock and the mass-delete panel stay, no rows are
+  reloaded and the selection is untouched. The first version of this fix un-claimed the channel
+  like a failed initial `load()` does; with the URL following the active set that turned the
+  selected set `null`, unmounted `app-mass-delete-panel` in the middle of a run (the run went on in
+  the service, and the remount could report `deleted` twice) and raised the skeleton through the
+  load effect. So the code comment it had reversed ("a failed refetch … must never take the
+  mass-delete panel away over a transient error") is right again; what changed is that the old id
+  no longer passes unlocked. A failed initial `load()` still un-claims (bullet "An unknown active
+  set is not the selected set", fix round 2026-09-22 of the 2026-09-21 K4 entry) and sets the flag
+  as well. The refresh also marks `setStatusFailedChannel`, which "all time" (`rangeResolved`) and
+  the member-list gate need when the refresh overtook the channel's initial request (that one then
+  never answers); nothing was ever adopted for the channel in that case, so the DTO on hand is the
+  previous channel's and is dropped — its `trackedSince` would otherwise start this channel's "all
+  time". The flush-probe refresh gets the same failure handling on purpose.
+- **One `latestOnly` for every status read, one way to adopt one.** `load()`, `refreshSetStatus`,
+  the sync-failure poll and `awaitSync` share `latestSetStatus`, and every success lands through
+  `adoptSetStatus` (DTO, claim on the channel, lock flag cleared). With (b), an out-of-order answer
+  would otherwise do harm both ways: an old failure locking over a newer success, an old success
+  lifting the lock over a newer failure. The channel guards stay; they keep another channel's
+  answer out, the shared guard orders answers within one channel. Background reads (a recheck tick,
+  a first-sync probe) never supersede an in-flight `load()`/`refreshSetStatus` read: they skip
+  while one is out (`statusReadsInFlight`), so that read's failure still locks and a sync's row
+  reload still follows its success (Codex review). The first-sync wait still starts
+  from `load()`'s success only: after a `channel.synced` the sync has just happened, and the poll
+  runs only while a failure reason is known. **`preserveSelection` removed, retain/clear by
+  `totalsChannel` alone:** whether `loadTotals` keeps (and reconciles) the selection now depends
+  only on whether the rows on screen already belong to the requested channel. The option made a
+  pushed reload retain unconditionally, so a reload for channel Y that landed while the rows still
+  showed X carried X's marks into Y — a 7TV id both channels share survived as a delete candidate.
+  **Pushed reloads wait for `rangeResolved`:** `loadTotals` refuses while "all time" is still the
+  placeholder span — one guard at the choke point instead of one per caller. A flush between a
+  channel switch and its status no longer fetches a year of rows or takes `load()`'s skeleton down
+  with it, the load effect asks exactly once after the range correction, and the first-sync wait
+  and the sync-failure poll no longer ask twice under "all time".
+- **The winning `/totals` answer takes the skeleton down.** Before, only an answer to a loud
+  request lowered `isLoading`, so a silent `usage.flushed` reload that overtook a loud one left the
+  skeleton (and the disabled refresh button) up for good. Now the winning answer lowers it
+  whoever asked, unless a later `load()` has raised it since the request went out (`loadStarts`),
+  so a request older than the current load cannot drop the skeleton that load still owns. The
+  `silent` option of `loadTotals` only ever guarded that lowering and is removed.
+
+Not done, recorded as known limits in PR #303 (operator 2026-09-29): `/totals` still does not echo
+the resolved set id and `isActiveSet`, so a second set swap between the status and the rows answer
+stays possible until the next `channel.synced`; and a sync that moves the selected set still
+reloads it with the skeleton (existing behaviour of the load effect), this fix only stops the
+skeleton from sticking.
+
+Known limits of the lock (second review round, arbitrated 2026-09-29):
+
+- Import and transfer stay available while the channel's set status is unknown after a failed
+  refresh; only deleting and voting lock.
+- A status refresh that overtakes the initial status read skips the first-sync wait; the next
+  `channel.synced` covers it.
+- A failed first-sync probe or sync-failure recheck tick neither locks nor marks the status; the
+  next tick or event answers. It can no longer swallow another read's failure that way: a tick or
+  probe is skipped while a `load()`/`refreshSetStatus` read is in flight.
+- After a failed refresh the rows keep the view identity they had; whether they still are the
+  active view is unknown until the next successful status.
+
+### 2026-09-29 — A null-session's usage is summed across every emote set, through a named `EmoteSetScope` instead of a nullable set id (#200)
+
+**Betrifft:** `src/EmotePurge.Core/Services/EmoteSetScope.cs`,
+`src/EmotePurge.Core/Services/IUsageStatQueryService.cs` and
+`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs`
+(`GetTotalsByEmoteIdsAsync`, `GetDailySeriesAsync`) ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` ·
+`src/EmotePurge.Api/Endpoints/UsageStatsEndpoints.cs` (`/daily`) ·
+`src/EmotePurge.Api/Validation/EmoteSetScopeParser.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteSetScopeParserTests.cs`, `UsageStatsDailyScopeEndpointTests.cs` and
+`ApiFactory.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatQueryServiceTests.cs` and
+`VoteSessionQueryServiceTests.cs`
+
+A vote session without a set (`VoteSession.EmoteSetId == null`) used to read its usage column from
+`channel.ActiveEmoteSetId`. After a set switch the session's window lies under the *old* set, so
+every unarchived emote reported a fabricated `0`; a channel that never synced (`ActiveEmoteSetId ==
+""`) reported `0` as well (empty dictionary, `GetValueOrDefault(id, 0)`). A null-session has no set of its own, so its usage is now what the
+emote got in the channel during the session window, summed across all sets. A set-session stays
+scoped to its own set, unchanged.
+
+Summing cannot double count: the flush writes exactly one row per (emote, set, day), under the set
+that was active at chat time, so one chat message never lands under two sets.
+
+The scope is a small Core value type (`EmoteSetScope`: active set, one named set, all sets;
+`default` is the active set) rather than a `null` set id. On the channel-scoped reads of
+`IUsageStatQueryService`, `null` already means "the channel's active set"; giving it a second
+meaning ("no filter") on the same interface would recreate the ambiguity that caused this bug.
+`GetTotalsByEmoteIdsAsync` takes the scope instead of a `string` and rejects the active-set scope
+with `ArgumentException` (it takes ids, not a channel, so it cannot resolve "active");
+`EmoteSetScope.Set` rejects a null or empty id. `GetDailySeriesAsync` takes the scope instead of
+`string? emoteSetId`; for all sets it drops the set predicate from both the day query and the
+first/last bounds and groups by day, so the DTO keeps its one-entry-per-day promise.
+
+The drilldown behind a null-session's row must show the same numbers as the row, so `GET
+/usage-stats/daily` can read every set. The wire contract is an explicit `setScope` query
+parameter, not a reserved set id (`all` is itself a well-formed id): `emoteSetId=<id>` (that set),
+`setScope=all` (every set), or neither (the active set). `setScope` is compared ordinally and only
+lowercase `active` and `all` are words; either word together with an `emoteSetId`, or any other
+value (`All`, empty, ...), is `400 invalid_emote_set_id` — no new error code, and the pair never
+resolves by one parameter silently winning. The rule lives in the static `EmoteSetScopeParser`, not
+in `EmoteSetIdValidationFilter`, which hangs on routes without `setScope`. The usage page never
+sends `setScope`; the vote-detail drilldown sends `setScope=all` for a null-session and keeps its
+own set for a set-session. The client's cache key marks "active" and "all" with a character outside
+`[0-9A-Za-z]`, so neither can collide with a set whose id is literally `all` or `active`.
+
+### 2026-09-29 — A tracked channel's set preview gets its own route and its own per-user bucket; `ForeignEmoteLookup` keeps guarding only what is foreign (#220)
+
+**Betrifft:** `src/EmotePurge.Core/Services/EmoteSetMembershipRule.cs`,
+`src/EmotePurge.Core/Services/ITrackedEmoteSetMembershipService.cs` and
+`src/EmotePurge.Infrastructure/Services/TrackedEmoteSetMembershipService.cs` (the membership proof;
+the rule is shared with `VoteSessionService`, whose behaviour is unchanged) ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Api/RateLimiting/RateLimitingOptions.cs`, `RateLimitPolicyNames.cs` and
+`src/EmotePurge.Api/Program.cs` (policy `TrackedEmoteSetPreview`) ·
+`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` (new route) ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` (`MapLookupResult`, the shared status mapping) ·
+`src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` (descriptor) ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs` and `EmoteSetIdValidationFilter.cs` (docs) ·
+`src/EmotePurge.Api/Auth/UsageStatsAccessAuthorizationFilter.cs` (docs) ·
+`tests/EmotePurge.Api.Tests/TrackedEmoteSetPreviewEndpointTests.cs`, `AuthFilterMatrixTests.cs`,
+`EmoteRoutePolicyTests.cs`, `AdminRateLimitsEndpointTests.cs` and `ApiFactory.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/TrackedEmoteSetMembershipServiceTests.cs` and
+`Unit/EmoteSetMembershipRuleTests.cs` · `web/public/i18n/de.json` and `en.json`
+(`admin.rateLimits.policies.names.TrackedEmoteSetPreview`) · `docs/Architectur.md` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` and its spec (`loadCachedEmoteSetPreview`
+reads the tracked route; `loadEmoteSetPreview` is unchanged) ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` (+ spec; the deep-link gate, point 6) and
+`vote-session-detail-page.ts` (docs) and its spec · `web/e2e/support/mocks.ts` (`mockTrackedEmoteSetPreview`) ·
+`web/e2e/usage-atlas.e2e.spec.ts`, `vote-ballot.e2e.spec.ts` and `emote-import.e2e.spec.ts`
+
+**1. What `ForeignEmoteLookup` protects, and what it does not.** It is the per-user fairness and
+abuse bound for reads that can cost 7TV up to ten paginated calls. It does not protect 7TV itself:
+that is the job of the provider budget, the coalescer, the breaker and the 60 s cache in the
+hardening decorator (spec E5b). Switching sets on a tracked channel has another load profile — one
+cached preview call per switch, with a client cache in front — and only sat in the same bucket
+because both callers once shared a route. The Set-Vorschau of the usage-stats and vote-detail pages
+spent the foreign import's ten permits, and a deep link showed it as two requests for one answer.
+
+**2. Why a route split (option 1a), not a cache check before the limiter or a higher limit.** A
+partitioner is synchronous and runs before every filter, so it cannot ask a service whether a set is
+cached; moving the cache read into the middleware order would make the limiter depend on Redis state.
+Raising `PermitLimit` weakens the measured bound of the import case for everyone to relieve one
+caller. The route is the only place where "a set of a tracked channel the caller may view" is known
+before the limiter runs — from the path, not from a runtime lookup.
+
+**3. Who stays in the foreign bucket.** The #216 pre-check (`/me/emote-set-targets/{id}`), K2
+(`/me/emote-set-targets`), K3 (`/seventv/channels/{c}/emote-sets` and `…/emotes`), the import-target
+loader (which also reads tracked, non-active sets, but stays on the foreign route by scope decision,
+because that path does not require the usage-stats role), the restore-slot preview, and the
+vote-session creation (`POST …/vote-sessions`, K6 review Fable A). Each of them can cost 7TV a
+paginated read without a tracked-channel filter in front of it.
+
+**4. The contract of the new route.** `GET /api/channels/{channelName}/emote-sets/{emoteSetId}/emotes[?refresh=true]`,
+registered on `app` beside the dropdown route (the `/emotes` group prefix would nest it wrongly).
+Chain: `RequireAuthorization` → `ChannelNameValidationFilter` → `UsageStatsAccessAuthorizationFilter`
+→ `EmoteSetIdValidationFilter` → policy `TrackedEmoteSetPreview`; exactly one policy applies, and the
+route names it itself. A caller without access gets 403 before the set id is checked. Membership is
+proven before the preview and fail-closed: not tracked → 404 (bare), not a member → 404
+`emote_set_not_found` (chosen because its text is true from the tracked channel's point of view;
+`channel_not_found`, `foreign_channel_no_active_emote_set` and `emote_ids_invalid` say something
+else), set list unreadable → 503 `foreign_channel_seventv_unavailable`. A member's preview goes
+through `GetForeignEmoteSetBySetIdAsync` and the status mapping that the foreign route uses, now one
+shared helper (`SevenTvEndpoints.MapLookupResult`), so the two tables cannot drift. The response body
+is identical to the foreign route's, so the frontend switches only the URL. The membership rule: the
+channel's active set is a member without reading the list; otherwise a `NORMAL` set in the 7TV list
+of its Twitch id (no Twitch id or no 7TV account → not a member). `IsBotActive` and the exclusion
+list are deliberately not checked — the same semantics as the dropdown route, the usage-stats filter
+and the vote creation, which serve departed channels until retention deletes them. The vote creation
+keeps its behaviour and shares only the pure rule. Known limit: `refresh=true` reaches only the
+preview read; the membership proof reads the set list through its own 60 s cache and is not bypassed,
+so the proof is exactly as fresh as the dropdown that offered the choice.
+
+**5. Why the vote detail moves along.** `canManage ⊂ canViewUsageStats`, and the members read is gated
+on `canManage`, so every caller that triggers it passes the usage-stats filter. Known limit: the set's
+membership was proven only when the session was created. If the set later leaves the channel's 7TV
+list and is not the active set, the route answers 404, the panel state becomes `'unavailable'` and the
+mass-delete panel stays locked with the generic text — intended, and consistent with the scoping rule
+of the creation.
+
+**6. A deep link no longer requests the member list twice.** Reproduced in `usage-stats-page.spec.ts`
+by counting every request to the tracked route, cancelled ones included (a cancelled request has still
+passed the limiter). With `?emoteSetId=set-b` and the set list landing before the set status, the
+resource's params were first computed while `activeEmoteSetId()` was still `null` (request 1), then
+recomputed as a content-equal but reference-different object when the status landed, so `rxResource`
+cancelled request 1 and issued request 2: two permits, one result. A deep link to the *active* set
+even asked once for a list that is never fetched. Same bug class as the vote detail (2026-09-22, #227
+(d)). The params of `liveMembersResource` are now defined only once the status outcome is known for
+the channel in the URL (`setStatusChannel() === channelName() || setStatusFailedChannel() ===
+channelName()`) and carry structural equality on `channelName` and `emoteSetId`. While the gate is
+closed with a set chosen, `liveMembersState` reports `'loading'` (not `'unavailable'`, which would
+flash the error state). Accepted gap: `setStatusFailedChannel` is never cleared, so X failed → Y →
+back to X opens the gate early; the cost is at most the old double request. A status answer that
+arrives after the page has moved to another channel is discarded (success and failure alike, in
+`load()` as in `refreshSetStatus()`), so a late X can neither re-claim `setStatusChannel` nor wipe Y's
+status and close Y's gate. A status request that never completes keeps the member list in
+`'loading'`; accepted, because such a request ends in an error eventually, and that error opens the
+gate via `setStatusFailedChannel`.
+
+**7. Configuration and telemetry.** `RateLimiting__TrackedEmoteSetPreview__PermitLimit`, default 30
+per 60 s window and user, effective after a restart. The client cache catches A→B→A; what remains are
+first switches plus the `refresh=true` reloads after `channel.synced` and own runs, so 30 covers a
+user opening another set every other second and stays an abuse bound, not a provider surrogate. The
+admin snapshot lists the policy (fixed window, partition `twitch-user`); the label is
+`admin.rateLimits.policies.names.TrackedEmoteSetPreview` in both locales.
+`refresh=true` bypasses the server-side preview cache, so one user can cause up to 30 uncached
+preview reads per minute (it was 10 in the shared bucket). The provider-wide budget, the coalescer and
+the breaker remain the upstream bound; a per-set refresh throttle is out of scope.
+
+### 2026-09-28 — The owner check reads the hinted owner's list beside the actor's own, the pre-check gets a set-scoped route on the guarded grants path, and "zero requests" becomes the true cost
+
+**Betrifft:** `src/EmotePurge.Core/Services/IImportTargetOwnershipService.cs` (new `EmoteSetOwnerHint`;
+`CheckAsync` gains an optional `ownerHint` after the token; new `ResolveEditableAsync`;
+`SevenTvEmoteSetOwnershipCheckResult.EmoteSet`/`SevenTvActiveEmoteSetId`) ·
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` (one shared list walk,
+two modes) · `src/EmotePurge.Core/Services/IGuardedSevenTvEditorGrantsService.cs` and
+`src/EmotePurge.Infrastructure/Services/GuardedSevenTvEditorGrantsService.cs` (docs only: both
+callers, true cost) · `tests/EmotePurge.Infrastructure.Tests/Fakes/SevenTvGqlRouteHandler.cs` (the
+v4 set list as a kind of its own, body-aware answers) ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ImportTargetOwnershipServiceTests.cs` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (addendum §41) ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` (`SyncImportedToSetRequest`/`SyncInSetRequest` gain
+`TargetOwnerTwitchId`, forwarded as an `EmoteSetOwnerHint` at the two `CheckAsync` call sites; true
+cost replaces the "no unguarded request" comment) ·
+`tests/EmotePurge.Api.Tests/SevenTvEmoteSetSyncImportedEndpointTests.cs` and
+`SevenTvEmoteSetSyncBookkeepingEndpointTests.cs` · `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs`
+(new `GET /api/seventv/me/emote-set-targets/{emoteSetId}` with `ownerTwitchId`/`ownerLogin`,
+`EditableSetPreCheckResponse`/`EditableSetPreCheckTarget`/`EditableSetPreCheckStatus`) ·
+`src/EmotePurge.Api/Validation/EmoteSetIdValidationFilter.cs` (docs: the new route) ·
+`tests/EmotePurge.Api.Tests/SevenTvEmoteSetPreCheckEndpointTests.cs`, `EmoteRoutePolicyTests.cs` and
+`AuthFilterMatrixTests.cs` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` (new `OwnerHint`;
+`EditableSetTarget.ownerTwitchChannelId`; `SyncInSetBody.targetOwnerTwitchId`, required, `string | null`) ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` (+ spec; `resolveEditableSet` gains an
+optional `hint`, cache-first over the list copy then a per-set 60 s cache before the new route;
+`SyncImportedToSetBody.targetOwnerTwitchId`, required, `string | null`) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`ResolvedRestoreTarget.ownerTwitchChannelId`, carried
+mechanically) and the `EditableSetTarget`/`ResolvedRestoreTarget` literals of
+`web/src/app/shared/seven-tv/file-import-step.spec.ts`, `import-flow.spec.ts`,
+`import-source-dialog.spec.ts`, `import-trigger.spec.ts`, `mass-delete-panel.spec.ts`,
+`restore-flow.spec.ts`, `undo-confirm-dialog.spec.ts` and `undo-flow.spec.ts` (mechanical field
+addition only) · `web/e2e/support/mocks.ts` (`mockEmoteSetTargets` answers the new route from the
+same fixture, resolving the **owner** account) · `web/src/app/shared/export/purge-run-export.ts`,
+`transfer-run-export.ts` and `transfer-undo-export.ts` (T5: additive `targetOwnerTwitchId` meta
+field on all three file formats, no version bump) · **T6a** (the import path):
+`web/src/app/shared/seven-tv/import-target-choices.ts` (+ spec; `ImportTargetSetChoice.ownerTwitchChannelId`,
+resolved per set against every account of the target response) ·
+`web/src/app/shared/seven-tv/import-target-dialog.ts` (+ spec; `ImportTargetChoice.ownerTwitchChannelId`,
+`selectSet` reads it off the set, never the group) · `web/src/app/shared/seven-tv/import-trigger.ts`
+(+ spec; its fabricated choice sets `ownerTwitchChannelId: null` explicitly) ·
+`web/src/app/shared/seven-tv/import-flow.ts` (+ spec; hints `resolveEditableSet` and the confirm
+dialog with the choice's owner id or its login, carries the pre-check's or the choice's own id onto
+`startImport`) · `web/src/app/shared/seven-tv/import-confirm-dialog.ts` (+ spec;
+`ImportConfirmDialogData.targetOwnerTwitchId` reaches the planned transfer-run file) ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` (+ spec; the finished-stage protocol reads
+the run's own frozen id) · `web/src/app/core/seven-tv/seven-tv-import.service.ts` (+ spec;
+`ImportRunInfo.targetOwnerTwitchId`, `startImport`'s target gains a required field, both reports
+carry it) · `web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` and `seven-tv-emote-set.service.ts`
+(`SyncImportedToSetBody.targetOwnerTwitchId` made required, `string | null`, once its one caller
+was wired; `SyncInSetBody`'s followed with T6b, so both bodies now require it) · `seven-tv-emote-set.service.spec.ts`,
+`seven-tv-run-arbiter.spec.ts`, `foreign-import-flow.spec.ts` and `dock-outcome-announcer.spec.ts`
+(mechanical field addition only, following the new required fields) · **T6b** (delete/restore/undo):
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (+ spec; hints the delete pre-check with the
+page's channel login, freezes the pre-check's resolved owner id through
+`openConfirmDialogAfterCheck` into `startDelete` and the purge protocol, hints the restore-from-dock
+pre-check with the finished run's own owner id or its frozen channel) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` and `undo-flow.ts` (+ specs;
+`restoreStartTarget`/`undoRunTarget` carry `ResolvedRestoreTarget.ownerTwitchChannelId` onto
+`RestoreStartTarget`/`UndoRunTarget`) · `web/src/app/shared/seven-tv/file-import-step.ts` (+ spec;
+hints the pre-check from the parsed file's `ownerTwitchId`, else its `ownerLogin` fallback) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (+ spec; `DeleteRunInfo.targetOwnerTwitchId`,
+`startDelete` gains a required parameter, `lastRun`'s projection carries it, the report carries it) ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (+ spec;
+`RestoreStartTarget`/`RestoreRunInfo.targetOwnerTwitchId`, the report carries it) ·
+`web/src/app/core/seven-tv/seven-tv-undo.service.ts` (+ spec;
+`UndoRunTarget`/`UndoRunInfo.targetOwnerTwitchId`, both reports carry it) ·
+`web/src/app/shared/seven-tv/undo-confirm-dialog.ts` (+ spec; the planned back-out file reads the
+hint off the resolved target) · `web/src/app/shared/export/transfer-undo-export.ts` (+ spec;
+`buildUndoRunProtocol` reads the hint off the run record instead of a `null` placeholder).
+
+Issue #216, and the "Known limit" of the #280 entry below. The set-centric reports (`sync-imported`
+to an untracked set, `sync-deleted`, `sync-restored`) walked the actor's list and then every
+`editor_of` grant's list serially until a match; with the lists older than their 60 s, a report
+into the last of k grants cost `1 + k` list requests (measured: 6). The shared editable pre-check
+(`resolveEditableSet`) had it worse — on a cold client copy it reloaded the whole target list,
+whose backend walks the same `1 + k` accounts serially, which can exceed the pre-check's 20 s
+bound. Code and spec claimed the ordinary report "costs no upstream request at all"; that only
+holds inside the lists' 60 s.
+
+- **A hint is an order, never a permission.** Callers may name the probable owner — the report
+  body's `targetOwnerTwitchId`, the pre-check route's `ownerTwitchId`/`ownerLogin` query — as an
+  `EmoteSetOwnerHint`. It resolves only against `{actor} ∪ grants` of the session, before any list
+  is read: the Twitch id wins (actor, else the grant with that `TwitchChannelId`); a login is only
+  consulted without an id, normalised on both sides (`ChannelName.Normalize`), and only ever yields
+  the matching grant's id. Anything else is dropped (logged at Debug), never answered with 400,
+  never echoed. A dropped hint makes no list request, but resolving it may cost the grants lookup
+  (identity + `editor_of`) when the grant cache is cold — before the own list is read, so also when
+  the actor owns the set, and for an actor without a 7TV account once per 60 s hold, where the
+  unhinted call skips the grants. Bounded, guarded and budgeted like every other grant read. Admissibility is still `EmoteSetEditability.IsEditable` over the verified accounts'
+  lists alone.
+- **The actor's own list is always read** (Codex adversarial review, finding 1). A hint on the
+  actor, or none, walks exactly as before. A hint on grant G reads the grants (cached ten minutes;
+  needed to validate the hint), then the own list **and** G's list in parallel — one round trip,
+  two of the provider's `MaxConcurrent = 2` slots — then the remaining grants serially. G's evidence
+  counts only once the own list has not said `NoSevenTvAccount`: the grant cache can outlive the
+  actor's 7TV connection, and a stale positive grant must never widen what is admissible. In that
+  case G's list is discarded and the outcome equals the one without a hint; the one hinted list
+  request already in flight is the only extra cost. An unreadable own list is the partial outage it
+  always was (a find in G's list is admissible, none is "unavailable"); an unreadable G's list is
+  noted and the walk goes on. The two parallel list reads compete for the emote-set-list breaker's
+  single half-open probe and the provider budget's two concurrency slots — a race the serial walk
+  never had, because there the own read *is* the probe and its success closes the breaker for the
+  next one. When both cold reads reach a half-open breaker, one of them is denied and the list
+  service holds that denial as `Unavailable` for its one-second minimum. If the own read loses, the
+  hinted grant's evidence counts under the partial-outage rule exactly as an unreadable own list
+  did before (the `NoSevenTvAccount` guard only applies when the own list reads
+  `NoSevenTvAccount`). If the hinted read loses, the walk skips that grant as read, and a set owned
+  only by it ends `Unavailable` for that second — the pre-check says "unavailable", the report
+  answers 503 and its 2-s retry lands on a closed breaker. Accepted over sequencing the two reads:
+  the race is confined to the moment a breaker window ends, fails closed, and never grants
+  anything, while a serial hinted walk would double the worst case under budget contention (two
+  times 5 s wait plus 10 s timeout, beyond the client's 20-s pre-check bound). 7TV still enforces
+  write permission itself. The early 403 for "listed only under foreign owners" still falls only
+  after the full walk.
+- **Always the owner's identity, never the listing account's** (finding 2). A match names the
+  account whose 7TV id is the set's owner id — the same identity the report writes to the audit row.
+  The result now also carries, for a match from a list, the set as listed (`EmoteSet`: name, kind,
+  owner display name, owner 7TV id) and the owner list's `SevenTvActiveEmoteSetId` (null when the
+  owner's own list did not carry the set). The report's owner-lookup fallback carries neither.
+- **One walk, two modes.** `CheckAsync` (the reports) keeps its budgeted owner lookup as the
+  fallback. `ResolveEditableAsync` (the pre-check) never looks up: in no readable list ⇒
+  `SetNotFound`; listed only under foreign owners or without an owner id ⇒ `Forbidden` (F16, never
+  looser than the report); any unreadable source without an admissible find ⇒ `Unavailable`. The
+  hint sits after the `CancellationToken` as an optional parameter (finding 3), so every positional
+  call of the old signature compiles unchanged.
+- **The pre-check reads the grants the guarded way** — a deviation from spec §32 as worded ("only
+  resolved by `ImportTargetOwnershipService`" stays literally true; that service now serves both the
+  reports and the pre-check). A held grant failure (`7tveditorhold:`, 30–60 s) makes the pre-check
+  "unavailable" where the picker's unguarded target list would still have shown accounts — stricter,
+  not looser. The picker route keeps its unguarded way.
+- **The pre-check gets its own route**, `GET /api/seventv/me/emote-set-targets/{emoteSetId}` in the
+  `/me` group under `ForeignEmoteLookup`, answering 200 with a `status` (`editable`, `notSelectable`,
+  `notEditable`, `unavailable`) and the target on `editable`; `resolveEditableSet` answers from the
+  client's fresh target-list copy first (0 requests), then from a per-set answer cached 60 s, and
+  only then asks the route — it never reloads the whole target list again. For a set listed under
+  account A but owned by B, the client's cache-first path keeps the listing account's display fields
+  (`twitchLogin`, `trackedChannelName`, `isActiveSet`) while the set-scoped route returns the owner's;
+  `ownerTwitchChannelId` is the owner on both paths, so an `expectedChannelName` derived from those
+  display fields can differ by cache warmth. Accepted as planned (plan decision 21).
+- **The true cost replaces "zero requests"** in `ImportTargetOwnershipService`,
+  `IImportTargetOwnershipService`, `GuardedSevenTvEditorGrantsService`, `SevenTvEndpoints` and the
+  spec (§41): lists warm ⇒ 0; cold with the actor as owner ⇒ 1 (with a hint naming another account that is then dropped, plus the
+  grants lookup below when cold); cold with a valid grant hint ⇒ 2 in
+  one round trip; cold without a valid hint ⇒ up to `1 + k` serially, plus the report's one owner
+  lookup for a set in no list; reading cold grants adds 2 (identity, `editor_of`). All budgeted,
+  behind breaker and coalescer; an open list breaker is "unavailable" with or without a hint.
+- **Old protocol files** carry no owner id; their channel login (the purge envelope's
+  `channelName`, a transfer file's `targetChannelName`) serves as a login hint — no format version
+  changes.
+
+Existing entries are not rewritten; this one qualifies 2026-09-25 "Who may report …" (F16 holds:
+the pre-check takes no owner lookup), 2026-09-25 "The replace lock … falls" (the pre-check it
+relies on) and 2026-09-28 #280 (its Known limit narrows to calls without a valid hint and to budget
+contention; the addendum lands with the client change).
+
+---
+
+### 2026-09-28 — A confirmed start of any 7TV run locks the start triggers before its run exists, and the announcer speaks that wait
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (+ spec; `SevenTvRunParticipant.startCheckPending`,
+new `startPending` and `startLocked`) · `web/src/app/core/seven-tv/seven-tv-delete.service.ts`,
+`seven-tv-restore.service.ts`, `seven-tv-import.service.ts` and `seven-tv-undo.service.ts`
+(`startCheckPending`, registered with the arbiter) · `web/src/app/shared/seven-tv/restore-flow.ts`,
+`undo-flow.ts`, `import-flow.ts` (the flag, bounded `resolveEditableSet` and `recheckTransferPlan`),
+`import-confirm-dialog.ts`, `mass-delete-panel.ts`, `import-trigger.ts`,
+`import-trigger-gate.ts`, `import-shortcut.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts`
+(`transferButtonDisabled`, `importShortcutLocked`) · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts`
+(`START_CHECK_ANNOUNCE_DELAY_MS`) · `web/public/i18n/de.json`/`en.json` (`massDelete.startChecking`,
+`restore.startChecking`, `import.startChecking`, `undo.startChecking`) · `docs/UI-Designsprache.md`
+§4.2, §4.5 · every affected spec and
+`web/e2e/emote-import.e2e.spec.ts`.
+
+Issue #280. Between a confirmation closing and its run appearing, each run's last live read ran
+with nothing on screen and (except for the delete's own button) every start trigger free again —
+the delete's live alias read (spec §37/§38), the restore's confirm-time duplicate check, the
+import's shared pre-check and `recheckTransferPlan`, the undo's freshness read (each up to 20 s). A
+click there only ever led to a refused start.
+
+- **A pre-run lock.** A confirmed start whose last live read is still out now locks the run
+  triggers before the run exists. All four run services — delete, restore, import, undo — register
+  a `startCheckPending` signal with the arbiter, set by their flow (the delete's by
+  `MassDeletePanel`, whose `liveAliasReadPending` now aliases it) around exactly that read and
+  released by `finalize` on every exit; `startPending` is their union and `startLocked` (`activeRun() !== null ||
+  startPending()`) is the condition the arbiter-gated triggers bind to — the header's
+  "Übertragen", the import trigger, the dock's copy shortcut, the mass-delete CTA (each disabled
+  on it, and each click handler returning silently on it, since nothing is confirmed yet —
+  Festlegung Nr. 8) and the import confirmation's executor (`runBlocked`). The dock's restore entry
+  keeps its own shape with the same effect: hidden while `activeRun` is set, disabled on
+  `restoreConfirmPending() || startPending()`. So the running window and the pre-run window never
+  leave a different set of these buttons usable. A pending start is not a claim: `activeRun` stays
+  `null` and `noteRefusedStart` names nothing on its account — which is why every *confirmed*
+  start point (the re-checks right before `startRestore`/`startUndo`/`startImport`/`startDelete`)
+  keeps reading `activeRun`/`activeClaim`: `startLocked` would refuse the confirmed run on its own
+  still-set `startCheckPending`, and silently.
+- **No self-lock.** Every flag is set only after the flow's own confirmation has closed (the
+  import's executor, `runBlocked`, is never live while the import's own flag is set), and the
+  confirmed start points read `activeRun`/`activeClaim` as above, so no flow blocks its own start.
+- **A named exception to §4.5.** `DockOutcomeAnnouncer` used to speak only what the dock shows. It
+  now also speaks the pre-run wait (`massDelete.startChecking`, `restore.startChecking` and
+  `import.startChecking` on both pages that mount the mass-delete panel — the import's too, because
+  its checks outlive a navigation and can lock a vote-session page's mass-delete button — and
+  `undo.startChecking` on the usage-stats page only, whose reads are dropped with their trigger),
+  which no dock
+  shows, because the only visible sign is a disabled button — silent for a screen reader — and
+  §6.1 allows no loading text for an isolated action. The line enters only after the read has been
+  out for `START_CHECK_ANNOUNCE_DELAY_MS` (1 s), so a quick read does not open every start with it;
+  the lock itself is immediate.
+- **Every read behind a flag is bounded.** The confirm-time restore check now shares the open-time
+  one's 20 s; `timeout()` aborts the request, so a timeout is a failed read in the sense of Plan-275
+  Festlegung 16, which is unchanged. The import's shared pre-check and `recheckTransferPlan` gain
+  the same budget (`LIVE_READ_TIMEOUT_MS`): a timed-out pre-check is "unavailable" like a 429, a
+  timed-out re-check is the failed read it already handled (no replace row through, duplicate
+  check unavailable). The delete's live alias read was already bounded; its block on error,
+  incomplete answer or timeout is unchanged. Known limit: a cold `resolveEditableSet` walk over
+  several editor grants (the backend walks 1+k accounts serially, each with up to 5 s budget wait
+  plus a 10 s HTTP timeout, #216) can exceed the 20 s pre-check bound — the replace import then ends
+  fail-closed with the "cannot be checked right now" notice, and the user redoes picker,
+  confirmation and recovery file; a retry gets further, because the backend caches the accounts it
+  finished. The same bound already applies to this read in the delete and restore pre-checks.
+- **The confirm-time restore read deliberately has no teardown**: a confirmed restore is started and
+  shown by the root service regardless of the host that opened it, so dropping the read with its
+  host would silently lose a confirmed restore. The undo differs — its flow drops both reads with
+  its caller (`UndoFlowDeps.destroyRef`, `undo-flow.ts`); aligning the two would be a separate
+  product decision. The import's checks and the delete's alias read keep their existing teardown
+  semantics too — neither is dropped with its host (the import flow never had a teardown, and a
+  torn-down panel's `startDelete` starts nothing by contract); both are bounded, so their flag is
+  always released.
+
+**Addendum 2026-09-28 (#216).** The Known limit above narrows to calls without a valid hint: an old
+protocol file whose channel login has since been renamed or that names an untracked transfer target,
+a login hint against a renamed channel, and a revoked editor grant — plus budget contention, under
+which even a hinted request can still exhaust the 5 s slot wait and the 10 s HTTP timeout. With a
+valid hint and a cold client copy, the pre-check now costs one list request when the hint resolves
+to the actor, or two parallel ones in a single round trip when it resolves to a grant (plus two more
+if that grant's own ten-minute cache is cold); warm, it still costs none. See the 2026-09-28 entry
+above ("The owner check reads the hinted owner's list beside the actor's own …") for the full design.
+
+### 2026-09-28 — A 7TV run step is `done` only when the answer carries the mutation's result — an unconfirmed 200 is `unknown` or `failed`
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-engine.ts` (+ spec) — new `SevenTvMutation`
+(`query` + `resultPath`) and `RunRequest`, `RunOperation.buildRequest` returns a `RunRequest`,
+`runOne` posts only `query` and `variables` and checks the result path, new `unconfirmedAnswer`,
+`holdsMutationResult`, `RunItemStatus`/`transportLossIsUnknown` docs ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (`REMOVE_EMOTE_MUTATION` becomes a
+`SevenTvMutation`, `REMOVE_OPERATION` doc) · `web/src/app/core/seven-tv/seven-tv-restore.service.ts`,
+`seven-tv-import.service.ts` and `seven-tv-undo.service.ts` (`ADD_EMOTE_MUTATION`, the import's
+`UPDATE_EMOTE_ALIAS_MUTATION`, their request builders) · `web/public/i18n/de.json`/`en.json`
+(`massDelete.errors.unconfirmedAnswer`) · new `web/src/app/core/seven-tv/seven-tv-mutation.testing.ts`
+(+ spec; `mutationSelection`, `flushApplied`, `flushWithoutResult`, spec support only) and every
+spec that confirmed a mutation with `flush({})`.
+
+Issue #285, found by the adversarial plan review for #275. The engine counted every HTTP 200 without
+`errors[0]` as `done` — an empty body, `null`, `{}`, whatever a proxy or an edge error page served
+under that status. Such a row was reported to the backend (`sync-deleted`, `sync-restored`,
+`sync-imported`), counted as succeeded in the dock and written into the run protocol as `done`, so a
+restore from that file skipped it.
+
+**A step is `done` only when the answer holds the mutation's result.** Each mutation now declares,
+right next to its query text, the path from `data` down to its own mutation field:
+`['emoteSets', 'emoteSet', 'removeEmote']` for the `REMOVE` (delete, the import's replace, the
+undo), `[…, 'addEmote']` for the `ADD` (restore, import, undo) and `[…, 'updateEmoteAlias']` for the
+import's adopt. A 200 without `errors` counts as `done` only when an object sits at that path. The
+engine reads it off the request's `SevenTvMutation`, not off a switch over operation names, and it
+posts only `query` and `variables`. The path ends at the mutation field, not at the scalar it
+selects (`id`, `alias`): the field is what GraphQL nulls when a resolver fails, and 7TV fills it
+only for a mutation it applied.
+
+**A 200 that neither rejects nor confirms is classified like a lost answer.** It is `unknown` for an
+operation with `transportLossIsUnknown` (delete, restore, undo, an import whose plan deletes) and
+`failed` otherwise (the add-only import). Both carry the engine's own
+`massDelete.errors.unconfirmedAnswer`; a `failed` one reaches `abortOn` with `httpStatus: 200` and
+`errorCode`/`gqlStatus` `null`, so neither privilege check aborts on it. A 200 with `errors` keeps its
+classification exactly: a rate limit (`RATE_LIMIT_EXCEEDED` or `extensions.status: 429`) still backs
+off and retries, any other GraphQL error is still `failed`, whether or not `data` sits beside it. A
+body that is not JSON already failed in `HttpClient` with status 200 and was already `unknown` or
+`failed` by the same rule.
+
+**Downstream nothing new was needed.** An `unknown` from this path is indistinguishable from one
+after a 5xx: no cancel flag is set, so the settle read goes out at once, without
+`CANCEL_SETTLE_GRACE_MS`; delete and restore clear it up positively only, import and undo through
+their clarification tables; reports name only settled `doneKeys`; the protocol carries the row as
+`unknown` and a restore from it treats it fail-closed. The add-only import's `failed` row is not
+reported either — should 7TV have applied it anyway, only the periodic resync notices. That is the
+exception the #230 entry keeps on purpose for its lost answers, and #290 asks whether to lift it for
+every import; setting the flag there would carry this path along.
+
+**Specs answer from the query, in both directions.** `flushApplied` answers a mutation with its
+result nested along the path its query text selects, read off the query by `mutationSelection` and
+not off the declared `resultPath` — so a service spec that confirms a step through it shows the
+declared path is not longer than the query's, nor off to the side of it. A path that is too *short*
+would find an object in that answer too; `flushWithoutResult` answers everything along the path
+except the mutation field, and each mutation constant (the delete's `REMOVE`, the three copies of the
+`ADD`, the import's adopt) has a service spec that expects *no* `done` from it. The helper is
+production code to Sonar (neither excluded nor a spec file) and has its own co-located spec rather
+than a new exclusion pattern. The e2e mocks that answered `RemoveEmote` with `{ data: {} }` were
+switched to the result beforehand, in a commit of their own that is valid under both engines.
+
+**What this revises** (texts stay as they are): the 2026-09-27 #275 entry's "An HTTP 200 without
+`errors`, or with an empty body, is still `done` without any read (#285)" no longer holds.
+
+### 2026-09-28 — E2E specs import from a shared fixture that stubs and guards the 7TV CDN, and Chromium cannot resolve the CDN at all
+
+**Betrifft:** `web/playwright.config.ts` (`use.launchOptions`: `--host-resolver-rules=MAP cdn.7tv.app
+~NOTFOUND`) · `web/e2e/support/test.ts` (new — `test` with the automatic `sevenTvCdn` fixture,
+`expect`, type re-exports, `fulfillCdnStub`, `CDN_URL_PATTERN`) · `web/eslint.config.mjs`
+(`@typescript-eslint/no-restricted-imports` for `e2e/**/*.spec.ts`) · every `web/e2e/*.spec.ts`
+(import switched) · `web/e2e/usage-atlas.e2e.spec.ts` (its own CDN stub and `PNG_1X1` removed) ·
+`web/e2e/emote-import.e2e.spec.ts` (the recording route in `openGrid` answers through
+`fulfillCdnStub`, its own `PNG_1X1` removed) · `CLAUDE.md` („Tests").
+
+Issue #222. Every spec imported `test` and `expect` straight from `@playwright/test`, there was no
+shared fixture, and 100 of 214 tests sent 434 real requests to `cdn.7tv.app` per full run (7TV
+answered 400 for the made-up ids). Two specs had grown their own 1×1-PNG stub — `usage-atlas`
+after exactly that made it flaky, `emote-import` to record CDN requests for its own acceptance
+criterion; every other spec depended on a third-party host by accident.
+
+**E2E specs import `test`/`expect` from the shared fixture, never directly from
+`@playwright/test`.** The regular Playwright config makes `cdn.7tv.app` unresolvable for Chromium,
+so no run can reach the CDN — the network is closed by construction instead of watched after the
+fact. Playwright routing happens before DNS, so routes still answer. Both projects inherit the
+argument from the shared `use`; a project that sets its own `launchOptions` has to carry it along.
+
+**The fixture stubs the CDN suite-wide with a 1×1 PNG** — a route on the browser context, so every
+page of a test gets it — and one helper, `fulfillCdnStub`, is the only place that PNG lives. A test
+that needs other dimensions or formats, or records requests (the animated-grid tests in
+`emote-import`), adds its own `page.route` for the CDN, which takes precedence, and answers through
+the helper. Behaviour change: sprites that used to fail now load and become visible, and animated
+overlays reach "settled"; no spec asserts dimensions, `naturalWidth` or screenshots against them.
+
+**A CDN request that fails with `net::ERR_NAME_NOT_RESOLVED` fails the test.** That error means the
+request got past every stub (`route.continue()`, a missing route) and died at the resolver block —
+the one signal the guard reads. Cancellations (`net::ERR_ABORTED` and the like) are ignored: a
+sprite whose url changes and a row the virtual scroll recycles cancel requests that were stubbed,
+not escaped. No marker header: with the resolver block the guard no longer has to tell stubbed
+from real responses. The check runs after the test body and waits only while CDN requests are
+still open, bounded at 1 s — an escaped request fails at DNS within milliseconds, and a fixed wait
+would have cost every test. What escapes only after that, or during teardown, goes unreported,
+but it still cannot reach the network. The block only holds while Chromium resolves names itself;
+a configured HTTP proxy would resolve for it (none is configured). A test that simulates a CDN
+failure uses `route.abort()` or `route.abort('failed')`, never `'namenotresolved'`: that produces
+exactly the guard's signal and fails the test.
+
+**Two blind spots, neither used today.** A test that creates its own `browser.newContext()` gets
+neither stub nor guard, silently — the resolver block still holds, and ESLint cannot catch it. And
+`APIRequestContext` (the `request` fixture, `page.request`) runs in Node, bypassing both the
+resolver block and routes, so "no request reaches the CDN" holds for the browser only.
+
+**A lint rule instead of discipline.** A spec that imports from `@playwright/test` still cannot
+reach the CDN, but it loses stub and guard silently — its sprites stay invisible and the console
+fills with DNS errors. `@typescript-eslint/no-restricted-imports` forbids value imports from
+`@playwright/test` in `e2e/**/*.spec.ts`; type imports stay allowed. The rule is syntactic and
+needs no type information, like the rest of the config.
+
+**Measure and audit configs are deliberately excluded.** `atlas-image-loading.measure.ts` exists
+to measure the real CDN; the audit harness keeps its own stub. `e2e/support/mocks.ts` therefore
+imports only types from `@playwright/test` and not the fixture, because the measure spec uses it
+too. Only the 7TV CDN is covered: `7tv.io/v4/gql` and Turnstile are neither blocked nor guarded.
+
+### 2026-09-28 — Both audit-log endpoints' response grows the unresolved-channel trio and the legacy-body-form flag
+
+**Betrifft:** `src/EmotePurge.Core/Services/IAuditLogQueryService.cs` (`AuditLogTargetEmoteSet` — three
+new optional trailing fields; `AuditLogDetail` — `LegacyBodyForm`) ·
+`src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs` (`ReadTargetEmoteSet`, `ReadBoolFlag`,
+`ReadStringArray`) · `web/src/app/core/audit/audit.model.ts` (mirrored, all optional) ·
+`web/src/app/shared/audit/audit-row.ts`, `audit-actions.ts`, `audit-log-list.ts` (two new addenda) ·
+`web/public/i18n/{en,de}.json` (`audit.details.legacyBodyForm`,
+`audit.details.unresolvedChannel{NotTracked,ActiveSetDiffers}`).
+
+Issue #273. `EmoteService.MarkDeletedInSetAsync`/`MarkRestoredInSetAsync` have written
+`unresolvedChannelName`, `unresolvedReason` and `unresolvedSevenTvEmoteIds` into a paper entry's
+`DetailsJson` since #253/#270 (restore-per-set spec 5.5, addendum N3), and `MarkDeletedAsync`/
+`MarkRestoredAsync` have written `legacyBodyForm: true` since the same spec's 5.6 (E4) — but
+`AuditLogQueryService.ListAsync` never read either back out, so both endpoints
+(`GET /api/admin/audit-log` and `GET /api/channels/{c}/audit-log`) served a `Detail` that dropped
+them silently. This closes that gap: the response DTO (both endpoints share `AuditLogEntryDto`)
+grows five fields — `AuditLogTargetEmoteSet.UnresolvedChannelName`/`UnresolvedReason`/
+`UnresolvedSevenTvEmoteIds` and `AuditLogDetail.LegacyBodyForm` — no route, no request shape and no
+existing field changes.
+
+**Read generically, same as the existing `targetIsActiveSetOfChannel`/`ownerLogin` fields — no new
+whitelisting mechanism.** The unresolved trio lands on `AuditLogTargetEmoteSet` because it is always
+written alongside `emoteSetId` (never on its own); `legacyBodyForm` lands directly on
+`AuditLogDetail` because the legacy Guid-keyed form carries no `emoteSetId` at all, so
+`AuditLogTargetEmoteSet` stays `null` on that row regardless. All five default to their
+already-established absent-field reading (`null`/`false`), so a row written before this change
+projects exactly as it did before — pinned by both a resurfaced-assertion test on the pre-existing
+legacy-row case and two new hand-built-JSON tests in `AuditLogQueryServiceTests`, plus two real
+round-trip tests in `EmoteServiceTests` that write through `EmoteService` and read back through
+`AuditLogQueryService` in the same test.
+
+**An unrecognized `unresolvedReason` drops the addendum, not the row.** `AuditLogQueryService`
+passes the string through unvalidated — the closed vocabulary
+(`UnresolvedChannelReasons.NotTracked`/`ActiveSetDiffers`) is a display decision for the frontend,
+the same way an unrecognized `Kind` or leaderboard sort code already is: `audit-row.ts`'s
+`renderUnresolvedChannel` returns `null` for anything else, and the row keeps its action, actor and
+every other addendum it has.
+
+**The ids are delivered but not displayed.** `unresolvedSevenTvEmoteIds` reaches the wire and the
+frontend model (the issue asks for the field, and carrying it costs nothing), but the audit row does
+not render a count from it: the row's own `emoteCount` in `detail` already states the quantity
+(`unresolvedSevenTvEmoteIds.length` always equals it — none of the reported ids matched in the
+missed channel), and deriving a second number from a list that could in principle be malformed would
+risk a misleading "0" rather than add information. The addendum instead just names the channel:
+"expected channel X: not tracked" / "erwarteter Kanal X: nicht getrackt", and for `activeSetDiffers`
+the same hedge the #255 dock line already uses (`ActiveEmoteSetId` can lag a 7TV set switch, F13) —
+"according to EmotePurge, not currently its active set" / "laut EmotePurge gerade nicht dessen
+aktives Set" — rather than stating it as settled fact.
+
+**Supersedes two earlier statements, left standing rather than rewritten (Regel: bestehende
+DECISIONS-Einträge werden nicht rückwirkend umgeschrieben).** The 2026-09-25 entry "Delete, restore
+and a replace's removals report per emote set" says of the channel-entry branch "the audit view
+renders it as before" — still true for that branch — but the paper entry's own new fields it goes on
+to name (`unresolvedChannelName`, `unresolvedReason`, `unresolvedSevenTvEmoteIds`) went unrendered
+until this entry; see it above for what changed. The restore-per-set spec itself carries a short,
+dated German addendum at the same two places (§4.7 no. 23, §5.5) for the same reason.
+
+### 2026-09-27 — Import and undo wait the cancel grace before their settle read, and their docks hold back summary and unclear rows while settling
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-import.service.ts` (+ spec) — `cancel` (cancel
+flag), `onRunComplete` (grace wait, `SET_ENTRIES_READ_TIMEOUT_MS`, the settling snapshot published
+with its final `failed` reasons), `settleRun` (settles the engine's own snapshot), `settleRunResult`
+doc, `SETTLE_READ_TIMEOUT_MS` removed, `ImportRunItem`/`ImportSettlement`/`ImportRunInfo.settlement`/
+`isSettling` docs · `web/src/app/core/seven-tv/seven-tv-undo.service.ts` (+ spec) — `cancel`
+(cancel flag), `onRunComplete` (grace wait, `SET_ENTRIES_READ_TIMEOUT_MS`, the settling snapshot
+published with its final `failed` reasons and `partial`), `settleRun` (settles the engine's own
+snapshot), `settleUndoResult` doc, `UNDO_SETTLE_READ_TIMEOUT_MS` removed, `RECHECK_READ_TIMEOUT_MS`
+doc (value and recheck unchanged), `UndoRunItem`/`UndoSettlement`/`UndoRunInfo.result`/
+`isSettling`/class docs · `web/src/app/core/seven-tv/seven-tv-run-settlement.ts`
+(`SET_ENTRIES_READ_TIMEOUT_MS` and `CANCEL_SETTLE_GRACE_MS` docs only) ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` (+ spec) and
+`web/src/app/shared/seven-tv/undo-progress-section.ts` (+ spec) — `[settling]` bound to
+`run.phase === 'settling'`, class docs · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts`
+(+ spec) — `notActiveNoticeParams` gated on `settlement === 'settled'` instead of `result !== null` ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` (`settling` doc only) ·
+`docs/UI-Designsprache.md` §2.5, §4.5.
+
+Issues #284 and #286 (Plan-284-286 Festlegungen 1–9). The 2026-09-27 #275 entry gave delete and
+restore a grace period before their settle read and left import and undo behind: a user who
+cancelled an import-replace or an undo with a request in flight got a read that went out at once,
+often before 7TV had finished applying the aborted step — so "unchanged ⇒ it did not happen" could
+overtake a mutation that was landing right then. And while an import or undo run was `settling`,
+its dock already showed the summary and the unclear rows of a snapshot that was about to change.
+
+**The same grace, the same flag, only before the settle read.** Import and undo now hold a private
+cancel flag for the synchronous span of `engine.cancel()` inside their own `cancel()`, exactly the
+delete's pattern; `onRunComplete` reads it first. Only when it was set *and* the run has an
+`unknown` row does the settle read wait `CANCEL_SETTLE_GRACE_MS` (3 s) — inside `settling`, with
+phase and snapshot already published. After a plain transport loss (a 5xx, no answer) the read goes
+out at once as before. The undo's recheck read in front of each `REMOVE` never waits: it is a gate
+before a mutation, not a settlement after the run. Every branch still ends in `settleRun` (timer →
+read with timeout → `null` on failure → settle; Plan-275 P6), and `reset()` during the wait only
+drops the display. Both services drop their own settle-read constants
+(`SETTLE_READ_TIMEOUT_MS`, `UNDO_SETTLE_READ_TIMEOUT_MS`) for the shared
+`SET_ENTRIES_READ_TIMEOUT_MS` (20 s, unchanged); `RECHECK_READ_TIMEOUT_MS` stays on its own.
+
+**`result` is still the published snapshot — only the display is gated.** Unlike the delete and the
+restore, import and undo keep publishing their snapshot with `phase: 'settling'` (`items()`, the
+protocol gates and the usage-stats page's `watchRunSettle` rely on it). What
+changes is what their docks show from it: while a run is `settling`, the import and undo docks bind
+`RunProgressPanel.settling` like delete and restore, so the summary block, its actions and the
+`unknown` rows stay hidden — with the block every line read off the rows: the import's removed and
+unclear counts, the undo's counter and skipped lines, the protocol, the report and resync lines —
+and the not-active notice is neither shown nor announced until the run is `settled`
+(`DockOutcomeAnnouncer` gates it on the settlement now, since `result` is already set while
+`settling`). The bar, the progress count, `failed` rows and "finishing…" stay. Two gaps this leaves,
+not closed here (#294): while an undo settles, its skipped candidates are named nowhere — the
+notice gives way once the run stops running, as before, and the summary names the same candidates
+only once the run has settled; and the insufficient-privileges banner, which sits in the summary
+block too, waits for the settle as well. So that a visible `failed` row does not change its
+text between `settling` and `closed`, the snapshot published for `settling` already carries every
+`failed` row's final reason — that reason never depends on the read (import: `withFailureReason`
+over the recorded GraphQL status; undo: over its rejected keys — and the undo's `partial`, which
+hangs on the row alone, likewise). The settle itself still starts from the engine's own snapshot,
+so no row is given its reason twice.
+
+**Unchanged.** The clarification tables (`settleUnknownRow`, `settleUnknownRemove`/`settleUnknownAdd`)
+— in particular #275's "only ever confirms" does *not* carry over to them. Reports, resync,
+lifecycle, arbiter and engine. The add-only import stays the exception (`transportLossIsUnknown` only
+for a plan that deletes): a cancel in flight there is `cancelled`, without a settle — #290.
+
+**Costs.** After a cancel, the unload guard's worst case after the last click grows by the 3 s
+grace: import from about 116 s to about **119 s** (its two reports run in parallel), undo from about
+212 s to about **215 s** (`sync-deleted`, then `sync-restored`).
+
+**What this revises** (texts stay as they are): the #275 entry's "Unlike the import and the undo,
+which publish their snapshot while re-reading" still holds for the data, no longer for the display;
+its "until #284" and "Import and undo keep their own read timeouts" are done — for the add-only
+import, moved to #290. The 2026-09-23 #230 entry's "the dock already shows the engine's live
+snapshot" no longer holds for a settling run. The 2026-09-26 run-bound entry is the context both
+build on.
+
+### 2026-09-27 — The wider N2 reload predicate now applies to delete and restore too
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle` loses its
+optional `shouldReload` predicate parameter and calls `mayHaveChangedTheSet` directly; the delete and
+restore calls no longer rely on a default; `mayHaveChangedTheSet`'s doc updated) ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` (addendum N2 block: `settleRestore` and
+`settleDelete` gain an `items` parameter, the two `unknown`/never-confirmed `it.each` cases extended
+to all four run kinds) ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (addendum) ·
+`docs/superpowers/specs/2026-09-25-replace-undo-254-design.md` (addendum).
+
+Issue #287, the gap the entry further below (2026-09-27, "The N2 member-list reload also fires on a
+confirmed-but-not-done row for import and undo", #279) left open on purpose: delete and restore were
+assumed single-step and never settling a row `unknown`, so `doneKeys.length > 0` stayed their
+predicate. The entry directly below this one (delete/restore settle a lost answer as `unknown`)
+removed that assumption — a cancel mid-request or a lost answer can now settle a delete or restore
+row `unknown` with an empty `doneKeys`, and the non-active target's member list stayed stale exactly
+as #279 first found for import and undo.
+
+The fix is the one the #279 entry already named (tracked in #287): delete and restore now also use
+`mayHaveChangedTheSet` (`doneKeys.length > 0 || items.some(item => item.completedSteps >= 1 ||
+item.status === 'unknown')`), which for a single-step run reduces to `done || unknown`, since a
+cancelled or plain-failed row never confirms a step. With all four callers on the same predicate,
+`watchRunSettle`'s optional third parameter and its `doneKeys.length > 0` default served no caller
+any more and were removed; the predicate now lives inside `watchRunSettle` itself.
+
+For the chosen non-active target, `MassDeletePanel` already requests a reload of its own for both
+run kinds, so this closes less than "restore had no reload path": (a) delete's panel path fires
+only after the settle (its `'idle'` branch waits for `lastRun()`, the others for a report end
+state) — for an unknown-only delete it lands in the same change-detection pass as the settle
+watcher's reload, and its `reloadLiveMembers()` is then a no-op; with a `done` row it adds the
+second `refresh=true` `GET` spec 253 already accepts (F7); (b) restore's panel path is gated only
+on the engine's `isRunning()`, which `finish()` clears before the grace and the re-read, so its
+`GET` can land before the re-read — after a cancel, possibly before the aborted 7TV mutation; the
+settle watcher's reload is the one that reads after it; (c) the panel mounts only in the desktop
+dock with a set selected (`@if (dockVisible() && !isCoarse())`), so on a coarse pointer the settle
+watcher is the only reload; (d) both panel paths (`deleted`/`reloadRequested` → `refresh()` →
+`reloadLiveMembers()`) reload only the selected set — a target that is neither active nor selected
+was never covered and now gets its `liveMembersRefreshFor` mark (`onOwnRunSettled`).
+
+No new e2e case: the existing cancel-as-unknown e2e cases (#275) all run in the active set, and a
+non-active variant would be a new, sizeable test for a path the unit specs already cover.
+
+### 2026-09-27 — Delete and restore runs settle a lost answer by one re-read that only ever confirms — a cancel mid-request is `unknown`, never `cancelled`
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-delete.service.ts` (+ spec) — `REMOVE_OPERATION`
+sets `transportLossIsUnknown`, `DeleteRunInfo` (`settling`, `result` stays `null` until settled),
+`queue` as a `linkedSignal` projection, `cancel`, `onRunComplete`, new `settleRun`,
+`fallbackResync` for an unknown-only run, `isSettling`/`destructiveOpen`/`lastRun` docs ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (+ spec) — `addOperation` sets
+`transportLossIsUnknown`, `RestoreRunInfo` (`settling`, `result` stays `null` until settled), `queue`
+as a `linkedSignal` projection, `cancel`, `onRunComplete`, new `settleRun`, `triggerResync` called
+directly for an unknown-only run, `toRestoreQueue`'s new `defaultNameByKey`,
+`isSettling`/`destructiveOpen` docs ·
+`web/src/app/core/seven-tv/seven-tv-run-settlement.ts` (`SET_ENTRIES_READ_TIMEOUT_MS`,
+`CANCEL_SETTLE_GRACE_MS`, `settleDeleteResult`, `settleRestoreResult`, `unknownCount`) ·
+`web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts` (`RunPhase` doc only) ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`transportLossIsUnknown` doc only) ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` (reader list in the doc only) ·
+`web/src/app/core/seven-tv/seven-tv-run-arbiter.spec.ts` (a restore's cancel-in-flight case updated
+to settle, like the delete's).
+
+Issue #275 (Plan-275 Festlegungen 1, 2, 5, 6, 8, 10–13, 19, 20). Until now a delete whose `REMOVE` was
+still in flight when the user clicked "Cancel" ended that row `cancelled` — "nothing happened" in
+the dock and in the protocol — although the request had usually reached 7TV and taken the emote out
+of the set; a lost answer (no response, a 5xx) ended it `failed`, which says the same. Both are
+claims the client cannot back.
+
+**The row is `unknown`, and the run re-reads once before it reports.** Both the delete's and the
+restore's operations now set the engine's `transportLossIsUnknown`: no answer, any 5xx, and a
+`cancel()` that aborts a request in flight end the row
+`unknown`; a 4xx and a GraphQL rejection stay `failed`, and a cancel between two rows or during a
+rate-limit pause stays `cancelled`, since nothing was in flight. A run that ends with at least one
+`unknown` row is `settling` while the target set is read once, tokenless, with a
+`SET_ENTRIES_READ_TIMEOUT_MS` (20 s) budget — no retry, no second read. Only after a cancel through
+the service's own `cancel()` does the read first wait `CANCEL_SETTLE_GRACE_MS` (3 s): 7TV is still
+finishing the aborted request, and an immediate read would mostly see the old state. After a plain
+transport loss there is nothing to wait for — a 5xx arrives once 7TV is done, a dropped connection
+has no moment to aim at. The wait only raises how often the read can confirm; it never decides
+anything. A cancel between rows in a run that already has an older transport-loss row waits as well
+— harmless, not worth a distinction. The run knows it was cancelled from a flag its own `cancel()`
+holds for the synchronous span of `engine.cancel()` (which calls `onRunComplete` synchronously), not
+from a new engine field.
+
+**The read only ever confirms.** A row becomes `done` exactly when a complete read shows the wanted
+effect (delete: the id has no entry left in the set, under any alias or none). Every other finding
+stays `unknown` — "the id is still there", a failed or timed-out read, `complete: false`. A read can
+prove that a mutation landed; it cannot prove that one still in flight, or whose answer was lost,
+did not — and "still there" is also what a third party re-adding the id after our `REMOVE` looks
+like (Codex, adversarial review 2026-09-27). "The id is gone" can equally be a third party's doing;
+indistinguishable, and the set *is* without the id either way — the import accepts the same. For the
+restore the wanted effect is the mirror image (Festlegung 8): the row's alias sitting on this id: for
+a `null`-alias row (only ever from a transfer-run file) either `aliaslessIds` or, checked before any
+stale name the file itself recorded, the read's own live default name for that id.
+
+**Published and reported only once settled.** Unlike the import and the undo, which publish their
+snapshot while re-reading, the delete keeps `result` `null` through `settling` and writes the settled
+outcome, `phase: 'reporting'` and the report state in one lifecycle update. So `lastRun`, the
+protocol download and the usage-stats page's `watchRunSettle` see exactly one result, never a
+snapshot whose rows are about to change. The dock still shows rows meanwhile: `queue` is now a
+projection — the shown run's settled `result.items` once it has one, the engine's queue otherwise —
+kept a `linkedSignal` so specs can still `set` it. `sync-deleted` names the settled `doneKeys`, so
+`retrySyncReport` is right automatically; a row still `unknown` is never reported. The restore's
+`result` is held back the same way until the settle writes it; `sync-restored` names the settled
+`doneKeys`.
+
+**What an `unknown` row that stays pulls after it.** With nothing to report (no row ended `done`),
+the run closes at once and the client resyncs `expectedChannelName` itself through the existing N1
+fallback — never for a non-active or untracked set, which has no channel of ours showing it. With a
+report, nothing more: the backend resyncs every channel that holds the set, the active one included,
+and that heals the unclear row as well; should the report fail for good, the N1 fallback resync
+stands in exactly as before. Resyncing on top of a report would only run into the per-channel
+cooldown both share. The delete dock's own reload for the unknown-only case is a later step of this
+plan. The restore runs this same D6 (a) resync through its existing `triggerResync` rather than a
+silent fallback — visible in its dock through `resyncTrigger`, and, like the delete, only ever for
+the active target.
+
+**Lifecycle and arbiter are untouched** — `settling` has existed since the 2026-09-26 run-bound
+entry; `isSettling` and the arbiter's `settling` claim pick it up on their own, so no other run can
+start while the read is out. `reset()` during `settling` only detaches the display: the record
+settles, reports and closes on its own, and a report that then fails shows the run again with its
+retry, as for any detached run. A channel switch still only resets a `closed` run.
+
+**What this revises.** Plan-256 Festlegung 5 and the 2026-09-26 run-bound entry's "Neither ever
+sees settling: a delete/restore run has no re-read" no longer hold (both texts stay as they are).
+For the restore, it also lifts the #230 rule that a run without a deleting row keeps a lost answer
+`failed` (2026-09-23, "A lost answer is `unknown`, not `failed`, for a run that deletes") — the
+restore service now sets the flag too; the add-only *import* remains the deliberate exception until
+#284, which also brings the grace period to import and undo. Import and undo keep
+their own read timeouts (`SETTLE_READ_TIMEOUT_MS`, `UNDO_SETTLE_READ_TIMEOUT_MS`), same value.
+
+**Costs and a known gap.** The delete's unload guard still holds until `closed`, `settling`
+included; its worst case after the last click grows from about 96 s to about 119 s (3 s grace + 20 s
+read + three 30 s report attempts with their 2 s and 4 s pauses). An HTTP 200 without `errors`, or
+with an empty body, is still `done` without any read (#285) — only a body that is not JSON reaches
+the engine's error path.
+
+### 2026-09-27 — The purge-run protocol carries `unknown` rows — format version 3, restorable alongside `done`, fail-closed when the live check cannot vouch
+
+**Betrifft:** `web/src/app/shared/export/purge-run-export.ts` (+ spec) — `PURGE_RUN_FORMAT_VERSION`
+2 → 3, `PurgeRunMeta.counts.unknown`, new optional `RestoreRow.uncertain`,
+`parsePurgeRunProtocol` reading `formatVersion` `1`/`2`/`3` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` (+ spec) — new optional
+`RestoreFilterRow.uncertain`, new `uncertainDropped` on `RestoreAlreadyPresentFilterResult` (and so
+on `RestoreConfirmPreview`/`restoreConfirmPreviewUnavailable`) ·
+`web/src/app/shared/seven-tv/restore-confirm-dialog.ts` (+ spec) — new
+`RestoreConfirmDialogData.uncertainDropped`, its notice, executor disabled at `addCount === 0`
+(described by that notice, own title, no slot projection) ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `mass-delete-panel.ts` (+ specs) — `unknown` rows
+offered with the marker, no "everything already there" shortcut while `uncertainDropped > 0` ·
+`web/public/i18n/{de,en}.json` (`restore.confirm.uncertainDropped`,
+`restore.confirm.nothingToRestore`).
+
+Issue #275 (plan Festlegungen 15–17). A delete or restore run whose request was still in flight
+when the user cancelled it, or whose 7TV answer was lost in transport, no longer ends the row
+`cancelled`/`failed` outright: it settles instead to `unknown` — a row status delete/restore never
+used before — that only one re-read after the run, never a retry, never a second guess, can clear.
+That read only ever confirms positively: it either shows the wanted effect (delete: the id is gone
+from the set; restore: the alias or, for an alias-less entry, the default name is there), in which
+case the row becomes `done`, or it stays `unknown` for good. A read can prove a mutation landed; it
+can never prove one that is still in flight, or whose answer never arrived, *did not* land — so
+every other outcome of the read, including "still there" or "still missing", is treated exactly
+like no read at all (Codex finding, 2026-09-27 adversarial review). The two run services that
+actually produce `unknown` rows this way, and the restore-file entry points that offer them back for
+restore, are later tasks of this same plan; this entry gives the protocol and the restore contract
+they are all built against.
+
+`meta.counts` gains `unknown`, summing with `succeeded`/`failed`/`cancelled` to `requested` exactly
+as before. The row itself carries `status: 'unknown'` like any other terminal status — no special
+casing was needed in `buildPurgeRunProtocol`, since `RunItemStatus` (`seven-tv-run-engine.ts`)
+already had the value. `PURGE_RUN_FORMAT_VERSION` bumps 2 → 3 for the same reason it bumped 1 → 2
+for K5 (2026-09-22, below): a reader written for the older row shape must refuse the newer one
+rather than parse it silently short. Concretely, a v2 `parsePurgeRunProtocol` only ever looked for
+`status === 'done'`; fed a v3 file, it would drop every `unknown` row without a trace instead of
+offering it for restore — quietly fewer restorable rows than the file actually recorded, discovered
+only by whoever later expected the rest to still be there. `parsePurgeRunProtocol` keeps accepting
+`1` and `2` alongside `3`, so no file already on someone's disk from before either change stops
+being readable; a v3 file opened in a tab still running a v2 reader is refused as `wrongVersion` —
+the same intended refusal K5 already established, not a new gap. CSV export gains no new column:
+the protocol's restorability has only ever lived in the JSON round-trip.
+
+The parser's restorable rows are no longer raw protocol rows — `status`/`errorMessage` are the paper
+trail's own business, not the restore flow's — but plain `RestoreRow`s. A `done` row comes back
+exactly as before; an `unknown` row comes back with a new optional marker, `uncertain: true`. The
+marker exists because the delete behind an `unknown` row may never have reached 7TV at all: the
+`REMOVE` could still be in flight, or its answer could be the one that was lost — either way, the
+emote can still be sitting in the set under its old alias. Restoring such a row without checking
+would run its `ADD` blind: at best 7TV refuses the colliding alias (a burnt ticket, a red row); at
+worst, if the emote sits under a different alias by the time the file is used, a second entry of the
+same id that no rollback removes — 7TV's `addEmote` mutation does not dedupe by emote id, it only
+rejects a colliding alias string (the #149 hole, `already-present-filter.ts:31-35`, `:127-131`). A
+`done` row carries neither risk: 7TV's own answer, or the settling re-read, confirmed the id gone,
+which is exactly why it is free to keep the filter's ordinary fail-open behaviour.
+
+That is why `uncertain` rows are held to a stricter rule than `done` ones, and that rule lives only
+in the already-present filter (`already-present-filter.ts`) — never in either restore entry point
+that hands rows to it: a purge-run file read through the file step, and a finished delete run's own
+restore offer in the mass-delete dock, both pass `uncertain` rows on alongside `done` ones
+unchanged. The filter drops an `uncertain` row outright whenever its own live re-read of the target
+set fails or comes back incomplete, and counts how many it dropped so the confirmation dialog can
+say so; a `done` row keeps its existing fail-open behaviour on the very same failure, and the
+confirm-time fallback (`fallOnOpenTime`) is untouched either way. When the re-read *does* complete,
+an `uncertain` row is judged exactly like any other: if its id turns up under a different alias than
+the row itself names, the row is dropped as already present (rule 2 — one id never gets a second
+`ADD`, no matter which alias is in the file); if it turns up only under aliases the row itself
+already lists, its present aliases are skipped and only the missing ones restored (rule 3). The
+window between that filter read and the eventual `ADD` stays open on purpose — a third party could
+still add the id in between, the same residual race every restore row already carries, not a new one
+this marker introduces. Neither restore call site (`restore-flow.ts`, `mass-delete-panel.ts`) grows
+a branch of its own for any of this beyond one: neither takes its "everything already there"
+shortcut while `uncertainDropped > 0` (that notice would be untrue for the dropped rows) — the rule
+itself sits inside the one filter. The confirm-time re-check applies the same rule, and only a
+confirm-time read that *fails* falls back to the open-time rows; one that succeeds but comes back
+incomplete drops an `uncertain` row the dialog already showed, silently, after the user confirmed.
+That is accepted on purpose: it can only ever send less, never a blind `ADD`.
+
+### 2026-09-27 — The N2 member-list reload also fires on a confirmed-but-not-done row for import and undo
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle` gains an
+optional `shouldReload` predicate; new `mayHaveChangedTheSet`, used for the import and undo calls
+only) · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` (addendum N2 block).
+
+Issue #279, a gap the spec had already named
+(`docs/superpowers/specs/2026-09-25-replace-undo-254-design.md` §18 item 9). The N2 reload of a
+chosen non-active set's member list fired only when the settled run's `result.doneKeys` was
+non-empty. Delete and restore are single-step per row and currently never settle a row as
+`unknown`, so `done` and "changed the set on 7TV" coincide there. Import and undo are not: a row
+with a confirmed step but not all of them (a Replace/full gap, or an addOnly row short of its ADDs)
+ends `failed` with `completedSteps >= 1` and never reaches `done`, leaving the set changed on 7TV
+without a done key, so the list stayed stale. A row still `unknown` after the re-read may also have
+changed the set — nothing in the run can tell — so it now reloads too; the cost is one extra `GET`
+that shows the real state instead of a guess.
+
+The fix keeps `doneKeys.length > 0` as `watchRunSettle`'s default predicate (delete and restore keep
+calling it with no third argument) and adds `mayHaveChangedTheSet` as the predicate passed only from
+the import and undo calls: `doneKeys.length > 0 || items.some(item => item.completedSteps >= 1 ||
+item.status === 'unknown')`. Once delete and restore can settle a row as `unknown` too (a parallel
+branch adds a cancel-to-unknown path for both), their calls should pass the same predicate — it
+reduces to `done || unknown` there — tracked in #287, not done here.
+
+### 2026-09-26 — Run-protocol exports default to JSON, the re-importable format
+
+**Betrifft:** `web/src/app/shared/export/export-dialog.ts` (new constant
+`FORMAT_EXPORT_OPTIONS_JSON_FIRST`) · `web/src/app/shared/seven-tv/mass-delete-panel.ts`,
+`import-progress-section.ts`, `undo-progress-section.ts` (switched from `FORMAT_EXPORT_OPTIONS` to
+the new constant) · `docs/UI-Designsprache.md` §7.4.
+
+Issue #282, found in local testing. After a run (delete, transfer, transfer-undo), "Protokoll
+herunterladen" / "Ergebnisprotokoll herunterladen" opened the export dialog with CSV preselected
+and listed first — but only the JSON protocol can be read back in (the file-import step, restore).
+`ExportDialog` has exactly one default rule, `options[0]` (§7.4), and treats the option list as an
+opaque, caller-supplied constant; the fix is a second such constant, JSON first, for the three
+run-protocol exports (purge/delete, transfer, transfer-undo) — restore has no protocol download of
+its own yet. The voting export and the usage-statistics purpose list keep their existing order:
+the voting file is a report, never read back in, and usage statistics already default to "Analyse
+the numbers" (CSV) for the header's own spreadsheet export.
+
+### 2026-09-26 — The undo's dock: a host-supplied tally, a removal report under `undo.sync*`, lasting skip lines, and a second report region
+
+**Betrifft:** `web/src/app/shared/seven-tv/run-progress-panel.ts` (new optional input `tally`,
+type `RunProgressTally`; `labelPrefix` gains `'undo'`) ·
+`web/src/app/shared/seven-tv/undo-progress-section.ts` (new) ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` (`resyncNoticeKey` family `'undo'`,
+`undoSkippedLines`, `undoSkippedNotice`) · `web/public/i18n/{de,en}.json` (`undo.sync*`,
+`undo.restoreSync*`, `undo.summary.*`, `undo.resync.*`, `undo.progress*`,
+`undo.leaveWhileRunning.*`) — consumes `web/src/app/core/seven-tv/seven-tv-undo.service.ts`
+(`progress`, `summary`, `summarizeUndoRun`).
+
+Issue #254 (spec 4.7, 6.6, plan Festlegung 3 and 5). Four decisions about how the undo run is shown;
+the run itself is the entry below.
+
+**(a) `RunProgressPanel.tally` — a host may hand the panel its own counts.** The panel counted its
+bar (`finished`) and its summary sentence (`done`/`failed`/`cancelled`) from each row's engine
+status. The undo's recheck before a REMOVE (E19) skips a row through the engine's `beforeStep` hook,
+and the engine records that row as `cancelled`: counted by status, the bar never reached the end
+(the panel does not count `cancelled` as finished) and the row appeared twice — once as a
+cancellation in the sentence and once under its skip reason. The undo section therefore passes
+`{ finished, done, failed, cancelled }` from the service's `progress()` and `summary()`, where a
+recheck skip is finished and counted only in `skippedInRun`/`skippedByReason`, and a `partial` row is
+`done`. `tally` is optional and defaults to `null`; with `null` the panel counts `items` by status
+exactly as before, so delete, restore and import are unchanged. `total` and the failure list keep
+reading `items` for every host.
+
+**(b) The panel's removal report speaks `undo.sync*`.** The panel carries one report (Festlegung 3:
+the removal, `sync-deleted`, the destructive fact) and derives its keys from `labelPrefix`
+(`${labelPrefix}.syncFailedTitle`, `.syncPartial`, `.syncRetry`, …) — the same mechanism that makes
+the import's panel report speak `import.sync*`. The undo's removal report is therefore worded under
+`undo.sync*`, not under the `undo.removalSync*` the plan's locale list named; the restore report,
+which the section renders itself, is `undo.restoreSync*`.
+
+**(c) Skipped-per-reason lines persist in the run summary; only the pre-run notice is transient.**
+Spec 4.7 calls the undo's skipped lines "transient". Two kinds of skip exist: candidates a start
+left out before anything ran (dialog, freshness check, the service's own locks — `run.skipped`) and
+rows the recheck skipped during the run. The second kind is not a cancellation (a) and has no other
+place in the dock; a transient line would make it vanish from every count after four seconds while
+the protocol still lists it. So the settled summary shows one line per reason from
+`summary().skippedByReason`, for as long as the run is shown. The transient notice
+(`noticePending`/`noticeSkipped`) remains for a start that ran nothing — its only voice — and gives
+way once the run it started has stopped running, since the summary then names the same candidates;
+no candidate is named twice.
+
+**(d) The restore report is its own live region, below the panel.** `sync-restored` is rendered by
+the section as a banner directly below the panel, so the two reports read in the order they are
+sent (F8: removal first). Placed inside the panel's projected run-actions it would appear before the
+panel's removal banner. Outside the panel it is also outside the panel's `role="status"`; a banner
+that mounts together with its failure text announces nothing (docs/UI-Designsprache.md §4.4, §4.5),
+so the restore report sits in its own `role="status" aria-atomic="false"` container that mounts with
+the run, and the failure, its reason and its retry enter an already standing region.
+
+---
+
+### 2026-09-26 — A replace can be undone from its transfer file — a fourth destructive run with the replace's safeguards
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-undo.service.ts` (new: `SevenTvUndoService`,
+`UndoRunTarget`, `UndoRunInfo`, `UndoRunItem`, `UndoRunResult`, `UndoSettlement`, `UndoRunSummary`,
+`summarizeUndoRun`) · `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts`
+(`SevenTvRunKind` gains `'undo'`, `SEVEN_TV_RUN_KIND_LABEL_KEY.undo`) · `web/public/i18n/{de,en}.json`
+(`sevenTvRun.kind.undo`, `undo.settling`, `undo.errors.*`) — built on
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`RunOperation.beforeStep`),
+`web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts`, `web/src/app/core/seven-tv/undo-plan.ts`,
+`web/src/app/core/seven-tv/undo-candidate.ts` (`UndoCandidate`, `UndoCandidateTargetEntry`,
+`UndoSourceFileInfo`) and `web/src/app/shared/export/transfer-undo-export.ts` (also holds
+`buildUndoRunProtocol` — see the layering-fix addendum below); consumed from #254's later tasks:
+`web/src/app/shared/seven-tv/undo-confirm-dialog.ts` (the effective plan and the confirmation it
+hands over), `web/src/app/shared/seven-tv/undo-flow.ts`, `web/src/app/shared/seven-tv/file-import-step.ts`
+and `web/src/app/shared/seven-tv/import-trigger.ts` (the switch that reaches `startUndo`),
+`web/src/app/shared/seven-tv/undo-progress-section.ts`, `web/src/app/shared/seven-tv/run-progress-panel.ts`,
+`web/src/app/features/usage-stats/usage-stats-page.ts`,
+`web/src/app/features/usage-stats/usage-stats-leave.guard.ts` and
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` (dock, settle effect, guard,
+`resetIfChannelChanged`).
+
+Issue #254 (spec `docs/superpowers/specs/2026-09-25-replace-undo-254-design.md`, E1, E2, E5–E7,
+E9–E11, E15–E17, E19, E22–E24, spec 17 K2/K4): a successful "replace target" (#230) could only be
+reversed by hand — the restore reached none of its rows (its filter throws out every name the source
+still holds) and carries none of the safeguards a removal needs. The undo is therefore **one door, one
+switch, its own action** (E1): a transfer-run file offers "undo the replacements" next to "fill the
+gaps", and behind it runs a fourth destructive 7TV run — `SevenTvUndoService`, its own engine
+instance like delete, restore and import — registered with the run arbiter as `'undo'`. It holds no
+start lock of its own: busy/settling and the tab's unload guard are the arbiter's (#256), exactly as
+for the three runs before it.
+
+**Every row is an undo pair, and only "exactly `{ alias }`" is removed (E2, E5).** A candidate is one
+`replace` row of the file (`planned`: every row, `unproven`; `finished`: only confirmed REMOVEs). The
+source is removed only when its live entries are exactly one named entry, ordinally equal to the
+collision alias — a REMOVE takes *every* entry of an id, so a second alias somebody gave it since
+would go with it, unrecorded. Anything else skips the row with its live counterpart. A source that is
+already gone makes the row `addOnly`: it re-adds the target's missing entries and so closes the gaps
+the replace run itself left (E7).
+
+**REMOVE first, then one ADD per missing entry, always under an explicit alias (E6, E21).** The
+collision alias belongs to the source until its REMOVE frees it; an entry the file names without an
+alias goes back under the file's `defaultName`. A step that fails ends the row: no auto-rollback, the
+gap is named in the dock and the protocol, and the same undo from the same file closes it — the row
+is then `addOnly` (E9). `partial` replaces only a `done` of an `addOnly` row that left entries out;
+`failed`, `unknown` and `cancelled` keep their status with the omissions next to them (E23, F19).
+The set's slot limit is a warning in the confirm dialog, not a lock (E17): a single-entry `full` row
+is net zero because its REMOVE runs first; only a #74 duplicate cell adds slots.
+
+**The replace's safeguards, and one more (E10, E14, E19, spec 17 K2).** Every lost answer is `unknown`
+and cleared up by one re-read after the run, by the operation of its step, never its number (E24); a
+cancel while a request is in flight ends that row `unknown` too. The recovery file (`transfer-undo`,
+`planned`) is mandatory before the first REMOVE (see the entry below). Beyond the replace: **before
+every REMOVE attempt** — a rate-limit retry included — the service reads the target set afresh and
+classifies that one row again, through the engine's `beforeStep` hook; only an unchanged
+classification sends the REMOVE. A failed or incomplete read skips the row (fail-closed); after three
+failed reads in a row every remaining `full` row is skipped without reading, `addOnly` rows run on.
+The service also repeats the dialog's **origin lock**: without the confirmation for an unproven
+(`planned`) file, no `full` row from it becomes a queue row, whatever the caller hands in.
+
+**Two reports, in order, no client resync on success (E11, E16, F8).** `sync-deleted` names the source
+of every confirmed REMOVE (also of a row whose later ADD stayed `unknown`), then `sync-restored` the
+target of every row with a confirmed ADD — set-centric, no backend change, the existing audit entries.
+The dock shows `backendTriggered` when either answer names the expected channel. The N1 fallback
+resyncs the expected channel only when every report the run sent failed for good — then no report
+reached the backend's own resync; a non-active or untracked target never gets one.
+
+**Deviation from spec 14: the pure modules live in `core/`, not `shared/`.** `undo-plan.ts` sits at
+`core/seven-tv/undo-plan.ts` and the candidate/file types at `core/seven-tv/undo-candidate.ts`,
+alongside `transfer-plan.ts` as `core/`-owned pure modules, rather than at spec 14's `shared/` path.
+Reason: a `core/` service — this one — consumes `undo-plan.ts` at run time (the recheck before every
+REMOVE, E19), and `core/` may not import from `shared/` (layering rule); spec 14 did not anticipate
+that a `core/` module would need it. `buildUndoRunProtocol`/`toExecutedInput`/`settledStatus` go the
+other way, in `web/src/app/shared/export/transfer-undo-export.ts` rather than the service, since that
+mapping's own home is next to the protocol it builds.
+
+---
+
+### 2026-09-26 — Every recovery file restores what its own run removed — the transfer-undo file
+
+**Betrifft:** `web/src/app/shared/export/export-envelope.ts` (`ExportKind` gains `'transfer-undo'`) ·
+`web/src/app/shared/export/transfer-run-export.ts` (`parseTransferRunForUndo`,
+`TransferRunUndoParseResult`, and re-exports `UndoCandidate`/`UndoSourceFileInfo`, defined in
+`web/src/app/core/seven-tv/undo-candidate.ts`) ·
+`web/src/app/shared/export/transfer-undo-export.ts` (new: `TRANSFER_UNDO_FORMAT_VERSION`,
+`TransferUndoRow` — `TransferUndoExecutedRow` | `TransferUndoSkippedRow` —,
+`buildTransferUndoPlanRecord`, `buildTransferUndoProtocol`, `transferUndoJson`, `transferUndoCsv`,
+`transferUndoPlanFilename`, `transferUndoFilename`, `parseTransferUndoForRestore`) ·
+`web/src/app/shared/export/import-source-parser.ts` (rejects `transfer-undo` by name, same as
+`transfer-run`) · `web/public/i18n/{de,en}.json` (`restore.import.sorts.transferUndo`,
+`restore.import.errors.{transferUndo,transferUndoNoRows}`) — consumed from #254's later tasks:
+`web/src/app/core/seven-tv/seven-tv-undo.service.ts` (the run that writes both stages),
+`web/src/app/shared/seven-tv/undo-confirm-dialog.ts` (shows a `planned` file's unproven rows) and
+`web/src/app/shared/seven-tv/file-import-step.ts` (dispatches an uploaded `transfer-undo` file
+straight to the restore parser, no file-step weiche — that weiche belongs to `transfer-run` alone).
+
+Issue #254 (spec `docs/superpowers/specs/2026-09-25-replace-undo-254-design.md`, E2, E3, E12, F6, F7,
+F17, spec 17 K4): a replace's undo is a fourth destructive 7TV run — REMOVE the source emote from the
+target set, then re-ADD whatever entries that `replace` row took from the target — and a
+transfer-run's `planned` file already carries the same mandatory-before-the-first-mutation shape a
+replace itself established (2026-09-23, "The safeguard is a file, not a typed confirmation"; the
+purge-run protocol is a different case — its own file is optional and only ever offered for download
+*after* the run settles, `mass-delete-panel.ts`'s `openProtocolExport`, so it is not a second instance
+of the same rule). The principle stated plainly for the first time here because a second file kind
+that *is* mandatory up front is what makes it worth naming: **a recovery file restores what its own
+run removed, never what some other run removed.** A transfer-run's `planned` file already restores
+the *target* a replace is about to clear (`parseTransferRunForRestore`); it cannot also stand in for
+the *source* an undo removes later — same principle, opposite direction, so the undo gets its own file
+kind rather than overloading the transfer-run file with a second meaning. `transfer-undo` follows the
+same two-stage shape as `transfer-run` (`planned` before the first REMOVE, `finished` after the run
+settles) and versions its own row shape independently (`TRANSFER_UNDO_FORMAT_VERSION`), exactly like
+the purge-run and transfer-run protocols already do — a shared envelope version would tie three
+unrelated row shapes to one number.
+
+**Mirrors #230's "The safeguard is a file, not a typed confirmation" (2026-09-23).** The undo
+downloads its own `planned` recovery file from a live read before issuing a single REMOVE, and
+without it there is no start — the same rule a replace itself follows, one destructive layer down.
+`parseTransferRunForUndo` (in `transfer-run-export.ts`, next to the restore parser it mirrors) reads a
+transfer-run file's `replace` rows back out as `UndoCandidate`s: every row of a `planned` file
+(`provenance: 'unproven'` — a `planned` file is written *before* the first REMOVE and proves nothing
+about whether its run ever started, #254 spec F17/E2), or only the rows whose REMOVE 7TV actually
+confirmed in a `finished` file (`provenance: 'confirmed'`). That candidate carries `provenance`
+straight into the `transfer-undo` file it eventually produces (`UndoCandidate.provenance` →
+`TransferUndoExecutedRow.provenance`), so the paper trail keeps saying how proven a removal was, all
+the way through.
+
+**Review follow-up (2026-09-26): a confirmed REMOVE alone is not enough for `'confirmed'`.** A
+`finished` row is `provenance: 'confirmed'` only when its own `status` also settled `'done'` —
+`failed`, `unknown`, `cancelled` and a stamped `pending` all keep it `'unproven'` and behind the same
+origin lock as a `planned` row, because 7TV having taken the REMOVE says nothing about whether the
+rest of that row's own run (its ADD) ever finished; live state proves state, not the file's stage.
+
+**Does not revive #230's decision 6, the untracked-target replace lock** (already removed by "The
+replace lock for an untracked target falls, and a shared pre-check comes first", 2026-09-25): that
+lock existed only because a replace into an untracked target had no restore path back then. Since
+#253 every set — tracked or not — has a restore and a paper trail regardless of who owns it, and the
+undo's own recovery file is exactly as readable for an untracked target as for a tracked one (its rows
+are set-centric, not channel-centric, same as `transfer-run`'s). The condition that carried the lock
+is gone for the undo exactly as it is for the replace it undoes; reinstating a lock without the reason
+that carried it would be a second, disconnected truth.
+
+**Skipped candidates get their own row kind, not a status.** `TransferUndoRow` is a `kind`-discriminated
+union: `'executed'` for anything the run actually queued (whatever it settled at — `done`, `failed`,
+`cancelled`, `unknown`, or skipped mid-run by its own freshness recheck), `'skipped'` for a candidate
+the run never turned into a row at all — refused as `duplicateInFile` by the classification's own
+step 0 (`core/seven-tv/undo-plan.ts`) or by the service's own lock, dropped in the confirm
+dialog's classification, or refused by the service's own second origin check. A `'skipped'` row cannot
+carry `mode`/`restoredTarget`/`removedSource`/`status`/`completedSteps`: none of those were ever
+decided for it, and forcing the executed row's shape onto a candidate that was never classified would
+mean inventing values for fields that have no honest answer. `counts.requested` on the `finished` stage
+counts only executed rows; `counts.skipped` is the skipped ones on top, never merged into the same
+number. The `planned` stage never carries a `'skipped'` row at all — a back-out file names only what
+its run is about to touch, same as `transfer-run`'s own `planned` stage never named an `add` row.
+
+**Consumed by the tasks that follow.** This entry covers the file formats and their parsers (#254
+T1) on their own; the classification against a live set (`undo-plan.ts`, the entry above), the run
+that writes both stages (`SevenTvUndoService`), the confirm dialog that shows a `planned` file's
+unproven rows and the file-step dispatch that routes an uploaded `transfer-undo` file to the restore
+parser are the later commits described in the two entries above.
+
+---
+
+### 2026-09-26 — The run arbiter takes registrations, counts settling as busy and owns the unload guard
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (`SevenTvRunParticipant`,
+`register`, `activeClaim`, `activeRun`, `destructiveOpen`, `refusedStart`, `noteRefusedStart`,
+`REFUSED_START_FEEDBACK_MS`, the `beforeunload` effect, and — since T4 —
+`SEVEN_TV_RUN_KIND_LABEL_KEY`/`refusedStartMessage`) ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (each: one `register(...)` in its
+constructor; the import loses its own `beforeunload` effect) · `docs/UI-Designsprache.md` (the
+"all start buttons are disabled" rule, and since T4 the confirmed-start notice) ·
+`web/src/app/shared/seven-tv/import-flow.ts`, `web/src/app/shared/seven-tv/restore-flow.ts` (T4:
+`noteRefusedStart` at every confirmed-start check), `web/src/app/features/usage-stats/usage-stats-page.ts`/`.html`
+(T4: `refusedStartNotice`, the §4.5 region), `web/src/app/shared/seven-tv/mass-delete-panel.ts` (T4:
+`abortNotice` reuses the same wording family via `activeClaim()`), `web/public/i18n/{de,en}.json`
+(T4: `sevenTvRun.*`, `massDelete.anotherRunStarted` removed) · `docs/plans/Plan-256-Robustheit.md`
+(T3, Festlegungen 1, 6, 7; T4, Festlegung 8).
+
+Issue #256 point 1, contract P2–P5 of the #254 spec (11.1); the arbiter half of it — the run-bound
+lifecycle behind the three signals is the entry "7TV runs complete run-bound" further down. Until now the arbiter injected the three run
+services and read their `isRunning` in a fixed order (delete, restore, import). That had three gaps:
+a run whose engine was done but whose re-read or report was still out counted as free, so a second
+run could start in exactly that window; the unload guard lived in the import service and saw only
+the import's runs; and a fourth run kind (#254's undo) would have meant another injected service
+and another branch.
+
+- **Services register; the arbiter knows no service.** Each run service calls
+  `inject(SevenTvRunArbiter).register({ kind, isRunning, isSettling, destructiveOpen })` in its
+  constructor. The arbiter holds these participants in a signal, so a service that registers after
+  a derivation was first read is still seen. This turns the DI edge of 2026-09-06 around (it was
+  arbiter → services, "the services do not know the arbiter"): it now runs service → arbiter only,
+  and the arbiter imports nothing but `@angular/core`, so there is still no cycle. A fourth kind is
+  one value in `SevenTvRunKind` and one `register(...)` call. Registration is lazy on purpose: a
+  service that was never constructed never started a run, so it has nothing to claim; no app
+  initializer is involved, which also keeps the run services and the import engine out of the
+  initial bundle. Rejected: a multi-provider token in the usage-stats routes — a root arbiter cannot
+  see route providers, and two arbiter instances would mean two unload guards. **Only a root
+  (`providedIn: 'root'`) service may call `register`**: there is no unregister, so a participant
+  belonging to a torn-down instance would keep counting toward `activeRun`/`destructiveOpen`
+  forever — the three run services all qualify, a route-scoped service never would.
+- **R1 (2026-09-05) is unchanged: derived, not locked.** `activeRun` is still a `computed` over the
+  participants' own signals, with no `tryAcquire`/`release`.
+- **Busy means running or settling.** `activeRun` is non-null while any participant runs **or**
+  settles; every start point already checks `activeRun() !== null`, so they are blocked through the
+  settling window without a change of their own. `activeClaim` gives the reason as `{ kind, phase:
+  'running' | 'settling' }`. With several claimants (constructed only — the start points prevent
+  it), a running one beats a settling one, otherwise registration order wins; the old fixed kind
+  order would have been a service list in disguise. The same kind registered twice is not refused.
+- **The unload guard is the union.** `destructiveOpen` is true while any participant reports a
+  destructive run open, and the `beforeunload` effect moved here from the import service, armed and
+  disarmed only on a transition and removed on destroy. A run no dock shows any more still holds
+  it. Visible change: **a delete run now protects the tab** from its start until its report has an
+  end state (Plan-256 Festlegung 6), as an import with a `replace` row already did; a restore never
+  does.
+- **Busy always resolves.** `isSettling`/`destructiveOpen` stay true only while a participant's own
+  report has no end state yet; every report a run opens (`sync-deleted`, `sync-imported`,
+  `sync-restored`) is guaranteed to reach `succeeded | partial | failed` within `REPORT_TIMEOUT_MS`
+  of its last attempt, because the response is classified (`map`) before `retry` ever sees it — a
+  throw reaching `retry` unclassified used to leave a run `reporting`, hence a claim here, forever
+  (fixed as part of #256 T1's review, Mitgabe 1). The arbiter holds no timer of its own; it only
+  ever reflects what the report chain has already resolved.
+- **One visible consequence: the delete dock's own restore button.** `mass-delete-panel.ts` shows it
+  only once `arbiter.activeRun() === null` — a finished delete run holds the claim through its
+  `reporting` phase, so the button appears only after `sync-deleted`'s answer reaches an end state,
+  not as soon as the deletion itself is done. The same fact reads the other way round too, **for a
+  run's first report**: a `sync-restored` report can never reach our Api before that run's own
+  `sync-deleted` has, because starting the restore run — the earliest point a `sync-restored` report
+  could go out — is gated on exactly that button. It does not extend to a *manual* retry: a delete's
+  `retrySyncReport()` (#256 P2 on the Plan-256-Robustheit review) re-sends `sync-deleted` for the same
+  ids at any later time, including after the set's own `sync-restored` has already answered — nothing
+  in the arbiter or either run's lifecycle blocks that ordering, since the delete run is `closed`
+  by then and the retry does not reopen it. Harmless in practice: the retry only repeats an audit
+  entry for ids already archived, and the worker's periodic resync (never the report itself) is what
+  reconciles the set's actual state regardless of which report answered last.
+- **The refusal notice is arbiter business.** `noteRefusedStart(attempted)` records what a start
+  point tried and what blocked it (`refusedStart`, cleared after `REFUSED_START_FEEDBACK_MS` = 4000
+  ms, §4.5; a second refusal restarts the window). On a free arbiter it notes nothing, so the notice
+  never names a reason that is not there. #256 T4 wires this up: `import-flow.ts` and
+  `restore-flow.ts` call it at every point where a *confirmed* run finds nothing to start, and
+  `usage-stats-page.ts` renders it as its own transient region (`refusedStartMessage`,
+  `SEVEN_TV_RUN_KIND_LABEL_KEY` — a `Record<SevenTvRunKind, string>`, not a key built from the kind,
+  so a future kind missing its noun is a compile error, not a silent unresolved key).
+  `mass-delete-panel.ts` reads `activeClaim()` directly for its own, already-persistent
+  `abortNotice` instead of calling `noteRefusedStart` itself — routing the same refusal through the
+  arbiter's transient notice too would announce it twice on a page that mounts both. The still-silent
+  locks (a disabled trigger outraced by a click, the confirm dialog's own `runBlocked`) are
+  unaffected — nothing has been confirmed yet at those points.
+
+---
+
+### 2026-09-26 — After a drifted replace target, reload reads the target live
+
+**Betrifft:** `web/src/app/shared/seven-tv/import-flow.ts` (`reloadLive`, `toLiveTargetSelection`) ·
+`web/src/app/core/emotes/import-target-loader.ts` (`loadImportTarget`'s `options.refresh`,
+`fetchLiveTarget`) · `web/src/app/shared/seven-tv/import-confirm-dialog.ts`
+(`ImportConfirmDialogData.reloadLive`, the `drifted` notice's own button) ·
+`docs/plans/Plan-256-Robustheit.md` (T6, Festlegung 9).
+
+Issue #256 point 2. The confirm dialog's `drifted` notice already comes out of a live read (the
+recovery-file check before a replace run) finding the confirmed target has moved on — its own
+"Ziel neu laden" button used to call the same `retry()` every other reason (`readFailed`, a failed
+or missing target) uses, which repeats the *original* load. For a tracked channel's active set that
+load is the Postgres-backed "today" path (`EmoteSetStatus`/`listEmotes`, AK 36 of #200) — the same
+kind of read that can already be a drift round behind 7TV, the very gap this notice exists to close.
+
+The button now calls a second function, `reloadLive`, that forces the loader's live branch
+(`loadEmoteSetPreview` via `'trackedSet'`/`'untrackedSet'`) for the `setId` the last `ready` answer
+already resolved — never re-derived from the target passed into the flow, so a stale id can never
+leak into the selection either. Without a `ready` answer yet, `reloadLive` falls back to the
+ordinary load rather than doing nothing (fail-closed). **AK 36 is unaffected: the *first* load of a
+tracked active set still takes the "today" path unchanged; only a drift-triggered reload takes the
+live one, and it costs the same 7TV preview-read budget any other live target read already does.**
+A non-active tracked or an untracked target already took the live branch on its first load, so
+`reloadLive` repeats the same call there — nothing changes for those besides a fresher answer.
+
+**2026-09-26 follow-up (Codex P2):** the first cut above still landed on `loadEmoteSetPreview`'s
+plain two-argument overload, which reads through the backend's own 60 s preview cache for the set-ID
+route (6.4) — the same cache `loadCachedEmoteSetPreview`'s doc describes as sitting behind the
+shared `ForeignEmoteLookup` limiter. A `reloadLive` call inside that 60 s window therefore got back
+the exact same drifted answer that triggered the notice in the first place, turning "Ziel neu laden"
+into a drift/reload loop instead of a fix. `reloadLive` now calls `performLoad` with
+`{ refresh: true }`, threaded through `loadImportTarget`'s new `options.refresh` parameter to
+`fetchLiveTarget`, which — only on that flag — calls `loadEmoteSetPreview(channelName, emoteSetId,
+{ refresh: true })` instead of the two-argument form; the query parameter this adds
+(`?refresh=true`) is what makes the backend bypass its cache for this one read. `load()` and `retry`
+never pass the flag, so neither the ordinary first load nor a `readFailed` retry changes cost. The
+cost this adds is exactly what Festlegung 9 already priced in — one `ForeignEmoteLookup` permit per
+drift reload (the same 10-permits/60 s bucket the set-list and every other live-preview read already
+share) — the fix closes the cache hit that made even that one permit come back with stale data, it
+does not add a second one.
+
+---
+
+### 2026-09-26 — 7TV runs complete run-bound — running → settling → reporting → closed; reset() detaches the display only
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts` (`RunPhase`, `RunRecordBase`,
+`SevenTvRunLifecycle`, incl. the `closed`-is-final guard in `update()` and `discardUnstarted()`) ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`ImportRunInfo`,
+`isSettling`, `destructiveOpen`, the dock projections, `reset`, `markProtocolSaved`;
+`destructiveRunActive` and `applyIfCurrent` removed) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (`DeleteRunInfo`, `run`, `lastRun`,
+`syncReport`, `syncReportReason`, `isSettling`, `destructiveOpen`, `REPORT_TIMEOUT_MS`,
+`timeoutReportAttempt`) · `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (`RestoreRunInfo`,
+`run`, `syncReport`, `syncReportReason`, `resyncTrigger`, `isSettling`, `destructiveOpen`) ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`reset` doc, `showFinishedRows`) ·
+`web/src/app/shared/seven-tv/import-progress-section.ts`,
+`web/src/app/shared/seven-tv/mass-delete-panel.ts`,
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (all three: `[dismissible]`; review round:
+`mass-delete-panel.ts`'s `openRestoreConfirm` also freezes `hostChannelName` to the finished run's
+own channel, see below) ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` (`dismissible` doc) ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle`) ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` (review round: the
+channel-change effect reads `run()` `untracked`, see below) ·
+`web/public/i18n/{de,en}.json` (`massDelete.settling`, `restore.settling`, review round:
+`restore.errors.channelUnknown`) ·
+`docs/plans/Plan-256-Robustheit.md` (T1, T2, Festlegungen 2, 3, 4, 6, 13, 14, 15).
+
+Issue #256 point 1, contract P1/P6 of the #254 spec (11.1). Until now a run's closing work was
+bound to the *display*: `onRunComplete` returned early when `run()` was no longer the run that
+finished ("only reachable via reset() during the run"), and every report answer was written only
+if its run was still shown (`applyIfCurrent`). A `reset()` in the wrong moment therefore dropped
+the re-read and both reports of a run whose 7TV mutations had happened — the one outcome this
+feature must never allow. On top of that, `SevenTvRunEngine.reset()` during a run empties the
+queue `finish()` builds its result from, so even without the early return nothing would have been
+reported. And the arbiter and the unload guard read signals of the shown run only.
+
+A run is now a record with its own lifecycle, held by `SevenTvRunLifecycle` (one plain-class
+instance per run service, like the engine): `running` (the engine works) → `settling` (the
+re-read of `unknown` rows, import only) → `reporting` (at least one report without an end state)
+→ `closed` (every report opened has `succeeded | partial | failed`, or there was none). The rules:
+
+- **Identity is `runId`, not the object.** Records are replaced on every change so signals see it;
+  every late answer finds its record by id.
+- **Report states live on the record** (`syncReport`, `removalReport`, `removalReportReason`,
+  `resyncTrigger`, plus `abortedForPrivileges` and `protocolSaved`). The service signals the dock
+  reads keep their names and types but are `linkedSignal` projections of `run()` — writable, because
+  a large share of the existing spec suite drives a dock directly through `.set(...)` calls on
+  these very signals (a plain `computed` would break every one of them, unseen by any filtered
+  test run); production code never writes them, only the record (`markProtocolSaved()` replaces
+  the dock's direct `protocolSaved.set(true)`).
+- **`reset()` and a newer run only change what is shown.** A run in flight runs to its end — it is
+  deliberately *not* cancelled: without `transportLossIsUnknown` a cancelled request in flight would
+  end `cancelled` although 7TV may have applied it (Codex finding on the plan). The engine's queue is
+  cleared once `finish()` has built the result, not at `reset()`.
+- **`isSettling` and `destructiveOpen` span every open run of the service**, shown or not;
+  `destructiveOpen` holds from start to `closed`. The import's `beforeunload` guard hung off it here
+  until T3 (arbiter) of #256 moved it out: the guard now lives on the arbiter, as the union of
+  `destructiveOpen` across all three run services (see the entry above). `destructiveRunActive` is
+  gone.
+- **`closed` is final.** A manual retry is a new report on a closed run: it neither reopens it nor
+  brings back `isSettling`/`destructiveOpen`. A resync is not a report and never holds a run open.
+- **Every report attempt has a time budget** (`REPORT_TIMEOUT_MS = 30_000`, exported next to
+  `SYNC_RETRY_DELAY_MS`): a run out counts as a network failure, so the usual retries follow and then
+  `failed`/`unavailable`. Without it a report that never answers would keep its run open forever.
+- **Close waits for `closed`** (import dock: `[dismissible]` from `settlement === 'settled'` to
+  `phase === 'closed'`), so a failed report always has its dock with reason and retry. A run
+  detached by a programmatic `reset()` whose report then ends failed or partial is **shown again**
+  when nothing else is shown and no run is in flight (`reshow` plus the engine's
+  `showFinishedRows`, which puts its rows back so the dock mounts); otherwise the failure stays on
+  the record and goes to `console.warn`.
+
+One reader had to follow: the usage-stats page's `watchRunSettle` recognised a settle by the run
+object, which now changes with every report answer and would have reloaded a chosen non-active set's
+member list once per answer. It now dedupes on the settled `result` object, which does not change.
+`ImportSettlement` stays as its own field rather than a `computed` off the phase: `settleRun` sets it
+to `'settled'` in the same `update()` call that moves the phase to `reporting`, in lockstep, not
+derived from it after the fact — the two happen to agree (`'settled'` ⇔ `reporting | closed`)
+because both readings describe "the outcome is final", but the field is what the dock, that page and
+#254 actually read.
+
+Delete and restore (#256 T2) now run on the same building block. `run` becomes each service's own
+writable lifecycle signal (`lastRun` on the delete service stays its unchanged-shape projection of
+it); `syncReport`/`syncReportReason` on both, plus the restore's `resyncTrigger`, become the same
+kind of `linkedSignal` projection `run()` already gave the import. Neither ever sees `settling`:
+a delete/restore run has no re-read, so it goes straight from `running` to `reporting`. Two
+behaviour changes follow:
+
+- **Every delete row is destructive** (Plan-256 Festlegung 6) — a delete run's `destructiveOpen`
+  now correctly reads `true` from `startDelete` to `closed`, the same way an import's `replace` plan
+  drives its own; a restore's always stays `false` (only `ADD`s, `destructive: false` always). The
+  signal is what the tab's `beforeunload` guard hangs off, but the actual arming — the union of
+  `destructiveOpen` across delete, restore and import into one guard — was T3's arbiter's job, not
+  this step's; T3 has since landed (see the entry above).
+- **Schließen-Gate and channel switch now wait for `closed`** (Plan-256 Festlegung 13, Codex-Befund
+  2 on the plan): both docks bind `[dismissible]` to `run.phase === 'closed'` instead of "the engine
+  stopped", and `resetIfChannelChanged` now only resets a `closed` run — a run still reporting
+  follows the user to the next channel for the few seconds until its report reaches an end state,
+  rather than losing its dock (and its retry) to a channel switch mid-report; the host page's own
+  channel-change effect reads `run()` only `untracked()`, so the run reaching `closed` on the page it
+  now sits on does not itself retrigger the switch check (#256 review finding, P1) — only the next
+  actual channel change, or an explicit close, does. Losing its dock this way is a different case
+  from a run *detached* by a programmatic `reset()`: that one, should its report then end
+  `failed`/`partial`, shows itself again exactly like the import's — a channel switch never detaches
+  a still-reporting run in the first place, so this reshow path is not what carries it across pages.
+
+**Review round: the delete dock's restore entry now attributes to the run, not the page** (#256
+P3-3 on the Plan-256-Robustheit review). `mass-delete-panel.ts`'s `openRestoreConfirm` used to build
+`hostChannelName` from the panel's own live `channelName()` input — correct as long as the finished
+delete run and the page it is shown on agree, which the "Schließen-Gate…" bullet above establishes
+is no longer guaranteed: a `reporting` run follows the user to another channel, so the panel's input
+and the run's own frozen channel can drift apart while its dock is still visible there. Restoring
+against the live page in that case would attribute the restore to wherever the dock merely happened
+to still be mounted, not to the channel the delete actually ran on. This revises the "the page only
+supplies the host fields" entry above (2026-09-25, `hostChannelName`/E13, `hostSelectedSetId`/E21)
+for this one caller: the panel path now reads `hostChannelName` off `DeleteRunInfo.channelName` — the
+run's own frozen field — instead of the page's `channelName()`; the other entry point
+(`ImportTrigger`'s restore-file door) is untouched, since it never carries a delete run to begin
+with. `channelName` is a required field of `DeleteRunInfo` and never empty in practice, but the
+button now locks on it defensively (`restore.errors.channelUnknown`, de/en, provisional wording like
+every other reason in this family) rather than silently mis-attributing a future run shape that
+could ever lack one.
+
+---
+
+### 2026-09-26 — The restore confirmation hedges its count on a truncated read too, not only a failed one
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts`
+(`RestoreAlreadyPresentFilterResult.complete`, `filterAlreadyPresentForRestore`,
+`restoreConfirmPreviewUnavailable`) · `web/src/app/shared/seven-tv/restore-flow.ts`
+(`startRestoreFlow`) · `web/src/app/shared/seven-tv/mass-delete-panel.ts`
+(`handleRestoreConfirmPreview`) · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`
+(`RestoreConfirmDialogData.countIsUpperBound` doc) · `already-present-filter.spec.ts` ·
+`restore-flow.spec.ts` · `mass-delete-panel.spec.ts`.
+
+Codex review finding (P2) on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change: both
+restore confirmations already hedge their title and slot projection as "up to N" when the open-time
+duplicate check's own 7TV read fails outright (`available: false`). But `loadSevenTvSetEntries` can
+also come back `available: true` with `complete: false` — the read succeeded, but stopped at the
+10-page runaway guard, or 7TV's own `totalCount` did not match what the pages actually delivered
+(`SevenTvSetEntries.complete`). `filterAlreadyPresentForRestore` deliberately keeps filtering
+against a truncated read rather than failing the whole check open (see its own doc — a partial read
+still catches every duplicate genuinely inside the pages it saw), but its `available: true` result
+used to discard that read's own completeness signal entirely. Both confirmations therefore showed an
+exact-looking ADD count and an exact-looking slot projection built from a read that had not actually
+seen the whole set — silently more confident than the check itself was.
+
+**What changed.** `RestoreAlreadyPresentFilterResult` gains a `complete` field, carrying
+`SevenTvSetEntries.complete` through from `filterAlreadyPresentForRestore`'s own read (`false` on a
+failed fetch, same as `available`). `RestoreConfirmPreview` inherits it via
+`loadRestoreConfirmPreview`, unchanged otherwise. Both call sites now compute
+`countIsUpperBound: !preview.available || !preview.complete` instead of `!preview.available` alone.
+Nothing about *what* gets filtered changes — the aliases found present or name-taken in the pages
+the read did see are still dropped exactly as before, and the confirmation still names and counts
+exactly those survivors; only the *wording* now also hedges when the read was merely partial, not
+only when it failed outright.
+
+---
+
+### 2026-09-26 — A restore's confirm-time recheck can only narrow the confirmation, never widen it
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts` (`clipToShown`) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`) ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (`handleRestoreConfirmPreview`) ·
+`web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Codex review finding on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change
+(2026-09-25 entry below): that change made both restore entry points run
+`filterAlreadyPresentForRestore` once, fresh, right before the confirmation opens, so its title and
+slot projection count what the run will actually send. The confirm-time re-check that already ran
+afterward, right before `startRestore`, kept querying the *original*, unfiltered row set every
+time — correct for *narrowing* the set further (that is the whole reason it re-reads instead of
+reusing the open-time answer), but it left a hole for *widening* it back: a row, or one alias of a
+row, the open-time check had already found present — and which the confirmation dialog therefore
+never named or counted — could come back as "missing" at confirm time if the live entry disappeared
+from the target set in the window between the two reads (another editor, or the confirmation simply
+left open a while). It would then be sent as an `ADD` the user never saw or agreed to, silently
+invalidating the capacity number the dialog had already committed to.
+
+**What changed.** The confirm-time check still queries `filterAlreadyPresentForRestore` with every
+row's full, original alias context — it has to, to keep applying that function's rule 2 correctly
+(a row whose input aliases were pre-trimmed to only what survived the open-time filter would make an
+alias that lives under a different, correctly-still-missing name of the *same* row look "foreign",
+and drop the row outright — the #74 duplicate-cell partial retry this filter exists to support).
+Its result is intersected through the new `clipToShown(rows, shown)` against the open-time
+preview's own `rows` — id by id, then alias by alias for whichever ids survive that — before it
+ever reaches `startRestore`. A row whose id was filtered out entirely at open time is dropped even
+if the confirm-time read now calls it missing; a row that only partially survived keeps at most the
+aliases the open-time answer still named for it. The invariant this establishes, and the reason for
+the two-step shape (query full, then clip) rather than querying the already-narrowed set directly:
+**the confirm-time check can only narrow what the confirmation showed, never widen it.** The skip
+counters (`skippedDuplicates`/`skippedNameTaken`) are unaffected — they still come straight from the
+confirm-time check's own fresh count, exactly as before this fix.
+
+---
+
+### 2026-09-26 — The shared restore pre-check gate now releases on the caller's own teardown too
+
+**Betrifft:** `web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`'s `previewPending`
+read) · `web/src/app/shared/seven-tv/mass-delete-panel.ts` (`openRestoreConfirm`,
+`openRestoreConfirmDialog`) · `web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Second Codex review finding on the 2026-09-26 "share the restore pre-check gate across both entry
+points" fix: moving `previewPending`/`restoreConfirmPending` onto the shared, root-level
+`SevenTvRestoreService.restorePreCheckPending` closed the race between the two restore entry
+points, but it also raised the cost of a gap that fixing entry-local flags had made harmless before
+it — every read in the pre-check chain (`resolveEditableSet`, then the open-time duplicate check)
+released the flag only from its own `next`/`error` branches. `takeUntilDestroyed` unsubscribes on
+the caller's teardown (a route change, a closed panel) without ever calling either, so tearing down
+mid-read left the flag `true` for good. Before the flag was shared this only ever disabled a
+component that no longer existed; once it lives on the service, the same gap disabled *both* restore
+entries, on whichever page they next mounted, until a full reload.
+
+**What changed.** Every read in the chain now releases the flag through `finalize` on its own pipe
+rather than a manual `.set(false)` inside `next`/`error`, so teardown releases it exactly like a
+settled answer does. `mass-delete-panel.ts`'s `openRestoreConfirm` has two chained reads sharing one
+flag; its `resolveEditableSet` pipe's `finalize` skips the release when a local `handedOff` flag is
+`true` — set right before the second read (`openRestoreConfirmDialog`) starts — so the flag stays
+held across the handoff instead of flickering to `false` between the two reads. The
+already-documented behaviour of releasing the flag while a token prompt is open in between is
+unchanged: that exit still sets `handedOff` to `false`, so it still releases. `restore-flow.ts` has
+only the one read, so its `finalize` releases unconditionally, same as `openRestoreConfirmDialog`'s
+own single read in `mass-delete-panel.ts`.
+
+---
+
+### 2026-09-26 — `channelMismatch` splits into two reasons, and `partial` gets its own wording
+
+**Betrifft:** `web/src/app/core/seven-tv/sync-report-outcome.ts` (`SyncReportReason`,
+`isChannelMismatch`, `classifySyncInSetResponse`) ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` (`syncReportTitleKey`/`syncReportTextKey`,
+`syncRetryOffered`) · `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` (`UnresolvedChannel` doc) ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (E18, E23, 4.4 Nr. 14, 6.4, N4,
+§18 addendum).
+
+Review finding on issue #255. `syncReportReason` used to fold both `UnresolvedChannel.reason`
+values (E18: `'notTracked'` — the expected channel is not currently tracked at all — and
+`'activeSetDiffers'` — it is tracked, but this set is not its active one right now) into one
+`'channelMismatch'` value, so the dock could never say *which* of the two applied, even though they
+call for different expectations (one never heals itself, the other heals over the resync that is
+already running for `activeSetDiffers`). `SyncReportReason` now carries
+`'channelMismatchNotTracked'`/`'channelMismatchActiveSetDiffers'` instead, and every producer
+(`classifySyncInSetResponse` in the shared `sync-report-outcome.ts`, used identically by the
+delete, import and restore services) and consumer picks the one that matches
+`UnresolvedChannel.reason`. `isChannelMismatch(reason)` folds both back into one boolean wherever a
+caller only needs "is this some channel-mismatch reason at all" — chiefly addendum N4's retry rule
+(`syncRetryOffered`, and the `retrySyncReport`/`retryRemovalReport` refusal in all three services),
+which treats both identically and would otherwise have had to enumerate them at every comparison
+site.
+
+Separately, but in the same commit because it touches the same notice: `partial` gets its own
+title and body text, distinct from `failed`. `RunProgressPanel.syncReportTitleKey`/
+`syncReportTextKey` (`labelPrefix() === 'restore' | 'massDelete'`) now switch on
+`syncReport() === 'partial'` to `.syncPartialTitle`/`.syncPartial` ("… recorded at EmotePurge — but
+not completely.") rather than reusing `.syncFailedTitle`/`.syncFailed` ("… reporting back to
+EmotePurge failed …"), which was simply wrong for a report that in fact went through, just not for
+every row. `import.syncPartialTitle`/`import.syncPartial` never had a way to be reached — the
+import's own `syncReport` (the sync-imported call) answers with a bodyless 204 and can never become
+`'partial'` — and are removed rather than kept dead; `import.removalSyncPartial*`, the unrelated
+pair for the *removal* report of a replace row's confirmed REMOVE (which can become `'partial'`),
+is untouched.
+
+---
+
+### 2026-09-26 — Adopts count as "renamed" in the dock, and a rename-only plan's button says "Align"
+
+**Betrifft:** `web/src/app/shared/seven-tv/run-progress-panel.ts` (`renamedCount` input,
+`summaryCountsKey`) · `web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`doneAdoptCount`) ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` (`executeLabelKey`, `titleIsRenameOnly`) ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` (`copiedNotActiveNotice`,
+`renamedNotActiveNotice`) · `web/public/i18n/de.json` · `web/public/i18n/en.json`.
+
+Review findings on issue #255. An adopt (`adoptSourceName`) renames an existing target-set entry in
+place; it is not a copy. The dock's summary line used to count a `done` adopt the same as a `done`
+plain add ("N kopiert"), overstating what the run actually added — `RunProgressPanel` now accepts
+an optional `renamedCount` (fed from the import service's own `doneAdoptCount`, a count only the
+import run can ever produce) and splits it out of "kopiert" into its own "M umbenannt" segment,
+shown only once there is something to name. The same distinction reaches the two dock notices for a
+copy into a tracked but *not currently active* set (`copiedNotActiveNotice`): it now requires at
+least one `done` row that is not an adopt, and a rename-only outcome (every `done` row an adopt, at
+least one) gets its own `renamedNotActiveNotice` wording ("In Set '…' umbenannt — …") instead; a run
+where nothing at all succeeded gets neither.
+
+The confirm dialog's button follows the same distinction for a plan that is *exclusively* renames
+(`titleIsRenameOnly`, no `add`/`replace` row at all): "Kopieren" would misdescribe it exactly as
+"Hinzufügen läuft danach…" would, so both are replaced for that one case — the run notice with a
+sentence about renaming, and the button with a fourth word, "Angleichen"/"Align", matching the
+title it already used for this case (`import.confirm.titleAlign`, "N Namen im Zielset angleichen?").
+This corrects an earlier fix's own choice to reuse "Übertragen" for that button: the entry of
+2026-09-07 ("Ein Verb für die Übertragung", #92) reserves that verb for the header button/dock
+shortcut that opens the whole import flow (`import.copyButton`/`import.dockCopyButton`) — using it
+a second time, for a button inside the confirmation that flow leads to, would have reintroduced the
+exact ambiguity #92 exists to prevent (two controls, same word, in this case not even the same
+*step*). A plan that adds anything at all, mixed with adopts or not, keeps "Kopieren"/"Hinzufügen
+läuft danach…" unchanged — that wording is still literally true there.
+
+---
+
+### 2026-09-25 — A restore into a non-active target no longer triggers its own resync
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (`resyncAfterReport`,
+`ResyncTriggerState` doc, `RestoreStartTarget`/`RestoreRunInfo` doc) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`restoreStartTarget` doc) ·
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (doc only) ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.spec.ts` ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (E12, 6.4, §18 addendum).
+
+Part of task T1 of issue #255, itself a follow-up to the restore-per-set plan (#253). Before this,
+a restore into a **non-active** set of a tracked channel made the client trigger its own resync of
+that channel once the closing `sync-restored` report answered (the former E12 in the design doc,
+`resyncAfterReport` reading `resyncChannelName`) — the one case no backend resync covered, because
+the backend only resyncs a channel's active set. The reasoning at the time was that this at least
+reloaded *something*, but it never reloaded the *right* thing: a channel resync only pulls the
+channel's active-set view current, never a non-active set's member list, which is what the run
+actually changed. The request could succeed while confirming nothing the operator or the user
+watching the dock actually cared about — a resync line and a "being re-synced" state describing a
+list that never moves. The import already drew this conclusion for the identical situation and
+never resyncs a non-active target at all (`seven-tv-import.service.ts:657-671`); the restore now
+matches it.
+
+**What changed.** `SevenTvRestoreService.resyncAfterReport` now returns immediately whenever
+`expectedChannelName` is `null` — i.e. for any target that is not the tracked channel's active set,
+tracked or not — before even looking at the report's `resyncTriggered` answer. No
+`POST /api/channels/{channel}/resync` goes out, `resyncTrigger` stays `'idle'`, and the dock shows
+no resync line for that run. This applies uniformly: a successful report that names the channel in
+`resyncTriggered` no longer flips to `'backendTriggered'` either (there is no client resync left to
+suppress) — it simply stays `'idle'`, same as a report that names nothing. The **N1 fallback**
+(2026-09-25, addendum in the design doc's §18: a report that fails for good gets a client resync
+standing in for the backend's) is now active-set-only as well — it used to fall back to
+`resyncChannelName ?? expectedChannelName`, which is now just `expectedChannelName`, since
+`resyncChannelName` no longer feeds any resync decision.
+
+**What did not change.** The active set of a tracked channel keeps its full pre-#255 behaviour
+unchanged: the backend's own resync (E17) still covers it, `resyncTrigger` still becomes
+`'backendTriggered'` when the answer already names the expected channel (including the stale,
+`activeSetDiffers` case); when the answer names some other channel or none at all, `resyncTrigger`
+simply stays `'idle'` and no request of the client's own goes out — the backend's own resync
+already covers the active set unconditionally there, whatever `resyncTriggered` happens to list.
+The only client resync left for the active set is the N1 fallback, which still fires when the
+report fails for good. An untracked target still gets no client resync either, exactly as before —
+nothing there depended on `resyncChannelName`. `resyncChannelName` itself is not removed from
+`RestoreStartTarget`/
+`RestoreRunInfo`: it still names a non-active tracked target's channel for
+`RestoreProgressSection`'s target line (the "Target: *channel* · set *name*" wording versus the
+untracked "Target: set *name* of *owner*" one), a purely cosmetic use unrelated to resyncing
+anything — only `resyncAfterReport` stopped reading it. No i18n key became unreachable: every
+`restore.resync.*` string is still shown, just only ever from the active-set path now.
+
+---
+
+### 2026-09-25 — usage-stats becomes a lazy child route to keep the leave guard out of the initial bundle
+
+**Betrifft:** `web/src/app/app.routes.ts` (the `usage-stats` entry: `loadChildren` instead of
+`loadComponent`, `canDeactivate` removed) · `web/src/app/features/usage-stats/usage-stats.routes.ts`
+(new — the lazy child module, `component: UsageStatsPage` + `canDeactivate: [usageStatsLeaveGuard]`).
+The behavioral check for this split, `web/src/app/features/usage-stats/usage-stats.routes.spec.ts`,
+landed in a separate commit and is described there.
+
+Issue #264: `ng build --stats-json` after merging `main` into `feat/emote-sets-200` via PR #263
+(`chore/200-sync-main`) put the initial bundle at 510.4 kB, over the 500 kB warning budget — a
+genuine result of the merge, since neither branch alone was over it (epic branch 499.5 kB, main
+496.8 kB). By the time this fix started, `feat/emote-sets-200` had moved on to 992eef14 (after PR
+#270 merged further work), where the same build measured 513.14 kB — that later number is the
+baseline the fix below is actually measured against. The chain was `app.routes.ts`'s `usage-stats`
+route → its `canDeactivate: [usageStatsLeaveGuard]` →
+`usageStatsLeaveGuard`'s `SevenTvImportService` dependency, which pulls in the whole 7TV import
+engine (the run engine, the delete/restore services, the emote-set/emote-admin services) plus CDK
+Dialog, Overlay and Scrolling — roughly 127 kB, all of it eager because the guard sat on a
+`loadComponent` route and guards are resolved together with the route they guard. None of that
+belongs in every page's initial load — only in a navigation that actually reaches toward
+usage-stats (see the compromise on exactly when, below); before this fix it loaded on first paint
+regardless of which route a visitor landed on.
+
+**The fix (A2): split `usage-stats` into its own `loadChildren` module, with a plain static
+`component` inside it, not a nested `loadComponent`.** `app.routes.ts`'s `usage-stats` entry keeps
+`canActivate: [usageStatsAccessGuard]` (unaffected — it depends only on `AuthService`/
+`ChannelService`) and trades `loadComponent` + `canDeactivate` for a single
+`loadChildren: () => import('./features/usage-stats/usage-stats.routes').then((m) => m.USAGE_STATS_ROUTES)`.
+The new file's one entry (`path: ''`) carries `component: UsageStatsPage` directly rather than
+another `loadComponent` — a nested `loadComponent` would split `UsageStatsPage` into a *second*
+chunk for no size benefit (the `loadChildren` import already produces one chunk on its own) and
+would cost an extra network round trip before the page renders. Measured: 404.07 kB initial /
+106.39 kB transfer, with `usage-stats-routes` as its own 213.16 kB / 44.67 kB lazy chunk.
+
+**A conscious compromise: the chunk now loads before the guard runs, not after.** In Angular
+22.1.6, route recognition resolves `loadChildren` while expanding the route tree, and that happens
+before `checkGuards` (`_router-chunk.mjs`, the `recognize`/`checkGuards` stages of the navigation
+pipeline around lines 3202–3222 and 3903). So a visitor who cannot actually open usage-stats — a
+voter, or a logged-out visitor arriving via the `/channels/x` redirect — now downloads the
+`usage-stats-routes` chunk before `usageStatsAccessGuard` redirects them away, where the old flat
+`loadComponent` route only loaded the page after guards had already passed. Not a correctness bug —
+the chunk sits inert until something renders it, and the redirect still happens — but a real,
+accepted trade-off against the pre-#264 behavior. `canMatch` is not a free way around this: it
+re-evaluates on every navigation into the route, including every `listQueryState` query-param
+change the page itself makes while already open, not once per visit.
+
+**Why not the alternative sketched in the issue (a slimmer guard, keeping the flat route).** The
+issue also sketched making `usageStatsLeaveGuard` depend only on a small root signal ("an import is
+running") instead of `SevenTvImportService` directly, loading the confirmation dialog dynamically
+only when it actually needs to show one — sidestepping the `leadsToSameRoute` risk below entirely,
+since the route shape would never change. Measured at 406.56 kB initial — smaller than doing
+nothing, but larger than A2, and it would have introduced a new registration convention (something
+has to expose that root signal and keep it in sync with the real service) plus an async guard
+(dynamically importing the confirm dialog inside the guard itself) — A2 measured about 2.5 kB
+smaller than this alternative (404.07 kB against 406.56 kB). Not implemented.
+
+**The `leadsToSameRoute` risk the issue flagged, checked.** `usageStatsLeaveGuard`'s
+`leadsToSameRoute` helper tells a pure channel switch apart from a real navigation away by
+comparing `ActivatedRouteSnapshot.routeConfig` object identity — walking the next router state for
+a snapshot whose `routeConfig` is the same object as the current route's. Moving the route into a
+child `loadChildren` module changes which object plays that role, so this needed an explicit check,
+not just "the build still compiles" (the issue's own words). It still holds: Angular's router
+caches a `loadChildren` route's resolved array on the route object itself
+(`route._loadedRoutes`), and for a plain array export (no `NgModule`) this happens without a new
+child injector (`route._loadedInjector` stays `undefined`, confirmed by reading
+`_router-chunk.mjs`'s `loadChildren()`/`RouterConfigLoader.loadChildren()`) — so the `path: ''`
+entry inside `usage-stats.routes.ts` keeps the same object identity across every navigation after
+the first, exactly as a flat top-level route did, and DI still resolves against the current
+injector rather than a stale cached one. `usage-stats.routes.spec.ts` asserts this behaviorally
+(channel switch during a run: no dialog, same `UsageStatsPage` instance, the route param follows)
+rather than trusting the reasoning alone, and does it against the real `routes` export and the real
+`USAGE_STATS_ROUTES` array — not a hand-typed stand-in of their shape, so a future reshape of either
+file breaks this test instead of only the production build.
+
+---
+
+### 2026-09-25 — The replace lock for an untracked target falls, and a shared pre-check comes first
+
+**Betrifft:** `web/src/app/shared/seven-tv/conflict-resolution.ts` (rule 7,
+`ruleReplaceNeedsTrackedTarget`, `ResolutionContext` all gone) ·
+`web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` (`collisionStepRows` loses its
+`targetIsTracked` parameter) · `web/src/app/shared/seven-tv/import-confirm-dialog.ts` (the same
+field and the three call sites that carried it) · `web/src/app/core/seven-tv/seven-tv-import.service.ts`
+(the guard in `startImport`, and `reportTargetCheckBlocked`/`targetCheckBlockReason`) ·
+`web/src/app/shared/seven-tv/import-flow.ts` (`start`'s pre-check before `recheckTransferPlan`) ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (the same pre-check before the delete
+confirmation opens) · `web/src/app/shared/seven-tv/import-progress-section.ts`,
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` (the block reason's visible and spoken
+notice) · `web/public/i18n/{de,en}.json` (`massDelete.errors.*`, `import.errors.*`, the two
+`import.resolve.*` keys the lock owned are gone) · `web/e2e/emote-import.e2e.spec.ts`,
+`web/e2e/vote-ballot.e2e.spec.ts` (every test that starts a delete or a replace now mocks the
+target list).
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E19, sections 4.5, 4.6 and 6.6). **Before**, `validateResolution`'s rule 7
+(`replaceNeedsTrackedTarget`) refused a `replaceTarget` decision whenever the target set belonged
+to an untracked account — the reasoning being that only a tracked channel's own resync could
+restore a deleted entry, so replacing into an untracked target had no way back. Since the entry
+"The file names a restore's target, and the target list checks it" (2026-09-25, earlier
+today) an untracked target's restore works like any other — reported as paper only — so that
+reasoning no longer holds for the replace direction either: the restore half of the 2026-09-23
+entry "Restore reads transfer-run files" is what that earlier entry already revised; this entry
+revises only the *replace* half of that same day's "The import dialog becomes a deleting
+operation" — the paragraph "Replace is **only offered for a tracked target** — deleting from an
+untracked set would have no way back".
+
+**The lock is gone, not relaxed.** `ViolationRule` loses `replaceNeedsTrackedTarget`,
+`validateResolution` and `buildTransferPlan` lose their third parameter (`ResolutionContext`)
+outright rather than keeping an unused field — a caller that has nothing meaningful left to pass
+should not compile one up. `collisionStepRows` drops the parameter that fed the disabled reason;
+the confirm dialog's own `resolutionContext` field and the three sites that read it are deleted with
+it. Rename, adopt and skip were never affected by rule 7 to begin with (none of them delete
+anything), so nothing about their own behavior changes. The two locale keys the lock owned
+(`import.resolve.replaceNeedsTracked`, `import.resolve.violation.replaceNeedsTrackedTarget`) are
+removed from both locales, not left dangling.
+
+**What still stands.** The pre-run drift check (`import.resolve.reloadTargetFirst`) is a different
+finding — a row whose live counterpart no longer holds the name it collides on — and is untouched.
+The mandatory recovery file before the first REMOVE (2026-09-23, "The safeguard is a file, not a
+typed confirmation") is unconditional and stays exactly as strict for an untracked target as for a
+tracked one; its filename already fell back to the set id for an untracked target
+(`transferPlanFilename(targetChannelName ?? setId, …)`), a branch that simply went unreachable while
+the lock stood. Nothing about `reportRemoved`'s own set-centric reporting (entry "Delete, restore
+and a replace's removals report per emote set") changes here — it already reported without a
+channel branch for every replace, tracked target or not.
+
+**A shared pre-check comes first, everywhere a first mutation can happen.** The lock's removal
+would otherwise let a replace start against a set the actor's right to edit has since lapsed, or
+that 7TV no longer has at all — the picker's own choice carried `editable` at pick time (spec 5.8),
+but that snapshot can be stale by the time the run actually starts, and the three side doors (file,
+foreign channel, leaderboard) never asked in the first place. `resolveEditableSet` (spec 6.2, from
+the earlier "The file names the target" entry) is now the pre-check every first mutation into a
+7TV set runs immediately before it: `import-flow.ts`'s `start` runs it — only when the plan carries
+at least one `replace` row — *before* `recheckTransferPlan`, and `MassDeletePanel` runs it before
+`openDeleteConfirmDialog` ever opens, mirroring the restore entry's own pre-check the same file
+already had (spec E16, 4.6 point 22). A block starts nothing: the delete confirmation never opens,
+the replace-carrying plan never reaches `recheckTransferPlan`, and the reason is shown at the same
+spot a drift abort already used — `SevenTvImportService.duplicateNoticePending`'s transient-notice
+mechanic (`reportTargetCheckBlocked`/`targetCheckBlockReason`), because a blocked pre-check leaves
+no run or queue behind either and the dock still has to mount to say why. The delete panel's own
+button gains a matching `deleteTargetCheckPending` lock, the same idiom as the existing
+`liveAliasReadPending`. A plan without any replace row never runs this pre-check at all — an ADD
+into a set the actor cannot write to fails at 7TV itself, and its report is already gated on the
+same right server-side (spec 5.7).
+
+**Locale families, one per first-mutation caller** (plan 0.5, the table in 2.6 "Fehlergründe und
+Locale-Familien"): the delete confirmation's own family is `massDelete.errors.*`, the replace
+start's is `import.errors.*` — both carry the same three reasons
+(`targetNotEditable`/`targetNotSelectable`/`targetCheckUnavailable`) the restore file step
+(`restore.import.errors.*`) and the panel restore (`restore.errors.*`) already used. Four families,
+one vocabulary, each caller its own copy — the wording is provisional (#255), the family per caller
+is the contract.
+
+---
+
+### 2026-09-25 — The file names a restore's target, and the target list checks it
+
+**Betrifft:** `web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts` ·
+`web/src/app/shared/seven-tv/file-import-step.ts` ·
+`web/src/app/shared/seven-tv/import-source-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-trigger.ts` · `web/public/i18n/{de,en}.json` ·
+`docs/UI-Designsprache.md` (§7.3) ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` (consumer, T4: `resolveEditableSet`) ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`,
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (consumer, T6: `ResolvedRestoreTarget`, the
+set-comparison hint, the panel restore through the same pre-check) ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` (consumer, T9: the entry without a selected set)
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E1/E2/E10/E11/E15/E21/E22, F1/F2/F5/F6, sections 4.1, 4.2 and 6.1). **Before**, both restore
+parsers took the page's channel and its selected set as an expectation and refused anything else:
+a purge-run protocol of another set with `wrongSet`, of another channel with `wrongChannel`, and a
+transfer-run file of an untracked target always with `wrongChannel`, because its
+`meta.targetChannelName` is `null` and equals no page. After the set switch on 2026-10-01 a protocol
+naming the now non-active set becomes the normal case, and an untracked target had no way back at
+all.
+
+**The file names the target.** A purge-run protocol restores into its `meta.emoteSetId`, a
+transfer-run file (either stage) into its `meta.targetEmoteSetId`. The page's channel and selected
+set play no part in whether a file is valid; both parsers return `target: { emoteSetId }` instead of
+comparing anything, and `wrongChannel`/`wrongSet` are gone from the parsers and both locales. The
+transfer-run parser still does not read the envelope's `channelName` — it holds `''` for an
+untracked target (F2); the purge-run parser passes its envelope channel through but never compares
+it, so its case no longer matters either. There are exactly these two classes of restore file: every
+purge-run protocol ever written carries `meta.emoteSetId` (F1), so one without it is `wrongKind`, and
+there is deliberately no fallback to the page's active set — after a set switch that fallback would
+push an old set's protocol into the new one. What a file yields as rows is unchanged (`readProtocolRow`,
+the `planned`/`finished` rules of the 2026-09-23 entry; AK 24).
+
+**The target list checks it, in the file step.** `FileImportStep` runs the shared pre-check
+`SevenTvEmoteSetService.resolveEditableSet` as its third step, after the envelope and the parser —
+the same `editable` verdict the report applies (entry "Who may report is decided by 7TV editing
+rights", not repeated here). Four outcomes: editable ⇒ `picked` — a found, `NORMAL`, `editable`
+set wins outright, even when the list is also degraded for some *other*, unrelated account (a
+confirmed positive is never downgraded by a degradation elsewhere); a set whose `kind` is not
+`NORMAL` ⇒ `targetNotSelectable` (a personal set is never a restore target, E11); not in any list,
+or listed with `editable: false`, on a complete list ⇒ `targetNotEditable`, worded "not editable
+**or** no longer there" because the 60 s list cache cannot tell the two apart (F5); an incomplete
+list or a failed request, and the set not found editable ⇒ `targetCheckUnavailable`, never "not
+allowed" (F3). A
+blocked check keeps the dialog open with the step's own banner; no confirmation opens and 7TV sees
+no request. `picked` carries the **resolved** target — set name, owner, tracked channel, whether it
+is active, and the set id the confirmation shows (AK 35) all come from the target list, never from
+the file, which is untrusted and becomes a target only here. Because `picked` closes the dialog and
+the check is asynchronous, the file control is locked while it runs (`aria-disabled`, so the caret is
+not dropped to `<body>`), and an answer that arrives after the step is gone is discarded (F6).
+`ImportTrigger` passes the resolved target to `startRestoreFlow` unchanged; its interim target built
+from the page's frozen values is gone.
+
+**The page only supplies the host fields.** The target carries `hostChannelName` (the page's channel,
+for the run's dock binding, E13) and `hostSelectedSetId` (the page's selected set, `null` without
+one). The confirmation's hint that the restore goes somewhere other than the set on screen compares
+`emoteSetId` with `hostSelectedSetId`, never channels (E21) — another set of the same channel gets
+the hint as well. On a page without a selected set the file step reads restore files only; an emote
+list or a usage export is refused with `noTargetSetForCopy` before its parser runs (E22). The
+trigger itself leaving the set gate, and `ImportSourceDialogData.setId` becoming nullable, follow
+with the restore dock's move out of the mass-delete panel.
+
+**What this revises.** The 2026-09-23 entry "Restore reads transfer-run files" matched the channel
+against `meta.targetChannelName` and refused an untracked target's file with `wrongChannel`; that
+check is gone, and with it its reason "there is no restore into an untracked set, because nothing
+there can report it" — since the set-centric report (entry "Delete, restore and a replace's removals
+report per emote set") an untracked target's file restores like any other, reported as paper only.
+What that means for replace into an untracked target is decided in its own entry. The 2026-09-21
+entry for K4 described the purge-run protocol's set match (AK 66) as generic over the set on screen;
+there is no match any more. Where the restore reports and who may report are the subjects of the two
+entries below.
+
+---
+
+### 2026-09-25 — Delete, restore and a replace's removals report per emote set — report plus resync
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` (`TryTriggerGuardedResyncAsync`,
+now `internal`) ·
+`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` (`PublishChannelSyncedAsync`, now shared; T3: the
+legacy routes' own body/handler) ·
+`src/EmotePurge.Core/Services/IEmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` (`targetIsActiveSetOfChannel`
+derived from the hit list, not hard-coded; the Twitch-id lookup deferred to where the paper entry is
+actually written) ·
+`src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs`
+(`LoadActiveChannelByTwitchIdReadOnlyAsync`, shared with `ChannelService`),
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs`
+(`GetActiveByTwitchChannelIdAsync` now calls the shared query) ·
+`src/EmotePurge.Core/Services/IImportTargetOwnershipService.cs`,
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` (addendum N3: `OwnerTwitchUserId`) ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs`,
+`src/EmotePurge.Api/Auth/UsageStatsAccessAuthorizationFilter.cs` (T3: the legacy form's own contract,
+`EmoteSetIdEmpty` retired) ·
+`web/src/app/core/i18n/api-error.ts`, `web/public/i18n/{de,en}.json` (T3: `emote_set_id_empty` retired) ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.model.ts`,
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts`,
+`web/src/app/core/seven-tv/sync-report-outcome.ts` (consumer, T4: wire model, `reportDeletedInSet`,
+`reportRestoredInSet`, `classifySyncInSetResponse`) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (consumer, T7) ·
+`web/e2e/support/mocks.ts` (consumer, T10)
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E3/E9/E17/E18, sections 5.1–5.5). A delete, a restore and the removals of a replace mutate one
+7TV **emote set**; which EmotePurge channels that touches is a consequence, not the address. The
+channel-bound report (`POST /api/channels/{channelName}/emotes/sync-deleted`) could not say so: it
+needed a tracked channel to exist, and its set-scoped variant answered an untracked or non-active
+target with a paper entry that looked like success (#224).
+
+**Two routes.** `POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted` and `…/sync-restored`,
+in the `emoteSetGroup` next to `sync-imported`, with the body
+`{ sevenTvEmoteIds: string[], expectedChannelName: string | null }` — no set id in the body, the
+route carries it. Policy `Bookkeeping`, not `ForeignEmoteLookup`: the 7TV mutation already happened,
+and a spent read budget must not cost the paper trail. The ladder, in order: middleware (401,
+429) → `EmoteSetIdValidationFilter` (400 `invalid_emote_set_id`) → body (400 `emote_ids_empty`,
+400 `invalid_channel_name` for a set but invalid `expectedChannelName`, 401 without an actor) →
+the owner check `IImportTargetOwnershipService.CheckAsync` (404 `emote_set_not_found`, 403 bare,
+503 `foreign_channel_seventv_unavailable`; no service call, audit entry, live event or resync on any
+of these) → the service → the live event → the resync → 200. Who passes the owner check is the
+subject of the entry below ("Who may report is decided by 7TV editing rights") and is not repeated
+here.
+
+**What the service writes** (`IEmoteService.MarkDeletedInSetAsync`/`MarkRestoredInSetAsync`). The
+hit channels are every `Channel` with `IsBotActive && ActiveEmoteSetId == emoteSetId`, minus the
+block list (`IExcludedChannelFilter`, now an `EmoteService` dependency — a blocked channel is written
+nowhere and never named). In each hit channel the rows matched by `(ChannelId, SevenTvEmoteId)` are
+archived or restored with the goal-state semantics the channel-bound active branch always had: every
+found row counts, only the ones not yet in the target state are written, and an earlier `ArchivedAt`
+survives. The reported ids are deduplicated ordinally first; `reportedCount` is that number.
+
+**The expected channel (E18).** The client names the channel it expects to hit — the target
+account's tracked channel when the set is its active one, otherwise `null`. If that channel is not
+among the hits, the answer carries `unresolvedChannel: { channelName, reason }`: `activeSetDiffers`
+when it is tracked with another stored active set (`ActiveEmoteSetId` lags a set switch on 7TV), and
+`notTracked` when it is missing, left, or blocked — the block is deliberately not revealed, the same
+way `channel_excluded` exists only at join time. None of that channel's rows is touched or counted.
+Without this, a report that hit nothing would look exactly like a successful paper-only report — the
+class of error #224 was.
+
+**Answer.** `{ reportedCount, channels: [{ channelName, archivedCount | restoredCount, notFoundIds }],
+unresolvedChannel | null, resyncTriggered: string[] }`, channels ordinal by name. `channels` empty
+and `unresolvedChannel` null together mean "paper only". The service's `NewlyChangedCount` per
+channel never goes on the wire; it only decides the live event.
+
+**Audit.** Per hit channel with a goal-state count above 0, one entry with that channel,
+`TargetType = "emoteSet"`, `TargetId = emoteSetId` and the details
+`{ emoteCount, emoteSetId, targetIsActiveSetOfChannel: true }` — the same shape the set-scoped active
+branch writes, so the audit view renders it as before. When no channel entry was written (no hit, or
+every hit found 0 rows) **or** a channel stayed unresolved, one paper entry, plus
+`unresolvedChannelName`, `unresolvedReason` and `unresolvedSevenTvEmoteIds` on a mismatch. **(The
+paper entry's own new fields just named went unrendered until the 2026-09-28 entry above, #273.)**
+Its
+channel is the set owner's tracked channel (addendum N3, amended after the live verification): the
+service resolves it from the owner's Twitch id, which the owner check now returns as
+`SevenTvEmoteSetOwnershipCheckResult.OwnerTwitchUserId` (the actor's own id, or the matching grant's
+`TwitchChannelId`) and the endpoint passes on — by exactly the rule of
+`IChannelService.GetActiveByTwitchChannelIdAsync` (an active row, not on the block list), the same
+rule that gives the target list its `trackedChannelName`. With such a channel the entry is
+`ChannelName = <owner channel>` and `{ emoteCount: reportedCount, emoteSetId,
+targetIsActiveSetOfChannel }`, without the `targetOwner*` fields — the form these flows wrote
+before #253, rendered "(not the active set)" when the flag is `false`, and listed by
+`GET /api/channels/{c}/audit-log`. The flag is not hard-coded: it is `true` exactly when the owner
+channel is itself a hit channel (its stored `ActiveEmoteSetId` is the reported set), `false`
+otherwise; a hit owner channel with zero matched rows still reads `true`, even though it got no
+channel entry of its own (that one is gated on a goal-state count above 0). Only without an owner
+channel (untracked, left or blocked — a blocked channel looks like a left one) is it
+`ChannelName = null` with
+`{ emoteCount: reportedCount, emoteSetId, targetOwnerSevenTvUserId, targetOwnerTwitchLogin }` and no
+`targetIsActiveSetOfChannel`, rendered "for <ownerLogin>". An entry carries either a channel and
+`targetIsActiveSetOfChannel` or the `targetOwner*` fields, never both. A mismatch reuses the same
+channel and flag rather than a rule of its own, and `ChannelName` need not equal
+`unresolvedChannelName`: the former is always the owner's channel, the latter whichever channel
+`sync-restored`/`-deleted` expected and missed. When the reporting page belongs to the owner and the
+owner's own channel lags, it is not a hit — `ChannelName` and `unresolvedChannelName` both name it,
+and the flag reads `false`. A set shared with a second tracked channel can instead have the owner's
+channel as a hit (flag `true`) while the second channel's stored active set lags, so
+`unresolvedChannelName` names that second channel while the paper entry still names the owner.
+`notTracked` follows the same owner rule: without a channel when the missed channel is the owner's
+own left or blocked one, with the owner's channel when that still resolves by Twitch id (a renamed
+owner channel, or a page other than the owner's). The first version of this report wrote
+every paper entry with `ChannelName = null`; since the channel audit view filters exactly on
+`ChannelName`, a delete or restore in a non-active set of one's own tracked channel disappeared from
+that view, where it had appeared before #253 — a regression the live verification found, which this
+reverses. Every successful call leaves at least one entry; rows and entries are saved in one
+transaction. A retried report may write a second entry — a duplicate beats a gap.
+
+**Live event and resync, both in the endpoint.** One `channel.synced` per channel whose rows this
+call actually changed, through the same `EmoteEndpoints.PublishChannelSyncedAsync` (now `internal`)
+and its error handling — logged and swallowed, no request token. Then, per hit channel and for an
+`activeSetDiffers` mismatch (never for `notTracked`): `IChannelResyncCooldown.TryBeginAsync`, on
+success `IChannelService.TriggerResyncAsync` under the reporter's own account, and the slot is handed
+back when the trigger answers anything but `Triggered` — the sequence `POST /resync` uses. A held
+cooldown means a resync ran within 60 s and its result is on its way: no error, and the channel is
+not named in `resyncTriggered`, which lists exactly the channels triggered by this call. The client
+reads it to never start a second resync of its own (E12, F15), so a channel is resynced at most once
+per 60 s however many reports touch it. Two choices beyond the spec's wording: the resync steps take
+no request token either, so a client that hangs up after the write cannot skip the resync that is
+meant to check it; and a failure in them is logged and swallowed rather than turned into a 500,
+because the report is committed and a 500 would make the client retry a report that succeeded — the
+worker's periodic resync reaches the channel on its next tick regardless. `sync-imported` stays
+without a backend resync; its frontend resync is unchanged. When the first report of a restore or
+delete run fails for good (any status or a network error, after the automatic retries), the backend
+never reached this stage, so the client triggers `POST /api/channels/{c}/resync` itself — the
+restore for `resyncChannelName ?? expectedChannelName`, the delete for `expectedChannelName`, none
+when that is `null`, never after a manual retry, a 429 read as the cooldown (addendum N1); a
+replace's failed removal report already fell back to the import's own resync.
+
+**Residual risk, accepted (F12, F13).** The report changes rows on the client's word: the server
+checks who reports (cached 7TV rights, up to 10 minutes old in the grants cache), not whether the
+mutation really happened on 7TV. An editor whose right was just revoked can therefore still archive
+or restore rows of a tracked channel for a few minutes. The reach is the rows of that set's
+channels; the resync this same report triggers reads 7TV and restores the truth within the 60 s
+cooldown, at the latest with the next worker tick. The alternative — letting a report act only after
+a 7TV read of its own — would put an unbudgeted request on every report and undo the reason these
+routes sit on `Bookkeeping` at all. The channel-role check that still gates the legacy Guid form
+(T3 below) was weaker still, back when it decided whether a row changed: it did not even know
+which set was meant. Second rest: for a set shared by two
+tracked channels the client can only name the channel of its own target account; a **second**
+channel whose stored active set lags stays undetected until its periodic resync picks it up within
+a minute — the same rest a delete run has always had for every second channel. Named here, not
+closed.
+
+**T3 — the legacy Guid form becomes audit-and-resync only (H4/E4/E24, spec 5.6, AK 22–23).** The
+channel-bound `sync-deleted`/`sync-restored` routes keep their filter chain, `Bookkeeping` policy and
+"legacy body form" log line until the E3 gate of the spec-200 plan (§21, Folge-Issue 1: behind K7, at
+least 14 days after deploy, once the API log shows no more legacy callers) — but
+`EmoteService.MarkDeletedAsync(channelName, emoteIds, actor)`/`MarkRestoredAsync(…)` no longer touch a
+row. A browser tab left open across a 7TV set switch could otherwise archive a row of the *new*
+active set on the strength of a body that only ever meant the old one, since this form carries no set
+of its own. It now only counts how many of the reported Guids are rows of the channel, writes the
+audit entry with `legacyBodyForm: true` whenever that count is above 0, and answers in the old shape
+— `archivedCount`/`restoredCount` is the *found* count, not a changed one (E24), so an old open tab
+still reads its report as succeeded instead of a false `partial`. It then triggers the same guarded
+resync (spec 5.1 stage 7, reused via `SevenTvEndpoints.TryTriggerGuardedResyncAsync`, now `internal`)
+under the per-channel cooldown — that resync, not this call, is what actually reconciles the row
+against 7TV. The endpoint publishes no `channel.synced` of its own for this form any more (nothing
+changed to publish); the resync's own worker tick does, same as before. **The set-scoped
+channel-bound body shape is retired in the same commit:** `{ emoteSetId, sevenTvEmoteIds }`, its own
+ladder steps (`ValidateSyncBookkeepingBody` is back down to a single empty-list check) and
+`ApiErrorCodes.EmoteSetIdEmpty` are gone — that shape never had a production caller (T2's set-centric
+routes above are its replacement), so a body still sending it now falls through to `EmoteIds == null`
+and gets the same 400 `emote_ids_empty` any other empty legacy body gets.
+
+---
+
+### 2026-09-25 — Who may report is decided by 7TV editing rights — list and report apply the same rule
+
+**Betrifft:** `src/EmotePurge.Core/Services/EmoteSetEditability.cs` ·
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` (consumer, T4: `resolveEditableSet`) ·
+`web/src/app/shared/seven-tv/file-import-step.ts` (consumer, T5) ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `web/src/app/shared/seven-tv/mass-delete-panel.ts`
+(consumer, T6) · `web/src/app/shared/seven-tv/import-flow.ts` (consumer, T8)
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E5/F4/5.7). **Before this plan**, the two channel-bound report routes,
+`POST /api/channels/{channelName}/emotes/sync-deleted` and `.../sync-restored`, were authorized by
+the **channel role** — admin allowlist, broadcaster, live moderator, or a 7TV editor of the channel
+account (`UsageStatsAccessAuthorizationFilter`/`CanViewUsageStatsAsync`). Only the already existing
+set-centric `sync-imported` route (spec-200, section 32/6.7) checked 7TV editing rights instead, via
+`IImportTargetOwnershipService.CheckAsync` against the **logged-in** Twitch account — matching 7TV's
+own enforcement, where a mutation without editor rights on the token account already fails
+(`LACKING_PRIVILEGES`).
+
+**With this plan**, the set-centric routes it adds for deleted/restored (T2) apply that same
+`CheckAsync` rule instead of the channel role — for every set-centric report, not just
+`sync-imported`. The channel role no longer decides who may report a deleted or restored emote —
+except through the legacy Guid form (spec 5.6, E4, "Delete, restore and a replace's removals
+report per emote set" T3), which still runs behind `UsageStatsAccessAuthorizationFilter`, but by
+now only to write the audit entry and trigger the guarded resync; it changes no row any more, so
+the channel role it still checks decides nothing that reaches 7TV.
+**Consequence:** a moderator or admin without their own 7TV editor grant on the set's owner can no
+longer report a change to it through a set-centric route, even while still holding the channel role
+that let them do so before.
+**Operator decision, 2026-09-24 (F4):** uncritical for HandOfBlood, because its mod team already
+works with its **own** 7TV editor grants rather than a shared token — a 403 on a report is therefore
+only a genuine, freshly revoked right, not a systematic loss of anyone's ability to report.
+
+**What this commit adds:** the target list (`GET /api/seventv/me/emote-set-targets`) used to answer
+"can I edit this set" with a weaker question than the report itself asks — it never carried an
+owner id at all, so a caller had to attempt the report to find out. The list now carries
+`sevenTvUserId` per account and `ownerSevenTvUserId` plus `editable` per set, with `editable`
+computed by `EmoteSetEditability.IsEditable` — the exact same pure function
+`ImportTargetOwnershipService`'s `OwnershipEvidence.MatchAgainstAllKnownAccounts` now calls instead
+of its own private copy of the rule. A future frontend pre-check (T4's `resolveEditableSet`) can
+therefore read the same answer the report would give, before spending a report on a set the caller
+cannot write to.
+
+**F16 — one deliberate asymmetry.** The ownership check has a fallback the list cannot afford: a set
+that is in no cached list, or listed without an owner, gets one direct, budgeted 7TV lookup
+(`ImportTargetOwnershipService.CheckAsync`). The list would have to spend that lookup per set on
+every dialog open to offer the same precision, so it does not: a set without an owner id is
+`editable: false` there unconditionally, even in the one case where the live lookup might have said
+yes. The list is therefore never looser than the report, only ever stricter — a run can be blocked
+where the report might have succeeded, never the other way around.
+
+**No pre-authorized re-report path.** If a report fails despite the frontend's pre-check having
+passed (rights revoked mid-run), there is deliberately no way to resubmit it under the earlier
+authorization: the mod team holds its own rights, a failure at that point is a genuine revocation,
+and a resubmission path would amount to a second authorization next to the one 7TV just withdrew.
+
+---
+
+### 2026-09-25 — Only the active row animates in the resolution step
+
+**Betrifft:** `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` ·
+`web/src/app/shared/seven-tv/import-conflict-resolution-step.spec.ts` ·
+`docs/UI-Designsprache.md`
+
+The resolution step (#230/#268/#269) first shipped every row mounting `EmoteSpriteAnimated`
+unconditionally, so opening the step or scrolling through it started every buffered row's own
+200ms dwell and fetched an animation for each one at once — a Codex P2 finding against
+`docs/UI-Designsprache.md` §113 ("Animation is earned by dwelling, and only ever for one emote at
+a time"). The reported reason to animate at all: the operator could not reliably tell some emotes
+apart from their still frame alone.
+
+**Decision:** only the row under the pointer, or failing that the row holding keyboard focus,
+animates — the same `pointerKey ?? focusKey` idea `foreign-emote-grid.ts` already uses for its own
+hovered cell, including its safety nets (a scroll clears the pointer key, since virtualisation can
+recycle a hovered row's DOM node into a different row with no mouseleave to end it; either key
+resets once its row is no longer rendered). Unlike the import grid, which plays one emote at a
+time, this step plays one ROW's two cells together: comparing a source emote against its target
+needs both sides animated at once, not one after the other, because the row is a comparison. §113
+now carries this as a named exception, and §7.2 says so at the resolution step's own entry.
+
+---
+
+### 2026-09-24 — Every deactivation closes the emote-set observation interval, the objection gate's included
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelEmoteSetObservationService.cs`
+
+Found while merging main into the emote-set epic. The epic closed a channel's open observation
+interval inside `ChannelService.LeaveAsync` (`ClosedBy.Leave`, spec 4.3); main meanwhile factored
+the deactivation write out into `ChannelDeactivation.DeactivateAsync` and gave it a second caller,
+the identity reconcile's objection-gate deactivation. That second caller never closed the interval,
+so a blocked channel ended up inactive with an interval still open — contradicting the invariant
+`RecordObservedSetAsync` relies on ("`IsBotActive = false` implies no open row, both written in one
+save"; the converse does not hold — a channel that just joined and has not synced yet is active with
+no open row of its own).
+
+**Decision:** the close moves into the shared helper, so every deactivation closes the interval in
+the same `SaveChangesAsync` as the flip and the audit entry. The objection gate uses
+`ClosedBy.Leave` as well: it writes a `channel.leave` audit entry, and no separate vocabulary value
+would tell a reader anything the audit log does not already say (and a distinct value would name the
+objection, which the gate's log lines deliberately avoid). `LeaveAsync` no longer calls
+`CloseOpenIntervalAsync` itself.
+
+---
 
 ### 2026-09-24 — robots.txt stays closed after the legal launch
 
@@ -1263,6 +3495,230 @@ identity of its own.
 `docs/Operations.md` documents the operator procedure: look up the numeric ID for an objecting
 chatter, add it to the env var, recreate the worker; the change takes effect on that restart, not
 before.
+
+### 2026-09-23 — The import dialog becomes a deleting operation: name conflicts resolved per row, recovery file before the first removal (#230)
+
+**Betrifft:** `docs/UI-Designsprache.md` (§7.2) · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` · `web/src/app/core/seven-tv/transfer-plan.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` · `web/src/app/core/seven-tv/import-source.ts` ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` · `web/src/app/core/emotes/emote-list-item.model.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts` · `web/src/app/shared/export/export-envelope.ts` ·
+`web/src/app/shared/export/import-source-parser.ts` · `web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/export/emote-list-export.ts` · `web/src/app/shared/export/usage-export.ts` ·
+`web/src/app/shared/export/usage-export-purposes.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` · `web/src/app/shared/seven-tv/conflict-resolution.ts` ·
+`web/src/app/shared/seven-tv/import-preview.ts` · `web/src/app/shared/seven-tv/slot-projection.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/src/app/shared/seven-tv/file-import-step.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.ts` · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
+`src/EmotePurge.Core/Services/IEmoteListQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteListQueryService.cs`
+
+Until now a transfer into a 7TV set only ever added: a source row whose name the target already
+held, or whose emote the target held under another alias, was counted and left out. Since this
+change the confirm dialog resolves those rows one by one — and one of the resolutions deletes. The
+plan (docs/plans/Plan-230-Namenskonflikte.md) carries the full reasoning; this entry records the
+contracts that changed.
+
+**What the user can decide, per row.** Both conflict groups open a second step of the *same*
+dialog (no page, no second overlay): a name collision offers skip, rename (the source is added under
+a typed alias) and **replace** (the target entry is removed, then the source is added under the
+freed name); an alias mismatch offers skip and adopt (the target entry is renamed to the source
+alias, nothing is added). Skip is the default, so an untouched dialog closes with exactly the plan
+it always had — `toAdd`, one `add` row each (`ImportConfirmOutcome` now carries `plan: TransferPlan`
+instead of `rows`). The rules a set of decisions must satisfy are one pure function,
+`validateResolution` (seven rules, independent of row order); the dialog blocks "Apply" with the
+violating rows named beside it and never builds a plan that fails them. Replace is **only offered
+for a tracked target** — deleting from an untracked set would have no way back — and is shown
+disabled with that reason instead of hidden. Decisions live in the dialog until it closes: "Apply"
+commits a group's edits, "Back" keeps the committed ones and the edits for the next opening.
+**An adopt also gets a quiet line of its own** ("N entries in the target set will be renamed",
+right after the removal line, whenever the plan holds at least one), and where a plan has no
+ADD at all, the title switches from "0 emotes … copy?" to "Align N names in the target set?", both
+counted from the same `summarizeTransferPlan` (its new `adoptCount` field).
+
+**One run row can now be two mutations.** A replace row is REMOVE, then ADD, in one row of one run
+(the run engine's sequence of steps per row). A REMOVE that fails ends the row without its ADD; an
+ADD that fails after a successful REMOVE leaves the gap — deliberately no automatic rollback — and
+says so in the row's own reason. The plan runs every replace first, then adopts, then plain adds,
+then renames, so a replace can only lower the set's peak occupancy. The slot projection uses the
+net change (`addCount − removedEntryCount`): a replace on a #74 duplicate or on an id with an
+aliasless sibling removes more entries than it adds back.
+
+**A lost answer is `unknown`, not `failed`, for a run that deletes.** `RunItemStatus` gains
+`'unknown'`. `SevenTvImportService.createOperation` sets the engine's `transportLossIsUnknown` flag
+whenever the plan holds at least one replace row — for *every* row of that run, not only the replace
+ones. With the flag set, a step's HTTP failure is `unknown` exactly when the response cannot say
+whether 7TV applied the mutation: no answer at all, any 5xx, or a body that is not a GraphQL answer.
+A 4xx is unambiguous (7TV rejected the request before it ran) and always stays `failed`, and a
+GraphQL-level rejection (a real answer, just a negative one) is never `unknown` either. A plan
+without any replace row keeps today's plain `failed` for every transport loss, exactly as before.
+
+**The run settles before anything is reported.** `ImportRunInfo.settlement` (`'pending'`/`'settled'`)
+tracks this. A run without any `unknown` row settles the moment the engine completes. One with at
+least one reads the target set live, once more, and clears each `unknown` row against that read
+(`settleUnknownRow`); a read that fails, times out (`SETTLE_READ_TIMEOUT_MS`) or comes back
+incomplete leaves those rows `unknown` regardless — the run still settles, it never waits forever.
+Nothing reaches the Api before `settlement` turns `'settled'`: `sync-imported`, the removal report
+and the channel resync all wait for it, even though the dock already shows the engine's live
+snapshot while the re-read is in flight. A `reset()` or a second `startImport` started during that
+re-read takes the outcome off the dock, but the pending run's reports are still sent — they record
+7TV changes that already happened, independent of what is currently on screen. Close itself no
+longer reaches `reset()` during that window: `RunProgressPanel` gained a `dismissible` input
+(default `true`, so delete/restore are unaffected), and the import section binds it to
+`run.settlement === 'settled'` — a run that has stopped running but not yet settled shows neither
+Cancel nor Close, only a muted "settling" line, so a user cannot end the run before its protocol and
+the unload cover over the pending re-read exist. A second `startImport` during that window still
+takes the outcome off the dock the way it always could — closing that gap needs a change to the
+arbiter that decides whether a run may start, not to the dock, and stays open.
+
+**The safeguard is a file, not a typed confirmation.** A plan with at least one replace turns the
+executor into a three-state button: "Save recovery file" reads the target set live, checks every
+replace target at entry level (same id, same set of aliases, same aliasless entry, the name still
+held by that id, a complete read — `verifyReplaceTargets`), downloads the recovery file (the
+`transfer-run` envelope, stage `planned`, built from that read), and only then offers "Start".
+Nothing else is asked; the removal count stands in the dialog as a warning line. A drifted target
+releases nothing: its row goes back to skip, the resolution step shows the live counterpart instead
+of the stale one, and the user confirms again (operator decision). A failed or incomplete read
+releases nothing either, but keeps the decisions — it cannot say which target changed, if any. Only
+the newest read may answer (a new read cancels the one before it, and the resolve triggers are
+locked while one runs), and a reload that no longer fits a committed decision drops it and names it
+in the same banner. Any change to the decisions after the download asks for a new file. The replace targets of the plan the
+dialog closes with carry the read's aliases and 7TV default names, so the run protocol can name an
+aliasless entry and the flow's own second check compares against the read, not the preview.
+
+**A second check right before the run, and what remains open.** Between the download and the start
+can lie the token prompt, so `import-flow.ts` reads the set once more: a replace row whose target
+drifted by then is dropped and counted in the dock (`replaceSkippedDrift`) rather than reopening
+the dialog, and a failed or incomplete read lets no replace row through. A window between that read
+and each individual REMOVE remains — it cannot be closed without an atomic operation on 7TV's side,
+the same residual race the duplicate filter already documents.
+
+**After the run.** A settled run now reports through the channel-scoped `sync-deleted`, next to the
+`sync-imported` an add already sent — the same call the delete flow uses (`reportRemoved`). It names
+every replace row whose REMOVE 7TV confirmed (`completedSteps >= 1`), independent of the row's own
+final status: a replace whose ADD then failed or came back `unknown` still reports its REMOVE,
+because that target entry really is gone. An adopt row reports nothing, since nothing disappears.
+The result protocol (stage `finished`) is offered in the dock after every
+transfer run; both stages load back through the existing "Restore" entry, which re-adds only the
+removed target entries and only where the gap is still open. While a run with replace rows is
+active, closing the tab asks first (`beforeunload`); an add-only run never does. No
+`localStorage` copy of either file.
+
+**The confirm dialog's side-by-side preview needs an image on both sides.**
+`GET /api/channels/{channel}/emotes` now also serves each active emote's own image URL
+(`EmoteListItemDto.ImageUrl`, additive; `EmoteListQueryService`), carried through unchanged as
+`EmoteListItem.imageUrl` on the frontend. `ImportRow.imageUrl` mirrors it for every live source
+(channel grid, foreign channel, leaderboard) — never derived from `sevenTvEmoteId`, since a static
+and an animated emote use different 7TV URL shapes. A file-sourced row used to have no image to
+offer, because the wire format wrote only id and name.
+
+**Export files now carry each row's image URL too**, closing that last gap. `emote-list-export.ts`
+and `usage-export.ts`'s JSON writers add an `imageUrl` field, taken from the same in-app rows the
+rest of each row already comes from (`EmoteListItem.imageUrl`, `EmoteUsageTotal.imageUrl`) — still
+never derived from the id. The field is additive and optional: `formatVersion` stays `1`, and
+`import-source-parser.ts` reads it only when it is a non-empty string, mapping anything else
+(missing, empty, non-string) to `null`. A file exported before this change therefore keeps parsing
+unchanged, with `imageUrl: null` on every row — operator decision is to re-export rather than teach
+the parser to guess. The CSV usage export stays untouched: it is not an import source (the ingest
+dialog's file control only ever accepts `application/json`, `file-import-step.ts`), so there was
+never a contract to extend there.
+
+---
+
+### 2026-09-23 — Restore leaves out an alias another emote now holds, for every restore source (#230)
+
+**Betrifft:** `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.ts`
+
+`filterAlreadyPresentForRestore` gains a fourth rule: an alias that is missing for the row's id but
+held by a **different** id in the live set is dropped from the row before the run, and a row with
+nothing left drops out. Its `ADD` could only end in 7TV's name conflict — a burnt
+`emote_set_change` ticket and a red row. Until now the filter only ever asked what the row's *own* id
+holds (`aliasesById.get(id)`), never who else holds a name. The held names come from the same read,
+no second request; only named aliases are compared. That leaves two cases open: a restored alias equal
+to the default name of another emote's *aliasless* entry, and a restored `null` entry whose default
+name another emote holds as an alias, can both still end in a 409 — no live probe has shown whether
+7TV counts a default name as occupying a name, so the rule does not guess (a visible failure, as
+before, never a silent drop).
+
+**Why for every source, not only transfer-run files.** The case that forced it is a successful
+"replace target" transfer: the source emote holds the target's old name by design, and restoring the
+target from the transfer file must close gaps only, not collide with — or remove — what the transfer
+put there (operator decision 2026-09-23). But a purge-run protocol meets the same situation whenever
+someone reused a name since the purge, and the 409 was just as certain there. One filter with a rule
+that applied to one source only would be two truths about the same question. **This changes
+behaviour for existing purge-run restores**: such a row is now left out before the run instead of
+failing in it. Reading purge-run files is untouched.
+
+**Counted apart, never silent.** The dropped aliases are counted in `skippedNameTaken`, not in
+`skipped` ("already present"): every alias of the input is either sent, `skipped` or
+`skippedNameTaken`. `SevenTvRestoreService.startRestore` takes the count as a sixth argument; it
+opens the same transient notice window as `skippedDuplicates` (a run left with nothing to queue still
+shows it) and gets its own dock line (`restore.skippedNameTaken`), shown in `MassDeletePanel` and
+spoken by `DockOutcomeAnnouncer` right after the "already present" count, so "skipped" is never read
+as "was already there". Nothing is removed to make room, and there is no automatic undo of a replace
+(follow-up issue).
+
+---
+
+### 2026-09-23 — Restore reads transfer-run files: removed target entries only, an aliasless entry comes back without an alias (#230)
+
+**Betrifft:** `docs/UI-Designsprache.md` (§7.3) ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` ·
+`web/src/app/shared/seven-tv/file-import-step.ts` ·
+`web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.ts`
+
+A "replace target" transfer deletes target entries, and its two files are the way back (operator
+decision 2026-09-23, revising AK 18's restore half): the recovery file (`stage: 'planned'`, written
+before the first REMOVE) and the result protocol (`stage: 'finished'`). Both are now read through the
+door a purge-run protocol already uses — the file branch of the import dialog (`FileImportStep`),
+where they are the fourth file sort (§7.3) — and start the same restore flow. A transfer-run file
+stays refused as an *import* source.
+
+**What is restored.** `parseTransferRunForRestore` validates the file like `parsePurgeRunProtocol`
+(kind, its own `formatVersion`, channel, set — same error keys) and returns one restore row per
+`replace` row's removed target, nothing for any source row. The channel is matched against
+`meta.targetChannelName`, which is `null` for an untracked target and therefore equals no page's
+channel — an untracked target's file is refused with `wrongChannel`. The envelope's `channelName` is
+deliberately not read: it holds `''` for an untracked target, a stand-in rather than the honest
+`null`. There is no restore into an untracked set, because nothing there can report it
+(`sync-restored` is channel-bound); a follow-up issue. `planned` offers every
+removed target (what was never removed is still in the set and falls out through the restore filter);
+`finished` offers only targets with `removedTarget.confirmed === true`, whatever the row's final
+status. A file without such a target is refused with `transferRunNoRows`.
+
+**The in-memory row widens, the purge-run file does not.** The restore flow's input is `RestoreRow`
+(`aliases: (string | null)[]`), not `PurgeRunRow`. `null` is an entry without an alias — only a
+transfer-run file records one (`removedTarget.entries`). `parsePurgeRunProtocol` and `readProtocolRow`
+are unchanged; a purge-run row is a `RestoreRow` by assignment. A row's display name is its first
+named alias, else the target's `defaultName`, else its 7TV id — `defaultName` may be `null` in a real
+file, and the entry is restored all the same.
+
+**An aliasless entry is restored, never filtered away.** The restore queue keys a `null` alias as
+`${sevenTvEmoteId}#` (7TV holds at most one aliasless entry per id) and sends its ADD with
+`alias: null` — 7TV's documented default-name fallback. `filterAlreadyPresentForRestore` counts a
+row's `null` as present when the id has a live aliasless entry (`aliaslessIds`), missing otherwise, and
+reads the K5 rule 2 ("the id sits under an entry the row does not name ⇒ drop the whole row") so that
+a live aliasless entry is foreign only to a row that does **not** name one. Without that reading K5
+would drop every row carrying an aliasless entry without a trace. A purge-run row never names one, so
+K5 is unchanged for it; `skipped` still counts per alias, `null` as one.
+
+---
 
 ### 2026-09-23 — Data retention runs as a tenth hosted service, dry run warns every tick, `RETENTION_ENFORCE` is the switch (#243/#244)
 
@@ -1969,6 +4425,1708 @@ new `ChannelServiceCapacityTests` creates its own fresh, freshly migrated databa
 so its counting assertions are deterministic regardless of what the rest of the collection has done.
 
 ---
+
+### 2026-09-22 — Vote-page deletes read the session's set live, both K6 known limitations closed (#227)
+
+**Betrifft:** `docs/DECISIONS.md` (K6 entry above) · `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (§37) ·
+`web/e2e/vote-ballot.e2e.spec.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.html` ·
+`web/src/app/features/voting/vote-session-detail-page.spec.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/ui/name-preview-list.ts`
+
+Closes the two "known limitations, recorded rather than fixed" the K6 entry above named for the
+vote-session detail page's mass-delete panel. First landed as four commits, then corrected by a
+second round after an independent Opus review found the first round's live-alias fix left the actual
+"defect #227 exists to close" open (P1 below) and its departed-member fix undercounted its own fetch
+cost (P2), then by a third round — this time with the E2E suite actually run — after a further Opus
+review found the second round's own fix incomplete for a null-session (P2-b), its missing-row reason
+actionable only by count (P2-c), one of its own new Vitest cases provably vacuous (P3-a, confirmed
+live by a deliberate counter-check, see that finding below), and three smaller UX/doc gaps (P3-c
+through P3-f). All three rounds are folded into this one entry rather than left as three, since the
+first two rounds' own text made claims about the code that a later round's fixes falsified —
+recording them as if they had always been true would misdescribe what shipped.
+
+**(a) Live aliases, for any target set, not only the active one.** `MassDeletePanel` gains
+`readLiveAliasesFromSet`, the vote page's counterpart to the usage page's
+`readLiveAliasesFromActiveSet` (2026-09-22, above): where that flag only fires once `setId()`
+happens to be the channel's *active* set (a non-active view's own rows already carry live aliases
+from the member list they were built from, E20/K5), the vote page's rows never carry a live alias at
+all — `VoteSessionEmote.NameAtCreation` is frozen the moment a set-session is created, active target
+set or not — so `readLiveAliasesFromSet` reads unconditionally, regardless of active-ness. Both
+inputs feed one `wantsLiveAliasRead(frozenIsActiveSet)` gate in `openConfirmDialog`; the read itself
+(`readLiveAliasesThenDelete`, `loadSevenTvSetEntries` against the frozen `setId`) is unchanged from
+the active-set case, and the vote-session detail page's panel binds `[readLiveAliasesFromSet]="true"`
+unconditionally — for every session kind, not only a set-session (see the null-session note below) —
+matching `[setId]` already being the session's own set since K6.
+
+**(a, failure handling) A failed or incomplete read: nothing is deleted, the same as the active-set
+case.** A network failure, a disguised 7TV 429 (a GraphQL error inside HTTP 200), a timeout (20 s
+budget) or a truncated/undercounted read all block the run with
+`massDelete.memberRead.unavailable`/`massDelete.memberRead.truncated`, reusing the active-set path's
+existing handling verbatim (spec 8.3's "a list that only knows half must not delete", K5).
+
+**(a, P1 — the actual brake, added in the second round) A *complete* read that simply does not
+carry a confirmed row's id at all now blocks the whole run.** The first round's own read-and-delete
+step (`startDelete`) fell back to the host's own `aliases` — the vote page's frozen `[name]` — for
+any id the read did not know, and deleted it anyway: a `RemoveEmote` for a member that had already
+left, exactly the defect #227 point 2 exists to close, and the first round's own doc text describing
+this fallback as "the actual backstop, not a silent no-op" was simply wrong about what the code did.
+`startDelete` now checks every confirmed row against `liveEntries.aliasesById`/`aliaslessIds` once a
+*complete* read is in hand (an incomplete one is already blocked above) — a row present in neither is
+missing, not merely unaliased, and the whole batch is blocked, not just that row: a partial run would
+record a protocol that no longer matches what the confirmation showed as a whole ("gezeigt =
+gelöscht", spec §8.3, K5 follow-up #229). New keys `massDelete.memberRead.missingFromSet.one`/
+`.other` (plural via `pluralKey` on the missing count, which only decides *which* key — see (P2-c)
+below for what the key itself says) name it in the panel's existing abort-notice region;
+`DeleteAbortNotice` gained an optional `reasonParams` for the interpolation. Applies to **both**
+live-alias inputs — the active-set path (usage page) had the identical gap.
+
+This check is inherently TOCTOU (third round, P3-e): the confirm-time read and the `RemoveEmote` it
+gates are two separate 7TV round trips, and nothing stops the set from changing again in the narrow
+window between them. That window is not closed by this fix — closing it completely would need 7TV to
+support a conditional/compare-and-swap remove, which it does not — only narrowed to "between the read
+and the mutation" instead of "between page load (or a stale cache) and the mutation", which is what
+made the vote page's version of the bug so much wider than the active-set path's own already-accepted
+residual window (the same trade-off spec §37/8.3 already made for that path).
+
+**(b) A departed set-session member is excluded from the delete selection, and deleting is locked
+while that is still unconfirmed.** `eligible` never reflects live 7TV departure for a set-session
+ballot row (K6, this entry's predecessor above: the ballot is frozen and voting on it never closes on
+that account) — a member 7TV no longer carries under the session's set stayed selectable for delete
+forever, and confirming issued a `RemoveEmote` for something no longer there. `VoteSessionDetailPage`
+gains `sessionSetMembersResource`, an `rxResource` reading `SevenTvEmoteSetService.
+loadCachedEmoteSetPreview(channelName, emoteSetId)` — the same K4 reader (and cache: 60 s TTL,
+`ForeignEmoteLookup` bucket) the usage page's non-active view already uses for the identical "which
+of my rows are still live" question. `departedSevenTvEmoteIds` computes the set of ballot rows the
+read confirms are gone; `selectedForDelete` drops them, mirroring the usage page's
+`membership === 'live'` filter (AK 57) — the card itself stays markable (clicking it is unaffected),
+only the delete run's own selection excludes it.
+
+**(b, corrected in the second round) This is fail-CLOSED, not fail-open, while the read is loading,
+failed or truncated — the first round's own text claimed the opposite, and mischaracterized the usage
+page it was citing as precedent: `usage-stats-page.ts`'s own `sharedSetViewLockReasonKey` already
+locks deleting for exactly these three states (`usageStats.setView.lock.*`), it does not merely leave
+a row provisionally selectable.** `VoteSessionDetailPage` now mirrors that shape: `massDeleteLockReasonKey`
+(new, dedicated `massDelete.memberRead.lock.loading`/`.unavailable`/`.truncated` keys — deliberately
+not the usage page's own `usageStats.setView.lock.*` text, which says "Deleting **and voting** are
+locked", wrong here where only deleting is) is bound to `MassDeletePanel`'s `deleteLockReasonKey`
+input, which the vote page's panel had never bound at all before this. `departedSevenTvEmoteIds`
+itself still answers empty until the read lands clean (`sessionSetMembersState() === 'ready'`) — that
+part *is* fail-open, but only in the sense that nothing is excluded prematurely, never in the sense
+that deleting is reachable during that window: the page-level lock is what actually stops the button.
+The panel-level (a, P1) check remains as the second, independent backstop for the read this
+pre-filter itself makes (a stale cached preview, or a race between the two reads) — not the only
+line of defence it was described as being before P1 existed.
+
+**(c) Gated on `canSelectForDelete()` and `!isCoarse()`, matching the panel's own template `@if`,
+not on every page view.** A plain voter — or a manager on a coarse pointer, where the panel never
+mounts either — must not spend a permit off the shared `ForeignEmoteLookup` bucket (10/min, #220) for
+a check whose only consumer they cannot reach. `loadCachedEmoteSetPreview` widens its own doc comment
+from "K4's usage-stats page only" to include this second caller. Also gated on the session actually
+being a set-session (`sessionSetEmoteSetId() !== null`) — a null-session has no live-membership
+*resource* of its own kind, so this never fetches for one, but its ballot is not left without an
+equivalent pre-filter: `eligible` (`!isArchived`) already gated its voting before this entry, and
+`selectedForDelete` now filters on it too (third round, P2-b below) — see the null-session note
+below for what a null-session's delete still goes through.
+
+**(d) Second-round fix, params bug (P2-a/b): the resource's `params` used to read `results()`
+directly.** `results` is replaced wholesale on every reload (`usage.flushed` roughly every 30 s,
+every vote, every `onDeleted`) — a new object reference every time — so a `params` callback reading
+it directly retriggered the resource, and past its 60 s cache spent a fresh `ForeignEmoteLookup`
+permit, on every one of those, not only when the session's set actually changed (it never does,
+mid-session). Fixed by routing `params` through `sessionSetEmoteSetId`, a plain `computed()` whose
+*value* is a primitive (`string | null`) — Angular's default equality correctly memoizes a primitive,
+so downstream consumers only see a change when that string genuinely differs. One consequence this
+also fixes: the `channel.synced` handler's explicit `sessionSetMembersResource.reload()` (with
+`refresh: true`, bypassing the 60 s cache for that one read, same as `loadActiveEmoteSetId`'s own
+loud reload) used to race against the very same reload's `results.set(...)` retriggering `params` on
+its own — the explicit, cache-bypassing reload could be silently superseded by an incidental,
+cache-serving one. With `params` no longer reacting to `results()` at all, the explicit `reload()` is
+the only thing that can still trigger a refetch, and it reaches the network with `refresh: true`
+(asserted on the request's own `?refresh=true` query param, third round P3-b — not merely "a request
+went out", which a cache-serving one could equally produce).
+
+**(d, third round correction, P3-a) The `onDeleted([])` "no spurious refetch" case is a
+`vi.spyOn(SevenTvEmoteSetService, 'loadCachedEmoteSetPreview')` call count, not an
+`httpMock.expectNone()`.** The first version of this case used `expectNone` and would have stayed
+green against the *unfixed* `params` too: `loadCachedEmoteSetPreview` itself is what caches — a
+retriggered `stream()` call within the 60 s TTL asks the service again, and the service serves it
+from its own in-memory map without ever reaching `HttpClient`, so the resource-level retrigger this
+case exists to catch is invisible at the network layer. Verified live by reverting `params` to read
+`results()` directly again: the spy then counts 2 calls where the fixed code counts 1, and the
+`channel.synced` refresh case (P3-b, above) fails too, differently — `Cannot flush a cancelled
+request`, the race P2-b's own fix closes surfacing directly.
+
+**(e) Second-round addition (P3-c): a departed member gets the usage page's existing "left"
+treatment** (void plate, dimmed sprite, `usageStats.setView.leftBadge` — reused key, no new string)
+in the cell, the mobile readout and the sidecar, rather than looking identical to a live row. Without
+it, two marked cards silently produced "Löschen (1)" with nothing on screen explaining the missing
+one — not a new visual vocabulary, the same one the usage page already has for the identical idea.
+
+**(f) Second-round clarification (P3-d): binding `[readLiveAliasesFromSet]="true"` unconditionally
+also covers a null-session's delete, which the first round's doc text did not make clear enough.**
+A null-session has no *page-level pre-filter* (b) of its own — but its delete still goes through the
+panel-level, confirm-time live read and P1's fail-closed check (a) like every other session kind, so
+a null-session delete is not "unchecked" merely because `sessionSetMembersResource` never fetches
+for it.
+
+**(g) Third round (P2-b): a null-session's own archived rows get the same pre-filter set-sessions
+already had.** `cellAction`/`rowAction` never gated on `eligible` (a null-session's ballot member,
+`!isArchived`) — only voting was, and that was by design (K6). Harmless before P1 existed: an
+archived row simply got deleted with its stale name, the very defect #227 was filed over. Fail-closed
+since P1, it stopped being harmless — a confirmed selection that still included such a row now
+blocked the *entire run*, on every attempt, because reloading the page changes nothing about it (the
+row never leaves `results.emotes` for a fixed ballot, K6, and our own database still reports it
+`IsArchived` regardless of how many times the page reloads). `selectedForDelete` now filters
+`!eligible` rows the same way it filters `departedSevenTvEmoteIds` — a no-op for a set-session, where
+`eligible` is always `true` by design, so this only ever changes a null-session's behaviour.
+
+**(h) Third round (P2-c): the missing-row reason names the rows, not only a count, and asks for
+something the user can actually do.** The usage page has a legitimate normal case P1's blanket "try
+again" advice did not cover: an emote removed directly on 7TV, ahead of the periodic resync noticing
+— every run that includes it fails the same way, repeatedly, and "please reload" is not a fix for
+that, because the staleness is in *our* database, not in the page. The reason now lists the missing
+rows' own names (`MassDeletePanel.missingRowsReasonParams`, `{{names}}` interpolated into
+`massDelete.memberRead.missingFromSet.one`/`.other`) and tells the user to deselect exactly those and
+start again — actionable regardless of *why* a row went missing, and unlike a resync it takes effect
+immediately rather than waiting on the next sync tick. Capped and tailed exactly like
+`NamePreviewList`'s own list (`PREVIEW_CAP`, now exported and reused rather than a second constant,
+plus the shared `common.andMore` key) — the same "many names" problem, rendered as one line of status
+text instead of a scrollable `<ul>`, since the abort notice has no dialog to put a list into.
+Deliberately **not** an automatic resync or a new button: the deselect-and-retry path is immediate
+and needs no new write path, and an automatic resync the panel triggers on its own would be a second,
+undiscussed behaviour change riding along with this fix.
+
+**(i) Third round (P3-c): the `unavailable`/`truncated` lock reasons name an escape.** Both used to
+describe only the problem, with nothing on screen saying what — if anything — a manager could do
+about it. Reloading the page genuinely helps here (unlike (h) above): the lock reflects
+`sessionSetMembersResource`'s own state, and a reload starts that read fresh rather than reusing a
+failed or truncated answer. Both keys gain "Seite neu laden, um es erneut zu versuchen." /
+"Reload the page to try again." — no new retry button, the existing reload is enough and adding a
+second, panel-local one would duplicate it.
+
+**(j) Third round (P3-d): the missing-row reason no longer says "nothing was deleted" twice.** The
+first version's reason text ended on its own "…, nichts gelöscht"/"…, nothing deleted", on top of the
+abort notice's `leadKey` (`massDelete.nothingDeleted`, "Nichts gelöscht."/"Nothing was deleted.")
+already saying it once. Both locales' `missingFromSet` keys drop the repeated phrase now that they
+also carry the names+advice from (h).
+
+**(k) Third round (P3-f): the *non-active usage view* does not read live and (a, P1) never applies to
+it, by spec.** Spec §37 (K5) already decided this for the alias side — a non-active set's rows are
+built from `mergeSetView`'s live member list to begin with (E16), so a second, confirm-time read of
+the same set would be redundant, and `MassDeletePanel` skips it (`readLiveAliasesFromActiveSet` never
+fires there, only for the *active* set). The same absence of a read means P1's missing-row check has
+nothing to run against either: `liveEntries` stays `undefined` on that path, and `startDelete`'s
+`if (liveEntries !== undefined)` guard is exactly what keeps the check from firing at all — a
+non-active usage delete keeps whatever risk of a stale row it already had before #227, unchanged by
+either round of this entry.
+
+**No new backend route.** Every fix reuses existing frontend readers only — `loadSevenTvSetEntries`
+(shared/seven-tv/seven-tv-set-entries.ts, unchanged) for (a)/(a, P1), `SevenTvEmoteSetService.
+loadCachedEmoteSetPreview` (unchanged itself, only its doc comment widened) for (b)/(c)/(d),
+`NamePreviewList`'s `PREVIEW_CAP` (now exported) for (h).
+
+---
+
+### 2026-09-22 — Dialog action row stays visible while the body scrolls (#226)
+
+**Betrifft:** `docs/UI-Designsprache.md` · `web/e2e/audit/ui-audit.audit.ts` ·
+`web/e2e/dialog-action-row.e2e.spec.ts` · `web/e2e/touch-mobile.e2e.spec.ts` ·
+`web/src/app/shared/ui/dialog-shell.ts`
+
+Every `DialogShell` dialog used to scroll its action row away with the body — on a dialog whose
+content outgrows the pane (the import target picker with every set of every account the user edits
+is the reported case, #217's follow-up), "Cancel"/"Continue" ended up below the fold with nothing
+telling the reader a next step existed at all. A nested scroll area inside the picker's own content
+was considered and rejected: it scrolls inside an already-scrolling pane, which behaves badly on
+touch, and it would make that one dialog behave differently from the other eleven `DialogShell`
+callers.
+
+The fix sits once in `DialogShell`, not in any one dialog: the action row is `position: sticky` to
+`.cdk-overlay-pane.app-dialog-panel`'s bottom edge, the same bleed-and-pin technique the sheet's own
+drag handle already used at the top — `-mx-6 -mb-6` (row) / `-mx-6 -mt-6` (handle) cancel the
+shell's `p-6` on three sides so each one's margin box reaches the pane's edge, and the sticky offset
+itself is plain **`0`** (`bottom-0` / `top-0`), so the pinned position lands flush with that already-
+bled edge. Sticky rather than a flex-column height chain (`h-full` on the shell, `overflow-y-auto`
+on the body) deliberately: two component hosts with a `display: inline` default sit between the pane
+and the shell, and a height chain does not survive them — the exact reason the pane, not the shell,
+has been the scroll container all along. The row carries its own `bg-surface` and a `border-t
+border-border` so scrolled content cannot show through underneath it and the boundary between "still
+scrolling" and "always visible" stays legible; it rounds its bottom corners to match the shell's own
+only on a fine pointer, since the sheet's shell has no bottom radius to match (flush with the screen
+edge). `overflow-hidden` on the shell stays forbidden, unchanged from the existing sheet-handle
+rule — it would break both sticky pins the same way.
+
+**Caught and corrected within the same, still-unmerged branch, worth stating plainly for the next
+reader:** the first version of this fix pinned the row with `sticky -bottom-6` — mirrored, on the
+mistaken belief that the offset had to "cancel" the `-mb-6` margin a second time — and, following the
+same (wrong) reasoning, the sheet's pre-existing drag handle carried `sticky -top-6`. A margin and a
+sticky offset do two different jobs: the margin decides where the box sits in normal flow, the
+offset decides where the *stuck* box is clamped to relative to the pane's own edge. `-6` there does
+not cancel anything a second time, it pins the box 24 px past the pane's true edge — invisible at
+rest and at the very end of a scroll (both are *unstuck*, natural-flow positions), but for every
+scroll position genuinely in between, the handle's own grab bar was clipped completely out of view
+and the row's `pb-6` cushion was clipped away under the pane's edge, leaving its buttons flush
+against the raw bottom with no visible padding. Neither had been noticed before: the handle predates
+this issue entirely and its only test checked it at rest; the row's own first e2e case checked it
+only at full scroll, both *unstuck* states where the bug is invisible. Both now pin at offset `0`.
+Measured with `getBoundingClientRect()` mid-scroll (not `toBeInViewport()` on the button alone, which
+does not notice a clipped-away padding, and not on the handle's touch-target wrapper, which stays
+partly inside the pane long after its 4 px bar has scrolled out) — pinned by
+`web/e2e/dialog-action-row.e2e.spec.ts` and `web/e2e/touch-mobile.e2e.spec.ts`, both confirmed red
+against the `-6` offsets before the fix.
+
+Also fixed in the same change: the audit harness's `usage-stats-import-target-dialog` scenario had
+gone stale since K2 (#206) — it never mocked `GET /api/seventv/me/emote-set-targets`, so its
+screenshot showed the picker's load-failed banner instead of the picker the scenario is named for.
+
+---
+
+### 2026-09-22 — Voting: "member of the session's set" replaces "not archived"; permission comes from permission (#200, K6)
+
+**Betrifft:** `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (section 9, 6.9, 6.10, F8, F12, E4, E10) ·
+`src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs` ·
+`src/EmotePurge.Core/Services/IUsageStatQueryService.cs` ·
+`src/EmotePurge.Core/Services/IVoteSessionQueryService.cs` ·
+`src/EmotePurge.Core/Services/IVoteSessionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatQueryServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionQueryServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
+`web/e2e/audit/ui-audit.audit.ts` ·
+`web/e2e/support/mocks.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
+`web/e2e/vote-ballot.e2e.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/voting/vote-session.model.ts` ·
+`web/src/app/core/voting/vote-session.service.spec.ts` ·
+`web/src/app/core/voting/vote-session.service.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.spec.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.html` ·
+`web/src/app/features/voting/vote-session-detail-page.spec.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` ·
+`web/src/app/features/voting/vote-session-list-page.spec.ts` ·
+`web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
+`web/src/app/shared/export/voting-export.spec.ts` · `web/src/app/shared/export/voting-export.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts`
+
+A vote session can now be scoped to any 7TV emote set of the channel, not only the active one — a
+**set-session**, created from a non-active set's view in the usage-stats grid (K6, spec section 9),
+alongside the existing **null-session** every session was before this (dynamic "all active emotes" or
+a fixed ballot of local `Emote` Guids, spec E4 unchanged). Both live on `CreateVoteSessionRequest`
+(`emoteIds` for a null-session; `emoteSetId` + `sevenTvEmoteIds` for a set-session) with an exclusion
+rule between them (400 `vote_session_set_ballot_invalid`), and both go through `VoteSessionService.
+CreateAsync`. `VoteSession.EmoteSetId` (nullable) records which kind a session is; a set-session's
+invariant is that `EmoteSetId != null` implies its `SessionEmotes` are never empty — there is no
+dynamic "all emotes of a set" mode, because a foreign or non-active set has no local inventory to be
+dynamic over.
+
+**The trap this revises, in both directions.** The 2026-08-01 archived-badge entry read a subset
+ballot member's `Emote.IsArchived` as "left the 7TV set, voting closed" — correct for a null-session,
+where the flag means exactly that. It is the wrong test for a set-session: `CreateAsync` upserts a
+set-session's members via `INSERT … ON CONFLICT ("ChannelId", "SevenTvEmoteId") DO NOTHING`, and a
+member with no prior local row gets one created `IsArchived = true`, `ArchivedAt = null` ("never
+active") — not because it left anything, but because it was never the *active* set's member to begin
+with. Reading that flag as "closed to voting" would have frozen a fresh set-session's ballot shut on
+arrival. The fix touches **both** ends the trap has: creation no longer validates a set-session's
+members against `!IsArchived` (it validates against the live 7TV membership instead, all-or-nothing on
+the 7TV identity, 400 `emote_ids_invalid` on a miss) and voting no longer gates on it either —
+`IsEmoteVotableAsync` accepts any ballot member of a set-session, `IsArchived` or not.
+
+**`GetResultsAsync` gains `eligible: bool`**, which is what actually gates the vote buttons and the
+"left the set" badge now: `!IsArchived` for a null-session row (unchanged behaviour), always `true` for
+a set-session row (its fixed ballot never closes, precisely because it was frozen as a ballot, not as
+a live view) — so a set-session shows **no** mid-session badge at all. `useCount` follows a matching
+split: a null-session row still nulls it for an archived member and otherwise defaults a missing
+`UsageStat` entry to `0` (no row in range genuinely means no use); a set-session row instead reports
+`null` only when the set's own `UsageStats` never carry that emote at all — **date-independently**, not
+just "no row inside the session's own window" (fix round 1: `GetTotalsByEmoteIdsAsync`'s `WHERE` clause
+used to filter the date range itself, which made a row that exists but falls outside the window
+indistinguishable from no row at all; the date range moved into the `Sum`'s own conditional instead, the
+same shape `GetUsageContextAsync`'s aggregates query already used for the identical reason) — a
+fabricated `0` for "we never even watched this member under this set" would have been a claim the data
+does not support, and a fabricated `null` for "counted, just not in this window" would have hidden a
+real, reportable zero. Name/image come from `VoteSessionEmote.NameAtCreation`/`ImageUrlAtCreation` when
+set (a set-session's freeze, `null` for a null-session's row, where the live `Emote` is always the
+answer) — so a later sync that renames the live `Emote.Name` cannot retroactively rewrite what a voter
+was shown.
+
+**`canSelectForDelete` no longer follows `hasUsageData`.** The two used to be the same flag
+(`hasUsageData` reading a null-only-`TotalUseCount` shape as "not a manager"), which is also exactly
+the shape a manager sees on an all-null-usage set-session ballot (every member genuinely never used
+under that set) — the old coupling would have hidden the mass-delete panel from the one viewer who is
+allowed to use it. `canSelectForDelete` now follows `canManage` directly; `hasUsageData` keeps gating
+only the usage column and the coarse-pointer drilldown, which still are permission-shaped. The panel's
+target set (`massDeletePanelSetId`) is `session.EmoteSetId ?? activeEmoteSetId()` — a set-session's
+own set, never the channel's active one under its name. On the usage-stats page, `voteLockReasonKey`
+is now exactly the lock deleting uses (`sharedSetViewLockReasonKey`: mid-switch per spec §36, or the
+shown set's member list loading, unreadable or truncated) — a settled non-active view with a good
+member list no longer blocks creating a vote session at all (the "set sessions are K6" interim
+`nonActiveSet` lock this revises; its copy key is removed). An unreadable or truncated list still
+locks voting as it locks deleting: creating a set-session validates the ballot against the live 7TV
+membership server-side, and a member list the page cannot read in full cannot back a ballot that
+check would accept either. Since both locks are one, the vote button's `aria-describedby` always
+points at the delete button's reason paragraph; K5's interim vote-only paragraph
+(`voteOnlyLockReasonId`) is gone again. `openCreateVoteSession` picks the ballot's id
+space by view: `voteBallotEmoteIds` (Guids) in the active view, `voteBallotSevenTvEmoteIds` (7TV ids,
+including class-2b rows a Guid ballot would silently drop) in a non-active one, paired with
+`setSession: { emoteSetId }` on the dialog data only in the latter case — the request body this
+produces is exactly `CreateVoteSessionRequest`'s pair, and the null-session body is byte-for-byte
+unchanged from before this feature.
+
+**Why a per-channel advisory lock could not close the create/sync race instead.** A set-session's
+creation upserts emote rows from the **Api** process; `ChannelSyncGate` (`ChannelSyncGate.cs`) is a
+process-wide semaphore that only serializes the **Worker's** own sync attempts against each other —
+it has no reach into the Api process at all, so it cannot be what keeps the two from racing. The
+chosen fix is a **retry, not a lock** (spec E10): `SevenTvSyncService.SyncChannelAsync` catches
+exactly the `23505` unique-key violation on `IX_Emotes_ChannelId_SevenTvEmoteId` once, clears the
+change tracker, re-reads the channel row and re-runs the write sequence — a second conflict propagates
+as before. **Widened beyond E10's own wording** (T6.2, decided during implementation, not a separate
+spec revision): the retried sequence re-runs `RecordObservedSetAsync` as well as the emote reconcile,
+because `ChangeTracker.Clear()` discards whatever that call had staged on the first attempt — the
+observation row is tracked-only until `SaveChangesAsync`, so a retry that skipped it would silently
+lose the open interval a plain, un-conflicted sync would have recorded. An advisory lock spanning the
+Worker's read-to-save window plus the Api's upsert would have cost every 60-second sync tick of every
+channel a lock acquisition, for a race whose only cost when it does happen is one lost sync round —
+disproportionate for what the retry already closes for free, and testable by forcing the interleaving
+with two `AppDbContext` instances (AK 78) in a way a lock's absence of contention could not be.
+
+**Fix round 1 (review + the controller's E2E run), same entry, same day.** Three more corrections
+belong to this same contract change, not a separate one: `openDrilldown` on the vote detail page now
+passes the session's own `emoteSetId` to `EmoteDrilldownData` (it used to omit it entirely, which
+made a set-session's drilldown chart the channel's *active* set — silently wrong whenever the two
+differ); and the vote-session detail page's mass-delete panel now also gates on
+`results()` (not just `canSelectForDelete()`/`massDeletePanelSetId()`), so it cannot briefly mount
+bound to the channel's active set while the session's own results — and with them, its actual
+`emoteSetId` — are still in flight.
+
+**Final fix wave (whole-branch review: Opus, Codex Sol, a Fable arbitration), same entry, same
+day.** **Ruling D (P1, both reviews):** a temporary lock on the vote detail page's mass-delete
+panel for a set-session over a non-active set existed only until K5's set-scoped `sync-deleted
+{ emoteSetId, sevenTvEmoteIds }` bookkeeping landed, and is lifted: the panel now deletes from the
+session's own set (`[setId]`) with the channel's real active set beside it (`[activeSetId]`). **Fable A (P2, rate
+limit):** `POST /api/channels/{c}/vote-sessions` (create) moved from `Bookkeeping` (120/min) to
+`ForeignEmoteLookup` (10/min, spec 6.10) — a set-session's branch of `CreateAsync` reads the set's
+live 7TV membership, one or more paginated pages, the same provider-budget shape as the other
+`ForeignEmoteLookup` routes; a null-session create touches no 7TV endpoint and simply rides along
+under the same policy. `end`/`delete` keep `Bookkeeping` — they write only against Postgres.
+
+Two deliberate non-changes, recorded so a future reader does not mistake either for an oversight:
+the delta path (`SevenTvSyncService.ApplyEmoteSetUpdateAsync`, the EventAPI dispatch route) carries
+no `23505` retry of its own — E10 scopes the retry to `SyncChannelAsync` alone (the full
+reconcile), and a conflict reaching the delta path instead is left to the periodic resync (default
+60 s) to repair on its own next tick, the same staleness tolerance the delta path already has
+elsewhere. And a set-session's never-active row keeps `FirstSeenAt = null` at creation — a recorded
+deviation from spec section 9 step 3's "`FirstSeenAt` aus dem Set-Eintrag, wenn 7TV es liefert":
+the set-ID read path (`IForeignEmoteSetService`) does not thread 7TV's `AddedToSetAt` through (only
+the full sync's REST/dispatch path does, `SevenTvSyncService.UpsertEmote`), so the column is
+corrected retroactively if and when the set becomes active, not filled at ballot-creation time.
+
+**Known limitations, both on the vote-session detail page's mass-delete panel, recorded rather than
+fixed here (rebase-delta review, same day).** (a) A delete started from the vote page records
+`[NameAtCreation]` as the emote's only alias — `MassDeletePanel.readLiveAliasesFromActiveSet` stays
+unset there on purpose (see that input's own doc). The recorded alias goes stale after a later 7TV
+rename, and a #74 duplicate cell still records only one of its aliases, same as before this entry;
+the fix needs a live read of the panel's own (possibly non-active) set's membership, not the active
+set's, which is a design step of its own rather than a one-line follow-up. (b) A set-session member
+that has since left the live set stays selectable for delete on the vote page — `eligible` is always
+`true` there by design (this entry, above), it does not track live membership — so confirming a
+delete on such a member issues a `RemoveEmote` for something no longer a member of the target set.
+Both are tracked as a follow-up in epic #200, not fixed in K6. *(Both fixed 2026-09-22 by #227 — see
+that entry above; the log is sorted descending by date.)*
+
+**Arbitrated review fixes (round 2, Opus/Codex Sol with a Fable arbitration), same entry, same
+day.** `CreateAsync` now rejects a set-session whose `emoteSetId` is not one of the channel's own
+sets before it ever reads that set's live membership (spec section 9's new step 0, via
+`ISevenTvEmoteSetListService`, precedent 6.8), the usage-stats page's vote button now counts and
+gates on the exact ballot `openCreateVoteSession` sends instead of a stale sibling count, and the
+vote detail page withholds the drilldown trigger from a set-session row that carries no usage
+number while leaving a null-session's archived-with-null-usage rows untouched.
+
+---
+
+### 2026-09-22 — Target-set picker: one heading per account, one radio per set, PERSONAL sets hidden (#217)
+
+**Betrifft:** `web/src/app/shared/seven-tv/import-target-choices.ts` ·
+`web/src/app/shared/seven-tv/import-target-choices.spec.ts` ·
+`web/src/app/shared/seven-tv/import-target-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-target-dialog.spec.ts` ·
+`web/e2e/emote-import.e2e.spec.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (§39 addendum)
+
+Issue #217's follow-up for the *target* picker, applying to it the same two decisions spec addendum
+34 already applied to the *source* picker (`foreign-channel-step.ts`) on 2026-09-21 — that entry
+explicitly left the target side to its own follow-up, which this is.
+
+**One layout regardless of account or set count.** The picker used to mix three shapes: a multi-set
+account showed a heading with radios below it; a single-set tracked account with a selectable active
+set showed the channel name itself as the radio ("#brudivoeller_tv (aktiv: …)", 8.6's "one-click into
+channel X" shortcut); an account with both an active and further sets showed the channel-radio *and*
+nested set radios at once. Every account is now a plain, non-interactive heading (`<p>`, never a
+radio, never a stop in the radiogroup's native tab order) with every set — including a lone one — as
+its own radio below it, the active one labelled "(aktiv)". The merged header-radio shortcut
+(`headerSet()`/`remainingSets()`) is removed outright; picking a single-set or active-set account
+still costs one click, just on that set's own radio instead of the account's name. The radiogroup
+itself keeps rendering only when at least one radio exists (the ARIA constraint, unchanged).
+Preselection is unchanged in contract — still only the caller's own account's active set
+(`isOwnAccount`, finding 4 from 2026-09-21) — but `firstPreselectableTarget()` now reads that set
+directly off the (already PERSONAL-filtered) own account's set list instead of through the removed
+shortcut, so it can never disagree with what the template renders.
+
+**PERSONAL sets are hidden entirely, not shown disabled.** Same reversal of spec 8.6 ("sichtbar,
+aber deaktiviert und beschriftet — nie kommentarlos wählbar, nie ausgeblendet") that addendum 34
+already made for the source picker: `importTargetChoices` filters `PERSONAL` sets out of
+`account.sets` before building any `ImportTargetSetChoice`, so one never reaches the template.
+`isPersonal` is dropped from `ImportTargetSetChoice` — the only remaining `disabledReason:
+'notNormalKind'` case is `GLOBAL`/`SPECIAL`, both sharing `import.target.kindUnavailable`. The
+now-unused `import.target.kindPersonal` key is removed from both locale files. **Operator decision
+2026-09-22: `GLOBAL`/`SPECIAL` keep 8.6's original treatment unchanged** — visible, disabled,
+labelled — only `PERSONAL` is affected.
+
+An account's reported active set that is itself `PERSONAL` now counts as no active set at all
+(mirrors the source picker's P2-2 fix): `toAccountGroup` nulls `ImportTargetAccountGroup.
+activeEmoteSetId` whenever the raw `account.activeEmoteSetId` names a `PERSONAL` set, rather than
+passing that id through unchanged. This is a defensive consistency measure, not a fix for a reachable
+bug — preselection already keys on each set's own `isActive` flag over the already-filtered `sets`,
+and `import-flow.ts`'s `toTargetSelection` (which decides its "tracked target and `emoteSetId ===
+activeEmoteSetId`" fast path from exactly this field) only ever compares it against an `emoteSetId`
+that came from a rendered, selectable set to begin with, so a raw `PERSONAL` id here could never have
+matched by accident either way. The invariant this keeps is simply that `activeEmoteSetId` never
+names a set the group does not also offer a row for.
+
+**Operator decision 2026-09-22: an account left with zero sets after filtering gets its own, quiet
+notice.** Whether an account had only `PERSONAL` sets or genuinely none, its heading still renders
+and a new "Kein nutzbares Set" / "No usable set" text (`import.target.noUsableSets`, new key in both
+locale files) appears below it — never silence. Deliberately distinct from `setsUnavailable`'s "Sets
+nicht lesbar": one means the list could not be read at all, the other means it was read and, after
+filtering, held nothing. Made explicit in the transform model via a new
+`ImportTargetAccountGroup.noUsableSets: boolean` (`sets.length === 0 && !setsUnavailable`) rather
+than left implicit in the template.
+
+**P2 fix, same review round (#217): that notice was unreachable on first landing.** The whole account
+loop — headings, `setsUnavailable`/`noUsableSets` notices, set radios, tracked and untracked alike —
+sat entirely inside `@if (hasAnySet())`. An accounts list consisting of exactly one account with
+nothing offerable (a PERSONAL-only account, or a `setsUnavailable` one — the same gap existed for
+both) never rendered its own heading or notice at all: `hasAnySet()` was `false`, so the template
+fell straight through to the unrelated, list-wide `import.target.none` placeholder instead, the very
+case the notice above exists to avoid. The account loop now renders whenever the accounts list itself
+is non-empty (`ImportTargetDialog.hasAnyAccount()`, a new computed, deliberately weaker than
+`hasAnySet()`); the wrapper only becomes a `role="radiogroup"` with the "Ziel" `aria-label` once
+`hasAnySet()` is actually `true` (ARIA still requires a radiogroup to contain a radio) and is a
+plain, unlabelled container otherwise. `import.target.none` is now reserved for the one case nothing
+here can render at all — the accounts list itself is empty. `ImportTargetDialog.hasAnySet()` itself
+is unchanged in meaning — still "does any account anywhere have at least one set" — only what it
+gates changed: rendering the loop at all is now `hasAnyAccount()`'s job, `hasAnySet()` only decides
+the radiogroup role/label.
+
+**Unrelated layout fix, same commit window.** The untracked-target confirmation banner (8.6, AK 35)
+used to lay its text and two buttons side by side in `NoticeBanner`'s `[notice-action]` slot, which
+squeezed each button's label to one or two words per line at narrow width. The two buttons now sit
+in their own row *below* the text, both inside the banner's default content slot instead of the
+action slot — a rendering change only; the contract (confirmation mandatory, cancel restores the
+prior radio state) is unchanged.
+
+**Addendum 34's scope note closed.** That entry's own caveat — "the target picker still shows
+PERSONAL disabled and still varies its layout by set count … the separate follow-up applies the same
+two decisions there" — is resolved by this entry: source and target pickers now treat PERSONAL and
+layout uniformity identically.
+
+---
+
+### 2026-09-21 — A row of the set view is identified by its 7TV id; bookkeeping speaks 7TV ids (#200, K4 — first part)
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/core/usage-stats/usage-stat.model.ts` · `web/src/app/core/usage-stats/merge-set-view.ts` ·
+`web/src/app/core/usage-stats/usage-stat.service.ts` · `web/src/app/core/routing/list-query-state.ts` ·
+`web/src/app/shared/emotes/emote-set-menu.ts` · `web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
+`web/src/app/shared/datetime/date-range-menu.ts` · `web/src/app/shared/grid/atlas-grid.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` · `web/src/app/shared/seven-tv/import-trigger.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/foreign-import-flow.ts` ·
+`web/src/app/shared/seven-tv/file-import-step.ts` · `web/src/app/shared/seven-tv/import-source-dialog.ts` ·
+`web/src/app/shared/export/usage-export.ts` · `web/src/app/shared/export/usage-export-purposes.ts` ·
+`web/e2e/support/mocks.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` · `src/EmotePurge.Core/Services/IEmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` · `web/src/app/core/emotes/emote-admin.service.ts` ·
+`web/src/app/shared/export/purge-run-export.ts` · `web/src/app/shared/seven-tv/restore-flow.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` ·
+`web/src/app/shared/seven-tv/delete-confirm-dialog.ts` · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
+`web/e2e/emote-import.e2e.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
+`src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs` ·
+`src/EmotePurge.Core/Services/IAuditLogQueryService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs` ·
+`web/src/app/shared/audit/audit-row.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
+`web/src/app/core/audit/audit.model.ts` · `web/src/app/shared/audit/audit-row.spec.ts` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (6.6, 7, 8.1–8.6, 8.10, §35, §36) ·
+`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.3, T5.2, T5.1) ·
+`web/src/app/shared/seven-tv/seven-tv-set-entries.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` (spec §37, §38)
+
+Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
+part**, written with the K4 key switch (plan T4.3 + T4.4, one commit); K5 appends the bookkeeping half
+(T5.2: `sync-deleted`/`sync-restored` body `{ emoteSetId, sevenTvEmoteIds }`, match over
+`(ChannelId, SevenTvEmoteId)`, the paper-only variant for a non-active set, the set id frozen into the
+run record) to this same entry.
+
+**The key.** The usage page can now show *any* NORMAL set of the channel, not only the active one, and
+a non-active set's view unions the counted `/totals` rows with the set's live 7TV member list. A live
+member that never earned a `UsageStat` under that set has no `Emote.Id` at all. Every identity the grid
+uses therefore moves from `Emote.Id` to `SevenTvEmoteId`: the `ListSelection` key, the inner
+`@for … track` (the outer `trackBy: trackRow` stays on the index — 2026-08-30), `inspectedId`,
+`usageRank`, `fillPercents` and the `/series` lookup. `Emote.Id` stays on the row as **nullable
+payload without meaning of its own**; the only readers left are the ones that talk to the server in
+Guids (drilldown `/daily`, the null-session ballot, the legacy delete report). Two Guid-less rows are
+two cells and two selection keys (AK 54); keyed on the Guid they would collapse into one and trip
+NG0955 (AK 55). This is why the key switch and the first Guid-less row land in one commit.
+
+**`/series` names its entries by `SevenTvEmoteId`** — revising the wire-format sentence of the
+2026-08-06 `/usage-stats/series` entry — **additively**: `emoteId` stays beside it until follow-up
+issue 5, the same pattern and the **same gate** as the legacy `sync-deleted` body form (E3): both
+transitional fields fall only behind K7 plus 14 days plus evidence from operation, never behind the
+merge of K4, so the integration branch between K1 and K4 stays usable and no tab opened before the
+deploy loses the field. The E2E mock sends both fields (it mirrors the contract, not the reader). Both
+series caches (`/daily`, `/series`) carry the set in their key (T4.2, AK 64); the drilldown reads the
+set frozen into its dialog data, never the dropdown.
+
+**Two models, not one (T4.1).** `EmoteUsageTotalDto` is the `/totals` wire shape (always a DB row,
+`emoteId`/counts never null); `EmoteUsageTotal` is the page's merged row (`emoteId` and counts
+nullable, `membership: 'live' | 'left'`, `slotCount`, `aliases`, `nameTwinEmoteSetIds`), built only by
+the pure `mergeSetView`. Kept apart because the union happens in the **frontend** (E16: a silent
+`usage.flushed` reload every 30 s must never cause a 7TV request, which a server-side union would tie
+to every `/totals` call), and because one type for both would have made every wire consumer handle a
+`null` the wire never sends. In the active set's view `mergeSetView` is a lossless 1:1 mapping, so
+nothing that predates set views sees a different row.
+
+**`null` is not 0.** A row without counts under the shown set is split off *before* bands, sort,
+Pareto denominator, distribution strip, fill bars and sums — each of them would otherwise turn it into
+a silent `NaN` (F16) — and forms its own trailing group in name order, headed "keine Zählungen unter
+diesem Set" (E17, AK 56). It is not a fifth band: `packAtlasRows` got a widened group key instead of
+`usageBandOf` learning a value it must never return. A counted row that is no longer in the set is
+`'left'` (E23): the ballot's archived treatment (void plate, dimmed sprite, badge text), counted in
+sums and denominator, never handed to the delete run (AK 57). A #74 duplicate is one cell with
+`slotCount 2` and both aliases, and frees two slots in the dock's projection (AK 58). A name twin in
+another set gets a marker naming that set, never a merged number (E24, AK 59). The set view creates
+no `Emote` rows; only a set-scoped vote session will (K6, foreign key).
+
+**The caption states two independent facts** (spec 8.4, AK 60): *observed* comes only from the shown
+set's observation intervals against the loaded range, *counted* only from the loaded totals — never one
+from the other. A range with counts but without an interval (an inactive channel's rows backfilled onto
+a set id by the migration, later rejoined) says "not observed" and nothing about the numbers. The
+active set's view is unchanged. The date menu gains a `'set-observed'` preset (youngest interval,
+offered only when there is one; wording "beobachtet", not "aktiv").
+
+**Set state in the URL — T4.0 chose route (a).** The page reuses `listQueryState({ emoteSetId: '' })`
+instead of a hand-rolled `queryParamMap` reader: `''` means *follow the active set* and the active id
+is never written out — choosing the active set removes the parameter; every write is `replaceUrl`, so
+a set switch is never a history step. This **corrects a premise of spec 8.1**, which asked for the
+set in the URL "like the date range": the range was never in the URL (`rangePreset` is a local
+signal, the page had no `ActivatedRoute` at all — plan 0.2). The set is the page's first URL-borne
+state, and the asymmetry is deliberate for this plan: Back/reload restores the set but not the range.
+An id the set list does not confirm falls back to the active set **silently**; with a **readable**
+list the parameter is also removed from the URL, with an **unreadable** list (6.1 answered 503) it is
+kept, and the display is pinned to the active set (a later successful read must not jump the view)
+— refined on 2026-09-22, see "Fix round" below: the pin applies only while the list has *never*
+been read for the channel, and an explicit choice in the dropdown lifts it. Following the operator decision of 2026-09-21 (spec §35) the
+dropdown hides every `kind != NORMAL` set entirely instead of showing it disabled (reversing 8.1/AK 50
+for this one dropdown), and a URL id naming such a set counts exactly like an unknown one.
+
+**A set switch is a sight, not a context** — like a date-range change: `selection.retainAmong` with the
+#94 notice, never `clear()` (AK 51); against the *merged* view, and when the member list is still
+loading the reconciliation waits for it instead of pruning a marked live member that merely has no
+counted row yet. The set list loads once per channel and on a loud reload only (E19); the member list
+of a non-active set loads beside `/totals`/`/series` and again on `channel.synced` or the refresh
+button, never on `usage.flushed` (8.3, AK 52). Slot bar and projection of a non-active view come from
+that list's `capacity`/`totalCount`, never from the active set's status.
+
+**Gates on the selected set, locks with reasons (spec 8.1, 8.3), and what stays interim.** Header
+write paths and the dock's marking half are gated on `selectedEmoteSetId()`. Deleting in a non-active
+view is locked with a visible reason: member list unreadable, member list truncated (AK 62), and — as
+an **interim lock until K5** — in every non-active view, because the delete run still reports in the
+legacy `{ emoteIds }` form, which archives `Emote` rows as if they had left the *active* set, and still
+keys queue and protocol by `Emote.Id` (the Guid-less-row lock of plan T4.3 is contained in it). For the
+same reason `DeletableEmote`/`DeleteQueueEmote.emoteId` stay required here and the page filters
+Guid-less and `'left'` rows out itself; the panel stays bound to the active set, since every run it can
+show started there. Creating a vote session is locked in a non-active view until set sessions exist
+(K6). The push ("Übertragen") and the export already capture the shown set (T4.4). The usage export
+serializes a `null` count as an empty CSV cell / JSON `null` with trend `unknown`, never 0. The
+null-session ballot is resolved from the 7TV-keyed selection into Guids when the dialog reads it,
+i.e. at submit (E4).
+
+**T4.5 — the import trigger's three channel-only doors now follow the selected set; restore is the
+one door that still does not (K5 closes it).** `import-trigger.ts`'s `setId` input was always bound
+to `selectedEmoteSetId()` (T4.4), but the file/foreign-channel/leaderboard doors ignored it and
+hardcoded `{ kind: 'activeSet' }` — the header comment said so outright ("its file, foreign-channel
+and leaderboard doors still write into the channel's ACTIVE set"). They now build a `'chosen'`
+`ImportFlowTarget` (`toImportTarget`) from `setId` plus a new `activeSetId` input: when the two
+agree, `toTargetSelection` (`import-flow.ts`, unchanged) still takes the identical `'trackedActive'`
+fast path a plain `'activeSet'` target always did (AK 36 — same request contract, not a new one);
+when they differ, it reads the target live via `SevenTvEmoteSetService.loadEmoteSetPreview` instead
+of assuming the channel's active set, the same `'trackedSet'` path the K2 target picker's own
+non-active choice already used. `startForeignChannelImportFlow`/`startLeaderboardImportFlow`
+(`foreign-import-flow.ts`) take that target as a parameter now instead of building `{ kind:
+'activeSet' }` themselves. `activeSetId` defaults to `null`, which folds back onto `setId` and
+keeps every caller that predates this task (including tests that never pass it) byte-identical.
+
+**Restore stays locked while a non-active set is on screen, with a visible reason shown at the
+exact moment a file is picked.** A finished restore still books its un-archive through the legacy,
+set-agnostic `EmoteAdminService.syncRestored(channelName, emoteIds)` call (`restore-flow.ts`) — K5
+(T5.2) is what makes it set-aware. `FileImportStep` gained a `restoreEnabled` input (`true` unless
+the caller says otherwise) that `import-trigger.ts` sets to `setId === activeSetId`; when `false`, a
+purge-run protocol never reaches `parsePurgeRunProtocol` at all — `handlePurgeRunProtocol` reports
+`restore.import.errors.restoreNonActiveSet` immediately instead. The protocol's own *match* check
+(`setId` against the file's `meta.emoteSetId`) needed no change to support this: it was already
+generic over whichever set it is handed, so a protocol naming a non-active set is accepted while
+that set is shown and rejected while another is (AK 66) — independent of whether restoring is
+currently locked at all.
+
+**The usage export now names its set.** `UsageExportInput`/`UsageExportMeta` gained
+`emoteSetId`/`emoteSetName`; the filename gets the set id's last six characters as a segment (the
+same "Kurzform" idiom the audit view and the name-twin tooltip already use), so two set exports of
+the same channel no longer share a filename. One deliberate deviation from the spec's own `string`
+annotation for `emoteSetId`: it stays `string | null`, because a channel with no active/selected
+7TV set can still export its usage numbers — a pre-K4 allowance `usage-stats-page.spec.ts`'s
+"mountWithoutActiveSet" case already exercised and that this task did not remove. `null` omits the
+filename segment entirely and nulls both meta fields, rather than inventing a placeholder set.
+
+**Fix round 2026-09-22 (independent reviews of the K4 branch) — what the page does while the view
+is not settled.** Five rules, each closing a path to a wrong write or a view that never settles:
+
+- **"Selected ≠ shown" locks delete and vote, visibly.** The dock stays mounted across a set switch
+  (it hangs on the selection), and before this round its delete and vote buttons stayed live because
+  every lock read the set the rows on screen belong to — still the old one — while the delete panel
+  targets the *active* set with the *live* selection. `viewSwitching` (the chosen set's rows are not
+  on screen yet, or their request failed, or the rows were merged for the other kind of view — see
+  the next-but-one bullet) is now the first reason `deleteLockReasonKey` names
+  (`usageStats.setView.lock.switching`), and `voteLocked` follows it; it is the same predicate the
+  push already used (`importScopeCurrent`). Because a confirm dialog outlives the view it was opened
+  on, both dialogs re-evaluate the lock when they are confirmed: `MassDeletePanel.startDelete`
+  aborts with a visible and announced notice (`massDelete.abortedByLock`), and
+  `CreateVoteSessionDialogData` gained an optional **live** `lockReasonKey` signal that blocks the
+  submit with the reason next to it — the same live-signal contract its ballot already had (#132).
+- **"Loading" means a request in flight, never "the member list does not match".** The old
+  derivation stayed `'loading'` forever once the rows' own request failed after a switch (the member
+  list then belonged to the new set, or was idle), so the skeleton never came down and the refresh
+  button — disabled while loading — offered no retry. A settled switch without the chosen set's rows
+  (`setSwitchFailed`) now shows an error state in the sheet with a retry, keeps the error banner, and
+  hides the previous set's rows, strip, sidecar and slot bar instead of presenting them as the chosen
+  set's. A successful `/totals` answer clears a standing error.
+- **Rows carry the kind of view they were requested for.** `totalsNonActive` is frozen at request
+  time next to `totalsSetId`; `isNonActiveView` reads it. When a sync makes the viewed set the active
+  one (or the reverse), `viewKindStale` locks through `viewSwitching` and triggers one silent reload,
+  so a delete is never offered over rows merged as a non-active view — no flash of an unlocked button.
+- **The pin, refined (operator decisions 2026-09-22).** The pin to the active set applies only if the
+  set list has *never* been read for the channel (a mount-time failure). Every successful read is
+  latched per channel (`lastReadSetList`); a later failed reload keeps serving it — no pin, no
+  silent fallback to the active set, no #94 prune, no totals reload caused by a background request.
+  An explicit choice in the dropdown lifts the pin for that channel and loads the chosen set: the pin
+  never moves the view unrequested, but a deliberate choice is never ignored. The latch resets with
+  the channel.
+- **An unknown active set is not the selected set.** `activeEmoteSetId()` is derived only once the
+  status on hand belongs to the channel in the URL (`setStatusChannel === channelName`), so a channel
+  switch can no longer request the new channel's rows for the old channel's set; a failed status
+  request un-claims the channel, which locks the push and the import doors (`importScopeCurrent`).
+  `ImportTrigger.activeSetId` now tells *omitted* (`undefined`: a legacy caller, folded onto `setId`
+  as before) from *known unknown* (`null`): unknown takes the explicit `'trackedSet'` path, which reads
+  the selected set live by its id and assumes nothing about the active set (no active-set request, no
+  post-run resync) — chosen over disabling the doors because it is just as safe and keeps the import
+  usable while a status request keeps failing; restore requires `activeSetId !== null && activeSetId
+  === setId`. Silent reloads (`usage.flushed`, the recheck poll, the sync wait) request no rows while
+  a URL-carried set is still unconfirmed.
+
+**Second review round (same day), three more rules.** Rows carry the set they were **answered
+for**, fixed at request time and never re-derived: the explicit set, or for a request without one
+(the endpoint's active-set fallback) the active id known at that moment, or *unknown* (`null`) when
+none was known. `shownSetId` used to fill a `null` with today's active id, which relabelled fallback
+rows fetched during a failed status request as whatever set the recovered status named — after a
+7TV set switch in between, one set's rows under another's name with every write path open. An
+unknown identity never equals a known selected set, so `viewSwitching` keeps writes locked until
+rows for an explicit, known set land (and stays locked if that request fails). The selection's
+deferred reconciliation now waits for *any* member-list request in flight, a loud reload included
+(`liveMembersSettling`): a reload keeps the old list renderable (`'ready'`), but reconciling against
+it would miss a member the new list drops, with nothing reconciling afterwards. And the set-view
+statements (observed/counted facts, member list unavailable or truncated) render in a paragraph of
+their own when the set status — and with it the tracking-start paragraph they normally close —
+could not be read.
+
+Two smaller rules of the same round: **the set dropdown is locked, with its reason shown next to the
+trigger, while a delete run is still writing or its `sync-deleted` report is still out**
+(`emoteSetMenu.lockedDuringDelete`) — `onDeleted` edits the rows on screen when that report
+answers, and additionally only when the run's set and channel are still the ones on screen (another
+channel's run is ignored, another set reloads); and **a loud reload of the member list** (refresh
+button, `channel.synced`) passes `refresh: true` to the preview route for exactly that request,
+while a params-driven load after a switch may use the Api's cache (spec 8.3). The E2E mock of 6.1
+now answers what the real route answers for a tracked channel (spec 4.3): the active set carries an
+open observation interval unless a test says otherwise. One visible side effect of the guarded
+active id: during a channel switch inside the route, the header's set-gated write paths and the
+dock's marking half are unmounted until the new channel's status lands, instead of staying mounted
+(disabled) over the previous channel's set id.
+
+**A client-side cache for the non-active member list (operator decision 2026-09-22).** Switching
+back and forth between sets quickly still hit 429 on the shared `ForeignEmoteLookup` limiter (10
+permits/60 s) even with the Api-side cache above, because that cache sits *behind* the limiter — a
+hit there still spends a permit. `SevenTvEmoteSetService` gained `loadCachedEmoteSetPreview`, used
+only by `liveMembersResource`'s params-driven load: a client-side `Map` keyed `(channelName,
+emoteSetId)`, TTL 60 s (the same figure as the Api-side cache, named `EMOTE_SET_PREVIEW_CACHE_TTL_MS`
+so a future change to one is a prompt to check the other), so a switch back to a recently-shown set
+within that window costs no request at all — A, B, A now costs two, not three. A loud reload
+(`channel.synced`, the refresh button) still passes `refresh: true` straight through, bypassing the
+client cache exactly as it already bypassed the Api's, and replaces the cached entry; an error
+response is never cached. `loadEmoteSetPreview` itself is unchanged and is what K3's
+`ForeignChannelStep` and the K2/T4.5 import-target loader keep calling — deliberately not folded in:
+K3 already carries its own component-scoped, indefinitely-lived preview cache with its own
+same-set-id race guard (P3-5, an older answer must never overwrite a newer one), a guarantee this
+TTL cache does not make on its own, and layering it underneath K3's would risk resurrecting exactly
+that race one layer down for no gain K3 does not already have. Giving the tracked-channel preview
+(K4) its own rate-limit bucket instead of continuing to share `ForeignEmoteLookup` with K2/K3 is a
+follow-up issue.
+
+**Two corrected sentences of the concept** (`docs/Konzept-Emote-Sets-2026-09-19.md`): 7.1 "engine and
+mutation need nothing new" was only true of the 7TV mutation itself — everything around the run
+(selection key, queue key, report, optimistic update, protocol, voting wire) hung on the Guid; 6.2
+"live members without a row are still usable for deleting" holds only once that identity contract is
+in place, i.e. from K5 on.
+
+**K5 addendum (T5.2) — sync-deleted/sync-restored speak set-scoped bookkeeping too.**
+`SyncDeletedRequest`/`SyncRestoredRequest` become one record with two shapes (spec 6.6): the legacy
+`{ emoteIds }` (Guid, active set only) stays valid, transitionally, behind the same gate as `/series`'s
+dual fields above (E3, follow-up issue 1) — `EmoteService` now logs one Information line per legacy
+call ("sync-deleted: legacy body form {EmoteIds} used", and the restore mirror), so retiring it is a
+measured decision, not a guess. The new shape is `{ emoteSetId, sevenTvEmoteIds }`. A shared
+`ValidateSyncBookkeepingBody` (`EmoteEndpoints.cs`) enforces spec 6.6's four-step ladder ahead of both
+handlers: both lists empty → `emote_ids_empty` (unchanged); both non-empty → `emote_ids_invalid`
+(reused from the vote-session ballot); `sevenTvEmoteIds` set without `emoteSetId` →
+`emote_set_id_empty` (already defined for T2.3, reused rather than duplicated); a malformed
+`emoteSetId` → `invalid_emote_set_id`, checked inline — a body field, not a query/route value, so
+`EmoteSetIdValidationFilter` never sees it, the same reason `sync-imported`'s own `TargetEmoteSetId`
+check is inline.
+
+`IEmoteService` gains a set-scoped overload of `MarkDeletedAsync`/`MarkRestoredAsync` rather than
+replacing the Guid-keyed one, taking the plan's own recommendation as-is: the legacy form still needs
+the old path until follow-up issue 1 retires it, and every one of the twelve pre-existing
+`EmoteServiceTests` keeps passing unchanged. When `emoteSetId == channel.ActiveEmoteSetId`, the
+overload matches by `(ChannelId, SevenTvEmoteId)` instead of `Emote.Id` — the unique index on that
+pair (`AppDbContext.cs:31`) gives the same precision the Guid match had, and is the only identity a
+live-only member (a set-view row the grid never saw a `UsageStat` for, K4) has at all — archives/
+un-archives and audits exactly like today, with `emoteSetId` and `targetIsActiveSetOfChannel: true`
+added to the audit details and `TargetType = "emoteSet"`/`TargetId = emoteSetId` on the entry itself.
+
+A **different** `emoteSetId` is paper-only, a nachtrag to the soft-archive entry of 2026-07-26: this
+database never archived a row under any set but the active one, so there is nothing to match outside
+it — no `Emote` row changes, and the audit entry (`emoteCount` = the deduplicated 7TV id count,
+`targetIsActiveSetOfChannel: false`) is written unconditionally, since there is no per-id match left
+to gate it on. The reported response is `archivedCount: 0, notFoundIds: [], targetIsActiveSetOfChannel:
+false`. `channel.synced` keeps its existing gate (`NewlyArchivedCount > 0`) unchanged, so it never
+fires for a non-active-set report. `notFoundIds` carries 7TV ids for the new form, Guids for the
+legacy one, per the response shape (spec 6.6). Threading the set id into the delete/restore run
+record and the frontend's own body construction is T5.1, not this commit.
+
+The admin audit view (spec 8.10) reads this same `emoteSetId` back off the two actions' details —
+`AuditLogQueryService.ReadTargetEmoteSet` took the property name as a parameter instead of a second
+copy, because the import ladder's own equivalent field is spelled `targetEmoteSetId` (K5/T5.2 gap
+close, closed alongside #209).
+
+**K5 addendum (T5.1) — delete and restore runs speak 7TV ids end to end.** `RunResult.doneIds` is
+gone (E2); `doneKeys` is the one identity a finished run reports, so a row without a local
+`Emote.Id` can no longer drop out of the report, the retry or the panel's `deleted` output. The
+delete queue is keyed by `sevenTvEmoteId` — a #74 duplicate cell is one row and one `REMOVE`, which
+takes both entries (Sonde 5, branch A) — and the restore queue by `${sevenTvEmoteId}#${alias}`, one
+`ADD` per alias, the only key space that contains an alias. **The purge protocol's row shape
+changes, and its own `formatVersion` bumps to 2 for it — corrected 2026-09-22 (K5 fix round): the
+first version of this sentence said "without a version bump", which would have let a pre-K5 reader
+parse a post-K5 file silently short instead of refusing it** — unaware of either new field, it would
+drop every `emoteId: null` row outright and, for a duplicate cell's restore, only re-add one of its
+two aliases, no error, just quietly fewer restores than the file recorded.
+`PurgeRunProtocol.formatVersion` is `PURGE_RUN_FORMAT_VERSION` (`purge-run-export.ts`, `= 2`),
+deliberately **not** a bump of the shared `EXPORT_FORMAT_VERSION` every envelope `kind` uses and
+`import-source-parser.ts` pins its own reads to `1` for — this row-shape change never touched
+those. `PurgeRunRow.emoteId` is
+`string | null` (`null` for a row that never had a local emote), and each row gains `aliases:
+string[]` (every alias the cell sat under; `[name]` for a single entry). The panel no longer filters
+rows without an `emoteId` out of the protocol — that filter produced a silently short protocol, i.e.
+a deletion without a way back that nobody would notice (F3). `parsePurgeRunProtocol` accepts
+`formatVersion` `1` **and** `2`, `emoteId` as a Guid, `null` or absent, and reads a row without (or
+with a malformed) `aliases` as `[name]`, so protocols written before K5 restore exactly as before.
+Both run records
+(`DeleteRunInfo`, `RestoreRunInfo`) carry the set id **frozen at start**; the first
+`sync-deleted`/`sync-restored` call and every `retrySyncReport` read set and keys from that record,
+never from the page (AK 71), and the panel's restore-from-run re-adds into the run's own set. The
+client sends only `{ emoteSetId, sevenTvEmoteIds }` — deduplicated, so a restore that re-added one
+emote under two aliases reports one id — and never the legacy `{ emoteIds }`; an answer with
+`targetIsActiveSetOfChannel: false` counts as succeeded, since `archivedCount: 0` is the paper-only
+contract there, not a shortfall. The panel's `deleted` emits the run's keys; the usage page drops
+cells by `sevenTvEmoteId` and frees `slotCount` slots per cell, the vote-session detail page drops
+rows by `sevenTvEmoteId` while its own selection stays keyed by the Guid (F12). **Interim locks of
+the K4 part above:** lifted here — `DeletableEmote.emoteId`/`DeleteQueueEmote.emoteId` are optional,
+the usage page no longer filters Guid-less rows out of the delete selection (`'left'` rows stay out,
+AK 57), `onDeleted` matches by 7TV id and subtracts `slotCount`. **Still standing, for T5.3:** the
+delete lock in every non-active view (`usageStats.setView.lock.nonActiveSet`), the panel's binding
+to the *active* set, the restore lock while a non-active set is shown (`restoreEnabled`), the
+restore dialog's slot preview from the active set's status and per name rather than per `ADD`, and
+the set name in both confirmations (spec 8.8) — lifting the delete lock before the dialog names the
+set would let a delete reach a non-active set behind a confirmation that does not say which. Not
+done anywhere yet: spec 7.2's `(sevenTvEmoteId, alias)` comparison in the restore's pre-run
+duplicate check; `filterAlreadyPresent` still compares the id alone, so re-running a restore in
+which only one alias of a duplicate came back skips the whole row. *(Closed on 2026-09-22 by the
+"middle rule" addendum below.)*
+
+**K5 addendum (T5.3) — both confirmations name the set; the delete and restore locks that stood
+only for a non-active view lift.** `DeleteConfirmDialogData`/`RestoreConfirmDialogData` gain
+`setName: string`/`isActiveSet: boolean` (spec 8.8): the dialog names "aus dem Set '<Name>'"/"in
+das Set '<Name>'" and, only when `isActiveSet` is `false`, adds "dieses Set ist gerade nicht
+aktiv" — no new confirmation step, still today's one dialog. A #74 duplicate cell was already one
+`DeletableEmote` entry (T5.1), so it reads as one deletion in the dialog's name list with no
+exception group; 8.9 stays gone.
+
+`MassDeletePanel` gains `activeSetId`/`setName`/`setNames` inputs (the last a `Map<string, string>`
+the page fills from the same `emoteSetList` the name-twin tooltip already reads) and its `setId`
+input is now bound to the page's *selected* set, not `activeEmoteSetId()` (`.html` ~1053) — the run
+has been set-aware since T5.1/T5.2, so the panel no longer needs the active set as a stand-in.
+`getSetWarning` is now called with the panel's own `setId` explicitly (spec 6.8) instead of
+implicitly checking the active set. A restore offered from a finished delete run reads `run.setId`
+— which the dropdown may have moved past by the time Restore is clicked, since the set menu locks
+only while a run is still *writing* — against the same `setNames` map and against `activeSetId` for
+`isActiveSet`, never against the panel's current `setId()`.
+
+Both restore paths' slot preview (`MassDeletePanel.openRestoreConfirmDialog`,
+`restore-flow.ts`'s `startRestoreFlow`) fork on whether the target is the active set: active keeps
+the cheap, non-7TV-rate-limited `EmoteAdminService.getSetStatus`; any other set reads
+`SevenTvEmoteSetService.loadEmoteSetPreview` instead (spec 8.3) — `getSetStatus` has no set-scoped
+form. The projection itself is now against **ADDs**, not rows (spec 7.2): a #74 duplicate cell's
+row carries two aliases and restores under both, so `RestoreConfirmDialogData` gains `addCount`
+beside `names` (the display list still lists the row once). `startRestoreFlow` takes two new
+parameters, `setName`/`isActiveSet`, frozen at the same moment as `channelName`/`setId`;
+`import-trigger.ts`'s `restoreEnabled` is unconditionally `true` now (`FileImportStep`'s own input
+is untouched, so a future caller can still gate it) — the last of T5.1's "still standing" interim
+locks, and the only one that ever blocked restore outright rather than just naming it wrong.
+
+**The delete lock lifts for a plain, fully-loaded non-active view; the vote lock does not, because
+K6 is what lifts that one.** `deleteLockReasonKey` no longer returns `nonActiveSet` there —
+switching, an unreadable member list and a truncated one still lock it, refactored into a shared
+`sharedSetViewLockReasonKey` both `deleteLockReasonKey` and `voteLockReasonKey` read from.
+`voteLockReasonKey`'s own line had to change to source its text from that shared computed plus its
+own `nonActiveSet` fallback rather than from `deleteLockReasonKey()` directly, since the two stopped
+agreeing the moment `deleteLockReasonKey` narrowed — a one-line, behaviour-preserving decoupling
+(every input that used to lock/unlock voting still does, with the same reason text), not a change to
+when or why voting locks, which stays K6's. One direct consequence of the two locks parting ways:
+the vote button's `aria-describedby` used to point at the delete panel's own reason paragraph on the
+premise that both locks were the same condition; that premise now fails for exactly the
+plain-non-active case (deleting unlocked, voting still locked), so `usage-stats-page.html` gained a
+second, vote-only reason paragraph (`voteOnlyLockReasonId`) shown only then, with the button's
+`aria-describedby` picking whichever of the two paragraphs currently exists.
+
+**Left open, on purpose.** Whether a finished restore's `channelService.resync` call
+(`seven-tv-restore.service.ts`) should skip a non-active-set target the way the K2 import path's
+`targetIsActiveSet` already does (the 2026-09-21 entry above, "the dock stops claiming it does") —
+the spec is silent on this specific point, unlike that import fix, whose own wording covers it. T5.3
+therefore leaves the call firing unconditionally: harmless (the endpoint only ever resyncs the
+*active* set regardless of what triggered it) but pointless for a non-active-set restore, exactly as
+T5.1's own addendum already flagged. AK 57 ('left' rows carry the badge and are not selectable)
+needed no further work here — it was already in place from T4.x/T5.1, nothing in T5.3 touches it.
+
+**K5 fix round 2026-09-22 (independent reviews) — the delete confirmation now freezes the set id
+it names.** `MassDeletePanel.openConfirmDialog` freezes `setId()` into `frozenSetId` the moment it
+builds `DeleteConfirmDialogData`, alongside the `setName`/`isActiveSet` it already froze there, and
+passes it through to `startDelete`. `startDelete`'s existing confirm-time re-check compared only
+`deleteLockReasonKey()` — a `channel.synced` set switch that lands and *settles* while the dialog is
+still open clears that lock again before the dialog closes, so a lock-only re-check let a confirmed
+run start against whatever set was selected by then, not the one the dialog had named. `startDelete`
+now also aborts, with the same visible `abortedByLock` notice (`massDelete.setChangedDuringConfirm`),
+when the live `setId()` no longer matches `frozenSetId` at confirm time — whether the switch is still
+in progress (the existing lock) or has already settled (this gap). The restore-confirm path needed no
+equivalent change: it has read the run's own frozen `DeleteRunInfo.setId` (T5.1), never the panel's
+live `setId()` input, since it was written.
+
+**K5 addendum, operator decision 2026-09-22 — a delete from the active set's view records every
+alias of a duplicate; spec E20 amended (spec §37).** E20 left the active view's #74 duplicate at
+"today's picture": that view builds its rows from our database, which keeps one name per 7TV id, so
+every row there is `slotCount: 1, aliases: [emoteName]` (`mergeSetView`). Harmless for display, not
+for deleting: one `REMOVE` takes every entry of the id (Sonde 5, branch A), so the protocol recorded
+one alias of two and a restore from it silently re-added one — a protocol that looks complete but is
+not (F3). A delete started from the active view now reads the set's entries live, once, before the
+queue and the protocol are built, and records every alias 7TV lists for each selected id
+(`MassDeletePanel.readLiveAliasesFromActiveSet`, opt-in, set by the usage page only). E20 now reads:
+the active *view* still shows one name per id and fetches no live list for display (E16 unchanged —
+the read hangs on a confirmed delete, never on a reload), but the active-set *delete* knows every
+alias.
+
+- **Source:** 7TV's own v4 `emoteSet` entries through `loadSevenTvSetEntries`
+  (`seven-tv-set-entries.ts`) — the reader the restore's pre-run check already used, moved out of
+  `already-present-filter.ts` and extended by `alias` — not the Api's preview route
+  (`loadEmoteSetPreview`). Both carry every alias per id; the direct read is fresh by construction
+  (neither the 60 s client cache nor the Api cache sits in front of it), and it draws on 7TV's global
+  bucket instead of the shared `ForeignEmoteLookup` limiter (10 permits/60 s), which a few set
+  switches before the delete can already have drained — a delete must not be refused by our own
+  budget.
+- **When:** at confirm, not at dialog open. The delete confirmation shows nothing alias-dependent
+  (names, one per cell), so an open-time read would put no better number on screen; it would spend a
+  read on every cancelled dialog and record the set as it stood when the dialog opened instead of at
+  the irreversible moment. It reads the set id frozen at open (the fix-round freeze above stays
+  intact); the lock and set-switch checks run before the read (a doomed delete spends nothing) and
+  again after it, followed by a silent arbiter re-check like the restore paths'. The delete button
+  stays disabled while the read is out.
+- **Failure blocks.** A failed read (network, HTTP, a GraphQL error inside HTTP 200 — 7TV's disguised
+  429) blocks the run with `massDelete.memberRead.unavailable`; an incomplete one (the 10-page
+  runaway guard hit while 7TV promises more — or, since the K5 fix round below, a `totalCount`
+  mismatch on an otherwise normally-ending read) with `massDelete.memberRead.truncated` — spec 8.3's
+  "a list that only knows half must not delete". *Corrected 2026-09-22 (K5 fix round below): the
+  first version of this sentence named the reused `usageStats.setView.lock.*` keys — correct wording
+  for the sticky lock paragraph they were written for ("Deleting and voting are locked: …"), wrong
+  for this one-off abort notice; dedicated `massDelete.memberRead.*` keys replace them.* Nothing is
+  deleted; the panel shows and announces "Nichts gelöscht." plus that reason
+  (`massDelete.nothingDeleted`, renamed from `massDelete.abortedByMemberRead` in the second fix
+  round below) in the status region the lock aborts already use. A selected id
+  the read does not know keeps the host's aliases.
+- **No double fetch.** A non-active view makes no second read: its rows already carry every alias
+  from the member list the view is built from (`mergeSetView`'s non-active branch).
+- **Slots.** `onDeleted` frees per cell the larger of its `slotCount` and the alias count the run
+  recorded, so the active view's slot bar drops by two for a duplicate right away instead of waiting
+  for the `channel.synced` refetch.
+- **Still open, on purpose:** the vote-session detail page does not opt in. Its rows stay on
+  `[name]` until K6, so a duplicate deleted there still records one alias.
+
+**K5 addendum, operator decision 2026-09-22 — the restore's pre-run check compares per alias, the
+"middle rule" (spec §38).** `filterAlreadyPresentForRestore` (`already-present-filter.ts`), used by
+both restore entry points (`restore-flow.ts` and the panel's restore-from-run), decides per protocol
+row against the target set's live entries: (1) the id is not in the set → the row goes through
+unchanged; (2) the id is in the set under an alias the row does not name → the whole row is dropped,
+as the id-only check always did; (3) the id is in the set only under aliases the row names → those
+are dropped from the row and the rest re-added (none left → the row drops out). This refines spec
+7.2's literal `(sevenTvEmoteId, alias)` comparison, which would re-add `A` next to an existing `C` of
+the same id — the #149 hole (7TV's `addEmote` rejects only a colliding alias string, never a second
+entry of the same id) this check exists to keep shut. Rule 3 is what the literal comparison was
+meant for: a partly failed restore of a duplicate cell can be re-run from the same protocol and adds
+just the missing alias. Import (`filterAlreadyPresent`) and the delete path stay on the id axis.
+Aliases compare exactly, case included. A 7TV entry without an alias counts as a foreign alias.
+
+The "already present" notice (`restore.skippedDuplicates`) counts **skipped aliases** — `ADD`s not
+sent — not rows: the restore confirmation already speaks in `ADD`s (`addCount`), and the run queue
+is one row per `ADD`, so the run's rows plus the skipped count equal the number the user confirmed.
+For single-alias rows, nearly all of them, both counts are the same; a row dropped under rule 2
+counts all of its aliases.
+
+**K5 fix round 2026-09-22 (independent review) — a set read now catches an offset shift, and an
+aliasless entry no longer disappears next to an aliased one.** Two findings against the two K5
+addenda above, both in `seven-tv-set-entries.ts`/`already-present-filter.ts`:
+
+- **`loadSevenTvSetEntries`'s `complete` now also compares the collected item count against the
+  query's own `totalCount` from the last page**, not only the 10-page runaway guard: offset
+  pagination shifting between two page fetches of the same set can silently drop (or double-count)
+  an entry at a page boundary without ever tripping the guard, and a read that ended "normally"
+  (`page >= pageCount`) still looked complete despite that. The delete run's live alias read
+  (`mass-delete-panel.ts`, a later commit) blocks on this exactly as it already did for the guard
+  case — no new branch needed there, since both feed the same `complete` flag. The restore pre-run
+  check (`filterAlreadyPresentForRestore`) deliberately does **not** gate on `complete` the same way:
+  it never has, checked against its own tests, and extending it now would mean failing the whole
+  check open (every row passes through completely unfiltered) whenever a read is merely partial —
+  strictly *more* wrong re-adds than continuing to filter against whatever the (partial) read did
+  see, which still catches every duplicate genuinely inside the pages it read and only stays blind to
+  one beyond them. Restore's fail-open path stays reserved for an actual fetch/GraphQL error, as
+  before this round; this only widens an already-accepted gap (a window between any read and each
+  individual `addEmote` call has always remained), it does not open a new one.
+- **An aliasless 7TV entry is a foreign entry on the id it belongs to, even when the same id also
+  has an aliased entry the row does name.** `loadSevenTvSetEntries` gained `aliaslessIds:
+  Set<string>` alongside `aliasesById`, since an id that carries both an aliased and an aliasless
+  entry used to lose the aliasless one the moment the aliased entry gave `aliasesById` a non-empty
+  array for that id (only a *purely* aliasless id, with `aliasesById.get(id)` still `[]`, was ever
+  caught). `filterAlreadyPresentForRestore`'s foreign-entry rule (the "middle rule" above) now also
+  checks `aliaslessIds.has(id)`, restoring the sentence it always claimed to implement: "a 7TV entry
+  without an alias counts as a foreign alias" now holds for *every* aliasless entry, not only one on
+  an otherwise-unaliased id.
+
+**K5 fix round 2026-09-22 (independent review), continued — `MassDeletePanel` deletes exactly the
+selection it confirmed, the run's channel is frozen too, a stuck arbiter re-check now speaks up, a
+hung read times out, and the delete's own alias enrichment picks up an aliasless entry.** Four more
+findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
+
+- **The confirmed selection is snapshotted at confirm — the set id, the channel and
+  `isActiveSet` stay frozen at dialog open, and the difference is deliberate.** `startDelete` used
+  to re-read the live `selectedEmotes()` input after `readLiveAliasesThenDelete`'s async read
+  answered — the confirm dialog is already closed by then and nothing locks the grid, so an id could
+  be added to or removed from the selection while the read was out. The first version of this fix
+  froze the list at dialog *open*, next to `frozenSetId`; the independent review that followed
+  showed why that is the wrong moment, and the **operator decision of 2026-09-22** settled it:
+  **snapshot at confirm.** The dialog renders the panel's live
+  `visibleSelectedEmoteNames`/`hiddenSelectedEmoteNames` (both `computed` over `selectedEmotes()`,
+  passed as `Signal`s in `DeleteConfirmDialogData`), so a pushed reload (`channel.synced`,
+  `usage.flushed` → `retainAmong`) landing behind the open modal changes what the confirmation says
+  — and an open-time snapshot would then delete emotes the screen had already stopped naming. The
+  snapshot is now taken synchronously inside the dialog's `closed` callback, before any async work,
+  from those very same signals: **what the confirmation last showed and what the run deletes are the
+  same list by construction**, which is the only formulation that survives an asynchronous reload.
+  Everything downstream acts on that snapshot — the live alias read, both branches, the queue and the
+  protocol — so an id deselected *after* the click is still deleted (it was confirmed) and an id
+  selected *after* it is not swept in (it was never shown).
+
+  **Why the other three stay frozen at open.** `frozenSetId`/`frozenIsActiveSet`/`frozenChannelName`
+  are not inputs to the run the way the selection is: they are the identity of the *view the dialog
+  was built from*, and `startDelete` compares them against their live values to abort on a mismatch
+  (`massDelete.setChangedDuringConfirm`). A confirm-time re-read would make that comparison compare
+  a value with itself and silently delete into whatever set the dropdown moved to — the exact gap
+  finding A closed. So: what is **named** on the confirmation is frozen at open and checked at
+  confirm; what is **listed** on it is read at confirm, because the list is live on screen until
+  then. One new i18n key falls out of it — an emptied selection at confirm time
+  (`massDelete.selectionGoneDuringConfirm`, under the existing `abortedByLock` lead): the run would
+  otherwise be `startDelete`'s silent "refused, empty list", where the open-time snapshot at least
+  started a doomed run whose failed rows were visible. A confirmed delete never ends in silence.
+
+  **The confirmation itself locks on the same condition** (`DeleteConfirmDialog`,
+  `confirmLockReasonKey`, i18n `massDelete.confirmSelectionEmpty`): because the lists are live, that
+  same reload leaves the dialog showing "0 Emotes von 7TV löschen?", two empty lists — and, before
+  this, an enabled red button. The panel-side abort stays as the backstop (the dialog can be
+  confirmed in the same frame the reload lands), but the last screen before an irreversible write
+  must not invite a click it is going to refuse, and a disabled control states its reason
+  (docs/UI-Designsprache.md §10) in the hint slot the shared-set check already uses. Emptiness
+  counts over *both* lists, hidden names included — a filtered-out target is still a target — and it
+  outranks the "still checking shared sets" reason when both hold, being the final one of the two.
+- **The run's channel name is frozen at dialog open too** (`frozenChannelName`, alongside
+  `frozenSetId`) — `deleteService.startDelete` used to read the live `channelName()` input at the
+  point it was actually called, the same class of gap finding A closed for `setId`: harmless today
+  (a panel only ever sees one channel across a run's lifetime) but the wrong source of truth
+  regardless.
+- **The arbiter re-check after the live alias read is no longer silent.** Every other
+  confirm-time-async arbiter re-check in this file stays silent on a block
+  (`openRestoreConfirmDialog`, the restore's own pre-run-check race) because the run that got there
+  first is always the one whose progress panel is already mounted in the *same* dock the user is
+  looking at. This one is different: the competing run can be any of the three 7TV-writing kinds,
+  started from anywhere else on the page, so a silent return could leave nothing on screen
+  explaining why a confirmed delete simply did not happen. `startDelete` now sets `abortNotice` with
+  the existing `massDelete.abortedByMemberRead` lead and a new `massDelete.anotherRunStarted` reason
+  (wired to i18n text in a later commit; transloco shows the raw key until then). *The lead is
+  renamed to `massDelete.nothingDeleted` in the second fix round below, where this re-check stops
+  being the member read's alone.*
+- **The live alias read has a 20 s total timeout** (`LIVE_ALIAS_READ_TIMEOUT_MS`) — a hung request
+  (7TV accepts the connection but never answers) used to leave `liveAliasReadPending` `true` forever,
+  the delete button disabled with no way out short of a page reload. A timeout is piped through the
+  same `catchError` as a network error, so it blocks exactly like one.
+- **The active-set delete's alias enrichment falls back to the emote's own display name for an
+  aliasless entry**, built on the `aliaslessIds` the read now tracks (previous commit): 7TV requires
+  an alias string to restore an entry, and the read cannot invent one for a slot it lists without
+  one, so this is appended to whatever aliased entries the read also found under the same id —
+  skipped if that name is already one of them — rather than leaving the entry unrecorded (F3: a
+  protocol that looks complete but is not).
+
+**K5 fix round 2026-09-22 (independent review), second pass — the dock knows about a confirmed
+delete before it is a run; the claim covers the whole confirmation.** From the moment the delete
+confirmation opens until the first `REMOVE`, a delete exists nowhere the host dock can see it:
+`dockVisible` (`usage-stats-page.ts`, via `actionDockHasContent`) counts marked items and shown run
+panels, and neither an open modal nor the active-set delete's live alias read is either. A pushed
+reload landing in that window and pruning every marked key therefore unmounted the dock and took
+`MassDeletePanel` down with it — while the confirmation stayed up, because the CDK dialog is opened
+without a `viewContainerRef` and does not belong to the panel's view. The user then clicked Delete
+against a destroyed panel: `abortReasonBeforeStart`'s `destroyed` branch returns `null` precisely so
+a torn-down panel starts nothing, and there was no view left to say so on. Nothing was deleted,
+which is the safe direction, but from the user's side a confirmed, irreversible action simply did
+not happen and never explained itself. Worse on the way there: the destroyed panel's
+`selectedEmotes()` input still reads its last value, so the emptied-selection guard of the first
+commit does not fire either.
+
+`SevenTvDeleteService` carries the state as `confirmedRunPending`, written only through
+`beginConfirmedRun()` / `endConfirmedRun()` / `clearConfirmedRun()`;
+`ActionDockState.deleteConfirmPending` feeds it into the dock's marking half. Four decisions inside
+that:
+
+- **The claim is taken when the confirmation opens, not when the read starts.** *(Corrected
+  2026-09-22 within the same round: the first version of this fix bracketed only the live alias
+  read, which left the whole life of the modal — the part a user can hold open for minutes —
+  uncovered, and gave the no-read branch no claim at all.)* Every exit of the `closed` callback
+  releases it again, and which release is used is itself the decision: a **dismissed** confirmation
+  takes `clearConfirmedRun()`, an immediate drop, because nothing was confirmed and an 8 s hold over
+  an emptied grid would be exactly the empty bar `actionDockHasContent` exists to prevent; every
+  exit that **attempted** the delete — started, aborted, or refused for an emptied selection — takes
+  `endConfirmedRun()` and its notice window. A leaked claim pins an empty dock, so this is a
+  balance the panel owes on every path, the destroyed-panel path included.
+- **`abortNotice` stays on the panel, deliberately, and is not moved onto the service next to
+  `duplicateNoticePending`.** That flag sits on the service because the service produces it
+  (`startRestore` sets it); every reason the delete aborts for is decided from the panel's own
+  inputs (host lock, frozen set id, arbiter, confirmed selection), so moving the text onto a root
+  singleton would move panel-local knowledge into shared state — and both mounted panels (usage page
+  and vote-session page) would render it, so an abort on one page would surface on the other. The
+  one thing it would buy, a *freshly mounted* panel still showing the notice, is the case where
+  showing it is wrong: a panel is remounted by a route, set or pointer change, i.e. into a view the
+  aborted delete never belonged to. Keeping the panel that set the notice alive is the fix; carrying
+  the notice to a different panel is not.
+- **The claim outlives the read when nothing started.** `endConfirmedRun()` asks its own
+  `isRunning()`: a started run carries the dock by itself, so the claim drops at once; an abort has
+  nothing but its notice, so the claim is held for `ABORTED_DELETE_NOTICE_MS` (8 s) and then drops
+  itself. Without that second half the fix would keep the panel alive exactly long enough to *set* a
+  notice nobody gets to read. Self-clearing rather than dismissable for the same reason the
+  restore/import services' `duplicateNoticePending` is (docs/UI-Designsprache.md §4.5): there is no
+  run or queue for a dismiss button to hang on. Longer than those 4 s because this notice reports
+  that an irreversible action the user confirmed did *not* happen, and it is two sentences, not a
+  count.
+- **Inside the `hasActiveSet` gate, not beside it** — unlike `importShown`/`importNoticePending`,
+  which sit outside it because the import half has no set gate (R9). The panel this keeps alive
+  renders inside the marking half, so mounting the dock without a set would only bring back the
+  empty accent-framed bar `actionDockHasContent` exists to prevent.
+
+**K5 fix round 2026-09-22 (independent review), second pass — the run arbiter is checked on every
+delete start, not only on the one that waited for a read.** `startDelete`'s re-check was qualified
+on `liveAliases !== null`, i.e. it only ran for an active-set delete that had just come back from
+its live alias read. The other branch — a non-active set, or an active one whose host did not opt
+into the read — called `startDelete(..., null)` and relied on `deleteService.startDelete`'s own
+refusal, which is silent: a confirmed delete in a non-active view could evaporate without a word
+whenever an import or restore had claimed the arbiter behind the open confirmation. The window is
+not smaller there, it is larger — the confirmation is a modal a user can leave standing for
+minutes, and a run started anywhere else on the page lands behind it just as well as behind a read.
+
+The check is now unconditional, and the near side of the same contract is guarded too:
+`openConfirm()` asks the arbiter next to its existing host-lock guard, silently, since nothing has
+been confirmed at that point and the run that got there first is already visible in the dock. The
+visible abort's lead key is renamed `massDelete.abortedByMemberRead` → **`massDelete.nothingDeleted`**
+(same text, both locales) — the old name described the one path it happened to be reachable from,
+and would now be read out for an abort that has nothing to do with a member read. It stays the lead
+for the member-read reasons as well, which is what it always said on screen.
+
+**Known residual, left standing on purpose.** A **non-active** view's delete still does not read
+live from 7TV at all (`readLiveAliasesFromActiveSet` stays off there) — its rows already carry every
+alias from the member list loaded *with that view* (`mergeSetView`'s non-active branch, spec §37).
+An entry added to the set on 7TV after that list loaded is therefore not reflected in the run's
+protocol even if it duplicates a selected id; this is accepted by spec §37 itself ("die
+nicht-aktive Ansicht liest nicht ein zweites Mal") and unchanged by this round.
+
+**New/renamed i18n keys, closing the K5 fix round.** `massDelete.memberRead.unavailable`/`.truncated`
+replace the reused `usageStats.setView.lock.*` texts (corrected above); `massDelete.anotherRunStarted`
+is new. `restore.skippedDuplicates` is reworded from "{{count}} emotes …" to "{{count}} entries …" —
+the string counts `ADD`s (aliases) since the "middle rule" addendum, and a #74 duplicate cell is one
+emote but can contribute more than one skipped alias, so "emote" both undercounted the entity being
+reported and invited a reader to expect one skipped notice per emote rather than per alias.
+
+**The second fix round's i18n keys, completing that list.** Renamed:
+`massDelete.abortedByMemberRead` → **`massDelete.nothingDeleted`** (same text, both locales — the
+lead is no longer the member read's alone). New, all in both locales:
+**`massDelete.selectionGoneDuringConfirm`** (a reload emptied the confirmed selection; worded
+membership-neutral — "gehören nicht mehr zu diesem Set" / "are no longer part of this set" — rather
+than "no longer marked", because its most reachable path is a non-active view where the rows flip to
+`membership: 'left'` and stay marked), **`massDelete.tokenGoneDuringConfirm`** (the stored 7TV token
+was cleared by a 401 behind the open confirmation — the third and last of
+`deleteService.startDelete`'s silent refusals, now all three spoken: a run already going, an empty
+list, no token) and **`massDelete.confirmSelectionEmpty`** (the confirmation's own lock reason, see
+the snapshot bullet above).
+
+**Two lifetime rules for the dock claim, from the same round.** `SevenTvDeleteService.reset()` drops
+it — whatever the dock was still holding open, the user has dismissed it, exactly as the restore
+service clears its own transient notice flag there — and `channel-workspace-layout.ts` drops it on a
+channel change through a call of its own, since `resetIfChannelChanged` returns early when there is
+no run record and a confirmed-but-unstarted delete is precisely that state. Correspondingly,
+`endConfirmedRun()` refuses to re-arm a claim that is no longer held: a read that answers after
+either of those two would otherwise open a notice window on a dock the aborted delete no longer
+belongs to.
+
+---
+
+### 2026-09-21 — An import into a tracked channel's non-active set no longer resyncs the channel, and the dock stops claiming it does
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
+`web/src/app/shared/seven-tv/import-target-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-target-choices.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+Live-Verifikation K2 2026-09-21 (the K2 target-set picker from the 2026-09-20 entry, checked against
+a running dev stack, not just its own test suite) found six bugs the tests had not caught, because
+none of them pins a *live* run into a **non-active** tracked set end to end. This entry covers the
+one with an actual behaviour change; the other five are wording/preselection fixes with no new
+`**Betrifft:**`-worthy contract (title now names the set for a non-active target, the dock target line
+now always names the set by name rather than sometimes by raw id, the picker's load-time
+preselection now looks up the caller's own account by `isOwnAccount` instead of "whichever tracked
+account comes first", the untracked confirmation banner is reworded as a target confirmation instead
+of echoing "kopieren" a second time, and the confirm dialog's ownership-check-unavailable banner now
+has import-flavoured copy of its own instead of borrowing the delete flow's).
+
+**The bug:** `SevenTvImportService.onRunComplete` fired the target channel's `POST
+/api/channels/{c}/resync` — and the dock showed "Abgleich angestoßen — der Zielkanal zeigt die
+Emotes gleich" plus an "open target channel" link — for *every* tracked target, regardless of
+whether the copy actually went into that channel's *active* 7TV set. A resync only ever re-syncs the
+channel's active set (that is what the endpoint does); a copy into a tracked but non-active set (the
+2026-09-20 entry's whole point — K2 lets the picker choose *any* set of an account the user edits,
+active or not) triggered a resync that read the *wrong* set, succeeded, and told the user the channel
+page would show emotes it never would.
+
+**The fix:** `ImportRunInfo` gains `targetIsActiveSet: boolean` (default `true` for every caller that
+predates this — they only ever targeted the active set) alongside a `targetSetName: string`
+(previously only the untracked branch had reason to carry a set-facing name, and even that one was
+the raw id). `onRunComplete` now skips the resync call whenever `!targetIsActiveSet`, on top of the
+existing `targetChannelName === null` (untracked) check — the `sync-imported` report itself is
+unaffected either way, it is the audit trail for the copy regardless of which set received it.
+`import-flow.ts` computes `isActiveSet` once per run, from the exact condition `import-target-choices.ts`'s
+loader fork already uses (`target.kind === 'activeSet'`, or a `'chosen'` pick whose `emoteSetId`
+equals the account's `activeEmoteSetId`), and threads it into both the confirm dialog (for the title,
+finding 1) and `startImport` (for the run record). The dock (`import-progress-section.ts`) and its
+screen-reader twin (`dock-outcome-announcer.ts`) both gate the "open target channel" link and the
+post-run resync notice on the same flag, replacing it with a new `import.summary.copiedNotActive`
+notice ("In Set '…' kopiert — es ist nicht das aktive Set von …") whenever a settled run's target
+was not the active set — sourced from a single shared helper (`copiedNotActiveNotice`) so the visible
+and the spoken text cannot drift apart, mirroring the existing `resyncNoticeKey` pattern for the
+notice it replaces.
+
+---
+
+### 2026-09-21 — Source-set picker: one radio per set even for a single set, and PERSONAL sets hidden entirely (#217)
+
+**Betrifft:** `web/src/app/shared/seven-tv/foreign-channel-step.ts` ·
+`web/src/app/shared/seven-tv/foreign-channel-step.spec.ts` ·
+`web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·
+`web/e2e/emote-import.e2e.spec.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (§34 addendum)
+
+Issue #217 raised two operator decisions for K2's *target* picker during its 2026-09-21 live re-check
+(see the entry above). The operator decided both apply to K3's *source* picker too; implemented here
+for the source, with the target picker's own implementation left to a separate K2 follow-up.
+
+**One layout regardless of set count.** The source-set radiogroup used to render only once an account
+had more than one set (`ready.sets.length > 1`), so a single-set account — the common case — got a
+bare, non-interactive list of nothing to choose, with the active set's name appearing only in the
+channel/reload row above it. The radiogroup now always renders once there is at least one offerable
+set: a single set is one radio, checked and labelled "(aktiv)", the same shape every other account
+gets. Spec 8.7 already asked for this; §8.6's original text did not.
+
+**PERSONAL sets are hidden from this picker entirely, not shown disabled.** This reverses spec 8.6's
+"sichtbar, aber deaktiviert und beschriftet — nie kommentarlos wählbar, nie ausgeblendet" for the
+`PERSONAL` kind specifically: a personal 7TV set holds a handful of emotes at most and is not a
+plausible import source, so nothing is gained by showing it, disabled, next to the sets that are real
+choices. `GLOBAL`/`SPECIAL` keep 8.6's original treatment unchanged — visible, disabled, labelled. The
+now-unused `import.foreignChannel.kindPersonal` i18n key is removed; the sibling
+`import.target.kindPersonal` on the target picker is untouched — it still shows PERSONAL disabled,
+pending that picker's own follow-up. A reported active set that turns out to be `PERSONAL` is now
+treated exactly like no active set at all, since it can no longer be surfaced as the checked radio
+(see the P2-2 fix below).
+
+**Scope.** Both decisions are implemented here only for the source picker (`foreign-channel-step.ts`).
+The target picker (`import-target-dialog.ts`) still shows PERSONAL disabled and still varies its
+layout by set count, per issue #217's own description of its current shape — the separate follow-up
+applies the same two decisions there.
+
+**Also fixed while touching this picker (K3 review, unrelated to #217 itself):** no usable active set
+(none reported, or a `PERSONAL` one) no longer dead-ends the step with a loaded grid that renders
+nothing — a lone selectable (`NORMAL`) set is auto-picked, anything else shows a new
+`import.foreignChannel.noActiveSet` notice instead of silence. `ForeignEmoteGrid`'s fixed-height
+viewport now takes a `reservedRem` input so the radiogroup's own height — which that fixed
+calculation had no way to know about — is folded into its allowance; without this, an account with
+several sets grew the dialog pane a second, nested scrollbar below moderate window heights, the exact
+defect that height expression exists to prevent. A stale preview response can no longer win a race
+against a fresher one for the same set id (a request counter closes a gap the previous
+`selectedEmoteSetId`-only guard missed), and `import.foreignChannel.empty`'s text ("Das aktive
+7TV-Set dieses Kanals hat keine Emotes.") is reworded set-neutral ("Dieses Set hat keine Emotes."),
+since it renders for whichever set is picked, active or not.
+
+---
+
+### 2026-09-20 — An import may target any set of an account the user edits; the confirm dialog keeps collisions out of the run
+
+**Betrifft:** `web/src/app/core/emotes/import-target-loader.ts` ·
+`web/src/app/core/emotes/emote-admin.service.ts` ·
+`web/src/app/shared/seven-tv/import-preview.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` ·
+`web/src/app/shared/seven-tv/foreign-import-flow.ts` ·
+`web/src/app/shared/seven-tv/import-trigger.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/shared/seven-tv/import-target-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-target-choices.ts` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`src/EmotePurge.Infrastructure/SevenTv/ForeignSevenTvBreakerPolicy.cs` ·
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvEmoteSetListCache.cs` ·
+`src/EmotePurge.Core/Services/IGuardedSevenTvEditorGrantsService.cs` ·
+`src/EmotePurge.Infrastructure/Services/GuardedSevenTvEditorGrantsService.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvEditorGrantsHoldCache.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs`
+
+Revises the 2026-09-09 entry's "the target set stays a tracked channel out of `listMine()`" into the
+weakened form: tracked stays the default and needs no extra step; an untracked target (a 7TV account
+the actor edits via `editor_of`, but that is not itself an EmotePurge-tracked channel) is offered too,
+after a confirmation naming the set and its owner's display name. **R2 from the 2026-09-06 entry is
+unaffected** — the write token is still only asked for right before the run starts, never earlier
+just because the target class changed.
+
+**The picker chooses a set, not a channel.** `GET /api/seventv/me/emote-set-targets` replaces
+`listMine()` as the picker's data source: it groups every offered set under the account it belongs
+to (the caller's own 7TV account first, then every account reachable through an `editor_of` grant),
+tracked accounts before untracked ones, active set labelled and preselected per tracked account. Only
+`kind == NORMAL` sets are selectable; `PERSONAL`, `GLOBAL` and `SPECIAL` render visible but disabled
+and labelled, never silently hidden and never silently selectable — a positive rule so a fifth `kind`
+value 7TV adds later lands disabled by default rather than wrongly offered. `import-target-options.ts`
+is retired; `import-target-choices.ts` replaces it with a pure function over the new response.
+
+**The loader now has three cases, not one — and the active case is the same case as before, always
+(spec 8.6, fourth bullet; AK 36).** "Getracktes Ziel **und** `emoteSetId === activeEmoteSetId` ⇒
+**heutiger Weg**; **sonst** Live-Liste nach Set-ID" is two-sided in the spec, and stays two-sided
+here: a tracked choice whose picked `emoteSetId` equals the account's `activeEmoteSetId` (spec 6.2,
+carried on `ImportTargetChoice` for exactly this comparison) resolves via `getSetStatus` +
+`listEmotes` + `getSetWarning`, the unchanged pre-spec requests — whether it arrived as the picker's
+one-click "active set of channel X" shortcut or as one of the three channel-only import doors (file,
+foreign channel, leaderboard), which never ask *which* set at all and always mean the active one. Any
+other tracked choice — a non-active set — or an untracked account's set reads live via the set-ID mode
+of the existing foreign-emotes endpoint instead: occupancy from `totalCount`, capacity and the set's
+own name from the same response. This is a cost decision the spec already made, not a style
+preference: per E6's permit budget, the target-set preview itself already spends up to 2 permits per
+dialog open for a large set, and routing the *common* case (dialog open, active set, import) through
+the same live read as well would have turned "costs nothing extra" into "costs permits on every open,
+for every viewer" — exactly the assumption E6's "1 + *k* Permits je Dialog" accounting rests on. A
+`truncated` live answer counts as a failed load, not a smaller-but-usable one — a page cap that hid
+part of the set's real contents would otherwise undercount both its occupancy and its name collisions.
+The set-ownership warning is sourced by class: a tracked target (active or not) still gets a real check
+(`GET .../set-warning`, now with an optional `emoteSetId` query parameter for the non-active case); an
+untracked target has no channel to check ownership against at all, and gets the same "not verified"
+fallback the check's own failure path already used — that costs no request, and is not a weaker answer
+to the same question, it is the only honest answer to a different one.
+
+**Open question, flagged here rather than decided:** the picker loads its account list (and each
+account's `activeEmoteSetId`) once, when the dialog opens; a click on "active set of channel X" some
+time later trusts that snapshot rather than re-asking 7TV. If the channel's active set changes in that
+window (another editor, another tab, the periodic resync), the picker's one-click shortcut can commit
+to a comparison — "is the set I'm about to pick still the active one?" — that was true when the dialog
+opened and may no longer be by the time it closes. This does not change the contract above: the
+spec's two-sided rule is what this entry documents, and a stale snapshot argues for a narrower fix
+(re-verifying at load time, inside the existing "today" path) if it turns out to matter in practice,
+not for routing every choice through the live-list read to sidestep the question.
+
+**The chosen set is wired all the way to the run, not just as far as the loader.** A first pass of
+this change left `usage-stats-page.ts`'s `startImportFromChoice` still calling `startImportFlow` with
+only `choice.channelName`, discarding `choice.emoteSetId` — which meant `import-flow.ts` kept
+resolving every picker choice as the channel's *active* set regardless of what was actually picked
+(spec F5, in full: "der Ziel-Loader liest das aktive Set, und der Dialog schließt mit dessen ID"),
+silently copying into the wrong set the moment a user picked anything other than the active one. That
+is precisely the failure the plan named as the reason T2.5a (the picker) and T2.5b (the loader) had to
+land in one commit — a picker capable of choosing a set is not the fix by itself if nothing carries
+the choice to where the run actually starts. `startImportFlow` now takes an `ImportFlowTarget`
+(`import-flow.ts`) instead of a bare channel name: `'activeSet'` for the three channel-only doors
+(unchanged behaviour, always the channel's active set), `'chosen'` for a full picker `ImportTargetChoice`
+(minus its `scope`, which the caller has already applied to the rows by then).
+`startImportFromChoice` passes the whole choice through unconditionally for a tracked target — active
+or not — and the resulting `ImportTargetLoadState.setId` (the *loaded*, chosen set) is what flows into
+`ImportConfirmOutcome.targetSetId`, `SevenTvImportService.startImport`'s `setId`, and from there into
+`reportImported`'s `targetEmoteSetId` (AK 44) — never re-derived from the choice a second time at any
+of those points, so a stale re-comparison cannot creep back in there either. The untracked class's
+transitional guard (`choice.channelName === null` in `startImportFromChoice`) stays exactly what it
+was: it still refuses to start anything for an untracked choice (confirmation and the set-centric
+report are T2.6's job), but it no longer also swallows the tracked-non-active case along with it.
+`startImportFlow` itself carries the same refusal as a second, independent backstop for a `'chosen'`
+target with no channel name, so the invariant does not rest on the caller-side guard alone.
+
+The untracked class's own live-list read needed a route: `GET /api/seventv/channels/{channelName}/…`
+needs *some* Twitch-login-shaped path segment, and an untracked target has no `channelName` to supply
+it (spec E8 — the segment is never resolved server-side in this mode, only format-checked).
+`EmoteSetTargetAccount.twitchLogin` (spec 6.2) is exactly the field for this — carried machine-readable
+next to the display-only `ownerDisplayName` for precisely this kind of use — so `ImportTargetChoice`
+now also carries `twitchLogin`, and the untracked branch routes through it. `ownerDisplayName` stays
+barred from any routing or comparison role (E7): it is what the confirm dialog's header shows, nothing
+it, or any URL, is built from.
+
+**Revises the 2026-09-06 entry's informative-preview reading (#72).** Two of the three findings
+`buildImportPreview` produces changed from "reported, but the row still runs" to "reported, and the
+row is excluded": a name collision (a different `sevenTvEmoteId` in the target already owns the
+source's exact name) and an alias mismatch (the same `sevenTvEmoteId` already exists in the target,
+but under a different alias) both now leave `toAdd` entirely, each surfaced as its own named group
+instead. 7TV would reject every one of these rows outright; running them anyway only spent a rate-limit
+attempt on something known to fail before it was even sent. Neither becomes a silent rename: 7TV's
+existing alias for that id is left exactly as it is, the row is skipped and named, nothing more.
+`invalidNames` is unaffected and stays informational — unlike the other two, nothing about the
+*target's contents* dooms an invalid-alias row, so it still reaches `toAdd` and 7TV still decides. The
+already-present count only ever refers to a same-id-same-alias match and is never double-counted with
+an alias mismatch; the #74 duplicate-id grenzfall (the target itself carries the same `sevenTvEmoteId`
+twice under two different aliases, 7TV's own set-merge defect) counts as already-present the moment
+*either* alias agrees with the source, and only becomes a mismatch when *neither* does.
+`already-present-filter.ts`'s own, separate, fresh pre-send check stays an ID comparison, untouched —
+it answers a different question (did 7TV's *live* set change since the dialog opened), not this one.
+
+**Audit contract for both ways in.** `SyncImportedRequest.TargetEmoteSetId` stays optional forever on
+the wire (an older open tab is still a valid caller, and a missing field is an honest "no set known"
+rather than a rejected mutation after the 7TV writes already happened) — but this client now sends it
+on *every* `sync-imported` call it makes, active target or not, tracked or not, pinned by a Vitest
+spec. The audit entry carries `TargetType = "emoteSet"` / `TargetId = <the set>` and a three-valued
+`targetIsActiveSetOfChannel` (`true`/`false` when a set was reported, `null` when it was not) next to
+the existing per-channel entry shape. An untracked target's eventual write goes through a *different*,
+set-centric endpoint with its own ownership check (`editor_of`) rather than the per-channel one, since
+there is no channel to scope it to at all — wiring that report and its confirmation step is a
+follow-up task, not this one. `ownerDisplayName`, shown in the picker and the confirm dialog's header,
+is a 7TV display name (`owner.mainConnection.platformDisplayName`), never a login and never compared
+against anything; the audit trail's own record of *who* still runs on the Twitch login, the same
+identity every other audit row uses.
+
+**Breaker clause, added 2026-09-20 after the day's implementation (T2.1, commit `b3526a7`).** The
+shared 7TV breaker (`ForeignSevenTvBreakerPolicy`) counts an ordinary failure streak and holds its
+half-open probe **per operation** (a named constant like `emote-set-list` or `foreign-preview`), while
+a confirmed rate limit and the provider's upstream request budget stay **shared across every
+operation** — the list/preview read path introduced by this spec sits on the *same* rate-limit bucket
+and budget as the existing foreign-preview path (unlike the 7TV leaderboard read, which has its own
+budget, `ServiceCollectionExtensions.cs:128,135-136`). This matters because a malformed or
+schema-drifted query is, from the breaker's point of view, indistinguishable from a genuine outage
+(F17) — without the per-operation split, five bad requests on one read path would trip the shared
+breaker and answer a perfectly healthy second read path with 503 too, and would also burn the one
+half-open probe that healthy path needed to prove itself.
+
+**Not carried by the spec, found only while implementing it:** the breaker's generation counter
+(`_generation`) stays **provider-wide** even though the failure streak and the probe slot are now
+per-operation. `ForeignSevenTvBreakerPolicy.TryAcquire` stamps a claimed probe as
+`state.ProbeGeneration = _generation` (per operation) rather than a plain boolean, and
+`RecordSuccess`/`RecordFailure` only apply a report whose `generation` still equals the current
+`_generation`. A per-operation generation would have reopened a correctness hole this class exists to
+close: a success straggling in late on read path A, after read path B has just tripped the shared
+rate-limit lock, would unconditionally clear that lock if generations were scoped per operation — path
+A's own success proves nothing about the incident path B just reported. Keeping one generation for the
+whole provider, with only the probe *slot* itself tracked per operation, is what lets a stale report
+release its slot on any transition without ever being able to undo a lock a different operation is
+still holding. (Superseded 2026-09-21 — see the correction below.)
+
+**Correction 2026-09-21 (second opinion on K2, spec section 32).** The single provider-wide
+generation got the opposite case wrong. `OpenOperation` bumped the same counter a provider-wide
+lock did, so an *operation-local* transition invalidated every report in flight on every other
+operation: the list opens its own breaker after five bad queries while a preview request admitted
+before that is still running; the preview then comes back with a confirmed 429, its generation no
+longer matches, and the report is discarded — the provider-wide rate-limit lock is never opened and
+7TV's `Retry-After` is lost, which is exactly the lockout E4 exists to honour. What holds now is two
+epochs. The **provider epoch** moves only when the provider-wide rate-limit lock opens or closes;
+each **operation epoch** moves only when that operation's own breaker opens or closes. Both are
+stamps from one monotonic transition clock, so a decision still carries a single `long` (the clock
+at admission), and "has this epoch moved since I was admitted" is "is its stamp newer than my
+admission". A report is checked against the epoch of the state it wants to change: opening or
+clearing the rate-limit lock needs only a current provider epoch; the operation's own streak, open
+state and probe slot need its own epoch and the provider epoch, because whether a call was a probe,
+and whether an ordinary failure belonged to a rate-limit incident already acted on, depends on the
+provider state it was admitted under. The probe slot stays per operation and is held only while
+neither of the two epochs its operation sees has moved since the claim, so every transition that
+makes a probe's own report stale also hands its slot back — and a transition of *another*
+operation no longer frees or invalidates it. The original reason for keeping the counter
+provider-wide still holds and is now kept by the provider epoch: a success straggling in late on
+path A cannot clear a rate-limit lock path B has just caught, because that lock's opening moved the
+provider epoch past A's admission.
+
+**Owner-check clause, added 2026-09-21 after the second opinion on K2 (spec section 32).** The
+set-centric endpoint's owner check (`POST /api/seventv/emote-sets/{id}/sync-imported`, step 4 of the
+6.7 ladder) no longer asks 7TV directly. It answers from the cached set lists of
+`ISevenTvEmoteSetListService` — the actor's own and every `editor_of` account's, the same lists the
+picker was built from, behind the full guard chain of 6.1: a set is admissible when it appears in one
+of those lists *and* its `owner.id` is the `userByConnection.id` of one of the checked accounts, so
+E22's "owner ∈ {actor} ∪ {editor_of}" holds exactly, compared on ids only. Both ids were already part
+of the measured E7 query and are now passed through, at no extra request. Why: this check does not
+guard access — the report runs *after* the import, whose 7TV mutation already happened with the
+user's own token — it keeps the audit log honest. Its previous form made uncached set-owner and
+identity requests on every call under the `Bookkeeping` policy (120/min per user, documented as
+database-only work), outside the provider budget and breaker the list and preview paths share, so a
+single caller could drain the shared bucket. The one case that still asks 7TV — a set in none of the
+lists — is budgeted: one permit, a concurrency slot and its own breaker operation (`emote-set-owner`),
+with 503 and no audit entry when refused. A partial outage without an admissible find answers 503,
+not 403, because the unreadable list may be the owner's. Rejected: moving the route to
+`ForeignEmoteLookup` (bounds each user, but still bypasses the provider budget) and putting the
+existing direct calls behind the budget (trades abuse for a lost paper trail: a 503 *after* the
+mutation writes no entry, and the frontend does not retry). The 7TV account id on editor grants and
+the live re-resolution of legacy grants had no other reader and were removed with it.
+
+**Grant-refresh clause, added 2026-09-21 after the second review round (spec section 32).** The
+owner check still read its `editor_of` accounts through the unguarded
+`SevenTvEditorService.GetEditorGrantsAsync`: on an empty, unreachable or legacy grant cache that is
+one or two raw 7TV requests per report, outside the provider budget and breaker, with failures never
+held — so repeated forged reports during a Redis or 7TV outage could still drain the shared bucket
+through the `Bookkeeping` policy (measured before the change: 20 reports, 20 requests, 0 permits).
+The owner check now reads its grants through `IGuardedSevenTvEditorGrantsService`, a guarded refresh
+for this one caller. A cache hit costs nothing, as before; a miss runs behind the guards of spec 6.1
+in the list service's order — the shared breaker under its own operation `editor-grants`, a
+concurrency slot of the shared budget, and one permit per upstream request (identity and `editor_of`
+each charge their own, in a budgeted client twin, `LookUpEditorGrantsAsync`, that also tells both
+429 shapes apart so a rate limit here locks the provider like anywhere else). A success is written to
+the same `7tveditor:` entry, same shape and TTL, so every reader profits; a failure is held in a key
+space only this path reads (`7tveditorhold:`), fail-open on Redis: unavailable 60 s, rate-limited at
+least 60 s or 7TV's `Retry-After` (at most 1 h), refused permit or slot and open breaker 30 s,
+`NoSevenTvAccount` 60 s as an answer. A refused guard or a held failure makes the grants unreadable,
+which without an admissible find elsewhere is the first round's partial-outage rule: 503, no entry.
+Rejected: reading the cache only. It holds ten minutes, so a report after a long import or during a
+Redis blip would be refused with 503 after the 7TV mutation already happened, and the frontend does
+not retry — the audit entry would be lost for good, while the ordinary report is free anyway because
+the picker fills the cache minutes before. Deliberately not extended to the other readers of
+`GetEditorGrantsAsync` (authorization via `ChannelAccessService`, `/me/emote-set-targets`,
+`MyChannelsService`): behind a shared budget, an exhausted budget would make roles unknown and
+channel pages answer 403, an effect far larger than the finding and not decided here.
+
+---
+
+### 2026-09-20 — Usage is counted per emote set; the observed set travels with the match cache (#200)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IEmoteMatchCache.cs` ·
+`src/EmotePurge.Core/Services/IUsageStatFlushService.cs` ·
+`src/EmotePurge.Core/Entities/UsageStat.cs` · `src/EmotePurge.Core/Entities/VoteSession.cs` ·
+`src/EmotePurge.Core/Entities/VoteSessionEmote.cs` ·
+`src/EmotePurge.Core/Entities/ChannelEmoteSetObservation.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteMatchCache.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/UsageStatFlushService.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/20260920191131_AddUsageStatEmoteSetId.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/20260920191131_AddUsageStatEmoteSetId.Designer.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/UsageStatMigrationChecks.cs` ·
+`src/EmotePurge.Worker/EmoteUsageCounter.cs` · `src/EmotePurge.Worker/IEmoteUsageCounter.cs` ·
+`src/EmotePurge.Worker/TwitchChatManager.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceRenameHandoverTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatFlushServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AddUsageStatEmoteSetIdMigrationTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/EmoteMatchCacheTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/UsageStatMigrationChecksTests.cs` ·
+`tests/EmotePurge.Worker.Tests/EmoteUsageCounterTests.cs`
+
+Chat usage used to be counted per `Emote.Id` alone. `UsageStat` now also carries `EmoteSetId`: the
+7TV emote set the match cache was built for at the moment a message was matched — our **locally
+observed** state, not necessarily what 7TV reports right now, and offset from it by however long it
+takes us to notice a switch (seconds via the `user.*` EventAPI push, up to 60 s in the periodic REST
+case, 10–30 min during a 7TV REST-cache lag, unbounded for as long as the #76 implausible-wipe guard
+blocks a sync). `TwitchChatManager` reads one snapshot object — dictionary, set id and generation
+timestamp together — per chat message, so a cache swap between two messages can separate them but
+never split one message's matches across two sets; two separate reads of dictionary and set id could
+have raced a swap in between and paired one swap's dictionary with another's id, which is why the
+match cache hands both out as a single object instead. The flush's `ON CONFLICT` target is now
+`(EmoteId, EmoteSetId, Date)`, and the unique index backing it was swapped to match. `VoteSession`
+gets a nullable `EmoteSetId` and `VoteSessionEmote` gets nullable `NameAtCreation`/`ImageUrlAtCreation`
+for set-scoped ballots, both consumed starting with a later commit in this epic.
+
+**The migration (`AddUsageStatEmoteSetId`) is the first change to this table that an old, still-running
+image cannot tolerate.** The two earlier counter migrations (bot use count, shared-chat use count)
+were additive and said so explicitly; this one drops the two-column unique index the flush's raw SQL
+upserts against, so an old worker's `ON CONFLICT ("EmoteId", "Date")` statement stops resolving,
+requeues its batch five times, and drops it. It runs once, by hand, inside a maintenance window with
+both the worker and the api stopped — not just a `pg_dump`-safe schema change — because from the
+step that drops the old index onward the migration holds `ACCESS EXCLUSIVE` on `UsageStats` until it
+commits, and anything still serving requests would hang on it for however long that takes. The 15
+minutes budgeted for the whole window (worker stop through new images up) is a planning value with an
+explicit abort point, not a measurement: if the `Up` step itself has not returned after 10 minutes,
+the operator cancels it (the transaction rolls back cleanly; a 5-second `lock_timeout`, set as the
+migration's first statement, rules out an indefinite wait on a lock — a `Up` still running past 10
+minutes is genuinely computing, not stuck), confirms with `dotnet ef migrations list` that the
+migration is still pending, and restarts the old images as a null run rather than waiting longer at a
+down site. Both the window's actual duration and the measured duration of the `Up` step itself are not
+part of this entry — a later commit appends them once the window has actually run.
+
+**Backfilling the existing rows needs to know, per channel, which set they were counted under before
+this column existed — and the input for that is a list of *switches*, not a directory of channels.**
+`SetSwitchAssignments` is a committed constant next to the migration (`internal static class`, one
+entry type: `(TwitchChannelId, OldEmoteSetId, NewEmoteSetId, BoundaryUtc)`), and in this round it
+carries exactly **one** entry — HandOfBlood, from `01GV88A38G0006FW5TVZVMG507` to
+`01J94NYQR0000D15QN0BDGN85E`, `BoundaryUtc` still a clearly marked placeholder the operator replaces
+with the real day in its own `chore:` commit once it has happened. A channel with no entry gets no
+entry at all, and its rows are backfilled with its channel's current `ActiveEmoteSetId` — a default,
+not a statement anyone confirmed. Three checks run inside the migration, before anything destructive,
+so that an abort costs no lock and leaves nothing behind: (1) for every entry whose channel exists in
+this database, its `NewEmoteSetId` must equal that channel's current active set id, and no channel may
+carry more than one entry — catches both a stale list and a duplicate; (2) no `UsageStats` row may
+belong to a channel with an empty active set id, because the backfill would otherwise hand it one; (3)
+`BoundaryUtc` must fall inside the usage-date range the channel's own rows actually cover — catches a
+mistyped month or year. No default, no `COALESCE`, no guessing: a failing check aborts with the
+offending channel (and, for check 3, the boundary and the range) named in the exception text. All
+three checks only ever see channels that exist in the target database (checks 1 and 3 additionally
+only those with at least one `UsageStats` row) — on an empty database every one of them passes
+trivially, which is what lets the test suite run the full migration chain against a fresh,
+channel-less container on every start. The backfill itself is two `UPDATE`s in a fixed order: first
+every row gets its channel's current active set id, then every row strictly before `BoundaryUtc` for
+a listed channel is corrected to `OldEmoteSetId`. That models exactly **one** boundary per channel; a
+second entry for the same channel is an inadmissible input, not a case this rule handles, and whoever
+ever adds one changes the backfill rule first. The boundary day itself is a known, named fuzziness of
+up to one day: it can contain usage from both the old and the new set and goes entirely to the new
+one.
+
+**The safety net around this backfill was deliberately cut back on 2026-09-20, after two rounds of
+adversarial review, on the operator's own call.** The design on the table before that cut was a
+*complete* classification of every channel with at least one usage row — a second entry kind for
+"confirmed, never switched", an acknowledged mass-archival signature, a data-cutoff timestamp, a
+chain-closure rule across multiple boundaries, and the whole list living in a gitignored file outside
+the repo because, at that size, it amounted to the service's user list. The operator judged that
+disproportionate for a closed beta of 20 channels and 62,771 usage rows: "we shouldn't overengineer
+this just to protect the usage stats against a thousand edge cases," and, on scope, "as far as I'm
+concerned, we do the migration, but only for HandOfBlood. For the rest, it doesn't exist." What
+that leaves genuinely uncovered, stated plainly rather than papered over: a channel that switched sets
+without a listed entry gets its **entire** history silently reassigned to whatever set is active
+today, and nothing detects it anymore — no completeness check, no archival-count signature, no
+acknowledged data cutoff, no chain closure. The remaining damage is lost attribution of usage numbers,
+not lost data, and the chat-log backfill (#69) can regenerate those numbers once it lands after
+2026-10-08. A second, related decision the same day: with the classification cut down to a single
+entry, the list is no longer the service's user directory the way an 18-entry version would have
+been — one entry names one public streamer and two 7TV sets that are themselves publicly visible — so
+it moved back into the repository as ordinary committed source instead of a gitignored file, which
+means it is readable in the PR diff again, the way a reviewer can actually check it. The project's own
+test channel is purged from the admin channel list before the maintenance window regardless of any of
+this, and a throwaway channel considered as a stopgap (never tracked, purged after any use) never
+appears in `SetSwitchAssignments` either way — neither is a case this list needs to carry.
+
+**`ChannelEmoteSetObservation` is a new, narrowly scoped table: intervals during which EmotePurge
+observed a given 7TV set as active for a channel**, timestamped by when we noticed, not by when the
+switch actually happened, and at most one interval per channel may be open at a time — enforced by a
+partial unique index on `ChannelId` where `ObservedToUtc IS NULL`. A successful sync without an open
+interval opens one; an observed `emoteSetSwitched` closes the old interval (`ClosedBy = 'set-switch'`)
+and opens a new one in the same transaction; leaving, renaming and merging each close their own way; a
+purge cascades via the foreign key; and the #76 implausible-wipe guard leaves the open interval
+untouched, because it never lets the switch happen in the first place. Both writing paths — the open
+and the switch — first re-check that the channel is still active, because a sync already in flight can
+otherwise land after a leave and reopen an interval on a channel nothing is tracking anymore. No lock
+is needed for this: `LeaveAsync` commits the interval's close and the `IsBotActive` flip in one
+`SaveChangesAsync`, so any read that no longer sees the open interval also sees the flag. One ordering
+remains a documented residual — a switch that commits *before* a concurrent leave can still leave its
+new interval open on a channel that has since left. The migration seeds one row per channel with a
+non-empty active set id (an open interval from when tracking last resumed, split at `BoundaryUtc` for the one listed
+channel) but **never** assigns `ClosedBy = 'set-switch'` to a seeded row — that distinction is load
+-bearing, not incidental: it's what lets a later migration rollback treat any `'set-switch'` row as
+proof that a switch has been observed since the deploy. The table's purpose is deliberately limited to
+things like a "while this set was active" date-range preset and a factual statement on the usage page,
+plus a future backfill automation window (#69) — it does **not** decide which set a usage number
+belongs to; that is `UsageStat.EmoteSetId` itself, fixed at count time.
+
+**Rolling the migration back (`Down`) is unrestricted only until the first observed set switch after
+deploy, and then blocked by two independent guards, neither of which supersedes the other.** The first
+checks directly for any `ChannelEmoteSetObservation` row with `ClosedBy = 'set-switch'` and aborts
+before touching anything — this catches switches the second guard would miss entirely: a switch
+landing between two calendar days, two sets with no emote in common, or a shared emote used on only
+one side never produces two rows under the same `(EmoteId, Date)`, so the old two-column unique index
+could be recreated without complaint and `Down` would silently discard `EmoteSetId`. The second guard
+is the older one: recreating `(EmoteId, Date)` fails outright if any pair of rows collides under it,
+catching sources the observation log doesn't know about (a hand-set channel, a seed with two
+intervals, anything upstream of the `emoteSetSwitched` path). Past that point, rolling back is a manual
+job for the operator — summing colliding rows per `(EmoteId, Date)` and deleting the duplicate to clear
+the index guard, deleting the `'set-switch'` rows to clear the log guard — and it deliberately throws
+away exactly the attribution this whole change exists to keep.
+
+**This migration touches the flush's conflict target and every read query on `UsageStats` for a
+different reason than the one the #69 chat-log-backfill design explicitly rejected doing that for**
+(`docs/designs/Chat-Log-Backfill-69-2026-09-05.md:306-308`, its "Approach C"): that design turned down
+a provenance column with a changed unique key because it would touch the hot live path's conflict
+target and every read query just to answer a question its chosen approach could answer in two days
+without any schema change at all. Here the question is different — which set a count belongs to, not
+where it came from — and the answer genuinely requires exactly that touch; it isn't the same tradeoff
+revisited, it's a different one that happens to cost the same shape of change. `GetRowsAsync`, read by
+the #69 harness, now sums `UseCount` across `EmoteSetId` per `(EmoteId, Date)` and keeps its DTO
+unchanged — the harness compares counted chat usage against rows, not against sets, so the sum is the
+number it needs regardless of how many sets a day's usage is split across.
+
+**Left as an open source of error, not addressed here:** as long as the #76 implausible-wipe guard
+(`SevenTvSyncService.cs:351-370`) blocks a sync, the line that would update `ActiveEmoteSetId` and
+open a new observation interval is never reached — the match cache keeps its stale generation, and
+both chat counting and the observation log keep booking against the old set indefinitely, even though
+7TV has genuinely switched. That is correct under this feature's own model ("the set we believe is
+active"), but it is a real, unbounded fork between our and 7TV's state in the field, and it is not
+this migration's job to close.
 
 ### 2026-09-19 — The selection survives search and filter changes; the safety moves to the point of action (supersedes S2-16)
 

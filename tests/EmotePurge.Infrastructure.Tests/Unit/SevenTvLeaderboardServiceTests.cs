@@ -161,7 +161,7 @@ public class SevenTvLeaderboardServiceTests
             harness.Clock.Advance(TimeSpan.FromSeconds(31));
         }
 
-        Assert.True(harness.Breaker.TryAcquire().Allowed);
+        Assert.True(harness.Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Allowed);
     }
 
     [Theory]
@@ -184,7 +184,7 @@ public class SevenTvLeaderboardServiceTests
         Assert.Equal([SevenTvSearchConsumer.Leaderboard], harness.SearchBudget.Charges);
         Assert.True(harness.Budget.TryCharge(out _));
         // Nothing reached 7TV, so the breaker learnt nothing and its probe slot is free again.
-        Assert.True(harness.Breaker.TryAcquire().Allowed);
+        Assert.True(harness.Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Allowed);
     }
 
     [Fact]
@@ -200,7 +200,7 @@ public class SevenTvLeaderboardServiceTests
 
         Assert.Equal(SevenTvLeaderboardStatus.SevenTvRateLimited, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
         Assert.Equal(0, harness.UpstreamRequests);
-        Assert.True(harness.Breaker.TryAcquire().Allowed);
+        Assert.True(harness.Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Allowed);
 
         // Stocked for the remaining block, not for the thirty seconds of an ordinary refusal.
         harness.SearchBudget.NextRefusal = SevenTvSearchRefusal.None;
@@ -241,7 +241,7 @@ public class SevenTvLeaderboardServiceTests
 
         Assert.Equal(SevenTvLeaderboardStatus.BudgetRefused, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
         Assert.Equal(0, harness.UpstreamRequests);
-        Assert.True(harness.Breaker.TryAcquire().Allowed);
+        Assert.True(harness.Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Allowed);
 
         harness.SearchBudget.NextRefusal = SevenTvSearchRefusal.None;
         harness.Clock.Advance(TimeSpan.FromSeconds(31));
@@ -290,7 +290,7 @@ public class SevenTvLeaderboardServiceTests
 
         // And none of those ten refusals was reported as a failure: a breaker that had counted them
         // would have re-opened for another 60 s on the last one.
-        Assert.True(harness.Breaker.TryAcquire().Allowed);
+        Assert.True(harness.Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Allowed);
     }
 
     [Fact]
@@ -442,7 +442,10 @@ public class SevenTvLeaderboardServiceTests
         // Open the breaker, then let its open duration elapse, so the fill below runs as the single
         // probe the breaker allows through — the state in which a missing report jams it forever.
         harness.Breaker.RecordFailure(
-            ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(60), harness.Breaker.TryAcquire().Generation);
+            ForeignSevenTvBreakerOperations.Leaderboard,
+            ForeignSevenTvBreakerOutcome.RateLimited,
+            TimeSpan.FromSeconds(60),
+            harness.Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Generation);
         harness.Clock.Advance(JustPastAFailureShelfLife);
         harness.Throw(Trending, 1);
 
@@ -450,7 +453,7 @@ public class SevenTvLeaderboardServiceTests
 
         Assert.Equal(1, harness.UpstreamRequests);
         // The probe failed, so the breaker is open again rather than stuck mid-probe.
-        Assert.False(harness.Breaker.TryAcquire().Allowed);
+        Assert.False(harness.Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Allowed);
 
         harness.Clock.Advance(JustPastAFailureShelfLife);
         harness.Answer(Trending, 1, OkPage(totalCount: 1, pageCount: 1, "a"));
@@ -478,13 +481,13 @@ public class SevenTvLeaderboardServiceTests
         // Page 1 succeeded and reset the streak to zero; page 2's exception then put it at one, once.
         // Three more failures leave it at four, below the threshold of five.
         harness.RecordOrdinaryFailures(3);
-        Assert.True(harness.Breaker.TryAcquire().Allowed);
+        Assert.True(harness.Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Allowed);
 
         // The fifth tips it over — which it could not do if page 1's success had gone unreported (the
         // streak would have opened the breaker one failure ago) or if page 2's exception had been
         // reported twice (likewise).
         harness.RecordOrdinaryFailures(1);
-        Assert.False(harness.Breaker.TryAcquire().Allowed);
+        Assert.False(harness.Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Allowed);
     }
 
     [Fact]
@@ -608,7 +611,10 @@ public class SevenTvLeaderboardServiceTests
             for (var failure = 0; failure < count; failure++)
             {
                 Breaker.RecordFailure(
-                    ForeignSevenTvBreakerOutcome.OtherFailure, null, Breaker.TryAcquire().Generation);
+                    ForeignSevenTvBreakerOperations.Leaderboard,
+                    ForeignSevenTvBreakerOutcome.OtherFailure,
+                    null,
+                    Breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard).Generation);
             }
         }
     }

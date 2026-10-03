@@ -1,21 +1,41 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
-import { Component, WritableSignal, signal } from '@angular/core';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  Component,
+  EnvironmentProviders,
+  Provider,
+  Signal,
+  WritableSignal,
+  computed,
+  signal,
+} from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { SevenTvDeleteService, SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
+import { DeleteRunInfo, SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import {
+  EditableSetTarget,
+  EmoteSetTargetsResponse,
+} from '../../core/seven-tv/seven-tv-emote-set.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
-import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
-import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { RunItemStatus, RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
+import {
+  SevenTvRunArbiter,
+  SevenTvRunClaim,
+  SevenTvRunKind,
+} from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
 import { JSON_MIME } from '../export/export-envelope';
 import { DeleteConfirmDialog, DeleteConfirmDialogData } from './delete-confirm-dialog';
 import { DeletableEmote, MassDeletePanel } from './mass-delete-panel';
+import { RestoreConfirmDialogData } from './restore-confirm-dialog';
 
 /**
  * `openProtocolExport()`'s `downloadFile(...)` call is a real `<a download>` click against a real
@@ -27,6 +47,7 @@ import { DeletableEmote, MassDeletePanel } from './mass-delete-panel';
 interface CapturedDownload {
   filename: string;
   mimeType: string;
+  blob: Blob;
 }
 
 /** Spies on the same two seams `downloadFile` touches — restore via `vi.restoreAllMocks()` in
@@ -37,7 +58,7 @@ function captureDownloads(): CapturedDownload[] {
     Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
   }
   vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
-    downloads.push({ filename: '', mimeType: (blob as Blob).type });
+    downloads.push({ filename: '', mimeType: (blob as Blob).type, blob: blob as Blob });
     return 'blob:test';
   });
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
@@ -71,6 +92,48 @@ const DE_TRANSLATIONS = {
   massDelete: {
     deleteButton: 'Löschen ({{ count }})',
     clearSelection: 'Auswahl aufheben',
+    progress: '{{ finished }} / {{ total }} verarbeitet',
+    progressBarLabel: 'Löschfortschritt',
+    settling: 'Wird abgeschlossen…',
+    summary: {
+      counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+      unknownRows: {
+        one: 'Bei {{ count }} Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+        other:
+          'Bei {{ count }} Emotes ist unklar, ob 7TV sie gelöscht hat — bitte das Set bei 7TV prüfen.',
+      },
+      unknownInProtocol: {
+        one: 'Im Protokoll steht es als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.',
+        other:
+          'Im Protokoll stehen sie als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt sie zurück, falls sie fehlen.',
+      },
+    },
+  },
+  // Real text (matches public/i18n/de.json), unlike the other abort-notice families in this fixture
+  // (`massDelete.nothingDeleted` et al. stay out, so their bare key is what the tests below match
+  // on): `refusedStartNotice` builds the blocking kind's noun via `TranslocoService.translate`
+  // directly (#256 T4), and the template's own `transloco` pipe then interpolates it as `{{ kind }}`
+  // into `notStarted.*` — a missing `notStarted.*` key would drop that interpolation entirely rather
+  // than falling back to the raw key string the way a *param-less* missing translation does
+  // elsewhere in this file, so both halves need real text for the assertions below to mean anything.
+  sevenTvRun: {
+    notStarted: {
+      running: 'Nichts gestartet — {{ kind }} läuft noch.',
+      settling: 'Nichts gestartet — {{ kind }} wird noch abgeschlossen.',
+    },
+    kind: {
+      delete: 'der Löschlauf',
+      restore: 'die Wiederherstellung',
+      import: 'die Übertragung',
+    },
+  },
+  common: {
+    cancel: 'Abbrechen',
+    close: 'Schließen',
+    andMore: {
+      one: '… und 1 weiteres',
+      other: '… und {{count}} weitere',
+    },
   },
 };
 
@@ -130,8 +193,10 @@ describe('MassDeletePanel row composition', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun: signal(null),
+            startCheckPending: signal(false),
           } as unknown as SevenTvDeleteService,
         },
         {
@@ -140,18 +205,23 @@ describe('MassDeletePanel row composition', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
+            skippedNameTaken: signal(0),
             duplicateCheckAvailable: signal(true),
             duplicateNoticePending: signal(false),
+            // #255 P2 (Codex review): the shared cross-entry pre-check gate `restoreConfirmPending`
+            // now aliases — read as soon as the component is constructed, not just once a restore
+            // pre-check actually starts.
+            restorePreCheckPending: signal(false),
+            startCheckPending: signal(false),
           } as unknown as SevenTvRestoreService,
         },
         {
           provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
+          useValue: fakeRunArbiter() as unknown as SevenTvRunArbiter,
         },
         {
           provide: SevenTvTokenService,
@@ -227,7 +297,12 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
   let fixture: ComponentFixture<MassDeletePanel>;
   let panel: MassDeletePanel;
   let openSpy: ReturnType<typeof vi.fn>;
-  let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+  let lastRun: WritableSignal<{
+    setId: string;
+    channelName: string;
+    targetOwnerTwitchId: string | null;
+    result: RunResult;
+  } | null>;
   let downloads: CapturedDownload[];
 
   beforeEach(async () => {
@@ -236,11 +311,28 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
     lastRun = signal({
       setId: 'set-1',
       channelName: 'somechannel',
+      targetOwnerTwitchId: null,
       result: {
-        doneIds: ['e1'],
-        doneKeys: ['e1'],
+        doneKeys: ['7tv-1', '7tv-live'],
         items: [
-          { key: 'e1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
+          // A set-view row without a local emote (spec #200, 7.1) — see the no-filter case below.
+          {
+            key: '7tv-live',
+            sevenTvEmoteId: '7tv-live',
+            name: 'LiveOnly',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
         ],
         startedAt: Date.parse('2026-09-01T12:00:00Z'),
         finishedAt: Date.parse('2026-09-01T12:05:00Z'),
@@ -264,8 +356,10 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun,
+            startCheckPending: signal(false),
           } as unknown as SevenTvDeleteService,
         },
         {
@@ -274,18 +368,23 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
+            skippedNameTaken: signal(0),
             duplicateCheckAvailable: signal(true),
             duplicateNoticePending: signal(false),
+            // #255 P2 (Codex review): the shared cross-entry pre-check gate `restoreConfirmPending`
+            // now aliases — read as soon as the component is constructed, not just once a restore
+            // pre-check actually starts.
+            restorePreCheckPending: signal(false),
+            startCheckPending: signal(false),
           } as unknown as SevenTvRestoreService,
         },
         {
           provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
+          useValue: fakeRunArbiter() as unknown as SevenTvRunArbiter,
         },
         {
           provide: SevenTvTokenService,
@@ -333,6 +432,34 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
     expect(panel['protocolSaved']()).toBe(true);
   });
 
+  // Only the JSON protocol can be read back in (restore); the dialog preselects and lists
+  // `options[0]` (ExportDialog's own contract), so passing JSON first is the whole fix.
+  it('offers JSON first, ahead of CSV, since only JSON can be restored', () => {
+    openSpy.mockReturnValue({ closed: of(undefined) });
+
+    panel['openProtocolExport']();
+
+    const data = openSpy.mock.calls[0][1].data as { options: { id: string }[] };
+    expect(data.options.map((option) => option.id)).toEqual(['json', 'csv']);
+  });
+
+  // Spec #200, F3/AK 72: this panel used to filter rows without an emoteId out of the protocol
+  // ("a silently short protocol") — which, with set-view rows that have none, would make their
+  // deletion irreversible and traceless. Every row of the run is written.
+  it('writes every row of the run into the protocol, a row without an emoteId included', async () => {
+    openSpy.mockReturnValue({ closed: of({ optionId: 'json', scope: 'visible' }) });
+
+    panel['openProtocolExport']();
+
+    const written = JSON.parse(await downloads[0].blob.text());
+    expect(written.rows.map((row: { sevenTvEmoteId: string }) => row.sevenTvEmoteId)).toEqual([
+      '7tv-1',
+      '7tv-live',
+    ]);
+    expect(written.rows[1].emoteId).toBeNull();
+    expect(written.meta.counts.succeeded).toBe(2);
+  });
+
   it('downloads nothing and leaves protocolSaved alone when the dialog closes with nothing', () => {
     openSpy.mockReturnValue({ closed: of(undefined) });
 
@@ -340,252 +467,6 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
 
     expect(downloads).toHaveLength(0);
     expect(panel['protocolSaved']()).toBe(false);
-  });
-});
-
-/**
- * #149: the notice for a pre-run duplicate check that could not run at all
- * (`already-present-filter.ts`'s `available: false`) — distinct from, and independent of, the
- * `skippedDuplicates` notice above it. Mounts `MassDeletePanel` directly so `duplicateCheckAvailable`
- * and `duplicateNoticePending` can be driven straight from the test, same style as the
- * protocol-export block above. The real service always sets both together (`startRestore` calls
- * `showDuplicateNotice` right after setting `duplicateCheckAvailable`) — these tests drive them
- * independently on purpose, to pin the P2 fix (design doc §4.5's transient-notice convention) as its
- * own behaviour rather than assuming the coupling.
- */
-describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => {
-  const DUPLICATE_CHECK_TRANSLATIONS = {
-    ...DE_TRANSLATIONS,
-    restore: {
-      duplicateCheckUnavailable:
-        'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
-    },
-  };
-
-  let fixture: ComponentFixture<MassDeletePanel>;
-  let duplicateCheckAvailable: WritableSignal<boolean>;
-  let duplicateNoticePending: WritableSignal<boolean>;
-
-  beforeEach(async () => {
-    duplicateCheckAvailable = signal(true);
-    duplicateNoticePending = signal(true);
-
-    await TestBed.configureTestingModule({
-      imports: [
-        MassDeletePanel,
-        TranslocoTestingModule.forRoot({
-          langs: { de: DUPLICATE_CHECK_TRANSLATIONS },
-          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
-        }),
-      ],
-      providers: [
-        provideHttpClient(),
-        { provide: EmoteAdminService, useValue: {} as unknown as EmoteAdminService },
-        {
-          provide: SevenTvDeleteService,
-          useValue: {
-            isRunning: signal(false),
-            queue: signal([]),
-            syncReport: signal('idle'),
-            rateLimitPauseSeconds: signal(0),
-            lastRun: signal(null),
-          } as unknown as SevenTvDeleteService,
-        },
-        {
-          provide: SevenTvRestoreService,
-          useValue: {
-            isRunning: signal(false),
-            queue: signal([]),
-            syncReport: signal('idle'),
-            rateLimitPauseSeconds: signal(0),
-            resyncTrigger: signal('idle'),
-            skippedDuplicates: signal(0),
-            duplicateCheckAvailable,
-            duplicateNoticePending,
-          } as unknown as SevenTvRestoreService,
-        },
-        {
-          provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
-        },
-        {
-          provide: SevenTvTokenService,
-          useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
-        },
-        { provide: Dialog, useValue: { open: vi.fn() } as unknown as Dialog },
-      ],
-    }).compileComponents();
-
-    await TestBed.inject(TranslocoService).load('de');
-
-    fixture = TestBed.createComponent(MassDeletePanel);
-    fixture.componentRef.setInput('setId', 'set-1');
-    fixture.componentRef.setInput('channelName', 'somechannel');
-    fixture.componentRef.setInput('selectedEmotes', []);
-  });
-
-  it('shows nothing while the check is available (the default, and every run that verified fine)', () => {
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
-  });
-
-  it('shows the quiet notice once the check is reported unavailable, stating the consequence', () => {
-    duplicateCheckAvailable.set(false);
-
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).toContain(
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
-    );
-  });
-
-  // #149 P2 (independent review): the notice is transient (design doc §4.5), not a persistent flag
-  // — once its window has elapsed (duplicateNoticePending flips back to false, e.g. a later,
-  // unrelated run has since settled), it must not keep showing just because duplicateCheckAvailable
-  // still happens to read false from a stale earlier run.
-  it('hides the notice again once its pending window has elapsed, even while duplicateCheckAvailable still reads false', () => {
-    duplicateCheckAvailable.set(false);
-    duplicateNoticePending.set(false);
-
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
-  });
-});
-
-/**
- * #134: on the usage-stats page this panel lives in the action dock, which can mount in the same
- * change-detection pass that sets a notice — a status region created together with its text
- * announces nothing. So the panel's resync and duplicate-check notices are shown but aria-hidden,
- * and the host page's permanently mounted DockOutcomeAnnouncer speaks them instead
- * (docs/UI-Designsprache.md §4.5). Pinned here: the panel's own status regions (RunProgressPanel is
- * one) never announce these notices, so nothing is spoken twice.
- */
-function announcedByStatusRegions(root: HTMLElement): string {
-  return Array.from(root.querySelectorAll('[role="status"]'))
-    .map((region) => {
-      const copy = region.cloneNode(true) as HTMLElement;
-      copy.querySelectorAll('[aria-hidden="true"]').forEach((hidden) => hidden.remove());
-      return copy.textContent?.trim() ?? '';
-    })
-    .join(' ')
-    .trim();
-}
-
-describe('MassDeletePanel — resync and duplicate-check notices are shown, not announced (#134)', () => {
-  const STATUS_REGION_TRANSLATIONS = {
-    ...DE_TRANSLATIONS,
-    restore: {
-      duplicateCheckUnavailable:
-        'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
-      resync: {
-        pending: 'Synchronisierung wird angestoßen…',
-        succeeded: 'Synchronisierung angestoßen — die Liste aktualisiert sich gleich.',
-        cooldown:
-          'Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.',
-        failed:
-          'Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.',
-      },
-    },
-  };
-
-  let fixture: ComponentFixture<MassDeletePanel>;
-  let resyncTrigger: WritableSignal<'idle' | 'pending' | 'succeeded' | 'cooldown' | 'failed'>;
-  let duplicateCheckAvailable: WritableSignal<boolean>;
-  let duplicateNoticePending: WritableSignal<boolean>;
-
-  beforeEach(async () => {
-    resyncTrigger = signal('idle');
-    duplicateCheckAvailable = signal(true);
-    duplicateNoticePending = signal(false);
-
-    await TestBed.configureTestingModule({
-      imports: [
-        MassDeletePanel,
-        TranslocoTestingModule.forRoot({
-          langs: { de: STATUS_REGION_TRANSLATIONS },
-          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
-        }),
-      ],
-      providers: [
-        provideHttpClient(),
-        { provide: EmoteAdminService, useValue: {} as unknown as EmoteAdminService },
-        {
-          provide: SevenTvDeleteService,
-          useValue: {
-            isRunning: signal(false),
-            queue: signal([]),
-            syncReport: signal('idle'),
-            rateLimitPauseSeconds: signal(0),
-            lastRun: signal(null),
-          } as unknown as SevenTvDeleteService,
-        },
-        {
-          provide: SevenTvRestoreService,
-          useValue: {
-            isRunning: signal(false),
-            // A non-empty queue, not running: the resync notice sits in the run-actions slot,
-            // which RunProgressPanel only projects once the restore run has settled
-            // (!isRunning() && total() > 0) — matching how resyncTrigger is only ever written from
-            // onRunComplete in the real service.
-            queue: signal([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]),
-            syncReport: signal('idle'),
-            rateLimitPauseSeconds: signal(0),
-            resyncTrigger,
-            skippedDuplicates: signal(0),
-            duplicateCheckAvailable,
-            duplicateNoticePending,
-          } as unknown as SevenTvRestoreService,
-        },
-        {
-          provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
-        },
-        {
-          provide: SevenTvTokenService,
-          useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
-        },
-        { provide: Dialog, useValue: { open: vi.fn() } as unknown as Dialog },
-      ],
-    }).compileComponents();
-
-    await TestBed.inject(TranslocoService).load('de');
-
-    fixture = TestBed.createComponent(MassDeletePanel);
-    fixture.componentRef.setInput('setId', 'set-1');
-    fixture.componentRef.setInput('channelName', 'somechannel');
-    fixture.componentRef.setInput('selectedEmotes', []);
-  });
-
-  it('shows the resync notice aria-hidden, so no status region of the panel speaks it', () => {
-    resyncTrigger.set('pending');
-    fixture.detectChanges();
-
-    const text = 'Synchronisierung wird angestoßen…';
-    const notice: HTMLElement | undefined = Array.from<HTMLElement>(
-      fixture.nativeElement.querySelectorAll('[aria-hidden="true"]'),
-    ).find((element) => element.textContent?.trim() === text);
-    expect(notice).toBeDefined();
-    expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(text);
-  });
-
-  it('shows the duplicate-check-unavailable notice aria-hidden, so no status region of the panel speaks it', () => {
-    duplicateCheckAvailable.set(false);
-    duplicateNoticePending.set(true);
-    fixture.detectChanges();
-
-    const text =
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.';
-    const notice: HTMLElement | undefined = Array.from<HTMLElement>(
-      fixture.nativeElement.querySelectorAll('[aria-hidden="true"]'),
-    ).find((element) => element.textContent?.trim() === text);
-    expect(notice).toBeDefined();
-    expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(text);
   });
 });
 
@@ -602,16 +483,48 @@ describe('MassDeletePanel — resync and duplicate-check notices are shown, not 
  */
 type DeleteServiceFake = Pick<
   SevenTvDeleteService,
-  'isRunning' | 'queue' | 'syncReport' | 'rateLimitPauseSeconds' | 'lastRun'
+  | 'isRunning'
+  | 'queue'
+  | 'run'
+  | 'syncReport'
+  | 'syncReportReason'
+  | 'rateLimitPauseSeconds'
+  | 'lastRun'
+  | 'confirmedRunPending'
+  | 'beginConfirmedRun'
+  | 'endConfirmedRun'
+  | 'clearConfirmedRun'
+  | 'startCheckPending'
 >;
 
 function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteServiceFake {
   return {
     isRunning: signal(false),
     queue: signal<RunQueueItem[]>([]),
+    // #256: `[dismissible]` reads `run()?.phase` directly (`lastRun` keeps its own, phase-less
+    // shape for the summary slot) — no test in this file exercises Close on the delete panel today,
+    // so this defaults to `null`; the dedicated Schließen-Gate block below sets it explicitly.
+    run: signal<DeleteRunInfo | null>(null),
     syncReport: signal<SyncReportState>('idle'),
+    syncReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
-    lastRun: signal<{ setId: string; channelName: string; result: RunResult } | null>(null),
+    lastRun: signal<{
+      setId: string;
+      channelName: string;
+      targetOwnerTwitchId: string | null;
+      result: RunResult;
+    } | null>(null),
+    // The dock's claim on a confirmed-but-not-yet-running delete. Spied rather than implemented:
+    // what the *service* does with them (drop at once for a started run, hold for the abort notice
+    // otherwise, drop outright when nothing was confirmed) is pinned in
+    // seven-tv-delete.service.spec.ts; what the panel owes is that every exit of the confirmation
+    // reaches one of them.
+    confirmedRunPending: signal(false),
+    beginConfirmedRun: vi.fn(),
+    endConfirmedRun: vi.fn(),
+    clearConfirmedRun: vi.fn(),
+    // #280: the live alias read's window, aliased by the panel's `liveAliasReadPending`.
+    startCheckPending: signal(false),
     ...overrides,
   };
 }
@@ -621,11 +534,15 @@ type RestoreServiceFake = Pick<
   | 'isRunning'
   | 'queue'
   | 'syncReport'
+  | 'syncReportReason'
   | 'rateLimitPauseSeconds'
   | 'resyncTrigger'
   | 'skippedDuplicates'
+  | 'skippedNameTaken'
   | 'duplicateCheckAvailable'
   | 'duplicateNoticePending'
+  | 'restorePreCheckPending'
+  | 'startCheckPending'
 >;
 
 function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): RestoreServiceFake {
@@ -633,50 +550,132 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
     isRunning: signal(false),
     queue: signal<RunQueueItem[]>([]),
     syncReport: signal<SyncReportState>('idle'),
+    syncReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
     resyncTrigger: signal('idle'),
     skippedDuplicates: signal(0),
+    skippedNameTaken: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    // #255 P2 (Codex review): defaults to its own fresh signal, same as every other flag here — a
+    // test that wants to simulate the *other* restore entry already holding this gate overrides it
+    // with a shared instance (see "ignores a click while the other restore entry's own pre-check…").
+    restorePreCheckPending: signal(false),
+    // #280: the confirm-time check's window, same default as the gate above.
+    startCheckPending: signal(false),
     ...overrides,
   };
 }
 
 interface RunArbiterFake {
   activeRun: WritableSignal<SevenTvRunKind | null>;
+  activeClaim: () => SevenTvRunClaim | null;
+  /** #280: the restore's and the delete's own start checks (linked by `panelProviders`) or any
+   *  other participant's — `otherStartPending` stands in for an undo's or an import's. */
+  startPending: Signal<boolean>;
+  startLocked: Signal<boolean>;
+  otherStartPending: WritableSignal<boolean>;
+  noteRefusedStart: ReturnType<typeof vi.fn>;
 }
 
+/** `activeClaim` is derived from `activeRun` as a `'running'` claim — good enough for this panel's
+ *  own tests, which never distinguish `running` from `settling` (that distinction is the arbiter's
+ *  own spec's job, `seven-tv-run-arbiter.spec.ts`). `noteRefusedStart` is a spy only: #256 T4 has
+ *  this panel build its own `abortNotice` from `activeClaim()` directly rather than routing through
+ *  the arbiter's transient notice (see `refusedStartNotice`'s own doc on the component) — every
+ *  test below that expects an abort notice asserts on `abortNotice()`, never on this spy. */
 function fakeRunArbiter(
   activeRun: WritableSignal<SevenTvRunKind | null> = signal(null),
+  ...ownStartChecks: Signal<boolean>[]
 ): RunArbiterFake {
-  return { activeRun };
+  const activeClaim = computed<SevenTvRunClaim | null>(() => {
+    const kind = activeRun();
+    return kind === null ? null : { kind, phase: 'running' };
+  });
+  const otherStartPending = signal(false);
+  const startPending = computed(
+    () => ownStartChecks.some((check) => check()) || otherStartPending(),
+  );
+  return {
+    activeRun,
+    activeClaim,
+    startPending,
+    startLocked: computed(() => activeRun() !== null || startPending()),
+    otherStartPending,
+    noteRefusedStart: vi.fn(),
+  };
+}
+
+/** A resolved target every editable-stub answer carries — irrelevant to the delete confirmation
+ *  itself (spec 4.6 point 20: the pre-check only gates, it never feeds `DeleteConfirmDialogData`),
+ *  so its exact field values are never asserted on by the blocks below. */
+const EDITABLE_STUB_TARGET: EditableSetTarget = {
+  emoteSetId: 'set-1',
+  setName: 'set-1',
+  ownerDisplayName: 'owner',
+  twitchLogin: 'owner',
+  trackedChannelName: 'somechannel',
+  isActiveSet: true,
+  ownerTwitchChannelId: 'tw-owner',
+};
+
+type EmoteSetServiceFake = Pick<SevenTvEmoteSetService, 'resolveEditableSet'>;
+
+/** #253 AK 31/20: `MassDeletePanel` now runs the shared pre-check (`resolveEditableSet`) before
+ *  every delete confirmation opens. Defaults to an immediate `'editable'` answer so every block
+ *  below that does not itself test the pre-check keeps opening the confirmation synchronously,
+ *  exactly as it did before that pre-check existed — the dedicated pre-check block further down
+ *  overrides this with the real service instead (`panelProviders({ emoteSetService: null })`) to
+ *  drive `HttpTestingController` directly. */
+function fakeEmoteSetService(overrides: Partial<EmoteSetServiceFake> = {}): EmoteSetServiceFake {
+  return {
+    resolveEditableSet: vi
+      .fn()
+      .mockReturnValue(of({ status: 'editable', target: EDITABLE_STUB_TARGET })),
+    ...overrides,
+  };
 }
 
 /** The provider list every #89 block below needs, differing only in which fakes a test wants to
- *  drive — the rest default to an idle/untouched instance. */
+ *  drive — the rest default to an idle/untouched instance. `emoteSetService: null` opts out of the
+ *  default editable stub and leaves `SevenTvEmoteSetService` real, for a block that drives it
+ *  through its own `HttpTestingController` (the restore-confirm-path and delete-pre-check blocks). */
 function panelProviders(
   options: {
     deleteService?: DeleteServiceFake;
     restoreService?: RestoreServiceFake;
     arbiter?: RunArbiterFake;
     dialogOpen?: ReturnType<typeof vi.fn>;
+    emoteAdminService?: Partial<EmoteAdminService>;
+    emoteSetService?: EmoteSetServiceFake | null;
   } = {},
 ) {
-  return [
+  const restoreService = options.restoreService ?? fakeRestoreService();
+  const deleteService = options.deleteService ?? fakeDeleteService();
+  const providers: (Provider | EnvironmentProviders)[] = [
     provideHttpClient(),
-    { provide: EmoteAdminService, useValue: {} as unknown as EmoteAdminService },
+    {
+      provide: EmoteAdminService,
+      useValue: (options.emoteAdminService ?? {}) as unknown as EmoteAdminService,
+    },
     {
       provide: SevenTvDeleteService,
-      useValue: (options.deleteService ?? fakeDeleteService()) as unknown as SevenTvDeleteService,
+      useValue: deleteService as unknown as SevenTvDeleteService,
     },
     {
       provide: SevenTvRestoreService,
-      useValue: (options.restoreService ??
-        fakeRestoreService()) as unknown as SevenTvRestoreService,
+      useValue: restoreService as unknown as SevenTvRestoreService,
     },
     {
       provide: SevenTvRunArbiter,
-      useValue: (options.arbiter ?? fakeRunArbiter()) as unknown as SevenTvRunArbiter,
+      // Linked to the restore and delete fakes' start checks the way the real services register
+      // them (#280).
+      useValue: (options.arbiter ??
+        fakeRunArbiter(
+          signal(null),
+          restoreService.startCheckPending,
+          deleteService.startCheckPending,
+        )) as unknown as SevenTvRunArbiter,
     },
     {
       provide: SevenTvTokenService,
@@ -684,6 +683,14 @@ function panelProviders(
     },
     { provide: Dialog, useValue: { open: options.dialogOpen ?? vi.fn() } as unknown as Dialog },
   ];
+  if (options.emoteSetService !== null) {
+    providers.push({
+      provide: SevenTvEmoteSetService,
+      useValue: (options.emoteSetService ??
+        fakeEmoteSetService()) as unknown as SevenTvEmoteSetService,
+    });
+  }
+  return providers;
 }
 
 /** `Löschen (n)` — the same wording `DELETE_LABEL` pins for n=2, generalised so the lock block can
@@ -717,28 +724,59 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
   let panel: MassDeletePanel;
   let isRunning: WritableSignal<boolean>;
   let syncReport: WritableSignal<SyncReportState>;
-  let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+  let lastRun: WritableSignal<{
+    setId: string;
+    channelName: string;
+    targetOwnerTwitchId: string | null;
+    result: RunResult;
+  } | null>;
 
-  function runResult(doneIds: string[]): RunResult {
+  // A delete run keys every row by its 7TV id, so key and sevenTvEmoteId are the same value.
+  function runResult(doneKeys: string[]): RunResult {
     return {
-      doneIds,
-      doneKeys: doneIds,
-      items: doneIds.map((id) => ({
+      doneKeys,
+      items: doneKeys.map((id) => ({
         key: id,
-        emoteId: id,
-        sevenTvEmoteId: `7tv-${id}`,
+        emoteId: `guid-${id}`,
+        sevenTvEmoteId: id,
         name: id,
         status: 'done',
+        completedSteps: 1,
+        failedStep: null,
       })),
       startedAt: Date.parse('2026-09-01T12:00:00Z'),
       finishedAt: Date.parse('2026-09-01T12:05:00Z'),
     };
   }
 
+  /** A settled result with the given rows, `doneKeys` derived from them as `settleDeleteResult`
+   *  does — for the #275 cases, whose rows are not all `done`. */
+  function settledResult(rows: [key: string, status: RunItemStatus][]): RunResult {
+    return {
+      doneKeys: rows.filter(([, status]) => status === 'done').map(([key]) => key),
+      items: rows.map(([key, status]) => ({
+        key,
+        emoteId: `guid-${key}`,
+        sevenTvEmoteId: key,
+        name: key,
+        status,
+        completedSteps: status === 'done' ? 1 : 0,
+        failedStep: status === 'failed' || status === 'unknown' ? 0 : null,
+      })),
+      startedAt: 0,
+      finishedAt: 1,
+    };
+  }
+
   beforeEach(async () => {
     isRunning = signal(false);
     syncReport = signal<SyncReportState>('idle');
-    lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
+    lastRun = signal<{
+      setId: string;
+      channelName: string;
+      targetOwnerTwitchId: string | null;
+      result: RunResult;
+    } | null>(null);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -763,7 +801,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
   });
 
-  it('emits deleted with the run doneIds once the closing sync report succeeds', () => {
+  it('emits deleted with the run doneKeys once the closing sync report succeeds', () => {
     const deleted: string[][] = [];
     panel.deleted.subscribe((ids) => deleted.push(ids));
 
@@ -771,7 +809,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1', 'e2']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1', 'e2']),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([['e1', 'e2']]);
@@ -787,7 +830,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('failed');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([]);
@@ -802,7 +850,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('partial');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
 
     expect(reloads).toHaveLength(1);
@@ -825,7 +878,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     expect(reloads).toEqual([]);
 
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([['e1']]);
@@ -833,7 +891,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
   });
 
   it('emits nothing at all when the run succeeded but nothing was actually deleted', () => {
-    // doneIds.length === 0: there is nothing to drop from the host list and nothing wrong to
+    // doneKeys.length === 0: there is nothing to drop from the host list and nothing wrong to
     // report either, so neither output is the right call.
     const deleted: string[][] = [];
     const reloads: void[] = [];
@@ -844,10 +902,248 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult([]) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult([]),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([]);
+    expect(reloads).toEqual([]);
+  });
+
+  // #275, Festlegung 13 (a): a run that settled with nothing but `unknown` rows never sends a
+  // sync-deleted call at all — `settleRun` only reports confirmed `doneKeys`, and there are none —
+  // so `syncReport` stays `idle` for good on this run. The service resyncs the active set on its
+  // own instead, but that resync is invisible to this page until something refetches it: without
+  // this branch the effect's own "'idle' means nothing to report either way" comment above would
+  // make it (wrongly) skip this case forever.
+  it('asks the host to reload once for a run that settled with nothing but unknown rows', () => {
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    // syncReport stays 'idle' — never sent, doneKeys is empty.
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: [],
+        items: [
+          {
+            key: 'e1',
+            emoteId: 'guid-e1',
+            sevenTvEmoteId: 'e1',
+            name: 'e1',
+            status: 'unknown',
+            completedSteps: 0,
+            failedStep: 0,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([]);
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('does not reload a second time when the still-idle run settles again with the same result', () => {
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+    const result = {
+      doneKeys: [],
+      items: [
+        {
+          key: 'e1',
+          emoteId: 'guid-e1',
+          sevenTvEmoteId: 'e1',
+          name: 'e1',
+          status: 'unknown' as const,
+          completedSteps: 0,
+          failedStep: 0,
+        },
+      ],
+      startedAt: 0,
+      finishedAt: 1,
+    };
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+
+    // The effect running again over the same, still-idle run must not re-fire the latch — a fresh
+    // record with the same content re-runs it, as any later write to the shown run would.
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: { ...result },
+    });
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('re-arms the nothing-but-unknown reload for the next run, once a new run started in between', () => {
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: settledResult([['e1', 'unknown']]),
+    });
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+
+    isRunning.set(true);
+    lastRun.set(null);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: settledResult([['e2', 'unknown']]),
+    });
+    fixture.detectChanges();
+
+    expect(reloads).toHaveLength(2);
+  });
+
+  // #275, Festlegung 13 (b): a run that settled with `done` rows next to unclear ones is reported
+  // like any other — the report's own outcome decides, the unclear rows add nothing of their own.
+  it('emits deleted exactly once and no reload when a run with unclear and done rows reports successfully', () => {
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('pending');
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: settledResult([
+        ['e1', 'done'],
+        ['e2', 'unknown'],
+      ]),
+    });
+    fixture.detectChanges();
+    expect(deleted).toEqual([]);
+    expect(reloads).toEqual([]);
+
+    syncReport.set('succeeded');
+    fixture.detectChanges();
+    // A later write to the same, already-reported run must not emit a second time.
+    const shown = lastRun();
+    lastRun.set(shown === null ? null : { ...shown });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([['e1']]);
+    expect(reloads).toEqual([]);
+  });
+
+  it('asks for exactly one reload and emits no deleted when a run with unclear and done rows fails to report', () => {
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('pending');
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: settledResult([
+        ['e1', 'done'],
+        ['e2', 'unknown'],
+      ]),
+    });
+    fixture.detectChanges();
+
+    syncReport.set('failed');
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([]);
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('does not reload for a settled run whose rows were all cancelled', () => {
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: settledResult([
+        ['e1', 'cancelled'],
+        ['e2', 'cancelled'],
+      ]),
+    });
+    fixture.detectChanges();
+
+    expect(reloads).toEqual([]);
+  });
+
+  it('does not reload for a settled run whose only remaining rows are failed/cancelled, never unknown', () => {
+    // Same 'idle' report as the nothing-but-unknown case, but nothing here can ever clarify — this
+    // pins that the new branch does not fire indiscriminately for every idle-report settle.
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: [],
+        items: [
+          {
+            key: 'e1',
+            emoteId: 'guid-e1',
+            sevenTvEmoteId: 'e1',
+            name: 'e1',
+            status: 'failed',
+            completedSteps: 0,
+            failedStep: 0,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+    fixture.detectChanges();
+
     expect(reloads).toEqual([]);
   });
 
@@ -866,7 +1162,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('failed');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
     expect(reloads).toHaveLength(1);
     expect(deleted).toEqual([]);
@@ -881,6 +1182,50 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     expect(deleted).toEqual([]);
   });
 
+  // AK 72 / E18: `deleted` speaks 7TV ids — the run's keys — and a row that never had a local
+  // emote is among them like any other, so the host can drop its cell.
+  it('emits deleted as the 7TV-id keys of the run, a row without an emoteId included', () => {
+    const deleted: string[][] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('succeeded');
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: ['7tv-1', '7tv-live'],
+        items: [
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
+          {
+            key: '7tv-live',
+            sevenTvEmoteId: '7tv-live',
+            name: 'LiveOnly',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([['7tv-1', '7tv-live']]);
+  });
+
   it('re-arms the latch and resets protocolSaved once a new run starts', () => {
     const deleted: string[][] = [];
     panel.deleted.subscribe((ids) => deleted.push(ids));
@@ -889,7 +1234,12 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
     isRunning.set(false);
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e1']),
+    });
     fixture.detectChanges();
     expect(deleted).toEqual([['e1']]);
 
@@ -907,10 +1257,310 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
 
     isRunning.set(false);
     syncReport.set('succeeded');
-    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e2']) });
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      targetOwnerTwitchId: null,
+      result: runResult(['e2']),
+    });
     fixture.detectChanges();
 
     expect(deleted).toEqual([['e1'], ['e2']]);
+  });
+});
+
+/**
+ * #256, Plan-256 Festlegung 13: Close is offered exactly once the delete run's own record is
+ * `closed`, not merely once the engine stops — a report still `reporting` must keep its dock (and
+ * its eventual retry) reachable through a channel switch or a page reload attempt.
+ */
+describe('MassDeletePanel — Schließen-Gate (#256)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let isRunning: WritableSignal<boolean>;
+  let queue: WritableSignal<RunQueueItem[]>;
+  let run: WritableSignal<DeleteRunInfo | null>;
+
+  function closeButton(): HTMLButtonElement | undefined {
+    return Array.from(fixture.nativeElement.querySelectorAll('button')).find(
+      (candidate) => (candidate as HTMLButtonElement).textContent?.trim() === 'Schließen',
+    ) as HTMLButtonElement | undefined;
+  }
+
+  beforeEach(async () => {
+    isRunning = signal(false);
+    queue = signal<RunQueueItem[]>([
+      {
+        key: 'e1',
+        emoteId: 'guid-e1',
+        sevenTvEmoteId: 'e1',
+        name: 'e1',
+        status: 'done',
+        completedSteps: 1,
+        failedStep: null,
+      },
+    ]);
+    run = signal<DeleteRunInfo | null>(null);
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: panelProviders({
+        deleteService: fakeDeleteService({ isRunning, queue, run }),
+      }),
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  it('offers no Close button while the run is only reporting, not yet closed', () => {
+    run.set({
+      runId: 'delete-1',
+      phase: 'reporting',
+      destructive: true,
+      channelName: 'somechannel',
+      expectedChannelName: 'somechannel',
+      setId: 'set-1',
+      targetOwnerTwitchId: null,
+      result: { doneKeys: ['e1'], items: queue(), startedAt: 0, finishedAt: 1 },
+      syncReport: 'pending',
+      syncReportReason: null,
+    });
+    fixture.detectChanges();
+
+    expect(closeButton()).toBeUndefined();
+    expect(fixture.nativeElement.textContent).toContain('Wird abgeschlossen…');
+  });
+
+  it('offers Close once the run has closed', () => {
+    run.set({
+      runId: 'delete-1',
+      phase: 'closed',
+      destructive: true,
+      channelName: 'somechannel',
+      expectedChannelName: 'somechannel',
+      setId: 'set-1',
+      targetOwnerTwitchId: null,
+      result: { doneKeys: ['e1'], items: queue(), startedAt: 0, finishedAt: 1 },
+      syncReport: 'succeeded',
+      syncReportReason: null,
+    });
+    fixture.detectChanges();
+
+    expect(closeButton()).toBeDefined();
+  });
+});
+
+/**
+ * #275 T4: the settled run's rows 7TV's answer never clarified get their own summary line, read
+ * from the settled `lastRun().result`, never from the live `queue()`. While the run is still
+ * `settling`, `queue()` is the pre-settle snapshot (`seven-tv-delete.service.ts`, Plan-275
+ * Festlegung 11), and a row it still marks `unknown` can flip to `done` once the settle's one
+ * confirming re-read answers — so the dock keeps the bar and the failed rows as they were, but holds
+ * back the summary and the unknown rows until then (review of T4).
+ */
+describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let queue: WritableSignal<RunQueueItem[]>;
+  let run: WritableSignal<DeleteRunInfo | null>;
+  let lastRun: WritableSignal<{
+    setId: string;
+    channelName: string;
+    targetOwnerTwitchId: string | null;
+    result: RunResult;
+  } | null>;
+
+  function unknownItem(key: string): RunQueueItem {
+    return {
+      key,
+      emoteId: `guid-${key}`,
+      sevenTvEmoteId: key,
+      name: key,
+      status: 'unknown',
+      completedSteps: 0,
+      failedStep: 0,
+    };
+  }
+
+  function doneItem(key: string): RunQueueItem {
+    return {
+      key,
+      emoteId: `guid-${key}`,
+      sevenTvEmoteId: key,
+      name: key,
+      status: 'done',
+      completedSteps: 1,
+      failedStep: null,
+    };
+  }
+
+  function failedItem(key: string): RunQueueItem {
+    return {
+      key,
+      emoteId: `guid-${key}`,
+      sevenTvEmoteId: key,
+      name: key,
+      status: 'failed',
+      completedSteps: 0,
+      failedStep: 0,
+      errorMessage: 'HTTP 500',
+    };
+  }
+
+  function progressValue(): string | null {
+    return fixture.nativeElement
+      .querySelector('[role="progressbar"]')
+      .getAttribute('aria-valuenow');
+  }
+
+  /** The names of the rows in the failure list's alert region, in order. */
+  function alertRowNames(): string[] {
+    return Array.from(fixture.nativeElement.querySelectorAll('[role="alert"] li'), (row: Element) =>
+      (row.textContent ?? '').split(':')[0].trim(),
+    );
+  }
+
+  function baseRun(overrides: Partial<DeleteRunInfo>): DeleteRunInfo {
+    return {
+      runId: 'delete-1',
+      phase: 'reporting',
+      destructive: true,
+      channelName: 'somechannel',
+      expectedChannelName: 'somechannel',
+      setId: 'set-1',
+      targetOwnerTwitchId: null,
+      result: null,
+      syncReport: 'idle',
+      syncReportReason: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    queue = signal<RunQueueItem[]>([]);
+    run = signal<DeleteRunInfo | null>(null);
+    lastRun = signal<{
+      setId: string;
+      channelName: string;
+      targetOwnerTwitchId: string | null;
+      result: RunResult;
+    } | null>(null);
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: panelProviders({
+        deleteService: fakeDeleteService({ isRunning: signal(false), queue, run, lastRun }),
+      }),
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  it('shows the unknownRows and unknownInProtocol lines once the settled run has one unclear row', () => {
+    const items = [doneItem('e1'), unknownItem('e2')];
+    const result: RunResult = { doneKeys: ['e1'], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain(
+      'Bei 1 Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+    );
+    expect(text).toContain(
+      'Im Protokoll steht es als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.',
+    );
+  });
+
+  it('shows neither line once every row in the settled run is done', () => {
+    const items = [doneItem('e1')];
+    const result: RunResult = { doneKeys: ['e1'], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).not.toContain('ist unklar');
+  });
+
+  it('uses the plural wording for both lines once the settled run has more than one unclear row', () => {
+    const items = [unknownItem('e1'), unknownItem('e2')];
+    const result: RunResult = { doneKeys: [], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain(
+      'Bei 2 Emotes ist unklar, ob 7TV sie gelöscht hat — bitte das Set bei 7TV prüfen.',
+    );
+    expect(text).toContain(
+      'Im Protokoll stehen sie als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt sie zurück, falls sie fehlen.',
+    );
+  });
+
+  it('keeps the progress and the failed row while settling, but holds back the summary and the unclear row', () => {
+    queue.set([doneItem('e1'), unknownItem('e2'), failedItem('e3')]);
+    run.set(baseRun({ phase: 'settling', result: null }));
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain('Wird abgeschlossen…');
+    expect(text).toContain('3 / 3 verarbeitet');
+    expect(progressValue()).toBe('3');
+    expect(alertRowNames()).toEqual(['e3']);
+    expect(text).not.toContain('gelöscht ·');
+    expect(text).not.toContain('ist unklar');
+  });
+
+  it('shows the summary and the still unclear row once the run moves from settling to closed', () => {
+    queue.set([doneItem('e1'), unknownItem('e2'), unknownItem('e4'), failedItem('e3')]);
+    run.set(baseRun({ phase: 'settling', result: null }));
+    fixture.detectChanges();
+    const regionBefore = fixture.nativeElement.querySelector('[role="alert"]');
+    expect(alertRowNames()).toEqual(['e3']);
+
+    // The re-read cleared `e4` up; `e2` stayed unclear.
+    const items = [doneItem('e1'), unknownItem('e2'), doneItem('e4'), failedItem('e3')];
+    const result: RunResult = { doneKeys: ['e1', 'e4'], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', targetOwnerTwitchId: null, result });
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain('2 gelöscht · 1 fehlgeschlagen · 0 abgebrochen');
+    expect(text).toContain(
+      'Bei 1 Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+    );
+    expect(progressValue()).toBe('4');
+    expect(alertRowNames()).toEqual(['e2', 'e3']);
+    // Same live region throughout: the failed row is not announced a second time.
+    expect(fixture.nativeElement.querySelector('[role="alert"]')).toBe(regionBefore);
   });
 });
 
@@ -928,7 +1578,15 @@ describe('MassDeletePanel — restore latch (#89)', () => {
   let queue: WritableSignal<RunQueueItem[]>;
 
   function item(key: string): RunQueueItem {
-    return { key, emoteId: key, sevenTvEmoteId: `7tv-${key}`, name: key, status: 'done' };
+    return {
+      key,
+      emoteId: key,
+      sevenTvEmoteId: `7tv-${key}`,
+      name: key,
+      status: 'done',
+      completedSteps: 1,
+      failedStep: null,
+    };
   }
 
   beforeEach(async () => {
@@ -1033,8 +1691,12 @@ describe('MassDeletePanel — restore latch (#89)', () => {
 describe('MassDeletePanel — delete button lock, three independent sources (#89)', () => {
   let isRunning: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
+  let arbiter: RunArbiterFake;
 
-  async function render(selectedEmotes: DeletableEmote[]): Promise<HTMLButtonElement> {
+  async function render(
+    selectedEmotes: DeletableEmote[],
+    deleteLockReasonKey: string | null = null,
+  ): Promise<HTMLButtonElement> {
     await TestBed.configureTestingModule({
       imports: [
         MassDeletePanel,
@@ -1045,7 +1707,7 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
       ],
       providers: panelProviders({
         deleteService: fakeDeleteService({ isRunning }),
-        arbiter: fakeRunArbiter(activeRun),
+        arbiter,
       }),
     }).compileComponents();
 
@@ -1055,6 +1717,7 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
     fixture.componentRef.setInput('setId', 'set-1');
     fixture.componentRef.setInput('channelName', 'somechannel');
     fixture.componentRef.setInput('selectedEmotes', selectedEmotes);
+    fixture.componentRef.setInput('deleteLockReasonKey', deleteLockReasonKey);
     fixture.detectChanges();
 
     return findButtonByLabel(fixture.nativeElement, deleteButtonLabel(selectedEmotes.length));
@@ -1063,6 +1726,7 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
   beforeEach(() => {
     isRunning = signal(false);
     activeRun = signal<SevenTvRunKind | null>(null);
+    arbiter = fakeRunArbiter(activeRun);
   });
 
   it('disables the button when the selection is empty, even with nothing else blocking', async () => {
@@ -1085,10 +1749,29 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
     expect(button.disabled).toBe(true);
   });
 
+  // #280: a confirmed start (of any run) whose last live read is still out locks every start trigger
+  // the arbiter gates, this one included — before its run exists and claims the arbiter.
+  it('disables the button while a confirmed start of any run is still being checked', async () => {
+    arbiter.otherStartPending.set(true);
+    const button = await render(EMOTES);
+
+    expect(button.disabled).toBe(true);
+  });
+
   it('enables the button once none of the three sources blocks it', async () => {
     const button = await render(EMOTES);
 
     expect(button.disabled).toBe(false);
+  });
+
+  it('a host lock disables the button and names its reason as text the button is described by (spec #200, 8.3)', async () => {
+    const button = await render(EMOTES, 'usageStats.setView.lock.membersUnavailable');
+
+    expect(button.disabled).toBe(true);
+    const reasonId = button.getAttribute('aria-describedby');
+    expect(reasonId).not.toBeNull();
+    const reason = button.ownerDocument.getElementById(reasonId!);
+    expect(reason?.textContent).toContain('usageStats.setView.lock.membersUnavailable');
   });
 });
 
@@ -1189,6 +1872,13 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
           provide: SevenTvTokenService,
           useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
         },
+        // #253 AK 31/20: the pre-check before the confirmation opens — an immediate `'editable'`
+        // answer, same reasoning as `panelProviders`' own default (this block does not use that
+        // helper, it builds its providers manually).
+        {
+          provide: SevenTvEmoteSetService,
+          useValue: fakeEmoteSetService() as unknown as SevenTvEmoteSetService,
+        },
         { provide: Dialog, useValue: { open: openSpy } as unknown as Dialog },
         // Only needed once DeleteConfirmDialog itself is instantiated below — resolved lazily via
         // the factory so each test can shape `dialogData` first, same pattern as
@@ -1202,11 +1892,20 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
   });
 
   /** Mounts the panel, triggers openConfirm() and returns what it handed to Dialog.open(...). */
-  function captureDialogData(selectedEmotes: DeletableEmote[]): DeleteConfirmDialogData {
+  function captureDialogData(
+    selectedEmotes: DeletableEmote[],
+    options: { setName?: string; activeSetId?: string | null } = {},
+  ): DeleteConfirmDialogData {
     const fixture = TestBed.createComponent(MassDeletePanel);
     fixture.componentRef.setInput('setId', 'set-1');
     fixture.componentRef.setInput('channelName', 'somechannel');
     fixture.componentRef.setInput('selectedEmotes', selectedEmotes);
+    if (options.setName !== undefined) {
+      fixture.componentRef.setInput('setName', options.setName);
+    }
+    if (options.activeSetId !== undefined) {
+      fixture.componentRef.setInput('activeSetId', options.activeSetId);
+    }
     fixture.detectChanges();
 
     openSpy.mockReturnValue({ closed: of(undefined) });
@@ -1251,5 +1950,2635 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
 
     expect(host.querySelectorAll('ul')).toHaveLength(1);
     expect(host.textContent).not.toContain('durch den aktuellen Filter ausgeblendet');
+  });
+
+  // spec #200, 8.8: the dialog's set name/active flag come from the panel's own `setId`/`setName`
+  // inputs — the page's *selected* set (bound to `selectedEmoteSetId()` since T5.3) — never from
+  // `activeEmoteSetId()` directly, which the panel does not even read.
+  it("takes the delete-confirm dialog's set name from its own setName input, and marks it active when it matches activeSetId", () => {
+    dialogData = captureDialogData(EMOTES, { setName: 'Halloween', activeSetId: 'set-1' });
+    expect(dialogData.setName).toBe('Halloween');
+    expect(dialogData.isActiveSet).toBe(true);
+  });
+
+  it("marks the delete-confirm dialog's set not active when activeSetId names a different set", () => {
+    dialogData = captureDialogData(EMOTES, { setName: 'Halloween', activeSetId: 'set-other' });
+    expect(dialogData.isActiveSet).toBe(false);
+  });
+
+  // #200 K5 finding B: the vote-session-detail page mounted this panel without ever binding
+  // `[activeSetId]` at all — an omitted input defaulted to `null`, read as a *known* "not active",
+  // so its delete confirmation wrongly said "this set is not currently active" even though that
+  // page's run is always against the active set. An omission must not read the same as an explicit
+  // `null` ("we checked and don't know"); it folds onto `setId()` instead.
+  it('marks the delete-confirm dialog set active when the host never bound activeSetId at all', () => {
+    dialogData = captureDialogData(EMOTES);
+    expect(dialogData.isActiveSet).toBe(true);
+  });
+
+  it('still marks the delete-confirm dialog set not active for an explicit null activeSetId (a known unknown, not an omission)', () => {
+    dialogData = captureDialogData(EMOTES, { activeSetId: null });
+    expect(dialogData.isActiveSet).toBe(false);
+  });
+});
+
+/**
+ * #200 K4 fix round (finding A): the confirm dialog outlives the view it was opened on. A host lock
+ * that lands while it is open — the usage page's set switch — must stop the delete at the moment
+ * of confirming, not only at the moment of opening, and say so instead of doing nothing silently.
+ */
+describe('MassDeletePanel — the host lock is re-checked at confirm time (#200, K4)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let startDelete: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+
+  beforeEach(async () => {
+    startDelete = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    const deleteService = { ...fakeDeleteService(), startDelete };
+    const providers = panelProviders({
+      deleteService,
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers,
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', EMOTES);
+    fixture.componentRef.setInput('deleteLockReasonKey', null);
+    fixture.detectChanges();
+  });
+
+  function statusRegion(): HTMLElement {
+    const region = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
+    expect(region).not.toBeNull();
+    return region as HTMLElement;
+  }
+
+  it('starts the run when nothing locked it while the dialog was open', () => {
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(startDelete.mock.calls[0][0]).toBe('set-1');
+  });
+
+  it('aborts a confirmed delete when the host locked it behind the open dialog, and says why in a status region', () => {
+    fixture.componentInstance['openConfirm']();
+    // The set switch lands while the confirm dialog is still open.
+    fixture.componentRef.setInput('deleteLockReasonKey', 'usageStats.setView.lock.switching');
+    fixture.detectChanges();
+    closed.next(true);
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    // Mounted before the abort (so a screen reader hears the mutation), filled by it.
+    expect(statusRegion().textContent).toContain('massDelete.abortedByLock');
+    expect(statusRegion().textContent).toContain('usageStats.setView.lock.switching');
+  });
+
+  // #200 K5 finding A: the host's lock only catches a switch still *in progress* — once it
+  // settles (channel.synced moved the page's selected set while the dialog was open), the lock
+  // clears again with nothing else to say the dialog no longer names the set on screen.
+  it('aborts a confirmed delete when the set switched and settled behind the open dialog, with the host lock never engaging', () => {
+    fixture.componentInstance['openConfirm']();
+    // The switch has already settled by the time the dialog closes: the input moved, but no lock
+    // was ever set — the case a plain re-check of deleteLockReasonKey() alone would miss.
+    fixture.componentRef.setInput('setId', 'set-2');
+    fixture.detectChanges();
+    closed.next(true);
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusRegion().textContent).toContain('massDelete.abortedByLock');
+    expect(statusRegion().textContent).toContain('massDelete.setChangedDuringConfirm');
+  });
+
+  it('keeps the status region mounted but empty until an abort, and clears it on the next attempt', () => {
+    expect(statusRegion().textContent?.trim()).toBe('');
+
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('deleteLockReasonKey', 'usageStats.setView.lock.switching');
+    fixture.detectChanges();
+    closed.next(true);
+    fixture.detectChanges();
+    expect(statusRegion().textContent).toContain('massDelete.abortedByLock');
+
+    fixture.componentRef.setInput('deleteLockReasonKey', null);
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    fixture.detectChanges();
+    expect(statusRegion().textContent?.trim()).toBe('');
+  });
+
+  // Sonde 5, branch A (spec 7.2/8.9, AK 68): a #74 duplicate cell and a row without a local emote
+  // go into the run like any other row — no exception group, both aliases carried along.
+  it('hands a duplicate cell and a row without an emoteId to the run like any other row', () => {
+    fixture.componentRef.setInput('selectedEmotes', [
+      {
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        aliases: ['PogU', 'PogU2'],
+        hidden: false,
+      },
+      { sevenTvEmoteId: '7tv-live', name: 'LiveOnly', hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+        { emoteId: undefined, sevenTvEmoteId: '7tv-live', name: 'LiveOnly', aliases: undefined },
+      ],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  it('starts nothing once the panel itself is gone when the dialog confirms', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.destroy();
+    closed.next(true);
+
+    expect(startDelete).not.toHaveBeenCalled();
+  });
+});
+
+// Operator decision 2026-09-22 (amending spec #200 E20): the active set's view keeps one name per
+// 7TV id, but one REMOVE takes every entry of a #74 duplicate. A delete there reads the set's live
+// entries from 7TV first and records every alias — or, if that read fails, deletes nothing.
+describe('MassDeletePanel — an active-set delete records every alias from a live read', () => {
+  const GQL = 'https://7tv.io/v4/gql';
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let startDelete: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+  let activeRun: WritableSignal<SevenTvRunKind | null>;
+  let dialogOpen: ReturnType<typeof vi.fn>;
+
+  function entriesPage(entries: { id: string; alias?: string }[], pageCount = 1) {
+    return {
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: entries.length,
+              pageCount,
+              items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  beforeEach(async () => {
+    startDelete = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    activeRun = signal<SevenTvRunKind | null>(null);
+    dialogOpen = vi.fn().mockReturnValue({ closed });
+    const deleteService = { ...fakeDeleteService(), startDelete };
+    const providers = panelProviders({
+      deleteService,
+      arbiter: fakeRunArbiter(activeRun, deleteService.startCheckPending),
+      dialogOpen,
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('activeSetId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', true);
+    // What the active view hands in: one name per id, the duplicate included.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'], hidden: false },
+    ]);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  function statusText(): string {
+    const region = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
+    return region?.textContent ?? '';
+  }
+
+  function deleteButton(): HTMLButtonElement {
+    return (fixture.nativeElement as HTMLElement).querySelector('button') as HTMLButtonElement;
+  }
+
+  function confirm(): void {
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+    fixture.detectChanges();
+  }
+
+  it('reads the frozen set from 7TV only once the dialog is confirmed', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock.expectNone(GQL);
+
+    closed.next(true);
+    const req = httpMock.expectOne(GQL);
+    expect(req.request.body.variables.id).toBe('set-1');
+    req.flush(entriesPage([]));
+  });
+
+  it('hands a duplicate both of its live aliases, and leaves a single entry as it was', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+        { id: '7tv-1', alias: 'PogU2' },
+      ]),
+    );
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  // Superseded by #227 P1 (below, "blocks the whole run…"): a cell the live read does not know at
+  // all used to keep its host aliases and still get deleted — exactly the defect #227 point 2
+  // closes. What a *known* cell without any alias entry falls back to is still covered by "falls
+  // back to the name for a cell that is entirely aliasless" above (that id IS in the read, via
+  // `aliaslessIds`, so it is not "missing").
+
+  // K5 fix round, spec §37/§38: an aliasless 7TV entry is a slot the one REMOVE also takes, but it
+  // has no alias to restore under — the enrichment falls back to the emote's own display name for
+  // that entry rather than losing it (F3: a protocol that looks complete but is not).
+  it("falls back to the emote's own name for an aliasless entry, appended to the aliased entry the live read also finds under the same id", () => {
+    confirm();
+    httpMock
+      .expectOne(GQL)
+      .flush(
+        entriesPage([
+          { id: '7tv-1', alias: 'PogUOld' },
+          { id: '7tv-1' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogUOld', 'PogU'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  // The degenerate case: the fallback name happens to already be one of the live aliases — nothing
+  // is appended a second time under the same string.
+  it('does not duplicate an alias that already equals the fallback name', () => {
+    confirm();
+    httpMock
+      .expectOne(GQL)
+      .flush(
+        entriesPage([
+          { id: '7tv-1', alias: 'PogU' },
+          { id: '7tv-1' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+    expect(startDelete.mock.calls[0][2][0].aliases).toEqual(['PogU']);
+  });
+
+  it('falls back to the name for a cell that is entirely aliasless in the live set', () => {
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1' }]));
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  it('deletes nothing when the live read fails, and says why', () => {
+    confirm();
+    httpMock.expectOne(GQL).error(new ProgressEvent('network error'));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    // K5 fix round: dedicated massDelete.memberRead.* keys, not the reused usageStats.setView.lock.*
+    // texts ("Deleting and voting are locked: …"), which are wrong for this one-off abort notice.
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
+  });
+
+  it('deletes nothing when 7TV answers the read with a GraphQL error disguised as HTTP 200', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush({ errors: [{ message: 'rate limited' }] });
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
+  });
+
+  it('deletes nothing when the live read only knows part of the set', () => {
+    confirm();
+    for (let page = 1; page <= 10; page++) {
+      httpMock.expectOne(GQL).flush(entriesPage([], 11));
+    }
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.truncated');
+  });
+
+  // K5 fix round: `complete` now also compares the collected item count against the query's own
+  // `totalCount` from the last page, not only the 10-page runaway guard — offset pagination
+  // shifting between page fetches can silently miss an entry without ever hitting the guard.
+  it('deletes nothing when the live read ends normally but under-counts against the reported total', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 5,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.truncated');
+  });
+
+  // Opus review P1 (#227): a complete read that simply does not carry a confirmed row's id at all
+  // (neither aliased nor aliasless) used to fall back to the host's own aliases and delete it
+  // anyway — the vote page's frozen `[name]` fallback, still sent to 7TV for a member that had
+  // already left. Fails closed: the WHOLE batch is blocked, not just the missing row, so a partial
+  // run never records a protocol that disagrees with what the confirmation showed as a whole.
+  it('blocks the whole run, with no read result used, when the complete read is missing one confirmed id', () => {
+    confirm();
+    // Knows 7tv-1 only — 7tv-2 (KEKW) is not there at all, aliased or not.
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('massDelete.memberRead.missingFromSet.one');
+    // Opus review P2-c: the reason names the missing row, not only a count — the user has to know
+    // which one to deselect before trying again.
+    expect(fixture.componentInstance['abortNotice']()?.reasonParams).toEqual({ names: 'KEKW' });
+  });
+
+  it('picks the plural reason key when more than one confirmed id is missing from a complete read', () => {
+    confirm();
+    // Empty but complete (pageCount 1, totalCount 0) — neither 7tv-1 nor 7tv-2 is in the set.
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.missingFromSet.other');
+    expect(fixture.componentInstance['abortNotice']()?.reasonParams).toEqual({
+      names: 'PogU, KEKW',
+    });
+  });
+
+  // Opus review P2-c: many missing rows still read as one line, not a wall of names — same cap and
+  // "and N more" tail NamePreviewList uses for the identical problem in a dialog.
+  it('caps the missing-row names and counts the rest, mirroring NamePreviewList', () => {
+    const manyEmotes: DeletableEmote[] = Array.from({ length: 52 }, (_, i) => ({
+      emoteId: `e${i}`,
+      sevenTvEmoteId: `7tv-${i}`,
+      name: `Emote${i}`,
+      hidden: false,
+    }));
+    fixture.componentRef.setInput('selectedEmotes', manyEmotes);
+    fixture.detectChanges();
+
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([])); // none of the 52 are known to the set
+
+    expect(startDelete).not.toHaveBeenCalled();
+    const params = fixture.componentInstance['abortNotice']()?.reasonParams as { names: string };
+    expect(params.names.startsWith('Emote0, Emote1, ')).toBe(true);
+    expect(params.names.endsWith('… und 2 weitere')).toBe(true);
+    expect(params.names.split(', ')).toHaveLength(50); // 50 previewed names + the tail sentence
+  });
+
+  // An aliasless entry still counts as "known" (the id is a real member, just with no name to
+  // record) — only a row absent from BOTH maps is missing, so this must not falsely block.
+  it('does not block on an id that is only aliasless — that id is still known to the set', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }, { id: '7tv-2' }]));
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  /** The three dock-claim calls of the fake service, typed for the block below. */
+  function claimCalls(): {
+    beginConfirmedRun: ReturnType<typeof vi.fn>;
+    endConfirmedRun: ReturnType<typeof vi.fn>;
+    clearConfirmedRun: ReturnType<typeof vi.fn>;
+  } {
+    return TestBed.inject(SevenTvDeleteService) as unknown as ReturnType<typeof claimCalls>;
+  }
+
+  // Opus review P2-1: the claim used to start with the *read*, which left the whole life of the
+  // modal uncovered — and the CDK dialog is opened without a viewContainerRef, so it outlives the
+  // panel. A reload pruning every marked key while the confirmation is up unmounted the dock,
+  // destroyed the panel under it, and the eventual Delete click then ran its checks against a
+  // torn-down component: nothing deleted, nothing said. The claim therefore begins with the dialog.
+  it('claims the dock the moment the confirmation opens, before anything is confirmed', () => {
+    fixture.componentInstance['openConfirm']();
+
+    expect(claimCalls().beginConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
+    expect(claimCalls().clearConfirmedRun).not.toHaveBeenCalled();
+  });
+
+  it('drops the claim outright, with no notice window, when the confirmation is dismissed', () => {
+    fixture.componentInstance['openConfirm']();
+
+    closed.next(false);
+
+    // clearConfirmedRun, not endConfirmedRun: nothing was confirmed, so there is no notice to read
+    // and an 8 s hold would be the empty dock actionDockHasContent exists to prevent.
+    expect(claimCalls().clearConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
+    expect(startDelete).not.toHaveBeenCalled();
+  });
+
+  it('holds the claim across the read and releases it once the run was attempted', () => {
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+    expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
+
+    // Both confirmed ids known to the read (#227 P1: an id missing from a complete read now blocks
+    // the whole run instead of falling back — not what this test is about).
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+      ]),
+    );
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+    // Released only once the run was attempted, so the service can tell a started run (which keeps
+    // the dock by itself) from an abort (which has nothing but its notice).
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(startDelete.mock.invocationCallOrder[0]).toBeLessThan(
+      claimCalls().endConfirmedRun.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('releases the claim on the branch that makes no live read at all', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the claim for a confirmed delete whose selection the reload emptied', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+
+    closed.next(true);
+
+    expect(startDelete).not.toHaveBeenCalled();
+    // endConfirmedRun, not clearConfirmedRun: this exit has a notice, so it needs the window.
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().clearConfirmedRun).not.toHaveBeenCalled();
+  });
+
+  // The P2-1 scenario end to end. The panel is gone before the click — by a route change now that
+  // the dock can no longer drop it — so the delete still starts nothing (abortReasonBeforeStart's
+  // `destroyed` branch, deliberate: a torn-down panel has no selection left to vouch for). What
+  // must not also happen is the claim outliving it and pinning an empty dock on whatever mounts
+  // next.
+  it('starts nothing and leaves no claim behind when the panel was destroyed while the modal was open', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.destroy();
+
+    closed.next(true);
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the dock claim on a failed read too, after the abort notice is set', () => {
+    const deleteService = TestBed.inject(SevenTvDeleteService) as unknown as {
+      endConfirmedRun: ReturnType<typeof vi.fn>;
+    };
+    confirm();
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(deleteService.endConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
+  });
+
+  it('keeps the delete button disabled while the read is out', () => {
+    confirm();
+    expect(deleteButton().disabled).toBe(true);
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+    expect(deleteButton().disabled).toBe(false);
+  });
+
+  // K5 fix round item 5: a hung request used to leave liveAliasReadPending true forever, with the
+  // delete button disabled and no way out short of reloading. A 20 s total budget treats a request
+  // that never answers exactly like one that answers with an error.
+  it('blocks the run and re-enables the button when the live read hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      confirm();
+      const req = httpMock.expectOne(GQL);
+      expect(deleteButton().disabled).toBe(true);
+      expect(req.cancelled).toBeFalsy();
+
+      vi.advanceTimersByTime(20_000);
+      fixture.detectChanges();
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(statusText()).toContain('massDelete.nothingDeleted');
+      expect(statusText()).toContain('massDelete.memberRead.unavailable');
+      expect(deleteButton().disabled).toBe(false);
+      expect(req.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #280: the live alias read is the delete's own confirm-to-start window — its flag lives on the
+  // root service (the panel's `liveAliasReadPending` aliases it), so every other start trigger locks
+  // and the page can announce it. The confirmed start itself still goes through while that flag,
+  // and with it `startLocked`, is set: `startDelete`'s own re-check reads `activeClaim`.
+  describe('the window before the start (#280)', () => {
+    function startCheckPending(): boolean {
+      return (
+        TestBed.inject(SevenTvDeleteService) as unknown as DeleteServiceFake
+      ).startCheckPending();
+    }
+
+    it('holds the start check exactly while the live read is out, and starts the confirmed delete while it is still set', () => {
+      const lockedAtStart: boolean[] = [];
+      startDelete.mockImplementation(() => {
+        lockedAtStart.push(
+          startCheckPending() &&
+            (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).startLocked(),
+        );
+      });
+      expect(startCheckPending()).toBe(false);
+
+      confirm();
+      expect(startCheckPending()).toBe(true);
+
+      httpMock.expectOne(GQL).flush(
+        entriesPage([
+          { id: '7tv-1', alias: 'PogU' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+      expect(startDelete).toHaveBeenCalledTimes(1);
+      expect(lockedAtStart).toEqual([true]);
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the live read fails, blocking the delete as before', () => {
+      confirm();
+      httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+      fixture.detectChanges();
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(statusText()).toContain('massDelete.memberRead.unavailable');
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the live read hangs past its timeout', () => {
+      vi.useFakeTimers();
+      try {
+        confirm();
+        httpMock.expectOne(GQL);
+        expect(startCheckPending()).toBe(true);
+
+        vi.advanceTimersByTime(20_000);
+
+        expect(startCheckPending()).toBe(false);
+        expect(startDelete).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps the read, and releases the start check once it answers, when the panel is torn down meanwhile', () => {
+      confirm();
+      const req = httpMock.expectOne(GQL);
+
+      fixture.destroy();
+      expect(req.cancelled).toBeFalsy();
+      expect(startCheckPending()).toBe(true);
+
+      req.flush(entriesPage([]));
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(startCheckPending()).toBe(false);
+    });
+  });
+
+  it('aborts when the set switched while the read was out', () => {
+    confirm();
+    fixture.componentRef.setInput('setId', 'set-2');
+    fixture.componentRef.setInput('activeSetId', 'set-2');
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.setChangedDuringConfirm');
+  });
+
+  // K5 fix round item 4: this re-check used to abort silently. The competing run can be any
+  // 7TV-writing kind, started from elsewhere on the page, so a silent return left nothing on
+  // screen explaining why a confirmed delete just vanished. Since #256 T4 the reason names the
+  // blocking kind through the shared `sevenTvRun.notStarted.*` family — the fixed, kind-agnostic
+  // reason key this describe block used before T4 is gone.
+  it('starts nothing when another run claimed the arbiter while the read was out, and says so', () => {
+    confirm();
+    activeRun.set('import');
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('Nichts gestartet — die Übertragung läuft noch.');
+  });
+
+  // Codex P3, K5 fix round 2: the same re-check, on the branch that has no read to hide behind. It
+  // used to be qualified on `liveAliases !== null`, so a non-active-set delete (and an active one
+  // whose host did not opt in) relied on deleteService.startDelete's own silent refusal — a
+  // confirmed delete evaporating without a word. The confirmation is a modal the user can leave
+  // open for minutes; a run started elsewhere lands behind it just as well as behind a read.
+  it('starts nothing and says so when another run claimed the arbiter behind the confirmation, with no read involved', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    activeRun.set('restore');
+    closed.next(true);
+    fixture.detectChanges();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('Nichts gestartet — die Wiederherstellung läuft noch.');
+  });
+
+  // The near side of the same contract: the button is already disabled while a run holds the
+  // arbiter, so this only catches a click that outraces one starting — silently, like the host-lock
+  // guard next to it, since nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2) and
+  // the winning run is already visible in the dock.
+  it('does not even open the confirmation while another 7TV run holds the arbiter', () => {
+    activeRun.set('import');
+
+    fixture.componentInstance['openConfirm']();
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toBeNull();
+  });
+
+  // #280: the same silent guard while a confirmed start of any run is still being checked before its
+  // start — no run holds the arbiter yet, but the button is locked by `startLocked` all the same.
+  it('does not even open the confirmation while a confirmed start of any run is still being checked', () => {
+    (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).otherStartPending.set(true);
+
+    fixture.componentInstance['openConfirm']();
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toBeNull();
+  });
+
+  // Opus review P3-2: the third way deleteService.startDelete refuses in silence. A 401 from any
+  // 7TV call behind the open confirmation clears the stored token, and the engine then declines
+  // without a word — with the dock claim of this round holding an empty dock over it.
+  it('says so instead of vanishing when the 7TV token was cleared behind the confirmation', () => {
+    const tokenService = TestBed.inject(SevenTvTokenService) as unknown as {
+      hasToken: WritableSignal<boolean>;
+    };
+    fixture.componentInstance['openConfirm']();
+    tokenService.hasToken.set(false);
+
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('massDelete.tokenGoneDuringConfirm');
+  });
+
+  it('makes no read at all when the host lock already stops the delete', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('deleteLockReasonKey', 'usageStats.setView.lock.switching');
+    closed.next(true);
+    fixture.detectChanges();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByLock');
+  });
+
+  // A non-active view's rows already carry every alias from the member list the view is built
+  // from — no second read.
+  it('makes no read in a non-active set, handing the host aliases through', () => {
+    fixture.componentRef.setInput('activeSetId', 'set-active');
+    fixture.componentRef.setInput('selectedEmotes', [
+      {
+        emoteId: undefined,
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        aliases: ['PogU', 'PogU2'],
+        hidden: false,
+      },
+    ]);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    // Spec 4.6 point 21: a delete from a non-active set expects no channel (`null`).
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: undefined, sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] }],
+      null,
+      'tw-owner',
+    );
+  });
+
+  // A caller that leaves this specific input false makes no active-set read regardless of any
+  // other input — the vote-session page opts into `readLiveAliasesFromSet` instead, its own
+  // unconditional-on-active-ness equivalent (#227), covered in that input's own describe block.
+  it('makes no read when the host did not opt in', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledTimes(1);
+  });
+
+  // K5 fix round item 1: the dialog closes on confirm and nothing locks the grid, so the page's
+  // live selection can change while this async read is still out. The run must delete exactly what
+  // the dialog showed, not whatever the selection happens to be once the read answers.
+  it('deletes the selection the dialog showed, unaffected by a shrink of the live selection while the read is pending', () => {
+    confirm();
+    // The selection loses one of its two entries while the read is still in flight — nothing on
+    // screen prevented this once the dialog closed.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    // Both confirmed ids known to the read (#227 P1) — including 7tv-2, which the shrunk live
+    // selection above no longer carries but the confirmed snapshot still does.
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+      ]),
+    );
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  it('does not sweep in an id added to the live selection only after the dialog was confirmed', () => {
+    confirm();
+    fixture.componentRef.setInput('selectedEmotes', [
+      ...EMOTES.map((emote) => ({ ...emote, aliases: [emote.name] })),
+      { emoteId: 'e3', sevenTvEmoteId: '7tv-3', name: 'NEW', aliases: ['NEW'], hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    // Both confirmed ids known to the read (#227 P1) — 7tv-3 was never confirmed, so it must not
+    // matter either way whether the read knows it; it isn't in this response at all.
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+      ]),
+    );
+
+    const deletedIds = startDelete.mock.calls[0][2].map(
+      (emote: { sevenTvEmoteId: string }) => emote.sevenTvEmoteId,
+    );
+    expect(deletedIds).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  // Operator decision 2026-09-22, replacing the K5 fix round's open-time freeze: the dialog renders
+  // the panel's live name lists, so a pushed reload (channel.synced / usage.flushed -> retainAmong)
+  // landing behind the open modal changes what the confirmation says. The snapshot is therefore
+  // taken at confirm, from those same signals — displayed == deleted by construction. This is the
+  // "no live read" branch, where a change between open and confirm is the only window there is to
+  // observe the snapshot point at all.
+  it('snapshots the selection at confirm, not at dialog open, on the no-read branch', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+    closed.next(true);
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  // The same thing on the branch that actually matters, checked against what the dialog itself last
+  // rendered rather than against the input alone: the signals handed to DeleteConfirmDialogData are
+  // the panel's own, so asking them after the reload landed is asking what is on screen. The live
+  // alias read is then made for exactly that list.
+  it('deletes what the confirmation last showed when a reload shrinks the selection behind the open dialog', () => {
+    const shown = fixture.componentInstance as unknown as {
+      visibleSelectedEmoteNames: () => string[];
+    };
+    fixture.componentInstance['openConfirm']();
+    // The reload lands while the modal is still open: KEKW is gone from the grid, so the dialog —
+    // which reads these very signals — has stopped naming it.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+    expect(shown.visibleSelectedEmoteNames()).toEqual(['PogU']);
+
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  // The extreme of the same reload: nothing is left to delete at confirm time. startDelete would
+  // refuse the empty list without a word, which is the one outcome a confirmed delete must not
+  // produce — before the snapshot moved to confirm time, an emptied selection at least started a
+  // doomed run whose failed rows were visible.
+  it('says so instead of silently doing nothing when the reload left nothing selected', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+
+    closed.next(true);
+    fixture.detectChanges();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByLock');
+    expect(statusText()).toContain('massDelete.selectionGoneDuringConfirm');
+  });
+
+  // K5 fix round item 7: the run used to read the live channelName() input at the point
+  // deleteService.startDelete was finally called, instead of the value frozen at dialog open.
+  it("freezes the run's channel name at dialog open", () => {
+    confirm();
+    fixture.componentRef.setInput('channelName', 'otherchannel');
+    fixture.detectChanges();
+
+    // Both confirmed ids known to the read (#227 P1) — this test is about the channel name, not
+    // about the missing-id block.
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+      ]),
+    );
+
+    expect(startDelete.mock.calls[0][1]).toBe('somechannel');
+  });
+});
+
+// #227 (fixing the #200 K6 known limitation): the vote-session page's rows are frozen at
+// session-creation time (VoteSessionEmote.NameAtCreation) and can never carry a live alias — unlike
+// the usage page's active-set flag, this one has to fire for the panel's own set regardless of
+// whether that set happens to be the channel's active one, because the vote page's target is most
+// often a non-active set-session's set (K6).
+describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set regardless of active-ness (#227)", () => {
+  const GQL = 'https://7tv.io/v4/gql';
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let startDelete: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+
+  function entriesPage(entries: { id: string; alias?: string }[], pageCount = 1) {
+    return {
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: entries.length,
+              pageCount,
+              items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  async function setUp(inputs: {
+    setId: string;
+    activeSetId: string | null;
+    selectedEmotes: DeletableEmote[];
+  }): Promise<void> {
+    startDelete = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    const deleteService = { ...fakeDeleteService(), startDelete };
+    const providers = panelProviders({
+      deleteService,
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', inputs.setId);
+    fixture.componentRef.setInput('activeSetId', inputs.activeSetId);
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('readLiveAliasesFromSet', true);
+    fixture.componentRef.setInput('selectedEmotes', inputs.selectedEmotes);
+    fixture.detectChanges();
+  }
+
+  function statusText(): string {
+    const region = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
+    return region?.textContent ?? '';
+  }
+
+  function confirm(): void {
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+    fixture.detectChanges();
+  }
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  it("reads the panel's own set, not the active one, once confirmed", async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+
+    const req = httpMock.expectOne(GQL);
+    expect(req.request.body.variables.id).toBe('set-halloween');
+    req.flush(entriesPage([{ id: '7tv-pump', alias: 'Pumpkin' }]));
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-halloween',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-pump',
+          name: 'PumpkinAtCreation',
+          aliases: ['Pumpkin'],
+        },
+      ],
+      null,
+      'tw-owner',
+    );
+  });
+
+  it('records every alias of a #74 duplicate read live from the non-active set', async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-pump', alias: 'Pumpkin' },
+        { id: '7tv-pump', alias: 'Pumpkin2' },
+      ]),
+    );
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-halloween',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-pump',
+          name: 'PumpkinAtCreation',
+          aliases: ['Pumpkin', 'Pumpkin2'],
+        },
+      ],
+      null,
+      'tw-owner',
+    );
+  });
+
+  // The behaviour #227's issue explicitly asks for: a delete must not silently continue under the
+  // frozen name when the live read cannot confirm it. Same dedicated massDelete.memberRead.* keys
+  // as the active-set read.
+  it('deletes nothing under the frozen name when the live read fails', async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+    httpMock.expectOne(GQL).error(new ProgressEvent('network error'));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
+  });
+
+  it('deletes nothing when the live read only knows part of the non-active set', async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+    for (let page = 1; page <= 10; page++) {
+      httpMock.expectOne(GQL).flush(entriesPage([], 11));
+    }
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.truncated');
+  });
+
+  // The flag is unconditional on active-ness (unlike readLiveAliasesFromActiveSet): it still fires
+  // even when the panel's own set happens to equal the channel's active one.
+  it("still reads live even when the panel's own set happens to be the active one", async () => {
+    await setUp({
+      setId: 'set-1',
+      activeSetId: 'set-1',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-pump', alias: 'Pumpkin' }]));
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-pump',
+          name: 'PumpkinAtCreation',
+          aliases: ['Pumpkin'],
+        },
+      ],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  // Opus review P1 (#227): the exact case the issue describes — Ghost was on the frozen ballot,
+  // left the Halloween set, and the live read now confirms it is simply not there. Blocked, not
+  // silently deleted under its frozen name.
+  it("blocks the run instead of falling back to the frozen name when the vote page's own read is missing a confirmed id", async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-ghost', name: 'GhostAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([])); // complete, empty: Ghost is gone
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.missingFromSet.one');
+  });
+
+  it('makes no read at all when the host did not opt in', async () => {
+    startDelete = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    const deleteService = { ...fakeDeleteService(), startDelete };
+    const providers = panelProviders({
+      deleteService,
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-halloween');
+    fixture.componentRef.setInput('activeSetId', 'set-active');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    // readLiveAliasesFromSet left at its false default — same as readLiveAliasesFromActiveSet's own
+    // "did not opt in" case above.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #200 K5 finding F: the restore-confirm path used to read `this.channelName()` — the panel's
+// live input — at three call sites, instead of the finished run's own frozen `channelName`
+// (`DeleteRunInfo.channelName`). Harmless while a panel only ever sees one channel across a run's
+// lifetime, which is true today, but the wrong source of truth all the same — the same class of
+// bug finding A fixed for `setId`. Pinned here against a panel whose live `channelName` input
+// disagrees with the run's own, which cannot happen in production today but must not silently
+// resolve to the live value if it ever does.
+/** `resolveEditableSet(setId)` finds `setId` under `trackedChannel`'s account, `kind: 'NORMAL'`
+ *  and `editable: true` — the one account/set pair every test in the block below needs, since
+ *  `SevenTvEmoteSetService` is never mocked at the service level here (real service, real
+ *  `HttpClient`, intercepted by `HttpTestingController` like every other request in this block).
+ *  Kept for reference (this is what the picker's list route would answer) even though this file's
+ *  cold `resolveEditableSet` calls no longer read it directly — see {@link preCheckUrl} and
+ *  {@link preCheckEditableBody}, the pre-check route's own shapes (owner-hint design 3.4). */
+function targetsResponse(setId: string, trackedChannel: string): EmoteSetTargetsResponse {
+  return {
+    accounts: [
+      {
+        twitchChannelId: 'tw-1',
+        twitchLogin: trackedChannel,
+        isOwnAccount: true,
+        trackedChannelName: trackedChannel,
+        activeEmoteSetId: setId,
+        sets: [
+          {
+            id: setId,
+            name: setId,
+            capacity: null,
+            kind: 'NORMAL',
+            isActive: true,
+            isPersonal: false,
+            ownerDisplayName: null,
+            ownerSevenTvUserId: 'owner-1',
+            editable: true,
+          },
+        ],
+        setsUnavailable: false,
+        sevenTvUserId: 'owner-1',
+      },
+    ],
+    sevenTvUnavailable: false,
+  };
+}
+
+/** `resolveEditableSet`'s cold path (owner-hint design 3.4) — this file's default target for
+ *  `setId`, once it is found, `NORMAL` and editable: the owner is `trackedChannel`'s own account
+ *  (`twitchChannelId: 'tw-1'`), same as {@link targetsResponse}'s trivial "listing account owns
+ *  what it lists" case, so every test that only cares about the block's blocking/gating behaviour
+ *  can keep asserting against `trackedChannel` without also tracking a separate owner identity. */
+function preCheckEditableBody(setId: string, trackedChannel: string): Record<string, unknown> {
+  return {
+    status: 'editable',
+    target: {
+      emoteSetId: setId,
+      setName: setId,
+      ownerDisplayName: null,
+      twitchLogin: trackedChannel,
+      twitchChannelId: 'tw-1',
+      trackedChannelName: trackedChannel,
+      isActiveSet: true,
+    },
+  };
+}
+
+/** The set-scoped pre-check route's URL (owner-hint design 3.4) — every `resolveEditableSet` call
+ *  in this file hits this once its list copy is cold, which it always is here (a fresh
+ *  `HttpTestingController` per test, no warmed picker call). Matched against `TestRequest.url`
+ *  (not `urlWithParams`, whose exact `?ownerTwitchId=…`/`?ownerLogin=…` query this file leaves to
+ *  the dedicated hint tests below, T6b) — the delete pre-check and the restore-from-dock chain
+ *  both send a login or owner-id hint now, which every other block here does not care about. */
+function preCheckUrl(emoteSetId: string): string {
+  return `/api/seventv/me/emote-set-targets/${emoteSetId}`;
+}
+
+describe("MassDeletePanel — the restore-confirm path resolves its target fresh and attributes the dock to the delete run's own channel (#253 spec E13/E16, revised by #256 P3-3)", () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let getSetStatus: ReturnType<typeof vi.fn>;
+  let startRestore: ReturnType<typeof vi.fn>;
+  let dialogOpen: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+  /** Hoisted so the shared cross-entry pre-check gate test below can reach the very same signal
+   *  instance the panel's own `restoreConfirmPending` aliases (#255 P2, Codex review) — writing to
+   *  it here stands in for `ImportTrigger`'s restore-file door already having claimed it.
+   *  `startRestore` is not part of `RestoreServiceFake` itself (`fakeRestoreService()`'s own
+   *  return type) — it is spread on top in `beforeEach` below, same as every other test in this
+   *  block already did before this field was hoisted. */
+  let restoreService: RestoreServiceFake & { startRestore: ReturnType<typeof vi.fn> };
+  /** Hoisted out of `beforeEach` (unlike most fields there) so individual tests can reshape the
+   *  finished run — #255 P3(11)'s partial-filtering test needs a second done row. */
+  let lastRun: WritableSignal<{
+    setId: string;
+    channelName: string;
+    targetOwnerTwitchId: string | null;
+    result: RunResult;
+  } | null>;
+  /** Hoisted so the two #256 T4 tests below can claim the arbiter from another kind mid-chain,
+   *  same pattern as the "an active-set delete" block above. */
+  let activeRun: WritableSignal<SevenTvRunKind | null>;
+
+  // The tracked channel the fresh pre-check resolves `set-1` to — deliberately equal to the
+  // delete run's own frozen `channelName` (a realistic case: the account that owns the target set
+  // is the same one that ran the delete), and deliberately distinct from `LIVE_CHANNEL` so a test
+  // that asserted the wrong one would still fail if it leaked in by accident. `expectedChannelName`
+  // comes from the resolved target (spec 6.3), never from either of these two.
+  //
+  // `LIVE_CHANNEL` stands in for the panel's current page having moved on from `RUN_CHANNEL` since
+  // the delete itself ran there — the delete service is a root singleton, so its finished run can
+  // still be the one this panel shows after a channel switch (Plan-256 Festlegung 13, #256 P3-3).
+  // Before #256, `hostChannelName` followed this live value unconditionally (#253 spec E13/E16); a
+  // carried-over run then had its restore attributed to `LIVE_CHANNEL`, a channel its own removals
+  // never touched. `hostChannelName` now comes from the run's own `channelName` instead — the same
+  // value as `LIVE_CHANNEL` in the ordinary case where the two never diverge, and the correct one in
+  // this carried-over case, which every test below now deliberately provokes.
+  const RUN_CHANNEL = 'runchannel';
+  const LIVE_CHANNEL = 'livechannel';
+
+  /** Flushes the one pre-check request every test in this block triggers via `openRestoreConfirm`
+   *  (spec E16, E19) before the rest of the chain can proceed. */
+  function flushTargetsResponse(): void {
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush(preCheckEditableBody('set-1', RUN_CHANNEL));
+  }
+
+  beforeEach(async () => {
+    closed = new Subject<boolean | undefined>();
+    getSetStatus = vi.fn().mockReturnValue(of({ occupiedSlots: 1, capacity: 100 }));
+    startRestore = vi.fn();
+    dialogOpen = vi.fn().mockReturnValue({ closed });
+    lastRun = signal({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: ['7tv-1'],
+        items: [
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    restoreService = { ...fakeRestoreService(), startRestore };
+    activeRun = signal<SevenTvRunKind | null>(null);
+    const emoteAdminService = { getSetStatus } as unknown as Partial<EmoteAdminService>;
+    const providers = panelProviders({
+      deleteService: fakeDeleteService({ lastRun }),
+      restoreService,
+      arbiter: fakeRunArbiter(activeRun, restoreService.startCheckPending),
+      dialogOpen,
+      emoteAdminService,
+      // This block drives resolveEditableSet through the real service and HttpTestingController
+      // (targetsResponse() below) — the default editable stub would answer before the test ever
+      // gets to flush its own response.
+      emoteSetService: null,
+    });
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('activeSetId', 'set-1');
+    fixture.componentRef.setInput('channelName', LIVE_CHANNEL);
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  // Owner-hint design 3.6, fourth row: the restore-from-dock pre-check hints with the delete run's
+  // own resolved owner id when it has one, falling back to the run's frozen channel login only for
+  // a run carried over from before this field existed (T5's `targetOwnerTwitchId: null` placeholder).
+  it("hints the pre-check with the delete run's own owner id, not the live page's channel", () => {
+    lastRun.set({ ...lastRun()!, targetOwnerTwitchId: 'tw-run-owner' });
+
+    fixture.componentInstance['openRestoreConfirm']();
+
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+    expect(req.request.params.get('ownerTwitchId')).toBe('tw-run-owner');
+    expect(req.request.params.get('ownerLogin')).toBe(RUN_CHANNEL);
+    req.flush(preCheckEditableBody('set-1', RUN_CHANNEL));
+    // An editable answer goes straight on into the confirmation's own open-time duplicate check
+    // (`openRestoreConfirmDialog`) — drained here like every other test in this block, fail-open.
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+  });
+
+  it("falls back to the run's frozen channel login when it carries no owner id", () => {
+    fixture.componentInstance['openRestoreConfirm']();
+
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+    expect(req.request.params.has('ownerTwitchId')).toBe(false);
+    expect(req.request.params.get('ownerLogin')).toBe(RUN_CHANNEL);
+    req.flush(preCheckEditableBody('set-1', RUN_CHANNEL));
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+  });
+
+  it("reads the slot-status check from the resolved target's tracked channel, not the live page", () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+
+    // #255 P3(10): the slot-status read only starts once the open-time duplicate check has
+    // answered and a confirmation is actually going to open — draining it first, with nothing to
+    // filter, is what lets the slot read fire at all here.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: {
+        emoteSets: { emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } } },
+      },
+    });
+
+    expect(getSetStatus).toHaveBeenCalledWith(RUN_CHANNEL);
+    expect(getSetStatus).not.toHaveBeenCalledWith(LIVE_CHANNEL);
+  });
+
+  it("starts the restore against the resolved target, attributing the dock to the delete run's own channel even though the panel has since moved to a different one", () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+
+    // #255: the open-time duplicate check runs, and fails open, before the confirmation opens at
+    // all — same read, same failure handling as the confirm-time one below.
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    closed.next(true);
+
+    // filterAlreadyPresent's own fresh 7TV read at confirm time — fails open too.
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(startRestore).toHaveBeenCalledTimes(1);
+    // The mutation target (expectedChannelName/resyncChannelName/ownerOrChannelLabel) comes from
+    // the fresh pre-check (spec 6.2/6.4), never from the panel's live channelName — its set is the
+    // resolved account's active one here, so its channel is the expected hit and there is no
+    // client resync. `hostChannelName` is the delete run's own `channelName` (spec 6.3, E13,
+    // revised by #256 P3-3) — `RUN_CHANNEL`, not the panel's live `LIVE_CHANNEL` input: the dock
+    // belongs to wherever the delete itself actually ran, which this test deliberately makes a
+    // different page than the one the restore button was clicked on.
+    expect(startRestore.mock.calls[0][0]).toEqual({
+      setId: 'set-1',
+      expectedChannelName: RUN_CHANNEL,
+      resyncChannelName: null,
+      hostChannelName: RUN_CHANNEL,
+      setName: 'set-1',
+      ownerOrChannelLabel: RUN_CHANNEL,
+      // From the fresh pre-check's own resolved owner (`preCheckEditableBody`'s `twitchChannelId`),
+      // never from the delete run's own hint — that hint only orders which list the check reads
+      // first (owner-hint design 3.1 Nr. 2), it never becomes the answer by itself.
+      targetOwnerTwitchId: 'tw-1',
+    });
+  });
+
+  // #256 P3-3, fail-closed: `DeleteRunInfo.channelName` is a required field and never empty in
+  // practice, but the button must not silently mis-attribute a restore if some future run shape
+  // ever left it unset — this locks the button with a reason instead, before the pre-check chain
+  // (and its 7TV read) even starts.
+  it('shows the abort notice and starts nothing when the finished run carries no channel', () => {
+    lastRun.set({ ...lastRun()!, channelName: '' });
+
+    fixture.componentInstance['openRestoreConfirm']();
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.channelUnknown',
+    });
+    expect(fixture.componentInstance['restoreConfirmPending']()).toBe(false);
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+    httpMock.expectNone((r) => r.url === preCheckUrl('set-1'));
+  });
+
+  // Operator decision 2026-09-22 ("middle rule"): the restore offered from a finished run runs the
+  // same per-alias check as the file restore — here, the run's one alias is already back. #255:
+  // since that is also the *only* row, the open-time check already leaves nothing to confirm, so
+  // no dialog opens at all — the existing "everything already there" notice reports it directly.
+  it('skips an alias of the run that is already back in the set, opening no dialog', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 1,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: 'set-1', hostChannelName: RUN_CHANNEL }),
+      [],
+      1,
+      true,
+      0,
+    );
+  });
+
+  // #255: the open-time check's own read can fail too — the confirmation still opens (there is no
+  // verified "nothing to do" here), but its count is marked an upper bound rather than exact.
+  it('marks the confirmation count an upper bound when the open-time check fails', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    const data = dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData;
+    expect(data.countIsUpperBound).toBe(true);
+    expect(data.addCount).toBe(1);
+    expect(data.names).toEqual(['PogU']);
+  });
+
+  // Spec E16, 4.6 point 22; Plan-253 §6, Nr. 3: a blocked pre-check shows the panel's existing
+  // abort notice with a restore-specific lead line and the `restore.errors.*` family — no
+  // confirmation, no slot-status read, no run.
+  it('shows the abort notice and starts nothing when the pre-check finds the set not editable', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'notEditable', target: null });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetNotEditable',
+    });
+    expect(getSetStatus).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // restoreTargetCheckReasonKey's "notSelectable" branch (Plan-253 §6, Nr. 4) had no case of its
+  // own here — the delete run's set can only ever have been NORMAL to begin with (the picker never
+  // offers another kind), but the mapping stays total rather than assuming that at the call site.
+  it('shows the abort notice and starts nothing when the pre-check finds the set no longer selectable', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'notSelectable', target: null });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetNotSelectable',
+    });
+    expect(getSetStatus).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'unavailable', target: null });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetCheckUnavailable',
+    });
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, finding 4: before this fix the subscription had no `error` branch at all — a
+  // failed request (429, 503, no connection, spec F3) surfaced nothing, leaving the restore entry
+  // silently inert instead of showing the abort notice every other pre-check failure already does.
+  it('shows "check unavailable" when the pre-check request itself fails (network error, not a degraded list)', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock.expectOne((r) => r.url === preCheckUrl('set-1')).error(new ProgressEvent('error'));
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetCheckUnavailable',
+    });
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, finding 4: a hung pre-check request used to leave the restore entry silently
+  // inert forever — same 20 s budget and same treatment as the delete confirmation's own pre-check.
+  it('shows "check unavailable" when the pre-check hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      fixture.componentInstance['openRestoreConfirm']();
+      const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+      expect(req.cancelled).toBeFalsy();
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(fixture.componentInstance['abortNotice']()).toEqual({
+        leadKey: 'restore.nothingRestored',
+        reasonKey: 'restore.errors.targetCheckUnavailable',
+      });
+      expect(startRestore).not.toHaveBeenCalled();
+      expect(req.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review round 1, finding 4: an answer landing after this panel is torn down must not open a
+  // restore confirmation nobody can see or answer any more.
+  it('cancels the pre-check request once the panel is destroyed', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+    expect(req.cancelled).toBeFalsy();
+
+    fixture.destroy();
+
+    expect(req.cancelled).toBe(true);
+    expect(startRestore).not.toHaveBeenCalled();
+    // #255 P2 (Codex review, second finding): `takeUntilDestroyed` unsubscribes here without ever
+    // calling `next` or `error`, so a reset reachable only from those never ran — and since this
+    // flag aliases the shared, root-level `restorePreCheckPending`, leaving it `true` would have
+    // disabled both restore entries until a full page reload, not just this destroyed panel.
+    expect(fixture.componentInstance['restoreConfirmPending']()).toBe(false);
+  });
+
+  // #255 P3(11): a run with more than one done row, where the open-time check finds only some of
+  // them already present — the confirmation must name and count exactly the survivors, not the
+  // whole run and not nothing.
+  it('shows only the row the open-time check found missing, filtering out the one already present', () => {
+    lastRun.set({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: ['7tv-1', '7tv-2'],
+        items: [
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+          {
+            key: '7tv-2',
+            emoteId: 'e2',
+            sevenTvEmoteId: '7tv-2',
+            name: 'KEKW',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+
+    // 7tv-1 (PogU) is already back in the target set under its own alias; 7tv-2 (KEKW) is not.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 1,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    const data = dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData;
+    expect(data.names).toEqual(['KEKW']);
+    expect(data.addCount).toBe(1);
+    expect(data.countIsUpperBound).toBe(false);
+  });
+
+  // #255 P2 (Codex review): a read that succeeds but only sees part of the target set
+  // (`SevenTvSetEntries.complete: false` — here, 7TV's own `totalCount` promising one more entry
+  // than this single page delivered) must not let the confirmation claim an exact count it never
+  // verified — same hedge as a failed read, but the filtering itself is unaffected: the
+  // found-present row still drops out, the genuinely-missing one still shows.
+  it('marks the count an upper bound, while still filtering rows normally, when the open-time read is truncated', () => {
+    lastRun.set({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: ['7tv-1', '7tv-2'],
+        items: [
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+          {
+            key: '7tv-2',
+            emoteId: 'e2',
+            sevenTvEmoteId: '7tv-2',
+            name: 'KEKW',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+
+    // 7tv-1 (PogU) is already back in the target set under its own alias; 7tv-2 (KEKW) is not —
+    // same setup as the test above, but the read's own totalCount does not match what this single
+    // page delivered.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 2,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    const data = dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData;
+    expect(data.names).toEqual(['KEKW']);
+    expect(data.addCount).toBe(1);
+    expect(data.countIsUpperBound).toBe(true);
+  });
+
+  // #255 P1 (Codex review): a row the open-time check already found present is hidden from the
+  // confirmation entirely — it must stay hidden from the run too, even if it goes missing from the
+  // target set again before the user confirms (another editor, or the confirmation simply left open
+  // a while). Without the fix, the confirm-time re-check's own fresh read — which has to query the
+  // full row set to apply its per-alias rule correctly — would see the row as newly missing and
+  // resend it as an `ADD` the user never saw or agreed to.
+  it('never sends a row the open-time check already hid, even if it goes missing again before confirm', () => {
+    lastRun.set({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: ['7tv-1', '7tv-2'],
+        items: [
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+          {
+            key: '7tv-2',
+            emoteId: 'e2',
+            sevenTvEmoteId: '7tv-2',
+            name: 'KEKW',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+
+    // Open-time: 7tv-1 (PogU) is already present -> hidden from the dialog; 7tv-2 (KEKW) is not.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 1,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect((dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData).names).toEqual(['KEKW']);
+
+    closed.next(true);
+
+    // Confirm-time: 7tv-1 has since been removed from the set too — a full re-check now finds
+    // BOTH rows missing.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: { emoteSets: { emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } } } },
+    });
+
+    // 'PogU' (7tv-1) never appeared in the confirmation and must not appear in the run either,
+    // however the confirm-time read now classifies it.
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: 'set-1', hostChannelName: RUN_CHANNEL }),
+      [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] }],
+      0,
+      true,
+      0,
+    );
+  });
+
+  // #255 P2a: the open-time duplicate check (`loadRestoreConfirmPreview`, run once the pre-check
+  // above has already resolved editable) gets the same timeout budget as every other read in this
+  // panel — a hung request must not leave the restore button disabled forever, and the
+  // confirmation still opens, its count hedged as an upper bound rather than a silent hang.
+  it('opens the confirmation with an upper-bound count when the open-time duplicate check hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      fixture.componentInstance['openRestoreConfirm']();
+      flushTargetsResponse();
+      const req = httpMock.expectOne('https://7tv.io/v4/gql');
+      expect(req.cancelled).toBeFalsy();
+      expect(fixture.componentInstance['restoreConfirmPending']()).toBe(true);
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(req.cancelled).toBe(true);
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+      const data = dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData;
+      expect(data.countIsUpperBound).toBe(true);
+      expect(data.names).toEqual(['PogU']);
+      expect(fixture.componentInstance['restoreConfirmPending']()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #255 P2a: a late answer to the open-time duplicate check, arriving after the panel is torn
+  // down, must not open a confirmation nobody can see or answer any more — same discipline as the
+  // pre-check's own `takeUntilDestroyed` above.
+  it('cancels the open-time duplicate check once the panel is destroyed', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+    const req = httpMock.expectOne('https://7tv.io/v4/gql');
+    expect(req.cancelled).toBeFalsy();
+
+    fixture.destroy();
+
+    expect(req.cancelled).toBe(true);
+    expect(dialogOpen).not.toHaveBeenCalled();
+    // #255 P2 (Codex review, second finding): same gap, the second read in the chain — teardown
+    // must release the shared gate here too, not just from a settled answer.
+    expect(fixture.componentInstance['restoreConfirmPending']()).toBe(false);
+  });
+
+  // #255 P2a: a second click while the pre-check chain (this method's own `resolveEditableSet`
+  // through the open-time duplicate check) is still out must not start a second read racing
+  // towards a second confirmation — `restoreConfirmPending` refuses re-entry, belt and suspenders
+  // next to the button's own `[disabled]`.
+  it('ignores a second click on the restore entry while its own pre-check is still out', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    expect(fixture.componentInstance['restoreConfirmPending']()).toBe(true);
+
+    // The second click lands before the target-list pre-check has even answered. Were the guard
+    // not there, this would fire a second `resolveEditableSet` request, and `flushTargetsResponse`
+    // below (which expects exactly one) would fail with "found 2" instead.
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // Same guard, the other gap: a second click landing after the pre-check resolved but while the
+  // open-time duplicate check is still out.
+  it('ignores a second click on the restore entry while the open-time duplicate check is still out', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+    expect(fixture.componentInstance['restoreConfirmPending']()).toBe(true);
+
+    fixture.componentInstance['openRestoreConfirm']();
+
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // #255 P2 (Codex review): the two restore entries — this panel's own button and
+  // `ImportTrigger`'s restore-file door — used to keep separate pending flags, so a click on
+  // *this* panel while the *other* entry's pre-check chain was still out was not caught by either
+  // guard: this panel's own `restoreConfirmPending` was still `false`, and the click landed before
+  // any request of this panel's own ever went out. `restoreConfirmPending` now aliases
+  // `SevenTvRestoreService.restorePreCheckPending`, so the fix closes the gap by making the two
+  // entries share the very same flag — setting it here, without going through this panel's own
+  // `openRestoreConfirm` at all, stands in for `ImportTrigger` having claimed it first.
+  it("ignores a click while the other restore entry's own pre-check already holds the shared gate", () => {
+    restoreService.restorePreCheckPending.set(true);
+
+    fixture.componentInstance['openRestoreConfirm']();
+
+    httpMock.expectNone((r) => r.url === preCheckUrl('set-1'));
+    expect(dialogOpen).not.toHaveBeenCalled();
+
+    // Released once the other entry's own chain settles — the panel's button works normally again.
+    restoreService.restorePreCheckPending.set(false);
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // #256 T4: the open-time "everything already there" shortcut (`handleRestoreConfirmPreview`)
+  // used to abort silently when another run claimed the arbiter while its own read was out — same
+  // gap `restore-flow.ts`'s identical shortcut had (Plan-256 0.2 Nr. 6). It now shows the panel's
+  // own abort notice with the blocking kind, the same `sevenTvRun.notStarted.*` family the page's
+  // transient region and the delete path above both use.
+  it('shows the abort notice and starts nothing when another run claims the arbiter while the open-time "everything already there" check was out', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+    const req = httpMock.expectOne('https://7tv.io/v4/gql');
+
+    // A delete run starts elsewhere while the open-time check is still awaiting 7TV. The response
+    // below would otherwise take the "everything already there" shortcut (the run's only row,
+    // 7tv-1, is already present) and start a restore straight away.
+    activeRun.set('delete');
+    req.flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 1,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'sevenTvRun.notStarted.running',
+      reasonParams: { kind: 'der Löschlauf' },
+    });
+  });
+
+  // #256 T4: the confirm-time re-check (after the dialog itself confirms) used to abort silently
+  // too — this is the panel's own counterpart to the check `restore-flow.ts`'s `startRestoreFlow`
+  // makes right before its own `startRestore` call.
+  it('shows the abort notice and starts nothing when another run claims the arbiter behind the confirmation dialog', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+    // 7tv-2 is missing, so the confirmation opens rather than taking the empty-preview shortcut.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: { emoteSets: { emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } } } },
+    });
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+
+    closed.next(true);
+    const req = httpMock.expectOne('https://7tv.io/v4/gql');
+
+    // An import run starts elsewhere while the confirm-time re-check is still awaiting 7TV.
+    activeRun.set('import');
+    req.flush({
+      data: { emoteSets: { emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } } } },
+    });
+
+    expect(startRestore).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'sevenTvRun.notStarted.running',
+      reasonParams: { kind: 'die Übertragung' },
+    });
+  });
+});
+
+// #275 (plan Festlegungen 16, 17): the dock's restore entry offers a finished run's `unknown` rows
+// alongside its `done` ones, marked `uncertain`; the duplicate checks drop them whenever their read
+// cannot vouch for them, and the confirmation says how many. Same real-pre-check setup as the
+// restore-confirm-path block above, but each test shapes its own finished run.
+describe('MassDeletePanel — unclear rows of a finished delete run are offered for restore, fail-closed (#275)', () => {
+  const RUN_CHANNEL = 'runchannel';
+  const GQL = 'https://7tv.io/v4/gql';
+
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let startRestore: ReturnType<typeof vi.fn>;
+  let dialogOpen: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+  let getSetStatus: ReturnType<typeof vi.fn>;
+
+  function item(
+    sevenTvEmoteId: string,
+    name: string,
+    status: RunQueueItem['status'],
+  ): RunQueueItem {
+    return {
+      key: sevenTvEmoteId,
+      emoteId: `e-${sevenTvEmoteId}`,
+      sevenTvEmoteId,
+      name,
+      status,
+      completedSteps: status === 'done' ? 1 : 0,
+      failedStep: status === 'failed' || status === 'unknown' ? 0 : null,
+    };
+  }
+
+  const DONE = item('7tv-1', 'PogU', 'done');
+  const UNKNOWN = item('7tv-2', 'KEKW', 'unknown');
+
+  /** Mounts the panel over a finished run of `items` — also shown as the dock's queue, so the
+   *  run-progress panel (and with it the restore entry) is on screen. */
+  async function mount(items: RunQueueItem[]): Promise<void> {
+    startRestore = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    dialogOpen = vi.fn().mockReturnValue({ closed });
+    getSetStatus = vi.fn().mockReturnValue(of({ occupiedSlots: 1, capacity: 100 }));
+    const lastRun = signal({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: items.filter((entry) => entry.status === 'done').map((entry) => entry.key),
+        items,
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    const providers = panelProviders({
+      deleteService: fakeDeleteService({ lastRun, queue: signal(items) }),
+      restoreService: { ...fakeRestoreService(), startRestore } as unknown as RestoreServiceFake,
+      dialogOpen,
+      emoteAdminService: { getSetStatus } as unknown as Partial<EmoteAdminService>,
+      emoteSetService: null,
+    });
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('activeSetId', 'set-1');
+    fixture.componentRef.setInput('channelName', RUN_CHANNEL);
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  }
+
+  /** Clicks the restore entry and answers its target pre-check, leaving the open-time duplicate
+   *  check's read for the test to answer. */
+  function openRestore(): void {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush(preCheckEditableBody('set-1', RUN_CHANNEL));
+  }
+
+  /** A single, last page of `entries`; `truncated` makes 7TV's `totalCount` promise one more
+   *  entry than it delivers — a read that succeeds with `complete: false`. */
+  function entriesPage(entries: { id: string; alias: string }[], truncated = false) {
+    return {
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: entries.length + (truncated ? 1 : 0),
+              pageCount: 1,
+              items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function confirmData(): RestoreConfirmDialogData {
+    return dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData;
+  }
+
+  function sentIds(): string[] {
+    return (startRestore.mock.calls[0][1] as { sevenTvEmoteId: string }[]).map(
+      (row) => row.sevenTvEmoteId,
+    );
+  }
+
+  function restoreEntry(): HTMLButtonElement | undefined {
+    return Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'restore.button',
+    );
+  }
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  it('shows the restore entry for a run whose only restorable row is unknown', async () => {
+    await mount([UNKNOWN, item('7tv-3', 'Sadge', 'failed')]);
+
+    expect(restoreEntry()).toBeDefined();
+  });
+
+  it('shows no restore entry for a run with only failed and cancelled rows', async () => {
+    await mount([item('7tv-3', 'Sadge', 'failed'), item('7tv-4', 'Clap', 'cancelled')]);
+
+    expect(restoreEntry()).toBeUndefined();
+  });
+
+  it('offers the unknown row alongside the done one once a complete read vouches for both', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    expect(confirmData().names).toEqual(['PogU', 'KEKW']);
+    expect(confirmData().uncertainDropped).toBe(0);
+  });
+
+  it('marks the unknown row uncertain, so an incomplete open-time read leaves it out and the confirmation counts it', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(confirmData().names).toEqual(['PogU']);
+    expect(confirmData().addCount).toBe(1);
+    expect(confirmData().uncertainDropped).toBe(1);
+  });
+
+  it('keeps a done row fail-open next to a dropped unknown one when the open-time read fails', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+
+    expect(confirmData().names).toEqual(['PogU']);
+    expect(confirmData().uncertainDropped).toBe(1);
+    expect(confirmData().countIsUpperBound).toBe(true);
+  });
+
+  it('opens the confirmation with nothing to add, not the "everything already there" shortcut, when every restorable row was unknown and the read fails', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData().addCount).toBe(0);
+    expect(confirmData().uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('opens the confirmation with nothing to add when every restorable row was unknown and the read is incomplete', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData().addCount).toBe(0);
+    expect(confirmData().uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('spends no slot read on a confirmation with nothing to add', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(getSetStatus).not.toHaveBeenCalled();
+  });
+
+  // Plan Festlegung 16, unchanged fallback: a confirm-time read that *fails* reuses the open-time
+  // rows, which already include the unknown row a complete open-time read vouched for.
+  it('keeps an unknown row the open-time read vouched for when only the confirm-time read fails', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    closed.next(true);
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+
+    expect(sentIds()).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  // Accepted on purpose (operator decision 2026-09-27): a confirm-time read that succeeds but is
+  // incomplete does not fall back — the unknown row the dialog showed is dropped silently, the
+  // done row still goes. It can only ever send less, never a blind ADD.
+  it('drops an unknown row the dialog showed when the confirm-time read succeeds but is incomplete, still sending the done row', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    expect(confirmData().names).toEqual(['PogU', 'KEKW']);
+
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(sentIds()).toEqual(['7tv-1']);
+    expect(startRestore.mock.calls[0][3]).toBe(true);
+  });
+
+  // No special rule once the read is complete: the unknown row's emote is still in the set (its
+  // delete never landed), so it is "already present" like any other and the shortcut is taken.
+  it('takes the "everything already there" shortcut when a complete read finds the unknown row still present', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).toHaveBeenCalledWith(expect.anything(), [], 1, true, 0);
+  });
+
+  it('gives up on a confirm-time check that hangs past its timeout and starts as for a failed check', async () => {
+    await mount([DONE]);
+    openRestore();
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    vi.useFakeTimers();
+    try {
+      closed.next(true);
+      const req = httpMock.expectOne(GQL);
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(req.cancelled).toBe(true);
+      expect(sentIds()).toEqual(['7tv-1']);
+      expect(startRestore.mock.calls[0][3]).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #280: the window after the confirmation, before anything runs. Here rather than in a block of
+  // its own because this block is the one that puts the restore entry itself on screen.
+  describe('the confirm-time check holds the restore entry (#280)', () => {
+    /** `SevenTvRestoreService.startCheckPending` on the fake `mount` provided — read, not held. */
+    function startCheckPending(): boolean {
+      return startCheckPendingSignal()();
+    }
+
+    function startCheckPendingSignal(): WritableSignal<boolean> {
+      return (TestBed.inject(SevenTvRestoreService) as unknown as RestoreServiceFake)
+        .startCheckPending;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('keeps the restore entry disabled from the confirmation until the confirm-time check has answered', async () => {
+      await mount([DONE]);
+      openRestore();
+      httpMock.expectOne(GQL).flush(entriesPage([]));
+      fixture.detectChanges();
+      expect(restoreEntry()?.disabled).toBe(false);
+
+      closed.next(true);
+      fixture.detectChanges();
+
+      expect(startCheckPending()).toBe(true);
+      expect(restoreEntry()?.disabled).toBe(true);
+      expect(startRestore).not.toHaveBeenCalled();
+
+      httpMock.expectOne(GQL).flush(entriesPage([]));
+      fixture.detectChanges();
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      expect(startCheckPending()).toBe(false);
+      expect(restoreEntry()?.disabled).toBe(false);
+    });
+
+    it("keeps the restore entry disabled while an undo's freshness read is out", async () => {
+      await mount([DONE]);
+      expect(restoreEntry()?.disabled).toBe(false);
+
+      (TestBed.inject(SevenTvRunArbiter) as unknown as RunArbiterFake).otherStartPending.set(true);
+      fixture.detectChanges();
+
+      expect(restoreEntry()?.disabled).toBe(true);
+    });
+
+    it('ignores a click on the restore entry while a confirmed restore is still being checked', async () => {
+      await mount([DONE]);
+      startCheckPendingSignal().set(true);
+
+      fixture.componentInstance['openRestoreConfirm']();
+
+      httpMock.expectNone((r) => r.url === preCheckUrl('set-1'));
+      expect(dialogOpen).not.toHaveBeenCalled();
+    });
+
+    it('releases the start check when the confirm-time check hangs past its timeout', async () => {
+      await mount([DONE]);
+      openRestore();
+      httpMock.expectOne(GQL).flush(entriesPage([]));
+      vi.useFakeTimers();
+
+      closed.next(true);
+      httpMock.expectOne(GQL);
+      expect(startCheckPending()).toBe(true);
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(startCheckPending()).toBe(false);
+      expect(startRestore).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+// #253, spec 4.6 point 20, AK 31: the shared pre-check now runs before the delete confirmation
+// itself opens, not only before the panel's own restore entry (the block above). Real
+// `SevenTvEmoteSetService` over `HttpTestingController` (`emoteSetService: null`, same reasoning as
+// the restore-confirm-path block above) so each test can drive the pre-check's own answer.
+describe('MassDeletePanel — the shared pre-check runs before the delete confirmation opens (#253 AK 31)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let dialogOpen: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    dialogOpen = vi.fn().mockReturnValue({ closed: of(undefined) });
+    const providers = panelProviders({
+      dialogOpen,
+      emoteSetService: null,
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', EMOTES);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => httpMock.verify());
+
+  it('locks the delete button and opens no dialog while the pre-check is out, then opens it on an editable answer', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.detectChanges();
+
+    // Rule 12: the observable contract is the button's own disabled state, not the internal
+    // `deleteTargetCheckPending` signal that happens to drive it.
+    expect(
+      findButtonByLabel(fixture.nativeElement, deleteButtonLabel(EMOTES.length)).disabled,
+    ).toBe(true);
+    expect(dialogOpen).not.toHaveBeenCalled();
+
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush(preCheckEditableBody('set-1', 'somechannel'));
+    fixture.detectChanges();
+
+    expect(
+      findButtonByLabel(fixture.nativeElement, deleteButtonLabel(EMOTES.length)).disabled,
+    ).toBe(false);
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(fixture.componentInstance['abortNotice']()).toBeNull();
+  });
+
+  // Owner-hint design 3.6, third row: the page knows only its own channel's login — every set it
+  // shows belongs to that one account (spec 6.1) — never a Twitch id, since the panel has no way to
+  // learn one ahead of the pre-check's own answer.
+  it("hints the pre-check with the page's own channel login, never an owner id", () => {
+    fixture.componentInstance['openConfirm']();
+
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+    expect(req.request.params.has('ownerTwitchId')).toBe(false);
+    expect(req.request.params.get('ownerLogin')).toBe('somechannel');
+    req.flush(preCheckEditableBody('set-1', 'somechannel'));
+  });
+
+  it('shows the abort notice and opens no dialog when the pre-check finds the set not editable', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'notEditable', target: null });
+
+    expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.errors.targetNotEditable',
+    });
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush({ status: 'unavailable', target: null });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.errors.targetCheckUnavailable',
+    });
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  it('maps a failed pre-check request (429) to the "check unavailable" reason too', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock
+      .expectOne((r) => r.url === preCheckUrl('set-1'))
+      .flush(null, { status: 429, statusText: 'Too Many Requests' });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.errors.targetCheckUnavailable',
+    });
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, finding 3b: a hung pre-check request used to leave the delete button disabled
+  // forever, with no way out short of reloading — same 20 s budget and same treatment (a timeout
+  // reads exactly like any other failed check) as the active-set live alias read's own fix.
+  it('unlocks the button and shows "check unavailable" when the pre-check hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      fixture.componentInstance['openConfirm']();
+      const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+      expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(true);
+      expect(req.cancelled).toBeFalsy();
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
+      expect(fixture.componentInstance['abortNotice']()).toEqual({
+        leadKey: 'massDelete.nothingDeleted',
+        reasonKey: 'massDelete.errors.targetCheckUnavailable',
+      });
+      expect(dialogOpen).not.toHaveBeenCalled();
+      // `timeout()` unsubscribes the source on expiry — the request is cancelled, not answered.
+      expect(req.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review round 1, finding 3c: an answer that lands after this panel was torn down must not open
+  // a confirmation nobody can see or answer any more. `takeUntilDestroyed` unsubscribes the whole
+  // pipe synchronously on destroy, which cancels the still-open request outright — a stronger
+  // guarantee than merely dropping a late answer, and proof the panel never even waits for one.
+  it('cancels the pre-check request and opens no dialog once the panel is destroyed', () => {
+    fixture.componentInstance['openConfirm']();
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+    expect(req.cancelled).toBeFalsy();
+
+    fixture.destroy();
+
+    expect(req.cancelled).toBe(true);
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  // Codex C3 / final fix wave A6, superseding review round 1 finding 3a: opening a confirmation
+  // silently for the set the pre-check happened to vouch for — even though the host has since
+  // switched away from it — used to defer the abort until the dialog closed
+  // (`abortReasonBeforeStart`). That left a confirmation open for a set nobody had selected any
+  // more. A switch behind the still-open pre-check now aborts immediately, visibly, instead.
+  it('aborts with setChangedDuringConfirm and opens no dialog when the set switches behind the still-open pre-check', () => {
+    fixture.componentRef.setInput('setName', 'Set A');
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    const req = httpMock.expectOne((r) => r.url === preCheckUrl('set-1'));
+    expect(req.request.url).toContain('/api/seventv/me/emote-set-targets');
+
+    // The set switches behind the still-open pre-check.
+    fixture.componentRef.setInput('setId', 'set-2');
+    fixture.componentRef.setInput('setName', 'Set B');
+    fixture.detectChanges();
+
+    // Answers for the originally checked set ('set-1'), editable — but no longer the one
+    // selected by the time the answer arrives.
+    req.flush(preCheckEditableBody('set-1', 'somechannel'));
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.abortedByLock',
+      reasonKey: 'massDelete.setChangedDuringConfirm',
+    });
   });
 });

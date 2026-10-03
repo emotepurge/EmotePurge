@@ -107,6 +107,28 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenRenaming_ClosesTheOpenObservationInterval()
+    {
+        // Spec 4.3, F9, AK 17: the periodic-reconcile RenameAsync is one of the observation log's
+        // closing sites. Asserts the call into the service, not a row in the table — same as the
+        // merge case above.
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identityrenameobs1old", "10015");
+        var emoteSetObservationService = Substitute.For<IChannelEmoteSetObservationService>();
+        var harness = CreateHarness(
+            db,
+            [new TwitchUserIdentity("10015", "IdentityRenameObs1New")],
+            emoteSetObservationService: emoteSetObservationService);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.Renamed);
+        await emoteSetObservationService.Received(1).CloseOpenIntervalAsync(
+            seeded.Id, ChannelEmoteSetObservationClosedBy.Rename, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ReconcileActiveChannelsAsync_WhenTheTargetNameIsHeldByARowWithItsOwnDifferentId_SkipsBothRows()
     {
         await using var db = fixture.CreateDbContext();
@@ -204,6 +226,33 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.Equal(
             ["channel:bot:commands|LEAVE:identitymergeold", "channel:bot:commands|JOIN:identitymergenew"],
             harness.Redis.Messages);
+    }
+
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenMerging_ClosesTheSurvivorsOpenObservationInterval()
+    {
+        // Spec 4.3, F9: the surviving channel of a merge is one of the observation log's five
+        // closing sites. Asserts the call into the service, not a row in the table — the loser needs
+        // no call at all (its row cascades away with db.Channels.Remove), which this also proves by
+        // never expecting a call for the loser's id.
+        await using var db = fixture.CreateDbContext();
+        var survivor = await SeedChannelAsync(db, "identitymergeobs1old", "10014");
+        var loser = await SeedChannelAsync(db, "identitymergeobs1new", twitchChannelId: null);
+        await db.SaveChangesAsync();
+        var emoteSetObservationService = Substitute.For<IChannelEmoteSetObservationService>();
+        var harness = CreateHarness(
+            db,
+            [new TwitchUserIdentity("10014", "IdentityMergeObs1New")],
+            emoteSetObservationService: emoteSetObservationService);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.Merged);
+        await emoteSetObservationService.Received(1).CloseOpenIntervalAsync(
+            survivor.Id, ChannelEmoteSetObservationClosedBy.Merge, Arg.Any<CancellationToken>());
+        await emoteSetObservationService.DidNotReceive().CloseOpenIntervalAsync(
+            loser.Id, Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -476,6 +525,32 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         await AssertAnonymousExclusionLeaveAsync(verify, "identityexcludedknown");
     }
 
+    // The objection gate's deactivation is a leave (it writes channel.leave), so it closes the open
+    // emote-set observation interval in the same save, exactly like ChannelService.LeaveAsync (spec
+    // 4.3). Without it an inactive row kept an open interval, breaking the "inactive implies no open
+    // row" invariant RecordObservedSetAsync relies on.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheKnownIdIsExcluded_ClosesTheOpenObservationInterval()
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identityexcludedobs1", "10089");
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10089").Returns(true);
+        var emoteSetObservationService = Substitute.For<IChannelEmoteSetObservationService>();
+        var harness = CreateHarness(
+            db,
+            [new TwitchUserIdentity("10089", "IdentityExcludedObs1")],
+            emoteSetObservationService: emoteSetObservationService,
+            excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.Deactivated);
+        await emoteSetObservationService.Received(1).CloseOpenIntervalAsync(
+            seeded.Id, ChannelEmoteSetObservationClosedBy.Leave, Arg.Any<CancellationToken>());
+    }
+
     // The BackfillIdAsync residual gap the #252 DECISIONS entry used to document explicitly, closed
     // by this revision: an id-less active row whose login now resolves to an excluded id must not be
     // backfilled into observation under that id — it is deactivated instead, and the id is
@@ -536,6 +611,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
             joinDb,
             Substitute.For<IRedisPublisher>(),
             identityService,
+            new ChannelEmoteSetObservationService(joinDb),
             new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
             excludedChannelFilter,
             NullLogger<ChannelService>.Instance);
@@ -1095,6 +1171,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         string? token = "identity-app-token",
         ChannelIdentityWarningState? warningState = null,
         bool failPublishes = false,
+        IChannelEmoteSetObservationService? emoteSetObservationService = null,
         IExcludedChannelFilter? excludedChannelFilter = null)
     {
         var helix = Substitute.For<ITwitchHelixClient>();
@@ -1111,13 +1188,15 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         var publisher = new RecordingPublisher(failPublishes);
         var logger = new RecordingLogger<ChannelIdentityService>();
         var state = warningState ?? new ChannelIdentityWarningState();
+        var emoteSetObservations = emoteSetObservationService ?? Substitute.For<IChannelEmoteSetObservationService>();
 
         return new Harness(
             helix,
             publisher,
             logger,
+            emoteSetObservations,
             new ChannelIdentityService(
-                db, helix, appTokenProvider, publisher, state,
+                db, helix, appTokenProvider, publisher, emoteSetObservations, state,
                 excludedChannelFilter ?? Substitute.For<IExcludedChannelFilter>(), logger));
     }
 
@@ -1125,6 +1204,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         ITwitchHelixClient Helix,
         RecordingPublisher Redis,
         RecordingLogger<ChannelIdentityService> Logger,
+        IChannelEmoteSetObservationService EmoteSetObservations,
         ChannelIdentityService Service);
 
     // Order matters here in a way NSubstitute's Received() cannot express as clearly: LEAVE has to

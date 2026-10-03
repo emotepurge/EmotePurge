@@ -21,20 +21,30 @@ public class EmoteSetOwnershipService(
     public async Task<EmoteSetWarningDto> CheckAsync(
         string channelName,
         TwitchPrincipalInfo? caller,
+        string? emoteSetId = null,
         CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
 
         var channel = await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
 
-        if (channel is null || channel.TwitchChannelId is null || string.IsNullOrEmpty(channel.ActiveEmoteSetId))
+        if (channel is null || channel.TwitchChannelId is null)
         {
             return new EmoteSetWarningDto(Available: false, IsOwnSet: false, [], []);
         }
 
-        // Tier 1: does this channel's own 7TV account actually own its currently active set?
+        // The set to check (E9): the caller's choice when given, the channel's own active set
+        // otherwise — the only source before this parameter existed. Both tiers below were already
+        // set-agnostic; this is what makes "which set" a caller decision instead of an implicit one.
+        var targetSetId = emoteSetId ?? channel.ActiveEmoteSetId;
+        if (string.IsNullOrEmpty(targetSetId))
+        {
+            return new EmoteSetWarningDto(Available: false, IsOwnSet: false, [], []);
+        }
+
+        // Tier 1: does this channel's own 7TV account actually own the target set?
         var ownIdentityResult = await sevenTvApiClient.ResolveSevenTvIdentityAsync(channel.TwitchChannelId, cancellationToken);
-        var setOwnerId = await sevenTvApiClient.GetEmoteSetOwnerIdAsync(channel.ActiveEmoteSetId, cancellationToken);
+        var setOwnerId = await sevenTvApiClient.GetEmoteSetOwnerIdAsync(targetSetId, cancellationToken);
 
         var available = ownIdentityResult.Status == SevenTvLookupStatus.Ok && setOwnerId is not null;
         var isOwnSet = available && string.Equals(ownIdentityResult.Identity!.SevenTvUserId, setOwnerId, StringComparison.Ordinal);
@@ -42,19 +52,20 @@ public class EmoteSetOwnershipService(
         if (!available)
         {
             logger.LogWarning("Owner-Check für Channel {Channel} / Set {SetId} nicht möglich (7TV nicht erreichbar oder unbekannt).",
-                normalized, channel.ActiveEmoteSetId);
+                normalized, targetSetId);
         }
 
-        // Tier 2: other channels WE already track that happen to share the same active set.
+        // Tier 2: other channels WE already track that happen to share the target set as their own
+        // active one.
         var otherTracked = await db.Channels.AsNoTracking()
-            .Where(c => c.ActiveEmoteSetId == channel.ActiveEmoteSetId && c.Id != channel.Id)
+            .Where(c => c.ActiveEmoteSetId == targetSetId && c.Id != channel.Id)
             .Select(c => c.ChannelName)
             .ToListAsync(cancellationToken);
 
         // Tier 3: channels the acting user moderates on Twitch but that we've never tracked/synced —
         // Tier 2 can't see these at all, since they have no row (or a stale one) in our own DB.
         var otherModerated = await CheckModeratedChannelsAsync(
-            channel.ActiveEmoteSetId, normalized, otherTracked, caller, cancellationToken);
+            targetSetId, normalized, otherTracked, caller, cancellationToken);
 
         return new EmoteSetWarningDto(available, isOwnSet, otherTracked, otherModerated);
     }

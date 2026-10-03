@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { animatedEmoteUrl, isAnimatedEmoteUrl } from './emote-url';
+import { animatedEmoteUrl, emoteStillUrl, isAnimatedEmoteUrl } from './emote-url';
 
 describe('animatedEmoteUrl', () => {
   it('swaps the stored 4x still for the 2x animation', () => {
@@ -48,5 +48,24 @@ describe('isAnimatedEmoteUrl', () => {
     expect(isAnimatedEmoteUrl('https://cdn.7tv.app/emote/01FFWH9WV80000JT8GHDKHJNZC/2x.webp')).toBe(
       false,
     );
+  });
+});
+
+describe('emoteStillUrl', () => {
+  // Byte-identical to the backend's BuildForeignImageUrl and to the still the mapper stores for an
+  // animated emote — which is what the atlas, the loader and animatedEmoteUrl all key on.
+  it('builds the _static still for an animated emote, the form the backend stores', () => {
+    const url = emoteStillUrl('01FFWH9WV80000JT8GHDKHJNZC', true);
+
+    expect(url).toBe('https://cdn.7tv.app/emote/01FFWH9WV80000JT8GHDKHJNZC/4x_static.webp');
+    expect(isAnimatedEmoteUrl(url)).toBe(true);
+  });
+
+  // `_static` answers 404 for a still emote (measured 2026-09-09); 4x.webp exists for every emote.
+  it('builds the plain 4x for a still emote, never the _static rendition that 404s there', () => {
+    const url = emoteStillUrl('01F6MZGCNG000255K4X1K7NTHR', false);
+
+    expect(url).toBe('https://cdn.7tv.app/emote/01F6MZGCNG000255K4X1K7NTHR/4x.webp');
+    expect(isAnimatedEmoteUrl(url)).toBe(false);
   });
 });

@@ -97,7 +97,7 @@ haben kein Modell: sie sind fertige Kommandozeilen mit Platzhaltern, die der Bet
   deploybar, und ein gemergtes K1 auf `main` hieße, dass der nächste Hotfix-Deploy vor dem
   2026-10-08 ein Image mitbrächte, das am `PendingMigrationGuard` (S3-34) abbricht. Der eine PR auf
   `main` ist T7 — nach dem 08.10., mit der Zweitmeinung aus Regel 22 über das Ganze. Die
-  Kind-Issue-PRs bekommen zusätzlich je eine `/codex:review --model gpt-5.6-sol --scope branch
+  Kind-Issue-PRs bekommen zusätzlich je eine `/codex:review --model gpt-6-sol --scope branch
   --base feat/emote-sets-200`, weil ein 100-Stunden-Diff in einem einzigen Review nicht mehr
   lesbar ist. (Planentscheidung, keine Spec-Vorgabe; vom Betreiber am 2026-09-20 bestätigt.)
 - **K1 und K2 laufen parallel in getrennten Worktrees** (`superpowers:using-git-worktrees`); die
@@ -1316,7 +1316,7 @@ names and eligibility` — enthält den DECISIONS-Eintrag 3. K6-PR.
    Frage, ob jede neue Zeile einen der in T1.2/T1.5/T4.2–T4.5 genannten Fälle hat, nicht die Zahl.
    Sonar misst `new_coverage` zeilen- **und** zweiggenau; die **drei** `RAISE`-Zweige der
    Migration haben je einen Test (T1.3b).
-3. `/codex:review --model gpt-5.6-sol --scope branch --base origin/main` über das Ganze — nach den
+3. `/codex:review --model gpt-6-sol --scope branch --base origin/main` über das Ganze — nach den
    Kind-Issue-Reviews (0.4) ein Blick auf die Nähte zwischen den Kind-Issues. Findings sind Input;
    widersprechen sich Opus-Review und Codex bei einem P1/P2, entscheidet Fable (globale Regel).
 4. PR-Text nennt: die Zahl der umgestellten Bestandstests je Datei (aus den Teilaufgaben), die
@@ -1520,7 +1520,7 @@ Der Merge gehört dem Nutzer; der Deploy ist ein getrenntes Wartungsfenster.
 
 ## 7. Nachtrag: Codex-Review vom 2026-09-20, **erste Runde**
 
-Adversariale Zweitmeinung (`/codex:adversarial-review --model gpt-5.6-sol`) über
+Adversariale Zweitmeinung (`/codex:adversarial-review --model gpt-6-sol`) über
 [die Spec](../superpowers/specs/2026-09-20-emote-sets-200-spec.md) und diesen Plan. Fünf Befunde,
 **alle fünf eingearbeitet** (Befund E am 2026-09-20 nach der Entscheidung des Betreibers), dazu
 **drei** Nachzügler aus der Einarbeitung und ein daraus entstandener neuer Task. Die Verträge sind in

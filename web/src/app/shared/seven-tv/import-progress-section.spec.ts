@@ -1,14 +1,24 @@
-import { WritableSignal, signal } from '@angular/core';
+import { Dialog } from '@angular/cdk/dialog';
+import { Signal, WritableSignal, computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
-import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import {
+  ImportRunInfo,
+  ImportRunItem,
+  SevenTvImportService,
+} from '../../core/seven-tv/seven-tv-import.service';
 import { ResyncTriggerState } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import {
+  SyncReportReason,
+  SyncReportState,
+  TargetCheckBlockReason,
+} from '../../core/seven-tv/sync-report-outcome';
+import { TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportProgressSection } from './import-progress-section';
 
 // Only the keys this component and the `RunProgressPanel` it wraps actually translate — not the
@@ -18,22 +28,60 @@ const DE_TRANSLATIONS = {
   import: {
     duplicateCheckUnavailable:
       'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+    errors: {
+      targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
+      targetNotSelectable: 'Das Zielset ist kein normales Emote-Set.',
+      targetCheckUnavailable: 'Das Zielset konnte gerade nicht geprüft werden.',
+    },
     skippedDuplicates: {
       one: '{{ count }} Emote war beim Start bereits im Zielset und wurde übersprungen.',
       other: '{{ count }} Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
     },
     progress: '{{ finished }} / {{ total }} kopiert',
+    settling: 'Wird abgeschlossen…',
     deleteFailedFallback: 'Kopieren fehlgeschlagen',
+    unknownOutcome: 'Unklar, ob kopiert — bitte im Set nachsehen.',
     rateLimitPaused: '7TV-Rate-Limit erreicht.',
     syncFailedTitle: 'Rückmeldung fehlgeschlagen',
     syncFailed: 'Rückmeldung an EmotePurge fehlgeschlagen.',
     syncRetry: 'Erneut melden',
     syncRetrySucceeded: 'Rückmeldung erfolgreich.',
+    removalSyncFailedTitle: 'Entfernungs-Rückmeldung fehlgeschlagen',
+    removalSyncFailed: 'Entfernungs-Rückmeldung an EmotePurge fehlgeschlagen.',
+    removalSyncPartialTitle: 'Entfernungs-Rückmeldung unvollständig',
+    removalSyncPartial: 'Entfernungs-Rückmeldung an EmotePurge vermerkt, aber nicht vollständig.',
+    removalSyncRetry: 'Entfernung erneut melden',
+    removalSyncSucceeded: 'Entfernungs-Rückmeldung erfolgreich.',
     summary: {
       counts: '{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
       target: 'Ziel: {{ channel }}',
+      targetWithSet: 'Ziel: {{ channel }} · Set {{ setName }}',
+      targetSet: 'Ziel: Set {{ setName }} von {{ owner }}',
       openTarget: 'Zielkanal öffnen',
+      copiedNotActive:
+        "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      renamedNotActive:
+        "In Set ‚{{ setName }}' umbenannt — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
       insufficientPrivileges: 'Das 7TV-Token hat im Zielset kein Schreibrecht.',
+      downloadProtocol: 'Protokoll herunterladen',
+      protocolNotSaved: 'Protokoll noch nicht gespeichert.',
+      removed: {
+        one: '{{ count }} Emote aus dem Zielset entfernt.',
+        other: '{{ count }} Emotes aus dem Zielset entfernt.',
+      },
+      replaceSkippedDrift: {
+        one: '{{ count }} Ersetzung übersprungen — Ziel hat sich verändert.',
+        other: '{{ count }} Ersetzungen übersprungen — Ziel hat sich verändert.',
+      },
+      unknownRows: {
+        one: 'Bei {{ count }} Zeile unklar, ob übernommen.',
+        other: 'Bei {{ count }} Zeilen unklar, ob übernommen.',
+      },
+      unknownRecordedIn: {
+        one: 'Bei {{ count }} Ersetzung unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+        other:
+          'Bei {{ count }} Ersetzungen unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+      },
     },
     resync: {
       pending: 'Abgleich des Zielkanals wird angestoßen…',
@@ -42,13 +90,45 @@ const DE_TRANSLATIONS = {
       failed: 'Abgleich konnte nicht angestoßen werden.',
     },
   },
+  syncReportReason: {
+    setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
+    channelMismatchNotTracked:
+      'Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.',
+    channelMismatchActiveSetDiffers:
+      'Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.',
+  },
 };
 
+/** A settled fixture defaults to a closed run (every report answered) and a pending one to a
+ *  settling run — the two pairings the service produces; a test that needs a settled run still
+ *  reporting says `phase: 'reporting'` itself. A settling run holds back the whole summary block
+ *  (Plan-284 Festlegung 5), so a case about what a finished run shows says `settlement: 'settled'`;
+ *  one that sets `isRunning` leaves the default alone, the panel shows no summary mid-run anyway. */
 function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
   return {
+    runId: 'import-1',
+    phase: overrides.settlement === 'settled' ? 'closed' : 'settling',
+    destructive: false,
+    syncReport: 'idle',
+    removalReport: 'idle',
+    removalReportReason: null,
+    resyncTrigger: 'idle',
+    abortedForPrivileges: false,
+    protocolSaved: false,
     targetChannelName: 'zielkanal',
+    targetOwnerDisplayName: null,
     targetSetId: 'set-1',
+    targetOwnerTwitchId: null,
+    targetSetName: 'Set-1',
+    // Active by default so the existing "Ziel: zielkanal" behaviour keeps working unchanged —
+    // findings 2/3 tests below override this explicitly.
+    targetIsActiveSet: true,
     origin: { kind: 'channel', channelName: 'quellkanal' },
+    plan: { rows: [] },
+    settlement: 'pending',
+    removedCount: 0,
+    unknownCount: 0,
+    unknownRemovalCount: 0,
     result: null,
     ...overrides,
   };
@@ -56,39 +136,90 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
 
 /** The fake stands in for the whole service — every field the template reads is a signal this
  *  spec drives directly, exactly the shape `SevenTvImportService` presents (Regel 12: behaviour,
- *  not the service's own internals, which have their own tests). */
+ *  not the service's own internals, which have their own tests). `items` is a plain mirror of
+ *  `queue` (not the real service's isRunning-gated computed — that distinction is
+ *  `seven-tv-import.service.spec.ts`'s job, e.g. its R15-guard tests) so every existing `queue.set(…)`
+ *  call in this file keeps driving `app-run-progress-panel`'s `[items]` binding unchanged, the
+ *  `queue()` → `items()` rebind included. */
 interface FakeImportService {
   queue: WritableSignal<RunQueueItem[]>;
+  items: Signal<RunQueueItem[]>;
   isRunning: WritableSignal<boolean>;
+  doneAdoptCount: WritableSignal<number>;
   rateLimitPauseSeconds: WritableSignal<number | null>;
   run: WritableSignal<ImportRunInfo | null>;
   syncReport: WritableSignal<SyncReportState>;
+  removalReport: WritableSignal<SyncReportState>;
+  removalReportReason: WritableSignal<SyncReportReason | null>;
   resyncTrigger: WritableSignal<ResyncTriggerState>;
   abortedForPrivileges: WritableSignal<boolean>;
   skippedDuplicates: WritableSignal<number>;
+  replaceSkippedDrift: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
+  protocolSaved: WritableSignal<boolean>;
+  markProtocolSaved: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   reset: ReturnType<typeof vi.fn>;
   retrySyncReport: ReturnType<typeof vi.fn>;
+  retryRemovalReport: ReturnType<typeof vi.fn>;
 }
 
 function createFakeImportService(): FakeImportService {
+  const queue = signal<RunQueueItem[]>([]);
   return {
-    queue: signal<RunQueueItem[]>([]),
+    queue,
+    items: computed(() => queue()),
     isRunning: signal(false),
+    doneAdoptCount: signal(0),
     rateLimitPauseSeconds: signal<number | null>(null),
     run: signal<ImportRunInfo | null>(null),
     syncReport: signal<SyncReportState>('idle'),
+    removalReport: signal<SyncReportState>('idle'),
+    removalReportReason: signal<SyncReportReason | null>(null),
     resyncTrigger: signal<ResyncTriggerState>('idle'),
     abortedForPrivileges: signal(false),
     skippedDuplicates: signal(0),
+    replaceSkippedDrift: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
+    protocolSaved: signal(false),
+    markProtocolSaved: vi.fn(),
     cancel: vi.fn(),
     reset: vi.fn(),
     retrySyncReport: vi.fn(),
+    retryRemovalReport: vi.fn(),
   };
+}
+
+const SOURCE_A_TRANSFER: TransferRow = {
+  action: 'add',
+  source: { sevenTvEmoteId: '7tv-a', name: 'A', imageUrl: null },
+  alias: 'A',
+};
+
+/** A settled run item — a `RunQueueItem` is all `app-run-progress-panel` needs, but `run.result`
+ *  is typed `ImportRunItem[]`, so every fixture carries a `transfer` row too. */
+function doneItem(overrides: Partial<ImportRunItem> = {}): ImportRunItem {
+  return {
+    key: 'a',
+    sevenTvEmoteId: '7tv-a',
+    name: 'A',
+    status: 'done',
+    completedSteps: 1,
+    failedStep: null,
+    transfer: SOURCE_A_TRANSFER,
+    ...overrides,
+  };
+}
+
+/** The rows of the failure list's alert region, as their text — name and reason. */
+function alertRows(fixture: ComponentFixture<ImportProgressSection>): string[] {
+  return Array.from(fixture.nativeElement.querySelectorAll('[role="alert"] li'), (row: Element) =>
+    (row.textContent ?? '').trim(),
+  );
 }
 
 /** What the component's status regions would announce: their text minus aria-hidden descendants. */
@@ -117,7 +248,11 @@ describe('ImportProgressSection', () => {
           translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
         }),
       ],
-      providers: [provideRouter([]), { provide: SevenTvImportService, useValue: importService }],
+      providers: [
+        provideRouter([]),
+        { provide: SevenTvImportService, useValue: importService },
+        { provide: Dialog, useValue: { open: vi.fn() } as unknown as Dialog },
+      ],
     }).compileComponents();
 
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
@@ -144,10 +279,206 @@ describe('ImportProgressSection', () => {
     expect(fixture.nativeElement.textContent).toContain('Ziel: zielkanal');
   });
 
+  // T2.6/spec 8.6: an untracked target's run has no channel of ours to name — the summary line and
+  // the "open target channel" link both need a channel-free branch instead of reading targetChannelName
+  // and crashing into "/channels/null/usage-stats".
+  describe('untracked target (targetChannelName: null, T2.6)', () => {
+    it('names the set and its owner instead of a channel, and offers no "open target channel" link', () => {
+      importService.isRunning.set(true);
+      importService.run.set(
+        runInfo({
+          targetChannelName: null,
+          targetOwnerDisplayName: 'Stranger',
+          targetSetId: 'set-untracked',
+          // Named by its resolved name, not the raw id (finding 2, Live-Verifikation K2 2026-09-21).
+          targetSetName: 'Wegwerf-Set',
+        }),
+      );
+
+      const fixture = render();
+
+      const host: HTMLElement = fixture.nativeElement;
+      expect(host.textContent).toContain('Ziel: Set Wegwerf-Set von Stranger');
+      expect(host.textContent).not.toContain('zielkanal');
+      expect(
+        Array.from(host.querySelectorAll<HTMLAnchorElement>('a')).some(
+          (a) => a.textContent?.trim() === 'Zielkanal öffnen',
+        ),
+      ).toBe(false);
+    });
+  });
+
+  // Finding 2/3 (Live-Verifikation K2 2026-09-21): a tracked target whose set is *not* the channel's
+  // active one — the run writes into it, but the channel page (and its resync) never shows it.
+  describe('tracked non-active target (targetIsActiveSet: false)', () => {
+    it("names the channel and the set together, mirroring the confirm dialog's own line", () => {
+      importService.isRunning.set(true);
+      importService.run.set(
+        runInfo({
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+        }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Ziel: zielkanal · Set wegwerf');
+    });
+
+    it('offers no "open target channel" link once the run has settled', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([
+        {
+          key: 'a',
+          sevenTvEmoteId: '7tv-a',
+          name: 'A',
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
+      ]);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+
+      const fixture = render();
+      const host: HTMLElement = fixture.nativeElement;
+
+      expect(
+        Array.from(host.querySelectorAll<HTMLAnchorElement>('a')).some(
+          (a) => a.textContent?.trim() === 'Zielkanal öffnen',
+        ),
+      ).toBe(false);
+    });
+
+    // Needs at least one done ADD (#255 P2-2, review finding) — `doneItem()`'s default
+    // `SOURCE_A_TRANSFER` is a plain `add`, so this stays the "copied" case.
+    it('shows the copied-not-active notice instead of a resync notice once the run has settled with a done add', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: ['7tv-a'], items: [doneItem()], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      // The service never sets resyncTrigger away from 'idle' for a non-active target
+      // (SevenTvImportService.onRunComplete) — pinned here too, not just assumed.
+      importService.resyncTrigger.set('idle');
+
+      const fixture = render();
+
+      const notice = fixture.nativeElement.querySelector('[aria-hidden="true"]');
+      expect(notice?.textContent.trim()).toBe(
+        "In Set ‚wegwerf' kopiert — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
+      );
+      expect(fixture.nativeElement.textContent).not.toContain('Abgleich');
+    });
+
+    // #255 P2-2 (review finding): a rename-only run (every done row an adopt, no ADD at all)
+    // copied nothing in, so the notice above would misdescribe it — the section shows its own
+    // "umbenannt" wording in the same slot instead.
+    it('shows the renamed-not-active notice instead when every done row is an adopt', () => {
+      const adoptItem = doneItem({
+        transfer: {
+          action: 'adoptSourceName',
+          source: SOURCE_A_TRANSFER.source,
+          alias: 'A',
+          target: {
+            sevenTvEmoteId: '7tv-a-old',
+            aliases: ['AOld'],
+            hasAliaslessEntry: false,
+            defaultName: null,
+          },
+        },
+      });
+      importService.isRunning.set(false);
+      importService.queue.set([adoptItem]);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: ['7tv-a'], items: [adoptItem], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      importService.resyncTrigger.set('idle');
+
+      const fixture = render();
+
+      const notice = fixture.nativeElement.querySelector('[aria-hidden="true"]');
+      expect(notice?.textContent.trim()).toBe(
+        "In Set ‚wegwerf' umbenannt — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
+      );
+      expect(fixture.nativeElement.textContent).not.toContain('Abgleich');
+    });
+
+    // #255 P2-2 (review finding): a run where nothing at all succeeded has nothing true to say
+    // about what landed in the target set — neither notice fires.
+    it('shows neither notice when the run has settled with nothing done', () => {
+      // A non-empty, all-failed queue: the panel's own visibility gate is `isRunning() ||
+      // queue().length > 0` — an *empty* queue here would hide the whole section and let this test
+      // pass for the wrong reason, without ever exercising the notice guard at all.
+      const failedItem = doneItem({ status: 'failed', failedStep: 0 });
+      importService.isRunning.set(false);
+      importService.queue.set([failedItem]);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: [], items: [failedItem], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      importService.resyncTrigger.set('idle');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('kopiert —');
+      expect(fixture.nativeElement.textContent).not.toContain('umbenannt —');
+    });
+
+    it('shows nothing yet while the run is still in flight (no settled result)', () => {
+      importService.isRunning.set(true);
+      importService.run.set(
+        runInfo({
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+        }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('kopiert —');
+    });
+  });
+
   it('stays visible after the run has settled, as long as the queue is not empty', () => {
     importService.isRunning.set(false);
-    importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
-    importService.run.set(runInfo());
+    importService.queue.set([
+      {
+        key: 'a',
+        sevenTvEmoteId: '7tv-a',
+        name: 'A',
+        status: 'done',
+        completedSteps: 1,
+        failedStep: null,
+      },
+    ]);
+    importService.run.set(runInfo({ settlement: 'settled' }));
 
     const fixture = render();
 
@@ -184,8 +515,17 @@ describe('ImportProgressSection', () => {
   // permanently mounted DockOutcomeAnnouncer speaks them (docs/UI-Designsprache.md §4.5).
   it('shows no resync notice once settled while resyncTrigger is idle', () => {
     importService.isRunning.set(false);
-    importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
-    importService.run.set(runInfo());
+    importService.queue.set([
+      {
+        key: 'a',
+        sevenTvEmoteId: '7tv-a',
+        name: 'A',
+        status: 'done',
+        completedSteps: 1,
+        failedStep: null,
+      },
+    ]);
+    importService.run.set(runInfo({ settlement: 'settled' }));
     importService.resyncTrigger.set('idle');
 
     const fixture = render();
@@ -202,8 +542,17 @@ describe('ImportProgressSection', () => {
     'maps the settled resyncTrigger %s to its own notice text, shown but not announced here',
     (trigger, expectedText) => {
       importService.isRunning.set(false);
-      importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
-      importService.run.set(runInfo());
+      importService.queue.set([
+        {
+          key: 'a',
+          sevenTvEmoteId: '7tv-a',
+          name: 'A',
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
+      ]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
       importService.resyncTrigger.set(trigger);
 
       const fixture = render();
@@ -218,8 +567,17 @@ describe('ImportProgressSection', () => {
 
   it('shows the insufficient-privileges banner only when the run aborted for that reason', () => {
     importService.isRunning.set(false);
-    importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'failed' }]);
-    importService.run.set(runInfo());
+    importService.queue.set([
+      {
+        key: 'a',
+        sevenTvEmoteId: '7tv-a',
+        name: 'A',
+        status: 'failed',
+        completedSteps: 0,
+        failedStep: 0,
+      },
+    ]);
+    importService.run.set(runInfo({ settlement: 'settled' }));
     importService.abortedForPrivileges.set(false);
 
     const withoutBanner = render();
@@ -319,5 +677,488 @@ describe('ImportProgressSection', () => {
     const fixture = render();
 
     expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
+  });
+
+  // The transfer-run protocol's dock offering, the removed/unknown-row summary lines, the drift
+  // notice (including the all-drift case) and the removal report's own retry.
+  describe('transfer-run protocol and removal report', () => {
+    function findButton(fixture: ComponentFixture<ImportProgressSection>, text: string) {
+      return Array.from(
+        (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('button'),
+      ).find((button) => button.textContent?.trim() === text);
+    }
+
+    it('shows the download-protocol button once the run has settled', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+
+      const fixture = render();
+
+      expect(findButton(fixture, 'Protokoll herunterladen')).toBeDefined();
+    });
+
+    // Only the JSON protocol can be read back in (file-import step); the dialog preselects and
+    // lists `options[0]` (ExportDialog's own contract), so passing JSON first is the whole fix.
+    it('offers JSON first when the protocol is downloaded, since only JSON can be read back in', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          result: { doneKeys: ['7tv-a'], items: [doneItem()], startedAt: 0, finishedAt: 1000 },
+        }),
+      );
+      const fixture = render();
+      const openSpy = TestBed.inject(Dialog).open as ReturnType<typeof vi.fn>;
+      openSpy.mockReturnValue({ closed: of(undefined) });
+
+      findButton(fixture, 'Protokoll herunterladen')!.click();
+
+      const data = openSpy.mock.calls[0][1].data as { options: { id: string }[] };
+      expect(data.options.map((option) => option.id)).toEqual(['json', 'csv']);
+    });
+
+    // Owner-hint design 3.6/3.7: the `finished`-stage protocol carries the run's own frozen owner
+    // id straight through — never re-derived, since a retry of either report already sent this same
+    // value.
+    it('writes the run’s own targetOwnerTwitchId onto the downloaded finished-stage protocol', async () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          targetOwnerTwitchId: 'owner-tw-7',
+          result: { doneKeys: ['7tv-a'], items: [doneItem()], startedAt: 0, finishedAt: 1000 },
+        }),
+      );
+      const fixture = render();
+      const openSpy = TestBed.inject(Dialog).open as ReturnType<typeof vi.fn>;
+      openSpy.mockReturnValue({ closed: of({ optionId: 'json' }) });
+
+      if (!('createObjectURL' in URL)) {
+        Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
+      }
+      let downloadedBlob: Blob | null = null;
+      vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
+        downloadedBlob = blob as Blob;
+        return 'blob:test';
+      });
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+      const originalCreateElement = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+        const element = originalCreateElement(tag);
+        if (tag === 'a') {
+          vi.spyOn(element as HTMLAnchorElement, 'click').mockImplementation(() => undefined);
+        }
+        return element;
+      });
+
+      findButton(fixture, 'Protokoll herunterladen')!.click();
+
+      expect(downloadedBlob).not.toBeNull();
+      const record = JSON.parse(await downloadedBlob!.text());
+      expect(record.meta.targetOwnerTwitchId).toBe('owner-tw-7');
+
+      vi.restoreAllMocks();
+    });
+
+    it('shows no download-protocol button while the run is still pending settlement', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(runInfo({ settlement: 'pending' }));
+
+      const fixture = render();
+
+      expect(findButton(fixture, 'Protokoll herunterladen')).toBeUndefined();
+      // Finding 2: Close shares the same settlement gate — a run that has stopped running but not
+      // yet settled must not be closable, since Close (reset()) would drop the run's unload cover
+      // and its protocol before either one exists.
+      expect(findButton(fixture, 'Schließen')).toBeUndefined();
+    });
+
+    // #256: Close waits for the run to close — a settled run whose report is still out, or whose
+    // re-read is still running, is not closable; once every report has an end state, a failed one
+    // included, it is.
+    it('offers Close only once the run is closed, a failed report included', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled', phase: 'reporting' }));
+      importService.syncReport.set('pending');
+
+      const reporting = render();
+      expect(findButton(reporting, 'Schließen')).toBeUndefined();
+      expect(findButton(reporting, 'Protokoll herunterladen')).toBeDefined();
+
+      importService.run.set(runInfo({ settlement: 'settled', phase: 'closed' }));
+      importService.syncReport.set('failed');
+
+      const closed = render();
+      expect(findButton(closed, 'Schließen')).toBeDefined();
+    });
+
+    it('shows the protocolNotSaved hint until the protocol has been saved, once settled', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.protocolSaved.set(false);
+
+      const notSaved = render();
+      expect(notSaved.nativeElement.textContent).toContain('Protokoll noch nicht gespeichert.');
+
+      importService.protocolSaved.set(true);
+      const saved = render();
+      expect(saved.nativeElement.textContent).not.toContain('Protokoll noch nicht gespeichert.');
+    });
+
+    it('closes without asking, calling reset() directly', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+
+      const fixture = render();
+      findButton(fixture, 'Schließen')?.click();
+
+      expect(importService.reset).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows the removed-count row when the settled run confirmed a REMOVE', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled', removedCount: 2 }));
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('2 Emotes aus dem Zielset entfernt.');
+    });
+
+    it('shows no removed-count row when nothing was confirmed removed', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled', removedCount: 0 }));
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('entfernt.');
+    });
+
+    it('shows the unknown-rows row when the settled run has rows 7TV never clarified', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(runInfo({ settlement: 'settled', unknownCount: 1 }));
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Bei 1 Zeile unklar, ob übernommen.');
+    });
+
+    // #256 issue point 4: the dock says where an unconfirmed REMOVE is recorded — under the
+    // existing unknown-rows line, only the recovery file covers it.
+    it('shows the unknown-removal row when the settled run has a replace REMOVE 7TV never clarified', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(
+        runInfo({ settlement: 'settled', unknownCount: 1, unknownRemovalCount: 1 }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        'Bei 1 Ersetzung unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+      );
+    });
+
+    it('shows no unknown-removal row when nothing is an unconfirmed removal', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(
+        runInfo({ settlement: 'settled', unknownCount: 1, unknownRemovalCount: 0 }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('Rückweg-Datei deckt sie ab.');
+    });
+
+    it('shows the drift notice for a run that still queued something', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.replaceSkippedDrift.set(1);
+      importService.duplicateNoticePending.set(true);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        '1 Ersetzung übersprungen — Ziel hat sich verändert.',
+      );
+    });
+
+    // The case the drift row exists for: every replace row drifted, nothing ran, no run object and
+    // an empty queue — the same "no run at all" shape #149 P2's skipped-duplicates notice already
+    // proves reachable.
+    it('shows the drift notice even when every replace row drifted and nothing ran at all', () => {
+      importService.run.set(null);
+      importService.queue.set([]);
+      importService.replaceSkippedDrift.set(3);
+      importService.duplicateNoticePending.set(true);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        '3 Ersetzungen übersprungen — Ziel hat sich verändert.',
+      );
+    });
+
+    it('shows no drift notice once its pending window has elapsed, even while the count is still set', () => {
+      importService.replaceSkippedDrift.set(2);
+      importService.duplicateNoticePending.set(false);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
+    });
+
+    // #253, spec 4.5 point 17, AK 32: the shared pre-check blocked a replace-carrying start before
+    // anything ran — same all-blocked-leaves-nothing-queued shape as the drift notice above (no run
+    // object, empty queue), shown for the same `duplicateNoticePending` window.
+    it('shows the shared pre-check block reason even with no run at all — a plan blocked before it started', () => {
+      importService.run.set(null);
+      importService.queue.set([]);
+      importService.targetCheckBlockReason.set('notEditable');
+      importService.duplicateNoticePending.set(true);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
+      );
+    });
+
+    it('shows no pre-check block notice once its pending window has elapsed, even while the reason is still set', () => {
+      importService.targetCheckBlockReason.set('unavailable');
+      importService.duplicateNoticePending.set(false);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('nicht geprüft werden');
+    });
+
+    it('shows a retry banner on a failed removal report and calls retryRemovalReport on click', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('failed');
+
+      const fixture = render();
+      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
+
+      findButton(fixture, 'Entfernung erneut melden')?.click();
+
+      expect(importService.retryRemovalReport).toHaveBeenCalledTimes(1);
+    });
+
+    // Spec E23: the removal banner carries the reason as its own line.
+    it('shows the reason line under a failed removal report, and none without a reason', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('failed');
+      importService.removalReportReason.set('setNotFound');
+
+      const withReason = render();
+      expect(withReason.nativeElement.textContent).toContain(
+        'Grund: Das Set gibt es bei 7TV nicht mehr.',
+      );
+
+      importService.removalReportReason.set(null);
+      const withoutReason = render();
+      expect(withoutReason.nativeElement.textContent).toContain(
+        'Entfernungs-Rückmeldung fehlgeschlagen',
+      );
+      expect(withoutReason.nativeElement.textContent).not.toContain('Grund:');
+    });
+
+    // #255: 'partial' means the removal report did get through, just not completely — its own
+    // title/text, not the 'failed' wording (which reads "fehlgeschlagen", wrong for something
+    // that was in fact recorded).
+    it('shows its own partial banner (not the failed one) for a partial removal report', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('partial');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung unvollständig');
+      expect(fixture.nativeElement.textContent).not.toContain(
+        'Entfernungs-Rückmeldung fehlgeschlagen',
+      );
+    });
+
+    // addendum N4, AK 40: the removal notice stays for either channel-mismatch reason, its retry
+    // does not.
+    it.each(['channelMismatchNotTracked', 'channelMismatchActiveSetDiffers'] as const)(
+      'offers no removal retry for partial/%s, but keeps the notice',
+      (reason) => {
+        importService.isRunning.set(false);
+        importService.queue.set([doneItem()]);
+        importService.run.set(runInfo({ settlement: 'settled' }));
+        importService.removalReport.set('partial');
+        importService.removalReportReason.set(reason);
+
+        const fixture = render();
+
+        expect(fixture.nativeElement.textContent).toContain(
+          'Entfernungs-Rückmeldung unvollständig',
+        );
+        expect(findButton(fixture, 'Entfernung erneut melden')).toBeFalsy();
+      },
+    );
+
+    it('keeps the removal retry for partial/shortfall', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('partial');
+      importService.removalReportReason.set('shortfall');
+
+      const fixture = render();
+      findButton(fixture, 'Entfernung erneut melden')?.click();
+
+      expect(importService.retryRemovalReport).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows the succeeded note for a settled, successful removal report, not the retry banner', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('succeeded');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung erfolgreich.');
+      expect(fixture.nativeElement.textContent).not.toContain(
+        'Entfernungs-Rückmeldung fehlgeschlagen',
+      );
+    });
+
+    it('shows no removal-report notice at all while its state is idle', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('idle');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('Entfernungs-Rückmeldung');
+    });
+  });
+
+  // Plan-284 Festlegung 5: the import publishes its snapshot while `settling` (E1) — every `failed`
+  // row already carries its final reason (Festlegung 9), but an `unknown` row may still flip once
+  // the re-read answers, and so may every count and line read off the rows. The dock holds those
+  // back until the run has settled, exactly as for delete and restore.
+  describe('while the run is settling', () => {
+    const gapReason = 'Ersetzen abgebrochen — das alte Emote ist schon entfernt.';
+
+    function settlingRows(clarified: 'unknown' | 'done'): ImportRunItem[] {
+      return [
+        doneItem(),
+        doneItem({ key: 'b', sevenTvEmoteId: '7tv-b', name: 'B', status: clarified }),
+        doneItem({
+          key: 'c',
+          sevenTvEmoteId: '7tv-c',
+          name: 'C',
+          status: 'failed',
+          failedStep: 1,
+          errorMessage: gapReason,
+        }),
+        doneItem({ key: 'd', sevenTvEmoteId: '7tv-d', name: 'D', status: 'unknown' }),
+      ];
+    }
+
+    function showSettling(): ComponentFixture<ImportProgressSection> {
+      const rows = settlingRows('unknown');
+      importService.isRunning.set(false);
+      importService.queue.set(rows);
+      importService.run.set(
+        runInfo({
+          settlement: 'pending',
+          phase: 'settling',
+          removedCount: 1,
+          unknownCount: 2,
+          unknownRemovalCount: 1,
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: ['7tv-a'], items: rows, startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      return render();
+    }
+
+    it('keeps the progress and the failed row, but holds back the summary and the unclear rows', () => {
+      const fixture = showSettling();
+      const text: string = fixture.nativeElement.textContent;
+
+      expect(text).toContain('Wird abgeschlossen…');
+      expect(text).toContain('4 / 4 kopiert');
+      expect(
+        fixture.nativeElement.querySelector('[role="progressbar"]').getAttribute('aria-valuenow'),
+      ).toBe('4');
+      expect(alertRows(fixture)).toEqual([`C: ${gapReason}`]);
+      // Everything the summary block carries: the counts, the host's count lines, the not-active
+      // notice, the protocol and the Close button.
+      expect(text).not.toContain('kopiert ·');
+      expect(text).not.toContain('aus dem Zielset entfernt');
+      expect(text).not.toContain('unklar, ob übernommen');
+      expect(text).not.toContain('unklar, ob entfernt');
+      expect(text).not.toContain('kopiert — es ist nicht das aktive Set');
+      expect(text).not.toContain('Protokoll');
+      expect(text).not.toContain('Schließen');
+    });
+
+    it('shows the summary and the still unclear row once the run moves from settling to closed, the failed row unchanged', () => {
+      const fixture = showSettling();
+      const regionBefore = fixture.nativeElement.querySelector('[role="alert"]');
+      const failedRowBefore = alertRows(fixture)[0];
+      expect(alertRows(fixture)).toEqual([`C: ${gapReason}`]);
+
+      // The re-read cleared `B` up as done; `D` stayed unclear.
+      const rows = settlingRows('done');
+      importService.queue.set(rows);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          phase: 'closed',
+          removedCount: 1,
+          unknownCount: 1,
+          unknownRemovalCount: 1,
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: ['7tv-a', '7tv-b'], items: rows, startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      fixture.detectChanges();
+
+      const text: string = fixture.nativeElement.textContent;
+      expect(text).toContain('2 kopiert · 1 fehlgeschlagen · 0 abgebrochen');
+      expect(text).toContain('1 Emote aus dem Zielset entfernt.');
+      expect(text).toContain('Bei 1 Zeile unklar, ob übernommen.');
+      expect(text).toContain(
+        'Bei 1 Ersetzung unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+      );
+      expect(text).toContain(
+        "In Set ‚wegwerf' kopiert — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
+      );
+      expect(alertRows(fixture)).toEqual([
+        `C: ${gapReason}`,
+        'D: Unklar, ob kopiert — bitte im Set nachsehen.',
+      ]);
+      // Festlegung 9: the failed row reads the same in both phases, in the same live region — it is
+      // not announced a second time.
+      expect(alertRows(fixture)[0]).toBe(failedRowBefore);
+      expect(fixture.nativeElement.querySelector('[role="alert"]')).toBe(regionBefore);
+    });
   });
 });

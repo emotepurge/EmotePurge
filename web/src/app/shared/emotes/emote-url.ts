@@ -34,3 +34,25 @@ export function animatedEmoteUrl(url: string): string {
 export function isAnimatedEmoteUrl(url: string): boolean {
   return url.endsWith(STILL_SUFFIX);
 }
+
+/**
+ * The 4x still of a 7TV emote, built from its id and its `animated` flag — the one place the
+ * frontend derives an image url from an id rather than rewriting one the backend stored (#254,
+ * spec 17 K1: the undo confirm dialog shows a source emote that only the live set read knows).
+ *
+ * Byte-identical to the backend's `BuildForeignImageUrl` (`SevenTvApiClient.cs`) and to the two
+ * forms `SevenTvEmoteJsonMapper` stores: `4x_static.webp` only for an animated emote, `4x.webp`
+ * otherwise. The `_static` rendition is 7TV's flattened first frame and exists only when there is
+ * something to flatten — measured 2026-09-09 against HandOfBlood's set, every still emote answered
+ * 404 there while `4x.webp` answered 200. Without the flag, therefore, `4x.webp` is the only safe
+ * answer (it exists for every emote; on an animated one it carries the animation), which is why the
+ * caller passes `false` for a missing flag, as the backend does.
+ *
+ * Plan-230 T1 forbade deriving an image url from the id; that rule was about deriving it *without*
+ * knowing whether the emote is animated, and it still holds for every such derivation. Both results
+ * end in a suffix `animatedEmoteUrl`/`isAnimatedEmoteUrl` and the sprite's image loader already
+ * recognise.
+ */
+export function emoteStillUrl(sevenTvEmoteId: string, animated: boolean): string {
+  return `https://cdn.7tv.app/emote/${sevenTvEmoteId}${animated ? STILL_SUFFIX : '/4x.webp'}`;
+}

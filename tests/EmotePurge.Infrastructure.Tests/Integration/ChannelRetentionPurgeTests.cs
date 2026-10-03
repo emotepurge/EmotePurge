@@ -367,6 +367,7 @@ public class ChannelRetentionPurgeTests(PostgresFixture fixture)
             db,
             Substitute.For<IRedisPublisher>(),
             identity ?? Unavailable(),
+            new ChannelEmoteSetObservationService(db),
             // Uncapped: the shared collection database accumulates active channels across tests.
             new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
             Substitute.For<IExcludedChannelFilter>(),
@@ -402,7 +403,8 @@ public class ChannelRetentionPurgeTests(PostgresFixture fixture)
         appTokenProvider.GetTokenAsync(Arg.Any<CancellationToken>()).Returns("retention-app-token");
 
         return new ChannelIdentityService(
-            db, helix, appTokenProvider, Substitute.For<IRedisPublisher>(), new ChannelIdentityWarningState(),
+            db, helix, appTokenProvider, Substitute.For<IRedisPublisher>(), new ChannelEmoteSetObservationService(db),
+            new ChannelIdentityWarningState(),
             Substitute.For<IExcludedChannelFilter>(), logger);
     }
 

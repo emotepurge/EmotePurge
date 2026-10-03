@@ -11,6 +11,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
@@ -545,7 +546,7 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
 
         const string voteTag = "acctdel-vote-race-vote";
         await using var voteDb = fixture.CreateTaggedDbContext(voteTag);
-        var vote = new VoteSessionService(voteDb).CastVoteAsync(channel.ChannelName, openSession.Id, emote.Id, user.Id, VoteType.Keep);
+        var vote = new VoteSessionService(voteDb, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>()).CastVoteAsync(channel.ChannelName, openSession.Id, emote.Id, user.Id, VoteType.Keep);
         await fixture.WaitUntilBlockedOnLockAsync(voteTag, vote);
 
         await blocker.RollbackAsync();

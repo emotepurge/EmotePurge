@@ -56,10 +56,9 @@ public class MyChannelsService(
         // means the grant list may be incomplete.
         var sevenTvUnavailable = grantsResult.Status == SevenTvLookupStatus.Unavailable;
 
-        var (isLegacyGrantPayload, grantTwitchIds, grantLogins) = PrepareSevenTvGrantLookup(grants, flagsByChannel);
+        var (grantTwitchIds, grantLogins) = PrepareSevenTvGrantLookup(grants);
 
-        // One query for both criteria: channels already known by name (self/moderated/legacy-grant/
-        // grant login) and channels the db tracks under a grant's Twitch id, whatever name they
+        // One query for both criteria: channels already known by name (self/moderated/grant login) and channels the db tracks under a grant's Twitch id, whatever name they
         // currently have. Matching the db-tracked, renamed case here — rather than after a Helix
         // round trip — is exactly why this stays a single query instead of two.
         var trackedChannels = await db.Channels
@@ -76,7 +75,7 @@ public class MyChannelsService(
             .Where(c => c.TwitchChannelId is not null)
             .ToDictionary(c => c.TwitchChannelId!, c => c.ChannelName, StringComparer.Ordinal);
 
-        await ApplyResolvedSevenTvGrantsAsync(isLegacyGrantPayload, grants, trackedNameById, flagsByChannel, cancellationToken);
+        await ApplyResolvedSevenTvGrantsAsync(grants, trackedNameById, flagsByChannel, cancellationToken);
 
         // The worker's last live-poll result; only bot-active channels were polled, so for every
         // other row absence from the live set must read as "unknown", not "offline".
@@ -100,40 +99,30 @@ public class MyChannelsService(
     }
 
     /// <summary>
-    /// Flags the legacy-payload channels directly (by login, no Helix call — issue #34 still applies
-    /// to these grants until the cache entry's TTL expires and a fresh lookup repopulates Entries),
-    /// and otherwise derives the two lookup sets the tracked-channels query below needs.
+    /// Derives the two lookup sets the tracked-channels query below needs.
     /// <para>
     /// Grant logins join the name criterion purely so a pre-backfill row (TwitchChannelId still null,
     /// so it can't match via the id set) is found by name instead. They must NOT be written into
-    /// <paramref name="flagsByChannel"/> here — that would resurrect the issue #34 ghost-channel bug:
-    /// a dead grant's stale login would produce an output row on its own, instead of being dropped
-    /// once <see cref="ResolveUntrackedGrantsAsync"/> finds Helix has no such id.
+    /// the flags here — that would resurrect the issue #34 ghost-channel bug: a dead grant's stale
+    /// login would produce an output row on its own, instead of being dropped once
+    /// <see cref="ResolveUntrackedGrantsAsync"/> finds Helix has no such id.
+    /// </para>
+    /// <para>
+    /// A cache payload from before <see cref="SevenTvEditorGrants.Entries"/> existed never reaches
+    /// this method: <c>ModRoleCache</c> reads it as a miss, so the grants arrive freshly resolved.
     /// </para>
     /// </summary>
-    private static (bool IsLegacyGrantPayload, IReadOnlySet<string> GrantTwitchIds, IReadOnlySet<string> GrantLogins) PrepareSevenTvGrantLookup(
-        SevenTvEditorGrants? grants, Dictionary<string, ChannelFlags> flagsByChannel)
+    private static (IReadOnlySet<string> GrantTwitchIds, IReadOnlySet<string> GrantLogins) PrepareSevenTvGrantLookup(
+        SevenTvEditorGrants? grants)
     {
-        // A cache entry written before Entries existed: still authoritative for authorization, but
-        // there is nothing to resolve by id yet.
-        if (grants is { Entries.Count: 0, ChannelLogins.Count: > 0 })
-        {
-            foreach (var login in grants.ChannelLogins)
-            {
-                GetOrAdd(flagsByChannel, login).IsSevenTvEditor = true;
-            }
-
-            return (true, new HashSet<string>(), new HashSet<string>());
-        }
-
         if (grants is null)
         {
-            return (false, new HashSet<string>(), new HashSet<string>());
+            return (new HashSet<string>(), new HashSet<string>());
         }
 
         var grantTwitchIds = new HashSet<string>(grants.Entries.Select(entry => entry.TwitchChannelId), StringComparer.Ordinal);
         var grantLogins = new HashSet<string>(grants.Entries.Select(entry => entry.ChannelLogin), StringComparer.Ordinal);
-        return (false, grantTwitchIds, grantLogins);
+        return (grantTwitchIds, grantLogins);
     }
 
     /// <summary>
@@ -143,13 +132,12 @@ public class MyChannelsService(
     /// only place this method ever asks Helix.
     /// </summary>
     private async Task ApplyResolvedSevenTvGrantsAsync(
-        bool isLegacyGrantPayload,
         SevenTvEditorGrants? grants,
         IReadOnlyDictionary<string, string> trackedNameById,
         Dictionary<string, ChannelFlags> flagsByChannel,
         CancellationToken cancellationToken)
     {
-        if (isLegacyGrantPayload || grants is null)
+        if (grants is null)
         {
             return;
         }

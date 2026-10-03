@@ -3,8 +3,11 @@ import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
 
-/** Beyond this the list stops being readable and starts being a wall — the tail is counted instead. */
-const PREVIEW_CAP = 50;
+/** Beyond this the list stops being readable and starts being a wall — the tail is counted instead.
+ *  Exported so a caller that formats the same kind of "these names" list as a single line of text
+ *  instead of a scrollable `<ul>` (`MassDeletePanel`'s missing-row abort reason, #227 P2-c) reuses
+ *  the identical threshold rather than picking its own. */
+export const PREVIEW_CAP = 50;
 
 /**
  * The list of names a dialog is about to act on (delete, restore).
