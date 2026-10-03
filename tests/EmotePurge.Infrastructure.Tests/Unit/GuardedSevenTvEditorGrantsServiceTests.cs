@@ -292,6 +292,7 @@ public class GuardedSevenTvEditorGrantsServiceTests
                 new HttpClient(Handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
                 new RecordingRateLimitTelemetry(),
                 RequestBudget,
+                new RecordingSevenTvSearchBudget(),
                 new RecordingLogger<SevenTvApiClient>());
             GrantsCache = grantsCache ?? Substitute.For<IModRoleCache>();
             var holdCache = holds ?? Holds;

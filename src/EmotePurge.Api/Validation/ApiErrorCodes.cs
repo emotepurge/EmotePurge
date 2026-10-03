@@ -44,6 +44,10 @@ internal static class ApiErrorCodes
     // language-neutral and free of any mention of a legal objection — the frontend text says only
     // that the channel cannot be added.
     public const string ChannelExcluded = "channel_excluded";
+    // 409 from DELETE /api/auth/me: the account the client asked to delete (expectedTwitchUserId)
+    // is not the one the session cookie belongs to — another tab signed in as someone else. Nothing
+    // was deleted, the session is untouched.
+    public const string AccountMismatch = "account_mismatch";
     // Four codes for GET /api/seventv/channels/{channelName}/emotes (foreign-channel-import spec,
     // section 5) — ChannelNotOnTwitch above covers the fifth state that row shares with the join
     // endpoint. All four carry a 503/404 body with no further detail: the caller cannot act on more

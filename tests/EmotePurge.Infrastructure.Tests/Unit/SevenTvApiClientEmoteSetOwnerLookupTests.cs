@@ -106,6 +106,7 @@ public class SevenTvApiClientEmoteSetOwnerLookupTests
             httpClient,
             new RecordingRateLimitTelemetry(),
             budget ?? new RecordingForeignUpstreamRequestBudget(),
+            new RecordingSevenTvSearchBudget(),
             new RecordingLogger<SevenTvApiClient>());
     }
 

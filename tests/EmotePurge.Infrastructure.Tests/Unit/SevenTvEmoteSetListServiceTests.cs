@@ -418,7 +418,7 @@ public class SevenTvEmoteSetListServiceTests
             BaseAddress = new Uri("https://7tv.io/v3/"),
         };
         return new SevenTvApiClient(
-            httpClient, new RecordingRateLimitTelemetry(), budget, new RecordingLogger<SevenTvApiClient>());
+            httpClient, new RecordingRateLimitTelemetry(), budget, new RecordingSevenTvSearchBudget(), new RecordingLogger<SevenTvApiClient>());
     }
 
     private static string MeasuredAnswer() =>

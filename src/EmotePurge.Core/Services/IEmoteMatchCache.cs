@@ -21,4 +21,7 @@ public interface IEmoteMatchCache
     void RemoveChannel(string channelName);
 
     EmoteMatchSnapshot GetChannelSnapshot(string channelName);
+
+    /// <summary>Normalized names of every channel that currently has an entry (point-in-time snapshot).</summary>
+    IReadOnlyCollection<string> GetCachedChannelNames();
 }

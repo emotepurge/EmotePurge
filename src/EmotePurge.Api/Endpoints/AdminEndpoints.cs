@@ -365,8 +365,8 @@ public static class AdminEndpoints
         });
 
         group.MapGet("/users", async (
-            int page,
-            int pageSize,
+            string? page,
+            string? pageSize,
             IAdminUserQueryService userQueryService,
             CancellationToken ct) =>
         {
@@ -453,8 +453,8 @@ public static class AdminEndpoints
         });
 
         group.MapGet("/audit-log", async (
-            int page,
-            int pageSize,
+            string? page,
+            string? pageSize,
             string? action,
             string? channel,
             string? actor,

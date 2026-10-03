@@ -40,6 +40,582 @@ finite re-read; it needs several edits within about a second and an ordering oth
 
 ---
 
+### 2026-10-03 — Harness: the run mode is recorded in the .jsonl header and checked on every existing file
+
+**Betrifft:** `src/EmotePurge.Worker/Harness/HarnessReportFile.cs` ·
+`src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessReportFileTests.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
+
+The run mode (`--diagnostic` or binding) was not part of the run identity (D4) and was recorded
+nowhere in the `.jsonl`, so only a *closed* run could be checked against it, through its report.
+An unfinished diagnostic file could be resumed and closed as a binding run, or its older window
+inherited by `FindFrozenWindow`. A run is binding only if it ran binding from the start (#69), so
+this is the same rule the closed-run refusal already enforced, now extended to files with no report.
+
+**File format.** `HarnessReportHeader` gets an optional `diagnostic` field (`true`/`false`). It sits
+beside the identity, not in it: `BuildFileName` and the byte-for-byte identity comparison are
+unchanged, so existing files keep their names and still match. A `null` is not written, so a header
+without the field is byte-identical to the old format, and that is how a legacy file reads: mode
+unknown.
+
+**Rules.**
+
+- A file whose recorded mode differs from the current invocation's is refused with exit 3, before
+  anything is written or fetched, in both directions. A diagnostic file is never continued as
+  binding, and a binding file is never continued by a diagnostic invocation.
+- A legacy file without a recorded mode is read as diagnostic. That can only lower a run's standing:
+  a diagnostic run may continue it, a binding run may not (exit 3, move the file aside).
+- `FindFrozenWindow` skips candidates of another mode, legacy ones included for a binding run, so a
+  binding run derives its own window instead of measuring an older diagnostic one.
+- The repair of a closed run's unreadable report uses the file's recorded mode; a legacy closed file
+  whose report is unreadable is repaired by a diagnostic invocation only. A closed legacy file with a
+  readable report is still decided by that report, as before.
+- `--report-only` takes the mode from the header, falling back to the original report and then to
+  diagnostic (D4) only for legacy files. The command line cannot combine `--report-only` with
+  `--diagnostic`, so there is no flag to disagree with; if the original report's `run.diagnostic`
+  disagrees with the header, the recompute logs a warning and uses the header.
+
+**Mixed images.** An unfinished binding file written by an image without this change has no
+recorded mode. The new image refuses it with exit 3 on the same UTC day (same identity, so it
+would be resumed) and, on a later day, derives a new window instead of resuming it, with a warning
+naming the file. A binding run therefore must either start on an image that already contains this
+change, or keep its image pinned until its last report is closed. The warning also names the
+operator action: move the file aside for a deliberate fresh start, or record the mode by hand in
+header line 1 (`"diagnostic":true|false`), which is an attestation by the operator that nothing
+verifies. `FindFrozenWindow` logs the skip when the file would otherwise have been inherited, and
+always for a legacy file seen by a binding run. A `--report-only` recompute whose header and
+original report disagree on the mode gets the warning code `run-mode-disagreement` (a new value in
+`Recomputation.Warnings`, no new field) and a prominent banner of its own in the recompute
+Markdown, separate from the snapshot-drift block; the "Herkunft" line there says whether the mode
+came from the header or from the original report.
+
+**Alternatives.** Putting the mode into the identity would have renamed every file and made a mode
+mismatch a silent fresh start instead of a refusal. Treating a legacy file as binding would have let
+exactly the files this change exists to catch (diagnostic runs written before it) pass as binding.
+
+### 2026-10-03 — Harness: a transfer cancelled mid-body books its bytes against the cap (#82)
+
+**Betrifft:** `src/EmotePurge.Core/ChatLogArchive/ChatLogArchiveModels.cs` ·
+`src/EmotePurge.Core/ChatLogArchive/IChatLogArchiveClient.cs` ·
+`src/EmotePurge.Infrastructure/ChatLogArchive/ChatLogArchiveClient.cs` ·
+`src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ChatLogArchiveClientTests.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
+
+The harness entry of 2026-09-05 promises that `Harness__MaxMegabytesPerRun` caps the bytes "über
+alle Tage und alle Resumes eines Laufs". One abort path did not keep that promise: a `docker stop`
+or Ctrl-C after part of a day's body had arrived. `ChatLogArchiveClient` let the caller's
+cancellation propagate as a bare `OperationCanceledException`, the byte count died with the
+counting stream, and `HarnessRunner`'s `catch` booked the abort with 0 bytes — a resumed run won
+those bytes back.
+
+**Contract change, return instead of throw.** `IChatLogArchiveClient.ReadDayAsync` now returns the
+new `ChatLogDayStatus.Cancelled` (appended as the last member, so no existing value moves) with
+`BytesReceived` set to what had arrived, whenever `ct` is cancelled while the body is being read.
+Cancellation before the body — waiting for the request slot, or the header phase — still throws:
+no body byte was read, and the runner's `catch` keeps booking 0 for it, which is now correct rather
+than merely the only number available. The two cancellation outcomes inside the body are told apart
+exactly as before: `ct.IsCancellationRequested` means the caller, anything else the body timeout.
+
+**No special case in the runner.** `Cancelled` falls into the existing `default:` branch, the one
+`BodyTimeout`/`TransportFailure`/`ByteCapExceeded` already take: an event line with status
+`Cancelled` (the same status string the `catch` wrote before), now with the received bytes and the
+HTTP status, and exit code 4 as before. Only the free-text `message` of that event line changes
+("Log-Archiv-Abruf endete mit Cancelled." instead of "Lauf abgebrochen."); nothing reads it.
+
+**Count-neutral, no `AlgorithmVersion` bump.** Nothing on the counting path moved: a cancelled day
+never produced a day line and still does not, so the day lines a run is built from are unchanged.
+What changes is the `bytes` of one kind of event line — the same accounting field the 2026-09-05
+"Nachtrag (Abschluss-Review)" introduced without a bump — and with it `run.totalBytes`, an
+operational figure outside every gate (#69, T10).
+
+---
+
+### 2026-10-03 — Harness: the byte cap bites while the bytes arrive, not after a whole line is buffered (#83)
+
+**Betrifft:** `src/EmotePurge.Core/ChatLogArchive/IChatLogArchiveClient.cs` ·
+`src/EmotePurge.Infrastructure/ChatLogArchive/ChatLogArchiveClient.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ChatLogArchiveClientTests.cs`
+
+`ChatLogArchiveClient` checked `maxBytes` after `reader.ReadLineAsync(...)` returned. A
+`StreamReader` assembles a whole line before it returns one, and its `bufferSize: 1024` bounds only
+each read from the stream, not that accumulation. A successful response with an overlong or
+newline-free line — after a format change on the archive's side, say — was therefore pulled and
+buffered in full before `ByteCapExceeded` could fire, and a single such body could exhaust the
+harness container's 512 MB long before. Not the "one chunk of slack" accepted when the client was
+built, but an unbounded body.
+
+**The cap now sits in the counting stream.** `CountingHashStream` takes `maxBytes`; once more than
+`maxBytes` bytes have been read, every further read reports end of body without touching the wire,
+so the reader cannot keep accumulating. `ScanLinesAsync` checks `CountingHashStream.CapExceeded`
+right after each `ReadLineAsync`, **before** the end-of-body test — past the cap a `null` line can
+mean "cap reached" as well as "done", and only the flag tells them apart. The overshoot is at most
+one `StreamReader` read buffer (1024 bytes), and every byte that did arrive is still reported in
+`BytesReceived` and booked by the runner, as before.
+
+End-of-body instead of a dedicated exception from inside the stream: the existing flow already ends
+at a `null` line and every abort already returns a result rather than throwing, so this needs no new
+exception type that the `IOException`/`HttpRequestException` catch beside it would have to be kept
+from swallowing.
+
+**The boundary does not move, and nothing below it changes.** A body of exactly `maxBytes` is
+`Complete`, one byte more is `ByteCapExceeded` — before and after, both now pinned by a test. For
+every body within the cap the stream behaves exactly as before (it only answers differently once
+the cap is crossed), so the bytes, the lines, the digest and the counts of every `Complete` day are
+identical. Days over the cap were aborted before and are aborted now; they never produce a day
+line. **Count-neutral, no `AlgorithmVersion` bump.**
+
+---
+
+### 2026-10-03 — Harness: a rerun of a finished run leaves its reports untouched (#87)
+
+**Betrifft:** `src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`src/EmotePurge.Worker/Harness/ReplayModels.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
+
+A second invocation with the same arguments on the same UTC day, against an unchanged data
+snapshot, is the identical run: same identity, same file. It fetched nothing — correctly — but went
+on through the resume path and rewrote both reports. The rewrite was poorer than the original: the
+window-wide distinct-chatter count is only ever held in memory while the days stream in
+(Plan-Entscheidung 13), so the second pass reported it as "nicht verfügbar (wiederaufgenommen)",
+and "Bericht erzeugt"/"Laufzeit" described the rerun rather than the measurement.
+
+**Chosen: a closed run is not rewritten.** The issue offered two ways. Persisting a per-day chatter
+count in the day line does not give the window's distinct count — a sum over days counts a person
+once per day — and a mergeable set structure would change the day-line shape, which is one of the
+three `AlgorithmVersion` triggers. Instead `HarnessRunner.DecideClosedRun` decides what a rerun of a
+closed run does — **after** the header has matched the identity and every day line has been read
+(`ReadHeader`, then `ReadDays`), never before: a closed file is evidence, and a valid report beside
+damaged day lines must not end the rerun as "already complete". A file that is not closed continues
+exactly as before.
+
+A "finished report" is one that describes this run: `TryReadExistingReport` returns it, `run`,
+`gate`, `plausibility` and `diagnostics` are all present, `run.runComplete` is `true`, and
+`run.windowFrom`/`run.windowTo` equal the identity's window. `TryReadExistingReport` itself stays as
+tolerant as it was — the recompute's fail-closed inheritance of `run.diagnostic` (#119) depends on
+that — so the stricter check is a separate predicate in the runner. A report whose JSON root is not
+an object (`null`, `[]`, `42`) makes `TryReadExistingReport` throw rather than return `null`; the
+closed-run path catches that and treats it as unreadable. The method itself is left alone, so the
+report-only recompute still ends such a file with exit 6 — a known, pre-existing gap of #119, not
+changed here. The `.report.md` is deliberately not validated: it is a rendering for humans with no
+parseable contract, and `IsClosed` asks only for its presence.
+
+The outcomes for a rerun, in the order they are decided:
+
+| Case | Outcome |
+| --- | --- |
+| Damaged evidence: an interior day line that does not parse, or a header that no longer matches | exit 3 (the existing `HarnessReportFileException` path), nothing written, nothing fetched |
+| Damaged evidence: a window day without a day line, or a day with two | exit 3, nothing written, nothing fetched — the same coverage check the recompute uses, now shared. An ordinary run cannot close with either, so the file was altered afterwards; the archive is never asked again for a closed run |
+| Unreadable or hollow `.report.json` (missing, unparsable, a JSON root that is not an object, no boolean `run.diagnostic`, a missing section, `runComplete` not `true`, a foreign window) | repaired: a warning naming what was wrong, then the old path — resume over the day lines, rewrite both reports, no fetch. The rewrite writes the invocation's run mode, since the report's own is not trustworthy |
+| Finished report, same run mode | exit 0, all three files untouched, nothing fetched, log line `Harness run for channel '…' is already complete; …` |
+| Finished **diagnostic** report, binding invocation | **refused, exit 3**, nothing written, nothing fetched |
+| Finished **binding** report, `--diagnostic` invocation | **refused, exit 3**, nothing written, nothing fetched; the error names both reports and points to `--report-only` |
+| Half-closed run (one of the two reports missing) | not closed, resumed and both reports written, as before |
+
+**A diagnostic run stays diagnostic (operator decision 2026-10-03).** The first version of this
+entry kept a closed diagnostic run rewritable as a binding report by a rerun without `--diagnostic`,
+as "the only way to correct a forgotten flag". That is withdrawn: a run is binding only if it ran
+binding from the start. The binding run of #69 is pre-registered, and a mode that could be switched
+on after the numbers are on disk would turn the pre-registration into a choice made with the result
+in view. A binding measurement after a diagnostic one needs a fresh start on a new window, per the
+runbook. The reverse direction is refused for the plainer reason that a diagnostic invocation must
+never overwrite a binding report. The run mode is still not part of the identity (D4): an
+*unfinished* file of the same identity can be resumed in either mode, as before; only a closed run's
+mode is fixed. The comment on `ReplayRunInfo.Diagnostic` that called the mode-switching rewrite
+intended now says so.
+
+Writing nothing on the no-op and on every refusal also means needing no new permission: on the VPS
+the report files are chowned away from uid 999 after a run, and these paths only read the `.jsonl`
+and the existing `.report.json`. Should the chown ever leave the report unreadable for uid 999, it
+counts as unreadable and the run falls back to the old rewrite, which needs nothing beyond what it
+needed before.
+
+A recompute of a closed run under today's code is `--report-only` (#119), which writes a sidecar and
+leaves the original alone. The no-op only ever fires on the **same UTC day with the same input**: a
+rerun on a later UTC day is not the same run — `FindFrozenWindow` skips closed runs, so it derives a
+fresh window, starts a new file and fetches the whole window again. A closed binding run is
+therefore never rerun "to be safe"; `--report-only` is the tool for looking at it again.
+
+**Exit codes: two new exit-3 cases, no new code.** The mode refusals and the coverage refusal use
+`ExitPreconditionViolated` — "the question could not be asked", nothing written, nothing fetched.
+**Count-neutral, no `AlgorithmVersion` bump.** The decision sits before any archive request and only
+decides whether an existing report is written again, or not at all; no counted number, day line,
+gate formula, threshold or `.report.json` field name is touched, and a completed day's line stays
+byte-identical.
+
+### 2026-10-03 — One fail-closed Redis budget for 7TV's search bucket, shared by Api and Worker, plus a per-channel backoff for Twitch ids that never resolve (#165)
+
+**Betrifft:** `src/EmotePurge.Core/Services/ISevenTvSearchBudget.cs` ·
+`src/EmotePurge.Infrastructure/Redis/RedisSevenTvSearchBudget.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/{SevenTvSearchBudgetOptions,SevenTvSearchBlockPolicy,TwitchIdResolutionBackoff}.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/{SevenTvApiClient,SevenTvApiDtos}.cs` ·
+`src/EmotePurge.Infrastructure/Services/{SevenTvSyncService,SevenTvLeaderboardService}.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Api/appsettings.json` · `src/EmotePurge.Worker/appsettings.json` · `docs/Architectur.md` ·
+`docs/Konzept-7TV-Such-Budget-2026-10-03.md`
+
+7TV's GraphQL search bucket (`x-ratelimit-search-*`: 100 per ~60 s, shared across v3 and v4, about an
+hour of lockout on overdraft, disguised as HTTP 200 with `extensions.status: 429`) has two consumers in
+two processes: the Worker's Twitch-id resolution (`users(query:)`, for channels without a stored
+`TwitchChannelId`) and the Api's leaderboard (`emotes.search`). Only the leaderboard was capped (its
+in-process lid of 10 per rolling hour, 2026-09-14); a channel whose id never resolved cost a search on
+every 60-second resync tick, without bound. Design note: `docs/Konzept-7TV-Such-Budget-2026-10-03.md`.
+
+- **One budget in Redis, charged by the consumer before every search.** `ISevenTvSearchBudget`
+  (Core) / `RedisSevenTvSearchBudget` (Infrastructure, singleton in both hosts): a rolling window kept
+  as two sorted sets of timestamps (all consumers, this consumer), trimmed, checked and recorded in one
+  Lua script, so concurrent Api and Worker charges can never overshoot. Defaults: 50 per 60 s in all
+  (half of 7TV's 100), at most 40 for the resolution, so the leaderboard keeps a reserve of ten. The
+  consumer charges because only it knows who it is and what a refusal means; a refusal is an answer,
+  never a wait. Leaderboard order: breaker → shared budget → its own lid → request (a shared slot
+  wasted on a lid refusal ages out in a minute, the reverse would waste a lid slot for an hour).
+- **The client reports every search answer back** (`ObserveResponseAsync`), because only it sees the
+  headers and the GraphQL error payload. A 429 in either form blocks every consumer until 7TV's reset
+  (hint order: search-reset header, GraphQL hint, Retry-After, else 3600 s; clamped to [60 s, 6 h]);
+  a reported `remaining` at or below `LowWatermark` (10) blocks until the reset, because our ceiling is
+  half the bucket and seeing it that low means traffic we do not count. The two are **separate blocks,
+  one key per cause**, each an absolute instant in Redis and only ever extended; a charge reports the
+  rate-limit block first while both run, so a longer precautionary block never relabels a lockout.
+  The observation writes the block **before** the minimum-remaining telemetry, each in its own
+  try — a failing telemetry write can never cost a block. `ResolveTwitchUserIdAsync` now reads the search headers, detects
+  both 429 forms and reports every answer it got, a 5xx and an unparseable 200 included; to its caller it still answers `Unavailable` — `SevenTvLookupStatus` gets no
+  rate-limit member, because the UI's failure reasons hang off it.
+- **Fail-closed for charging, fail-open for observing.** Redis unreachable refuses the search
+  (`StoreUnavailable`) — the opposite of the resync cooldown's fail-open choice, because this guards a
+  bucket whose overdraft costs every consumer an hour. **Slow counts as down:** StackExchange.Redis
+  takes no cancellation token, so every round trip is awaited with a 1 s timeout (and, for a charge,
+  the caller's token, whose cancellation propagates rather than turning into a refusal); a stalled
+  Redis costs the leaderboard one second and a refusal, never a hung request. Observing ignores the
+  caller's token on purpose — 7TV has already answered, and dropping a lockout because a browser went
+  away would let the next charge walk into it. Nothing else depends on the budget: channels with a
+  stored id sync without a search. A lost observation lets nothing through while the store is down,
+  since every charge is refused then.
+- **The clock is the callers'.** "Now" goes into the Lua scripts from `TimeProvider.System` in each
+  process (not the DI clock, and not Redis' `TIME`), and the window and both blocks are compared
+  against it. That is sound while Api and Worker share a host, as they do today; split across
+  machines, their clock skew would shift the window and the blocks by as much, and the scripts should
+  then read Redis' own `TIME` instead.
+- **A refused or backed-off resolution writes nothing.** No failure reason, no attempt timestamp, no
+  backoff step: no search was made, so the last real answer stands. The leaderboard answers only a
+  **429-caused** block as `SevenTvRateLimited`, stocked for the remaining block (at least 60 s by its
+  shelf-life policy); a low-watermark block is our own precaution and answers `BudgetRefused` (30 s),
+  like every other refusal. The refusal carries the cause (`SevenTvSearchPermit.BlockCause`). Neither
+  reaches the leaderboard's breaker.
+- **Per-channel backoff for ids that never resolve.** `TwitchIdResolutionBackoff` (in-process
+  singleton, keyed by `Channel.Id`): every resolution that spent a search and stored no id —
+  no 7TV account, unavailable, rename duplicate, excluded channel, and also a resolved id the sync
+  then could not store (the set lookup failed, the implausible-wipe guard stopped it, or the row
+  vanished under #59's re-read) — is a miss. The miss is therefore recorded as soon as the permit
+  is granted, before the request, and only the successful save of the id clears it, so an attempt
+  that throws (a cancelled save, say) still leaves the channel backed off; `WarmChannelAsync` (boot recovery) never
+  resolves and never charges; the next attempt waits
+  `min(60 s × 2^(n−1), 1 h)`, a success forgets the entry. A stuck channel settles at 24 searches a day
+  instead of 1440. In-process on purpose: only the Worker runs this path, a restart costs at most one
+  search per stuck channel, and persisting it would need a migration for nothing. Entries for rows
+  whose id arrives another way (Helix backfill, rename merge) or that are deleted stay until the next
+  restart — bounded by the row count and never consulted again. It applies to every trigger,
+  including a manual RESYNC. A concrete class like `SevenTvLeaderboardRequestBudget`, not an
+  interface: pure state with no external dependency, injected only where it is tested directly.
+- **Telemetry:** the lowest `remaining` observed per UTC hour across all consumers, as
+  `seventv:search-budget:min-remaining:{yyyyMMddHH}` (TTL 25 h); a Warning whenever a block is set or
+  extended, and on every Redis failure. Not on the admin page yet.
+- **Configuration** `SevenTv:SearchBudget:*` (`MaxRequestsPerWindow`, `WindowSeconds`,
+  `ChannelIdentityMaxRequestsPerWindow`, `LowWatermark`, `DefaultLockoutSeconds`,
+  `ResolutionBackoffBaseSeconds`, `ResolutionBackoffMaxSeconds`), defaults in the options type and in
+  both `appsettings.json`, validated at startup — including `ChannelIdentityMaxRequestsPerWindow <
+  MaxRequestsPerWindow` (the leaderboard always keeps a reserve) and `LowWatermark < 100 −
+  MaxRequestsPerWindow` (our own permitted traffic can never trip it). Api and Worker must carry the
+  same values: each checks the shared window against the ceiling it knows. All defaults confirmed by
+  the operator on 2026-10-03.
+- **The 2026-09-14 entry's point 2 still holds.** The leaderboard's lid and stock stay per process,
+  and a second Api replica still needs them distributed first; what is coordinated across processes
+  now is only the leaderboard's share of the search bucket. Out of scope: an admin view of the budget,
+  a failure reason of its own for rename duplicates, the v3 telemetry handler's `Ratelimit-*` spelling.
+
+### 2026-10-03 — Channel rename/leave/purge during an in-flight 7TV sync: convergence net plus a narrowing re-read, no row lock, no concurrency token (#59)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteMatchCache.cs` · `src/EmotePurge.Core/Services/IEmoteMatchCache.cs` ·
+`src/EmotePurge.Worker/RosterPrunePolicy.cs` · `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` ·
+`src/EmotePurge.Worker/SevenTv/SevenTvEventClient.cs` · `src/EmotePurge.Worker/SevenTv/ISevenTvEventClient.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelSyncGate.cs`
+
+`ChannelSyncGate` coordinates `SevenTvSyncService` callers with each other, nothing more. The entry of
+2026-09-04 ("Der Rename-Handover bekommt zwei Sperren") says that whoever writes a `Channel` row holds
+the row gate; that is true of the sync callers only. `ChannelIdentityService.RenameAsync`/`MergeAsync`,
+the rename path of `ChannelService.JoinAsync`, `ChannelDeactivation` and the purge (the last two partly
+in the **Api**, another process) never take it. Those entries are not edited; this one corrects the
+claim. The process boundary is an accepted limit: an in-process semaphore cannot span it.
+
+The window: a sync loads the row, then sits in the 7TV REST call. A rename commits and publishes
+LEAVE old / JOIN new, the worker processes the LEAVE (cache, registry, IRC), and the old sync then saves
+(disjoint columns, it succeeds) and re-creates the match-cache entry under the old login, after which
+its caller re-subscribes the registry under it. Deactivation looks the same (the row still exists, just
+inactive). Purge and merge-loser delete the row first, so the save fails with
+`DbUpdateConcurrencyException` or an FK violation (23503). The damage is worker memory only: no data
+is lost, but the ghost used to stay until restart, because the prune step only walked the IRC roster
+and the old login had already left it — so the "heals within 3 minutes" claim in issue #54/#59 was
+false for ghosts. A registry ghost could also win `TryGetChannelForUser` over the real entry.
+
+Decided:
+
+- **Convergence net covers ghosts.** `RosterPrunePolicy` now takes the union of the IRC roster, the
+  registry's desired channels and the match-cache keys as candidates, with the unchanged two-tick grace
+  and case-insensitive comparison. The worker cleans cache and registry for each, and calls
+  `LeaveChannelAsync` only for names actually on the roster. With this the 3-minute healing claim is
+  true.
+- **Narrowing re-read.** After `SaveChangesAsync`, before touching the cache, the sync re-reads name,
+  `IsBotActive` and existence by id (no tracking). Renamed: it continues under the new name and drops
+  any entry under the old one (the warm-up may have written it). Inactive or gone: it removes the
+  entry and returns `null`. All callers already treat `null` as "nothing to follow up on".
+- **Vanished row on save** (`DbUpdateConcurrencyException`, or `DbUpdateException` over a
+  `PostgresException` with SQLSTATE 23503) is an expected interleaving: change tracker cleared,
+  logged at Information, `null` returned. Any other `DbUpdateException` still propagates.
+- **Per-channel catch** in the EventAPI shared-set loop, so one failing channel no longer skips the
+  deltas for the channels after it.
+
+Rejected: `SELECT ... FOR UPDATE` across the sync, because it would hold a row lock over an HTTP call
+for every channel every 60 s and still leave the caller's `EnsureSubscribed` outside the lock. A
+concurrency token such as `xmin` on `Channel`, because it applies to every writer including the Api,
+creating new 500 paths and requiring an audit of all of them — for a defect whose damage is
+worker memory that now converges anyway.
+
+Follow-up hardening of the same change: the re-read only removes the old-login cache entry when no
+other *active* row carries that login now (a login swap must not wipe the other row's live entry);
+the "row vanished" catch applies only when every entry of the failed save belongs to this channel
+(the `DbContext` is shared across a resync tick, so an earlier channel's failure is not blamed on
+this one); and `RecordFailedAttemptAsync` tolerates a vanished row the same way.
+
+Residual, stated honestly: early returns *before* the save (the implausible-wipe guard, which returns
+under the loaded name so the caller subscribes under the old login; the failed-attempt and
+unusable-response paths) are not narrowed by the re-read, so a warm-up or registry ghost can still
+survive them. A ghost can also still appear between the re-read and the cache write. All of these are
+covered by the prune within two ticks, not by the sync.
+
+### 2026-10-03 — Boot recovery warms and joins every channel first, live channels leading, and syncs 7TV afterwards
+
+**Betrifft:** `src/EmotePurge.Worker/Worker.cs` · `src/EmotePurge.Worker/BootRecoveryOrderPolicy.cs` ·
+`src/EmotePurge.Core/Services/ISevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`tests/EmotePurge.Worker.Tests/BootRecoveryOrderPolicyTests.cs` · `tests/EmotePurge.Worker.Tests/WorkerBootSequenceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` · `docs/Architectur.md` (principle 3)
+
+Boot recovery used to join a channel and await its full 7TV sync before joining the next one, in
+alphabetical order. A local measurement (40 live channels, 5 restarts) showed the gap growing by
+830-940 ms per join position instead of the 600 ms join throttle, and the order ignored whether anyone
+was chatting. It now runs in two phases: phase 1 warms and joins every active channel through the
+existing throttle, phase 2 runs the serial 7TV syncs.
+
+- **Per-channel warm-up and join before any sync.** `TwitchChatManager` drops the messages of a
+  channel whose match cache is empty, and the #116 warm start used to happen only inside
+  `SyncChannelAsync`. Phase 1 therefore calls the new `ISevenTvSyncService.WarmChannelAsync` (cache
+  seeded from Postgres if empty; same name/row gates and excluded-channel check as the sync; no 7TV or
+  Twitch call, no database write; returns nothing; silent no-op for an unknown or merged row; an
+  excluded row has its cache entry removed and a Debug line written, as in the sync) and then joins,
+  per channel. A failed warm-up is caught and the join still happens. The chat-join gap no longer
+  includes sync time, and a channel with a warmed cache counts from its join. **A restart-gap
+  measurement measures to the join line**, since the warm-up precedes it; a channel without a warm-up
+  line (never synced, nothing to warm from) counts only from its sync.
+- **Phase 2 syncs cold channels first.** Channels whose cache is still empty after phase 1 (never-synced
+  rows, a warm-up that found nothing or failed) count nothing until their sync, so
+  `BootRecoveryOrderPolicy.ColdFirst` puts them ahead of the channels already counting; both groups
+  keep the phase-1 order. The syncs stay serial, which keeps `ChannelSyncGate` and the shared 7TV
+  quota untouched.
+- **Live channels first in phase 1.** `BootRecoveryOrderPolicy.LiveFirst` is a pure, stable partition
+  of the roster by the `ITwitchLiveStatusReader` snapshot (read once at boot, normalized through
+  `ChannelName.Normalize`, names not on the roster and null or blank entries ignored). A missing,
+  expired or unreadable snapshot, a throwing read, or a read slower than 2 s leaves the roster order
+  unchanged and never blocks the boot. Staleness is bounded by the key's TTL (twice the poll interval,
+  at most ~10 minutes at the default cadence); `GeneratedAtUtc` is not checked on top. Live-first moves
+  non-live channels back by design; that only costs something if the snapshot missed a channel that
+  just went live (TTL ~ 2 poll intervals).
+- **Failure isolation and shutdown.** A throwing join or warm-up does not stop later joins or the sync
+  phase; a throwing sync (JsonException, DbUpdateException) does not stop later syncs and never
+  escapes `ExecuteAsync` (StopHost crash loop). On shutdown the loops stop and one Information line is
+  written instead of a warning per remaining channel. `BootRecoveryGate.MarkCompleted()` stays in the
+  outer `finally`, after both phases: the gate keeps the periodic resync from syncing the same channels
+  concurrently with boot recovery.
+- **The reconnect rejoin path needs no change.** `TwitchChatManager.RejoinDesiredChannelsAsync` only
+  re-issues JOINs through the same throttle and waits for confirmations; it never calls a 7TV sync, so
+  there is no interleaving to split.
+- **Measurement.** Local, 2026-10-03, 40 live channels (22 with 7TV emotes), 4 interleaved SIGTERM
+  restarts per build: join-gap slope 1.10-1.33 s/channel (main) -> 0.60 s (new), last channel joined
+  ~44-50 s -> ~26 s, median lost messages across all 40 channels ~830 -> ~510. The warm-up preceded
+  the join in every run; live-first was not observable (all channels were live). Data in
+  `~/projects/gaptest-2026-10-03/` (local, not in the repo).
+- **Measurement window.** Under Epic #118 this Worker change must not be deployed before 2026-10-08.
+
+### 2026-10-03 — Self-service account deletion: `DELETE /api/auth/me`, `SelfRequest`, best-effort Twitch token revocation after the commit (#243)
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/AuthEndpoints.cs` ·
+`src/EmotePurge.Core/Services/IAccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs` ·
+`src/EmotePurge.Core/Twitch/ITwitchAuthClient.cs` · `src/EmotePurge.Infrastructure/Twitch/TwitchAuthClient.cs` ·
+`web/src/app/shared/ui/account-menu.ts` · `web/src/app/core/auth/auth.service.ts` ·
+`web/e2e/account-deletion.e2e.spec.ts`
+
+The last open acceptance criterion of #243: a logged-in user deletes their own account from the
+account menu. No second deletion path — the endpoint calls `IAccountDeletionService.DeleteAsync` with
+the new `AccountDeletionReason.SelfRequest` (recorded as `selfRequest` in the `user.delete` entry), so
+votes, audit pseudonymisation, row removal and Redis cleanup are exactly those of the admin and
+retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is rejected with an
+`ArgumentException`. No schema change, no migration.
+
+- **Route and identity.** `DELETE /api/auth/me`, next to `GET /api/auth/me`, behind
+  `RequireAuthorization()`. The user id comes from the `NameIdentifier` claim only — there is no route
+  value or body to bind, so a caller can only delete the account their own cookie belongs to. The
+  audit actor is the principal itself, which the service already turns into the `deleted-user` marker
+  on the `user.delete` entry when actor and target are the same.
+- **Rate limit and CSRF.** `Bookkeeping` policy, like the other authenticated mutations on our own
+  database (the `/auth` group is otherwise unlimited on purpose, but that reasoning covers the login
+  path only). No antiforgery token: the repo defends cookie-authenticated mutations through the
+  `SameSite=Lax` session cookie and Minimal API's JSON-only binding, and a `DELETE` is never sent
+  cross-site under `Lax`; this endpoint follows that convention rather than inventing its own.
+- **The deletion answers 204, 410 or 401 — and only 204/410 mean "gone".** The row being gone is the
+  state the caller asked for, so a deletion that finds the row vanished between the session check and
+  the delete (a concurrent admin deletion) signs out and answers 204 for both `Deleted` and
+  `NotFound`. That branch is a narrow race: once the row is gone, `OnValidatePrincipal` rejects the
+  session before the handler runs, so a retry or double submit never reaches it. A 401 in front of
+  this route has four causes: (1) the user row is gone, (2) the session was revoked
+  (`issuedAt < SessionsValidFromUtc` — logout in *any* tab revokes globally, as does the admin
+  session revoke), (3) the cookie is absent or expired, (4) a legacy cookie without the
+  `SessionIssuedAtUtc` claim. Only (1) means the account no longer exists, so the client must not
+  infer deletion from a 401: in (2)-(4) the account is still there, and showing "deleted" would be
+  false. `OnValidatePrincipal` therefore flags `HttpContext.Items` when `CheckSessionAsync` returns
+  null, and `OnRedirectToLogin` answers **410 Gone** only for that flag on `DELETE /api/auth/me`
+  (decision in the pure `SessionRejection.ChallengeStatusCode`); every other rejection and every
+  other route keeps 401. The scoping is deliberate: 410 elsewhere would turn a status code that
+  every other client treats as "sign in again" into something new, for no gain. Client:
+  `AuthService.deleteAccount()` resets to `/welcome` on 204 and 410; a 401 propagates, and the
+  account menu sends the user to `/login` with a one-shot notice that the deletion could not be
+  confirmed and nothing was deleted (`AuthService.handleDeletionSessionEnded`/`takeLoginNotice`;
+  the menu is unmounted by the reset, so the notice lives on the login page). The 401 is
+  ambiguous in both directions — a deletion in *another* tab clears the shared cookie, so this tab's
+  DELETE gets 401 without a 410 — so the notice (`deletionSessionEnded`) is conditional: if you
+  deleted in another tab it is gone, and do not sign in to check (`UpsertLoginAsync` recreates a
+  deleted account on login, silently creating a fresh one); if you did not, nothing was deleted and
+  signing in and repeating is fine. The interceptor
+  keeps `/api/auth/me` in its expected-401 paths so the error reaches the caller.
+- **Twitch token revocation, after the commit.** `ITwitchAuthClient.RevokeTokenAsync` posts
+  `client_id` and `token` as a form to `https://id.twitch.tv/oauth2/revoke` through the existing typed
+  client. The handler reads the stored tokens *before* the deletion (the row, and the encrypted tokens
+  with it, is gone afterwards) but revokes only once the deletion committed: a failed deletion must not
+  leave the user signed in with tokens Twitch has already invalidated. It revokes the distinct set of
+  cookie-claim access token, stored access token and stored refresh token. Revocation is best-effort:
+  the client never throws, logs a warning (never the token), and the outcome cannot change the
+  response. Revocation is best-effort and the stored ciphertext is deleted with the row either way,
+  but a token Twitch was never told about stays valid on its side: refresh tokens do not expire on
+  their own (Twitch's documentation covers revoking access tokens). The up-to-three revocations run
+  in parallel, each isolated, so the request waits for the slowest rather than the sum (bounded by
+  the client's 10 s timeout). If the stored tokens cannot be decrypted (`InvalidOperationException`
+  from the cipher, e.g. a lost key), the handler logs a warning with the Twitch user id only, skips
+  revoking those two and still deletes: a user must not be locked into an account they cannot erase,
+  while a database failure or cancellation (nothing deleted yet) still fails the request.
+  Accepted limit: a token refresh racing between the snapshot read and the deletion commit can leave
+  a freshly issued access token (at most four hours) and a rotated refresh token unrevoked at
+  Twitch, held by nobody. Accepted because revoking a refresh token is not documented to kill the
+  grant anyway; the fix (holding `TwitchTokenRefreshGate` around snapshot and `DeleteAsync`) is
+  recorded for the day a grant-killing revocation path exists. A racing refresh whose UPDATE hits
+  the locked or deleted row fails with `DbUpdateConcurrencyException` — one 500 for a request on an
+  account that is gone; the next request gets 410/401.
+- **A lost answer is an unknown outcome, owned by `AuthService`.** Status 0 and every 5xx do not say
+  whether the account was deleted: a dropped connection, a proxy or CDN answering for the API after
+  the commit (502/503/504, Cloudflare 520–527), and an uncertain commit (the connection drops before
+  Npgsql receives the COMMIT acknowledgement, so `CommitAsync` throws and the API answers 500 although
+  the transaction went through). `deletionState` becomes `unconfirmed`, the session is left alone and
+  the menu says to reload. Only "still signed in after a reload" is reliable (the account exists); a
+  signed-out reload is ambiguous, since `ensureLoaded()` also maps an unreachable API or an expired
+  session to "signed out". The notice therefore says so, warns against signing in to check (login
+  recreates an empty account) and points to the contact form. Only 4xx other than 401/410 are
+  confirmed rejections (`failed`, "nothing changed"). The state lives in the service, not the menu,
+  because the menu is per page and dies on navigation while the request is pending; a menu created
+  later shows the outcome, and the menu's focus work runs in an `effect`, so it dies with the
+  component. An ordinary session reset (another request's 401) does not clear a pending deletion; if
+  the outcome arrives with nobody signed in, the menu cannot show it, so it becomes a login-page
+  notice (`deletionUnknown` for an unknown outcome, `deletionSessionEnded` for a rejection), which
+  the login page picks up even if it was created first. Rule on any later session reset: an `unconfirmed` outcome is carried
+  over as the `deletionUnknown` login notice (the warning must outlive the menu) — also after the
+  user dismissed the menu notice, because dismissal and "unresolved" are separate: the unresolved
+  marker is cleared only when the outcome becomes known (a `/me` that finds a user, a sign-in, a new
+  attempt) or when a reset hands it over; `failed` and `mismatch` (nothing changed or deleted) reset
+  plainly, and after a *confirmed* deletion further
+  expiry reports from requests still in flight are ignored until the next sign-in, so a late 401 does
+  not pull the user from `/welcome` to `/login`.
+  A retry does not clear the unresolved marker unless it establishes the account state (204/410, or a
+  `/me` that finds the user): a 401, 0, 5xx, 409 or other 4xx on the retry leaves it set, so a session
+  that ends afterwards shows `deletionUnknown` — never "nothing was deleted", since the earlier attempt
+  may have deleted the account. While a deletion is *pending* and another request's 401 ends the
+  session, the login page shows a `deletionPending` notice and disables sign-in (`aria-disabled`, the
+  notice as its description; `AuthService.login()` refuses too), because an OAuth login before the
+  answer arrives could recreate the account; the late outcome replaces the notice, and a 204/410 ends
+  on `/welcome` as for any confirmed deletion.
+- **The deletion is bound to the account the user confirmed.** The session cookie is shared across
+  tabs: tab 1 may have cached account A and asked for A's login while tab 2 has since signed in as B,
+  so "the session's account" is not the confirmed one. The client sends the cached account's
+  immutable Twitch id as the query parameter `expectedTwitchUserId` (not a body: DELETE bodies are
+  discouraged); the server answers **409 `account_mismatch`** (new `ApiErrorCodes` value, mirrored in
+  `api-error.ts` and both locales) when it is missing or differs from the principal's
+  `NameIdentifier`, before reading tokens or deleting anything, and without signing out. Missing is a
+  409 rather than a 400 because the only caller without it is a stale cached bundle, for which the
+  remedy is the same reload. The client does **not** re-read `/api/auth/me` or adopt the other account
+  in place: account-scoped client state (the 7TV write token, cached channel permissions, …) would
+  carry over from A to B. It shows the notice (nothing deleted, signed in as a different account,
+  reload) and leaves everything as it is; a full reload rebuilds all client state, the isolation-safe
+  path. The same binding applies to 410: `OnValidatePrincipal` also stores the rejected principal's
+  id, and `SessionRejection.ChallengeStatusCode` answers 410 only when the request is
+  `DELETE /api/auth/me` *and* its `expectedTwitchUserId` equals that id — otherwise 401, so "your
+  account is gone" is never claimed about an account the user did not confirm.
+- **Known audit gap, accepted for self-deletion too.** An audit entry with the deleted user as
+  *actor*, written by that user's own in-flight request after the commit, can survive un-pseudonymised
+  (the row lock cannot close it). `AccountDeletionService` already accepted this for an admin
+  request; self-deletion is the same case and accepted likewise.
+- **Votes are deleted, not anonymised (operator decision).** Anonymising was estimated at two to four
+  days against about one for deletion: a nullable `Vote.UserId` plus a manual production migration,
+  NULL semantics in roughly eight queries, all three deletion paths changing together, and a residual
+  re-identification risk in small sessions. Deleting costs little in practice: the chance that someone
+  deletes their account exactly while a moderator is evaluating a voting is negligible, and a vote
+  result never deletes anything automatically — it is advisory, the moderator still decides what gets
+  removed. The dialog says so plainly, including that running votings change.
+- **Frontend.** A destructive entry at the end of the account menu opens `TypedConfirmDialog` (retype
+  the Twitch login); the copy names irreversibility, the removed votes (also in running votings) and
+  that audit entries stay, pseudonymised. `AuthService.deleteAccount()` resets the client session only
+  after the server answered and then navigates to `/welcome` (there is no account to log in to any
+  more). On failure nothing is reset and the menu reopens with the reason, since nothing was deleted,
+  and focus moves to the notice. While the request runs the menu's delete row is disabled, carries
+  `aria-busy` and reads "Deleting account …", so it cannot be submitted twice.
+- **Not in the repo.** The privacy policy is operator-owned markdown outside the repository; its
+  deletion section has to be updated by the operator (suggested wording is in the PR description).
+- **Set-owner identity in other actors' entries is pseudonymised too (#315).** Epic #200 writes
+  `targetOwnerTwitchLogin` and `targetOwnerSevenTvUserId` into the details of `emotes.syncImported`,
+  `emotes.syncDeleted` and `emotes.syncRestored` entries of *other* actors, which neither the actor rule
+  nor the `"user"`-target rule reaches. `DeleteAsync` (the one path of admin, retention and self deletion)
+  now rewrites, in the same transaction, every entry whose `targetOwnerTwitchLogin` equals the account's
+  normalised login (case-insensitive; `abc` never matches `abcd`) to the marker, together with that
+  entry's `targetOwnerSevenTvUserId`; all other keys stay. Counted separately as
+  `ownerEntriesPseudonymised` in the `user.delete` details and `AuditEntriesPseudonymisedAsOwner` on the
+  result, not in `auditEntriesPseudonymised`. Lives in this PR rather than on the epic branch because it
+  needs only the two key names: on `main` no entry carries them (no-op), and once the epic merges its
+  entries are covered at once, so the gap never opens. The key names are duplicated in
+  `AccountDeletionService` until the epic's `AuditLogQueryService` constant can be unified. The `unresolved*`
+  keys name a channel, not an owner, and stay.
+
+### 2026-10-03 — Paging query parameters bind as strings, so binding cannot fail
+
+**Betrifft:** `src/EmotePurge.Api/Validation/PagingQuery.cs` · `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` · `ChannelEndpoints.cs` · `VoteSessionEndpoints.cs` · `tests/EmotePurge.Api.Tests/PagingBindingTests.cs`
+
+The five paged list routes (admin audit log, admin users, channel audit log, channel vote sessions,
+`/api/vote-sessions/mine`) declared `int page, int pageSize`. A minimal-API parameter that is absent
+or not a number fails to bind, and binding runs before the endpoint filters: the request answered 400
+(500 in Development, where `ThrowOnBadRequest` is on and the exception handler flattens it) even for a
+caller the authorization filter would have refused with 403. The paging contract was already "corrected
+silently, no error code" (`PagingQuery`), so the fix extends it instead of adding an error code: both
+parameters are bound as `string?` and `PagingQuery.Clamp` parses them, treating missing, non-numeric and
+out-of-int32-range values like an out-of-range one (page 1, page size 20). Binding can no longer fail, so
+the filter order (401/403 first) holds for any query string. A new paged route must take `string? page,
+string? pageSize` and call `PagingQuery.Clamp`, not declare `int` parameters.
+
+---
+
 ### 2026-09-29 — `channel.synced` reads the set status before the rows, and a failed status refresh locks deleting and voting instead of passing silently (#200)
 
 **Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` (live subscription,

@@ -19,7 +19,7 @@ const DE_TRANSLATIONS = {
     animated: 'animiert',
     foreignChannel: {
       channelLabel: 'Kanalname',
-      placeholder: 'z. B. handofblood',
+      placeholder: 'kanalname',
       invalidChannelName: 'Kein gültiger Twitch-Kanalname.',
       load: 'Set laden',
       reload: 'Neu laden',

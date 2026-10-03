@@ -340,6 +340,7 @@ public class ImportTargetOwnershipServiceTests
             new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
             new RecordingRateLimitTelemetry(),
             requestBudget,
+            new RecordingSevenTvSearchBudget(),
             new RecordingLogger<SevenTvApiClient>());
         var breaker = new ForeignSevenTvBreakerPolicy();
         var budget = new ForeignEmoteSetProviderBudget();
@@ -365,6 +366,7 @@ public class ImportTargetOwnershipServiceTests
             new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
             new RecordingRateLimitTelemetry(),
             new RecordingForeignUpstreamRequestBudget(),
+            new RecordingSevenTvSearchBudget(),
             new RecordingLogger<SevenTvApiClient>());
         var breaker = new ForeignSevenTvBreakerPolicy();
         var service = CreateService(
@@ -879,6 +881,7 @@ public class ImportTargetOwnershipServiceTests
             new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
             new RecordingRateLimitTelemetry(),
             requestBudget,
+            new RecordingSevenTvSearchBudget(),
             new RecordingLogger<SevenTvApiClient>());
 
         var listCache = new InMemoryListCache();
@@ -982,6 +985,7 @@ public class ImportTargetOwnershipServiceTests
             new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
             new RecordingRateLimitTelemetry(),
             requestBudget,
+            new RecordingSevenTvSearchBudget(),
             new RecordingLogger<SevenTvApiClient>());
 
         var grantsCache = Substitute.For<IModRoleCache>();

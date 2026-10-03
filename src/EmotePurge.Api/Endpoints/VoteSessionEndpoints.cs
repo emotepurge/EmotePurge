@@ -132,8 +132,8 @@ public static class VoteSessionEndpoints
 
         group.MapGet("", async (
             string channelName,
-            int page,
-            int pageSize,
+            string? page,
+            string? pageSize,
             HttpContext httpContext,
             IVoteSessionQueryService voteSessionQueryService,
             IChannelAccessService channelAccessService,
@@ -294,8 +294,8 @@ public static class VoteSessionEndpoints
         // Deliberately NOT nested under /api/channels/{channelName}/... — a user's voting history spans
         // every channel they've ever voted in, so there's no single channelName route value to key off.
         app.MapGet("/api/vote-sessions/mine", async (
-            int page,
-            int pageSize,
+            string? page,
+            string? pageSize,
             HttpContext httpContext,
             IVoteSessionQueryService voteSessionQueryService,
             CancellationToken ct) =>

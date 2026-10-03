@@ -57,7 +57,7 @@ const DE_TRANSLATIONS = {
     foreignChannel: {
       title: 'Aus einem Kanal importieren',
       channelLabel: 'Kanalname',
-      placeholder: 'z. B. handofblood',
+      placeholder: 'kanalname',
       invalidChannelName: 'Kein gültiger Twitch-Kanalname.',
       load: 'Set laden',
       reload: 'Neu laden',

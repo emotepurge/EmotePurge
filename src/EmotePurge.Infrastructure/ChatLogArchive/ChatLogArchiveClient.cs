@@ -33,8 +33,17 @@ namespace EmotePurge.Infrastructure.ChatLogArchive;
 /// so it returns as soon as headers arrive. Reading the body afterwards is governed by its own
 /// <see cref="ChatLogArchiveOptions.BodyTimeout"/>-bounded <see cref="CancellationTokenSource"/>,
 /// linked to the caller's token: a body timeout maps to <see cref="ChatLogDayStatus.BodyTimeout"/>,
-/// while a caller cancellation is left to propagate as <see cref="OperationCanceledException"/>
-/// instead — the two are told apart via <c>ct.IsCancellationRequested</c>.
+/// a caller cancellation during the body maps to <see cref="ChatLogDayStatus.Cancelled"/> — the two
+/// are told apart via <c>ct.IsCancellationRequested</c>. Both carry the bytes received so far, because
+/// the caller books them against its byte budget. A caller cancellation before the body (request
+/// pacing, header phase) still propagates as <see cref="OperationCanceledException"/>: nothing was
+/// read, so there is nothing to report.
+/// </para>
+/// <para>
+/// <b>The byte cap bites where the bytes arrive</b>, inside the counting stream, not after a line
+/// has been assembled: once more than <c>maxBytes</c> have been read the stream reports end of body,
+/// so the <see cref="StreamReader"/> cannot keep buffering an overlong or newline-free line past the
+/// cap. At most one read buffer (1024 bytes) lands beyond <c>maxBytes</c>.
 /// </para>
 /// </summary>
 public class ChatLogArchiveClient(
@@ -133,7 +142,7 @@ public class ChatLogArchiveClient(
             // Bytes are counted and fed into the digest as they arrive off the wire, before the
             // corresponding text is decoded into a line and handed to the parser — the digest
             // therefore belongs to the received body, not to what the parser made of it.
-            countingStream = new CountingHashStream(rawStream, hash);
+            countingStream = new CountingHashStream(rawStream, hash, maxBytes);
             using var reader = new StreamReader(countingStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
 
             var scan = await ScanLinesAsync(
@@ -172,11 +181,12 @@ public class ChatLogArchiveClient(
 
     // Reads and classifies every remaining line of the body: PRIVMSGs go to onMessage, every other
     // recognized command and every unreadable line are only counted. Runs until EOF (line is null,
-    // the normal end) or a fatal reason to stop reading further — a body-read timeout, a mid-body
-    // transport failure, or the byte cap — each of which already carries the counts gathered so far
-    // into the ChatLogDayResult it returns as Failure. The narrow try/catch around only the read
-    // call is deliberate (Fixrunde 1 finding): an exception onMessage itself throws is the caller's
-    // error, not a transport failure, and must propagate unchanged instead of being reported as one.
+    // the normal end) or a fatal reason to stop reading further — a body-read timeout, a caller
+    // cancellation, a mid-body transport failure, or the byte cap — each of which already carries
+    // the counts gathered so far into the ChatLogDayResult it returns as Failure. The narrow
+    // try/catch around only the read call is deliberate (Fixrunde 1 finding): an exception onMessage
+    // itself throws is the caller's error, not a transport failure, and must propagate unchanged
+    // instead of being reported as one.
     private async Task<LineScanOutcome> ScanLinesAsync(
         StreamReader reader, CountingHashStream countingStream, long maxBytes,
         Func<ChatLogMessage, ValueTask> onMessage, string twitchChannelId, DateOnly day, int httpStatusCode,
@@ -193,7 +203,17 @@ public class ChatLogArchiveClient(
             {
                 line = await reader.ReadLineAsync(bodyCt);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Returned, not rethrown: the bytes that already arrived must reach the caller's byte
+                // budget, and the count dies with the stream once this method is left by a throw.
+                logger.LogWarning(
+                    "Chat-log archive read for channel {ChannelId}, day {Day} was cancelled by the caller after {Bytes} bytes.",
+                    twitchChannelId, day, countingStream.BytesRead);
+                return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, new ChatLogDayResult(
+                    ChatLogDayStatus.Cancelled, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode));
+            }
+            catch (OperationCanceledException)
             {
                 logger.LogWarning(
                     "Log-Archiv-Abruf für Kanal {ChannelId}, Tag {Day} wegen Body-Timeout ({Timeout}) abgebrochen.",
@@ -208,18 +228,20 @@ public class ChatLogArchiveClient(
                     ChatLogDayStatus.TransportFailure, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode));
             }
 
-            if (line is null)
-            {
-                return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, null);
-            }
-
-            if (countingStream.BytesRead > maxBytes)
+            // Checked before the end-of-body test, not after it: past the cap the counting stream
+            // reports end of body, so a null line here can mean "cap reached" as well as "done".
+            if (countingStream.CapExceeded)
             {
                 logger.LogWarning(
                     "Log-Archiv-Abruf für Kanal {ChannelId}, Tag {Day} über die Byte-Obergrenze ({MaxBytes}) hinaus abgebrochen, Antwort verworfen.",
                     twitchChannelId, day, maxBytes);
                 return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, new ChatLogDayResult(
                     ChatLogDayStatus.ByteCapExceeded, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode));
+            }
+
+            if (line is null)
+            {
+                return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, null);
             }
 
             if (JustlogRawLineParser.TryParse(line, out var message, out var ircCommand))
@@ -256,10 +278,14 @@ public class ChatLogArchiveClient(
     // Wraps the raw response stream to count bytes and feed them into the running SHA-256 exactly
     // as they are read off the wire, independent of however StreamReader chooses to buffer them —
     // so the digest and byte count reflect the received body, not an approximation reconstructed
-    // from decoded text.
-    private sealed class CountingHashStream(Stream inner, IncrementalHash hash) : Stream
+    // from decoded text. It is also where the byte cap bites: once more than maxBytes have been
+    // read, every further read reports end of body without touching the wire, so StreamReader
+    // cannot go on accumulating an overlong line. CapExceeded tells that apart from a real end.
+    private sealed class CountingHashStream(Stream inner, IncrementalHash hash, long maxBytes) : Stream
     {
         public long BytesRead { get; private set; }
+
+        public bool CapExceeded => BytesRead > maxBytes;
 
         public override bool CanRead => true;
 
@@ -282,20 +308,18 @@ public class ChatLogArchiveClient(
         public override int Read(byte[] buffer, int offset, int count) =>
             ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
 
-        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-        {
-            var read = await inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
-            if (read > 0)
-            {
-                hash.AppendData(buffer, offset, read);
-                BytesRead += read;
-            }
-
-            return read;
-        }
+        // One read path, so the counting, the hashing and the cap cannot drift apart between the
+        // two overloads (StreamReader only ever calls the Memory<byte> one).
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
+            if (CapExceeded)
+            {
+                return 0;
+            }
+
             var read = await inner.ReadAsync(buffer, cancellationToken);
             if (read > 0)
             {

@@ -38,7 +38,7 @@ public class SevenTvApiClientEditorOfTests
     {
         var handler = new StubHandler(jsonPayload);
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
-        return new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingLogger<SevenTvApiClient>());
+        return new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), new RecordingLogger<SevenTvApiClient>());
     }
 
     private sealed class StubHandler(string jsonPayload) : HttpMessageHandler

@@ -1,3 +1,4 @@
+import { Dialog } from '@angular/cdk/dialog';
 import { DOCUMENT } from '@angular/common';
 import {
   Component,
@@ -5,8 +6,10 @@ import {
   Injector,
   afterNextRender,
   computed,
+  effect,
   inject,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
@@ -17,6 +20,7 @@ import { AuthService } from '../../core/auth/auth.service';
 import { Avatar } from './avatar';
 import { DisplayPreferences } from './display-preferences';
 import { Popover } from './popover';
+import { openTypedConfirmDialog } from './typed-confirm-dialog';
 
 /**
  * Everything personal in the app frame behind one trigger: who you are, where your own pages are,
@@ -167,6 +171,43 @@ import { Popover } from './popover';
                 >
                   {{ 'shell.logout' | transloco }}
                 </button>
+
+                <!-- Last and set apart by colour alone: the rarest, least reversible entry of the
+                     panel. Trigger tier of the destructive ladder (UI-Designsprache §4.2) — the
+                     confirmation, and with it the solid button, is the typed dialog behind it. -->
+                <button
+                  type="button"
+                  class="flex min-h-11 items-center sm:min-h-9 border-t border-border px-3 text-left text-sm text-danger-fg transition hover:bg-danger-wash disabled:cursor-progress disabled:opacity-60 disabled:hover:bg-transparent"
+                  [disabled]="isDeleting()"
+                  [attr.aria-busy]="isDeleting() ? 'true' : null"
+                  (click)="deleteAccount()"
+                >
+                  {{
+                    (isDeleting() ? 'account.delete.pending' : 'account.delete.trigger') | transloco
+                  }}
+                </button>
+
+                @if (deletionNotice(); as notice) {
+                  <!-- The panel is reopened for this: the dialog is gone by the time the request
+                       fails. A confirmed rejection says nothing changed; a lost answer must not —
+                       the account may be gone already, and only a reload tells (signing in would
+                       recreate an empty account). -->
+                  <div
+                    #deleteAlert
+                    role="alert"
+                    tabindex="-1"
+                    class="flex flex-col gap-1 border-t border-border bg-danger-wash px-3 py-3 text-xs text-danger-fg"
+                  >
+                    @if (notice.status === 'failed') {
+                      <span>{{ 'account.delete.failed' | transloco }}</span>
+                      <span>{{ notice.errorKey | transloco }}</span>
+                    } @else if (notice.status === 'mismatch') {
+                      <span>{{ 'account.delete.mismatch' | transloco }}</span>
+                    } @else {
+                      <span>{{ 'account.delete.unconfirmed' | transloco }}</span>
+                    }
+                  </div>
+                }
               }
             } @else {
               <!-- Logged out the panel holds nothing but these two, so a row that opens a subview
@@ -182,12 +223,14 @@ import { Popover } from './popover';
 export class AccountMenu {
   private readonly authService = inject(AuthService);
   private readonly transloco = inject(TranslocoService);
+  private readonly dialog = inject(Dialog);
   private readonly document = inject(DOCUMENT);
   private readonly elementRef = inject(ElementRef<HTMLElement>);
   private readonly injector = inject(Injector);
   private readonly trigger = viewChild<ElementRef<HTMLButtonElement>>('trigger');
   private readonly back = viewChild<ElementRef<HTMLButtonElement>>('back');
   private readonly preferencesRow = viewChild<ElementRef<HTMLButtonElement>>('preferencesRow');
+  private readonly deleteAlert = viewChild<ElementRef<HTMLElement>>('deleteAlert');
 
   protected readonly currentUser = this.authService.currentUser;
   protected readonly authResolved = this.authService.isResolved;
@@ -197,6 +240,26 @@ export class AccountMenu {
    * left in the visitor's mind — at the top — rather than in a subview they last saw minutes ago.
    */
   protected readonly view = signal<'root' | 'preferences'>('root');
+  /**
+   * The deletion's progress lives in AuthService, not here: this component is destroyed with its
+   * page, and an answer arriving afterwards must neither be lost nor touch a dead view.
+   */
+  protected readonly deletionNotice = computed(() => {
+    const state = this.authService.deletionState();
+    return state.status === 'failed' ||
+      state.status === 'unconfirmed' ||
+      state.status === 'mismatch'
+      ? state
+      : null;
+  });
+  /**
+   * True from the confirmation until the server answers. The request can take a while (the server
+   * revokes tokens at Twitch before it responds), and the panel can be reopened meanwhile — the row
+   * is disabled and says what is happening, so a second submission is not possible.
+   */
+  protected readonly isDeleting = computed(
+    () => this.authService.deletionState().status === 'pending',
+  );
 
   /**
    * Translated imperatively rather than through the pipe, because it carries an interpolated name
@@ -219,6 +282,20 @@ export class AccountMenu {
     // The landing and login pages render outside AppShell, which is otherwise the only caller.
     // Idempotent, so the shell's own call is untouched and no second request is made.
     this.authService.ensureLoaded().subscribe();
+
+    // An outcome is shown by reopening the panel at its root, wherever the user wandered meanwhile
+    // — also for a menu created after the request started, on another page. An effect, so it dies
+    // with the component and its focus request never reaches a destroyed view.
+    effect(() => {
+      if (this.deletionNotice()) {
+        untracked(() => {
+          this.view.set('root');
+          this.isOpen.set(true);
+          // The dialog that held focus is gone and the panel is new: the alert is the thing to read.
+          this.focusAfterRender(() => this.deleteAlert());
+        });
+      }
+    });
   }
 
   protected toggle(): void {
@@ -237,6 +314,7 @@ export class AccountMenu {
     const hadFocus = this.elementRef.nativeElement.contains(this.document.activeElement);
     this.isOpen.set(false);
     this.view.set('root');
+    this.authService.dismissDeletionOutcome();
     if (hadFocus) {
       this.trigger()?.nativeElement.focus();
     }
@@ -255,6 +333,36 @@ export class AccountMenu {
   protected logout(): void {
     this.close();
     this.authService.logout();
+  }
+
+  /**
+   * The panel closes first, so the dialog is not stacked on top of a popover that outside-click
+   * rules could dismiss mid-confirmation. Typing the login is the lock (TypedConfirmDialog). Only a
+   * confirmed, server-acknowledged deletion resets the client (AuthService.startAccountDeletion);
+   * a rejection or a lost answer reopens the panel with the matching notice (see deletionNotice),
+   * a 401 goes to the login page instead.
+   */
+  protected deleteAccount(): void {
+    const user = this.currentUser();
+    if (!user || this.isDeleting()) {
+      return;
+    }
+    // Bound to this account now: the server refuses if the session is someone else's by then.
+    const expectedTwitchUserId = user.twitchUserId;
+    this.close();
+
+    openTypedConfirmDialog(this.dialog, {
+      title: this.transloco.translate('account.delete.title'),
+      message: this.transloco.translate('account.delete.message'),
+      requiredText: user.login,
+      inputLabel: this.transloco.translate('account.delete.inputLabel'),
+      confirmLabel: this.transloco.translate('account.delete.confirm'),
+    }).closed.subscribe((confirmed) => {
+      if (!confirmed) {
+        return;
+      }
+      this.authService.startAccountDeletion(expectedTwitchUserId);
+    });
   }
 
   /**

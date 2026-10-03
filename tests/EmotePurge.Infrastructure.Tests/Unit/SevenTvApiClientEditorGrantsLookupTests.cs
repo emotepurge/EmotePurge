@@ -118,5 +118,6 @@ public class SevenTvApiClientEditorGrantsLookupTests
         new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
         new RecordingRateLimitTelemetry(),
         budget ?? new RecordingForeignUpstreamRequestBudget(),
+        new RecordingSevenTvSearchBudget(),
         new RecordingLogger<SevenTvApiClient>());
 }

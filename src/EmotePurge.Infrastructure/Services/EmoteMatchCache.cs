@@ -23,4 +23,6 @@ public class EmoteMatchCache : IEmoteMatchCache
 
     public EmoteMatchSnapshot GetChannelSnapshot(string channelName)
         => _byChannel.TryGetValue(ChannelName.Normalize(channelName), out var snapshot) ? snapshot : Empty;
+
+    public IReadOnlyCollection<string> GetCachedChannelNames() => [.. _byChannel.Keys];
 }

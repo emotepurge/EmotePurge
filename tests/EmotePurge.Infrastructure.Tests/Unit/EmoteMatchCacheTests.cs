@@ -192,4 +192,15 @@ public class EmoteMatchCacheTests
 
         Assert.False(mixedPairObserved);
     }
+
+    [Fact]
+    public void GetCachedChannelNames_ReturnsNormalizedKeys_AndDropsRemovedChannels()
+    {
+        var cache = new EmoteMatchCache();
+        cache.ReplaceChannel("  Alpha ", "set-1", new Dictionary<string, string> { ["Foo"] = "emote-1" });
+        cache.ReplaceChannel("beta", "set-2", new Dictionary<string, string>());
+        cache.RemoveChannel("BETA");
+
+        Assert.Equal(["alpha"], cache.GetCachedChannelNames());
+    }
 }

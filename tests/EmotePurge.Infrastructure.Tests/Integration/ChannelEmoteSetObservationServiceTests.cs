@@ -4,6 +4,8 @@ using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.SevenTv;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -187,7 +189,9 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
         // that has not yet learned about the leave would.
         await using var syncDb = fixture.CreateDbContext();
         var staleSyncResult = await CreateSyncService(syncDb, twitchUserId, SetA).SyncChannelAsync(channel.ChannelName);
-        Assert.NotNull(staleSyncResult);
+        // Null since #59: the sync re-reads the row after the 7TV call and drops a deactivated one
+        // (no match-cache entry, no result) — the observation log must hold all the same.
+        Assert.Null(staleSyncResult);
 
         await using var afterRaceVerify = fixture.CreateDbContext();
         var rowsAfterRace = await afterRaceVerify.ChannelEmoteSetObservations.AsNoTracking()
@@ -387,6 +391,8 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
             new ChannelEmoteSetObservationService(db),
             new ChannelSyncGate(),
             Substitute.For<IExcludedChannelFilter>(),
+            new RecordingSevenTvSearchBudget(),
+            new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             NullLogger<SevenTvSyncService>.Instance);
     }
 
