@@ -206,8 +206,8 @@ public static class AuthEndpoints
             // deletion (a concurrent admin deletion), which is the state the caller asked for, and the
             // cookie still has to be cleared. This branch is a narrow race, not the retry path: once
             // the row is gone, the cookie scheme's OnValidatePrincipal rejects the session before the
-            // handler runs, so a retry or double submit answers 401 (the client treats that as
-            // "already deleted"). StillActive cannot occur for SelfRequest.
+            // handler runs, and a retry or double submit answers 410 (SessionRejection) — 401 stays
+            // reserved for causes that do not prove deletion. StillActive cannot occur for SelfRequest.
             await httpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             return result.Outcome is AccountDeletionOutcome.Deleted or AccountDeletionOutcome.NotFound
                 ? Results.NoContent()

@@ -65,7 +65,13 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         // Default cookie-auth behavior redirects to a login page on 401/403 — wrong for a JSON API.
         options.Events.OnRedirectToLogin = context =>
         {
-            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            // 401 for every challenge, except DELETE /api/auth/me after the user row vanished (410):
+            // see SessionRejection for why only that one case may tell the client "deleted".
+            var reason = context.HttpContext.Items.TryGetValue(SessionRejection.ItemKey, out var raw)
+                ? raw as SessionRejectionReason?
+                : null;
+            context.Response.StatusCode = SessionRejection.ChallengeStatusCode(
+                reason, context.Request.Method, context.Request.Path.Value);
             return Task.CompletedTask;
         };
         options.Events.OnRedirectToAccessDenied = context =>
@@ -100,7 +106,9 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
                 // The user row is gone — a deleted account (retention job or admin deletion), never
                 // grandfathered in the same way a missing claim above is not. Reading a missing row
                 // as "never revoked" would leave a deleted account's cookie working until it expires
-                // on its own, up to 14 days later.
+                // on its own, up to 14 days later. Flagged for OnRedirectToLogin, which answers the
+                // self-service deletion with 410 instead of 401 (no other cause may).
+                context.HttpContext.Items[SessionRejection.ItemKey] = SessionRejectionReason.UserGone;
                 context.RejectPrincipal();
                 await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
                 return;
