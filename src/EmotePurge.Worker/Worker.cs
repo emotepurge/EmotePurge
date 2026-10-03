@@ -13,6 +13,7 @@ public class Worker(
     IEmoteMatchCache emoteMatchCache,
     BootRecoveryGate bootRecoveryGate,
     ISevenTvEventClient sevenTvEventClient,
+    ITwitchLiveStatusReader liveStatusReader,
     IServiceScopeFactory scopeFactory,
     IConfiguration configuration) : BackgroundService
 {
@@ -27,6 +28,12 @@ public class Worker(
     // injected branch in HandleDebugTwitchReconnectAsync below.
     private readonly bool _allowTwitchReconnectTrigger =
         configuration.GetValue("Worker:Debug:AllowTwitchReconnectTrigger", false);
+
+    /// <summary>
+    /// Upper bound for the live-status read that orders boot recovery. Settable only so a test can
+    /// shorten it; production keeps the default.
+    /// </summary>
+    public TimeSpan LiveStatusReadTimeout { get; init; } = TimeSpan.FromSeconds(2);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -101,7 +108,16 @@ public class Worker(
         await Task.Delay(Timeout.Infinite, stoppingToken);
     }
 
-    // Boot-Recovery (docs/Architectur.md Grundsatz 3)
+    // Boot recovery (docs/Architectur.md principle 3), in two phases. Phase 1 walks the channels
+    // and, per channel, warms the match cache from Postgres (no 7TV call, a few ms) and then joins:
+    // TwitchChatManager drops messages of a channel whose cache is empty, so the warm-up has to
+    // happen right before the join for the channel to count from its first message (#116). Phase 2
+    // runs the 7TV syncs. A join costs ~600 ms of throttle, a sync a full 7TV round trip plus a
+    // Postgres write; interleaved, the last channel's chat gap grew with N x (throttle + sync)
+    // instead of N x throttle. A never-synced fresh row has nothing to warm from and counts nothing
+    // until its first sync, so phase 2 syncs the still-cold channels first.
+    // The syncs stay serial, one channel at a time: that respects ChannelSyncGate and the shared 7TV
+    // quota, and BootRecoveryGate keeps the periodic resync out until both phases are done.
     private async Task RunBootRecoveryAsync(CancellationToken stoppingToken)
     {
         try
@@ -109,36 +125,96 @@ public class Worker(
             using var scope = scopeFactory.CreateScope();
             var channelService = scope.ServiceProvider.GetRequiredService<IChannelService>();
             var activeChannels = await channelService.ListActiveChannelNamesAsync(stoppingToken);
+            var channels = BootRecoveryOrderPolicy.LiveFirst(
+                activeChannels, await ReadLiveStatusOrNullAsync(stoppingToken));
 
-            foreach (var channelName in activeChannels)
+            foreach (var channelName in channels)
             {
+                stoppingToken.ThrowIfCancellationRequested();
                 try
                 {
-                    logger.LogInformation("Boot-Recovery: joine {Channel}.", channelName);
+                    await WarmMatchCacheAsync(channelName, stoppingToken);
+                    logger.LogInformation("Boot recovery: joining {Channel}.", channelName);
                     await twitchChatManager.JoinChannelAsync(channelName);
+                }
+                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+                {
+                    // One failing join must not keep the channels behind it from being joined.
+                    logger.LogWarning(ex, "Boot recovery join for {Channel} failed.", channelName);
+                }
+            }
+
+            // Phase 2 starts with the channels that still count nothing (never-synced rows, a warm-up
+            // that found nothing or failed): only their sync makes them count, so they must not wait
+            // behind channels that are already counting from the warm start.
+            var cold = channels.Where(name => emoteMatchCache.GetChannelEmotes(name).Count == 0).ToHashSet(StringComparer.Ordinal);
+            foreach (var channelName in BootRecoveryOrderPolicy.ColdFirst(channels, cold))
+            {
+                stoppingToken.ThrowIfCancellationRequested();
+                try
+                {
                     await SyncSevenTvAsync(channelName, stoppingToken);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {
                     // Unlike JoinChannelAsync, SyncChannelAsync can throw (JsonException from 7TV,
                     // DbUpdateException on the (ChannelId, SevenTvEmoteId) unique index). Escaping
                     // ExecuteAsync would stop the whole host (BackgroundServiceExceptionBehavior
                     // defaults to StopHost), and since boot recovery runs in the same order every
                     // time, the restart would hit the same channel again — a crash loop in which
-                    // every channel behind the failing one is never joined at all.
-                    logger.LogWarning(ex, "Boot-Recovery für {Channel} fehlgeschlagen.", channelName);
+                    // every channel behind the failing one is never synced at all.
+                    logger.LogWarning(ex, "Boot recovery sync for {Channel} failed.", channelName);
                 }
             }
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Shutdown during boot recovery: stop quietly instead of one warning per remaining channel.
+            logger.LogInformation("Boot recovery stopped by shutdown.");
+        }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Boot-Recovery fehlgeschlagen — Channels werden erst über den periodischen Resync nachgezogen.");
+            logger.LogError(ex, "Boot recovery failed — channels are only picked up by the periodic resync.");
         }
         finally
         {
             // Releases the periodic resync worker even if boot recovery failed, so a broken boot
-            // never turns into a permanently blocked convergence path.
+            // never turns into a permanently blocked convergence path. It stays after the sync
+            // phase on purpose: the gate exists to keep the periodic resync from syncing the same
+            // channels concurrently with boot recovery's own syncs.
             bootRecoveryGate.MarkCompleted();
+        }
+    }
+
+    // A failed warm-up (database error) only costs the head start: the channel is still joined and
+    // its sync warms the cache again.
+    private async Task WarmMatchCacheAsync(string channelName, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var syncService = scope.ServiceProvider.GetRequiredService<ISevenTvSyncService>();
+            await syncService.WarmChannelAsync(channelName, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Boot recovery warm-up for {Channel} failed — joining anyway.", channelName);
+        }
+    }
+
+    // The live snapshot only orders the joins, so it must never be able to fail or delay the boot:
+    // null (absent, expired, Redis down), any read error and a read slower than the bound all mean
+    // "keep the roster order".
+    private async Task<TwitchLiveStatusSnapshot?> ReadLiveStatusOrNullAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await liveStatusReader.ReadAsync(ct).WaitAsync(LiveStatusReadTimeout, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Boot recovery could not read the live status in time — joining in roster order.");
+            return null;
         }
     }
 

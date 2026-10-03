@@ -10,6 +10,58 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — Boot recovery warms and joins every channel first, live channels leading, and syncs 7TV afterwards
+
+**Betrifft:** `src/EmotePurge.Worker/Worker.cs` · `src/EmotePurge.Worker/BootRecoveryOrderPolicy.cs` ·
+`src/EmotePurge.Core/Services/ISevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`tests/EmotePurge.Worker.Tests/BootRecoveryOrderPolicyTests.cs` · `tests/EmotePurge.Worker.Tests/WorkerBootSequenceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` · `docs/Architectur.md` (principle 3)
+
+Boot recovery used to join a channel and await its full 7TV sync before joining the next one, in
+alphabetical order. A local measurement (40 live channels, 5 restarts) showed the gap growing by
+830-940 ms per join position instead of the 600 ms join throttle, and the order ignored whether anyone
+was chatting. It now runs in two phases: phase 1 warms and joins every active channel through the
+existing throttle, phase 2 runs the serial 7TV syncs.
+
+- **Per-channel warm-up and join before any sync.** `TwitchChatManager` drops the messages of a
+  channel whose match cache is empty, and the #116 warm start used to happen only inside
+  `SyncChannelAsync`. Phase 1 therefore calls the new `ISevenTvSyncService.WarmChannelAsync` (cache
+  seeded from Postgres if empty; same name/row gates and excluded-channel check as the sync; no 7TV or
+  Twitch call, no database write; returns nothing; silent no-op for an unknown or merged row; an
+  excluded row has its cache entry removed and a Debug line written, as in the sync) and then joins,
+  per channel. A failed warm-up is caught and the join still happens. The chat-join gap no longer
+  includes sync time, and a channel with a warmed cache counts from its join. **A restart-gap
+  measurement measures to the join line**, since the warm-up precedes it; a channel without a warm-up
+  line (never synced, nothing to warm from) counts only from its sync.
+- **Phase 2 syncs cold channels first.** Channels whose cache is still empty after phase 1 (never-synced
+  rows, a warm-up that found nothing or failed) count nothing until their sync, so
+  `BootRecoveryOrderPolicy.ColdFirst` puts them ahead of the channels already counting; both groups
+  keep the phase-1 order. The syncs stay serial, which keeps `ChannelSyncGate` and the shared 7TV
+  quota untouched.
+- **Live channels first in phase 1.** `BootRecoveryOrderPolicy.LiveFirst` is a pure, stable partition
+  of the roster by the `ITwitchLiveStatusReader` snapshot (read once at boot, normalized through
+  `ChannelName.Normalize`, names not on the roster and null or blank entries ignored). A missing,
+  expired or unreadable snapshot, a throwing read, or a read slower than 2 s leaves the roster order
+  unchanged and never blocks the boot. Staleness is bounded by the key's TTL (twice the poll interval,
+  at most ~10 minutes at the default cadence); `GeneratedAtUtc` is not checked on top. Live-first moves
+  non-live channels back by design; that only costs something if the snapshot missed a channel that
+  just went live (TTL ~ 2 poll intervals).
+- **Failure isolation and shutdown.** A throwing join or warm-up does not stop later joins or the sync
+  phase; a throwing sync (JsonException, DbUpdateException) does not stop later syncs and never
+  escapes `ExecuteAsync` (StopHost crash loop). On shutdown the loops stop and one Information line is
+  written instead of a warning per remaining channel. `BootRecoveryGate.MarkCompleted()` stays in the
+  outer `finally`, after both phases: the gate keeps the periodic resync from syncing the same channels
+  concurrently with boot recovery.
+- **The reconnect rejoin path needs no change.** `TwitchChatManager.RejoinDesiredChannelsAsync` only
+  re-issues JOINs through the same throttle and waits for confirmations; it never calls a 7TV sync, so
+  there is no interleaving to split.
+- **Measurement.** Local, 2026-10-03, 40 live channels (22 with 7TV emotes), 4 interleaved SIGTERM
+  restarts per build: join-gap slope 1.10-1.33 s/channel (main) -> 0.60 s (new), last channel joined
+  ~44-50 s -> ~26 s, median lost messages across all 40 channels ~830 -> ~510. The warm-up preceded
+  the join in every run; live-first was not observable (all channels were live). Data in
+  `~/projects/gaptest-2026-10-03/` (local, not in the repo).
+- **Measurement window.** Under Epic #118 this Worker change must not be deployed before 2026-10-08.
+
 ### 2026-10-03 — Self-service account deletion: `DELETE /api/auth/me`, `SelfRequest`, best-effort Twitch token revocation after the commit (#243)
 
 **Betrifft:** `src/EmotePurge.Api/Endpoints/AuthEndpoints.cs` ·
