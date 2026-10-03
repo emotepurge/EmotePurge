@@ -11,12 +11,11 @@ public class EmptySetConfirmationTrackerTests
 
     private readonly HandWoundTimeProvider _clock = new();
 
-    private EmptySetConfirmationTracker Create(int confirmations = 3, int spacingSeconds = 45, int resyncSeconds = 60) =>
+    private EmptySetConfirmationTracker Create(int confirmations = 3, int spacingSeconds = 45) =>
         new(new EmptySetConfirmationOptions
         {
             EmptySetConfirmations = confirmations,
-            EmptySetConfirmationSpacingSeconds = spacingSeconds,
-            ResyncIntervalSeconds = resyncSeconds
+            EmptySetConfirmationSpacingSeconds = spacingSeconds
         }, _clock);
 
     [Fact]
@@ -140,46 +139,51 @@ public class EmptySetConfirmationTrackerTests
     }
 
     [Fact]
-    public void ZeroOlderThanTenSpacings_RestartsTheStreakInsteadOfConfirming()
+    public void Streaks_AreKeyedByTheNormalizedChannelName()
     {
         var tracker = Create();
+        tracker.ObserveZero("HandOfBlood", "setA");
+        _clock.Advance(Tick);
 
+        var second = tracker.ObserveZero(" handofblood ", "setA");
+        tracker.Reset("HANDOFBLOOD");
+        _clock.Advance(Tick);
+        var afterReset = tracker.ObserveZero("handofblood", "setA");
+
+        Assert.Equal(2, second.Streak);
+        Assert.Equal(1, afterReset.Streak);
+    }
+
+    // The sync resets on a failed lookup (an observation that is not a zero), so the streak is
+    // consecutive observations: the zero after the failure starts again at 1.
+    [Fact]
+    public void ResetAfterAFailedLookup_MakesTheNextZeroTheFirst()
+    {
+        var tracker = Create();
         tracker.ObserveZero("c1", "setA");
         _clock.Advance(Tick);
         tracker.ObserveZero("c1", "setA");
-        _clock.Advance(TimeSpan.FromSeconds(451));
-        var third = tracker.ObserveZero("c1", "setA");
+        _clock.Advance(Tick);
 
-        Assert.True(third.Counted);
-        Assert.False(third.Accept);
-        Assert.Equal(1, third.Streak);
+        tracker.Reset("c1");
+        _clock.Advance(Tick);
+        var verdict = tracker.ObserveZero("c1", "setA");
+
+        Assert.Equal(1, verdict.Streak);
+        Assert.False(verdict.Accept);
     }
 
+    // No maximum age: without a Reset in between, a long gap is only a gap without observations
+    // (a stalled resync, a slow cadence), and the zeros on either side of it are still in a row.
     [Fact]
-    public void ZeroSpacing_SkipsTheMaxAgeBound()
+    public void LongGapWithoutReset_StillCountsTowardTheStreak()
     {
-        var tracker = Create(spacingSeconds: 0);
-
+        var tracker = Create();
         tracker.ObserveZero("c1", "setA");
+        _clock.Advance(TimeSpan.FromHours(1));
         tracker.ObserveZero("c1", "setA");
-        _clock.Advance(TimeSpan.FromDays(1));
-        var third = tracker.ObserveZero("c1", "setA");
+        _clock.Advance(TimeSpan.FromHours(1));
 
-        Assert.True(third.Accept);
-    }
-
-    [Theory]
-    [InlineData(45, 600)]
-    [InlineData(5, 60)]
-    public void ZerosOnTheResyncCadence_AreAcceptedOnTheThird_EvenWhenSlowerThanTenSpacings(int spacingSeconds, int resyncSeconds)
-    {
-        var tracker = Create(spacingSeconds: spacingSeconds, resyncSeconds: resyncSeconds);
-        var tick = TimeSpan.FromSeconds(resyncSeconds);
-
-        tracker.ObserveZero("c1", "setA");
-        _clock.Advance(tick);
-        tracker.ObserveZero("c1", "setA");
-        _clock.Advance(tick);
         var third = tracker.ObserveZero("c1", "setA");
 
         Assert.True(third.Accept);
@@ -187,17 +191,14 @@ public class EmptySetConfirmationTrackerTests
     }
 
     [Fact]
-    public void GapBeyondThreeResyncTicks_RestartsTheStreak()
+    public void ZeroSpacing_CountsEveryZero()
     {
-        var tracker = Create(spacingSeconds: 45, resyncSeconds: 600);
+        var tracker = Create(spacingSeconds: 0);
 
         tracker.ObserveZero("c1", "setA");
-        _clock.Advance(TimeSpan.FromSeconds(600));
         tracker.ObserveZero("c1", "setA");
-        _clock.Advance(TimeSpan.FromSeconds(1801));
         var third = tracker.ObserveZero("c1", "setA");
 
-        Assert.False(third.Accept);
-        Assert.Equal(1, third.Streak);
+        Assert.True(third.Accept);
     }
 }

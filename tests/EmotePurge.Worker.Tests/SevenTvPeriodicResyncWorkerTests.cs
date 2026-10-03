@@ -18,7 +18,7 @@ public class SevenTvPeriodicResyncWorkerTests
     // is on the excluded-channel list, the prune is also how a blocked channel whose LEAVE got lost is
     // parted — and its log line used to name that channel.
     [Fact]
-    public async Task Prune_LeavesAChannelMissingFromTwoConsecutiveRosters_AndNamesItOnlyAtDebug()
+    public async Task Prune_LeavesAChannelMissingFromTwoConsecutiveRosters_ResetsItsEmptySetStreak_AndNamesItOnlyAtDebug()
     {
         var gate = new BootRecoveryGate();
         gate.MarkCompleted();
@@ -29,6 +29,7 @@ public class SevenTvPeriodicResyncWorkerTests
         var left = new TaskCompletionSource();
         chatManager.When(x => x.LeaveChannelAsync("prunedchannel")).Do(_ => left.TrySetResult());
         var emoteMatchCache = Substitute.For<IEmoteMatchCache>();
+        var emptySetConfirmations = Substitute.For<IEmptySetConfirmationTracker>();
         var eventClient = Substitute.For<ISevenTvEventClient>();
 
         var services = new ServiceCollection();
@@ -46,6 +47,7 @@ public class SevenTvPeriodicResyncWorkerTests
             gate,
             eventClient,
             emoteMatchCache,
+            emptySetConfirmations,
             Substitute.For<IRedisPublisher>(),
             // The shortest interval the setting allows: the prune needs two ticks.
             new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
@@ -65,6 +67,7 @@ public class SevenTvPeriodicResyncWorkerTests
         }
 
         emoteMatchCache.Received(1).RemoveChannel("prunedchannel");
+        emptySetConfirmations.Received(1).Reset("prunedchannel");
         eventClient.Received(1).Unsubscribe("prunedchannel");
         Assert.Contains(provider.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("Convergence net"));
         Assert.DoesNotContain(

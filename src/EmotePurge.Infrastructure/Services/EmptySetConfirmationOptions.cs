@@ -22,13 +22,6 @@ public sealed class EmptySetConfirmationOptions
     /// </summary>
     public int EmptySetConfirmationSpacingSeconds { get; set; } = 45;
 
-    /// <summary>
-    /// The periodic resync interval, bound from the same key the resync worker reads
-    /// (<c>SevenTv:ResyncIntervalSeconds</c>, default 60). Not a setting of this guard: it only
-    /// widens the streak's maximum age so a slow resync cadence cannot outrun it.
-    /// </summary>
-    public int ResyncIntervalSeconds { get; set; } = 60;
-
     /// <summary>Throws unless both values are usable; called at startup like the other options.</summary>
     public void Validate()
     {

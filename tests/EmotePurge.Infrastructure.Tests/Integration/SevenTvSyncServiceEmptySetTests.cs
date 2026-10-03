@@ -52,6 +52,20 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         return service.SyncChannelAsync(channel.ChannelName);
     }
 
+    // A zero from v3 together with what v4 lists for the same set (RemoteEntryCount).
+    private static Task<SevenTvSyncResult?> SyncZeroAsync(
+        AppDbContext db, Channel channel, EmoteMatchCache cache, IEmptySetConfirmationTracker tracker, string setId, int? remoteEntryCount,
+        RecordingLogger<SevenTvSyncService>? logger = null)
+    {
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
+            .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(setId, [], RemoteEntryCount: remoteEntryCount))));
+        var service = new SevenTvSyncService(
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            tracker, logger ?? new RecordingLogger<SevenTvSyncService>());
+        return service.SyncChannelAsync(channel.ChannelName);
+    }
+
     private static Task<bool> IsArchivedAsync(AppDbContext db, Channel channel) =>
         db.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).Select(e => e.IsArchived).SingleAsync();
 
@@ -165,7 +179,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
 
         await service.SyncChannelAsync(channel.ChannelName);
 
-        Assert.Contains(logger.Entries, e => e.Message.Contains("1 of 3"));
+        Assert.Contains(logger.Entries, e => e.Message.Contains("1 of 3") && e.Message.Contains("v4 cross-check unavailable"));
     }
 
     [Theory]
@@ -225,7 +239,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task FailedLookupBetweenZeros_NeitherCountsNorResets()
+    public async Task FailedLookupBetweenZeros_ResetsTheStreak()
     {
         await using var db = fixture.CreateDbContext();
         var (channel, cache, tracker) = await SeedAsync(db, "emptyset_failedlookup");
@@ -241,10 +255,112 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
             tracker, new RecordingLogger<SevenTvSyncService>());
         _clock.Advance(Tick);
         Assert.Null(await failingService.SyncChannelAsync(channel.ChannelName));
+
+        // Two zeros, a failure, a zero: not three in a row.
+        _clock.Advance(Tick);
+        var third = await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        Assert.False(third!.HasChanges);
         Assert.False(await IsArchivedAsync(db, channel));
+    }
+
+    [Fact]
+    public async Task UnusableResponseBetweenZeros_ResetsTheStreak()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_unusable");
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+        _clock.Advance(Tick);
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        _clock.Advance(Tick);
+        Assert.Null(await SyncAsync(db, channel, cache, tracker, "00000000000000000000000000"));
 
         _clock.Advance(Tick);
         var third = await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        Assert.False(third!.HasChanges);
+        Assert.False(await IsArchivedAsync(db, channel));
+    }
+
+    [Fact]
+    public async Task ZeroContradictedByV4_IsSkippedWithoutAFailureReason_AndResetsTheStreak()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_v4veto");
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+        _clock.Advance(Tick);
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        _clock.Advance(Tick);
+        var vetoed = await SyncZeroAsync(db, channel, cache, tracker, OldSetId, remoteEntryCount: 5, logger);
+
+        Assert.NotNull(vetoed);
+        Assert.False(vetoed.HasChanges);
+        Assert.Equal(OldSetId, vetoed.EmoteSetId);
+        Assert.Equal("7tv-user", vetoed.SevenTvUserId);
+        Assert.False(await IsArchivedAsync(db, channel));
+        Assert.Single(cache.GetChannelEmotes(channel.ChannelName).Keys, "stable");
+        var row = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
+        Assert.Null(row.LastSyncFailureReason);
+        Assert.Equal(OldSetId, row.ActiveEmoteSetId);
+        Assert.Contains(logger.Entries, e => e.Message.Contains("v4 lists 5 entries"));
+
+        // Without the reset the first of these would have been the third zero in a row.
+        _clock.Advance(Tick);
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+        _clock.Advance(Tick);
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+        Assert.False(await IsArchivedAsync(db, channel));
+    }
+
+    [Fact]
+    public async Task ZeroOnANewSetContradictedByV4_HoldsTheSwitchBack()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_v4vetoswitch");
+
+        var result = await SyncZeroAsync(db, channel, cache, tracker, NewSetId, remoteEntryCount: 3);
+
+        Assert.NotNull(result);
+        Assert.False(result.HasChanges);
+        Assert.False(await IsArchivedAsync(db, channel));
+        var row = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
+        Assert.Equal(OldSetId, row.ActiveEmoteSetId);
+        Assert.Null(row.LastSyncFailureReason);
+    }
+
+    [Fact]
+    public async Task ZeroContradictedByV4_IsHeldBackEvenWithASingleConfirmation()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_v4vetoone", confirmations: 1);
+
+        var vetoed = await SyncZeroAsync(db, channel, cache, tracker, OldSetId, remoteEntryCount: 1);
+        Assert.False(vetoed!.HasChanges);
+        Assert.False(await IsArchivedAsync(db, channel));
+
+        var accepted = await SyncZeroAsync(db, channel, cache, tracker, OldSetId, remoteEntryCount: 0);
+        Assert.True(accepted!.HasChanges);
+        Assert.True(await IsArchivedAsync(db, channel));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    public async Task ZeroWithoutAV4Contradiction_CountsTowardTheStreak(int? remoteEntryCount)
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, $"emptyset_v4none_{remoteEntryCount?.ToString() ?? "null"}");
+
+        await SyncZeroAsync(db, channel, cache, tracker, OldSetId, remoteEntryCount);
+        _clock.Advance(Tick);
+        await SyncZeroAsync(db, channel, cache, tracker, OldSetId, remoteEntryCount);
+        Assert.False(await IsArchivedAsync(db, channel));
+
+        _clock.Advance(Tick);
+        var third = await SyncZeroAsync(db, channel, cache, tracker, OldSetId, remoteEntryCount);
 
         Assert.True(third!.HasChanges);
         Assert.True(await IsArchivedAsync(db, channel));
