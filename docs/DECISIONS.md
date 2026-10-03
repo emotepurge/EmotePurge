@@ -107,8 +107,14 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   `api-error.ts` and both locales) when it is missing or differs from the principal's
   `NameIdentifier`, before reading tokens or deleting anything, and without signing out. Missing is a
   409 rather than a 400 because the only caller without it is a stale cached bundle, for which the
-  remedy is the same reload. The client then re-reads `/api/auth/me` and the menu says the user is
-  signed in as a different account and nothing was deleted.
+  remedy is the same reload. The client does **not** re-read `/api/auth/me` or adopt the other account
+  in place: account-scoped client state (the 7TV write token, cached channel permissions, …) would
+  carry over from A to B. It shows the notice (nothing deleted, signed in as a different account,
+  reload) and leaves everything as it is; a full reload rebuilds all client state, the isolation-safe
+  path. The same binding applies to 410: `OnValidatePrincipal` also stores the rejected principal's
+  id, and `SessionRejection.ChallengeStatusCode` answers 410 only when the request is
+  `DELETE /api/auth/me` *and* its `expectedTwitchUserId` equals that id — otherwise 401, so "your
+  account is gone" is never claimed about an account the user did not confirm.
 - **Known audit gap, accepted for self-deletion too.** An audit entry with the deleted user as
   *actor*, written by that user's own in-flight request after the commit, can survive un-pseudonymised
   (the row lock cannot close it). `AccountDeletionService` already accepted this for an admin

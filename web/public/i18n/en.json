@@ -25,7 +25,7 @@
       "pending": "Deleting account …",
       "failed": "Your account could not be deleted. Nothing has changed, you can try again.",
       "unconfirmed": "We couldn’t confirm whether your account was deleted – the connection was interrupted. Reload the page: if you’re still signed in, nothing was deleted and you can try again. If you’re signed out, we can’t tell from here – please don’t sign in to check, as that would create a new account; contact us via the contact form and we’ll confirm.",
-      "mismatch": "You’re signed in as a different account in another tab – nothing was deleted. Check which account you want to delete, then start the deletion again."
+      "mismatch": "You’re signed in as a different account in another tab – nothing was deleted. Reload the page to continue with the account that is actually signed in."
     }
   },
   "shell": {

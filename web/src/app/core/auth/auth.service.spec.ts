@@ -260,13 +260,22 @@ describe('AuthService', () => {
       expect(req.request.params.get('expectedTwitchUserId')).toBe(USER.twitchUserId);
     });
 
-    it('409 account_mismatch refreshes the cached account and reports the mismatch, deleting nothing', () => {
-      const other = { ...USER, twitchUserId: '2', login: 'other', displayName: 'Other' };
+    it('409 account_mismatch reports the mismatch without switching accounts or re-reading /me', () => {
       start().flush({ errorCode: 'account_mismatch' }, { status: 409, statusText: 'Conflict' });
-      httpMock.expectOne('/api/auth/me').flush(other);
 
       expect(service.deletionState()).toEqual({ status: 'mismatch' });
-      expect(service.currentUser()).toEqual(other);
+      expect(service.currentUser()).toEqual(USER);
+      httpMock.expectNone('/api/auth/me');
+    });
+
+    it('a mismatch that arrives after a session reset is a login-page notice and restores no user', () => {
+      const req = start();
+      service.handleSessionExpired();
+      req.flush({ errorCode: 'account_mismatch' }, { status: 409, statusText: 'Conflict' });
+
+      expect(service.currentUser()).toBeNull();
+      expect(service.takeLoginNotice()).toBe('deletionSessionEnded');
+      httpMock.expectNone('/api/auth/me');
     });
 
     it('a session reset by another request does not clear a pending deletion, and a later unknown outcome goes to the login page', () => {

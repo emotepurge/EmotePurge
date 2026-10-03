@@ -223,28 +223,15 @@ export class AuthService {
     if (unknown) {
       this.deletion.set({ status: 'unconfirmed' });
     } else if (mismatch) {
-      this.refreshAfterMismatch();
+      // No in-place switch to the other account: account-scoped client state (7TV token, cached
+      // permissions, …) would carry over. The notice asks for a reload, which rebuilds all of it.
+      this.deletion.set({ status: 'mismatch' });
     } else {
       this.deletion.set({
         status: 'failed',
         errorKey: apiErrorTranslationKey(error as HttpErrorResponse),
       });
     }
-  }
-
-  /** The cached account is not the session's: reload it, so the menu shows who is really signed in. */
-  private refreshAfterMismatch(): void {
-    this.http
-      .get<AuthUser>('/api/auth/me')
-      .pipe(catchError(() => of(null)))
-      .subscribe((user) => {
-        if (user) {
-          this.currentUser.set(user);
-          this.deletion.set({ status: 'mismatch' });
-        } else {
-          this.handleDeletionSessionEnded();
-        }
-      });
   }
 
   private resetClientSession(target = '/login'): void {

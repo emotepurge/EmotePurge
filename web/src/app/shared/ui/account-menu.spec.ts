@@ -587,19 +587,18 @@ describe('AccountMenu', () => {
       );
     });
 
-    it('on a 409 account mismatch reloads who is signed in and says nothing was deleted', async () => {
+    it('on a 409 account mismatch keeps the cached account, deletes nothing and asks for a reload', async () => {
       const menu = render();
-      const other: AuthUser = { ...USER, twitchUserId: '2', login: 'other', displayName: 'Other' };
       confirmDeletion(menu);
       const http = TestBed.inject(HttpTestingController);
       http
         .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
         .flush({ errorCode: 'account_mismatch' }, { status: 409, statusText: 'Conflict' });
-      http.expectOne({ method: 'GET', url: '/api/auth/me' }).flush(other);
       menu.detect();
       await menu.fixture.whenStable();
 
-      expect(authService.currentUser()).toEqual(other);
+      http.expectNone('/api/auth/me');
+      expect(authService.currentUser()).toEqual(USER);
       expect(menu.panel()!.querySelector('[role="alert"]')?.textContent).toContain('Anderes Konto');
     });
 

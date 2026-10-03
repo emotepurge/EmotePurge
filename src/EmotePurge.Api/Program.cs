@@ -70,8 +70,15 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
             var reason = context.HttpContext.Items.TryGetValue(SessionRejection.ItemKey, out var raw)
                 ? raw as SessionRejectionReason?
                 : null;
+            var rejectedUserId = context.HttpContext.Items.TryGetValue(SessionRejection.RejectedUserIdItemKey, out var rawId)
+                ? rawId as string
+                : null;
             context.Response.StatusCode = SessionRejection.ChallengeStatusCode(
-                reason, context.Request.Method, context.Request.Path.Value);
+                reason,
+                context.Request.Method,
+                context.Request.Path.Value,
+                rejectedUserId,
+                context.Request.Query["expectedTwitchUserId"].ToString());
             return Task.CompletedTask;
         };
         options.Events.OnRedirectToAccessDenied = context =>
@@ -109,6 +116,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
                 // on its own, up to 14 days later. Flagged for OnRedirectToLogin, which answers the
                 // self-service deletion with 410 instead of 401 (no other cause may).
                 context.HttpContext.Items[SessionRejection.ItemKey] = SessionRejectionReason.UserGone;
+                context.HttpContext.Items[SessionRejection.RejectedUserIdItemKey] = twitchUserId;
                 context.RejectPrincipal();
                 await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
                 return;

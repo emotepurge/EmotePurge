@@ -26,19 +26,23 @@ namespace EmotePurge.Api.Tests;
 public class SessionRejectionTests
 {
     [Theory]
-    [InlineData(SessionRejectionReason.UserGone, "DELETE", "/api/auth/me", 410)]
-    [InlineData(SessionRejectionReason.UserGone, "delete", "/API/auth/me/", 410)]
-    [InlineData(SessionRejectionReason.Other, "DELETE", "/api/auth/me", 401)]
-    [InlineData(null, "DELETE", "/api/auth/me", 401)]
-    [InlineData(SessionRejectionReason.UserGone, "GET", "/api/auth/me", 401)]
-    [InlineData(SessionRejectionReason.UserGone, "DELETE", "/api/channels/foo", 401)]
-    [InlineData(SessionRejectionReason.UserGone, "POST", "/api/auth/logout", 401)]
-    [InlineData(SessionRejectionReason.Other, "GET", "/api/auth/me", 401)]
-    [InlineData(null, "GET", null, 401)]
-    public void ChallengeStatusCode_AnswersGoneOnlyForUserGoneOnSelfDeletion(
-        SessionRejectionReason? reason, string method, string? path, int expected)
+    [InlineData(SessionRejectionReason.UserGone, "DELETE", "/api/auth/me", "1", "1", 410)]
+    [InlineData(SessionRejectionReason.UserGone, "delete", "/API/auth/me/", "1", "1", 410)]
+    [InlineData(SessionRejectionReason.UserGone, "DELETE", "/api/auth/me", "1", "2", 401)]
+    [InlineData(SessionRejectionReason.UserGone, "DELETE", "/api/auth/me", "1", null, 401)]
+    [InlineData(SessionRejectionReason.UserGone, "DELETE", "/api/auth/me", "1", "", 401)]
+    [InlineData(SessionRejectionReason.UserGone, "DELETE", "/api/auth/me", null, null, 401)]
+    [InlineData(SessionRejectionReason.Other, "DELETE", "/api/auth/me", "1", "1", 401)]
+    [InlineData(null, "DELETE", "/api/auth/me", "1", "1", 401)]
+    [InlineData(SessionRejectionReason.UserGone, "GET", "/api/auth/me", "1", "1", 401)]
+    [InlineData(SessionRejectionReason.UserGone, "DELETE", "/api/channels/foo", "1", "1", 401)]
+    [InlineData(SessionRejectionReason.UserGone, "POST", "/api/auth/logout", "1", "1", 401)]
+    [InlineData(SessionRejectionReason.Other, "GET", "/api/auth/me", "1", "1", 401)]
+    [InlineData(null, "GET", null, null, null, 401)]
+    public void ChallengeStatusCode_AnswersGoneOnlyForUserGoneOnSelfDeletionOfTheSameAccount(
+        SessionRejectionReason? reason, string method, string? path, string? rejectedId, string? expectedId, int expected)
     {
-        Assert.Equal(expected, SessionRejection.ChallengeStatusCode(reason, method, path));
+        Assert.Equal(expected, SessionRejection.ChallengeStatusCode(reason, method, path, rejectedId, expectedId));
     }
 }
 
@@ -60,14 +64,27 @@ public class SessionRejectionCookieSchemeTests : IClassFixture<SessionRejectionC
     }
 
     [Fact]
-    public async Task DeleteMe_WhenUserRowIsGone_Answers410()
+    public async Task DeleteMe_WhenUserRowIsGoneAndTheExpectedIdMatches_Answers410()
     {
         _factory.Users.CheckSessionAsync(UserId, Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
             .Returns((SessionCheckResult?)null);
 
-        var response = await SendAsync(HttpMethod.Delete, "/api/auth/me");
+        var response = await SendAsync(HttpMethod.Delete, $"/api/auth/me?expectedTwitchUserId={UserId}");
 
         Assert.Equal(HttpStatusCode.Gone, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("/api/auth/me?expectedTwitchUserId=999")]
+    [InlineData("/api/auth/me")]
+    public async Task DeleteMe_WhenUserRowIsGoneButTheExpectedIdDiffersOrIsMissing_Answers401(string path)
+    {
+        _factory.Users.CheckSessionAsync(UserId, Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
+            .Returns((SessionCheckResult?)null);
+
+        var response = await SendAsync(HttpMethod.Delete, path);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]
@@ -76,7 +93,7 @@ public class SessionRejectionCookieSchemeTests : IClassFixture<SessionRejectionC
         _factory.Users.CheckSessionAsync(UserId, Arg.Any<DateTime>(), Arg.Any<CancellationToken>())
             .Returns(new SessionCheckResult(IsValid: false));
 
-        var response = await SendAsync(HttpMethod.Delete, "/api/auth/me");
+        var response = await SendAsync(HttpMethod.Delete, $"/api/auth/me?expectedTwitchUserId={UserId}");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
