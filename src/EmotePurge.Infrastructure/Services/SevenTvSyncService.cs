@@ -15,6 +15,7 @@ public class SevenTvSyncService(
     IDuplicateEmoteNameTracker duplicateNameTracker,
     ChannelSyncGate channelSyncGate,
     IExcludedChannelFilter excludedChannelFilter,
+    IEmptySetConfirmationTracker emptySetConfirmations,
     ILogger<SevenTvSyncService> logger)
     : ISevenTvSyncService
 {
@@ -83,17 +84,18 @@ public class SevenTvSyncService(
             return null;
         }
 
+        // Read before the guard and before the assignment below: a switched active set is a content
+        // change of its own, even when the two sets happen to hold identical emotes, and a zero that
+        // arrives with a new set id is the one zero that needs no confirmation. A first-time
+        // TwitchChannelId backfill deliberately does not count — it changes no emote the UI could show.
+        var emoteSetSwitched = channel.ActiveEmoteSetId != emoteSet.Id;
+
         var implausibleWipeResult = await TryGuardAgainstImplausibleWipeAsync(
-            channel, normalized, emoteSet, channelState.State, cancellationToken);
+            channel, normalized, emoteSet, emoteSetSwitched, channelState.State, cancellationToken);
         if (implausibleWipeResult is not null)
         {
             return implausibleWipeResult;
         }
-
-        // Read before the assignment below: a switched active set is a content change of its own,
-        // even when the two sets happen to hold identical emotes. A first-time TwitchChannelId
-        // backfill deliberately does not count — it changes no emote the UI could show.
-        var emoteSetSwitched = channel.ActiveEmoteSetId != emoteSet.Id;
 
         channel.TwitchChannelId ??= twitchUserId;
         channel.ActiveEmoteSetId = emoteSet.Id;
@@ -393,17 +395,28 @@ public class SevenTvSyncService(
     /// A successful response with an empty emote list is indistinguishable from a real set wipe, but
     /// the consequences are wildly asymmetric: ReconcileAsync would archive every emote of the channel
     /// and RefreshMatchCacheAsync would install an empty dictionary, so chat matching stops entirely
-    /// until the next successful sync (up to 60s — thousands of lost matches at HandOfBlood's message
-    /// rate). Known triggers: a set change in progress, a partial 7TV outage, an owner briefly emptying
-    /// the set. Treated as implausible and skipped; the next tick recovers on its own.
-    /// <para>Returns the result to return immediately when the wipe looks implausible, or null when
+    /// until a later sync fills the set again (thousands of lost matches at HandOfBlood's message
+    /// rate). Known triggers: a set change in progress, a partial 7TV outage, an owner emptying the
+    /// set. A zero is therefore held back, but not forever — a set that really is empty would
+    /// otherwise stay frozen at its old content indefinitely (issue #76). It is believed when
+    /// <list type="bullet">
+    /// <item>it comes with a new set id (<paramref name="emoteSetSwitched"/>): a freshly created set
+    /// is expected to be empty, or</item>
+    /// <item>it is the same set's zero for the configured number of consecutive, time-spaced syncs
+    /// (<see cref="IEmptySetConfirmationTracker"/>); any non-empty answer starts the count over.</item>
+    /// </list>
+    /// Every entry point that reaches this method counts the same way — the periodic resync, boot
+    /// recovery, the JOIN/RESYNC handlers and the EventAPI follow-ups all call SyncChannelAsync — and
+    /// the tracker's spacing is what keeps a burst of them from confirming itself.
+    /// <para>Returns the result to return immediately while the zero is still held back, or null when
     /// the caller should continue the normal sync.</para>
     /// </summary>
     private async Task<SevenTvSyncResult?> TryGuardAgainstImplausibleWipeAsync(
-        Channel channel, string normalized, SevenTvEmoteSet emoteSet, SevenTvChannelState state, CancellationToken cancellationToken)
+        Channel channel, string normalized, SevenTvEmoteSet emoteSet, bool emoteSetSwitched, SevenTvChannelState state, CancellationToken cancellationToken)
     {
         if (emoteSet.Emotes.Count != 0)
         {
+            emptySetConfirmations.Reset(channel.Id);
             return null;
         }
 
@@ -411,12 +424,36 @@ public class SevenTvSyncService(
             .CountAsync(e => e.ChannelId == channel.Id && !e.IsArchived, cancellationToken);
         if (knownActiveEmotes == 0)
         {
+            emptySetConfirmations.Reset(channel.Id);
             return null;
         }
 
-        logger.LogWarning(
-            "7TV meldet 0 aktive Emotes für {Channel}, obwohl bisher {Count} bekannt waren — Sync übersprungen.",
-            normalized, knownActiveEmotes);
+        if (emoteSetSwitched)
+        {
+            emptySetConfirmations.Reset(channel.Id);
+            logger.LogInformation(
+                "7TV reports an empty new set {SetId} for {Channel} — accepted, {Count} known emotes are archived.",
+                emoteSet.Id, normalized, knownActiveEmotes);
+            return null;
+        }
+
+        var verdict = emptySetConfirmations.ObserveZero(channel.Id, emoteSet.Id);
+        if (verdict.Accept)
+        {
+            emptySetConfirmations.Reset(channel.Id);
+            logger.LogInformation(
+                "7TV has reported 0 emotes for set {SetId} of {Channel} in {Streak} consecutive syncs — accepted as really empty, {Count} known emotes are archived.",
+                emoteSet.Id, normalized, verdict.Streak, knownActiveEmotes);
+            return null;
+        }
+
+        // Only a counted zero is logged at Warning (at most once per spacing window and channel, so
+        // about once a minute while it lasts — the same volume as before); a zero that was too close
+        // to the previous one changes nothing and stays at Debug.
+        logger.Log(
+            verdict.Counted ? LogLevel.Warning : LogLevel.Debug,
+            "7TV reports 0 active emotes for {Channel}, although {Count} were known — sync skipped (empty answer {Streak} of {Required} needed to accept it).",
+            normalized, knownActiveEmotes, verdict.Streak, verdict.Required);
         return SevenTvSyncResult.Create(channel.ChannelName, emoteSet.Id, state.SevenTvUserId, hasChanges: false);
     }
 

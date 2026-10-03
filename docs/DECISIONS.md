@@ -10,6 +10,41 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — A 7TV set that really is empty is accepted: set switch at once, same set after repeated spaced zeros (#76)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationTracker.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationOptions.cs` · `src/EmotePurge.Core/Services/IEmptySetConfirmationTracker.cs` · `src/EmotePurge.Worker/appsettings.json`
+
+The guard against a "0 active emotes" answer from 7TV while we know active emotes (a glitch would
+archive the channel and empty the match cache) skipped every sync for as long as both halves stayed
+true. A set that was deleted and recreated, or emptied for good, therefore kept showing the old
+content forever; the comment's "the next tick recovers on its own" was only right for a transient
+zero. The guard stays, but a zero is now believed in two cases, decided by the operator:
+
+1. **Zero together with a new set id** (set switch detected) is accepted immediately — a freshly
+   created set is expected to be empty. The set id is written in the same sync, so the UI shows the
+   new (empty) set; a switch with a non-empty set was never guarded.
+2. **Zero for the same set id** is accepted once `SevenTv:EmptySetConfirmations` (default 3)
+   consecutive syncs each reported it. Any non-empty answer, a changed set id or an accepted zero
+   resets the streak; a failed 7TV lookup neither counts nor resets. `1` switches the guard off.
+
+The streak lives **in memory, in a singleton** (`EmptySetConfirmationTracker`, keyed by channel row
+id): the sync service is scoped, so state there would die each call. Nothing is persisted, because
+a restart only delays acceptance by N ticks, whereas a column would need a migration for a state
+whose loss is harmless. All entry points (periodic resync, boot recovery, JOIN/RESYNC handlers,
+EventAPI follow-ups) go through `SyncChannelAsync` and so count identically. To stop a burst of
+event-driven syncs from confirming itself within seconds, a zero only counts when at least
+`SevenTv:EmptySetConfirmationSpacingSeconds` (default 45, just under the 60 s periodic resync) have
+passed since the last *counted* zero; the effective delay for a permanently empty same set is thus
+about N-1 periodic ticks. A held-back zero logs at Warning with the streak ("empty answer 1 of 3
+needed") only when it counted, at Debug otherwise; acceptance logs at Information.
+
+The EventAPI delta path keeps its own guard (a delta that would remove the last active emote is
+skipped as `ImplausibleSkipped`) unchanged: it already answers with a full resync, which runs the
+logic above, so a really emptied set converges through the same confirmed path and a malformed
+delta alone still cannot wipe a channel. Out of scope and unchanged: matching/counting code.
+
+---
+
 ### 2026-09-24 — robots.txt stays closed after the legal launch
 
 **Betrifft:** `web/public/robots.txt` · `PRODUCT.md` · `CLAUDE.md`
