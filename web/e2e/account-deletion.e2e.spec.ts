@@ -69,7 +69,7 @@ test.describe('account deletion from the account menu', () => {
     // The copy has to say the two things the user cannot take back or would not expect.
     await expect(dialog.getByText(/jede Stimme, die du abgegeben hast/)).toBeVisible();
     await expect(dialog.getByText(/auch in laufenden Abstimmungen/)).toBeVisible();
-    await expect(dialog.getByText(/anonymisiert/)).toBeVisible();
+    await expect(dialog.getByText(/Platzhalter ersetzt/)).toBeVisible();
 
     const confirm = dialog.getByRole('button', { name: 'Konto endgültig löschen' });
     await expect(confirm).toBeDisabled();
