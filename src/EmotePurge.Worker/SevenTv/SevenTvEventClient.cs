@@ -55,6 +55,7 @@ public class SevenTvEventClient(
     public bool IsEnabled => _enabled;
     public int? SubscriptionLimit => _subscriptionLimit > 0 ? _subscriptionLimit : null;
     public bool IsConnected => _isConnected;
+    public IReadOnlyList<string> DesiredChannels => registry.DesiredChannels;
     public DateTime? LastFrameReceivedUtc => ReadUtc(ref _lastFrameTicks);
     public DateTime? LastDispatchReceivedUtc => ReadUtc(ref _lastDispatchTicks);
     public DateTime? ConnectAttemptedUtc => ReadUtc(ref _connectAttemptedTicks);
@@ -66,8 +67,6 @@ public class SevenTvEventClient(
             RequestSync();
         }
     }
-
-    public IReadOnlyList<string> DesiredChannels => registry.DesiredChannels;
 
     public void Unsubscribe(string channelName)
     {
@@ -383,7 +382,7 @@ public class SevenTvEventClient(
                 // Per channel, not per dispatch: the channels sharing this set are independent rows,
                 // so one failing must not skip the deltas for the ones after it. The periodic resync
                 // reconciles whatever was skipped (issue #59).
-                logger.LogWarning(ex, "7TV delta for one channel of a shared set failed, continuing with the others.");
+                logger.LogWarning(ex, "7TV-Delta für {Channel} eines geteilten Sets fehlgeschlagen, die übrigen Channels werden weiter bedient.", channelName);
             }
         }
     }

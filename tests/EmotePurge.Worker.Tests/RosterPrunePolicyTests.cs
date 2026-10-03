@@ -140,7 +140,8 @@ public class RosterPrunePolicyTests
     [Fact]
     public void DetermineChannelsToPrune_GhostOnlyInRegistry_IsPrunedAfterTwoTicks()
     {
-        // Registry keys keep the casing they were registered with; the comparison must not care.
+        // The registry normalizes on SetDesired, but this policy must not rely on that: a differently
+        // cased candidate has to match its lowercase counterpart.
         var firstTick = RosterPrunePolicy.DetermineChannelsToPrune([], roster: [], previouslyStaleChannels: [], ghostCandidates: ["GhostLogin"]);
         var secondTick = RosterPrunePolicy.DetermineChannelsToPrune([], roster: [], firstTick.StaleChannels, ghostCandidates: ["ghostlogin"]);
 
