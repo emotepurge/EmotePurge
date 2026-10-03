@@ -367,24 +367,8 @@ public class SevenTvEventClient(
 
         // Sequential per channel: two channels sharing the set touch different rows, but staying
         // sequential keeps this loop free of any parallel-writer questions.
-        foreach (var channelName in channels)
-        {
-            try
-            {
-                await ApplyDeltaToChannelAsync(channelName, emoteSetId, delta, ct);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                // Per channel, not per dispatch: the channels sharing this set are independent rows,
-                // so one failing must not skip the deltas for the ones after it. The periodic resync
-                // reconciles whatever was skipped (issue #59).
-                logger.LogWarning(ex, "7TV delta for {Channel} of a shared set failed, continuing with the other channels.", channelName);
-            }
-        }
+        await PerChannelFanOut.ApplyAsync(
+            channels, channelName => ApplyDeltaToChannelAsync(channelName, emoteSetId, delta, ct), logger, ct);
     }
 
     private async Task ApplyDeltaToChannelAsync(string channelName, string emoteSetId, SevenTvEmoteSetDelta delta, CancellationToken ct)
