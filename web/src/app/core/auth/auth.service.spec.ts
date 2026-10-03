@@ -229,7 +229,7 @@ describe('AuthService', () => {
       return httpMock.expectOne('/api/auth/me');
     }
 
-    it.each([0, 502, 503, 504])(
+    it.each([0, 500, 502, 503, 504])(
       'status %i is an unconfirmed outcome that keeps the session',
       (status) => {
         const req = start();
@@ -240,7 +240,7 @@ describe('AuthService', () => {
       },
     );
 
-    it.each([400, 403, 429, 500])('status %i is a confirmed rejection', (status) => {
+    it.each([400, 403, 429])('status %i is a confirmed rejection', (status) => {
       start().flush(null, { status, statusText: 'x' });
 
       expect(service.deletionState().status).toBe('failed');

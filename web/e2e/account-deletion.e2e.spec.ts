@@ -92,7 +92,7 @@ test.describe('account deletion from the account menu', () => {
   test('a failed deletion keeps the user signed in and says so in the reopened menu', async ({
     page,
   }) => {
-    await mockSession(page, 500);
+    await mockSession(page, 403);
     const dialog = await openDeleteDialog(page);
 
     await dialog.getByLabel('Zur Bestätigung deinen Twitch-Login eingeben').fill('sensitron');
@@ -157,6 +157,8 @@ test.describe('account deletion from the account menu', () => {
     const alert = page.getByRole('alert').filter({ hasText: 'nicht bestätigen' });
     await expect(alert).toBeVisible();
     await expect(alert).toContainText('Lade die Seite neu');
+    await expect(alert).toContainText('melde dich bitte nicht an');
+    await expect(alert).toContainText('Kontaktformular');
     await expect(alert).not.toContainText('unverändert');
     await expect(page).toHaveURL(/\/my-votings$/);
   });

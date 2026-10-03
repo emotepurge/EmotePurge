@@ -24,7 +24,7 @@
       "confirm": "Konto endgültig löschen",
       "pending": "Konto wird gelöscht …",
       "failed": "Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen.",
-      "unconfirmed": "Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde – die Verbindung wurde unterbrochen. Lade die Seite neu: Bist du danach abgemeldet, ist die Löschung durchgegangen; bist du weiterhin angemeldet, wurde nichts gelöscht und du kannst es erneut versuchen."
+      "unconfirmed": "Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde – die Verbindung wurde unterbrochen. Lade die Seite neu: Bist du danach weiterhin angemeldet, wurde nichts gelöscht und du kannst es erneut versuchen. Bist du abgemeldet, können wir das von hier aus nicht erkennen – melde dich bitte nicht an, um nachzusehen, denn dabei würde ein neues Konto angelegt; schreib uns über das Kontaktformular, wir bestätigen es dir."
     }
   },
   "shell": {

@@ -38,7 +38,7 @@ const DE_TRANSLATIONS = {
     cancel: 'Abbrechen',
     typedConfirmHint: 'Zum Fortfahren exakt „{{text}}“ eingeben.',
   },
-  errors: { status: { server: 'Serverfehler.' } },
+  errors: { status: { forbidden: 'Nicht erlaubt.' } },
   shell: {
     admin: 'Admin',
     logout: 'Logout',
@@ -487,14 +487,14 @@ describe('AccountMenu', () => {
       dialogButton('Konto endgültig löschen').click();
       TestBed.inject(HttpTestingController)
         .expectOne({ method: 'DELETE', url: '/api/auth/me' })
-        .flush(null, { status: 500, statusText: 'Internal Server Error' });
+        .flush(null, { status: 403, statusText: 'Forbidden' });
       menu.detect();
 
       expect(authService.currentUser()).toEqual(USER);
       expect(navigate).not.toHaveBeenCalled();
       const alert = menu.panel()!.querySelector('[role="alert"]');
       expect(alert?.textContent).toContain('Dein Konto konnte nicht gelöscht werden.');
-      expect(alert?.textContent).toContain('Serverfehler.');
+      expect(alert?.textContent).toContain('Nicht erlaubt.');
     });
 
     it('resets to the root view when the deletion fails, even if the user had moved to preferences', async () => {
@@ -514,7 +514,7 @@ describe('AccountMenu', () => {
       menu.detect();
       expect(menu.hasButton('Konto löschen')).toBe(false);
 
-      pending.error(new HttpErrorResponse({ status: 500 }));
+      pending.error(new HttpErrorResponse({ status: 403 }));
       menu.detect();
       await menu.fixture.whenStable();
 
@@ -547,7 +547,7 @@ describe('AccountMenu', () => {
       dialogButton('Konto endgültig löschen').click();
     }
 
-    it.each([0, 502, 503, 504])(
+    it.each([0, 500, 502, 503, 504])(
       'on status %i says the outcome is unknown, never "nothing has changed", and keeps the session',
       async (status) => {
         const menu = render();
@@ -594,7 +594,7 @@ describe('AccountMenu', () => {
       dialogButton('Konto endgültig löschen').click();
       TestBed.inject(HttpTestingController)
         .expectOne({ method: 'DELETE', url: '/api/auth/me' })
-        .flush(null, { status: 500, statusText: 'Internal Server Error' });
+        .flush(null, { status: 403, statusText: 'Forbidden' });
       menu.detect();
       await menu.fixture.whenStable();
 
@@ -619,7 +619,7 @@ describe('AccountMenu', () => {
       row.click();
       expect(deleteAccount).toHaveBeenCalledOnce();
 
-      pending.error(new HttpErrorResponse({ status: 500 }));
+      pending.error(new HttpErrorResponse({ status: 403 }));
       menu.detect();
       expect(menu.button('Konto löschen').disabled).toBe(false);
     });
@@ -632,7 +632,7 @@ describe('AccountMenu', () => {
       dialogButton('Konto endgültig löschen').click();
       TestBed.inject(HttpTestingController)
         .expectOne({ method: 'DELETE', url: '/api/auth/me' })
-        .flush(null, { status: 500, statusText: 'Internal Server Error' });
+        .flush(null, { status: 403, statusText: 'Forbidden' });
       menu.detect();
 
       menu.trigger().click(); // close

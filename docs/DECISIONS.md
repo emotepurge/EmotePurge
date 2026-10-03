@@ -81,13 +81,16 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   recorded for the day a grant-killing revocation path exists. A racing refresh whose UPDATE hits
   the locked or deleted row fails with `DbUpdateConcurrencyException` — one 500 for a request on an
   account that is gone; the next request gets 410/401.
-- **A lost answer is an unknown outcome, owned by `AuthService`.** Status 0 and 502/503/504 (a
-  dropped connection, or a proxy answering for the API, which can happen after the commit) do not say
-  whether the account was deleted: `deletionState` becomes `unconfirmed`, the session is left alone
-  and the menu says to reload (`/api/auth/me` answers 401 once the account is gone; "sign in to
-  check" would recreate an empty account). A 500 counts as a confirmed rejection: the handler's
-  post-commit steps (Redis cleanup, token revocation) swallow their own failures, so an unhandled
-  exception can only precede the commit, which rolls back. Other 4xx are rejections too. The state
+- **A lost answer is an unknown outcome, owned by `AuthService`.** Status 0 and 500/502/503/504 do
+  not say whether the account was deleted: a dropped connection, a proxy answering for the API after
+  the commit, and an uncertain commit (the connection drops before Npgsql receives the COMMIT
+  acknowledgement, so `CommitAsync` throws and the API answers 500 although the transaction went
+  through). `deletionState` becomes `unconfirmed`, the session is left alone and the menu says to
+  reload. Only "still signed in after a reload" is reliable (the account exists); a signed-out reload
+  is ambiguous, since `ensureLoaded()` also maps an unreachable API or an expired session to
+  "signed out". The notice therefore says so, warns against signing in to check (login recreates an
+  empty account) and points to the contact form. Only 4xx other than 401/410 are confirmed
+  rejections (`failed`, "nothing changed"). The state
   lives in the service, not the menu, because the menu is per page and dies on navigation while the
   request is pending; a menu created later shows the outcome, and the menu's focus work runs in an
   `effect`, so it dies with the component.

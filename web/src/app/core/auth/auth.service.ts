@@ -25,11 +25,11 @@ export type DeletionState =
 /**
  * Statuses that say nothing about whether the deletion committed: 0 is a dropped or aborted
  * connection, 502/503/504 come from a proxy in front of the API, which can answer them after the
- * API committed. A 500 is deliberately not here: it comes from the API itself, and every step after
- * the commit in the handler (Redis cleanup, token revocation) swallows its own failures, so an
- * unhandled exception can only precede the commit, which rolls back.
+ * API committed, and 500 can be an uncertain commit (the connection drops before the database
+ * acknowledges the COMMIT, so `CommitAsync` throws although the transaction went through). Only a
+ * 4xx other than 401/410 is a confirmed rejection.
  */
-const UNKNOWN_OUTCOME_STATUSES = new Set([0, 502, 503, 504]);
+const UNKNOWN_OUTCOME_STATUSES = new Set([0, 500, 502, 503, 504]);
 
 const RETURN_URL_STORAGE_KEY = 'ep_return_url';
 
