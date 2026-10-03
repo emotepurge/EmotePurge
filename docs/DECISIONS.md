@@ -46,6 +46,18 @@ unknown.
   `--diagnostic`, so there is no flag to disagree with; if the original report's `run.diagnostic`
   disagrees with the header, the recompute logs a warning and uses the header.
 
+**Mixed images.** An unfinished binding file written by an image without this change has no
+recorded mode. The new image refuses it with exit 3 on the same UTC day (same identity, so it
+would be resumed) and, on a later day, derives a new window instead of resuming it, with a warning
+naming the file. A binding run therefore must either start on an image that already contains this
+change, or keep its image pinned until its last report is closed. The warning also names the
+operator action: move the file aside for a deliberate fresh start, or record the mode by hand in
+header line 1 (`"diagnostic":true|false`), which is an attestation by the operator that nothing
+verifies. `FindFrozenWindow` logs the skip when the file would otherwise have been inherited, and
+always for a legacy file seen by a binding run. A `--report-only` recompute whose header and
+original report disagree on the mode gets the warning code `run-mode-disagreement` (a new value in
+`Recomputation.Warnings`, no new field).
+
 **Alternatives.** Putting the mode into the identity would have renamed every file and made a mode
 mismatch a silent fresh start instead of a refusal. Treating a legacy file as binding would have let
 exactly the files this change exists to catch (diagnostic runs written before it) pass as binding.

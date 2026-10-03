@@ -43,6 +43,7 @@ public class HarnessRunnerTests : IDisposable
     // One clock for the whole test, not one per Run(...) call: the resume tests need to move the
     // process start between two invocations of the same file.
     private readonly FakeClock _clock = new(Now);
+    private readonly CapturingLogger _log = new();
 
     private readonly IChannelService _channels = Substitute.For<IChannelService>();
     private readonly IUsageStatQueryService _usage = Substitute.For<IUsageStatQueryService>();
@@ -1917,6 +1918,19 @@ public class HarnessRunnerTests : IDisposable
         var recomputed = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
         Assert.True(recomputed.Run.Diagnostic);
         Assert.Equal("inherited", recomputed.Recomputation!.DiagnosticSource);
+        Assert.Contains("run-mode-disagreement", recomputed.Recomputation.Warnings);
+        Assert.Contains(_log.Entries, e => e.Level == Microsoft.Extensions.Logging.LogLevel.Warning && e.Message.Contains("the recompute uses the header"));
+    }
+
+    [Fact]
+    public async Task ReportOnly_WhenHeaderAndReportAgree_RaisesNoModeWarning()
+    {
+        var files = await CloseAThreeDayRun(diagnostic: true);
+
+        Assert.Equal(0, await Recompute(Path.GetFileName(files[0])));
+
+        var recomputed = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
+        Assert.DoesNotContain("run-mode-disagreement", recomputed.Recomputation!.Warnings);
     }
 
     [Fact]
@@ -1930,6 +1944,81 @@ public class HarnessRunnerTests : IDisposable
         var recomputed = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
         Assert.False(recomputed.Run.Diagnostic);
         Assert.Equal("inherited", recomputed.Recomputation!.DiagnosticSource);
+    }
+
+    [Fact]
+    public async Task ASkippedOtherModeCandidate_IsAnnouncedWithTheOperatorAction()
+    {
+        await WriteStaleLeftover(recordedDiagnostic: true);
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+
+        Assert.Equal(0, await Run(3, diagnostic: false));
+
+        var warning = Assert.Single(_log.Entries, e => e.Level == Microsoft.Extensions.Logging.LogLevel.Warning && e.Message.Contains("is not continued"));
+        Assert.Contains("leftover.jsonl", warning.Message);
+        Assert.Contains("move the file aside", warning.Message);
+        Assert.Contains("\"diagnostic\":false", warning.Message);
+    }
+
+    [Fact]
+    public async Task ASameModeCandidate_IsInheritedWithoutASkipWarning()
+    {
+        await WriteStaleLeftover(recordedDiagnostic: false);
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+
+        Assert.Equal(0, await Run(3, diagnostic: false));
+
+        Assert.DoesNotContain(_log.Entries, e => e.Message.Contains("is not continued"));
+    }
+
+    [Fact]
+    public async Task ADiagnosticInvocationHittingAnUnfinishedBindingFile_IsToldToResumeWithoutTheFlag()
+    {
+        await LeaveAnUnfinishedRun(diagnostic: false);
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, await Run(3, diagnostic: true));
+
+        var error = _log.Entries.Last(e => e.Level == Microsoft.Extensions.Logging.LogLevel.Error);
+        Assert.Contains("Resume it without '--diagnostic'", error.Message);
+        Assert.DoesNotContain("--report-only", error.Message);
+    }
+
+    [Fact]
+    public async Task AClosedLegacyFileWithAReadableReport_IsStillDecidedByTheReport_OnABindingRerun()
+    {
+        var files = await CloseAThreeDayRun(diagnostic: false);
+        StripRecordedMode(files[0]);
+        var before = ReadAllBytes(files);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3, diagnostic: false));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Equal(before, ReadAllBytes(files));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task AClosedLegacyFile_RefusesAnInvocationOfTheOtherModeThroughItsReport(bool reportDiagnostic, bool currentDiagnostic)
+    {
+        var files = await CloseAThreeDayRun(reportDiagnostic);
+        StripRecordedMode(files[0]);
+        var before = ReadAllBytes(files);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, await Run(3, diagnostic: currentDiagnostic));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Equal(before, ReadAllBytes(files));
     }
 
     private async Task<string> LeaveAnUnfinishedRun(bool diagnostic)
@@ -1991,7 +2080,7 @@ public class HarnessRunnerTests : IDisposable
                 SharedChatCutover = sharedChatCutover
             },
             _clock,
-            NullLogger<HarnessRunner>.Instance);
+            _log);
 
         return runner.RunAsync(ChannelName, days, diagnostic, ct);
     }
@@ -2014,7 +2103,7 @@ public class HarnessRunnerTests : IDisposable
                 SharedChatCutover = "2026-09-01"
             },
             _clock,
-            NullLogger<HarnessRunner>.Instance);
+            _log);
 
         return runner.RecomputeReportAsync(channelName ?? ChannelName, reportOnlyFileName, ct);
     }
@@ -2164,4 +2253,19 @@ public class HarnessRunnerTests : IDisposable
                 JsonSerializer.Serialize(writer, (IReadOnlyList<T>)value, options);
         }
     }
+}
+
+internal sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger<HarnessRunner>
+{
+    public List<(Microsoft.Extensions.Logging.LogLevel Level, string Message)> Entries { get; } = [];
+
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull => null;
+
+    public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state,
+        Exception? exception, Func<TState, Exception?, string> formatter) =>
+        Entries.Add((logLevel, formatter(state, exception)));
 }
