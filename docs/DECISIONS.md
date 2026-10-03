@@ -10,6 +10,66 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — Channel rename/leave/purge during an in-flight 7TV sync: convergence net plus a narrowing re-read, no row lock, no concurrency token (#59)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteMatchCache.cs` · `src/EmotePurge.Core/Services/IEmoteMatchCache.cs` ·
+`src/EmotePurge.Worker/RosterPrunePolicy.cs` · `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` ·
+`src/EmotePurge.Worker/SevenTv/SevenTvEventClient.cs` · `src/EmotePurge.Worker/SevenTv/ISevenTvEventClient.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelSyncGate.cs`
+
+`ChannelSyncGate` coordinates `SevenTvSyncService` callers with each other, nothing more. The entry of
+2026-09-04 ("Der Rename-Handover bekommt zwei Sperren") says that whoever writes a `Channel` row holds
+the row gate; that is true of the sync callers only. `ChannelIdentityService.RenameAsync`/`MergeAsync`,
+the rename path of `ChannelService.JoinAsync`, `ChannelDeactivation` and the purge (the last two partly
+in the **Api**, another process) never take it. Those entries are not edited; this one corrects the
+claim. The process boundary is an accepted limit: an in-process semaphore cannot span it.
+
+The window: a sync loads the row, then sits in the 7TV REST call. A rename commits and publishes
+LEAVE old / JOIN new, the worker processes the LEAVE (cache, registry, IRC), and the old sync then saves
+(disjoint columns, it succeeds) and re-creates the match-cache entry under the old login, after which
+its caller re-subscribes the registry under it. Deactivation looks the same (the row still exists, just
+inactive). Purge and merge-loser delete the row first, so the save fails with
+`DbUpdateConcurrencyException` or an FK violation (23503). The damage is worker memory only: no data
+is lost, but the ghost used to stay until restart, because the prune step only walked the IRC roster
+and the old login had already left it — so the "heals within 3 minutes" claim in issue #54/#59 was
+false for ghosts. A registry ghost could also win `TryGetChannelForUser` over the real entry.
+
+Decided:
+
+- **Convergence net covers ghosts.** `RosterPrunePolicy` now takes the union of the IRC roster, the
+  registry's desired channels and the match-cache keys as candidates, with the unchanged two-tick grace
+  and case-insensitive comparison. The worker cleans cache and registry for each, and calls
+  `LeaveChannelAsync` only for names actually on the roster. With this the 3-minute healing claim is
+  true.
+- **Narrowing re-read.** After `SaveChangesAsync`, before touching the cache, the sync re-reads name,
+  `IsBotActive` and existence by id (no tracking). Renamed: it continues under the new name and drops
+  any entry under the old one (the warm-up may have written it). Inactive or gone: it removes the
+  entry and returns `null`. All callers already treat `null` as "nothing to follow up on".
+- **Vanished row on save** (`DbUpdateConcurrencyException`, or `DbUpdateException` over a
+  `PostgresException` with SQLSTATE 23503) is an expected interleaving: change tracker cleared,
+  logged at Information, `null` returned. Any other `DbUpdateException` still propagates.
+- **Per-channel catch** in the EventAPI shared-set loop, so one failing channel no longer skips the
+  deltas for the channels after it.
+
+Rejected: `SELECT ... FOR UPDATE` across the sync, because it would hold a row lock over an HTTP call
+for every channel every 60 s and still leave the caller's `EnsureSubscribed` outside the lock. A
+concurrency token such as `xmin` on `Channel`, because it applies to every writer including the Api,
+creating new 500 paths and requiring an audit of all of them — for a defect whose damage is
+worker memory that now converges anyway.
+
+Follow-up hardening of the same change: the re-read only removes the old-login cache entry when no
+other *active* row carries that login now (a login swap must not wipe the other row's live entry);
+the "row vanished" catch applies only when every entry of the failed save belongs to this channel
+(the `DbContext` is shared across a resync tick, so an earlier channel's failure is not blamed on
+this one); and `RecordFailedAttemptAsync` tolerates a vanished row the same way.
+
+Residual, stated honestly: early returns *before* the save (the implausible-wipe guard, which returns
+under the loaded name so the caller subscribes under the old login; the failed-attempt and
+unusable-response paths) are not narrowed by the re-read, so a warm-up or registry ghost can still
+survive them. A ghost can also still appear between the re-read and the cache write. All of these are
+covered by the prune within two ticks, not by the sync.
+
 ### 2026-10-03 — Boot recovery warms and joins every channel first, live channels leading, and syncs 7TV afterwards
 
 **Betrifft:** `src/EmotePurge.Worker/Worker.cs` · `src/EmotePurge.Worker/BootRecoveryOrderPolicy.cs` ·

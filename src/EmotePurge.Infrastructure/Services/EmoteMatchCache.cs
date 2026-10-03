@@ -18,4 +18,6 @@ public class EmoteMatchCache : IEmoteMatchCache
 
     public IReadOnlyDictionary<string, string> GetChannelEmotes(string channelName)
         => _byChannel.TryGetValue(ChannelName.Normalize(channelName), out var emotes) ? emotes : Empty;
+
+    public IReadOnlyCollection<string> GetCachedChannelNames() => [.. _byChannel.Keys];
 }
