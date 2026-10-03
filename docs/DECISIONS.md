@@ -10,6 +10,58 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — Self-service account deletion: `DELETE /api/auth/me`, `SelfRequest`, best-effort Twitch token revocation after the commit (#243)
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/AuthEndpoints.cs` ·
+`src/EmotePurge.Core/Services/IAccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs` ·
+`src/EmotePurge.Core/Twitch/ITwitchAuthClient.cs` · `src/EmotePurge.Infrastructure/Twitch/TwitchAuthClient.cs` ·
+`web/src/app/shared/ui/account-menu.ts` · `web/src/app/core/auth/auth.service.ts` ·
+`web/e2e/account-deletion.e2e.spec.ts`
+
+The last open acceptance criterion of #243: a logged-in user deletes their own account from the
+account menu. No second deletion path — the endpoint calls `IAccountDeletionService.DeleteAsync` with
+the new `AccountDeletionReason.SelfRequest` (recorded as `selfRequest` in the `user.delete` entry), so
+votes, audit pseudonymisation, row removal and Redis cleanup are exactly those of the admin and
+retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is rejected with an
+`ArgumentException`. No schema change, no migration.
+
+- **Route and identity.** `DELETE /api/auth/me`, next to `GET /api/auth/me`, behind
+  `RequireAuthorization()`. The user id comes from the `NameIdentifier` claim only — there is no route
+  value or body to bind, so a caller can only delete the account their own cookie belongs to. The
+  audit actor is the principal itself, which the service already turns into the `deleted-user` marker
+  on the `user.delete` entry when actor and target are the same.
+- **Rate limit and CSRF.** `Bookkeeping` policy, like the other authenticated mutations on our own
+  database (the `/auth` group is otherwise unlimited on purpose, but that reasoning covers the login
+  path only). No antiforgery token: the repo defends cookie-authenticated mutations through the
+  `SameSite=Lax` session cookie and Minimal API's JSON-only binding, and a `DELETE` is never sent
+  cross-site under `Lax`; this endpoint follows that convention rather than inventing its own.
+- **`NotFound` answers 204, not 404.** The row being gone is the state the caller asked for (a
+  concurrent admin deletion, a retry after a lost response), and the cookie still has to be cleared,
+  so the handler signs out and answers 204 for both `Deleted` and `NotFound`.
+- **Twitch token revocation, after the commit.** `ITwitchAuthClient.RevokeTokenAsync` posts
+  `client_id` and `token` as a form to `https://id.twitch.tv/oauth2/revoke` through the existing typed
+  client. The handler reads the stored tokens *before* the deletion (the row, and the encrypted tokens
+  with it, is gone afterwards) but revokes only once the deletion committed: a failed deletion must not
+  leave the user signed in with tokens Twitch has already invalidated. It revokes the distinct set of
+  cookie-claim access token, stored access token and stored refresh token. Revocation is best-effort:
+  the client never throws, logs a warning (never the token), and the outcome cannot change the
+  response — an unrevoked token simply expires on its own.
+- **Votes are deleted, not anonymised (operator decision).** Anonymising was estimated at two to four
+  days against about one for deletion: a nullable `Vote.UserId` plus a manual production migration,
+  NULL semantics in roughly eight queries, all three deletion paths changing together, and a residual
+  re-identification risk in small sessions. Deleting costs little in practice: the chance that someone
+  deletes their account exactly while a moderator is evaluating a voting is negligible, and a vote
+  result never deletes anything automatically — it is advisory, the moderator still decides what gets
+  removed. The dialog says so plainly, including that running votings change.
+- **Frontend.** A destructive entry at the end of the account menu opens `TypedConfirmDialog` (retype
+  the Twitch login); the copy names irreversibility, the removed votes (also in running votings) and
+  that audit entries stay, pseudonymised. `AuthService.deleteAccount()` resets the client session only
+  after the server answered and then navigates to `/welcome` (there is no account to log in to any
+  more). On failure nothing is reset and the menu reopens with the reason, since nothing was deleted.
+- **Not in the repo.** The privacy policy is operator-owned markdown outside the repository; its
+  deletion section has to be updated by the operator (suggested wording is in the PR description).
+
 ### 2026-09-24 — robots.txt stays closed after the legal launch
 
 **Betrifft:** `web/public/robots.txt` · `PRODUCT.md` · `CLAUDE.md`
