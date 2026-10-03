@@ -546,3 +546,42 @@ Helix-Ausfall für neue Zeilen verweigern. Die Drei-Zustands-Abfrage existiert, 
 Ausfall funktionieren (DECISIONS 2026-09-24); eine Verweigerung nur für *neue* Zeilen wäre eine
 eigene Policy-Änderung mit Wirkung weit über #245 hinaus. Fail-closed für die **Beobachtung** (F2)
 genügt dem Zweck der Sperre.
+
+---
+
+## 8. Nachtrag 2026-10-03 — Befunde aus dem Plan-Review (Codex Sol)
+
+Das adversariale Review des Umsetzungsplans
+([`superpowers/plans/2026-10-03-broadcaster-self-purge.md`](superpowers/plans/2026-10-03-broadcaster-self-purge.md),
+Abschnitt 10) hat drei Aussagen dieses Konzepts gegen den Code widerlegt und zwei Lücken benannt,
+die das Konzept nicht gesehen hat. Hier nur die Korrekturen; die Entscheidungen dazu (D1–D4)
+stehen im Plan, Abschnitt 9, und sind **offen** — sie ändern Garantien dieses Konzepts erst, wenn
+sie fallen.
+
+- **3.3 „Nachweisgrenze" — falsch für aktive Zeilen.** „Sie ist inaktiv oder wird vom Reconcile
+  deaktiviert und läuft in die 180-Tage-Retention" gilt nur für **inaktive** Altzeilen. Eine
+  **aktive** id-lose Zeile, deren Login Helix nicht kennt, wird vom Reconcile heute nur gezählt
+  und einmal gewarnt (`ChannelIdentityService.cs:320-334`); die Retention nimmt nur inaktive
+  Zeilen (`DataRetentionService.cs:424`). Ohne Code bliebe sie stehen. → **D2** (Empfehlung:
+  Deaktivierung nach 7-Tage-Schonfrist mit Audit `loginUnresolvable`).
+- **3.4 Punkt 2/4 „Beobachtet wird in diesem Fenster nichts" — unvollständig.** Die
+  Live-Abdeckung (`TwitchLivePollWorker` → `LiveCoverageService`) schreibt Live-Minuten nach
+  Kanal**name** und sieht weder gespeicherte ID noch Sperre; eine aktive id-lose Zeile sammelt
+  also bis zum Reconcile `ChannelLiveDays`. Dieselbe Lücke hat die env-Liste. → Plan P15 (Helix-
+  `user_id` durchreichen, Abdeckung prüft beide Sperren) — kein Betreiberentscheid, Teil von T4.
+- **3.4 Punkt 2 „kein Match-Cache"** gilt für eine Zeile **ohne** Emotes in Postgres. Hat eine
+  id-lose Zeile Emotes (Altzeile aus der Vor-ID-Zeit, Restore), wärmt der Sync — seit PR #318
+  auch die Boot-Recovery (`WarmChannelAsync`) — den Match-Cache **vor** der Identitätsauflösung
+  und damit vor dem Gate; bei fehlgeschlagener 7TV-Auflösung bleibt er warm. → **D3**
+  (Empfehlung: id-lose Zeilen erst nach Identität und Gates wärmen).
+- **3.2 Audit-Log-404** schließt nur die Zeit **ohne** Zeile. Wird der Login neu vergeben und der
+  neue Inhaber joint, existiert wieder eine Zeile gleichen Namens, und
+  `AuditLogQueryService.cs:93-99` liefert ihm die Einträge des Vorgängers. Die hier als
+  Folgearbeit eingestufte ID-Bindung hat eine leichte Zwischenstufe (Generationsgrenze über
+  `Channel.CreatedAt`). → **D1**.
+- **T7/6 „Api und Worker gemeinsam"** belegt nicht, dass der Worker die Sperre kennt (`:latest`,
+  kein `pull_policy`). → **D4** (Empfehlung: Worker vor Api, Revisions-Vergleich, Log-Beleg per
+  neuem Reconcile-Zähler).
+- **T3 „LEAVE nach dem Commit"** gilt im Reconcile nur, wenn `ChannelDeactivation` den Publish vom
+  Speichern trennt — heute publiziert es direkt nach `SaveChanges` (`:52-57`). Plan P17, kein
+  Entscheid.
