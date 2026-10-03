@@ -16,7 +16,7 @@ public class SevenTvEditorService(
         var cached = await modRoleCache.TryGetSevenTvEditorGrantsAsync(twitchUserId, cancellationToken);
         // A miss here costs two 7TV REST calls (identity, then grants), which is what makes this hit
         // rate worth watching at all.
-        telemetry.RecordCacheLookup(RateLimitCacheNames.SevenTvGrants, cached is not null);
+        telemetry.ReportCacheLookup(RateLimitCacheNames.SevenTvGrants, cached is not null);
         if (cached is not null)
         {
             return SevenTvEditorGrantsLookupResult.Ok(cached);

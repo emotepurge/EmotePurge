@@ -105,6 +105,11 @@ function memberKey(item: { alias?: string | null; emote: { id: string } }): stri
   return `${item.emote.id}\u0000${item.alias ?? ''}`;
 }
 
+/** Code-unit order: deterministic and locale-independent, which is all a membership comparison needs. */
+function compareKeys(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function fetchEmoteSetEntriesPage(
   httpClient: HttpClient,
   setId: string,
@@ -182,8 +187,8 @@ export function loadSevenTvSetEntries(
           if (totalCounts.size > 1) {
             return of(false);
           }
-          const again = emotes.items.map(memberKey).sort();
-          const first = [...pageMembers[page - 1]].sort();
+          const again = emotes.items.map(memberKey).sort(compareKeys);
+          const first = [...pageMembers[page - 1]].sort(compareKeys);
           if (again.length !== first.length || again.some((key, index) => key !== first[index])) {
             return of(false);
           }

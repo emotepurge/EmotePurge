@@ -69,7 +69,7 @@ public sealed class GuardedSevenTvEditorGrantsService(
         ArgumentException.ThrowIfNullOrWhiteSpace(twitchUserId);
 
         var cached = await grantsCache.TryGetSevenTvEditorGrantsAsync(twitchUserId, cancellationToken);
-        telemetry.RecordCacheLookup(RateLimitCacheNames.SevenTvGrants, cached is not null);
+        telemetry.ReportCacheLookup(RateLimitCacheNames.SevenTvGrants, cached is not null);
         if (cached is not null)
         {
             return SevenTvEditorGrantsLookupResult.Ok(cached);

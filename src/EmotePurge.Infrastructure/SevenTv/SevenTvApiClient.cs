@@ -1021,7 +1021,7 @@ public class SevenTvApiClient(
         HttpResponseMessage response, string callSource, int? statusOverride, int? retryAfterSeconds)
     {
         var usesSearchHeaders = UsesSearchRateLimitHeaders(callSource);
-        telemetry.RecordProviderResponse(new ProviderResponseObservation(
+        telemetry.ReportProviderResponse(new ProviderResponseObservation(
             RateLimitProviders.SevenTv,
             callSource,
             statusOverride ?? (int)response.StatusCode,

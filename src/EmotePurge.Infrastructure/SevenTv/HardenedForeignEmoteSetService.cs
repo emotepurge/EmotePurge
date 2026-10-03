@@ -76,7 +76,7 @@ public sealed class HardenedForeignEmoteSetService(
         if (!refresh)
         {
             var cached = await cache.TryGetAsync(normalized, cancellationToken);
-            telemetry.RecordCacheLookup(RateLimitCacheNames.ForeignEmoteSet, hit: cached is not null);
+            telemetry.ReportCacheLookup(RateLimitCacheNames.ForeignEmoteSet, hit: cached is not null);
             if (cached is not null)
             {
                 return ForeignEmoteSetLookupResult.Ok(cached);
@@ -109,7 +109,7 @@ public sealed class HardenedForeignEmoteSetService(
         if (!refresh)
         {
             var cached = await cache.TryGetBySetIdAsync(emoteSetId, cancellationToken);
-            telemetry.RecordCacheLookup(RateLimitCacheNames.ForeignEmoteSetBySetId, hit: cached is not null);
+            telemetry.ReportCacheLookup(RateLimitCacheNames.ForeignEmoteSetBySetId, hit: cached is not null);
             if (cached is not null)
             {
                 return EchoRouteChannel(ForeignEmoteSetLookupResult.Ok(cached), normalizedChannel);
