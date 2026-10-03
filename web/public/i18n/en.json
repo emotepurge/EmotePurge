@@ -23,7 +23,8 @@
       "inputLabel": "Enter your Twitch login to confirm",
       "confirm": "Delete account permanently",
       "pending": "Deleting account …",
-      "failed": "Your account could not be deleted. Nothing has changed, you can try again."
+      "failed": "Your account could not be deleted. Nothing has changed, you can try again.",
+      "unconfirmed": "We couldn’t confirm whether your account was deleted – the connection was interrupted. Reload the page: if you’re signed out, the deletion went through; if you’re still signed in, nothing was deleted and you can try again."
     }
   },
   "shell": {

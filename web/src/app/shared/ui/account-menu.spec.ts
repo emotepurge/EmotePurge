@@ -29,7 +29,9 @@ const DE_TRANSLATIONS = {
       inputLabel: 'Login eingeben',
       confirm: 'Konto endgültig löschen',
       pending: 'Konto wird gelöscht …',
-      failed: 'Dein Konto konnte nicht gelöscht werden.',
+      failed: 'Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert.',
+      unconfirmed:
+        'Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde. Lade die Seite neu.',
     },
   },
   common: {
@@ -537,6 +539,51 @@ describe('AccountMenu', () => {
       expect(navigate).toHaveBeenCalledWith('/login');
       expect(authService.takeLoginNotice()).toBe('deletionUnconfirmed');
       expect(menu.panel()).toBeNull();
+    });
+
+    function confirmDeletion(menu: Harness): void {
+      openDialog(menu);
+      type('sensitron');
+      dialogButton('Konto endgültig löschen').click();
+    }
+
+    it.each([0, 502, 503, 504])(
+      'on status %i says the outcome is unknown, never "nothing has changed", and keeps the session',
+      async (status) => {
+        const menu = render();
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+        confirmDeletion(menu);
+        TestBed.inject(HttpTestingController)
+          .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+          .error(new ProgressEvent('error'), { status, statusText: 'x' });
+        menu.detect();
+        await menu.fixture.whenStable();
+
+        expect(authService.currentUser()).toEqual(USER);
+        expect(navigate).not.toHaveBeenCalled();
+        const alert = menu.panel()!.querySelector<HTMLElement>('[role="alert"]')!;
+        expect(alert.textContent).toContain('nicht bestätigen');
+        expect(alert.textContent).not.toContain('unverändert');
+        expect(document.activeElement).toBe(alert);
+      },
+    );
+
+    it('keeps the outcome after the menu is destroyed mid-request and shows it on a recreated menu', async () => {
+      const menu = render();
+      const pending = new Subject<void>();
+      vi.spyOn(authService, 'deleteAccount').mockReturnValue(pending);
+      confirmDeletion(menu);
+      menu.detect();
+
+      menu.fixture.destroy(); // the visitor navigated to another page
+      expect(() => pending.error(new HttpErrorResponse({ status: 0 }))).not.toThrow();
+
+      const second = render(); // the next page's menu; /me is cached, so no request
+      second.detect();
+      await second.fixture.whenStable();
+      expect(second.panel()!.querySelector('[role="alert"]')?.textContent).toContain(
+        'nicht bestätigen',
+      );
     });
 
     it('moves focus to the alert when the deletion fails', async () => {

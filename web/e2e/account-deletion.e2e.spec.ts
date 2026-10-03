@@ -135,6 +135,32 @@ test.describe('account deletion from the account menu', () => {
     await expect(page.getByRole('alert')).toHaveCount(0);
   });
 
+  test('a lost answer is reported as unconfirmed, not as unchanged, and keeps the session', async ({
+    page,
+  }) => {
+    await page.route('**/api/auth/me', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        await route.abort('connectionreset');
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(AUTH_USER),
+      });
+    });
+    const dialog = await openDeleteDialog(page);
+
+    await dialog.getByLabel('Zur Bestätigung deinen Twitch-Login eingeben').fill('sensitron');
+    await dialog.getByRole('button', { name: 'Konto endgültig löschen' }).click();
+
+    const alert = page.getByRole('alert').filter({ hasText: 'nicht bestätigen' });
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText('Lade die Seite neu');
+    await expect(alert).not.toContainText('unverändert');
+    await expect(page).toHaveURL(/\/my-votings$/);
+  });
+
   test('cancelling sends nothing', async ({ page }) => {
     await mockSession(page, 204);
     const dialog = await openDeleteDialog(page);

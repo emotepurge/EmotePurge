@@ -23,7 +23,8 @@
       "inputLabel": "Zur Bestätigung deinen Twitch-Login eingeben",
       "confirm": "Konto endgültig löschen",
       "pending": "Konto wird gelöscht …",
-      "failed": "Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen."
+      "failed": "Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen.",
+      "unconfirmed": "Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde – die Verbindung wurde unterbrochen. Lade die Seite neu: Bist du danach abgemeldet, ist die Löschung durchgegangen; bist du weiterhin angemeldet, wurde nichts gelöscht und du kannst es erneut versuchen."
     }
   },
   "shell": {

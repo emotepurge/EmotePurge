@@ -6,17 +6,17 @@ import {
   Injector,
   afterNextRender,
   computed,
+  effect,
   inject,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
-import { HttpErrorResponse } from '@angular/common/http';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { AuthService } from '../../core/auth/auth.service';
-import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { Avatar } from './avatar';
 import { DisplayPreferences } from './display-preferences';
 import { Popover } from './popover';
@@ -187,17 +187,23 @@ import { openTypedConfirmDialog } from './typed-confirm-dialog';
                   }}
                 </button>
 
-                @if (deleteErrorKey(); as errorKey) {
+                @if (deletionNotice(); as notice) {
                   <!-- The panel is reopened for this: the dialog is gone by the time the request
-                       fails, and the account being still there is the thing to say. -->
+                       fails. A confirmed rejection says nothing changed; a lost answer must not —
+                       the account may be gone already, and only a reload tells (signing in would
+                       recreate an empty account). -->
                   <div
                     #deleteAlert
                     role="alert"
                     tabindex="-1"
                     class="flex flex-col gap-1 border-t border-border bg-danger-wash px-3 py-3 text-xs text-danger-fg"
                   >
-                    <span>{{ 'account.delete.failed' | transloco }}</span>
-                    <span>{{ errorKey | transloco }}</span>
+                    @if (notice.status === 'failed') {
+                      <span>{{ 'account.delete.failed' | transloco }}</span>
+                      <span>{{ notice.errorKey | transloco }}</span>
+                    } @else {
+                      <span>{{ 'account.delete.unconfirmed' | transloco }}</span>
+                    }
                   </div>
                 }
               }
@@ -232,14 +238,22 @@ export class AccountMenu {
    * left in the visitor's mind — at the top — rather than in a subview they last saw minutes ago.
    */
   protected readonly view = signal<'root' | 'preferences'>('root');
-  /** Translation key of why the last account deletion failed; cleared whenever the panel closes. */
-  protected readonly deleteErrorKey = signal<string | null>(null);
+  /**
+   * The deletion's progress lives in AuthService, not here: this component is destroyed with its
+   * page, and an answer arriving afterwards must neither be lost nor touch a dead view.
+   */
+  protected readonly deletionNotice = computed(() => {
+    const state = this.authService.deletionState();
+    return state.status === 'failed' || state.status === 'unconfirmed' ? state : null;
+  });
   /**
    * True from the confirmation until the server answers. The request can take a while (the server
    * revokes tokens at Twitch before it responds), and the panel can be reopened meanwhile — the row
    * is disabled and says what is happening, so a second submission is not possible.
    */
-  protected readonly isDeleting = signal(false);
+  protected readonly isDeleting = computed(
+    () => this.authService.deletionState().status === 'pending',
+  );
 
   /**
    * Translated imperatively rather than through the pipe, because it carries an interpolated name
@@ -262,6 +276,20 @@ export class AccountMenu {
     // The landing and login pages render outside AppShell, which is otherwise the only caller.
     // Idempotent, so the shell's own call is untouched and no second request is made.
     this.authService.ensureLoaded().subscribe();
+
+    // An outcome is shown by reopening the panel at its root, wherever the user wandered meanwhile
+    // — also for a menu created after the request started, on another page. An effect, so it dies
+    // with the component and its focus request never reaches a destroyed view.
+    effect(() => {
+      if (this.deletionNotice()) {
+        untracked(() => {
+          this.view.set('root');
+          this.isOpen.set(true);
+          // The dialog that held focus is gone and the panel is new: the alert is the thing to read.
+          this.focusAfterRender(() => this.deleteAlert());
+        });
+      }
+    });
   }
 
   protected toggle(): void {
@@ -280,7 +308,7 @@ export class AccountMenu {
     const hadFocus = this.elementRef.nativeElement.contains(this.document.activeElement);
     this.isOpen.set(false);
     this.view.set('root');
-    this.deleteErrorKey.set(null);
+    this.authService.dismissDeletionOutcome();
     if (hadFocus) {
       this.trigger()?.nativeElement.focus();
     }
@@ -304,9 +332,9 @@ export class AccountMenu {
   /**
    * The panel closes first, so the dialog is not stacked on top of a popover that outside-click
    * rules could dismiss mid-confirmation. Typing the login is the lock (TypedConfirmDialog). Only a
-   * confirmed, server-acknowledged deletion resets the client (AuthService.deleteAccount); a failure
-   * reopens the panel with the reason, because nothing was deleted and the user may try again; a
-   * 401 (session already ended) cannot be retried from here and goes to the login page instead.
+   * confirmed, server-acknowledged deletion resets the client (AuthService.startAccountDeletion);
+   * a rejection or a lost answer reopens the panel with the matching notice (see deletionNotice),
+   * a 401 goes to the login page instead.
    */
   protected deleteAccount(): void {
     const user = this.currentUser();
@@ -325,27 +353,7 @@ export class AccountMenu {
       if (!confirmed) {
         return;
       }
-      this.isDeleting.set(true);
-      this.authService.deleteAccount().subscribe({
-        error: (error: HttpErrorResponse) => {
-          this.isDeleting.set(false);
-          if (error.status === 401) {
-            // The session had already ended (signed out elsewhere, expired): nothing was deleted,
-            // and a 401 does not prove otherwise. Not retryable from here — signing in again is.
-            this.authService.handleDeletionUnconfirmed();
-            return;
-          }
-          this.deleteErrorKey.set(apiErrorTranslationKey(error));
-          // The notice lives in the root view only; the user may have wandered into preferences
-          // while the request was pending.
-          this.view.set('root');
-          this.isOpen.set(true);
-          // The dialog that held focus is gone and the panel is new: without this the caret sits on
-          // <body>. The alert is the thing to read, so it gets the focus.
-          this.focusAfterRender(() => this.deleteAlert());
-        },
-        complete: () => this.isDeleting.set(false),
-      });
+      this.authService.startAccountDeletion();
     });
   }
 

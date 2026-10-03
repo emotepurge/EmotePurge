@@ -74,6 +74,23 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   from the cipher, e.g. a lost key), the handler logs a warning with the Twitch user id only, skips
   revoking those two and still deletes: a user must not be locked into an account they cannot erase,
   while a database failure or cancellation (nothing deleted yet) still fails the request.
+  Accepted limit: a token refresh racing between the snapshot read and the deletion commit can leave
+  a freshly issued access token (at most four hours) and a rotated refresh token unrevoked at
+  Twitch, held by nobody. Accepted because revoking a refresh token is not documented to kill the
+  grant anyway; the fix (holding `TwitchTokenRefreshGate` around snapshot and `DeleteAsync`) is
+  recorded for the day a grant-killing revocation path exists. A racing refresh whose UPDATE hits
+  the locked or deleted row fails with `DbUpdateConcurrencyException` — one 500 for a request on an
+  account that is gone; the next request gets 410/401.
+- **A lost answer is an unknown outcome, owned by `AuthService`.** Status 0 and 502/503/504 (a
+  dropped connection, or a proxy answering for the API, which can happen after the commit) do not say
+  whether the account was deleted: `deletionState` becomes `unconfirmed`, the session is left alone
+  and the menu says to reload (`/api/auth/me` answers 401 once the account is gone; "sign in to
+  check" would recreate an empty account). A 500 counts as a confirmed rejection: the handler's
+  post-commit steps (Redis cleanup, token revocation) swallow their own failures, so an unhandled
+  exception can only precede the commit, which rolls back. Other 4xx are rejections too. The state
+  lives in the service, not the menu, because the menu is per page and dies on navigation while the
+  request is pending; a menu created later shows the outcome, and the menu's focus work runs in an
+  `effect`, so it dies with the component.
 - **Known audit gap, accepted for self-deletion too.** An audit entry with the deleted user as
   *actor*, written by that user's own in-flight request after the commit, can survive un-pseudonymised
   (the row lock cannot close it). `AccountDeletionService` already accepted this for an admin

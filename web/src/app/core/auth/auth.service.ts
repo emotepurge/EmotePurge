@@ -3,11 +3,33 @@ import { inject, Injectable, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { catchError, Observable, of, tap, throwError } from 'rxjs';
 
+import { apiErrorTranslationKey } from '../i18n/api-error';
 import { ChannelService } from '../channels/channel.service';
 import { SevenTvTokenService } from '../seven-tv/seven-tv-token.service';
 import { AuthUser } from './auth.model';
 
 export type LoginNotice = 'deletionUnconfirmed';
+
+/**
+ * Where an account deletion stands, owned here rather than by the account menu: the menu exists
+ * once per page and is destroyed with it, while a request started from one page can finish after
+ * the visitor has moved on. `failed` is a confirmed rejection (nothing was deleted); `unconfirmed`
+ * means the outcome is unknown because the answer never (reliably) arrived.
+ */
+export type DeletionState =
+  | { status: 'idle' }
+  | { status: 'pending' }
+  | { status: 'failed'; errorKey: string }
+  | { status: 'unconfirmed' };
+
+/**
+ * Statuses that say nothing about whether the deletion committed: 0 is a dropped or aborted
+ * connection, 502/503/504 come from a proxy in front of the API, which can answer them after the
+ * API committed. A 500 is deliberately not here: it comes from the API itself, and every step after
+ * the commit in the handler (Redis cleanup, token revocation) swallows its own failures, so an
+ * unhandled exception can only precede the commit, which rolls back.
+ */
+const UNKNOWN_OUTCOME_STATUSES = new Set([0, 502, 503, 504]);
 
 const RETURN_URL_STORAGE_KEY = 'ep_return_url';
 
@@ -27,6 +49,10 @@ export class AuthService {
   readonly currentUser = signal<AuthUser | null>(null);
   private readonly isLoaded = signal(false);
   private readonly loginNotice = signal<LoginNotice | null>(null);
+  private readonly deletion = signal<DeletionState>({ status: 'idle' });
+
+  /** Progress and outcome of the current account deletion; survives the account menu being destroyed. */
+  readonly deletionState = this.deletion.asReadonly();
 
   /**
    * False until /api/auth/me has answered once, whichever way it answered. `currentUser()` alone
@@ -116,6 +142,42 @@ export class AuthService {
   }
 
   /**
+   * Runs the deletion and records its outcome in `deletionState`, so the result is not lost when
+   * the account menu that started it is gone by the time the answer arrives. Success and 410 reset
+   * the client (see deleteAccount); a 401 goes to the login page with a notice; a lost or
+   * proxy-answered request (UNKNOWN_OUTCOME_STATUSES) is `unconfirmed` and leaves the session
+   * alone — a reload settles it, because `/api/auth/me` answers 401 once the account is gone;
+   * anything else is a confirmed rejection (`failed`).
+   */
+  startAccountDeletion(): void {
+    if (this.deletion().status === 'pending') {
+      return;
+    }
+    this.deletion.set({ status: 'pending' });
+    this.deleteAccount().subscribe({
+      error: (error: unknown) => {
+        if (!(error instanceof HttpErrorResponse)) {
+          this.deletion.set({ status: 'unconfirmed' });
+        } else if (error.status === 401) {
+          // Session already ended: nothing was deleted, and a 401 does not prove otherwise.
+          this.handleDeletionUnconfirmed();
+        } else if (UNKNOWN_OUTCOME_STATUSES.has(error.status)) {
+          this.deletion.set({ status: 'unconfirmed' });
+        } else {
+          this.deletion.set({ status: 'failed', errorKey: apiErrorTranslationKey(error) });
+        }
+      },
+    });
+  }
+
+  /** Clears a shown `failed`/`unconfirmed` outcome; a running request is left alone. */
+  dismissDeletionOutcome(): void {
+    if (this.deletion().status !== 'pending') {
+      this.deletion.set({ status: 'idle' });
+    }
+  }
+
+  /**
    * The deletion could not be confirmed because the session had already ended: resets the client
    * like an expired session and leaves a one-shot notice for the login page, which is where the
    * user lands — the account menu that asked is unmounted by the reset.
@@ -138,6 +200,7 @@ export class AuthService {
   }
 
   private resetClientSession(target = '/login'): void {
+    this.deletion.set({ status: 'idle' });
     this.currentUser.set(null);
     this.isLoaded.set(true);
     this.sevenTvTokenService.clearToken();

@@ -220,6 +220,60 @@ describe('AuthService', () => {
     });
   });
 
+  describe('startAccountDeletion', () => {
+    function start(): ReturnType<HttpTestingController['expectOne']> {
+      service.currentUser.set(USER);
+      vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+      service.startAccountDeletion();
+      expect(service.deletionState()).toEqual({ status: 'pending' });
+      return httpMock.expectOne('/api/auth/me');
+    }
+
+    it.each([0, 502, 503, 504])(
+      'status %i is an unconfirmed outcome that keeps the session',
+      (status) => {
+        const req = start();
+        req.error(new ProgressEvent('error'), { status, statusText: 'x' });
+
+        expect(service.deletionState()).toEqual({ status: 'unconfirmed' });
+        expect(service.currentUser()).toEqual(USER);
+      },
+    );
+
+    it.each([400, 403, 429, 500])('status %i is a confirmed rejection', (status) => {
+      start().flush(null, { status, statusText: 'x' });
+
+      expect(service.deletionState().status).toBe('failed');
+      expect(service.currentUser()).toEqual(USER);
+    });
+
+    it('401 resets to the login page with the one-shot notice and no lingering state', () => {
+      start().flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      expect(service.deletionState()).toEqual({ status: 'idle' });
+      expect(service.currentUser()).toBeNull();
+      expect(service.takeLoginNotice()).toBe('deletionUnconfirmed');
+    });
+
+    it('204 resets the session and ends idle', () => {
+      start().flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(service.deletionState()).toEqual({ status: 'idle' });
+      expect(service.currentUser()).toBeNull();
+    });
+
+    it('ignores a second start while pending and can dismiss an outcome but not a running request', () => {
+      const req = start();
+      service.startAccountDeletion();
+      service.dismissDeletionOutcome();
+      expect(service.deletionState()).toEqual({ status: 'pending' });
+
+      req.error(new ProgressEvent('error'), { status: 0, statusText: '' });
+      service.dismissDeletionOutcome();
+      expect(service.deletionState()).toEqual({ status: 'idle' });
+    });
+  });
+
   describe('handleDeletionUnconfirmed', () => {
     it('resets the session, goes to /login and leaves a notice that is handed out exactly once', () => {
       service.currentUser.set(USER);
