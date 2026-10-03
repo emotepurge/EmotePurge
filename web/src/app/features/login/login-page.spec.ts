@@ -13,7 +13,11 @@ const TRANSLATIONS = {
     title: 'Anmelden',
     subtitle: 's',
     loginButton: 'Mit Twitch einloggen',
-    notice: { deletionSessionEnded: 'Nichts gelöscht.', deletionUnknown: 'Unklar.' },
+    notice: {
+      deletionSessionEnded: 'Nichts gelöscht.',
+      deletionUnknown: 'Unklar.',
+      deletionPending: 'Wird noch verarbeitet.',
+    },
     scopes: { title: 't', moderatedChannels: 'm', subscriptions: 's', note: 'n' },
   },
 };
@@ -60,6 +64,34 @@ describe('LoginPage notice', () => {
       .error(new ProgressEvent('error'), { status: 0, statusText: '' });
     fixture.detectChanges();
 
+    expect(el.querySelector('[role="alert"]')?.textContent).toContain('Unklar.');
+  });
+
+  it('disables sign-in while a deletion is pending, names the reason, and re-enables it afterwards', () => {
+    const auth = TestBed.inject(AuthService);
+    vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    auth.currentUser.set({ twitchUserId: '1' } as never);
+    auth.startAccountDeletion('1');
+    auth.handleSessionExpired(); // another request ended the session while the DELETE runs
+
+    const fixture = TestBed.createComponent(LoginPage);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    const button = el.querySelector('main button') as HTMLButtonElement;
+    const hrefBefore = window.location.href;
+
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    const reason = el.querySelector(`#${button.getAttribute('aria-describedby')}`);
+    expect(reason?.textContent).toContain('Wird noch verarbeitet.');
+    button.click();
+    expect(window.location.href).toBe(hrefBefore);
+
+    TestBed.inject(HttpTestingController)
+      .expectOne('/api/auth/me?expectedTwitchUserId=1')
+      .error(new ProgressEvent('error'), { status: 0, statusText: '' });
+    fixture.detectChanges();
+
+    expect(button.getAttribute('aria-disabled')).toBeNull();
     expect(el.querySelector('[role="alert"]')?.textContent).toContain('Unklar.');
   });
 

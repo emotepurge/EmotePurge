@@ -8,7 +8,7 @@ import { ChannelService } from '../channels/channel.service';
 import { SevenTvTokenService } from '../seven-tv/seven-tv-token.service';
 import { AuthUser } from './auth.model';
 
-export type LoginNotice = 'deletionSessionEnded' | 'deletionUnknown';
+export type LoginNotice = 'deletionSessionEnded' | 'deletionUnknown' | 'deletionPending';
 
 /**
  * Where an account deletion stands, owned here rather than by the account menu: the menu exists
@@ -66,8 +66,9 @@ export class AuthService {
    * An unconfirmed deletion that nothing has settled yet. Independent of the menu notice, which the
    * user may dismiss: the account may still be gone, and a later session reset must carry the
    * warning to the login page, where a sign-in would silently recreate an empty account. Cleared
-   * when the outcome becomes known (a /me that finds a user, a sign-in, a new attempt) or when a
-   * reset hands it over as a notice.
+   * when the outcome becomes known (a /me that finds a user, a 204/410, a sign-in) or when a reset
+   * hands it over as a notice. A retry that does not establish the account state (401, 0, 5xx,
+   * 409, another 4xx) leaves it set: the earlier attempt may have deleted the account.
    */
   private deletionUnresolved = false;
 
@@ -111,6 +112,10 @@ export class AuthService {
    * backend always uses.
    */
   login(returnUrl?: string): void {
+    if (this.deletion().status === 'pending') {
+      // The DELETE may already have committed; an OAuth round trip now could recreate the account.
+      return;
+    }
     this.deletionConfirmed = false;
     this.deletionUnresolved = false;
     if (returnUrl) {
@@ -168,6 +173,8 @@ export class AuthService {
       ),
       tap(() => {
         this.deletionConfirmed = true;
+        this.deletionUnresolved = false;
+        this.clearPendingNotice();
         this.resetClientSession('/welcome');
       }),
     );
@@ -189,7 +196,6 @@ export class AuthService {
       return;
     }
     this.deletion.set({ status: 'pending' });
-    this.deletionUnresolved = false;
     this.deleteAccount(expectedTwitchUserId).subscribe({
       complete: () => this.deletion.set({ status: 'idle' }),
       error: (error: unknown) => this.settleFailedDeletion(error),
@@ -209,9 +215,11 @@ export class AuthService {
    * user lands — the account menu that asked is unmounted by the reset.
    */
   handleDeletionSessionEnded(): void {
+    // "Nothing was deleted, sign in and repeat" is only true when no earlier attempt is unresolved;
+    // otherwise that attempt may have deleted the account, and a sign-in would recreate it.
+    this.loginNotice.set(this.deletionUnresolved ? 'deletionUnknown' : 'deletionSessionEnded');
     this.deletionUnresolved = false;
     this.deletion.set({ status: 'idle' });
-    this.loginNotice.set('deletionSessionEnded');
     this.resetClientSession('/login');
   }
 
@@ -230,7 +238,14 @@ export class AuthService {
     this.resetClientSession();
   }
 
+  private clearPendingNotice(): void {
+    if (this.loginNotice() === 'deletionPending') {
+      this.loginNotice.set(null);
+    }
+  }
+
   private settleFailedDeletion(error: unknown): void {
+    this.clearPendingNotice();
     const status = error instanceof HttpErrorResponse ? error.status : 0;
     if (status === 401) {
       this.handleDeletionSessionEnded();
@@ -246,7 +261,10 @@ export class AuthService {
       // Nobody is signed in any more (a concurrent 401 reset the client), so the menu is not there
       // to say it. An unknown outcome gets its own notice; a rejection says the session had ended.
       this.deletion.set({ status: 'idle' });
-      this.loginNotice.set(unknown ? 'deletionUnknown' : 'deletionSessionEnded');
+      this.loginNotice.set(
+        unknown || this.deletionUnresolved ? 'deletionUnknown' : 'deletionSessionEnded',
+      );
+      this.deletionUnresolved = false;
       return;
     }
     if (unknown) {
@@ -268,7 +286,12 @@ export class AuthService {
     // A running deletion keeps its state: it settles it (or its outcome is routed to the login page).
     // An unresolved one (see deletionUnresolved) leaves with the session as a login notice, whether
     // or not the menu still shows it; a pending one is handled by its own late answer.
-    if (this.deletionUnresolved && target === '/login') {
+    if (this.deletion().status === 'pending' && target === '/login') {
+      // The DELETE may already have committed while Twitch revocation still runs. Without this the
+      // visitor lands on an enabled sign-in button, and the OAuth login would recreate the account
+      // before the answer arrives; the late outcome replaces this notice.
+      this.loginNotice.set('deletionPending');
+    } else if (this.deletionUnresolved && target === '/login') {
       this.deletionUnresolved = false;
       this.deletion.set({ status: 'idle' });
       this.loginNotice.set('deletionUnknown');

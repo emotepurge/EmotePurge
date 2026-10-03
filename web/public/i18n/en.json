@@ -47,6 +47,7 @@
     "subtitle": "Log in with your Twitch account to manage the bot for your channel.",
     "notice": {
       "deletionSessionEnded": "We couldn’t confirm the deletion because your session had already ended. If you deleted your account in another tab, it is gone – please don’t sign in to check, as that would create a new account. If you didn’t, nothing was deleted and you can sign in and repeat the deletion.",
+      "deletionPending": "Your account deletion is still being processed – please wait before signing in.",
       "deletionUnknown": "We couldn’t confirm whether your account was deleted – the connection was interrupted and your session has ended. Please don’t sign in to check, as that would create a new account; contact us via the contact form and we’ll confirm."
     },
     "loginButton": "Log in with Twitch",

@@ -382,6 +382,70 @@ describe('AuthService', () => {
       expect(navigateSpy).toHaveBeenCalledWith('/login');
     });
 
+    it('a retry that gets 401 after an unconfirmed attempt says unknown, never "nothing was deleted"', () => {
+      start().error(new ProgressEvent('error'), { status: 0, statusText: '' });
+      expect(service.deletionState()).toEqual({ status: 'unconfirmed' });
+
+      service.startAccountDeletion(USER.twitchUserId);
+      httpMock
+        .expectOne('/api/auth/me?expectedTwitchUserId=123')
+        .flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      expect(service.takeLoginNotice()).toBe('deletionUnknown');
+    });
+
+    it('a rejected retry leaves the earlier unknown attempt unresolved for the next session reset', () => {
+      start().error(new ProgressEvent('error'), { status: 0, statusText: '' });
+      service.startAccountDeletion(USER.twitchUserId);
+      httpMock
+        .expectOne('/api/auth/me?expectedTwitchUserId=123')
+        .flush(null, { status: 403, statusText: 'Forbidden' });
+      expect(service.deletionState().status).toBe('failed');
+
+      service.handleSessionExpired();
+
+      expect(service.takeLoginNotice()).toBe('deletionUnknown');
+    });
+
+    it('a retry that is answered 204 resolves the earlier unknown attempt', () => {
+      start().error(new ProgressEvent('error'), { status: 0, statusText: '' });
+      service.startAccountDeletion(USER.twitchUserId);
+      httpMock
+        .expectOne('/api/auth/me?expectedTwitchUserId=123')
+        .flush(null, { status: 204, statusText: 'No Content' });
+      service.currentUser.set(USER); // a later sign-in
+      service.handleSessionExpired();
+
+      expect(service.takeLoginNotice()).toBeNull();
+    });
+
+    it('a session ended by another request while the deletion is pending leaves a pending notice and blocks sign-in', () => {
+      const req = start();
+      service.handleSessionExpired();
+
+      expect(service.takeLoginNotice()).toBe('deletionPending');
+      expect(service.deletionState()).toEqual({ status: 'pending' });
+      const hrefBefore = window.location.href;
+      service.login();
+      expect(window.location.href).toBe(hrefBefore);
+      req.error(new ProgressEvent('error'), { status: 0, statusText: '' });
+    });
+
+    it('the pending notice is replaced by the final outcome when the answer arrives', () => {
+      let req = start();
+      service.handleSessionExpired();
+      req.error(new ProgressEvent('error'), { status: 0, statusText: '' });
+      expect(service.deletionState()).toEqual({ status: 'idle' });
+      expect(service.takeLoginNotice()).toBe('deletionUnknown');
+
+      service.currentUser.set(USER);
+      req = start();
+      service.handleSessionExpired();
+      req.flush(null, { status: 204, statusText: 'No Content' });
+      expect(service.pendingLoginNotice()).toBeNull();
+      expect(service.deletionState()).toEqual({ status: 'idle' });
+    });
+
     it('401 resets to the login page with the one-shot notice and no lingering state', () => {
       start().flush(null, { status: 401, statusText: 'Unauthorized' });
 

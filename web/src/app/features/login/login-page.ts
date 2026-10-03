@@ -1,5 +1,5 @@
 import { NgOptimizedImage } from '@angular/common';
-import { Component, effect, inject, signal, untracked } from '@angular/core';
+import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 
@@ -62,16 +62,20 @@ const SCOPES = [
           </div>
 
           @if (notice(); as noticeKey) {
-            <app-notice-banner variant="error">
-              {{ 'login.notice.' + noticeKey | transloco }}
-            </app-notice-banner>
+            <div id="login-notice">
+              <app-notice-banner variant="error">
+                {{ 'login.notice.' + noticeKey | transloco }}
+              </app-notice-banner>
+            </div>
           }
 
           <button
             type="button"
             appButton="primary"
             buttonSize="lg"
-            class="self-start"
+            class="self-start aria-disabled:cursor-not-allowed aria-disabled:border-transparent aria-disabled:bg-surface-inset aria-disabled:text-fg-disabled"
+            [attr.aria-disabled]="deleting() ? 'true' : null"
+            [attr.aria-describedby]="deleting() && notice() ? 'login-notice' : null"
             (click)="login()"
           >
             {{ 'login.loginButton' | transloco }}
@@ -128,6 +132,15 @@ export class LoginPage {
   /** One-shot: read once at creation, so reloading the page or coming back later shows none. */
   private readonly shownNotice = signal(this.authService.takeLoginNotice());
   protected readonly notice = this.shownNotice.asReadonly();
+  /**
+   * A deletion that is still running blocks sign-in: its DELETE may already have committed, and an
+   * OAuth login now would recreate the account. `aria-disabled` rather than `disabled`, so the
+   * button stays focusable and its reason (the notice) is read out; the click is refused in
+   * AuthService.login().
+   */
+  protected readonly deleting = computed(
+    () => this.authService.deletionState().status === 'pending',
+  );
   protected readonly scopes = SCOPES;
   protected readonly logoSrc = LOGO_SRC;
   protected readonly hasLegalLinks = this.legalService.hasAnyDocument;

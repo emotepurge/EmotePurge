@@ -176,6 +176,61 @@ test.describe('account deletion from the account menu', () => {
     await expect(page).toHaveURL(/\/my-votings$/);
   });
 
+  test('a session that ends while the deletion is still pending blocks sign-in until the answer arrives', async ({
+    page,
+  }) => {
+    // The DELETE is held back (the server may already have committed); meanwhile another request
+    // 401s. The login page must not offer an enabled sign-in, and the late 204 then ends on /welcome.
+    let releaseDelete: () => void = () => undefined;
+    const deleteHeld = new Promise<void>((resolve) => (releaseDelete = resolve));
+    await page.route('**/api/auth/me*', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        await deleteHeld;
+        await route.fulfill({ status: 204 });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(AUTH_USER),
+      });
+    });
+    const dialog = await openDeleteDialog(page);
+    // Registered after the beforeEach stub, so it wins: page 2 is the "other request" that 401s.
+    await page.route('**/api/vote-sessions/mine*', (route) =>
+      route.request().url().includes('page=2')
+        ? route.fulfill({ status: 401 })
+        : route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              items: [],
+              page: 1,
+              pageSize: 20,
+              totalCount: 0,
+              totalPages: 2,
+            }),
+          }),
+    );
+
+    await dialog.getByLabel('Zur Bestätigung deinen Twitch-Login eingeben').fill('sensitron');
+    await dialog.getByRole('button', { name: 'Konto endgültig löschen' }).click();
+    await page.evaluate(() => {
+      history.pushState({}, '', '/my-votings?page=2');
+      dispatchEvent(new PopStateEvent('popstate'));
+    });
+
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole('alert').filter({ hasText: 'noch verarbeitet' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Mit Twitch einloggen' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+
+    releaseDelete();
+    await expect(page).toHaveURL(/\/welcome$/);
+  });
+
   test('cancelling sends nothing', async ({ page }) => {
     await mockSession(page, 204);
     const dialog = await openDeleteDialog(page);

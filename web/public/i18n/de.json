@@ -47,6 +47,7 @@
     "subtitle": "Melde dich mit deinem Twitch-Account an, um den Bot für deinen Channel zu verwalten.",
     "notice": {
       "deletionSessionEnded": "Wir konnten die Löschung nicht bestätigen, weil deine Sitzung bereits beendet war. Falls du dein Konto in einem anderen Tab gelöscht hast, ist es weg – melde dich bitte nicht an, um nachzusehen, denn dabei würde ein neues Konto angelegt. Falls nicht, wurde nichts gelöscht, und du kannst dich anmelden und die Löschung wiederholen.",
+      "deletionPending": "Die Löschung deines Kontos wird noch verarbeitet – bitte warte, bevor du dich anmeldest.",
       "deletionUnknown": "Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde – die Verbindung wurde unterbrochen und deine Sitzung ist beendet. Melde dich bitte nicht an, um nachzusehen, denn dabei würde ein neues Konto angelegt; schreib uns über das Kontaktformular, wir bestätigen es dir."
     },
     "loginButton": "Mit Twitch einloggen",

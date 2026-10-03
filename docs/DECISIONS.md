@@ -106,6 +106,14 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   plainly, and after a *confirmed* deletion further
   expiry reports from requests still in flight are ignored until the next sign-in, so a late 401 does
   not pull the user from `/welcome` to `/login`.
+  A retry does not clear the unresolved marker unless it establishes the account state (204/410, or a
+  `/me` that finds the user): a 401, 0, 5xx, 409 or other 4xx on the retry leaves it set, so a session
+  that ends afterwards shows `deletionUnknown` — never "nothing was deleted", since the earlier attempt
+  may have deleted the account. While a deletion is *pending* and another request's 401 ends the
+  session, the login page shows a `deletionPending` notice and disables sign-in (`aria-disabled`, the
+  notice as its description; `AuthService.login()` refuses too), because an OAuth login before the
+  answer arrives could recreate the account; the late outcome replaces the notice, and a 204/410 ends
+  on `/welcome` as for any confirmed deletion.
 - **The deletion is bound to the account the user confirmed.** The session cookie is shared across
   tabs: tab 1 may have cached account A and asked for A's login while tab 2 has since signed in as B,
   so "the session's account" is not the confirmed one. The client sends the cached account's
