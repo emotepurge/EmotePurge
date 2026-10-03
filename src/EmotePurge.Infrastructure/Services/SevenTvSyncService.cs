@@ -18,6 +18,32 @@ public class SevenTvSyncService(
     ILogger<SevenTvSyncService> logger)
     : ISevenTvSyncService
 {
+    public async Task WarmChannelAsync(string channelName, CancellationToken cancellationToken = default)
+    {
+        var normalized = ChannelName.Normalize(channelName);
+        using var nameGate = await channelSyncGate.AcquireByNameAsync(normalized, cancellationToken);
+
+        var channel = await db.LoadChannelAsync(channelName, cancellationToken);
+        if (channel is null)
+        {
+            return;
+        }
+
+        using var rowGate = await AcquireRowGateAsync(channel, cancellationToken);
+        if (rowGate is null)
+        {
+            return;
+        }
+
+        if (excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
+        {
+            RefuseExcludedChannel(channel);
+            return;
+        }
+
+        await WarmMatchCacheIfEmptyAsync(channel, cancellationToken);
+    }
+
     public async Task<SevenTvSyncResult?> SyncChannelAsync(string channelName, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);

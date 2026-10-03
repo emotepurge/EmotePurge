@@ -20,6 +20,17 @@ public interface ISevenTvSyncService
     Task<SevenTvSyncResult?> SyncChannelAsync(string channelName, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Seeds the channel's match cache from Postgres when it is empty, and does nothing else: no
+    /// 7TV or Twitch call, no database write, no failure recording. Takes the same gates and the same
+    /// excluded-channel check as <see cref="SyncChannelAsync"/>. Returns nothing: an unknown or vanished
+    /// (merged) row is a silent no-op rather than an error, and so is a cache that already holds
+    /// names. An excluded row is not silent: as in the sync, its cache entry is removed and a Debug
+    /// line is written. Lets boot recovery make a channel count from its join without waiting for the
+    /// 7TV round trip of its sync.
+    /// </summary>
+    Task WarmChannelAsync(string channelName, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Applies one 7TV EventAPI dispatch delta to a single channel, under the same per-channel
     /// gate the full resync uses, followed by a full match-cache reload. Applies nothing when
     /// <paramref name="emoteSetId"/> is no longer the channel's active set (a still-live
