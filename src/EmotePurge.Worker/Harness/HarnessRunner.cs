@@ -63,7 +63,10 @@ public sealed class HarnessRunner(
     /// </summary>
     public const string AlgorithmVersion = "harness-2";
 
-    /// <summary>The window covered completely; both final reports were written.</summary>
+    /// <summary>
+    /// The window covered completely; both final reports were written — by this invocation, or by
+    /// an earlier one of the identical run, which a rerun then leaves untouched (#87).
+    /// </summary>
     public const int ExitSuccess = 0;
 
     /// <summary>
@@ -301,6 +304,34 @@ public sealed class HarnessRunner(
             try
             {
                 file.ReadHeader(identity);
+
+                // The identical run, already finished (#87): same channel, window, bot list, data
+                // snapshot, algorithm version and run mode, both reports on disk. Rewriting them would
+                // add nothing — the day lines are the same — but would lose what only the first pass
+                // knew: the window-wide distinct-chatter count is never persisted, so a rewrite
+                // reports it as unavailable. A finished report is evidence and stays as it is; a
+                // recompute under today's code is what `--report-only` is for (#119).
+                // The run mode is not part of the identity (D4), so it is compared here: a closed
+                // diagnostic run invoked again without '--diagnostic' still gets its binding report
+                // written from the same day lines, exactly as before — that is how a forgotten flag
+                // is corrected without fetching the window a second time. An unreadable report on a
+                // closed run takes the same path, which rewrites (repairs) it.
+                if (file.IsClosed && file.TryReadExistingReport() is { } closedReport)
+                {
+                    if (closedReport.Run.Diagnostic == diagnostic)
+                    {
+                        logger.LogInformation(
+                            "Harness run for channel '{Channel}' is already complete; its reports '{ReportJson}' and '{ReportMarkdown}' are left untouched and nothing was fetched. Use '--report-only' to recompute them.",
+                            channel.ChannelName, file.ReportJsonPath, file.ReportMarkdownPath);
+                        return ExitSuccess;
+                    }
+
+                    logger.LogWarning(
+                        "Harness run for channel '{Channel}' was closed as a {ClosedMode} run; this {RequestedMode} invocation rewrites '{ReportJson}' and '{ReportMarkdown}' from the same day lines without fetching anything.",
+                        channel.ChannelName, ModeName(closedReport.Run.Diagnostic), ModeName(diagnostic),
+                        file.ReportJsonPath, file.ReportMarkdownPath);
+                }
+
                 existing = file.ReadDays();
             }
             catch (HarnessReportFileException ex)
@@ -819,6 +850,8 @@ public sealed class HarnessRunner(
     }
 
     private static DateOnly Later(DateOnly left, DateOnly right) => left > right ? left : right;
+
+    private static string ModeName(bool diagnostic) => diagnostic ? "diagnostic" : "binding";
 
     // ISO 8601 rather than DateOnly's culture-dependent default ToString(): a container's invariant
     // culture renders that as MM/dd/yyyy, which read as an ordinary (if odd) US date in a German

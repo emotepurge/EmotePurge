@@ -84,6 +84,50 @@ line. **Count-neutral, no `AlgorithmVersion` bump.**
 
 ---
 
+### 2026-10-03 — Harness: a rerun of a finished run leaves its reports untouched (#87)
+
+**Betrifft:** `src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
+
+A second invocation with the same arguments on the same UTC day, against an unchanged data
+snapshot, is the identical run: same identity, same file. It fetched nothing — correctly — but went
+on through the resume path and rewrote both reports. The rewrite was poorer than the original: the
+window-wide distinct-chatter count is only ever held in memory while the days stream in
+(Plan-Entscheidung 13), so the second pass reported it as "nicht verfügbar (wiederaufgenommen)",
+and "Bericht erzeugt"/"Laufzeit" described the rerun rather than the measurement.
+
+**Chosen: a closed run is not rewritten.** The issue offered two ways. Persisting a per-day chatter
+count in the day line does not give the window's distinct count — a sum over days counts a person
+once per day — and a mergeable set structure would change the day-line shape, which is one of the
+three `AlgorithmVersion` triggers. Instead, when the file exists, its header matches the identity,
+`HarnessReportFile.IsClosed` holds and the existing `.report.json` was written in the same run mode,
+`HarnessRunner` logs that the run is already complete and returns exit 0 without touching any file.
+Writing nothing also means needing no new permission: on the VPS the report files are chowned away
+from uid 999 after a run, and this path only reads the header and the existing `.report.json`. Should
+the chown ever leave that file unreadable for uid 999, it counts as unreadable (below) and the run
+falls back to the old rewrite, which needs nothing beyond what it needed before.
+
+Three cases keep the old path (resume over the day lines, rewrite both reports, no fetch), each on
+purpose:
+
+- **A different run mode.** `--diagnostic` is not part of the identity (D4), so a closed diagnostic
+  run invoked again without the flag is the same file. Rewriting it as a binding report is the only
+  way to correct a forgotten flag without fetching the window again, and it worked that way before.
+  Refusing here would leave the operator of the binding run with a diagnostic report and no
+  supported way out.
+- **An unreadable `.report.json`** (`TryReadExistingReport` returns `null`): the rewrite repairs it.
+- **A half-closed run** (one of the two reports missing): not closed, as before.
+
+A recompute of a closed run under today's code is `--report-only` (#119), which writes a sidecar and
+leaves the original alone. A rerun on a later UTC day is unaffected: `FindFrozenWindow` skips closed
+runs, so it derives a fresh window and starts a new file, as before.
+
+**Exit codes unchanged; count-neutral, no `AlgorithmVersion` bump.** The decision sits before any
+archive request and only decides whether an existing report is written again; no counted number,
+day line, gate formula or `.report.json` field is touched.
+
+---
+
 ### 2026-09-24 — robots.txt stays closed after the legal launch
 
 **Betrifft:** `web/public/robots.txt` · `PRODUCT.md` · `CLAUDE.md`

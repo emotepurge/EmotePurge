@@ -765,6 +765,98 @@ public class HarnessRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task ARerunOfAClosedRun_LeavesBothReportsUntouched_AndKeepsTheDistinctChatterCount()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var reportJsonPath = Assert.Single(Directory.GetFiles(_directory, "*.report.json"));
+        var reportMarkdownPath = Assert.Single(Directory.GetFiles(_directory, "*.report.md"));
+        var jsonlBefore = File.ReadAllBytes(jsonlPath);
+        var reportJsonBefore = File.ReadAllBytes(reportJsonPath);
+        var reportMarkdownBefore = File.ReadAllBytes(reportMarkdownPath);
+        Assert.Contains("| Distinkte Chatter im Fenster | 1 |", File.ReadAllText(reportMarkdownPath));
+
+        // Same arguments, same UTC day, same data snapshot: the identical run, already closed. Moving
+        // the clock by a few minutes would change "Bericht erzeugt" and "Laufzeit" in a rewritten
+        // Markdown, so an unchanged file proves it was not rewritten at all.
+        _clock.Now = _clock.Now.AddMinutes(5);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Equal(jsonlBefore, File.ReadAllBytes(jsonlPath));
+        Assert.Equal(reportJsonBefore, File.ReadAllBytes(reportJsonPath));
+        Assert.Equal(reportMarkdownBefore, File.ReadAllBytes(reportMarkdownPath));
+        Assert.DoesNotContain("wiederaufgenommen", File.ReadAllText(reportMarkdownPath));
+        Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedDiagnosticRunWithoutDiagnostic_StillWritesTheBindingReport_WithoutFetching()
+    {
+        // The run mode is not part of the identity, so a forgotten '--diagnostic' is corrected by
+        // invoking the same run again without it — this path must survive the no-rewrite rule.
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3, diagnostic: true));
+        var reportJsonPath = Assert.Single(Directory.GetFiles(_directory, "*.report.json"));
+        Assert.True(ReadReport(reportJsonPath).Run.Diagnostic);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3, diagnostic: false));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        Assert.False(ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.report.json"))).Run.Diagnostic);
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedRunWithAnUnreadableReport_RewritesIt()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+        var reportJsonPath = Assert.Single(Directory.GetFiles(_directory, "*.report.json"));
+        File.WriteAllText(reportJsonPath, "{ not json");
+
+        Assert.Equal(0, await Run(3));
+
+        Assert.False(ReadReport(reportJsonPath).Run.Diagnostic);
+    }
+
+    [Fact]
+    public async Task ARunWhoseMarkdownReportIsMissing_IsNotClosed_AndGetsItsReportsWrittenAgain()
+    {
+        // The half-closed case (a process that died between the two renames) must keep its recovery
+        // path: it is not closed, so a rerun still writes both reports.
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+        File.Delete(Assert.Single(Directory.GetFiles(_directory, "*.report.md")));
+
+        Assert.Equal(0, await Run(3));
+
+        Assert.Single(Directory.GetFiles(_directory, "*.report.json"));
+        Assert.Single(Directory.GetFiles(_directory, "*.report.md"));
+    }
+
+    [Fact]
     public async Task EveryDayOfTheWindow_IsFetchedExactlyOnce()
     {
         // Not a claim about the client instance — the runner takes that once through its constructor,
