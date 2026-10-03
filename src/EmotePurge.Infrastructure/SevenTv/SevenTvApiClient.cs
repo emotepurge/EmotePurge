@@ -696,12 +696,15 @@ public class SevenTvApiClient(
 
         // Overlay the real set-entry dates from v4. Null (lookup failed) simply leaves every
         // AddedToSetAt unknown — the sync's correction pass fills the gap on a later resync,
-        // which is strictly better than failing the whole channel sync over a date.
-        var addedAtByEmoteId = await GetSetEntryAddedAtAsync(emoteSetDto.Id, cancellationToken);
-        if (addedAtByEmoteId is not null)
+        // which is strictly better than failing the whole channel sync over a date. The same
+        // lookup's entry count travels along as RemoteEntryCount: it runs for the very set id v3
+        // just named, on every sync and also when v3 lists nothing, so it is the cross-check the
+        // sync's wipe guard holds a v3 zero against (issue #76).
+        var setEntries = await GetSetEntriesAsync(emoteSetDto.Id, cancellationToken);
+        if (setEntries is not null)
         {
             emotes = emotes
-                .Select(e => addedAtByEmoteId.TryGetValue(e.Id, out var addedAt)
+                .Select(e => setEntries.AddedAtByEmoteId.TryGetValue(e.Id, out var addedAt)
                     ? e with { AddedToSetAt = addedAt }
                     : e)
                 .ToList();
@@ -717,7 +720,7 @@ public class SevenTvApiClient(
         var capacity = emoteSetDto.Capacity > 0 ? emoteSetDto.Capacity : (int?)null;
 
         return SevenTvChannelStateResult.Ok(
-            new SevenTvChannelState(sevenTvUserId, new SevenTvEmoteSet(emoteSetDto.Id, emotes, capacity)));
+            new SevenTvChannelState(sevenTvUserId, new SevenTvEmoteSet(emoteSetDto.Id, emotes, capacity, setEntries?.EntryCount)));
     }
 
     // Reloads a set that the primary response no longer embeds (issue #43). Any non-success status —
@@ -755,11 +758,14 @@ public class SevenTvApiClient(
         }
     }
 
-    private async Task<Dictionary<string, DateTime>?> GetSetEntryAddedAtAsync(string emoteSetId, CancellationToken cancellationToken)
+    // Null on any failure (HTTP error, timeout, malformed JSON, or a set v4 does not know), so the
+    // caller can tell "v4 could not be asked" apart from "v4 lists 0 entries".
+    private async Task<SetEntriesOverlay?> GetSetEntriesAsync(string emoteSetId, CancellationToken cancellationToken)
     {
         try
         {
             var result = new Dictionary<string, DateTime>();
+            var entryCount = 0;
             for (var page = 1; page <= MaxSetEntryPages; page++)
             {
                 var payload = new
@@ -782,9 +788,16 @@ public class SevenTvApiClient(
                     return null;
                 }
 
-                foreach (var entry in entryPage.Items.Where(entry => entry.Emote is not null && entry.AddedAt is not null))
+                // An entry whose emote did not resolve (`emote: null`, e.g. a deleted emote still
+                // referenced by the set) is neither dated nor counted: it is nothing the v3 list
+                // could be missing.
+                foreach (var entry in entryPage.Items.Where(entry => entry.Emote is not null))
                 {
-                    result[entry.Emote!.Id] = entry.AddedAt!.Value.UtcDateTime;
+                    entryCount++;
+                    if (entry.AddedAt is { } addedAt)
+                    {
+                        result[entry.Emote!.Id] = addedAt.UtcDateTime;
+                    }
                 }
 
                 if (page >= entryPage.PageCount)
@@ -793,7 +806,7 @@ public class SevenTvApiClient(
                 }
             }
 
-            return result;
+            return new SetEntriesOverlay(result, entryCount);
         }
         // JsonException belongs here rather than in the caller's catch: a malformed v4 answer must
         // stay a missing date, not turn the whole channel Unavailable. The caller now treats
@@ -991,4 +1004,8 @@ public class SevenTvApiClient(
 
         public static PreviewPageFetch Failed(SevenTvEmoteSetPreviewResult failure) => new(null, failure);
     }
+
+    // What one v4 read of a set's entries yields (GetSetEntriesAsync): the dates for the AddedToSetAt
+    // overlay, and the number of entries with a resolved emote, which becomes RemoteEntryCount.
+    private sealed record SetEntriesOverlay(Dictionary<string, DateTime> AddedAtByEmoteId, int EntryCount);
 }
