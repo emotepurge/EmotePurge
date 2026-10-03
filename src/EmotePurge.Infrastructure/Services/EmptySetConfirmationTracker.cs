@@ -10,6 +10,8 @@ namespace EmotePurge.Infrastructure.Services;
 public sealed class EmptySetConfirmationTracker(EmptySetConfirmationOptions options, TimeProvider timeProvider)
     : IEmptySetConfirmationTracker
 {
+    private const int MaxAgeSpacings = 10;
+
     private readonly object _lock = new();
     private readonly Dictionary<string, Streak> _streaks = [];
 
@@ -21,6 +23,17 @@ public sealed class EmptySetConfirmationTracker(EmptySetConfirmationOptions opti
         lock (_lock)
         {
             if (!_streaks.TryGetValue(channelId, out var streak) || streak.EmoteSetId != emoteSetId)
+            {
+                streak = new Streak(emoteSetId, 1, now);
+                _streaks[channelId] = streak;
+                return Verdict(streak.Count, counted: true);
+            }
+
+            // A streak is "repeated zeros in a row", not "zeros ever seen": once the last counted zero
+            // is older than a generous multiple of the spacing, the earlier ones no longer vouch for
+            // this one and the streak starts over. Derived from the spacing so there is no knob to
+            // tune; with spacing 0 there is no cadence to measure against and the bound is skipped.
+            if (spacing > TimeSpan.Zero && now - streak.LastCountedAt > spacing * MaxAgeSpacings)
             {
                 streak = new Streak(emoteSetId, 1, now);
                 _streaks[channelId] = streak;

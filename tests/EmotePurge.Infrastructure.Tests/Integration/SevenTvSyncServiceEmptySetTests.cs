@@ -167,4 +167,113 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
 
         Assert.Contains(logger.Entries, e => e.Message.Contains("1 of 3"));
     }
+
+    [Theory]
+    [InlineData("00000000000000000000000000")]
+    [InlineData("")]
+    public async Task ImplausibleSetId_IsRejectedAsUnusable_BeforeAnythingIsWritten(string setId)
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, $"emptyset_badid_{setId.Length}");
+
+        var result = await SyncAsync(db, channel, cache, tracker, setId);
+
+        Assert.Null(result);
+        var row = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
+        Assert.Equal(SevenTvSyncFailureReasons.ResponseUnusable, row.LastSyncFailureReason);
+        Assert.Equal(OldSetId, row.ActiveEmoteSetId);
+        Assert.False(await IsArchivedAsync(db, channel));
+    }
+
+    [Fact]
+    public async Task PushDispatchForTheActiveSet_ResetsTheStreak()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_pushreset");
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+        _clock.Advance(Tick);
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        await ApplyAsync(db, channel, cache, tracker, new SevenTvEmoteSetDelta(
+            [new SevenTvEmote("e1", "stable", "https://cdn.7tv.app/emote/e1/2x.webp")], [], []));
+
+        _clock.Advance(Tick);
+        var third = await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        Assert.False(third!.HasChanges);
+        Assert.False(await IsArchivedAsync(db, channel));
+    }
+
+    [Fact]
+    public async Task PullOnlyDispatch_LeavesTheStreakAlone()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_pullkeeps");
+        db.Emotes.Add(new Emote { ChannelId = channel.Id, SevenTvEmoteId = "e2", Name = "other", ImageUrl = "https://cdn.7tv.app/emote/e2/2x.webp" });
+        await db.SaveChangesAsync();
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+        _clock.Advance(Tick);
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        await ApplyAsync(db, channel, cache, tracker, new SevenTvEmoteSetDelta([], [], ["e2"]));
+
+        _clock.Advance(Tick);
+        var third = await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        Assert.True(third!.HasChanges);
+        Assert.True(await db.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).AllAsync(e => e.IsArchived));
+    }
+
+    [Fact]
+    public async Task FailedLookupBetweenZeros_NeitherCountsNorResets()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_failedlookup");
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+        _clock.Advance(Tick);
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        var failing = Substitute.For<ISevenTvApiClient>();
+        failing.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
+            .Returns(SevenTvChannelStateResult.Failed(SevenTvLookupStatus.Unavailable));
+        var failingService = new SevenTvSyncService(
+            db, failing, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            tracker, new RecordingLogger<SevenTvSyncService>());
+        _clock.Advance(Tick);
+        Assert.Null(await failingService.SyncChannelAsync(channel.ChannelName));
+        Assert.False(await IsArchivedAsync(db, channel));
+
+        _clock.Advance(Tick);
+        var third = await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        Assert.True(third!.HasChanges);
+        Assert.True(await IsArchivedAsync(db, channel));
+    }
+
+    [Fact]
+    public async Task AcceptedSwitch_PersistsTheNewSetCapacity()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, _, tracker) = await SeedAsync(db, "emptyset_capacity");
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
+            .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(NewSetId, [], 750))));
+        var service = new SevenTvSyncService(
+            db, apiClient, new EmoteMatchCache(), new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), tracker, new RecordingLogger<SevenTvSyncService>());
+
+        await service.SyncChannelAsync(channel.ChannelName);
+
+        var row = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
+        Assert.Equal(NewSetId, row.ActiveEmoteSetId);
+        Assert.Equal(750, row.ActiveEmoteSetCapacity);
+    }
+
+    private static Task<SevenTvDeltaResult> ApplyAsync(
+        AppDbContext db, Channel channel, EmoteMatchCache cache, IEmptySetConfirmationTracker tracker, SevenTvEmoteSetDelta delta)
+    {
+        var service = new SevenTvSyncService(
+            db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            tracker, new RecordingLogger<SevenTvSyncService>());
+        return service.ApplyEmoteSetUpdateAsync(channel.ChannelName, OldSetId, delta);
+    }
 }

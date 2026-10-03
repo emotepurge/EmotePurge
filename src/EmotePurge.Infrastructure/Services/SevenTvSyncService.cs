@@ -3,6 +3,7 @@ using EmotePurge.Core.Matching;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
+using EmotePurge.Infrastructure.SevenTv;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -78,7 +79,7 @@ public class SevenTvSyncService(
         // onto Channel.ActiveEmoteSetId — a value the delta path then compares against every
         // incoming dispatch, and the usage page reads as "the first sync is still running". Rejected
         // here with a reason of its own instead, so the UI can say what happened.
-        if (string.IsNullOrWhiteSpace(emoteSet.Id))
+        if (!SevenTvIds.IsUsable(emoteSet.Id))
         {
             await RecordFailedAttemptAsync(channel, SevenTvSyncFailureReasons.ResponseUnusable, cancellationToken);
             return null;
@@ -215,6 +216,14 @@ public class SevenTvSyncService(
                 "7TV-Dispatch würde alle {Count} aktiven Emotes von {Channel} entfernen — als unplausibel übersprungen.",
                 activeBefore, normalized);
             return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.ImplausibleSkipped, currentName);
+        }
+
+        // A dispatch that adds or changes an emote is live evidence that the set is not empty, so a
+        // zero streak built from earlier resyncs is stale. Placed after the plausibility return and
+        // regardless of Applied vs NoChange; pull-only dispatches prove nothing of the sort.
+        if (delta.Pushed.Count > 0 || delta.Updated.Count > 0)
+        {
+            emptySetConfirmations.Reset(channel.Id);
         }
 
         foreach (var emote in delta.Pushed)

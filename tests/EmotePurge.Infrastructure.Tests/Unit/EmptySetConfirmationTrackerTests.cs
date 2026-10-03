@@ -137,4 +137,33 @@ public class EmptySetConfirmationTrackerTests
     {
         new EmptySetConfirmationOptions().Validate();
     }
+
+    [Fact]
+    public void ZeroOlderThanTenSpacings_RestartsTheStreakInsteadOfConfirming()
+    {
+        var tracker = Create();
+
+        tracker.ObserveZero("c1", "setA");
+        _clock.Advance(Tick);
+        tracker.ObserveZero("c1", "setA");
+        _clock.Advance(TimeSpan.FromSeconds(451));
+        var third = tracker.ObserveZero("c1", "setA");
+
+        Assert.True(third.Counted);
+        Assert.False(third.Accept);
+        Assert.Equal(1, third.Streak);
+    }
+
+    [Fact]
+    public void ZeroSpacing_SkipsTheMaxAgeBound()
+    {
+        var tracker = Create(spacingSeconds: 0);
+
+        tracker.ObserveZero("c1", "setA");
+        tracker.ObserveZero("c1", "setA");
+        _clock.Advance(TimeSpan.FromDays(1));
+        var third = tracker.ObserveZero("c1", "setA");
+
+        Assert.True(third.Accept);
+    }
 }

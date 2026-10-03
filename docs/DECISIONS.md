@@ -38,6 +38,28 @@ passed since the last *counted* zero; the effective delay for a permanently empt
 about N-1 periodic ticks. A held-back zero logs at Warning with the streak ("empty answer 1 of 3
 needed") only when it counted, at Debug otherwise; acceptance logs at Information.
 
+Review follow-ups, same change (unmerged, so amended here):
+
+- **A live push resets the streak.** An EventAPI dispatch for the active set that pushes or updates
+  at least one emote proves the set is not empty, so `ApplyEmoteSetUpdateAsync` calls
+  `Reset(channel.Id)` — after the active-set check and the plausibility return, regardless of
+  Applied vs NoChange. Pull-only dispatches, skipped-implausible ones, `SetNotActive` and
+  `ChannelUnknown` leave the streak alone.
+- **Max age.** A zero whose last counted predecessor is older than 10 x the spacing (450 s by
+  default) restarts the streak at 1: "N zeros in a row" must not be satisfied by zeros hours apart.
+  Derived from the spacing, no new setting; with spacing 0 the bound is skipped.
+- **Sentinel set ids.** The sync now rejects an all-zero set id with the same predicate the API
+  client uses (`SevenTvIds.IsUsable`) as `ResponseUnusable`, before the switch detection — a
+  placeholder id must neither count as "a new set" (which would accept a zero at once) nor be
+  written to `ActiveEmoteSetId`.
+- **Payload consistency, and the real shape of an empty set.** 7TV *omits* `emotes` and
+  `emote_count` for a genuinely empty set (its compat model, `shared/src/old_types/mod.rs` in the
+  SevenTV/SevenTV repository, uses `skip_serializing_if = "Vec::is_empty"` on `emotes` and
+  `is_default` on `emote_count`), so a missing `emotes` stays an empty list and flows into the
+  guard. What is *not* an empty set: an explicit `emotes: null`, and `emote_count > 0` with no
+  emotes — both answer `Unavailable`. The DTO reads `emote_count` for exactly that cross-check; the
+  embedded object and the `emote-sets/{id}` reload share it.
+
 The EventAPI delta path keeps its own guard (a delta that would remove the last active emote is
 skipped as `ImplausibleSkipped`) unchanged: it already answers with a full resync, which runs the
 logic above, so a really emptied set converges through the same confirmed path and a malformed
