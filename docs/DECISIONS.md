@@ -38,9 +38,16 @@ reset. The check runs **before** the set-switch acceptance, so a new set id that
 held back too. Why:
 
 - v3's REST answer can lag the set by 10–30 min (SevenTV/SevenTV#81, see the 2026-07-30 WebSocket
-  investigation), while v4 reflects mutations within seconds. A v3 zero next to a filled v4 set is
-  that lag, not an empty set — exactly the false zero the guard exists for, and the one case in
-  which a set switch would otherwise have archived everything at once.
+  investigation). How fresh v4 is has **not** been measured systematically; there is one
+  observation, on 2026-09-10 during the duplicate-entry investigation, where a v4 read reflected a
+  v4 mutation immediately (77 → 79 entries). A v3 zero next to a filled v4 set is most likely that
+  v3 lag, not an empty set — exactly the false zero the guard exists for, and the one case in which
+  a set switch would otherwise have archived everything at once.
+- The design does not depend on v4 being fresher, because the veto is conservative: it can only
+  hold a zero back, never accept one. If v4 is fresher, it prevents a wipe on a stale v3 zero. If
+  v4 itself lags and still lists entries for a set that really was emptied, convergence is merely
+  delayed until v4 catches up — a liveness cost, not a safety risk; no emote is archived wrongly
+  either way.
 - v4 listing entries is positive evidence, like a live push, so it resets the streak the same way.
 - It is not a failure: 7TV answered, and the next sync will most likely agree. Recording a failure
   reason would show the operator a misleading "sync failed" hint in the UI, so none is written and

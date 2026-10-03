@@ -417,9 +417,12 @@ public class SevenTvSyncService(
     /// </list>
     /// Neither applies when v4 contradicts the zero (<see cref="SevenTvEmoteSet.RemoteEntryCount"/>
     /// above 0): v3's REST answer can lag the set by 10-30 min, so v4 listing entries for the very
-    /// same set is positive evidence that it is not empty. Such a zero is held back and resets the
+    /// same set is treated as evidence that it is not empty. Such a zero is held back and resets the
     /// streak like a push does, also for a new set id; it is not a failure, so no failure reason is
-    /// recorded. An unknown (null) or zero v4 count does not veto.
+    /// recorded. An unknown (null) or zero v4 count does not veto. v4's own freshness is not
+    /// measured systematically, and the veto does not rely on it: it can only hold a zero back, so a
+    /// lagging v4 merely delays accepting a really emptied set until it catches up (liveness, not
+    /// safety).
     /// Every entry point that reaches this method counts the same way — the periodic resync, boot
     /// recovery, the JOIN/RESYNC handlers and the EventAPI follow-ups all call SyncChannelAsync — and
     /// the tracker's spacing is what keeps a burst of them from confirming itself.
