@@ -36,7 +36,8 @@ namespace EmotePurge.Infrastructure.Services;
 /// <para>
 /// The one gap the lock cannot close: an entry with the deleted user as <em>actor</em>, written by an
 /// in-flight request of that user after the commit (plan, decision 9). The inactivity path is free of it
-/// by the recheck; for an admin request it is accepted.
+/// by the recheck; for an admin request and for self-deletion (the user's own in-flight request, e.g. a
+/// role-cache invalidation racing the delete) it is accepted.
 /// </para>
 /// </remarks>
 public class AccountDeletionService(

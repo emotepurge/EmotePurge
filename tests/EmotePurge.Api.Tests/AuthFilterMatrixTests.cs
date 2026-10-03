@@ -358,6 +358,27 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task DeleteMe_StillDeletesAndAnswers204_WhenTheStoredTokensCannotBeRead()
+    {
+        // The cipher throws InvalidOperationException for a lost or rotated key. The user must still be
+        // able to erase the account; only the revocation of the unreadable tokens is skipped. The test
+        // session carries no access-token claim, so there is nothing left to revoke at all.
+        var userId = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+        _factory.Users.GetTwitchTokensAsync(userId, Arg.Any<CancellationToken>())
+            .Returns<TwitchStoredTokens?>(_ => throw new InvalidOperationException("key unavailable"));
+
+        var response = await SendAsync("DELETE", "/api/auth/me", userId);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.AccountDeletion.Received(1).DeleteAsync(
+            userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.DidNotReceive().RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task UsageStatsFilter_UsesTheWiderCheck_NotTheManagementCheck()
     {
         // The whole point of the weaker filter: a 7TV editor who cannot manage the channel still
