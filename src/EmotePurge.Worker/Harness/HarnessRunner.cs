@@ -77,7 +77,11 @@ public sealed class HarnessRunner(
     /// </summary>
     public const int ExitInvalidArguments = 2;
 
-    /// <summary>A precondition was violated; the question could not be asked at all.</summary>
+    /// <summary>
+    /// A precondition was violated; the question could not be asked at all. Also the refusal for a
+    /// rerun of a closed run in the other run mode, or of a closed run with damaged day lines (#87):
+    /// nothing is written and nothing is fetched.
+    /// </summary>
     public const int ExitPreconditionViolated = 3;
 
     /// <summary>Aborted with a resume point: 429, body timeout, byte ceiling, transport, cancellation.</summary>
@@ -304,34 +308,6 @@ public sealed class HarnessRunner(
             try
             {
                 file.ReadHeader(identity);
-
-                // The identical run, already finished (#87): same channel, window, bot list, data
-                // snapshot, algorithm version and run mode, both reports on disk. Rewriting them would
-                // add nothing — the day lines are the same — but would lose what only the first pass
-                // knew: the window-wide distinct-chatter count is never persisted, so a rewrite
-                // reports it as unavailable. A finished report is evidence and stays as it is; a
-                // recompute under today's code is what `--report-only` is for (#119).
-                // The run mode is not part of the identity (D4), so it is compared here: a closed
-                // diagnostic run invoked again without '--diagnostic' still gets its binding report
-                // written from the same day lines, exactly as before — that is how a forgotten flag
-                // is corrected without fetching the window a second time. An unreadable report on a
-                // closed run takes the same path, which rewrites (repairs) it.
-                if (file.IsClosed && file.TryReadExistingReport() is { } closedReport)
-                {
-                    if (closedReport.Run.Diagnostic == diagnostic)
-                    {
-                        logger.LogInformation(
-                            "Harness run for channel '{Channel}' is already complete; its reports '{ReportJson}' and '{ReportMarkdown}' are left untouched and nothing was fetched. Use '--report-only' to recompute them.",
-                            channel.ChannelName, file.ReportJsonPath, file.ReportMarkdownPath);
-                        return ExitSuccess;
-                    }
-
-                    logger.LogWarning(
-                        "Harness run for channel '{Channel}' was closed as a {ClosedMode} run; this {RequestedMode} invocation rewrites '{ReportJson}' and '{ReportMarkdown}' from the same day lines without fetching anything.",
-                        channel.ChannelName, ModeName(closedReport.Run.Diagnostic), ModeName(diagnostic),
-                        file.ReportJsonPath, file.ReportMarkdownPath);
-                }
-
                 existing = file.ReadDays();
             }
             catch (HarnessReportFileException ex)
@@ -342,6 +318,14 @@ public sealed class HarnessRunner(
                 // reader drops it, because that day was never finished.)
                 logger.LogError(ex, "Die vorhandene Berichtsdatei '{Datei}' kann nicht fortgesetzt werden.", file.Path);
                 return ExitPreconditionViolated;
+            }
+
+            // Decided only now, after the header and every day line have been read (#87): a closed
+            // run whose evidence is damaged is refused above or inside DecideClosedRun, never waved
+            // through on the strength of a report that happens to sit beside it.
+            if (file.IsClosed && DecideClosedRun(file, identity, existing, diagnostic, channel.ChannelName) is { } closedExitCode)
+            {
+                return closedExitCode;
             }
 
             resumed = true;
@@ -601,30 +585,21 @@ public sealed class HarnessRunner(
         // ReplayFidelityCalculator.Compute, which has no duplicate-day contract of its own and would
         // silently sum both copies into every total. Restricted to the window: a stray day line
         // outside [WindowFrom, WindowTo] is not this check's concern (it is never read by Compute).
-        var duplicateDays = allDays
-            .Where(d => d.Day >= identity.WindowFrom && d.Day <= identity.WindowTo)
-            .GroupBy(d => d.Day)
-            .Where(g => g.Count() > 1)
-            .Select(g => g.Key)
-            .ToList();
-        if (duplicateDays.Count > 0)
+        var coverage = CheckWindowCoverage(allDays, identity.WindowFrom, identity.WindowTo);
+        if (coverage.DuplicateDays.Count > 0)
         {
             logger.LogError(
                 "Report-only file '{File}' has more than one day line for {Days}; a duplicated day would be double-counted, so it cannot be recomputed.",
-                sourceFile.Path, string.Join(", ", duplicateDays.Select(Iso)));
+                sourceFile.Path, string.Join(", ", coverage.DuplicateDays.Select(Iso)));
             return ExitPreconditionViolated;
         }
 
-        var daysPresent = new HashSet<DateOnly>(allDays.Select(d => d.Day));
-        for (var day = identity.WindowFrom; day <= identity.WindowTo; day = day.AddDays(1))
+        if (coverage.FirstMissingDay is { } missingDay)
         {
-            if (!daysPresent.Contains(day))
-            {
-                logger.LogError(
-                    "Report-only file '{File}' is missing the day line for {Day}; the window {From}..{To} is not fully covered, so it cannot be recomputed.",
-                    sourceFile.Path, Iso(day), Iso(identity.WindowFrom), Iso(identity.WindowTo));
-                return ExitPreconditionViolated;
-            }
+            logger.LogError(
+                "Report-only file '{File}' is missing the day line for {Day}; the window {From}..{To} is not fully covered, so it cannot be recomputed.",
+                sourceFile.Path, Iso(missingDay), Iso(identity.WindowFrom), Iso(identity.WindowTo));
+            return ExitPreconditionViolated;
         }
 
         // Same refusal an ordinary run gives for the same fact (ExecuteAsync, just below the day
@@ -747,6 +722,84 @@ public sealed class HarnessRunner(
     }
 
     /// <summary>
+    /// What a rerun does with a closed run (#87) — one whose header matched this invocation's
+    /// identity and whose day lines all read cleanly. Returns the exit code to end with, or
+    /// <c>null</c> to continue down the ordinary resume path, which for a closed run fetches nothing
+    /// and rewrites both reports from the day lines.
+    /// <para>
+    /// The identical run, already finished, is not rewritten: the day lines are the same, but the
+    /// window-wide distinct-chatter count only ever existed in memory during the first pass, so a
+    /// rewrite would report it as unavailable. A finished report is evidence and stays as it is; a
+    /// recompute under today's code is what <c>--report-only</c> is for (#119).
+    /// </para>
+    /// <para>
+    /// The outcomes, in the order they are decided:
+    /// damaged evidence (a day of the window without a line, or a day with two) refuses with
+    /// <see cref="ExitPreconditionViolated"/>; a report that does not describe this run (see
+    /// <see cref="DescribeReportDefect"/>) is repaired from the day lines with a warning; a finished
+    /// report of the same run mode ends with <see cref="ExitSuccess"/>, untouched; a finished report
+    /// of the other run mode refuses with <see cref="ExitPreconditionViolated"/>, in both directions.
+    /// The run mode is not part of the identity (D4), which is why it is compared here at all. A
+    /// binding run is binding because it was registered as one before any number was seen (#69,
+    /// operator decision 2026-10-03), so a closed diagnostic run is never upgraded after the fact,
+    /// and a closed binding run is never overwritten by a diagnostic invocation either. Refusing
+    /// writes nothing and fetches nothing.
+    /// </para>
+    /// </summary>
+    private int? DecideClosedRun(
+        HarnessReportFile file, HarnessRunIdentity identity, HarnessReportContent content, bool diagnostic, string channelName)
+    {
+        // Ordinary runs cannot close with a gap or a duplicate — the day loop writes each day of the
+        // window exactly once before the report — so either one means the evidence was altered after
+        // the fact. Refused rather than refetched: the archive is never asked again for a closed run.
+        var coverage = CheckWindowCoverage(content.Days, identity.WindowFrom, identity.WindowTo);
+        if (coverage.DuplicateDays.Count > 0 || coverage.FirstMissingDay is not null)
+        {
+            logger.LogError(
+                "Harness run file '{File}' is closed but its day lines do not cover the window {From}..{To} exactly once (missing: {Missing}; duplicated: {Duplicated}); the evidence is damaged, nothing was written and nothing was fetched.",
+                file.Path, Iso(identity.WindowFrom), Iso(identity.WindowTo), Iso(coverage.FirstMissingDay),
+                coverage.DuplicateDays.Count == 0 ? "none" : string.Join(", ", coverage.DuplicateDays.Select(Iso)));
+            return ExitPreconditionViolated;
+        }
+
+        // Only the JSON report is checked. The Markdown is deliberately not validated: it is a
+        // rendering for humans with no parseable contract, so checking it would mean parsing our own
+        // prose; IsClosed asks for its presence and nothing more.
+        var closedReport = file.TryReadExistingReport();
+        var defect = DescribeReportDefect(closedReport, identity);
+        if (closedReport is null || defect is not null)
+        {
+            logger.LogWarning(
+                "Harness run for channel '{Channel}' is closed, but '{ReportJson}' does not describe this run ({Defect}); both reports are rewritten from the day lines without fetching anything.",
+                channelName, file.ReportJsonPath, defect);
+            return null;
+        }
+
+        if (closedReport.Run.Diagnostic == diagnostic)
+        {
+            logger.LogInformation(
+                "Harness run for channel '{Channel}' is already complete; its reports '{ReportJson}' and '{ReportMarkdown}' are left untouched and nothing was fetched. Use '--report-only' to recompute them.",
+                channelName, file.ReportJsonPath, file.ReportMarkdownPath);
+            return ExitSuccess;
+        }
+
+        if (closedReport.Run.Diagnostic)
+        {
+            logger.LogError(
+                "Harness run for channel '{Channel}' was closed as a diagnostic run; its reports '{ReportJson}' and '{ReportMarkdown}' stay as they are and nothing was fetched. A diagnostic run stays diagnostic: a run is binding only if it ran binding from the start, so a binding run needs a fresh start on a new window, per the runbook.",
+                channelName, file.ReportJsonPath, file.ReportMarkdownPath);
+        }
+        else
+        {
+            logger.LogError(
+                "Harness run for channel '{Channel}' was closed as a binding run; its reports '{ReportJson}' and '{ReportMarkdown}' stay as they are and nothing was fetched. A '--diagnostic' invocation never rewrites a binding run; use '--report-only {File}' to recompute it under today's code.",
+                channelName, file.ReportJsonPath, file.ReportMarkdownPath, Path.GetFileName(file.Path));
+        }
+
+        return ExitPreconditionViolated;
+    }
+
+    /// <summary>
     /// The frozen window this invocation should continue, or <c>null</c> if there is nothing to
     /// continue and a fresh window is to be derived.
     /// <para>
@@ -851,7 +904,77 @@ public sealed class HarnessRunner(
 
     private static DateOnly Later(DateOnly left, DateOnly right) => left > right ? left : right;
 
-    private static string ModeName(bool diagnostic) => diagnostic ? "diagnostic" : "binding";
+    /// <summary>
+    /// Which days of <paramref name="from"/>..<paramref name="to"/> have more than one line, and the
+    /// first day that has none. Days outside the window are ignored. Shared by the report-only
+    /// recompute (#119) and the closed-run decision (#87), which refuse on either finding.
+    /// </summary>
+    private static (IReadOnlyList<DateOnly> DuplicateDays, DateOnly? FirstMissingDay) CheckWindowCoverage(
+        IReadOnlyList<ReplayDayLine> days, DateOnly from, DateOnly to)
+    {
+        var duplicateDays = days
+            .Where(d => d.Day >= from && d.Day <= to)
+            .GroupBy(d => d.Day)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        var daysPresent = new HashSet<DateOnly>(days.Select(d => d.Day));
+        for (var day = from; day <= to; day = day.AddDays(1))
+        {
+            if (!daysPresent.Contains(day))
+            {
+                return (duplicateDays, day);
+            }
+        }
+
+        return (duplicateDays, null);
+    }
+
+    /// <summary>
+    /// Why <paramref name="report"/> is not the finished report of the run named by
+    /// <paramref name="identity"/>, or <c>null</c> if it is one: all four sections present, marked
+    /// complete, and covering exactly the identity's window. Deliberately stricter than
+    /// <see cref="HarnessReportFile.TryReadExistingReport"/>, which only guarantees a readable
+    /// <c>run.diagnostic</c> and must stay that tolerant for the recompute's fail-closed
+    /// inheritance (#119) — a <c>{"run":{"diagnostic":false}}</c> passes there and must not pass here.
+    /// </summary>
+    private static string? DescribeReportDefect(ReplayFinalReport? report, HarnessRunIdentity identity)
+    {
+        if (report?.Run is null)
+        {
+            return "missing, unreadable or without a boolean run.diagnostic";
+        }
+
+        var defects = new List<string>();
+        if (report.Gate is null)
+        {
+            defects.Add("no gate section");
+        }
+
+        if (report.Plausibility is null)
+        {
+            defects.Add("no plausibility section");
+        }
+
+        if (report.Diagnostics is null)
+        {
+            defects.Add("no diagnostics section");
+        }
+
+        if (!report.Run.RunComplete)
+        {
+            defects.Add("run.runComplete is not true");
+        }
+
+        if (report.Run.WindowFrom != identity.WindowFrom || report.Run.WindowTo != identity.WindowTo)
+        {
+            defects.Add(Invariant(
+                $"window {Iso(report.Run.WindowFrom)}..{Iso(report.Run.WindowTo)} instead of {Iso(identity.WindowFrom)}..{Iso(identity.WindowTo)}"));
+        }
+
+        return defects.Count == 0 ? null : string.Join(", ", defects);
+    }
 
     // ISO 8601 rather than DateOnly's culture-dependent default ToString(): a container's invariant
     // culture renders that as MM/dd/yyyy, which read as an ordinary (if odd) US date in a German

@@ -87,6 +87,7 @@ line. **Count-neutral, no `AlgorithmVersion` bump.**
 ### 2026-10-03 — Harness: a rerun of a finished run leaves its reports untouched (#87)
 
 **Betrifft:** `src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`src/EmotePurge.Worker/Harness/ReplayModels.cs` ·
 `tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
 
 A second invocation with the same arguments on the same UTC day, against an unchanged data
@@ -99,32 +100,62 @@ and "Bericht erzeugt"/"Laufzeit" described the rerun rather than the measurement
 **Chosen: a closed run is not rewritten.** The issue offered two ways. Persisting a per-day chatter
 count in the day line does not give the window's distinct count — a sum over days counts a person
 once per day — and a mergeable set structure would change the day-line shape, which is one of the
-three `AlgorithmVersion` triggers. Instead, when the file exists, its header matches the identity,
-`HarnessReportFile.IsClosed` holds and the existing `.report.json` was written in the same run mode,
-`HarnessRunner` logs that the run is already complete and returns exit 0 without touching any file.
-Writing nothing also means needing no new permission: on the VPS the report files are chowned away
-from uid 999 after a run, and this path only reads the header and the existing `.report.json`. Should
-the chown ever leave that file unreadable for uid 999, it counts as unreadable (below) and the run
-falls back to the old rewrite, which needs nothing beyond what it needed before.
+three `AlgorithmVersion` triggers. Instead `HarnessRunner.DecideClosedRun` decides what a rerun of a
+closed run does — **after** the header has matched the identity and every day line has been read
+(`ReadHeader`, then `ReadDays`), never before: a closed file is evidence, and a valid report beside
+damaged day lines must not end the rerun as "already complete". A file that is not closed continues
+exactly as before.
 
-Three cases keep the old path (resume over the day lines, rewrite both reports, no fetch), each on
-purpose:
+A "finished report" is one that describes this run: `TryReadExistingReport` returns it, `run`,
+`gate`, `plausibility` and `diagnostics` are all present, `run.runComplete` is `true`, and
+`run.windowFrom`/`run.windowTo` equal the identity's window. `TryReadExistingReport` itself stays as
+tolerant as it was — the recompute's fail-closed inheritance of `run.diagnostic` (#119) depends on
+that — so the stricter check is a separate predicate in the runner. The `.report.md` is deliberately
+not validated: it is a rendering for humans with no parseable contract, and `IsClosed` asks only for
+its presence.
 
-- **A different run mode.** `--diagnostic` is not part of the identity (D4), so a closed diagnostic
-  run invoked again without the flag is the same file. Rewriting it as a binding report is the only
-  way to correct a forgotten flag without fetching the window again, and it worked that way before.
-  Refusing here would leave the operator of the binding run with a diagnostic report and no
-  supported way out.
-- **An unreadable `.report.json`** (`TryReadExistingReport` returns `null`): the rewrite repairs it.
-- **A half-closed run** (one of the two reports missing): not closed, as before.
+The outcomes for a rerun, in the order they are decided:
+
+| Case | Outcome |
+| --- | --- |
+| Damaged evidence: an interior day line that does not parse, or a header that no longer matches | exit 3 (the existing `HarnessReportFileException` path), nothing written, nothing fetched |
+| Damaged evidence: a window day without a day line, or a day with two | exit 3, nothing written, nothing fetched — the same coverage check the recompute uses, now shared. An ordinary run cannot close with either, so the file was altered afterwards; the archive is never asked again for a closed run |
+| Unreadable or hollow `.report.json` (missing, unparsable, no boolean `run.diagnostic`, a missing section, `runComplete` not `true`, a foreign window) | repaired: a warning naming what was wrong, then the old path — resume over the day lines, rewrite both reports, no fetch. The rewrite writes the invocation's run mode, since the report's own is not trustworthy |
+| Finished report, same run mode | exit 0, all three files untouched, nothing fetched, log line `Harness run for channel '…' is already complete; …` |
+| Finished **diagnostic** report, binding invocation | **refused, exit 3**, nothing written, nothing fetched |
+| Finished **binding** report, `--diagnostic` invocation | **refused, exit 3**, nothing written, nothing fetched; the error names both reports and points to `--report-only` |
+| Half-closed run (one of the two reports missing) | not closed, resumed and both reports written, as before |
+
+**A diagnostic run stays diagnostic (operator decision 2026-10-03).** The first version of this
+entry kept a closed diagnostic run rewritable as a binding report by a rerun without `--diagnostic`,
+as "the only way to correct a forgotten flag". That is withdrawn: a run is binding only if it ran
+binding from the start. The binding run of #69 is pre-registered, and a mode that could be switched
+on after the numbers are on disk would turn the pre-registration into a choice made with the result
+in view. A binding measurement after a diagnostic one needs a fresh start on a new window, per the
+runbook. The reverse direction is refused for the plainer reason that a diagnostic invocation must
+never overwrite a binding report. The run mode is still not part of the identity (D4): an
+*unfinished* file of the same identity can be resumed in either mode, as before; only a closed run's
+mode is fixed. The comment on `ReplayRunInfo.Diagnostic` that called the mode-switching rewrite
+intended now says so.
+
+Writing nothing on the no-op and on every refusal also means needing no new permission: on the VPS
+the report files are chowned away from uid 999 after a run, and these paths only read the `.jsonl`
+and the existing `.report.json`. Should the chown ever leave the report unreadable for uid 999, it
+counts as unreadable and the run falls back to the old rewrite, which needs nothing beyond what it
+needed before.
 
 A recompute of a closed run under today's code is `--report-only` (#119), which writes a sidecar and
-leaves the original alone. A rerun on a later UTC day is unaffected: `FindFrozenWindow` skips closed
-runs, so it derives a fresh window and starts a new file, as before.
+leaves the original alone. The no-op only ever fires on the **same UTC day with the same input**: a
+rerun on a later UTC day is not the same run — `FindFrozenWindow` skips closed runs, so it derives a
+fresh window, starts a new file and fetches the whole window again. A closed binding run is
+therefore never rerun "to be safe"; `--report-only` is the tool for looking at it again.
 
-**Exit codes unchanged; count-neutral, no `AlgorithmVersion` bump.** The decision sits before any
-archive request and only decides whether an existing report is written again; no counted number,
-day line, gate formula or `.report.json` field is touched.
+**Exit codes: two new exit-3 cases, no new code.** The mode refusals and the coverage refusal use
+`ExitPreconditionViolated` — "the question could not be asked", nothing written, nothing fetched.
+**Count-neutral, no `AlgorithmVersion` bump.** The decision sits before any archive request and only
+decides whether an existing report is written again, or not at all; no counted number, day line,
+gate formula, threshold or `.report.json` field name is touched, and a completed day's line stays
+byte-identical.
 
 ---
 
