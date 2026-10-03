@@ -53,11 +53,13 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   every other client treats as "sign in again" into something new, for no gain. Client:
   `AuthService.deleteAccount()` resets to `/welcome` on 204 and 410; a 401 propagates, and the
   account menu sends the user to `/login` with a one-shot notice that the deletion could not be
-  confirmed and nothing was deleted (`AuthService.handleDeletionUnconfirmed`/`takeLoginNotice`;
-  the menu is unmounted by the reset, so the notice lives on the login page). A "sign in to check"
-  hint would be the wrong remedy for the user *without* that wording: `UpsertLoginAsync` recreates a
-  deleted account on login, so signing in cannot distinguish the cases and would silently create a
-  fresh account — the message instead says to repeat the deletion if still wanted. The interceptor
+  confirmed and nothing was deleted (`AuthService.handleDeletionSessionEnded`/`takeLoginNotice`;
+  the menu is unmounted by the reset, so the notice lives on the login page). The 401 is
+  ambiguous in both directions — a deletion in *another* tab clears the shared cookie, so this tab's
+  DELETE gets 401 without a 410 — so the notice (`deletionSessionEnded`) is conditional: if you
+  deleted in another tab it is gone, and do not sign in to check (`UpsertLoginAsync` recreates a
+  deleted account on login, silently creating a fresh one); if you did not, nothing was deleted and
+  signing in and repeating is fine. The interceptor
   keeps `/api/auth/me` in its expected-401 paths so the error reaches the caller.
 - **Twitch token revocation, after the commit.** `ITwitchAuthClient.RevokeTokenAsync` posts
   `client_id` and `token` as a form to `https://id.twitch.tv/oauth2/revoke` through the existing typed
@@ -81,19 +83,32 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   recorded for the day a grant-killing revocation path exists. A racing refresh whose UPDATE hits
   the locked or deleted row fails with `DbUpdateConcurrencyException` — one 500 for a request on an
   account that is gone; the next request gets 410/401.
-- **A lost answer is an unknown outcome, owned by `AuthService`.** Status 0 and 500/502/503/504 do
-  not say whether the account was deleted: a dropped connection, a proxy answering for the API after
-  the commit, and an uncertain commit (the connection drops before Npgsql receives the COMMIT
-  acknowledgement, so `CommitAsync` throws and the API answers 500 although the transaction went
-  through). `deletionState` becomes `unconfirmed`, the session is left alone and the menu says to
-  reload. Only "still signed in after a reload" is reliable (the account exists); a signed-out reload
-  is ambiguous, since `ensureLoaded()` also maps an unreachable API or an expired session to
-  "signed out". The notice therefore says so, warns against signing in to check (login recreates an
-  empty account) and points to the contact form. Only 4xx other than 401/410 are confirmed
-  rejections (`failed`, "nothing changed"). The state
-  lives in the service, not the menu, because the menu is per page and dies on navigation while the
-  request is pending; a menu created later shows the outcome, and the menu's focus work runs in an
-  `effect`, so it dies with the component.
+- **A lost answer is an unknown outcome, owned by `AuthService`.** Status 0 and every 5xx do not say
+  whether the account was deleted: a dropped connection, a proxy or CDN answering for the API after
+  the commit (502/503/504, Cloudflare 520–527), and an uncertain commit (the connection drops before
+  Npgsql receives the COMMIT acknowledgement, so `CommitAsync` throws and the API answers 500 although
+  the transaction went through). `deletionState` becomes `unconfirmed`, the session is left alone and
+  the menu says to reload. Only "still signed in after a reload" is reliable (the account exists); a
+  signed-out reload is ambiguous, since `ensureLoaded()` also maps an unreachable API or an expired
+  session to "signed out". The notice therefore says so, warns against signing in to check (login
+  recreates an empty account) and points to the contact form. Only 4xx other than 401/410 are
+  confirmed rejections (`failed`, "nothing changed"). The state lives in the service, not the menu,
+  because the menu is per page and dies on navigation while the request is pending; a menu created
+  later shows the outcome, and the menu's focus work runs in an `effect`, so it dies with the
+  component. An ordinary session reset (another request's 401) does not clear a pending deletion; if
+  the outcome arrives with nobody signed in, the menu cannot show it, so it becomes a login-page
+  notice (`deletionUnknown` for an unknown outcome, `deletionSessionEnded` for a rejection), which
+  the login page picks up even if it was created first.
+- **The deletion is bound to the account the user confirmed.** The session cookie is shared across
+  tabs: tab 1 may have cached account A and asked for A's login while tab 2 has since signed in as B,
+  so "the session's account" is not the confirmed one. The client sends the cached account's
+  immutable Twitch id as the query parameter `expectedTwitchUserId` (not a body: DELETE bodies are
+  discouraged); the server answers **409 `account_mismatch`** (new `ApiErrorCodes` value, mirrored in
+  `api-error.ts` and both locales) when it is missing or differs from the principal's
+  `NameIdentifier`, before reading tokens or deleting anything, and without signing out. Missing is a
+  409 rather than a 400 because the only caller without it is a stale cached bundle, for which the
+  remedy is the same reload. The client then re-reads `/api/auth/me` and the menu says the user is
+  signed in as a different account and nothing was deleted.
 - **Known audit gap, accepted for self-deletion too.** An audit entry with the deleted user as
   *actor*, written by that user's own in-flight request after the commit, can survive un-pseudonymised
   (the row lock cannot close it). `AccountDeletionService` already accepted this for an admin

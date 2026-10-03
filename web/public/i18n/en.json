@@ -24,7 +24,8 @@
       "confirm": "Delete account permanently",
       "pending": "Deleting account …",
       "failed": "Your account could not be deleted. Nothing has changed, you can try again.",
-      "unconfirmed": "We couldn’t confirm whether your account was deleted – the connection was interrupted. Reload the page: if you’re still signed in, nothing was deleted and you can try again. If you’re signed out, we can’t tell from here – please don’t sign in to check, as that would create a new account; contact us via the contact form and we’ll confirm."
+      "unconfirmed": "We couldn’t confirm whether your account was deleted – the connection was interrupted. Reload the page: if you’re still signed in, nothing was deleted and you can try again. If you’re signed out, we can’t tell from here – please don’t sign in to check, as that would create a new account; contact us via the contact form and we’ll confirm.",
+      "mismatch": "You’re signed in as a different account in another tab – nothing was deleted. Check which account you want to delete, then start the deletion again."
     }
   },
   "shell": {
@@ -45,7 +46,8 @@
     "title": "Sign in",
     "subtitle": "Log in with your Twitch account to manage the bot for your channel.",
     "notice": {
-      "deletionUnconfirmed": "Your account deletion could not be confirmed because your session had already ended (signed out elsewhere or expired). Nothing was deleted. Sign in again and repeat the deletion if you still want it."
+      "deletionSessionEnded": "We couldn’t confirm the deletion because your session had already ended. If you deleted your account in another tab, it is gone – please don’t sign in to check, as that would create a new account. If you didn’t, nothing was deleted and you can sign in and repeat the deletion.",
+      "deletionUnknown": "We couldn’t confirm whether your account was deleted – the connection was interrupted and your session has ended. Please don’t sign in to check, as that would create a new account; contact us via the contact form and we’ll confirm."
     },
     "loginButton": "Log in with Twitch",
     "scopes": {
@@ -1197,6 +1199,7 @@
       "channel_not_on_twitch": "This channel doesn't exist on Twitch (anymore). Please check the spelling.",
       "channel_capacity_reached": "No free channel slots right now. Please contact the operator.",
       "channel_excluded": "This channel cannot be added.",
+      "account_mismatch": "You’re signed in as a different account in another tab. Nothing was deleted.",
       "foreign_channel_twitch_unavailable": "Twitch is not reachable right now. Please try again shortly.",
       "foreign_channel_no_seventv_account": "This channel has no 7TV account.",
       "foreign_channel_no_active_emote_set": "This channel currently has no active 7TV emote set.",

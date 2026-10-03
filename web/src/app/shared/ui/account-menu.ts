@@ -201,6 +201,8 @@ import { openTypedConfirmDialog } from './typed-confirm-dialog';
                     @if (notice.status === 'failed') {
                       <span>{{ 'account.delete.failed' | transloco }}</span>
                       <span>{{ notice.errorKey | transloco }}</span>
+                    } @else if (notice.status === 'mismatch') {
+                      <span>{{ 'account.delete.mismatch' | transloco }}</span>
                     } @else {
                       <span>{{ 'account.delete.unconfirmed' | transloco }}</span>
                     }
@@ -244,7 +246,11 @@ export class AccountMenu {
    */
   protected readonly deletionNotice = computed(() => {
     const state = this.authService.deletionState();
-    return state.status === 'failed' || state.status === 'unconfirmed' ? state : null;
+    return state.status === 'failed' ||
+      state.status === 'unconfirmed' ||
+      state.status === 'mismatch'
+      ? state
+      : null;
   });
   /**
    * True from the confirmation until the server answers. The request can take a while (the server
@@ -341,6 +347,8 @@ export class AccountMenu {
     if (!user || this.isDeleting()) {
       return;
     }
+    // Bound to this account now: the server refuses if the session is someone else's by then.
+    const expectedTwitchUserId = user.twitchUserId;
     this.close();
 
     openTypedConfirmDialog(this.dialog, {
@@ -353,7 +361,7 @@ export class AccountMenu {
       if (!confirmed) {
         return;
       }
-      this.authService.startAccountDeletion();
+      this.authService.startAccountDeletion(expectedTwitchUserId);
     });
   }
 

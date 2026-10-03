@@ -161,8 +161,8 @@ describe('AuthService', () => {
       const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
 
       let completed = false;
-      service.deleteAccount().subscribe({ complete: () => (completed = true) });
-      const req = httpMock.expectOne('/api/auth/me');
+      service.deleteAccount(USER.twitchUserId).subscribe({ complete: () => (completed = true) });
+      const req = httpMock.expectOne('/api/auth/me?expectedTwitchUserId=123');
       expect(req.request.method).toBe('DELETE');
       expect(service.currentUser()).toEqual(USER); // nothing is reset before the server answers
       req.flush(null, { status: 204, statusText: 'No Content' });
@@ -179,11 +179,13 @@ describe('AuthService', () => {
 
       let completed = false;
       let failed = false;
-      service.deleteAccount().subscribe({
+      service.deleteAccount(USER.twitchUserId).subscribe({
         complete: () => (completed = true),
         error: () => (failed = true),
       });
-      httpMock.expectOne('/api/auth/me').flush(null, { status: 410, statusText: 'Gone' });
+      httpMock
+        .expectOne('/api/auth/me?expectedTwitchUserId=123')
+        .flush(null, { status: 410, statusText: 'Gone' });
 
       expect(completed).toBe(true);
       expect(failed).toBe(false);
@@ -196,8 +198,12 @@ describe('AuthService', () => {
       const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
 
       let status: number | undefined;
-      service.deleteAccount().subscribe({ error: (error) => (status = error.status) });
-      httpMock.expectOne('/api/auth/me').flush(null, { status: 401, statusText: 'Unauthorized' });
+      service
+        .deleteAccount(USER.twitchUserId)
+        .subscribe({ error: (error) => (status = error.status) });
+      httpMock
+        .expectOne('/api/auth/me?expectedTwitchUserId=123')
+        .flush(null, { status: 401, statusText: 'Unauthorized' });
 
       expect(status).toBe(401);
       expect(service.currentUser()).toEqual(USER);
@@ -209,9 +215,11 @@ describe('AuthService', () => {
       const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
 
       let status: number | undefined;
-      service.deleteAccount().subscribe({ error: (error) => (status = error.status) });
+      service
+        .deleteAccount(USER.twitchUserId)
+        .subscribe({ error: (error) => (status = error.status) });
       httpMock
-        .expectOne('/api/auth/me')
+        .expectOne('/api/auth/me?expectedTwitchUserId=123')
         .flush(null, { status: 500, statusText: 'Internal Server Error' });
 
       expect(status).toBe(500);
@@ -224,12 +232,12 @@ describe('AuthService', () => {
     function start(): ReturnType<HttpTestingController['expectOne']> {
       service.currentUser.set(USER);
       vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
-      service.startAccountDeletion();
+      service.startAccountDeletion(USER.twitchUserId);
       expect(service.deletionState()).toEqual({ status: 'pending' });
-      return httpMock.expectOne('/api/auth/me');
+      return httpMock.expectOne('/api/auth/me?expectedTwitchUserId=123');
     }
 
-    it.each([0, 500, 502, 503, 504])(
+    it.each([0, 500, 502, 503, 504, 520, 524])(
       'status %i is an unconfirmed outcome that keeps the session',
       (status) => {
         const req = start();
@@ -240,11 +248,53 @@ describe('AuthService', () => {
       },
     );
 
-    it.each([400, 403, 429])('status %i is a confirmed rejection', (status) => {
+    it.each([400, 403, 404, 429])('status %i is a confirmed rejection', (status) => {
       start().flush(null, { status, statusText: 'x' });
 
       expect(service.deletionState().status).toBe('failed');
       expect(service.currentUser()).toEqual(USER);
+    });
+
+    it('binds the DELETE to the confirmed account id', () => {
+      const req = start();
+      expect(req.request.params.get('expectedTwitchUserId')).toBe(USER.twitchUserId);
+    });
+
+    it('409 account_mismatch refreshes the cached account and reports the mismatch, deleting nothing', () => {
+      const other = { ...USER, twitchUserId: '2', login: 'other', displayName: 'Other' };
+      start().flush({ errorCode: 'account_mismatch' }, { status: 409, statusText: 'Conflict' });
+      httpMock.expectOne('/api/auth/me').flush(other);
+
+      expect(service.deletionState()).toEqual({ status: 'mismatch' });
+      expect(service.currentUser()).toEqual(other);
+    });
+
+    it('a session reset by another request does not clear a pending deletion, and a later unknown outcome goes to the login page', () => {
+      const req = start();
+      service.handleSessionExpired(); // some other request 401'd meanwhile
+      expect(service.deletionState()).toEqual({ status: 'pending' });
+
+      req.error(new ProgressEvent('error'), { status: 0, statusText: '' });
+
+      expect(service.deletionState()).toEqual({ status: 'idle' });
+      expect(service.takeLoginNotice()).toBe('deletionUnknown');
+    });
+
+    it('a rejection that arrives with nobody signed in any more says the session had ended', () => {
+      const req = start();
+      service.handleSessionExpired();
+      req.flush(null, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.takeLoginNotice()).toBe('deletionSessionEnded');
+    });
+
+    it('a deletion that succeeds after a concurrent session reset still ends idle', () => {
+      const req = start();
+      service.handleSessionExpired();
+      req.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(service.deletionState()).toEqual({ status: 'idle' });
+      expect(service.takeLoginNotice()).toBeNull();
     });
 
     it('401 resets to the login page with the one-shot notice and no lingering state', () => {
@@ -252,7 +302,7 @@ describe('AuthService', () => {
 
       expect(service.deletionState()).toEqual({ status: 'idle' });
       expect(service.currentUser()).toBeNull();
-      expect(service.takeLoginNotice()).toBe('deletionUnconfirmed');
+      expect(service.takeLoginNotice()).toBe('deletionSessionEnded');
     });
 
     it('204 resets the session and ends idle', () => {
@@ -264,7 +314,7 @@ describe('AuthService', () => {
 
     it('ignores a second start while pending and can dismiss an outcome but not a running request', () => {
       const req = start();
-      service.startAccountDeletion();
+      service.startAccountDeletion(USER.twitchUserId);
       service.dismissDeletionOutcome();
       expect(service.deletionState()).toEqual({ status: 'pending' });
 
@@ -274,16 +324,16 @@ describe('AuthService', () => {
     });
   });
 
-  describe('handleDeletionUnconfirmed', () => {
+  describe('handleDeletionSessionEnded', () => {
     it('resets the session, goes to /login and leaves a notice that is handed out exactly once', () => {
       service.currentUser.set(USER);
       const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
 
-      service.handleDeletionUnconfirmed();
+      service.handleDeletionSessionEnded();
 
       expect(service.currentUser()).toBeNull();
       expect(navigateSpy).toHaveBeenCalledWith('/login');
-      expect(service.takeLoginNotice()).toBe('deletionUnconfirmed');
+      expect(service.takeLoginNotice()).toBe('deletionSessionEnded');
       expect(service.takeLoginNotice()).toBeNull();
     });
   });

@@ -30,6 +30,7 @@ const DE_TRANSLATIONS = {
       confirm: 'Konto endgültig löschen',
       pending: 'Konto wird gelöscht …',
       failed: 'Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert.',
+      mismatch: 'Anderes Konto in einem anderen Tab.',
       unconfirmed:
         'Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde. Lade die Seite neu.',
     },
@@ -486,7 +487,7 @@ describe('AccountMenu', () => {
       type('sensitron');
       dialogButton('Konto endgültig löschen').click();
       TestBed.inject(HttpTestingController)
-        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
         .flush(null, { status: 403, statusText: 'Forbidden' });
       menu.detect();
 
@@ -531,13 +532,13 @@ describe('AccountMenu', () => {
       type('sensitron');
       dialogButton('Konto endgültig löschen').click();
       TestBed.inject(HttpTestingController)
-        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
         .flush(null, { status: 401, statusText: 'Unauthorized' });
       menu.detect();
 
       expect(authService.currentUser()).toBeNull();
       expect(navigate).toHaveBeenCalledWith('/login');
-      expect(authService.takeLoginNotice()).toBe('deletionUnconfirmed');
+      expect(authService.takeLoginNotice()).toBe('deletionSessionEnded');
       expect(menu.panel()).toBeNull();
     });
 
@@ -547,14 +548,14 @@ describe('AccountMenu', () => {
       dialogButton('Konto endgültig löschen').click();
     }
 
-    it.each([0, 500, 502, 503, 504])(
+    it.each([0, 500, 502, 503, 504, 520, 524])(
       'on status %i says the outcome is unknown, never "nothing has changed", and keeps the session',
       async (status) => {
         const menu = render();
         const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
         confirmDeletion(menu);
         TestBed.inject(HttpTestingController)
-          .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+          .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
           .error(new ProgressEvent('error'), { status, statusText: 'x' });
         menu.detect();
         await menu.fixture.whenStable();
@@ -586,6 +587,22 @@ describe('AccountMenu', () => {
       );
     });
 
+    it('on a 409 account mismatch reloads who is signed in and says nothing was deleted', async () => {
+      const menu = render();
+      const other: AuthUser = { ...USER, twitchUserId: '2', login: 'other', displayName: 'Other' };
+      confirmDeletion(menu);
+      const http = TestBed.inject(HttpTestingController);
+      http
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
+        .flush({ errorCode: 'account_mismatch' }, { status: 409, statusText: 'Conflict' });
+      http.expectOne({ method: 'GET', url: '/api/auth/me' }).flush(other);
+      menu.detect();
+      await menu.fixture.whenStable();
+
+      expect(authService.currentUser()).toEqual(other);
+      expect(menu.panel()!.querySelector('[role="alert"]')?.textContent).toContain('Anderes Konto');
+    });
+
     it('moves focus to the alert when the deletion fails', async () => {
       const menu = render();
       vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
@@ -593,7 +610,7 @@ describe('AccountMenu', () => {
       type('sensitron');
       dialogButton('Konto endgültig löschen').click();
       TestBed.inject(HttpTestingController)
-        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
         .flush(null, { status: 403, statusText: 'Forbidden' });
       menu.detect();
       await menu.fixture.whenStable();
@@ -631,7 +648,7 @@ describe('AccountMenu', () => {
       type('sensitron');
       dialogButton('Konto endgültig löschen').click();
       TestBed.inject(HttpTestingController)
-        .expectOne({ method: 'DELETE', url: '/api/auth/me' })
+        .expectOne({ method: 'DELETE', url: '/api/auth/me?expectedTwitchUserId=1' })
         .flush(null, { status: 403, statusText: 'Forbidden' });
       menu.detect();
 

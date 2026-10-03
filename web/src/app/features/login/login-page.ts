@@ -1,5 +1,5 @@
 import { NgOptimizedImage } from '@angular/common';
-import { Component, inject, signal } from '@angular/core';
+import { Component, effect, inject, signal, untracked } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 
@@ -126,10 +126,20 @@ export class LoginPage {
   private readonly legalService = inject(LegalService);
 
   /** One-shot: read once at creation, so reloading the page or coming back later shows none. */
-  protected readonly notice = signal(this.authService.takeLoginNotice()).asReadonly();
+  private readonly shownNotice = signal(this.authService.takeLoginNotice());
+  protected readonly notice = this.shownNotice.asReadonly();
   protected readonly scopes = SCOPES;
   protected readonly logoSrc = LOGO_SRC;
   protected readonly hasLegalLinks = this.legalService.hasAnyDocument;
+
+  constructor() {
+    // A deletion that was still running when the session ended can answer after this page exists.
+    effect(() => {
+      if (this.authService.pendingLoginNotice()) {
+        untracked(() => this.shownNotice.set(this.authService.takeLoginNotice()));
+      }
+    });
+  }
 
   protected login(): void {
     this.authService.login();

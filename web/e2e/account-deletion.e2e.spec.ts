@@ -10,7 +10,7 @@ import { AUTH_USER, mockWorkerHealth } from './support/mocks';
  */
 async function mockSession(page: import('@playwright/test').Page, deleteStatus: number) {
   let deleted = false;
-  await page.route('**/api/auth/me', async (route) => {
+  await page.route('**/api/auth/me*', async (route) => {
     const method = route.request().method();
     if (method === 'DELETE') {
       if (deleteStatus === 204) {
@@ -20,7 +20,7 @@ async function mockSession(page: import('@playwright/test').Page, deleteStatus: 
         await route.fulfill({
           status: deleteStatus,
           contentType: 'application/json',
-          body: JSON.stringify({}),
+          body: JSON.stringify(deleteStatus === 409 ? { errorCode: 'account_mismatch' } : {}),
         });
       }
       return;
@@ -115,10 +115,8 @@ test.describe('account deletion from the account menu', () => {
     await dialog.getByRole('button', { name: 'Konto endgültig löschen' }).click();
 
     await expect(page).toHaveURL(/\/login$/);
-    await expect(
-      page.getByRole('alert').filter({ hasText: 'konnte nicht bestätigt werden' }),
-    ).toBeVisible();
-    await expect(page.getByText('Es wurde nichts gelöscht.')).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: 'nicht bestätigen' })).toBeVisible();
+    await expect(page.getByText('nicht an, um nachzusehen')).toBeVisible();
   });
 
   test('a 410 on the deletion confirms the account is gone and ends on the public page', async ({
@@ -138,7 +136,7 @@ test.describe('account deletion from the account menu', () => {
   test('a lost answer is reported as unconfirmed, not as unchanged, and keeps the session', async ({
     page,
   }) => {
-    await page.route('**/api/auth/me', async (route) => {
+    await page.route('**/api/auth/me*', async (route) => {
       if (route.request().method() === 'DELETE') {
         await route.abort('connectionreset');
         return;
@@ -160,6 +158,21 @@ test.describe('account deletion from the account menu', () => {
     await expect(alert).toContainText('melde dich bitte nicht an');
     await expect(alert).toContainText('Kontaktformular');
     await expect(alert).not.toContainText('unverändert');
+    await expect(page).toHaveURL(/\/my-votings$/);
+  });
+
+  test('a session that belongs to another account is refused: nothing deleted, the menu says so', async ({
+    page,
+  }) => {
+    await mockSession(page, 409);
+    const dialog = await openDeleteDialog(page);
+
+    await dialog.getByLabel('Zur Bestätigung deinen Twitch-Login eingeben').fill('sensitron');
+    await dialog.getByRole('button', { name: 'Konto endgültig löschen' }).click();
+
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'anderen Tab mit einem anderen Konto' }),
+    ).toBeVisible();
     await expect(page).toHaveURL(/\/my-votings$/);
   });
 

@@ -285,6 +285,29 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task DeleteMe_Answers409AccountMismatch_AndDeletesNothing_WhenTheExpectedIdIsNotTheSessions()
+    {
+        var response = await SendAsync("DELETE", "/api/auth/me?expectedTwitchUserId=someone-else", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("account_mismatch", await ReadErrorCodeAsync(response));
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.DidNotReceive().RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers409AccountMismatch_AndDeletesNothing_WhenTheExpectedIdIsMissing()
+    {
+        var response = await SendAsync("DELETE", "/api/auth/me", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("account_mismatch", await ReadErrorCodeAsync(response));
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task DeleteMe_Answers204_AndDeletesTheSessionsOwnAccountWithSelfRequestAndNoCutoff()
     {
         var userId = NewUserId();
@@ -294,7 +317,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         _factory.Users.GetTwitchTokensAsync(userId, Arg.Any<CancellationToken>())
             .Returns(new TwitchStoredTokens("refresh-1", "access-1", DateTime.UtcNow.AddHours(1), "scopes"));
 
-        var response = await SendAsync("DELETE", "/api/auth/me", userId, login: "selfuser");
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId, login: "selfuser");
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         await _factory.AccountDeletion.Received(1).DeleteAsync(
@@ -316,8 +339,8 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
 
         // A victim id smuggled in as a route segment matches no route; in a body it is never bound.
-        var viaRoute = await SendAsync("DELETE", "/api/auth/me/victim-id", sessionUser);
-        var viaBody = await SendAsync("DELETE", "/api/auth/me", sessionUser, body: "{\"twitchUserId\":\"victim-id\"}");
+        var viaRoute = await SendAsync("DELETE", $"/api/auth/me/victim-id?expectedTwitchUserId={sessionUser}", sessionUser);
+        var viaBody = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={sessionUser}", sessionUser, body: "{\"twitchUserId\":\"victim-id\"}");
 
         Assert.Equal(HttpStatusCode.NotFound, viaRoute.StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, viaBody.StatusCode);
@@ -335,7 +358,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
                 userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
             .Returns(new AccountDeletionResult(AccountDeletionOutcome.NotFound));
 
-        var response = await SendAsync("DELETE", "/api/auth/me", userId);
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId);
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         await _factory.TwitchAuth.DidNotReceive().RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
@@ -352,7 +375,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(new TwitchStoredTokens("refresh-2", "access-2", DateTime.UtcNow.AddHours(1), null));
         _factory.TwitchAuth.RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(false);
 
-        var response = await SendAsync("DELETE", "/api/auth/me", userId);
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId);
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
@@ -370,7 +393,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         _factory.Users.GetTwitchTokensAsync(userId, Arg.Any<CancellationToken>())
             .Returns<TwitchStoredTokens?>(_ => throw new InvalidOperationException("key unavailable"));
 
-        var response = await SendAsync("DELETE", "/api/auth/me", userId);
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId);
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         await _factory.AccountDeletion.Received(1).DeleteAsync(

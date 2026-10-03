@@ -8,28 +8,33 @@ import { ChannelService } from '../channels/channel.service';
 import { SevenTvTokenService } from '../seven-tv/seven-tv-token.service';
 import { AuthUser } from './auth.model';
 
-export type LoginNotice = 'deletionUnconfirmed';
+export type LoginNotice = 'deletionSessionEnded' | 'deletionUnknown';
 
 /**
  * Where an account deletion stands, owned here rather than by the account menu: the menu exists
  * once per page and is destroyed with it, while a request started from one page can finish after
  * the visitor has moved on. `failed` is a confirmed rejection (nothing was deleted); `unconfirmed`
- * means the outcome is unknown because the answer never (reliably) arrived.
+ * means the outcome is unknown because the answer never (reliably) arrived; `mismatch` means the
+ * session belongs to another account than the one the user confirmed (another tab signed in as
+ * someone else) and nothing was deleted.
  */
 export type DeletionState =
   | { status: 'idle' }
   | { status: 'pending' }
   | { status: 'failed'; errorKey: string }
-  | { status: 'unconfirmed' };
+  | { status: 'unconfirmed' }
+  | { status: 'mismatch' };
 
 /**
- * Statuses that say nothing about whether the deletion committed: 0 is a dropped or aborted
- * connection, 502/503/504 come from a proxy in front of the API, which can answer them after the
- * API committed, and 500 can be an uncertain commit (the connection drops before the database
- * acknowledges the COMMIT, so `CommitAsync` throws although the transaction went through). Only a
- * 4xx other than 401/410 is a confirmed rejection.
+ * Whether a status says nothing about the deletion having committed: 0 is a dropped or aborted
+ * connection, and every 5xx can follow a commit — the API's own 500 (an uncertain commit: the
+ * connection drops before the database acknowledges it, `CommitAsync` throws although the
+ * transaction went through) as much as a proxy's 502/503/504 or a CDN's 520–527. Only a 4xx other
+ * than 401/410 is a confirmed rejection.
  */
-const UNKNOWN_OUTCOME_STATUSES = new Set([0, 500, 502, 503, 504]);
+function isUnknownOutcome(status: number): boolean {
+  return status === 0 || status >= 500;
+}
 
 const RETURN_URL_STORAGE_KEY = 'ep_return_url';
 
@@ -53,6 +58,9 @@ export class AuthService {
 
   /** Progress and outcome of the current account deletion; survives the account menu being destroyed. */
   readonly deletionState = this.deletion.asReadonly();
+
+  /** A notice waiting for the login page — read by it, consumed through takeLoginNotice(). */
+  readonly pendingLoginNotice = this.loginNotice.asReadonly();
 
   /**
    * False until /api/auth/me has answered once, whichever way it answered. `currentUser()` alone
@@ -130,8 +138,8 @@ export class AuthService {
    * still exists. It propagates like any other error; the caller decides how to tell the user. The
    * interceptor exempts `/api/auth/me` from its expiry handling, so the error reaches here.
    */
-  deleteAccount(): Observable<void> {
-    return this.http.delete<void>('/api/auth/me').pipe(
+  deleteAccount(expectedTwitchUserId: string): Observable<void> {
+    return this.http.delete<void>('/api/auth/me', { params: { expectedTwitchUserId } }).pipe(
       catchError((error: unknown) =>
         error instanceof HttpErrorResponse && error.status === 410
           ? of(undefined as void)
@@ -142,31 +150,24 @@ export class AuthService {
   }
 
   /**
-   * Runs the deletion and records its outcome in `deletionState`, so the result is not lost when
-   * the account menu that started it is gone by the time the answer arrives. Success and 410 reset
-   * the client (see deleteAccount); a 401 goes to the login page with a notice; a lost or
-   * proxy-answered request (UNKNOWN_OUTCOME_STATUSES) is `unconfirmed` and leaves the session
-   * alone — a reload settles it, because `/api/auth/me` answers 401 once the account is gone;
-   * anything else is a confirmed rejection (`failed`).
+   * Runs the deletion of the account the user confirmed (`expectedTwitchUserId` is that account's
+   * immutable id, captured when the dialog opened — the server refuses when the session belongs to
+   * someone else by now) and records the outcome in `deletionState`, so it is not lost when the
+   * account menu that started it is gone by the time the answer arrives. Success and 410 reset the
+   * client (see deleteAccount); 401 goes to the login page with a notice; a lost answer or any 5xx
+   * is `unconfirmed` and leaves the session alone; a mismatch refreshes the cached account and says
+   * so; any other 4xx is a confirmed rejection (`failed`). A session reset by some other request
+   * while this one is pending does not clear it, and an outcome that arrives with nobody signed in
+   * any more cannot be shown by the menu — it goes to the login page as a notice instead.
    */
-  startAccountDeletion(): void {
+  startAccountDeletion(expectedTwitchUserId: string): void {
     if (this.deletion().status === 'pending') {
       return;
     }
     this.deletion.set({ status: 'pending' });
-    this.deleteAccount().subscribe({
-      error: (error: unknown) => {
-        if (!(error instanceof HttpErrorResponse)) {
-          this.deletion.set({ status: 'unconfirmed' });
-        } else if (error.status === 401) {
-          // Session already ended: nothing was deleted, and a 401 does not prove otherwise.
-          this.handleDeletionUnconfirmed();
-        } else if (UNKNOWN_OUTCOME_STATUSES.has(error.status)) {
-          this.deletion.set({ status: 'unconfirmed' });
-        } else {
-          this.deletion.set({ status: 'failed', errorKey: apiErrorTranslationKey(error) });
-        }
-      },
+    this.deleteAccount(expectedTwitchUserId).subscribe({
+      complete: () => this.deletion.set({ status: 'idle' }),
+      error: (error: unknown) => this.settleFailedDeletion(error),
     });
   }
 
@@ -182,8 +183,9 @@ export class AuthService {
    * like an expired session and leaves a one-shot notice for the login page, which is where the
    * user lands — the account menu that asked is unmounted by the reset.
    */
-  handleDeletionUnconfirmed(): void {
-    this.loginNotice.set('deletionUnconfirmed');
+  handleDeletionSessionEnded(): void {
+    this.deletion.set({ status: 'idle' });
+    this.loginNotice.set('deletionSessionEnded');
     this.resetClientSession('/login');
   }
 
@@ -199,8 +201,54 @@ export class AuthService {
     this.resetClientSession();
   }
 
+  private settleFailedDeletion(error: unknown): void {
+    const status = error instanceof HttpErrorResponse ? error.status : 0;
+    if (status === 401) {
+      this.handleDeletionSessionEnded();
+      return;
+    }
+    const mismatch =
+      error instanceof HttpErrorResponse &&
+      status === 409 &&
+      (error.error as { errorCode?: string } | null)?.errorCode === 'account_mismatch';
+    const unknown = isUnknownOutcome(status);
+
+    if (!this.currentUser()) {
+      // Nobody is signed in any more (a concurrent 401 reset the client), so the menu is not there
+      // to say it. An unknown outcome gets its own notice; a rejection says the session had ended.
+      this.deletion.set({ status: 'idle' });
+      this.loginNotice.set(unknown ? 'deletionUnknown' : 'deletionSessionEnded');
+      return;
+    }
+    if (unknown) {
+      this.deletion.set({ status: 'unconfirmed' });
+    } else if (mismatch) {
+      this.refreshAfterMismatch();
+    } else {
+      this.deletion.set({
+        status: 'failed',
+        errorKey: apiErrorTranslationKey(error as HttpErrorResponse),
+      });
+    }
+  }
+
+  /** The cached account is not the session's: reload it, so the menu shows who is really signed in. */
+  private refreshAfterMismatch(): void {
+    this.http
+      .get<AuthUser>('/api/auth/me')
+      .pipe(catchError(() => of(null)))
+      .subscribe((user) => {
+        if (user) {
+          this.currentUser.set(user);
+          this.deletion.set({ status: 'mismatch' });
+        } else {
+          this.handleDeletionSessionEnded();
+        }
+      });
+  }
+
   private resetClientSession(target = '/login'): void {
-    this.deletion.set({ status: 'idle' });
+    // A running deletion keeps its state: it settles it (or its outcome is routed to the login page).
     this.currentUser.set(null);
     this.isLoaded.set(true);
     this.sevenTvTokenService.clearToken();

@@ -156,6 +156,7 @@ public static class AuthEndpoints
         group.MapDelete("/me", async (
             HttpContext httpContext,
             ClaimsPrincipal user,
+            string? expectedTwitchUserId,
             IUserService userService,
             IAccountDeletionService accountDeletionService,
             ITwitchAuthClient authClient,
@@ -169,6 +170,16 @@ public static class AuthEndpoints
             {
                 // Unreachable behind RequireAuthorization for a real session; guard, not a case.
                 return Results.Unauthorized();
+            }
+
+            // The client names the account whose login the user just retyped. The cookie is shared
+            // across tabs, so another tab may have signed in as someone else since: deleting "the
+            // session's account" would then erase an account the user never confirmed. Missing counts
+            // as a mismatch (409, not 400): the only caller without it is a stale cached client
+            // bundle, and for it the right remedy is the same reload the mismatch notice asks for.
+            if (!string.Equals(expectedTwitchUserId, actor.TwitchUserId, StringComparison.Ordinal))
+            {
+                return Results.Conflict(new { errorCode = ApiErrorCodes.AccountMismatch });
             }
 
             // Read before the deletion, because the row (and with it the encrypted tokens) is gone
