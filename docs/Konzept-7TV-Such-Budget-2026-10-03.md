@@ -117,14 +117,29 @@ prüft gegen die Decke, die er selbst kennt.
   Bestenliste bleiben unverändert.
 - Keine Änderung an Chat-Zählung oder Matching (Messfenster-Freeze).
 
-## 5. Offene Punkte für den Betreiber (mit Default)
+## 5. Offene Punkte für den Betreiber — entschieden
+
+Alle fünf Defaults sind **vom Betreiber am 2026-10-03 bestätigt** (nach Review und Live-Prüfung):
 
 1. **Gesamtdecke 50/min** (Hälfte von 7TVs 100). Höher heißt mehr gleichzeitige Erst-Auflösungen,
-   aber weniger Abstand zur Stunde Sperre. Default: 50.
-2. **Reserve der Bestenliste 10/min** (Identität max. 40). Default: so lassen.
+   aber weniger Abstand zur Stunde Sperre. Bestätigt: 50.
+2. **Reserve der Bestenliste 10/min** (Identität max. 40). Bestätigt.
 3. **Backoff-Deckel 1 h.** 6 h spart weitere 20 Suchen/Tag je hängendem Kanal, lässt aber einen
-   frisch angelegten 7TV-Account bis zu 6 h ungesynct. Default: 1 h.
+   frisch angelegten 7TV-Account bis zu 6 h ungesynct. Bestätigt: 1 h.
 4. **Low-Watermark 10.** Sperrt bis zum Reset, sobald fremder Verbrauch sichtbar wird; 0 schaltet
-   das ab und verlässt sich allein auf 429. Default: 10.
+   das ab und verlässt sich allein auf 429. Bestätigt: 10.
 5. **Manueller RESYNC unterliegt dem Backoff.** Alternative wäre ein Bypass je Klick (eine Suche).
-   Default: kein Bypass.
+   Bestätigt: kein Bypass.
+
+## 6. Nachträge nach dem Review (2026-10-03)
+
+- **Zwei Sperren statt einer**, je Ursache ein Key. Die Bestenliste antwortet nur auf eine
+  429-Sperre mit `SevenTvRateLimited` (Haltbarkeit ≥ 60 s); eine Low-Watermark-Sperre ist unsere
+  Vorsicht und antwortet `BudgetRefused`. Eine längere Watermark-Sperre überschreibt nie eine
+  laufende 429-Sperre.
+- **Beobachten schreibt die Sperre zuerst**, die Telemetrie danach und getrennt — ein Fehler beim
+  Minimum kostet nie die Sperre.
+- **Jeder Redis-Aufruf hat 1 s Zeitlimit**, das Belasten zusätzlich das Token des Aufrufers.
+  Langsam heißt ablehnen (fail-closed), nie Sekunden Latenz in der Bestenliste.
+- **Validierung:** `ChannelIdentityMaxRequestsPerWindow < MaxRequestsPerWindow` (Reserve bleibt) und
+  `LowWatermark < 100 − MaxRequestsPerWindow` (unser eigener erlaubter Verkehr löst sie nie aus).
