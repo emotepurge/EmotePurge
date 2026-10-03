@@ -56,8 +56,19 @@ Rejected: `SELECT ... FOR UPDATE` across the sync, because it would hold a row l
 for every channel every 60 s and still leave the caller's `EnsureSubscribed` outside the lock. A
 concurrency token such as `xmin` on `Channel`, because it applies to every writer including the Api,
 creating new 500 paths and requiring an audit of all of them — for a defect whose damage is
-worker memory that now converges anyway. Residual: between the re-read and the cache write a ghost can
-still appear for at most one prune cycle (two ticks).
+worker memory that now converges anyway.
+
+Follow-up hardening of the same change: the re-read only removes the old-login cache entry when no
+other *active* row carries that login now (a login swap must not wipe the other row's live entry);
+the "row vanished" catch applies only when every entry of the failed save belongs to this channel
+(the `DbContext` is shared across a resync tick, so an earlier channel's failure is not blamed on
+this one); and `RecordFailedAttemptAsync` tolerates a vanished row the same way.
+
+Residual, stated honestly: early returns *before* the save (the implausible-wipe guard, which returns
+under the loaded name so the caller subscribes under the old login; the failed-attempt and
+unusable-response paths) are not narrowed by the re-read, so a warm-up or registry ghost can still
+survive them. A ghost can also still appear between the re-read and the cache write. All of these are
+covered by the prune within two ticks, not by the sync.
 
 ### 2026-10-03 — Self-service account deletion: `DELETE /api/auth/me`, `SelfRequest`, best-effort Twitch token revocation after the commit (#243)
 

@@ -90,6 +90,102 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
         Assert.DoesNotContain("inflight_purged", cache.GetCachedChannelNames());
     }
 
+    [Fact]
+    public async Task SyncChannel_OldLoginNowCarriedByAnotherActiveRow_LeavesThatRowsCacheEntryAlone()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "inflight_swap_a");
+        var cache = new EmoteMatchCache();
+        var (service, entered, release) = CreateBlockedService(db, cache, channel);
+
+        var syncTask = service.SyncChannelAsync("inflight_swap_a");
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // A login swap: the synced row moves away and a different active row takes its old login.
+        await using (var writer = fixture.CreateDbContext())
+        {
+            await writer.Channels.Where(c => c.Id == channel.Id).ExecuteUpdateAsync(s => s.SetProperty(c => c.ChannelName, "inflight_swap_b"));
+            writer.Channels.Add(new Channel { ChannelName = "inflight_swap_a", TwitchChannelId = "tw_inflight_swap_other", ActiveEmoteSetId = SetId, IsBotActive = true });
+            await writer.SaveChangesAsync();
+        }
+
+        cache.ReplaceChannel("inflight_swap_a", new Dictionary<string, string> { ["Live"] = "other-emote" });
+        release.SetResult();
+        await syncTask.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Contains("Live", cache.GetChannelEmotes("inflight_swap_a").Keys);
+    }
+
+    [Fact]
+    public async Task IsRowVanishedFor_ForeignKeyViolationOnThisChannelsEmote_IsTrueOnlyForThatChannel()
+    {
+        await using var db = fixture.CreateDbContext();
+        db.Emotes.Add(new Emote { ChannelId = "no-such-channel", SevenTvEmoteId = "fk-1", Name = "Fk", ImageUrl = "https://cdn.7tv.app/emote/fk-1/2x.webp" });
+
+        var ex = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+
+        Assert.True(SevenTvSyncService.IsRowVanishedFor(ex, "no-such-channel"));
+        Assert.False(SevenTvSyncService.IsRowVanishedFor(ex, "some-other-channel"));
+    }
+
+    [Fact]
+    public async Task IsRowVanishedFor_ConcurrencyFailureOfThisChannelsRow_IsTrueOnlyForThatChannel()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "inflight_concurrency");
+        channel.LastSyncedAtUtc = DateTime.UtcNow;
+        await using (var writer = fixture.CreateDbContext())
+        {
+            await writer.Channels.Where(c => c.Id == channel.Id).ExecuteDeleteAsync();
+        }
+
+        var ex = await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => db.SaveChangesAsync());
+
+        Assert.True(SevenTvSyncService.IsRowVanishedFor(ex, channel.Id));
+        Assert.False(SevenTvSyncService.IsRowVanishedFor(ex, "some-other-channel"));
+    }
+
+    [Fact]
+    public async Task SyncChannel_AfterAVanishedRow_AFollowingChannelOnTheSameContextStillSyncs()
+    {
+        await using var db = fixture.CreateDbContext();
+        var vanishing = await SeedChannelAsync(db, "inflight_ctx_gone");
+        var following = await SeedChannelAsync(db, "inflight_ctx_next");
+        var cache = new EmoteMatchCache();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var state = SevenTvChannelStateResult.Ok(new SevenTvChannelState(
+            "7tv-user",
+            new SevenTvEmoteSet(SetId, [new SevenTvEmote("7tv-a", "Alpha", "https://cdn.7tv.app/emote/7tv-a/2x.webp")])));
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        apiClient.GetChannelStateForTwitchUserAsync(vanishing.TwitchChannelId!, Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                entered.TrySetResult();
+                await release.Task;
+                return state;
+            });
+        apiClient.GetChannelStateForTwitchUserAsync(following.TwitchChannelId!, Arg.Any<CancellationToken>()).Returns(state);
+        var service = new SevenTvSyncService(
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(),
+            Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
+
+        var first = service.SyncChannelAsync("inflight_ctx_gone");
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await using (var writer = fixture.CreateDbContext())
+        {
+            await writer.Channels.Where(c => c.Id == vanishing.Id).ExecuteDeleteAsync();
+        }
+
+        release.SetResult();
+        Assert.Null(await first.WaitAsync(TimeSpan.FromSeconds(30)));
+
+        var second = await service.SyncChannelAsync("inflight_ctx_next");
+
+        Assert.NotNull(second);
+        Assert.Contains("Alpha", cache.GetChannelEmotes("inflight_ctx_next").Keys);
+    }
+
     private static (SevenTvSyncService Service, TaskCompletionSource Entered, TaskCompletionSource Release) CreateBlockedService(
         AppDbContext db, EmoteMatchCache cache, Channel channel)
     {

@@ -123,13 +123,13 @@ public class SevenTvSyncService(
             inventoryChanged = await ReconcileAsync(channel.Id, emoteSet.Emotes, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
         }
-        catch (Exception ex) when (IsRowVanished(ex))
+        catch (Exception ex) when (IsRowVanishedFor(ex, channel.Id))
         {
             // The row was purged or merged away while the 7TV call was in flight. The row gate only
             // coordinates sync callers, not those writers (see DECISIONS), so this is an expected
             // interleaving, not a fault: drop the pending changes and leave nothing behind.
             db.ChangeTracker.Clear();
-            emoteMatchCache.RemoveChannel(channel.ChannelName);
+            await RemoveOldNameCacheEntryAsync(channel, cancellationToken);
             logger.LogInformation("SyncChannelAsync: row vanished while the sync was in flight — sync abandoned.");
             return null;
         }
@@ -143,7 +143,7 @@ public class SevenTvSyncService(
             .FirstOrDefaultAsync(cancellationToken);
         if (current is null || !current.IsBotActive)
         {
-            emoteMatchCache.RemoveChannel(channel.ChannelName);
+            await RemoveOldNameCacheEntryAsync(channel, cancellationToken);
             logger.LogInformation("SyncChannelAsync: row was deleted or deactivated while the sync was in flight — match cache left empty.");
             return null;
         }
@@ -153,7 +153,7 @@ public class SevenTvSyncService(
         {
             // Renamed meanwhile: the handover's LEAVE for the old login may already have run, so
             // anything the warm-up put under it would never be cleaned up by anyone.
-            emoteMatchCache.RemoveChannel(channel.ChannelName);
+            await RemoveOldNameCacheEntryAsync(channel, cancellationToken);
         }
 
         await RefreshMatchCacheAsync(channel, finalName, cancellationToken);
@@ -479,7 +479,18 @@ public class SevenTvSyncService(
 
         channel.LastSyncAttemptAtUtc = DateTime.UtcNow;
         channel.LastSyncFailureReason = reason;
-        await db.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception ex) when (IsRowVanishedFor(ex, channel.Id))
+        {
+            // Same expected interleaving as in SyncChannelAsync: the row was purged or merged away
+            // while the 7TV call was in flight. Nothing to record; do not poison the shared context.
+            db.ChangeTracker.Clear();
+            logger.LogInformation("SyncChannelAsync: row vanished while recording a failed attempt — nothing recorded.");
+            return;
+        }
 
         if (changed)
         {
@@ -632,9 +643,39 @@ public class SevenTvSyncService(
         return true;
     }
 
+    // Removes the cache entry under the login the row carried when it was loaded — unless another
+    // active row carries that login now (login swap, double rename): that row's live entry must
+    // survive, and the convergence net is the backstop for a genuine ghost.
+    private async Task RemoveOldNameCacheEntryAsync(Channel channel, CancellationToken cancellationToken)
+    {
+        var oldName = channel.ChannelName;
+        var heldElsewhere = await db.Channels
+            .AsNoTracking()
+            .AnyAsync(c => c.Id != channel.Id && c.IsBotActive && c.ChannelName == oldName, cancellationToken);
+        if (!heldElsewhere)
+        {
+            emoteMatchCache.RemoveChannel(oldName);
+        }
+    }
+
     // The two shapes "the row is gone" takes at SaveChanges: the channel UPDATE matching no row
-    // (purge, merge loser), or the emote INSERT hitting the channel foreign key (23503).
-    private static bool IsRowVanished(Exception exception) =>
-        exception is DbUpdateConcurrencyException
-        || exception is DbUpdateException { InnerException: Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.ForeignKeyViolation } };
+    // (purge, merge loser), or the emote INSERT hitting the channel foreign key (23503). Only when
+    // every entry of the failed save belongs to this channel: the context is shared across a whole
+    // resync tick, so a failure of an earlier channel's entry must not be blamed on this one.
+    internal static bool IsRowVanishedFor(Exception exception, string channelId)
+    {
+        var vanished = exception is DbUpdateConcurrencyException
+            || exception is DbUpdateException { InnerException: Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.ForeignKeyViolation } };
+        if (!vanished || exception is not DbUpdateException { Entries.Count: > 0 } update)
+        {
+            return false;
+        }
+
+        return update.Entries.All(entry => entry.Entity switch
+        {
+            Channel c => c.Id == channelId,
+            Emote e => e.ChannelId == channelId,
+            _ => false
+        });
+    }
 }
