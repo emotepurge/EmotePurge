@@ -404,12 +404,12 @@ public sealed class HarnessRunner(
             }
             catch (OperationCanceledException)
             {
-                // docker stop / Ctrl-C. Everything up to the previous day is on disk already, so
-                // this is an ordinary resume point rather than a loss.
-                // This day's bytes are booked as 0 even though a cancellation mid-body did pull real
-                // ones. Not a judgement that they are free: the archive client lets a caller
-                // cancellation propagate bare (ChatLogArchiveClient class doc), so the count dies with
-                // the stream and this caller cannot learn it. Followed up in #82.
+                // docker stop / Ctrl-C before the body: while waiting for the request slot or for the
+                // response headers. Everything up to the previous day is on disk already, so this is
+                // an ordinary resume point rather than a loss, and 0 bytes is the right booking — no
+                // body was read. A cancellation *during* the body does not land here: the client
+                // returns ChatLogDayStatus.Cancelled with the bytes received so far (#82), and the
+                // `default:` branch below books them like every other aborted transfer.
                 AppendAbort(file, day, "Cancelled", null, "Lauf abgebrochen.");
                 LogResumePoint(dayLines, "abgebrochen", day);
                 return ExitAbortedWithResumePoint;

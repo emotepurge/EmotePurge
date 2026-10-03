@@ -111,11 +111,31 @@ public class ChatLogArchiveClientTests
     }
 
     [Fact]
-    public async Task ReadDayAsync_WithCallerCancellationMidBody_ThrowsOperationCanceledException_NotBodyTimeout()
+    public async Task ReadDayAsync_WithCallerCancellationMidBody_ReturnsCancelledWithTheBytesReceivedSoFar_NotBodyTimeout()
     {
+        // A docker stop / Ctrl-C after part of the body arrived: those bytes left the archive and
+        // have to reach the caller's byte budget, so the client reports them instead of letting the
+        // cancellation fly out bare and taking the count down with the stream.
         var handler = new StreamStubHandler(HttpStatusCode.OK, () => new StallingStream(Encoding.UTF8.GetBytes("@partial"), stallAfterBytes: 4));
         var options = new ChatLogArchiveOptions { BodyTimeout = TimeSpan.FromSeconds(30) };
         var client = CreateClient(handler, options);
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(TimeSpan.FromMilliseconds(200));
+
+        var result = await client.ReadDayAsync("1", new DateOnly(2026, 1, 1), 10_000_000, _ => ValueTask.CompletedTask, cts.Token);
+
+        Assert.Equal(ChatLogDayStatus.Cancelled, result.Status);
+        Assert.Equal(4, result.BytesReceived);
+        Assert.Null(result.BodySha256Hex);
+        Assert.Equal((int)HttpStatusCode.OK, result.HttpStatusCode);
+    }
+
+    [Fact]
+    public async Task ReadDayAsync_WithCallerCancellationBeforeTheHeadersArrive_StillThrowsOperationCanceledException()
+    {
+        // No body was read yet, so there is no byte count to hand back — the header phase keeps
+        // letting a caller cancellation propagate, and the caller books 0 bytes for it.
+        var client = CreateClient(new HangingHandler(), new ChatLogArchiveOptions());
         using var cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromMilliseconds(200));
 
@@ -242,6 +262,16 @@ public class ChatLogArchiveClientTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             throw new HttpRequestException("Simulated connection failure.");
+    }
+
+    // Never produces a response on its own — only the caller's token ends the header phase.
+    private sealed class HangingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            throw new InvalidOperationException("unreachable");
+        }
     }
 
     // Hands StreamReader exactly one source line (including its trailing '\n') per ReadAsync call,

@@ -10,6 +10,44 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — Harness: a transfer cancelled mid-body books its bytes against the cap (#82)
+
+**Betrifft:** `src/EmotePurge.Core/ChatLogArchive/ChatLogArchiveModels.cs` ·
+`src/EmotePurge.Core/ChatLogArchive/IChatLogArchiveClient.cs` ·
+`src/EmotePurge.Infrastructure/ChatLogArchive/ChatLogArchiveClient.cs` ·
+`src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ChatLogArchiveClientTests.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
+
+The harness entry of 2026-09-05 promises that `Harness__MaxMegabytesPerRun` caps the bytes "über
+alle Tage und alle Resumes eines Laufs". One abort path did not keep that promise: a `docker stop`
+or Ctrl-C after part of a day's body had arrived. `ChatLogArchiveClient` let the caller's
+cancellation propagate as a bare `OperationCanceledException`, the byte count died with the
+counting stream, and `HarnessRunner`'s `catch` booked the abort with 0 bytes — a resumed run won
+those bytes back.
+
+**Contract change, return instead of throw.** `IChatLogArchiveClient.ReadDayAsync` now returns the
+new `ChatLogDayStatus.Cancelled` (appended as the last member, so no existing value moves) with
+`BytesReceived` set to what had arrived, whenever `ct` is cancelled while the body is being read.
+Cancellation before the body — waiting for the request slot, or the header phase — still throws:
+no body byte was read, and the runner's `catch` keeps booking 0 for it, which is now correct rather
+than merely the only number available. The two cancellation outcomes inside the body are told apart
+exactly as before: `ct.IsCancellationRequested` means the caller, anything else the body timeout.
+
+**No special case in the runner.** `Cancelled` falls into the existing `default:` branch, the one
+`BodyTimeout`/`TransportFailure`/`ByteCapExceeded` already take: an event line with status
+`Cancelled` (the same status string the `catch` wrote before), now with the received bytes and the
+HTTP status, and exit code 4 as before. Only the free-text `message` of that event line changes
+("Log-Archiv-Abruf endete mit Cancelled." instead of "Lauf abgebrochen."); nothing reads it.
+
+**Count-neutral, no `AlgorithmVersion` bump.** Nothing on the counting path moved: a cancelled day
+never produced a day line and still does not, so the day lines a run is built from are unchanged.
+What changes is the `bytes` of one kind of event line — the same accounting field the 2026-09-05
+"Nachtrag (Abschluss-Review)" introduced without a bump — and with it `run.totalBytes`, an
+operational figure outside every gate (#69, T10).
+
+---
+
 ### 2026-09-24 — robots.txt stays closed after the legal launch
 
 **Betrifft:** `web/public/robots.txt` · `PRODUCT.md` · `CLAUDE.md`

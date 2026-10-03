@@ -378,6 +378,47 @@ public class HarnessRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task ACancelledMidBodyTransfer_BooksItsReceivedBytes_AndTheNextRunKnowsIt()
+    {
+        // docker stop / Ctrl-C after 700 KB of day 2's body arrived. The client hands the count back
+        // as a Cancelled result instead of throwing, and those bytes have to survive into the resume
+        // — otherwise every interrupted attempt wins its share of the cap back.
+        RespondWith(async (day, onMessage) =>
+        {
+            if (day == Day2)
+            {
+                return new ChatLogDayResult(ChatLogDayStatus.Cancelled, 700_000, null, 0, 0, 0, 200);
+            }
+
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1, bytes: 10_000);
+        });
+
+        Assert.Equal(4, await Run(3, maxMegabytes: 1));
+
+        var lines = File.ReadAllLines(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        Assert.Equal(1, lines.Count(l => l.Contains("\"kind\":\"day\"")));
+        var cancelled = Assert.Single(lines, l => l.Contains("\"kind\":\"event\""));
+        Assert.Contains("\"status\":\"Cancelled\"", cancelled);
+        Assert.Contains("\"bytes\":700000", cancelled);
+        Assert.Empty(Directory.GetFiles(_directory, "*.report.json"));
+
+        var offeredOnResume = new List<long>();
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1, bytes: 10_000);
+        }, offeredOnResume);
+
+        Assert.Equal(0, await Run(3, maxMegabytes: 1));
+
+        // 1 MB minus day 1 (10,000) minus the 700,000 the cancelled attempt already pulled.
+        Assert.Equal((1L * 1024 * 1024) - 10_000 - 700_000, offeredOnResume[0]);
+        var json = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.report.json")));
+        Assert.Contains("\"totalBytes\": 730000", json);
+    }
+
+    [Fact]
     public async Task TheByteCap_ShrinksWithEveryDayAndStopsTheRunWhenItIsSpent()
     {
         var offered = new List<long>();

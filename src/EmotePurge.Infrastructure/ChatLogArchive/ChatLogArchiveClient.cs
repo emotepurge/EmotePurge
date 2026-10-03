@@ -33,8 +33,11 @@ namespace EmotePurge.Infrastructure.ChatLogArchive;
 /// so it returns as soon as headers arrive. Reading the body afterwards is governed by its own
 /// <see cref="ChatLogArchiveOptions.BodyTimeout"/>-bounded <see cref="CancellationTokenSource"/>,
 /// linked to the caller's token: a body timeout maps to <see cref="ChatLogDayStatus.BodyTimeout"/>,
-/// while a caller cancellation is left to propagate as <see cref="OperationCanceledException"/>
-/// instead — the two are told apart via <c>ct.IsCancellationRequested</c>.
+/// a caller cancellation during the body maps to <see cref="ChatLogDayStatus.Cancelled"/> — the two
+/// are told apart via <c>ct.IsCancellationRequested</c>. Both carry the bytes received so far, because
+/// the caller books them against its byte budget. A caller cancellation before the body (request
+/// pacing, header phase) still propagates as <see cref="OperationCanceledException"/>: nothing was
+/// read, so there is nothing to report.
 /// </para>
 /// </summary>
 public class ChatLogArchiveClient(
@@ -172,11 +175,12 @@ public class ChatLogArchiveClient(
 
     // Reads and classifies every remaining line of the body: PRIVMSGs go to onMessage, every other
     // recognized command and every unreadable line are only counted. Runs until EOF (line is null,
-    // the normal end) or a fatal reason to stop reading further — a body-read timeout, a mid-body
-    // transport failure, or the byte cap — each of which already carries the counts gathered so far
-    // into the ChatLogDayResult it returns as Failure. The narrow try/catch around only the read
-    // call is deliberate (Fixrunde 1 finding): an exception onMessage itself throws is the caller's
-    // error, not a transport failure, and must propagate unchanged instead of being reported as one.
+    // the normal end) or a fatal reason to stop reading further — a body-read timeout, a caller
+    // cancellation, a mid-body transport failure, or the byte cap — each of which already carries
+    // the counts gathered so far into the ChatLogDayResult it returns as Failure. The narrow
+    // try/catch around only the read call is deliberate (Fixrunde 1 finding): an exception onMessage
+    // itself throws is the caller's error, not a transport failure, and must propagate unchanged
+    // instead of being reported as one.
     private async Task<LineScanOutcome> ScanLinesAsync(
         StreamReader reader, CountingHashStream countingStream, long maxBytes,
         Func<ChatLogMessage, ValueTask> onMessage, string twitchChannelId, DateOnly day, int httpStatusCode,
@@ -193,7 +197,17 @@ public class ChatLogArchiveClient(
             {
                 line = await reader.ReadLineAsync(bodyCt);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Returned, not rethrown: the bytes that already arrived must reach the caller's byte
+                // budget, and the count dies with the stream once this method is left by a throw.
+                logger.LogWarning(
+                    "Chat-log archive read for channel {ChannelId}, day {Day} was cancelled by the caller after {Bytes} bytes.",
+                    twitchChannelId, day, countingStream.BytesRead);
+                return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, new ChatLogDayResult(
+                    ChatLogDayStatus.Cancelled, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode));
+            }
+            catch (OperationCanceledException)
             {
                 logger.LogWarning(
                     "Log-Archiv-Abruf für Kanal {ChannelId}, Tag {Day} wegen Body-Timeout ({Timeout}) abgebrochen.",
