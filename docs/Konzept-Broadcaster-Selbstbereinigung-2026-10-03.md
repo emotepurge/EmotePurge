@@ -1,13 +1,14 @@
 # Konzept: Broadcaster-Selbstbereinigung (#245, Epic #248 D)
 
-Stand 2026-10-03. Denkwerkzeug des Betreibers, kein Code. Die Entscheidungen in Abschnitt 4 sind
-am 2026-10-03 gefallen; Abschnitte 3, 5 und 6 sind auf sie hin ausgearbeitet. Gelesen: Issue #245,
-Epic #248, `CLAUDE.md`, `PRODUCT.md`, `docs/Architectur.md` (B.3, 5), die DECISIONS-Einträge zu
-#243/#244/#252 und zur Kanal-Sperrliste, `ChannelService` (Join/Leave/Purge/Retention-Purge),
-`ChannelAccessService`, `ChannelDeactivation`, `AuthEndpoints` (`DELETE /api/auth/me`),
-`Worker.cs` (LEAVE), `UsageStatFlushService`, `AppDbContext` (Kaskaden), die Datenschutzerklärung
-§ 9/§ 13 in `infra-docs` und die Dateninventur. Was nur auf `feat/emote-sets-200` existiert, ist
-als solches markiert.
+Stand 2026-10-03, zweite Fassung nach dem adversarialen Review durch Codex Sol (Abschnitt 7).
+Denkwerkzeug des Betreibers, kein Code. Die Entscheidungen E1–E9 in Abschnitt 4 sind am 2026-10-03
+gefallen; E10–E12 sind aus dem Review entstanden und **offen**. Gelesen: Issue #245, Epic #248,
+`CLAUDE.md`, `PRODUCT.md`, `docs/Architectur.md` (B.3, 5), die DECISIONS-Einträge zu #243/#244/#252
+und zur Kanal-Sperrliste, `ChannelService` (Join/Leave/Purge/Retention-Purge),
+`ChannelAccessService`, `ChannelDeactivation`, `ChannelIdentityService`, `SevenTvSyncService`,
+`AuditLogQueryService`, `AuthEndpoints` (`DELETE /api/auth/me`), `Worker.cs` (LEAVE),
+`UsageStatFlushService`, `AppDbContext` (Kaskaden), die Datenschutzerklärung § 9/§ 13 in
+`infra-docs` und die Dateninventur. Was nur auf `feat/emote-sets-200` existiert, ist markiert.
 
 ---
 
@@ -35,7 +36,8 @@ ausdrücklich #245 zu. Ob die Selbstbedienung rechtlich *nötig* ist, beantworte
 nicht; bis zum Deploy bleibt der E-Mail-Weg der versprochene Weg, und der funktioniert.
 
 **Nicht Gegenstand** (laut Issue): ob ein Mod überhaupt ohne Broadcaster joinen darf. Ebenso nicht:
-Datenexport (Art. 15/20), die Harness-Sperre (#260), der Fremdkanal-Preview (s. 3.7).
+Datenexport (Art. 15/20), die Harness-Sperre (#260), der Fremdkanal-Preview (3.7), die
+Admin-Allowlist nach Login (E11 — vorbestehend, eigenes Issue).
 
 ---
 
@@ -70,21 +72,29 @@ Datenexport (Art. 15/20), die Harness-Sperre (#260), der Fremdkanal-Preview (s. 
 - **Sperrliste** `EXCLUDED_CHANNEL_IDS`: env-basiert, beim Start gelesen, nicht gepollt;
   `IExcludedChannelFilter.IsExcluded(id)` ist synchron und speicherresident; nur der Betreiber
   ändert sie; **niemand** ist ausgenommen, auch kein Admin; ihre Existenz je Kanal ist bewusst
-  geheim (keine Namen in Logs/Audit). Der Identity-Reconcile deaktiviert gesperrte aktive Zeilen
-  stündlich von selbst.
+  geheim. Sie wird an vier Stellen geprüft: Join-Pfad (Identität **und** gewählte Zeile),
+  7TV-Sync-Gate (`SevenTvSyncService.cs:369`, die über 7TV aufgelöste ID einer id-losen Zeile,
+  **vor** dem Backfill), Roster (`ListActiveChannelNamesAsync`, in-memory) und Reconcile
+  (Known-ID-Pass, Deaktivierung **ohne** Zeilensperre, `ChannelIdentityService.cs:403`).
 - **Kontolöschung #243** (`DELETE /api/auth/me`, seit 03.10. live): löscht User-Zeile, Stimmen,
-  pseudonymisiert Audit-Einträge. **Kanaldaten sind ausdrücklich nicht betroffen** (§ 5.5: „auch
-  wenn es Ihr eigener Kanal ist"). Der Kanal eines gelöschten Broadcaster-Kontos **bleibt aktiv und
-  wird weiter gezählt**; die Mods verwalten ihn weiter. Loggt sich der Broadcaster erneut ein,
-  entsteht ein leeres Konto mit derselben Twitch-ID — er bleibt per ID Broadcaster.
+  pseudonymisiert Audit-Einträge. **Kanaldaten sind ausdrücklich nicht betroffen** (§ 5.5). Der
+  Kanal eines gelöschten Broadcaster-Kontos **bleibt aktiv und wird weiter gezählt**. Loggt sich
+  der Broadcaster erneut ein, entsteht ein leeres Konto mit derselben Twitch-ID.
+- **Kanal-Audit-Log** (`GET /{name}/audit-log`, `ChannelManagementAuthorizationFilter`): filtert
+  nur nach dem Namens-Snapshot (`AuditLogQueryService.cs:94-99`). **Existiert keine Zeile, fällt
+  `IsBroadcaster` auf den Login-Vergleich zurück** (`ChannelAccessService.cs:95-97`) — wer nach
+  einem Purge (gleich welcher Art) den freigewordenen Login registriert, liest 12 Monate lang das
+  Audit-Log des Vorgängers; dessen Mods ebenso (Helix-Live-Check gegen den Login). Vorbestehend.
 
 ### 2.3 Was der Broadcaster-Check kann und nicht kann
 
 `IsBroadcaster` vergleicht `Channel.TwitchChannelId` mit `principal.TwitchUserId`. Ist die ID
-`null` (Zeile während eines Helix-Ausfalls angelegt, oder id-loses Umbenennungs-Duplikat), fällt
-der Check auf einen **Login-Vergleich** zurück. Für Lesezugriffe vertretbar; für eine
-unwiderrufliche Löschung ist genau dieser Fallback die Lücke, die DECISIONS beim Rename schon
-einmal geschlossen hat (freigegebener Name → neuer Inhaber).
+`null` (Zeile während eines Helix-Ausfalls angelegt — `ChannelService.cs:419` legt sie mit
+`TwitchChannelId = null` an —, oder id-loses Umbenennungs-Duplikat), fällt der Check auf einen
+**Login-Vergleich** zurück. Der Reconcile löst nur **aktive** Zeilen auf
+(`ChannelIdentityService.cs:43`); eine inaktive id-lose Zeile bleibt id-los, bis sie jemand joint
+oder die Retention sie entsorgt. Für Lesezugriffe vertretbar; für eine unwiderrufliche Löschung ist
+der Login-Fallback die Lücke, die DECISIONS beim Rename schon einmal geschlossen hat.
 
 ---
 
@@ -92,48 +102,51 @@ einmal geschlossen hat (freigegebener Name → neuer Inhaber).
 
 ### 3.1 Nutzerfluss
 
-1. **Ort (E2):** Channel-Workspace, neben „Kanal verlassen"/„Bot reaktivieren"
-   (`channel-workspace-layout.ts`). Ein zweiter, leiserer Knopf „Kanaldaten löschen"
-   (`danger-quiet`, §4.2 Designsprache), **nur sichtbar bei `permissions.canPurgeAsBroadcaster`**
-   — neues Feld der `ChannelPermissionsDto` (der Code-Kommentar dort: „add it together with its
-   first consumer"). Sichtbar auch für einen inaktiven Kanal: wer verlassen hat, soll die 180 Tage
-   nicht abwarten müssen.
-2. **Bestätigung (E3):** `TypedConfirmDialog` mit abgetipptem Kanalnamen, wie Admin-Purge und
-   #243. Der Text nennt die Zahlen (Emotes, Abstimmungen, Live-Tage — die Admin-Seite liefert sie
-   schon; der Workspace braucht sie aus einem bestehenden oder einem schlanken neuen Read) und
-   vier Sätze: unwiderruflich; Audit-Einträge bleiben 12 Monate; Backups bis 60 Tage; **„Danach
-   kann nur du selbst den Kanal wieder hinzufügen, deine Moderatoren nicht."**
-3. **Konto-Bindung:** `expectedTwitchUserId` als Query-Parameter wie bei `DELETE /api/auth/me`
-   (Mehr-Tab-Problem). Mismatch → 409 `account_mismatch`, bestehender Code.
+1. **Ort (E2):** Channel-Workspace, neben „Kanal verlassen"/„Bot reaktivieren". Ein zweiter,
+   leiserer Knopf „Kanaldaten löschen" (`danger-quiet`, §4.2 Designsprache), **nur sichtbar bei
+   `permissions.canPurgeAsBroadcaster`** — neues Feld der `ChannelPermissionsDto`. Sichtbar auch
+   für einen inaktiven Kanal.
+2. **Bestätigung (E3):** `TypedConfirmDialog` mit abgetipptem Kanalnamen. Der Text nennt die
+   Zahlen (Emotes, Abstimmungen, Live-Tage) und fünf Sätze: unwiderruflich; gelöscht wird der Kanal
+   unter diesem Namen samt allem, was daran hängt — **eine Altzeile von vor einer Umbenennung, die
+   sich nicht mehr als deine nachweisen lässt, wird 180 Tage nach ihrer Deaktivierung automatisch
+   entfernt** (3.3); Audit-Einträge bleiben 12 Monate; Backups bis 60 Tage; „Danach kann nur du
+   selbst den Kanal wieder hinzufügen, deine Moderatoren nicht."
+3. **Konto-Bindung:** `expectedTwitchUserId` als Query-Parameter wie bei `DELETE /api/auth/me`.
+   Mismatch → 409 `account_mismatch`.
 4. **Danach:** Navigation zur Übersicht; der Kanal erscheint als „nicht beobachtet". Mods sehen
-   ihn in ihrer Übersicht ebenfalls untracked, ihr Join scheitert mit 403 (3.4). Das Kanal-Audit-Log
-   bleibt dem Mod-Team lesbar — `ChannelManagementAuthorizationFilter` prüft Mods live gegen
-   Helix, nicht gegen die Zeile — und zeigt `channel.purge` durch den Broadcaster. Das **ist** die
-   Benachrichtigung des Mod-Teams; eine eigene braucht es nicht.
-5. **Rückweg:** Der Broadcaster (oder ein Admin) klickt „Beobachten"/Join wie bei jedem
-   untracked Kanal; der Join hebt die Sperre auf (3.4). Keine eigene Oberfläche dafür.
+   ihn untracked; ihr Join scheitert mit 403 und dem Text aus 3.2 — **das ist die Benachrichtigung
+   des Mod-Teams.** Das Kanal-Audit-Log ist nach dem Purge **nicht** mehr erreichbar (3.2,
+   Review F1); die erste Fassung hatte sich darauf verlassen, was die Lücke aus 2.2 war.
+5. **Rückweg:** Der Broadcaster (oder ein Admin) joint wie bei jedem untracked Kanal; der Join hebt
+   die Sperre auf (3.4). Keine eigene Oberfläche dafür.
 
 ### 3.2 Api-Vertrag
 
-- **Route:** `DELETE /api/channels/{channelName}/data` (Name offen; `/purge` ist belegt und bleibt
-  für den Admin unverändert). Gruppe `/api/channels` → erbt Auth + `ChannelNameValidation`.
-- **Neuer Filter `ChannelBroadcasterAuthorizationFilter`** (`Auth/`), Muster der beiden
-  bestehenden: 400 `invalid_channel_name` · 401 ohne Principal · 404 keine Zeile ·
-  **403 wenn `TwitchChannelId != principal.TwitchUserId`** — kein Admin-Durchgriff (der Admin hat
-  `/purge`), kein Mod, **kein Login-Fallback (E7)**. Die Prüfung braucht weder Helix noch Redis
-  und funktioniert damit auch im Twitch-Ausfall.
-- **Antworten:** 204 gelöscht · 404 nicht getrackt · 409 `account_mismatch` · 409 neuer Code
-  `channel_identity_unresolved` für `TwitchChannelId == null` (Regel 7: `ApiErrorCodes` +
-  `api-error.ts` + beide Locales; Text sinngemäß „Die Kanal-Identität ist noch nicht bestätigt —
-  bitte in etwa einer Stunde erneut", der Reconcile füllt die ID nach).
-- **Join-Pfad (bestehend, `POST /{name}/join`):** neue Ablehnung 403 mit neuem Code
-  `channel_locked_by_broadcaster` (Text: „Der Streamer hat diesen Kanal aus EmotePurge entfernt.
-  Nur er selbst kann ihn wieder hinzufügen."). **Bewusst nicht** der neutrale `channel_excluded`-
-  Text: der ist für den operatorseitigen Widerspruch gebaut, dessen Existenz selbst schutzwürdig
-  ist. Hier handelt der Betroffene sichtbar selbst (der Eintrag steht ohnehin im Kanal-Audit-Log),
-  und ein Mod, der nur „kann nicht hinzugefügt werden" liest, schreibt sonst dem Betreiber.
-- **Rate-Limit:** `Bookkeeping`, wie Leave/Purge. Kein Antiforgery-Token (Konvention: `SameSite=Lax`
-  + JSON-Binding, DECISIONS 2026-10-03).
+- **Route:** `DELETE /api/channels/{channelName}/data` (Name offen; `/purge` bleibt dem Admin).
+  Gruppe `/api/channels` → erbt Auth + `ChannelNameValidation`.
+- **Neuer Filter `ChannelBroadcasterAuthorizationFilter`** (`Auth/`): 400 `invalid_channel_name`
+  · 401 ohne Principal · 404 keine Zeile · **403 wenn die Zeile eine ID trägt und sie nicht die
+  des Principals ist** — kein Admin-Durchgriff, kein Mod, **kein Login-Fallback (E7)**. Eine Zeile
+  **ohne** ID lässt der Filter durch; die Auflösung übernimmt der Service (3.3), damit die
+  Helix-Abfrage nicht im Filter landet.
+- **Antworten:** 204 gelöscht · 404 nicht getrackt · 403 · 409 `account_mismatch` · 409 neuer
+  Code `channel_identity_unresolved` (Regel 7: `ApiErrorCodes` + `api-error.ts` + beide Locales;
+  Text: „Die Kanal-Identität konnte gerade nicht bestätigt werden — bitte später erneut"). Der
+  Code ist **kein Endzustand** mehr (Review F9): der Service versucht die Auflösung live (3.3).
+- **Join-Pfad (bestehend):** neue Ablehnung 403 `channel_locked_by_broadcaster` („Der Streamer hat
+  diesen Kanal aus EmotePurge entfernt. Nur er selbst kann ihn wieder hinzufügen."). **Bewusst
+  nicht** der neutrale `channel_excluded`-Text: der gilt dem operatorseitigen Widerspruch, dessen
+  Existenz schutzwürdig ist; hier handelt der Betroffene sichtbar selbst, und ein Mod, der nur „kann
+  nicht hinzugefügt werden" liest, schreibt sonst dem Betreiber.
+- **Kanal-Audit-Log (bestehend, Review F1):** `GET /{name}/audit-log` antwortet **404, wenn keine
+  Kanalzeile existiert** — vor dem Autorisierungsfilter geprüft, damit kein Login-Fallback
+  greift. Das schließt die Lücke aus 2.2 für jeden Purge (Admin, Retention, Broadcaster), nicht
+  nur für diesen. Preis: das Mod-Team sieht nach dem Purge keinen Verlauf mehr; Ersatz ist der
+  403-Text beim Join. Die vollständige Lösung — Audit-Einträge zusätzlich an die unveränderliche
+  Kanal-ID binden und darüber filtern — ist eine neue Spalte mit Backfill und bleibt als
+  Folgearbeit notiert, nicht Teil von #245. Für einen **aktiven** Kanal mit ID ändert sich nichts.
+- **Rate-Limit:** `Bookkeeping`. Kein Antiforgery-Token (Konvention, DECISIONS 2026-10-03).
 
 ### 3.3 Service-Vertrag (Infrastructure)
 
@@ -141,36 +154,47 @@ Neue Methode `IChannelService.PurgeByBroadcasterAsync(channelName, actor, ct)` �
 `Purged | NotFound | NotBroadcaster | IdentityUnresolved`. `PurgeAsync` bleibt; Kaskade und
 Audit-Schritt wandern in einen privaten Helfer, den alle drei Purge-Pfade teilen.
 
-- **Transaktion + `LoadChannelForUpdateAsync`** wie der Retention-Purge, nicht ungesperrt wie der
-  Admin-Purge: ein gleichzeitiger Join (eines Mods oder des Broadcasters) serialisiert sich auf
-  dieser Sperre und sieht nach dem Commit **keine Zeile, aber die Sperrzeile** (3.4) — deshalb
-  muss die Sperrzeile **in derselben Transaktion vor dem Commit** eingefügt werden.
-- **ID-Nachprüfung im Service** (`channel.TwitchChannelId == actor.TwitchUserId`), nicht nur im
-  Filter — wie die Kontolöschung die Inaktivität unter der Sperre erneut prüft.
-- **Audit (E4):** `channel.purge`, `ChannelName` gesetzt, Details
-  `{ reason: "broadcasterRequest" }` — dritter Wert neben „keine Details" (Admin) und
-  `retention`. Die Sperre braucht keinen eigenen Eintrag: sie ist Teil dieses Purges.
-- **LEAVE nach dem Commit**, nicht davor wie beim Admin-Purge: die Zeile ist Quelle der Wahrheit,
-  der Roster-Prune des periodischen Resyncs holt einen verlorenen LEAVE in ≤ 2 Ticks nach, der
-  Flush verträgt fehlende Emote-FKs. Ein Redis-Ausfall kostet nur die Beschleunigung, und die
-  Zeilensperre wird nicht über einen Redis-Roundtrip gehalten.
+- **Identität vor der Transaktion.** Trägt die Zeile unter dem Routennamen keine ID, fragt der
+  Service `LookupByLoginAsync(name)` (Helix, dieselbe Drei-Zustands-Abfrage wie der Join) —
+  **außerhalb** der Transaktion, kein Lock über einen HTTP-Roundtrip. `Found` mit der ID des
+  Akteurs → weiter, die ID wird in der Transaktion auf die Zeile geschrieben (sofern frei);
+  `Found` mit fremder ID → `NotBroadcaster`; `NotFound`/`Unavailable` → `IdentityUnresolved`.
+  Damit ist das 409 nur noch ein „gerade nicht", kein „nie" (Review F9).
+- **Zielmenge: alle nachweisbar eigenen Zeilen, nicht eine** (Review F3). In der Transaktion
+  werden gesperrt, in dieser Reihenfolge (die Ordnung des Merge/Join): (1) die Zeile, die die
+  **ID des Akteurs** trägt (`LoadChannelByTwitchIdForUpdateAsync`), (2) die Zeile unter dem
+  **Routennamen** (`LoadChannelForUpdateAsync`), falls es eine andere ist und sie id-los ist und
+  ihr Login sich eben live auf den Akteur aufgelöst hat. Beide werden gelöscht, je mit eigener
+  Kaskade und je einem `channel.purge`-Eintrag. So verschwindet ein Umbenennungs-Duplikat
+  **mit** der Hauptzeile, solange sein Login noch dem Akteur gehört.
+- **Was nicht nachweisbar ist, wird nicht gelöscht — und das steht im Dialog.** Eine id-lose
+  Zeile unter einem **alten** Login, der inzwischen niemandem oder jemand anderem gehört, kann
+  das System dem Akteur nicht zuordnen; nach seiner eigenen Regel (ID schlägt Login) darf sie
+  nicht auf sein Wort hin gelöscht werden. Sie ist inaktiv oder wird vom Reconcile deaktiviert
+  und läuft in die 180-Tage-Retention. Das ist die ausdrückliche Definition von „unvollständig":
+  keine zweite Antwortform, sondern eine benannte Grenze — im Dialog, in Operations.md und in § 9.
+- **ID-Nachprüfung im Service** unter der Sperre (`channel.TwitchChannelId == actor.TwitchUserId`).
+- **Audit (E4):** `channel.purge`, `ChannelName` gesetzt, Details `{ reason: "broadcasterRequest" }`
+  — je gelöschter Zeile ein Eintrag; die Sperre braucht keinen eigenen.
+- **Sperrzeile vor dem Commit** (3.4), **LEAVE je gelöschter Zeile nach dem Commit** — die Zeile
+  ist Quelle der Wahrheit, der Roster-Prune holt einen verlorenen LEAVE in ≤ 2 Ticks nach, der
+  Flush verträgt fehlende Emote-FKs.
 
 ### 3.4 Die Broadcaster-Sperre (E1 = B) — Datenmodell und Lebenszyklus
 
 **Warum eine eigene Tabelle.** Der Purge löscht die `Channels`-Zeile samt Login. Ein Flag auf der
-Zeile („Tombstone") würde entweder den Login behalten (widerspricht „löschen") oder nach 180 Tagen
-vom Retention-Purge stillschweigend mit entsorgt — die Sperre liefe ab, ohne dass es jemand
-entschieden hat. Die Sperre muss also ohne Kanalzeile existieren und ist allein über die
-unveränderliche Twitch-ID adressierbar — genau die Kennung, die § 9 für die Sperre nennt.
+Zeile („Tombstone") behielte den Login (widerspricht „löschen") oder liefe nach 180 Tagen mit dem
+Retention-Purge still ab. Die Sperre muss ohne Kanalzeile existieren und ist allein über die
+unveränderliche Twitch-ID adressierbar — die Kennung, die § 9 nennt.
 
 **Warum nicht in `IExcludedChannelFilter` hineinfalten.** Die env-Liste ist (a) synchron und
-speicherresident — ein DB-Lookup passt nicht in die Signatur, und ein Cache davor hätte genau die
-Lücke, die die Sperre schließen soll (Mod joint im Cache-Fenster nach dem Purge); (b) ohne jede
-Ausnahme, auch nicht für Admins; (c) geheim je Kanal. Die Broadcaster-Sperre ist (a) ein
-indizierter Lookup auf einem Pfad, der ohnehin die DB berührt, (b) vom Broadcaster und vom Admin
-aufhebbar, (c) nicht geheim. **Zwei Mechanismen nebeneinander, mit klarer Trennung:** env-Liste =
-Widerspruch beim Betreiber, Tabelle = eigene Entfernung durch den Streamer. Ein Kanal kann auf
-beiden stehen; die env-Liste gewinnt immer (wird zuerst geprüft, kein Aufheben per Join).
+speicherresident — ein Cache davor hätte genau die Lücke, die die Sperre schließen soll; (b) ohne
+Ausnahme, auch nicht für Admins; (c) geheim. Die Broadcaster-Sperre ist (a) ein indizierter
+Lookup auf Pfaden, die ohnehin die DB berühren, (b) aufhebbar, (c) nicht geheim. **Zwei
+Mechanismen nebeneinander**, env gewinnt immer (wird zuerst geprüft, kein Aufheben per Join).
+**Aber: die Sperre wird an denselben vier Stellen durchgesetzt wie die env-Liste** (Review F2) —
+die erste Fassung hatte sie auf Join und Reconcile beschränkt und damit die Beobachtung bis zum
+stündlichen Reconcile offen gelassen.
 
 **Tabelle `BroadcasterChannelLocks`** (Name offen):
 
@@ -179,173 +203,207 @@ beiden stehen; die env-Liste gewinnt immer (wird zuerst geprüft, kein Aufheben 
 | `TwitchChannelId` | `string`, PK | die unveränderliche Broadcaster-ID — **kein Login**, kein Anzeigename |
 | `LockedAtUtc` | `timestamptz` | Zeitpunkt des Purges |
 
-Nicht mehr. Kein FK auf `Users` (das Konto kann gelöscht sein oder nie existiert haben), kein
-Grund-Feld (es gibt nur einen Grund), kein Akteur (der Akteur ist per Definition der Inhaber
-dieser ID). Minimal, damit die Zeile nach einer Kontolöschung nichts enthält, was die
-Pseudonymisierung aus #243 hätte erfassen müssen.
+Kein FK auf `Users`, kein Grund-Feld, kein Akteur. Minimal, damit die Zeile nach einer
+Kontolöschung nichts enthält, was die Pseudonymisierung aus #243 hätte erfassen müssen.
 
-**Schreiben:** nur `PurgeByBroadcasterAsync`, in der Purge-Transaktion, **vor** dem Commit
-(Upsert — ein zweiter Purge nach Rejoin+Purge aktualisiert nur den Zeitstempel). Admin-Purge und
-Retention-Purge schreiben **keine** Sperre: der Admin nutzt die env-Liste, der Retention-Purge
-folgt einem gewöhnlichen Verlassen, nach dem ein Mod den Kanal heute wie morgen wieder hinzufügen
-darf — diese Policy ändert #245 nicht.
+**Schreiben:** nur `PurgeByBroadcasterAsync`, in der Purge-Transaktion **vor** dem Commit (Upsert).
+Admin- und Retention-Purge schreiben **keine** Sperre: der Admin nutzt die env-Liste, der
+Retention-Purge folgt einem gewöhnlichen Verlassen, nach dem ein Mod wieder joinen darf — diese
+Policy ändert #245 nicht.
 
-**Lesen (zwei Stellen, beide über ein neues `IBroadcasterChannelLockService` in Infrastructure):**
+**Lesen — vier Stellen, über ein neues `IBroadcasterChannelLockService` in Infrastructure:**
 
-1. **`ChannelService.JoinAsync`**, direkt nach der env-Prüfung auf die aufgelöste Identität — und,
-   wie die zweite Revision der Sperrliste es für die env-Liste tat, zusätzlich auf die
-   `TwitchChannelId` der Zeile, die `ResolveJoinTargetAsync` tatsächlich gewählt hat. Treffer:
-   - Aufrufer ist der Inhaber (`actor.TwitchUserId == TwitchChannelId`) oder Global-Admin
-     (`isGlobalAdmin`, wird schon durchgereicht) → Sperrzeile in der Join-Transaktion löschen,
-     Join läuft weiter; `channel.join`-Audit bekommt `{ broadcasterLockLifted: true }`.
-   - sonst → `ChannelJoinStatus.LockedByBroadcaster` → 403 `channel_locked_by_broadcaster`. Keine
-     Zeile angelegt, nichts geschrieben, kein Audit (nichts ist passiert).
-   - Helix-Ausfall (`Unavailable`): keine aufgelöste ID, also keine Prüfung möglich — eine
-     **neue** id-lose Zeile kann entstehen (dieselbe, bewusst akzeptierte Lücke wie bei der
-     env-Liste). Fängt der Reconcile (2.) in seinem nächsten Durchlauf.
-2. **`TwitchIdentityReconcileWorker` / `ChannelIdentityService`**, im bestehenden Known-ID-Pass
-   und beim Backfill einer aufgelösten ID: eine **aktive** Zeile, deren ID gesperrt ist, wird
-   deaktiviert — dieselbe `ChannelDeactivation.DeactivateAsync`, aber **mit** Kanalname und
-   Details `{ reason: "locked" }` statt `forExclusion` (die Sperre ist nicht geheim). Wann kommt
-   so eine Zeile vor? (a) id-loses Duplikat unter einem alten Login, das den Purge der Hauptzeile
-   überlebt hat; (b) Join im Helix-Ausfall (oben); (c) Restore eines Backups von vor dem Purge.
-   Die Deaktivierung löscht die Daten nicht — die Zeile läuft dann als gewöhnlich „verlassen" in
-   die 180-Tage-Retention. Ein Broadcaster, der ganz sicher gehen will, kann sie nach dem Reconcile
-   selbst purgen; das Konzept nimmt den Restfall hin, statt im Worker eine zweite Kaskade zu bauen.
+1. **`ChannelService.JoinAsync`**, direkt nach der env-Prüfung, auf die aufgelöste Identität **und**
+   auf die `TwitchChannelId` der tatsächlich gewählten Zeile. Treffer: Inhaber (`actor.TwitchUserId
+   == TwitchChannelId`) oder Global-Admin (`isGlobalAdmin`) → Sperrzeile in der Join-Transaktion
+   löschen, Join läuft weiter, `channel.join` bekommt `{ broadcasterLockLifted: true }`; sonst →
+   `ChannelJoinStatus.LockedByBroadcaster` → 403, nichts geschrieben. **Helix-Ausfall:** ein Mod
+   mit positivem Rollen-Cache (bis 10 min) passiert den Filter, `Unavailable` liefert keine ID,
+   `ChannelService.cs:419` legt eine aktive id-lose Zeile an — dieselbe, bewusst akzeptierte Lücke
+   wie bei der env-Liste. Sie wird von Punkt 2 **sofort** und von Punkt 4 **dauerhaft** gefangen.
+2. **7TV-Sync-Gate (`SevenTvSyncService`, neben `SevenTvSyncService.cs:369`):** die für eine
+   id-lose Zeile über 7TV aufgelöste ID wird gegen die Sperre geprüft, **vor** dem Backfill und vor
+   der Duplikat-Suche — derselbe Platz, an dem die env-Liste geprüft wird, dieselbe Wirkung
+   (`RefuseExcludedChannel`-Analog): kein Set, keine Emotes, kein Match-Cache. Der Worker sitzt bis
+   zum nächsten Reconcile im IRC und verarbeitet Nachrichten im RAM, **zählt aber nichts**, weil
+   es für den Kanal keine Emotes gibt. Fail-closed für die Beobachtung, nicht fail-open.
+3. **Roster (`ListActiveChannelNamesAsync`):** SQL-Anti-Join gegen die Sperrtabelle auf der
+   gespeicherten ID — die Methode liest ohnehin die DB. Deckt Boot-Recovery, periodischen Resync
+   und Live-Poll ab, sobald eine Zeile ihre ID trägt. (Eine id-lose Zeile kann hier nicht matchen;
+   dafür ist Punkt 2 da.)
+4. **Reconcile (`ChannelIdentityService`), Known-ID-Pass und Backfill:** eine **aktive** Zeile mit
+   gesperrter ID wird deaktiviert — `ChannelDeactivation.DeactivateAsync` **mit** Kanalname und
+   `{ reason: "locked" }` (die Sperre ist nicht geheim). **Unter Zeilensperre** (Review F7): eigene
+   Transaktion, `LoadChannelByTwitchIdForUpdateAsync`, dann `IsLockedAsync` **erneut** unter der
+   Sperre, erst dann schreiben. Der Inhaber-Join hält dieselbe Zeilensperre, während er die
+   Sperrzeile löscht — die beiden serialisieren sich, und der Reconcile findet die Sperre weg und
+   schreibt nichts. Das weicht bewusst von `DeactivateExcludedRowAsync` ab, das ohne Sperre
+   schreibt und sich auf den `DbUpdateException`-Catch verlässt: dort gibt es keinen legitimen
+   gleichzeitigen Gegenschreiber, hier schon. Wann kommt eine aktive gesperrte Zeile vor? (a) ein
+   Duplikat, das 3.3 nicht erfassen konnte; (b) der Ausfall-Join aus Punkt 1, nach dem Backfill
+   durch Punkt 2 bzw. hier; (c) ein Restore von vor dem Purge (E10). Die Deaktivierung löscht
+   keine Daten — die Zeile läuft als „verlassen" in die 180-Tage-Retention.
 
-Nicht gelesen wird die Sperre in `ListActiveChannelNamesAsync`, im 7TV-Sync-Gate oder in
-`GetActiveByTwitchChannelIdAsync`: diese Filter existieren, damit die env-Liste sofort nach einem
-Neustart greift, ohne auf den Reconcile zu warten. Für die Broadcaster-Sperre ist eine aktive
-Zeile ein Anomaliefall (oben), kein Normalpfad — der stündliche Reconcile genügt, und die 60-s-Pfade
-des Workers bleiben unverändert.
-
-**Aufheben:** ausschließlich durch einen Join des Inhabers oder eines Admins (oben). Kein eigener
-Endpoint, keine Admin-Oberfläche in dieser Runde: der Admin-Kanal-Join auf der Admin-Seite ist
-die Admin-Aufhebung; wer die Tabelle sehen will, sieht in die DB oder sucht `channel.purge` mit
-`broadcasterRequest` im Audit-Log. Ein Broadcaster, der sein Konto gelöscht hat, loggt sich neu
-ein (leeres Konto, dieselbe ID) und joint — die Sperre fällt.
+**Aufheben:** ausschließlich durch einen Join des Inhabers oder eines Admins (Punkt 1). Kein eigener
+Endpoint, keine Admin-Oberfläche: der Admin-Kanal-Join auf der Admin-Seite ist die Admin-Aufhebung
+(zu deren Login-basierter Allowlist s. E11). Ein Broadcaster, der sein Konto gelöscht hat, loggt sich
+neu ein (leeres Konto, dieselbe ID) und joint — die Sperre fällt.
 
 **Retention:** keine. `RetentionPolicy` und `DataRetentionWorker` kennen die Tabelle nicht; eine
 ablaufende Sperre würde die Tür für Mods still wieder öffnen, und § 9 verspricht die Sperre ohne
-Frist. Die Datenschutzerklärung führt für die Chatter-Sperrliste schon die Formel „solange Ihr
-Widerspruch gilt"; die Sperrzeile bekommt in § 13 denselben Eintrag: **„Sperrvermerk (nur die
-Twitch-Kanal-ID): bis Sie den Kanal selbst wieder hinzufügen"** (E9).
+Frist. Die Datenschutzerklärung führt für die Chatter-Sperrliste schon „solange Ihr Widerspruch
+gilt"; § 13 bekommt den Eintrag **„Sperrvermerk (nur die Twitch-Kanal-ID): bis Sie den Kanal selbst
+wieder hinzufügen"** (E9).
 
-**Datenschutz — eine ID speichern, nachdem alles andere gelöscht ist.** Das ist kein Nebeneffekt,
-sondern das in § 9 ausdrücklich zugesagte Verhalten („sperren anhand seiner unveränderlichen
-Twitch-Kennung"); die Zeile *ist* die Sperre, und ohne sie wäre die Zusage leer. Die
-Rechtsgrundlage ist dieselbe, die die Erklärung für die Chatter-Sperrliste nennt (Art. 6 (1) c
-i. V. m. Art. 21; hier auf Wunsch des Betroffenen). Gespeichert wird nur die numerische ID; sie
-erscheint in keiner Logzeile (Startlog zählt höchstens wie bei den anderen Listen), und das
-Audit-Log nennt den Kanal ohnehin per Namen. Nach einer Kontolöschung bleibt die Zeile stehen
-— § 5.5 sagt bereits, dass Kanaldaten von der Kontolöschung unberührt sind, und die Sperre ist
-Kanaldatum. Sie verschwindet nur, wenn der Inhaber den Kanal selbst zurückholt.
+**Datenschutz — eine ID speichern, nachdem alles andere gelöscht ist.** Das ist das in § 9
+ausdrücklich zugesagte Verhalten („sperren anhand seiner unveränderlichen Twitch-Kennung"); die
+Zeile *ist* die Sperre. Rechtsgrundlage wie bei der Chatter-Sperrliste (Art. 6 (1) c i. V. m.
+Art. 21; hier auf Wunsch des Betroffenen). Gespeichert wird nur die numerische ID; sie erscheint in
+keiner Logzeile. Nach einer Kontolöschung bleibt die Zeile stehen — § 5.5 sagt, dass Kanaldaten von
+der Kontolöschung unberührt sind, und die Sperre ist Kanaldatum.
 
-**Backup/Restore:** die Tabelle liegt in derselben DB wie die Kanäle; ein Restore stellt Kanal
-und Sperre aus demselben Stand wieder her. Ein Dump von *vor* dem Purge bringt den Kanal ohne
-Sperre zurück — das ist der Fall (c) oben, den nur der Broadcaster selbst erneut schließen kann;
-der Dialog nennt die 60 Tage.
+**Backup/Restore und Rollback:** s. E10 und E12 — beides operative Fragen, die das Datenmodell
+allein nicht löst.
 
 ### 3.5 Hinweis in der Kontolöschung (E5 = B)
 
-Der `TypedConfirmDialog` der Kontolöschung (`account-menu.ts`, seit 03.10. live) bekommt einen
-bedingten Absatz: „Die Daten deines Kanals *{login}* bleiben erhalten und werden weiter gezählt.
-Wenn du sie löschen willst, tu das zuerst im Workspace deines Kanals." Bedingung: der eigene Kanal
-ist getrackt (aktiv **oder** inaktiv — die 180 Tage laufen auch bei inaktiv). Datenquelle:
-`GET /api/channels/mine` beim Öffnen des Dialogs — es liefert den eigenen Kanal samt
-Tracking-Status schon heute. Scheitert der Abruf, fehlt der Hinweis (fail-open ist für einen
-Hinweis richtig; die Löschung selbst bleibt unverändert). Kein Backend-Vertrag ändert sich; der
-Dialog-Zustandsautomat aus #243 bleibt unangetastet — nur Text und eine Bedingung.
+Der `TypedConfirmDialog` der Kontolöschung (`account-menu.ts`) bekommt einen bedingten Absatz:
+„Die Daten deines Kanals *{login}* bleiben erhalten und werden weiter gezählt. Wenn du sie löschen
+willst, tu das zuerst im Workspace deines Kanals." Bedingung: der eigene Kanal ist getrackt (aktiv
+**oder** inaktiv). Datenquelle: `GET /api/channels/mine` beim Öffnen des Dialogs. Scheitert der
+Abruf, fehlt der Hinweis (fail-open ist für einen Hinweis richtig). Kein Backend-Vertrag ändert
+sich; der Dialog-Zustandsautomat aus #243 bleibt unangetastet.
 
 ### 3.6 Wiederverwendung
 
-Kaskade, Audit-Snapshot, `TypedConfirmDialog`, `account_mismatch`, Sperrhelfer, Filter-Muster,
-`pendingChannel`-Doppelklickschutz der Admin-Seite, `ChannelDeactivation`, der Admin-Join als
-Aufhebungsweg. Neu: Filter, Endpoint, Service-Methode, Permissions-Feld, Knopf+Dialog, zwei
-Error-Codes, Sperrtabelle + Service + Migration, zwei Lesestellen (Join, Reconcile).
+Kaskade, Audit-Snapshot, `TypedConfirmDialog`, `account_mismatch`, Sperrhelfer,
+`LookupByLoginAsync`, Filter-Muster, `pendingChannel`-Doppelklickschutz, `ChannelDeactivation`,
+`RefuseExcludedChannel`-Muster im Sync-Gate, der Admin-Join als Aufhebungsweg. Neu: Filter,
+Endpoint, Service-Methode, Permissions-Feld, Knopf+Dialog, zwei Error-Codes, Sperrtabelle + Service
++ Migration, vier Lesestellen, 404 am Audit-Log für untracked Kanäle.
 
 ### 3.7 Epic #200 (Emote-Sets)
 
-`ChannelEmoteSetObservations` kaskadiert bereits am Kanal — nichts zu tun. Zwei Nähte: (a)
-`emotes.syncImported`-Einträge **anderer** Kanäle nennen den gelöschten Kanal als Quelle und dessen
-Besitzer-Login; § 9 deckt das („Einträge, die den Kanal nennen, bleiben"), `privacy-notes.md` hat
-dazu bereits einen Merker für den Prod-Gang des Epics — #245 ändert daran nichts, benennt es aber
-im DECISIONS-Eintrag. (b) Der Fremdkanal-Preview (`ForeignEmoteSetService`) liest das öffentliche
-7TV-Set **jedes** Kanals ohne Zeile — ob eine Sperre das deckt, ist laut DECISIONS 2026-09-24 eine
-offene Betreiberfrage, nicht Teil von #245. Das Konzept nimmt sie weder vorweg noch verbaut es
-sie: die Sperrtabelle wäre, falls ja, der natürliche Lesepunkt.
+`ChannelEmoteSetObservations` kaskadiert bereits am Kanal. Zwei Nähte: (a) `emotes.syncImported`-
+Einträge **anderer** Kanäle nennen den gelöschten Kanal als Quelle und dessen Besitzer-Login; § 9
+deckt das, `privacy-notes.md` hat dazu einen Merker für den Prod-Gang des Epics — #245 benennt es im
+DECISIONS-Eintrag. (b) Der Fremdkanal-Preview liest das öffentliche 7TV-Set **jedes** Kanals ohne
+Zeile — ob eine Sperre das deckt, ist laut DECISIONS 2026-09-24 eine offene Betreiberfrage; die
+Sperrtabelle wäre, falls ja, der natürliche Lesepunkt.
 
 ---
 
-## 4. Entscheidungen (Betreiber, 2026-10-03)
+## 4. Entscheidungen
+
+### 4.1 Gefallen (Betreiber, 2026-10-03)
 
 | | Entscheidung | Warum |
 |---|---|---|
-| **E1** | **B — Broadcaster-Sperre in der DB.** Mods → 403 beim Join; nur Inhaber (ID-geprüft) oder Global-Admin heben sie per Join auf. | Löst das Problem des Issues (der Mod, der ungefragt hinzugefügt hat, kann es nicht wiederholen), hält § 9 ein und lässt dem Streamer den Rückweg. Kostet Migration + Worker-Änderung. |
-| **E2** | **A — Workspace-Header neben „Verlassen"**, `danger-quiet`, nur Broadcaster. | Der Workspace ist der Ort, an dem der Streamer seinen Kanal sieht; nicht hinter einer Aktion verstecken, die Mods auch haben. |
-| **E3** | **A — abgetippter Kanalname.** | Unwiderruflich in beide Richtungen (Daten und Sperre); dieselbe Latte wie Admin-Purge und #243. |
-| **E4** | **A — `channel.purge` mit Kanalname + `reason: "broadcasterRequest"`.** | § 9 erlaubt es; das Mod-Team braucht die Zeile, um zu verstehen, warum der Kanal weg ist. Die Geheimhaltung gilt nur dem operatorseitigen Widerspruch. |
-| **E5** | **B — Hinweissatz im Kontolösch-Dialog** für Broadcaster getrackter Kanäle. | Vermeidet die Überraschung „Konto weg, Kanal wird weiter gezählt", ohne zwei Transaktionen zu verknüpfen. |
-| **E6** | **A — immer purgen**, Dialog nennt die Zahlen. | Der Admin-Purge tut es, § 9 zählt Abstimmungen zu den Kanaldaten; kein Streamer soll erst Sessions beenden müssen. |
-| **E7** | **A — 409 `channel_identity_unresolved`** bei Zeilen ohne Twitch-ID. | Eine Löschung auf Basis eines wiedervergebbaren Namens ist die Rename-Lücke, die der Lesepfad schon einmal geschlossen hat. |
-| **E8** | **A — Konzept und Plan jetzt, Bau und Deploy von Api+Worker nach dem bindenden #69-Lauf (ab 08.10.).** | Worker-Freeze bis 07.10.; ein Purge eines Messkanals im Fenster würde den Lauf um diesen Kanal bringen; der E-Mail-Weg trägt bis dahin. |
-| **E9** | **A — § 9 um die Selbstbedienung und § 13 um den Sperrvermerk ergänzen**, in `infra-docs` beim Prod-Gang. | Wie bei #243 § 5.5: der Text muss den Weg nennen, der existiert. |
+| **E1** | **B — Broadcaster-Sperre in der DB.** Mods → 403 beim Join; nur Inhaber (ID-geprüft) oder Global-Admin heben sie per Join auf. | Löst das Problem des Issues, hält § 9 ein, lässt dem Streamer den Rückweg. Kostet Migration + Worker-Änderung. |
+| **E2** | **A — Workspace-Header neben „Verlassen"**, `danger-quiet`, nur Broadcaster. | Der Workspace ist der Ort, an dem der Streamer seinen Kanal sieht. |
+| **E3** | **A — abgetippter Kanalname.** | Unwiderruflich in beide Richtungen; dieselbe Latte wie Admin-Purge und #243. |
+| **E4** | **A — `channel.purge` mit Kanalname + `reason: "broadcasterRequest"`.** | § 9 erlaubt es; Geheimhaltung gilt nur dem operatorseitigen Widerspruch. |
+| **E5** | **B — Hinweissatz im Kontolösch-Dialog** für Broadcaster getrackter Kanäle. | Vermeidet „Konto weg, Kanal wird weiter gezählt", ohne zwei Transaktionen zu verknüpfen. |
+| **E6** | **A — immer purgen**, Dialog nennt die Zahlen. | Der Admin-Purge tut es; § 9 zählt Abstimmungen zu den Kanaldaten. |
+| **E7** | **A — 409 `channel_identity_unresolved`** bei Zeilen ohne Twitch-ID. | Keine Löschung auf Basis eines wiedervergebbaren Namens. Seit der zweiten Fassung mit Live-Auflösung, kein Endzustand (3.3). |
+| **E8** | **A — Konzept und Plan jetzt, Bau und Deploy von Api+Worker nach dem bindenden #69-Lauf (ab 08.10.).** | Worker-Freeze bis 07.10.; der E-Mail-Weg trägt bis dahin. |
+| **E9** | **A — § 9 um die Selbstbedienung und die Nachweisgrenze, § 13 um den Sperrvermerk ergänzen**, in `infra-docs` beim Prod-Gang. | Der Text muss den Weg nennen, der existiert — und seine Grenze. |
 
-Beim Durcharbeiten offengebliebene Kleinigkeit, hier mit Vorschlag festgehalten statt als eigene
-Entscheidung: **der Ablehnungstext für Mods** (3.2) — ein eigener Code
-`channel_locked_by_broadcaster` statt des neutralen `channel_excluded`. Begründung dort.
+Kleinigkeit mit Vorschlag statt Entscheidung: der Ablehnungstext für Mods — eigener Code
+`channel_locked_by_broadcaster` statt des neutralen `channel_excluded` (3.2).
+
+### 4.2 Offen (aus dem Review, Abschnitt 7)
+
+**E10 — Restore eines Backups von vor dem Purge** (Review F4). Ein Restore stellt Kanalzeile,
+Daten und den Zustand *ohne* Sperre und *ohne* Audit-Eintrag wieder her; die Boot-Recovery joint den
+Kanal, die Löschung ist vergessen. § 13 nennt zwar „bis zu 60 Tage in Backups", aber ein Restore
+holt die Daten in die **laufende** Verarbeitung zurück — das ist mehr als „liegt noch in einem
+Backup".
+- (A) **Runbook-Schritt in `infra-docs` (EmotePurge-Backup-und-Restore.md):** vor jedem Restore
+  `BroadcasterChannelLocks` und die `channel.purge`-Einträge mit `broadcasterRequest` aus der
+  **laufenden** DB exportieren (zwei SQL-Zeilen); nach dem Restore die Sperren wieder einspielen
+  und die betroffenen Kanäle per Admin-Purge erneut löschen, **bevor** `api`/`worker` starten.
+  Billig; verlässt sich auf Disziplin in einem seltenen, gestressten Moment.
+- (B) **Journal außerhalb der DB:** die Api schickt nach dem Commit eine Mail an den Betreiber
+  (bestehender SMTP-Pfad des Kontaktformulars, best-effort wie die Twitch-Revocation) mit der
+  Twitch-ID und dem Zeitpunkt; die Mailbox ist das Journal, das Restore-Runbook liest es. Robust,
+  aber ein Nebeneffekt im Purge und eine ID in einer Mail (der Betreiber bekommt Widersprüche ohnehin
+  per Mail).
+- (C) Dokumentierte Grenze in § 13: „Nach der Wiederherstellung eines Backups kann ein gelöschter
+  Kanal bis zum nächsten Reconcile wieder beobachtet werden" — ehrlich, aber schwach.
+- **Empfehlung: A**, mit B als Zusatz, falls der Betreiber die Disziplin nicht tragen will.
+  Restores sind selten; die Sperrtabelle liegt in derselben DB und ist in zwei Zeilen gesichert.
+
+**E11 — Admin-Aufhebung über eine Login-basierte Allowlist** (Review F5). `IsGlobalAdmin`
+vergleicht Logins (`ChannelAccessService.cs:65-68`, `Auth:AdminTwitchLogins`), nicht IDs. Ein
+freigegebener und neu vergebener Admin-Login hätte **alle** Admin-Rechte — Purge jedes Kanals,
+Nutzerlöschung, Session-Revoke —, die Sperr-Aufhebung ist davon die kleinste. Vorbestehend, nicht
+von #245 verursacht.
+- (A) **Dokumentierte Grenze + eigenes Issue** für `Auth:AdminTwitchUserIds` (ID-Vergleich, Login
+  nur als Anzeige). Die Sperr-Aufhebung bleibt beim Admin.
+- (B) ID-Allowlist **in #245** umsetzen. Querschnitt durch jede Admin-Prüfung, eigener Review-Bedarf;
+  bläht den Branch.
+- (C) Keine Admin-Aufhebung: nur der Inhaber hebt per Join auf; der Betreiber greift im Supportfall
+  per SQL ein.
+- **Empfehlung: A.** Die Schwäche ist real, aber die Sperre vergrößert sie nicht; ihr Fix gehört in
+  einen eigenen, kleinen, gut reviewbaren Branch.
+
+**E12 — Rollback auf ein Image, das die Sperre nicht kennt** (Review F6). Ein älteres `api`-Image
+prüft die Tabelle nicht: ein Mod-Join geht durch, der alte Reconcile deaktiviert nichts. Der
+`PendingMigrationGuard` blockt nur fehlende Vorwärts-Migrationen, keinen Downgrade.
+- (A) **Runbook-Regel in `infra-docs`:** kein Rollback von `api`/`worker` unter die Sperr-Version;
+  wenn ein Rollback unvermeidbar ist, vorher die IDs aus `BroadcasterChannelLocks` in
+  `EXCLUDED_CHANNEL_IDS` übernehmen (die env-Liste kennt jedes Image seit 2026-09-24). Billig.
+- (B) **Durchsetzung in der DB:** ein `BEFORE INSERT OR UPDATE`-Trigger auf `Channels`, der eine
+  **aktive** Zeile mit gesperrter ID zurückweist. Wirkt gegen jedes Image; der Inhaber-Join löscht
+  die Sperrzeile in derselben Transaktion vor dem Schreiben und passiert. Ein altes Image bekommt
+  statt 403 einen 500 — fail-closed. Erste Logik in der DB in diesem Repo; Raw-SQL-Migration.
+- (C) Akzeptieren: Rollbacks im Messfenster sind ohnehin verboten; danach sind sie selten.
+- **Empfehlung: A.** B ist die robuste Variante, falls Rollbacks je Routine werden; dann als
+  eigener Eintrag mit eigenem Review.
 
 ---
 
 ## 5. Grenzfälle
 
-- **Rename des Twitch-Logins.** Route trägt den Namen, Check die ID. Zeigt der alte Name
-  inzwischen auf eine andere Zeile (Name freigegeben, neu vergeben), schlägt die ID-Prüfung an →
-  403, nichts gelöscht. Der Broadcaster findet seinen Kanal nach dem nächsten Reconcile unter dem
-  neuen Namen. Die Sperre ist ID-basiert und folgt jedem Rename automatisch.
-- **Duplizierte Zeilen.** Ein id-loses Duplikat (Join im Helix-Ausfall) fällt unter E7 → 409, bis
-  der Reconcile es zusammengeführt oder die ID nachgetragen hat. Überlebt ein Duplikat den Purge
-  der Hauptzeile (es trägt keine ID, der Purge findet es nicht), deaktiviert der Reconcile es beim
-  Backfill der nun gesperrten ID (3.4, Fall a); seine Daten laufen in die 180-Tage-Retention.
-- **Broadcaster ist Global-Admin.** Beide Wege offen; der Audit-`reason` sagt, welcher genommen
-  wurde. Nur der Broadcaster-Weg schreibt eine Sperre. Präzedenz: Admin darf das eigene Konto
-  löschen.
-- **Twitch nicht erreichbar.** Purge braucht Helix nicht. Der Join (Aufhebung) braucht die
-  aufgelöste ID, um den Inhaber zu erkennen — im Ausfall legt ein Broadcaster-Join eine id-lose
-  Zeile an, die Sperre bleibt stehen, und der Reconcile deaktiviert die Zeile beim Backfill wieder
-  (Fall b). Das ist falsch herum, aber selbstheilend: nach dem Ausfall joint er erneut, dann mit ID,
-  und die Sperre fällt. Hinweistext im 403? Nein — die Zeile ist ja entstanden; der Streamer sieht
-  nur, dass der Bot nach einer Stunde wieder inaktiv ist, und klickt erneut. Akzeptierter Restfall,
-  im DECISIONS-Eintrag zu nennen.
-- **Rennen Purge ↔ Join.** Zeilensperre: Join wartet; nach dem Commit findet er keine Zeile, aber
-  die Sperrzeile → Mod 403, Inhaber hebt auf und legt neu an. Der Retention-Purge sieht
-  `NotFound`. Der Admin-Purge bleibt ungesperrt (bewusst unverändert).
-- **Rennen Join (Inhaber hebt auf) ↔ Purge.** Beide locken die Kanalzeile; es gibt noch keine →
-  der Join legt sie an und löscht die Sperre in seiner Transaktion; der Purge findet keine Zeile →
-  404. Oder umgekehrt: Purge zuerst ist ein No-op auf einer nicht existierenden Zeile. Kein Pfad
-  kann eine Sperre mit einer aktiven Zeile zurücklassen, außer über Fall a–c.
-- **Doppelklick / zwei Tabs.** Zweiter Aufruf → 404; UI blockt per `pendingChannel`-Muster.
-  Konto-Wechsel zwischen Tabs → 409 `account_mismatch`.
+- **Rename des Twitch-Logins.** Route trägt den Namen, Check die ID. Zeigt der alte Name auf eine
+  fremde Zeile → 403. Die Sperre folgt der ID.
+- **Duplizierte Zeilen.** Trägt die Zeile unter dem Routennamen keine ID, löst der Service den
+  Login live auf (3.3): gehört er dem Akteur, werden Haupt- und Duplikatzeile gemeinsam gelöscht;
+  gehört er niemandem oder jemand anderem, bleibt das Duplikat als nicht nachweisbar stehen (180-
+  Tage-Retention) — die benannte Grenze.
+- **Broadcaster ist Global-Admin.** Beide Wege offen; der Audit-`reason` sagt, welcher. Nur der
+  Broadcaster-Weg schreibt eine Sperre.
+- **Twitch nicht erreichbar.** Purge einer Zeile **mit** ID braucht Helix nicht. Ohne ID → 409,
+  später erneut. Der Inhaber-Join (Aufhebung) braucht die aufgelöste ID — im Ausfall legt er eine
+  id-lose Zeile an, die Sperre bleibt; das Sync-Gate hält den Kanal unbeobachtet, der Reconcile
+  deaktiviert die Zeile, und ein erneuter Join nach dem Ausfall hebt mit ID auf. Falsch herum,
+  aber selbstheilend und fail-closed; im DECISIONS-Eintrag zu nennen.
+- **Mod-Join im Helix-Ausfall nach dem Purge** (Review F2). Positiver Rollen-Cache + `Unavailable`
+  → aktive id-lose Zeile. Sync-Gate (7TV-ID) verweigert Set und Emotes **beim ersten Sync-Tick**
+  (60 s), nicht erst beim Reconcile; Roster filtert, sobald die ID steht; Reconcile deaktiviert unter
+  Zeilensperre. Beobachtet wird in diesem Fenster nichts; der Worker hängt bis zu einer Stunde im
+  IRC, ohne zu zählen.
+- **Rennen Purge ↔ Join.** Zeilensperren (ID-Zeile vor Namenszeile): Join wartet; nach dem Commit
+  keine Zeile, aber die Sperrzeile → Mod 403, Inhaber hebt auf und legt neu an. Retention-Purge
+  sieht `NotFound`. Admin-Purge bleibt ungesperrt (bewusst unverändert).
+- **Rennen Reconcile ↔ Inhaber-Join** (Review F7). Beide locken die Zeile per Twitch-ID; der
+  Reconcile prüft die Sperre erneut unter dem Lock und schreibt nichts, wenn sie weg ist.
+- **Doppelklick / zwei Tabs.** Zweiter Aufruf → 404; `pendingChannel`-Muster. Konto-Wechsel → 409.
 - **Redis-Ausfall.** LEAVE nach Commit → Worker zählt bis zu zwei Resync-Ticks in einen Kanal ohne
-  Zeile; der Flush verwirft die Zähler am FK, die EventAPI-Subscription fällt beim Prune. Kein
-  Datenverlust.
-- **Backups.** Gelöschte Daten liegen bis 14/30/60 Tage in VPS/NAS/OneDrive; der Dialog nennt
-  60 Tage. Restore von vor dem Purge → Kanal ohne Sperre zurück (Fall c; nur der Broadcaster
-  schließt ihn erneut).
-- **Kapazitätsdeckel.** Der Purge gibt einen der 80 Slots frei; ein späterer Rejoin des Inhabers
-  zählt wieder dagegen und kann an 409 `channel_capacity_reached` scheitern — die Sperre wird
-  dann **nicht** aufgehoben (der Join ist gescheitert, die Transaktion rollt zurück). Kein
-  Sonderfall; der Admin kann joinen (ist vom Deckel ausgenommen).
-- **Kanal zusätzlich auf der env-Sperrliste.** Env gewinnt: Broadcaster-Join → 403
-  `channel_excluded` (neutral), die Broadcaster-Sperre bleibt unberührt stehen. Purge ist
-  trotzdem erlaubt (löscht Daten).
-- **Kontolöschung nach dem Purge.** Sperrzeile bleibt (3.4). Der `channel.purge`-Eintrag wird als
-  Akteur pseudonymisiert, nennt aber weiter den Kanal — wie #243 es für jede Kanalzeile festgelegt
-  hat (ein Broadcaster-Login ist zugleich ein Kanalname).
-- **Messfenster #69 (bis einschließlich 07.10., bindender Lauf ab 08.10.).** Ein Broadcaster-Purge
-  im Fenster zerstört die Live-Baseline des Kanals; der Harness bricht für ihn fail-closed ab.
-  Verweigern darf man das nicht — anbieten muss man es vor dem 08.10. nicht (E8). Der Worker-Freeze
-  macht E1 = B vor dem 08.10. ohnehin undeploybar.
+  Zeile; der Flush verwirft am FK, die Subscription fällt beim Prune.
+- **Backups.** 14/30/60 Tage; Dialog nennt 60. Restore von vor dem Purge → E10.
+- **Rollback der Images.** → E12.
+- **Kapazitätsdeckel.** Purge gibt einen Slot frei; scheitert der Inhaber-Rejoin am Deckel, rollt
+  die Transaktion zurück und die Sperre bleibt. Der Admin ist deckelbefreit.
+- **Kanal zusätzlich auf der env-Sperrliste.** Env gewinnt; Broadcaster-Join → 403
+  `channel_excluded`, Sperre unberührt. Purge trotzdem erlaubt.
+- **Kontolöschung nach dem Purge.** Sperrzeile bleibt. Der `channel.purge`-Eintrag wird als Akteur
+  pseudonymisiert, nennt aber weiter den Kanal (wie #243 es festgelegt hat).
+- **Audit-Log nach dem Purge** (Review F1). 404 für jeden, auch den früheren Inhaber und einen
+  späteren Inhaber des Logins. Für Admins bleibt das globale Audit-Log mit Kanalfilter.
+- **Messfenster #69 (bis einschließlich 07.10.).** Ein Purge im Fenster zerstört die Live-Baseline
+  des Kanals; nicht verweigerbar, aber vor dem 08.10. nicht anzubieten (E8).
 
 ---
 
@@ -353,49 +411,73 @@ Entscheidung: **der Ablehnungstext für Mods** (3.2) — ein eigener Code
 
 Jeder Task ein Subagent; Pläne ohne fertigen Code. Reihenfolge nach Abhängigkeit.
 
-**T1 — Sperrtabelle + Service (Infrastructure, Regel 11).** Entität, Migration, `IBroadcasterChannelLockService`
-(`IsLockedAsync`, `LockAsync` im übergebenen Kontext/Transaktion, `UnlockAsync`), Registrierung in
-`AddEmotePurgeInfrastructure`. Tests: Unit-frei, Integration gegen Postgres: Upsert, Lookup,
-Unlock idempotent. **Prod-Migration von Hand vor dem Deploy** (CLAUDE.md-Verfahren, additiv).
+**T1 — Sperrtabelle + Service (Infrastructure, Regel 11).** Entität, Migration,
+`IBroadcasterChannelLockService` (`IsLockedAsync`, `LockAsync`/`UnlockAsync` im Kontext des
+Aufrufers, damit sie dessen Transaktion teilen), Registrierung. Integrationstests: Upsert, Lookup,
+Unlock idempotent. **Prod-Migration von Hand vor dem Deploy** (additiv).
 
-**T2 — Purge-Pfad (Infrastructure, Regel 11).** `PurgeByBroadcasterAsync` mit Transaktion,
-Zeilensperre, ID-Nachprüfung, geteiltem Kaskaden-/Audit-Helfer, Sperrzeile vor dem Commit, LEAVE
-danach. Tests in `Integration/ChannelServiceTests`: ID-Mismatch → nichts geschrieben, kein Audit,
-keine Sperre; `null`-ID → `IdentityUnresolved`; Kaskade erreicht Emotes/UsageStats/LiveDays/
-Sessions/Votes (Observations auf dem Epic-Branch); Audit-Eintrag überlebt mit `reason`; Sperrzeile
-existiert nach dem Commit; LEAVE erst nach Commit (Fake-Publisher-Reihenfolge); Rennen mit
-`JoinAsync` unter der Sperre nach dem Muster der Retention-Tests.
+**T2 — Purge-Pfad (Infrastructure, Regel 11).** `PurgeByBroadcasterAsync`: Live-Auflösung vor der
+Transaktion, Zielmenge (ID-Zeile + nachgewiesene Namenszeile) unter Sperren in Merge-Reihenfolge,
+ID-Nachprüfung, geteilter Kaskaden-/Audit-Helfer, Sperrzeile vor Commit, LEAVE je Zeile danach.
+Tests: ID-Mismatch → nichts, kein Audit, keine Sperre; id-lose Zeile mit `Found`-eigener-ID →
+gelöscht; `Found`-fremd → `NotBroadcaster`; `Unavailable` → `IdentityUnresolved`, nichts
+geschrieben; Haupt+Duplikat beide weg mit zwei Audit-Einträgen; nicht nachweisbares Duplikat bleibt;
+Kaskade vollständig; Sperrzeile nach Commit; LEAVE-Reihenfolge; Rennen mit `JoinAsync`.
 
-**T3 — Join-Pfad + Reconcile (Infrastructure/Worker, Regel 11).** `JoinAsync`: Sperrprüfung auf
-Identität und gewählte Zeile, Aufhebung für Inhaber/Admin in der Join-Transaktion mit Audit-Detail,
-neuer `ChannelJoinStatus.LockedByBroadcaster`. `ChannelIdentityService`: Deaktivierung aktiver
-gesperrter Zeilen im Known-ID-Pass und beim Backfill, `reason: "locked"` mit Namen. Tests: Mod-Join
-→ Status, nichts geschrieben; Inhaber-Join → Sperre weg, Zeile neu, Audit-Detail; Admin-Join dito;
-Join bei gescheitertem Deckel lässt die Sperre stehen; Reconcile deaktiviert id-loses Duplikat nach
-Backfill; env-Liste gewinnt über die Sperre.
+**T3 — Join, Sync-Gate, Roster, Reconcile (Infrastructure/Worker, Regel 11).** `JoinAsync`:
+Sperrprüfung auf Identität und gewählte Zeile, Aufhebung für Inhaber/Admin mit Audit-Detail, neuer
+`ChannelJoinStatus`. `SevenTvSyncService`: Sperrprüfung neben der env-Prüfung vor dem Backfill.
+`ListActiveChannelNamesAsync`: Anti-Join. `ChannelIdentityService`: Deaktivierung aktiver
+gesperrter Zeilen **unter `FOR UPDATE` mit erneuter Sperrprüfung**, `reason: "locked"` mit Namen.
+Tests: Mod-Join → Status, nichts geschrieben; Inhaber-/Admin-Join → Sperre weg, Audit-Detail;
+Deckel-Fehlschlag lässt Sperre stehen; Sync-Gate verweigert id-lose gesperrte Zeile ohne Backfill;
+Roster lässt gesperrte ID aus; **deterministischer Rennen-Test** Reconcile ↔ Join mit zwei
+Kontexten (einer hält die Zeilensperre, der andere wartet und schreibt nichts); env gewinnt.
 
-**T4 — Api (Regel 11).** `ChannelBroadcasterAuthorizationFilter`, Endpoint, `account_mismatch`-
-Bindung, zwei Error-Codes, Permissions-Feld `canPurgeAsBroadcaster`, 403-Mapping im Join-Handler
-(Switch wächst, CS8509 schlägt an). `AuthFilterMatrixTests`: 400/401/403 (Mod, fremder Nutzer,
-Admin-ohne-Broadcaster)/404/409 (Mismatch, unresolved)/204 an der echten Route; Join → 403
-`channel_locked_by_broadcaster`; Filter-Reihenfolge der Gruppe unverändert. Architectur.md
-B.3-Matrix ergänzen.
+**T4 — Api (Regel 11).** `ChannelBroadcasterAuthorizationFilter`, Endpoint, `account_mismatch`,
+zwei Error-Codes, `canPurgeAsBroadcaster`, 403-Mapping im Join-Handler (CS8509), **404 am
+Kanal-Audit-Log ohne Zeile**. `AuthFilterMatrixTests`: 400/401/403/404/409 (Mismatch, unresolved)
+/204; Join → 403 neuer Code; Audit-Log untracked → 404 auch für Login-gleichen Principal;
+Filter-Reihenfolge unverändert. Architectur.md B.3-Matrix.
 
-**T5 — Web (Regel 12).** Permissions-Model, `ChannelService.purgeOwnData()`, Knopf + Dialog im
-Workspace, Join-Fehlertext, Hinweisabsatz in der Kontolöschung (E5), beide Locales, `api-error.ts`.
-Spec nur für Logik: Sichtbarkeit aus `permissions`, Dialog-Rückgabe, Fehler-Mapping, Bedingung des
-Kontolösch-Hinweises (`api-error-locales.spec` fängt die Locale-Hälfte). E2E: Broadcaster sieht
-Knopf, Mod nicht; Flow bis 204; 409-Pfad; Mod-Join → 403-Text; Kontolösch-Dialog mit/ohne Hinweis
-— alles gegen gemocktes `/api/**`. **Suite nur ohne Api auf `:5151`.**
+**T5 — Web (Regel 12).** Permissions-Model, `purgeOwnData()`, Knopf + Dialog mit Nachweisgrenze im
+Text, Join-Fehlertext, Kontolösch-Hinweis (E5), beide Locales, `api-error.ts`. Spec nur für Logik:
+Sichtbarkeit, Dialog-Rückgabe, Fehler-Mapping, Hinweis-Bedingung. E2E gegen gemocktes `/api/**`:
+Broadcaster sieht Knopf, Mod nicht; Flow bis 204; 409-Pfade; Mod-Join → 403-Text; Dialog mit/ohne
+Hinweis. **Suite nur ohne Api auf `:5151`.**
 
-**T6 — Doku im selben Commit (Regel 3).** DECISIONS-Eintrag (englisch; nennt die Trennung
-env-Liste/Sperrtabelle, den Helix-Ausfall-Restfall, die Epic-#200-Naht), Operations.md
-(Widerspruchsverfahren: Selbstbedienung + E-Mail; Sperrtabelle neben `EXCLUDED_CHANNEL_IDS`,
-Aufhebung per Admin-Join), Epic #248 Statuszeile, Datenschutzerklärung § 9/§ 13 in `infra-docs`
-(E9) beim Prod-Gang.
+**T6 — Doku im selben Commit (Regel 3).** DECISIONS-Eintrag (englisch; Trennung env-Liste/Sperre,
+vier Lesestellen, Nachweisgrenze, Ausfall-Restfall, Audit-Log-404, Epic-#200-Naht), Operations.md
+(Selbstbedienung + E-Mail; Sperrtabelle; Nachweisgrenze; Aufhebung per Admin-Join; **Restore- und
+Rollback-Regeln je nach E10/E12**), Epic #248, Datenschutzerklärung § 9/§ 13 in `infra-docs` (E9),
+Issue für E11.
 
 **T7 — Gates und Live-Verifikation (Regel 16).** `dotnet test`, Vitest, E2E, `coverage-local.mjs`;
-live gegen den lokalen Stack per Cookie: Purge als Broadcaster, LEAVE im Worker-Log, Mod-Join →
-403, Inhaber-Join → Sperre weg und Zeile neu, Reconcile deaktiviert ein von Hand reaktiviertes
-Duplikat. Codex-Zweitmeinung vor dem Merge; **Deploy nach dem 08.10., Migration zuerst, dann Api
-und Worker gemeinsam.**
+live per Cookie: Purge als Broadcaster (mit und ohne ID auf der Zeile), LEAVE im Worker-Log,
+Mod-Join → 403, Inhaber-Join → Sperre weg, Sync-Gate bei von Hand angelegter id-loser Zeile,
+Reconcile deaktiviert ein reaktiviertes Duplikat. Codex-Zweitmeinung vor dem Merge; **Deploy nach
+dem 08.10., Migration zuerst, dann Api und Worker gemeinsam.**
+
+---
+
+## 7. Review Codex Sol 2026-10-03
+
+Adversariales Review der ersten Fassung, Urteil „needs-attention". Jede Behauptung wurde gegen den
+Code geprüft; keine war falsch.
+
+| # | Finding (kurz) | Geprüft | Auflösung |
+|---|---|---|---|
+| F1 (high) | Audit-Einträge nach dem Purge lesbar für einen späteren Inhaber des Logins | ja — `ChannelAccessService.cs:95-97` (Login-Fallback ohne Zeile), `AuditLogQueryService.cs:94-99` (Filter nur nach Name) | **Design:** `GET /{name}/audit-log` → 404 ohne Kanalzeile, vor dem Filter (3.2). Mod-Benachrichtigung wandert in den 403-Text. ID-Bindung der Einträge als Folgearbeit notiert. |
+| F2 (high) | Helix-Ausfall: Mod mit Cache-Rolle legt aktive id-lose Zeile an, Sync füllt ID nach, Beobachtung läuft bis zum Reconcile | ja — `ChannelService.cs:419`, `SevenTvSyncService.cs:355-384` | **Design:** Sperre an denselben vier Stellen wie die env-Liste — Sync-Gate vor dem Backfill (fail-closed ab dem ersten Tick), Roster-Anti-Join, Reconcile (3.4). Die id-lose Zeile selbst bleibt die bekannte, akzeptierte Lücke. |
+| F3 (high) | Purge löscht eine Zeile, Duplikate bleiben 180 Tage; inaktive werden nie gescannt; 204 übertreibt | ja — `ChannelIdentityService.cs:43` (nur aktive), Unique-Index auf der ID | **Design:** Zielmenge = ID-Zeile + live nachgewiesene Namenszeile, beide gelöscht (3.3). Nicht nachweisbare Altzeilen: benannte Grenze im Dialog, in Operations.md und § 9 — bewusst keine zweite Antwortform. |
+| F4 (high) | Restore eines Backups rollt Sperre + Audit zurück, Boot-Recovery joint | ja — Tabelle liegt im Dump | **E10** (Runbook-Export/-Reimport, Mail-Journal, dokumentierte Grenze; Empfehlung A). |
+| F5 (high) | Admin-Aufhebung vertraut dem Login-basierten `IsGlobalAdmin` | ja — `ChannelAccessService.cs:65-68` | **E11** — vorbestehend, nicht von #245 verursacht, Sperr-Aufhebung ist das kleinste Admin-Recht (Empfehlung: dokumentieren + eigenes Issue). |
+| F6 (high) | Rollback auf sperr-unkundige Images schaltet alle Sperren still ab | ja — Guard prüft nur Vorwärts-Migrationen | **E12** (Runbook-Regel mit env-Übernahme, DB-Trigger, akzeptieren; Empfehlung A). |
+| F7 (medium) | Reconcile-Deaktivierung ohne Zeilensperre macht einen gleichzeitigen Inhaber-Join rückgängig | ja — `ChannelIdentityService.cs:403-405` | **Design:** Deaktivierung unter `FOR UPDATE` per Twitch-ID mit erneuter Sperrprüfung; deterministischer Zwei-Kontext-Test (3.4, T3). |
+| F8/F9 (medium) | Inaktive id-lose Zeilen werden nie aufgelöst → 409 ist ein Endzustand | ja — `ChannelIdentityService.cs:43` | **Design:** Live-Auflösung per `LookupByLoginAsync` im Purge-Pfad vor der Transaktion (3.3); 409 nur noch bei `NotFound`/`Unavailable`. Der Reconcile bleibt auf aktive Zeilen beschränkt — die Erweiterung wäre für diesen Fall nicht nötig. |
+
+Was das Review **nicht** verlangt hat und was die zweite Fassung bewusst **nicht** tut: den Join im
+Helix-Ausfall für neue Zeilen verweigern. Die Drei-Zustands-Abfrage existiert, damit Rejoins im
+Ausfall funktionieren (DECISIONS 2026-09-24); eine Verweigerung nur für *neue* Zeilen wäre eine
+eigene Policy-Änderung mit Wirkung weit über #245 hinaus. Fail-closed für die **Beobachtung** (F2)
+genügt dem Zweck der Sperre.
