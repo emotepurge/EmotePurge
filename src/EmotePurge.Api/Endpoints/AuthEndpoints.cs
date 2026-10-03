@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using EmotePurge.Api.Auth;
+using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.Twitch;
@@ -152,6 +153,80 @@ public static class AuthEndpoints
             });
         }).RequireAuthorization();
 
+        group.MapDelete("/me", async (
+            HttpContext httpContext,
+            ClaimsPrincipal user,
+            string? expectedTwitchUserId,
+            IUserService userService,
+            IAccountDeletionService accountDeletionService,
+            ITwitchAuthClient authClient,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
+        {
+            // The id comes from the session claim and from nowhere else — no route value, no body — so
+            // a caller can only ever delete the account their own cookie belongs to.
+            var actor = user.TryBuildAuditActor();
+            if (actor is null)
+            {
+                // Unreachable behind RequireAuthorization for a real session; guard, not a case.
+                return Results.Unauthorized();
+            }
+
+            // The client names the account whose login the user just retyped. The cookie is shared
+            // across tabs, so another tab may have signed in as someone else since: deleting "the
+            // session's account" would then erase an account the user never confirmed. Missing counts
+            // as a mismatch (409, not 400): the only caller without it is a stale cached client
+            // bundle, and for it the right remedy is the same reload the mismatch notice asks for.
+            if (!string.Equals(expectedTwitchUserId, actor.TwitchUserId, StringComparison.Ordinal))
+            {
+                return Results.Conflict(new { errorCode = ApiErrorCodes.AccountMismatch });
+            }
+
+            // Read before the deletion, because the row (and with it the encrypted tokens) is gone
+            // afterwards. Revoked only after the commit, though: a deletion that fails must not leave
+            // the user logged in with tokens Twitch has already invalidated.
+            TwitchStoredTokens? stored = null;
+            try
+            {
+                stored = await userService.GetTwitchTokensAsync(actor.TwitchUserId, ct);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // The cipher cannot decrypt the stored tokens (rotated or lost key). Narrow on purpose:
+                // a database failure or a cancellation still fails the request, since nothing has been
+                // deleted yet. Here the ciphertext is about to be deleted anyway, so the user must not
+                // be locked into an account they cannot erase; only the revocation of those two tokens
+                // is skipped. The exception is the cipher's own and carries no token or ciphertext.
+                logger.LogWarning(
+                    ex,
+                    "Stored Twitch tokens could not be read; account deletion proceeds, token revocation skipped (Twitch user {TwitchUserId})",
+                    actor.TwitchUserId);
+            }
+
+            // SelfRequest, so onlyIfInactiveBeforeUtc is null: unconditional, active or not. The service
+            // records the marker as actor on the user.delete entry when actor and target are the same.
+            var result = await accountDeletionService.DeleteAsync(
+                actor.TwitchUserId, actor, AccountDeletionReason.SelfRequest, onlyIfInactiveBeforeUtc: null, ct);
+            if (result.Outcome == AccountDeletionOutcome.Deleted)
+            {
+                await RevokeTwitchTokensBestEffortAsync(
+                    authClient, user.FindFirstValue(TwitchClaimTypes.AccessToken), stored);
+            }
+
+            // NotFound is answered like Deleted: the row vanished between the session check and the
+            // deletion (a concurrent admin deletion), which is the state the caller asked for, and the
+            // cookie still has to be cleared. This branch is a narrow race, not the retry path: once
+            // the row is gone, the cookie scheme's OnValidatePrincipal rejects the session before the
+            // handler runs, and a retry or double submit answers 410 (SessionRejection) — 401 stays
+            // reserved for causes that do not prove deletion. StillActive cannot occur for SelfRequest.
+            await httpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            return result.Outcome is AccountDeletionOutcome.Deleted or AccountDeletionOutcome.NotFound
+                ? Results.NoContent()
+                : Results.Problem();
+        })
+        .RequireAuthorization()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
         group.MapPost("/logout", async (
             HttpContext httpContext,
             IUserService userService,
@@ -174,5 +249,25 @@ public static class AuthEndpoints
             await httpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             return Results.Ok();
         });
+    }
+
+    // Every token that could still be used on this user's behalf: the cookie claim and the two stored
+    // ones (usually the claim equals the stored access token, hence the distinct set). Failures are
+    // logged by the client and deliberately ignored here — Twitch being unreachable must not keep a
+    // user from erasing their data. Revocation is best-effort: the stored ciphertext is deleted with
+    // the row either way, but a token Twitch was not told about stays valid on its side (refresh tokens
+    // do not expire on their own). The calls run in parallel, each isolated, so the request waits for
+    // the slowest one (bounded by the client's timeout) rather than their sum.
+    private static async Task RevokeTwitchTokensBestEffortAsync(
+        ITwitchAuthClient authClient, string? claimAccessToken, TwitchStoredTokens? stored)
+    {
+        var tokens = new[] { claimAccessToken, stored?.AccessToken, stored?.RefreshToken }
+            .Where(t => !string.IsNullOrEmpty(t))
+            .Distinct()
+            .ToList();
+
+        // CancellationToken.None: the deletion has committed, so a caller that goes away now must
+        // not leave a token unrevoked. Bounded by the typed client's 10 s timeout.
+        await Task.WhenAll(tokens.Select(token => authClient.RevokeTokenAsync(token!, CancellationToken.None)));
     }
 }

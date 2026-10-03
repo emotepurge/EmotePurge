@@ -15,7 +15,18 @@
   "account": {
     "trigger": "Account menu for {{ name }}",
     "preferencesTrigger": "Settings",
-    "back": "Back"
+    "back": "Back",
+    "delete": {
+      "trigger": "Delete account",
+      "title": "Delete your account irreversibly",
+      "message": "Your account and all data that belongs to you will be deleted: your stored Twitch credentials, your login and every vote you cast – including in running votings, whose standings change as a result. Audit-log entries that name you are kept, but your name and Twitch ID in them are replaced by a placeholder.\n\nThis cannot be undone. You will be signed out immediately.",
+      "inputLabel": "Enter your Twitch login to confirm",
+      "confirm": "Delete account permanently",
+      "pending": "Deleting account …",
+      "failed": "Your account could not be deleted. Nothing has changed, you can try again.",
+      "unconfirmed": "We couldn’t confirm whether your account was deleted – the connection was interrupted. Reload the page: if you’re still signed in, nothing was deleted and you can try again. If you’re signed out, we can’t tell from here – please don’t sign in to check, as that would create a new account; contact us via the contact form and we’ll confirm.",
+      "mismatch": "You’re signed in as a different account in another tab – nothing was deleted. Reload the page to continue with the account that is actually signed in."
+    }
   },
   "shell": {
     "workerStatus": {
@@ -34,6 +45,11 @@
   "login": {
     "title": "Sign in",
     "subtitle": "Log in with your Twitch account to manage the bot for your channel.",
+    "notice": {
+      "deletionSessionEnded": "We couldn’t confirm the deletion because your session had already ended. If you deleted your account in another tab, it is gone – please don’t sign in to check, as that would create a new account. If you didn’t, nothing was deleted and you can sign in and repeat the deletion.",
+      "deletionPending": "Your account deletion is still being processed – please wait before signing in.",
+      "deletionUnknown": "We couldn’t confirm whether your account was deleted – the connection was interrupted and your session has ended. Please don’t sign in to check, as that would create a new account; contact us via the contact form and we’ll confirm."
+    },
     "loginButton": "Log in with Twitch",
     "scopes": {
       "title": "What Twitch shares",
@@ -532,7 +548,7 @@
       "delete": {
         "button": "Delete account",
         "title": "Delete account irreversibly",
-        "message": "The account of {{name}} will be deleted: every vote they cast is removed, and audit-log entries naming them are anonymised instead of deleted.\n\nThis cannot be undone.",
+        "message": "The account of {{name}} will be deleted: every vote they cast is removed, and audit-log entries naming them are kept, with their name and Twitch ID replaced by a placeholder.\n\nThis cannot be undone.",
         "selfHint": "This is your own account: you will be signed out immediately, because the account it belongs to is gone.",
         "inputLabel": "Twitch login to confirm",
         "confirm": "Delete permanently"
@@ -1184,6 +1200,7 @@
       "channel_not_on_twitch": "This channel doesn't exist on Twitch (anymore). Please check the spelling.",
       "channel_capacity_reached": "No free channel slots right now. Please contact the operator.",
       "channel_excluded": "This channel cannot be added.",
+      "account_mismatch": "You’re signed in as a different account in another tab. Nothing was deleted.",
       "foreign_channel_twitch_unavailable": "Twitch is not reachable right now. Please try again shortly.",
       "foreign_channel_no_seventv_account": "This channel has no 7TV account.",
       "foreign_channel_no_active_emote_set": "This channel currently has no active 7TV emote set.",

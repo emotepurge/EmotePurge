@@ -13,6 +13,7 @@ public class SevenTvApiClient(
     HttpClient httpClient,
     IRateLimitTelemetry telemetry,
     IForeignUpstreamRequestBudget foreignRequestBudget,
+    ISevenTvSearchBudget searchBudget,
     ILogger<SevenTvApiClient> logger) : ISevenTvApiClient
 {
     // 7TV's own spelling of the Twitch platform on a Connection object — matched against exactly,
@@ -118,12 +119,62 @@ public class SevenTvApiClient(
 
         try
         {
+            // Draws from 7TV's search bucket (users(query:) is a search). The charge is the caller's
+            // (SevenTvSyncService, ISevenTvSearchBudget); reporting what came back is this client's,
+            // because only it sees the headers and the GraphQL error payload.
             var payload = new { query = GqlUsersQuery, variables = new { q = normalized } };
-            var response = await httpClient.PostAsJsonAsync("gql", payload, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            using var response = await httpClient.PostAsJsonAsync("gql", payload, cancellationToken);
+            var remaining = ReadSearchRemainingHeader(response);
+            var resetSeconds = ReadSearchResetHeaderSeconds(response);
 
-            var dto = await response.Content.ReadFromJsonAsync<SevenTvGqlUsersResponseDto>(
-                SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                await ObserveSearchBucketAsync(
+                    remaining, resetSeconds, rateLimited: true,
+                    resetSeconds ?? ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response), cancellationToken);
+                logger.LogWarning("7TV user search for {Channel} was rate limited (HTTP 429).", normalized);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            // Every answer 7TV gave reaches the shared budget, failures included — same rule as
+            // FetchV4PageAsync: a 5xx or an unparseable 200 still carries the bucket's headers, and
+            // a low remaining count there is exactly what the budget must not miss.
+            if (!response.IsSuccessStatusCode)
+            {
+                await ObserveSearchBucketAsync(remaining, resetSeconds, rateLimited: false, retryAfterSeconds: null, cancellationToken);
+                logger.LogWarning(
+                    "7TV user search for {Channel} failed with HTTP {StatusCode}, skipped.",
+                    normalized, (int)response.StatusCode);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            SevenTvGqlUsersResponseDto? dto;
+            try
+            {
+                dto = await response.Content.ReadFromJsonAsync<SevenTvGqlUsersResponseDto>(
+                    SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+            }
+            catch (JsonException ex)
+            {
+                await ObserveSearchBucketAsync(remaining, resetSeconds, rateLimited: false, retryAfterSeconds: null, cancellationToken);
+                logger.LogWarning(ex, "7TV user search for {Channel} returned an unreadable response, skipped.", normalized);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            if (IsRateLimited(dto?.Errors))
+            {
+                // The disguised form: HTTP 200, extensions.status 429. Still Unavailable to the
+                // caller — SevenTvLookupStatus deliberately has no rate-limit member, the UI's
+                // failure reasons hang off it — but the shared budget must hear about it.
+                await ObserveSearchBucketAsync(
+                    remaining, resetSeconds, rateLimited: true,
+                    resetSeconds ?? ReadResetHintSeconds(dto!.Errors) ?? ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response),
+                    cancellationToken);
+                logger.LogWarning("7TV user search for {Channel} was rate limited (GraphQL extensions.status 429).", normalized);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            await ObserveSearchBucketAsync(remaining, resetSeconds, rateLimited: false, retryAfterSeconds: null, cancellationToken);
 
             // GraphQL errors surface as HTTP 200 with `data: null` (or `users` missing inside it)
             // plus an `errors` array — that's a failed query, not evidence the account is missing.
@@ -433,6 +484,15 @@ public class SevenTvApiClient(
             var result = await FetchV4PageAsync<SevenTvGqlLeaderboardSearchResponseDto>(
                 payload, RateLimitCallSources.SevenTvLeaderboard, cancellationToken);
 
+            // The shared search budget hears every answer, whatever the outcome; the charge before
+            // this request was SevenTvLeaderboardService's.
+            await ObserveSearchBucketAsync(
+                ParseNonNegative(result.HeaderSample?.Remaining),
+                ParsePlausibleResetSeconds(result.HeaderSample?.Reset),
+                result.Status == V4PageStatus.RateLimited,
+                result.RetryAfter is { } retryAfter ? (int)retryAfter.TotalSeconds : null,
+                cancellationToken);
+
             if (result.Status == V4PageStatus.RateLimited)
             {
                 return SevenTvEmoteSearchPageResult.Failed(
@@ -668,6 +728,26 @@ public class SevenTvApiClient(
             ProviderRequestTelemetryHandler.ReadHeader(response, usesSearchHeaders ? SearchRateLimitRemainingHeader : "Ratelimit-Remaining"),
             ProviderRequestTelemetryHandler.ReadHeader(response, usesSearchHeaders ? SearchRateLimitResetHeader : "Ratelimit-Reset")));
     }
+
+    // One observation of 7TV's search bucket for the shared budget. Awaited rather than fired and
+    // forgotten: a block learnt here has to be in place before the next charge, wherever that comes
+    // from. The budget never throws for a store failure, so this cannot fail the lookup.
+    private Task ObserveSearchBucketAsync(
+        int? remaining, int? resetSeconds, bool rateLimited, int? retryAfterSeconds, CancellationToken cancellationToken) =>
+        searchBudget.ObserveResponseAsync(
+            new SevenTvSearchObservation(remaining, resetSeconds, rateLimited, ToRetryAfter(retryAfterSeconds)),
+            cancellationToken);
+
+    private static int? ReadSearchRemainingHeader(HttpResponseMessage response) =>
+        ParseNonNegative(ProviderRequestTelemetryHandler.ReadHeader(response, SearchRateLimitRemainingHeader));
+
+    private static int? ParseNonNegative(string? value) =>
+        int.TryParse(value, out var parsed) && parsed >= 0 ? parsed : null;
+
+    // Same bound as ReadSearchResetHeaderSeconds, for a reset that arrives as the header sample's
+    // string: a value that cannot be seconds-until-reset must not decide how long a block lasts.
+    private static int? ParsePlausibleResetSeconds(string? value) =>
+        int.TryParse(value, out var parsed) && parsed > 0 && parsed <= MaxResetHintSeconds ? parsed : null;
 
     private static TimeSpan? ToRetryAfter(int? retryAfterSeconds) =>
         retryAfterSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null;
