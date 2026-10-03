@@ -52,7 +52,17 @@ public enum ChatLogDayStatus
     /// format has likely changed underneath this client (Failure Mode "Wurzelform anders als
     /// angenommen"), not that the channel happens to have an unusually moderation-heavy day.
     /// </summary>
-    MalformedResponse
+    MalformedResponse,
+
+    /// <summary>
+    /// The caller's token was cancelled while the body was being read (a <c>docker stop</c> or
+    /// Ctrl-C mid-transfer). Returned rather than thrown so <see cref="ChatLogDayResult.BytesReceived"/>
+    /// can carry the bytes that had already arrived — they left the archive and count against the
+    /// caller's byte budget like any other aborted transfer. A cancellation before the response
+    /// headers arrived still propagates as <see cref="OperationCanceledException"/>: no body was
+    /// read, so there is no count to hand back.
+    /// </summary>
+    Cancelled
 }
 
 /// <summary>

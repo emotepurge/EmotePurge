@@ -10,6 +10,156 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — Harness: a transfer cancelled mid-body books its bytes against the cap (#82)
+
+**Betrifft:** `src/EmotePurge.Core/ChatLogArchive/ChatLogArchiveModels.cs` ·
+`src/EmotePurge.Core/ChatLogArchive/IChatLogArchiveClient.cs` ·
+`src/EmotePurge.Infrastructure/ChatLogArchive/ChatLogArchiveClient.cs` ·
+`src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ChatLogArchiveClientTests.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
+
+The harness entry of 2026-09-05 promises that `Harness__MaxMegabytesPerRun` caps the bytes "über
+alle Tage und alle Resumes eines Laufs". One abort path did not keep that promise: a `docker stop`
+or Ctrl-C after part of a day's body had arrived. `ChatLogArchiveClient` let the caller's
+cancellation propagate as a bare `OperationCanceledException`, the byte count died with the
+counting stream, and `HarnessRunner`'s `catch` booked the abort with 0 bytes — a resumed run won
+those bytes back.
+
+**Contract change, return instead of throw.** `IChatLogArchiveClient.ReadDayAsync` now returns the
+new `ChatLogDayStatus.Cancelled` (appended as the last member, so no existing value moves) with
+`BytesReceived` set to what had arrived, whenever `ct` is cancelled while the body is being read.
+Cancellation before the body — waiting for the request slot, or the header phase — still throws:
+no body byte was read, and the runner's `catch` keeps booking 0 for it, which is now correct rather
+than merely the only number available. The two cancellation outcomes inside the body are told apart
+exactly as before: `ct.IsCancellationRequested` means the caller, anything else the body timeout.
+
+**No special case in the runner.** `Cancelled` falls into the existing `default:` branch, the one
+`BodyTimeout`/`TransportFailure`/`ByteCapExceeded` already take: an event line with status
+`Cancelled` (the same status string the `catch` wrote before), now with the received bytes and the
+HTTP status, and exit code 4 as before. Only the free-text `message` of that event line changes
+("Log-Archiv-Abruf endete mit Cancelled." instead of "Lauf abgebrochen."); nothing reads it.
+
+**Count-neutral, no `AlgorithmVersion` bump.** Nothing on the counting path moved: a cancelled day
+never produced a day line and still does not, so the day lines a run is built from are unchanged.
+What changes is the `bytes` of one kind of event line — the same accounting field the 2026-09-05
+"Nachtrag (Abschluss-Review)" introduced without a bump — and with it `run.totalBytes`, an
+operational figure outside every gate (#69, T10).
+
+---
+
+### 2026-10-03 — Harness: the byte cap bites while the bytes arrive, not after a whole line is buffered (#83)
+
+**Betrifft:** `src/EmotePurge.Core/ChatLogArchive/IChatLogArchiveClient.cs` ·
+`src/EmotePurge.Infrastructure/ChatLogArchive/ChatLogArchiveClient.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ChatLogArchiveClientTests.cs`
+
+`ChatLogArchiveClient` checked `maxBytes` after `reader.ReadLineAsync(...)` returned. A
+`StreamReader` assembles a whole line before it returns one, and its `bufferSize: 1024` bounds only
+each read from the stream, not that accumulation. A successful response with an overlong or
+newline-free line — after a format change on the archive's side, say — was therefore pulled and
+buffered in full before `ByteCapExceeded` could fire, and a single such body could exhaust the
+harness container's 512 MB long before. Not the "one chunk of slack" accepted when the client was
+built, but an unbounded body.
+
+**The cap now sits in the counting stream.** `CountingHashStream` takes `maxBytes`; once more than
+`maxBytes` bytes have been read, every further read reports end of body without touching the wire,
+so the reader cannot keep accumulating. `ScanLinesAsync` checks `CountingHashStream.CapExceeded`
+right after each `ReadLineAsync`, **before** the end-of-body test — past the cap a `null` line can
+mean "cap reached" as well as "done", and only the flag tells them apart. The overshoot is at most
+one `StreamReader` read buffer (1024 bytes), and every byte that did arrive is still reported in
+`BytesReceived` and booked by the runner, as before.
+
+End-of-body instead of a dedicated exception from inside the stream: the existing flow already ends
+at a `null` line and every abort already returns a result rather than throwing, so this needs no new
+exception type that the `IOException`/`HttpRequestException` catch beside it would have to be kept
+from swallowing.
+
+**The boundary does not move, and nothing below it changes.** A body of exactly `maxBytes` is
+`Complete`, one byte more is `ByteCapExceeded` — before and after, both now pinned by a test. For
+every body within the cap the stream behaves exactly as before (it only answers differently once
+the cap is crossed), so the bytes, the lines, the digest and the counts of every `Complete` day are
+identical. Days over the cap were aborted before and are aborted now; they never produce a day
+line. **Count-neutral, no `AlgorithmVersion` bump.**
+
+---
+
+### 2026-10-03 — Harness: a rerun of a finished run leaves its reports untouched (#87)
+
+**Betrifft:** `src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`src/EmotePurge.Worker/Harness/ReplayModels.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
+
+A second invocation with the same arguments on the same UTC day, against an unchanged data
+snapshot, is the identical run: same identity, same file. It fetched nothing — correctly — but went
+on through the resume path and rewrote both reports. The rewrite was poorer than the original: the
+window-wide distinct-chatter count is only ever held in memory while the days stream in
+(Plan-Entscheidung 13), so the second pass reported it as "nicht verfügbar (wiederaufgenommen)",
+and "Bericht erzeugt"/"Laufzeit" described the rerun rather than the measurement.
+
+**Chosen: a closed run is not rewritten.** The issue offered two ways. Persisting a per-day chatter
+count in the day line does not give the window's distinct count — a sum over days counts a person
+once per day — and a mergeable set structure would change the day-line shape, which is one of the
+three `AlgorithmVersion` triggers. Instead `HarnessRunner.DecideClosedRun` decides what a rerun of a
+closed run does — **after** the header has matched the identity and every day line has been read
+(`ReadHeader`, then `ReadDays`), never before: a closed file is evidence, and a valid report beside
+damaged day lines must not end the rerun as "already complete". A file that is not closed continues
+exactly as before.
+
+A "finished report" is one that describes this run: `TryReadExistingReport` returns it, `run`,
+`gate`, `plausibility` and `diagnostics` are all present, `run.runComplete` is `true`, and
+`run.windowFrom`/`run.windowTo` equal the identity's window. `TryReadExistingReport` itself stays as
+tolerant as it was — the recompute's fail-closed inheritance of `run.diagnostic` (#119) depends on
+that — so the stricter check is a separate predicate in the runner. A report whose JSON root is not
+an object (`null`, `[]`, `42`) makes `TryReadExistingReport` throw rather than return `null`; the
+closed-run path catches that and treats it as unreadable. The method itself is left alone, so the
+report-only recompute still ends such a file with exit 6 — a known, pre-existing gap of #119, not
+changed here. The `.report.md` is deliberately not validated: it is a rendering for humans with no
+parseable contract, and `IsClosed` asks only for its presence.
+
+The outcomes for a rerun, in the order they are decided:
+
+| Case | Outcome |
+| --- | --- |
+| Damaged evidence: an interior day line that does not parse, or a header that no longer matches | exit 3 (the existing `HarnessReportFileException` path), nothing written, nothing fetched |
+| Damaged evidence: a window day without a day line, or a day with two | exit 3, nothing written, nothing fetched — the same coverage check the recompute uses, now shared. An ordinary run cannot close with either, so the file was altered afterwards; the archive is never asked again for a closed run |
+| Unreadable or hollow `.report.json` (missing, unparsable, a JSON root that is not an object, no boolean `run.diagnostic`, a missing section, `runComplete` not `true`, a foreign window) | repaired: a warning naming what was wrong, then the old path — resume over the day lines, rewrite both reports, no fetch. The rewrite writes the invocation's run mode, since the report's own is not trustworthy |
+| Finished report, same run mode | exit 0, all three files untouched, nothing fetched, log line `Harness run for channel '…' is already complete; …` |
+| Finished **diagnostic** report, binding invocation | **refused, exit 3**, nothing written, nothing fetched |
+| Finished **binding** report, `--diagnostic` invocation | **refused, exit 3**, nothing written, nothing fetched; the error names both reports and points to `--report-only` |
+| Half-closed run (one of the two reports missing) | not closed, resumed and both reports written, as before |
+
+**A diagnostic run stays diagnostic (operator decision 2026-10-03).** The first version of this
+entry kept a closed diagnostic run rewritable as a binding report by a rerun without `--diagnostic`,
+as "the only way to correct a forgotten flag". That is withdrawn: a run is binding only if it ran
+binding from the start. The binding run of #69 is pre-registered, and a mode that could be switched
+on after the numbers are on disk would turn the pre-registration into a choice made with the result
+in view. A binding measurement after a diagnostic one needs a fresh start on a new window, per the
+runbook. The reverse direction is refused for the plainer reason that a diagnostic invocation must
+never overwrite a binding report. The run mode is still not part of the identity (D4): an
+*unfinished* file of the same identity can be resumed in either mode, as before; only a closed run's
+mode is fixed. The comment on `ReplayRunInfo.Diagnostic` that called the mode-switching rewrite
+intended now says so.
+
+Writing nothing on the no-op and on every refusal also means needing no new permission: on the VPS
+the report files are chowned away from uid 999 after a run, and these paths only read the `.jsonl`
+and the existing `.report.json`. Should the chown ever leave the report unreadable for uid 999, it
+counts as unreadable and the run falls back to the old rewrite, which needs nothing beyond what it
+needed before.
+
+A recompute of a closed run under today's code is `--report-only` (#119), which writes a sidecar and
+leaves the original alone. The no-op only ever fires on the **same UTC day with the same input**: a
+rerun on a later UTC day is not the same run — `FindFrozenWindow` skips closed runs, so it derives a
+fresh window, starts a new file and fetches the whole window again. A closed binding run is
+therefore never rerun "to be safe"; `--report-only` is the tool for looking at it again.
+
+**Exit codes: two new exit-3 cases, no new code.** The mode refusals and the coverage refusal use
+`ExitPreconditionViolated` — "the question could not be asked", nothing written, nothing fetched.
+**Count-neutral, no `AlgorithmVersion` bump.** The decision sits before any archive request and only
+decides whether an existing report is written again, or not at all; no counted number, day line,
+gate formula, threshold or `.report.json` field name is touched, and a completed day's line stays
+byte-identical.
+
 ### 2026-10-03 — One fail-closed Redis budget for 7TV's search bucket, shared by Api and Worker, plus a per-channel backoff for Twitch ids that never resolve (#165)
 
 **Betrifft:** `src/EmotePurge.Core/Services/ISevenTvSearchBudget.cs` ·

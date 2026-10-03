@@ -378,6 +378,47 @@ public class HarnessRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task ACancelledMidBodyTransfer_BooksItsReceivedBytes_AndTheNextRunKnowsIt()
+    {
+        // docker stop / Ctrl-C after 700 KB of day 2's body arrived. The client hands the count back
+        // as a Cancelled result instead of throwing, and those bytes have to survive into the resume
+        // — otherwise every interrupted attempt wins its share of the cap back.
+        RespondWith(async (day, onMessage) =>
+        {
+            if (day == Day2)
+            {
+                return new ChatLogDayResult(ChatLogDayStatus.Cancelled, 700_000, null, 0, 0, 0, 200);
+            }
+
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1, bytes: 10_000);
+        });
+
+        Assert.Equal(4, await Run(3, maxMegabytes: 1));
+
+        var lines = File.ReadAllLines(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        Assert.Equal(1, lines.Count(l => l.Contains("\"kind\":\"day\"")));
+        var cancelled = Assert.Single(lines, l => l.Contains("\"kind\":\"event\""));
+        Assert.Contains("\"status\":\"Cancelled\"", cancelled);
+        Assert.Contains("\"bytes\":700000", cancelled);
+        Assert.Empty(Directory.GetFiles(_directory, "*.report.json"));
+
+        var offeredOnResume = new List<long>();
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1, bytes: 10_000);
+        }, offeredOnResume);
+
+        Assert.Equal(0, await Run(3, maxMegabytes: 1));
+
+        // 1 MB minus day 1 (10,000) minus the 700,000 the cancelled attempt already pulled.
+        Assert.Equal((1L * 1024 * 1024) - 10_000 - 700_000, offeredOnResume[0]);
+        var json = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.report.json")));
+        Assert.Contains("\"totalBytes\": 730000", json);
+    }
+
+    [Fact]
     public async Task TheByteCap_ShrinksWithEveryDayAndStopsTheRunWhenItIsSpent()
     {
         var offered = new List<long>();
@@ -721,6 +762,199 @@ public class HarnessRunnerTests : IDisposable
 
         var markdown = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.report.md")));
         Assert.Contains("wiederaufgenommen", markdown);
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedRun_LeavesBothReportsUntouched_AndKeepsTheDistinctChatterCount()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var reportJsonPath = Assert.Single(Directory.GetFiles(_directory, "*.report.json"));
+        var reportMarkdownPath = Assert.Single(Directory.GetFiles(_directory, "*.report.md"));
+        var jsonlBefore = File.ReadAllBytes(jsonlPath);
+        var reportJsonBefore = File.ReadAllBytes(reportJsonPath);
+        var reportMarkdownBefore = File.ReadAllBytes(reportMarkdownPath);
+        Assert.Contains("| Distinkte Chatter im Fenster | 1 |", File.ReadAllText(reportMarkdownPath));
+
+        // Same arguments, same UTC day, same data snapshot: the identical run, already closed. Moving
+        // the clock by a few minutes would change "Bericht erzeugt" and "Laufzeit" in a rewritten
+        // Markdown, so an unchanged file proves it was not rewritten at all.
+        _clock.Now = _clock.Now.AddMinutes(5);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Equal(jsonlBefore, File.ReadAllBytes(jsonlPath));
+        Assert.Equal(reportJsonBefore, File.ReadAllBytes(reportJsonPath));
+        Assert.Equal(reportMarkdownBefore, File.ReadAllBytes(reportMarkdownPath));
+        Assert.DoesNotContain("wiederaufgenommen", File.ReadAllText(reportMarkdownPath));
+        Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedBindingRunWithDiagnostic_IsRefused_AndTouchesNothing()
+    {
+        var files = await CloseAThreeDayRun(diagnostic: false);
+        var before = ReadAllBytes(files);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, await Run(3, diagnostic: true));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Equal(before, ReadAllBytes(files));
+        Assert.False(ReadReport(files[1]).Run.Diagnostic);
+        Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedDiagnosticRunWithoutDiagnostic_IsRefused_AndNeverBecomesBinding()
+    {
+        // Operator decision 2026-10-03 (#87): a run is binding only if it ran binding from the start.
+        // The run mode is not part of the identity, so the same file is reached — and must not be
+        // upgraded after its numbers have been seen.
+        var files = await CloseAThreeDayRun(diagnostic: true);
+        var before = ReadAllBytes(files);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, await Run(3, diagnostic: false));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Equal(before, ReadAllBytes(files));
+        Assert.True(ReadReport(files[1]).Run.Diagnostic);
+        Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedRunWithADamagedInteriorLine_IsRefused_AndTouchesNothing()
+    {
+        // Before #87's fix the closed-run shortcut fired before the day lines were read, so a damaged
+        // file next to a valid report still exited 0. The evidence is read first now.
+        var files = await CloseAThreeDayRun();
+        var lines = File.ReadAllLines(files[0]);
+        Assert.Equal(4, lines.Length);
+        lines[2] = "{ damaged";
+        File.WriteAllText(files[0], string.Join('\n', lines) + "\n");
+        var before = ReadAllBytes(files);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Equal(before, ReadAllBytes(files));
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedRunWithAMissingDayLine_IsRefused_InsteadOfRefetchingTheDay()
+    {
+        var files = await CloseAThreeDayRun();
+        var lines = File.ReadAllLines(files[0]).ToList();
+        Assert.Equal(4, lines.Count);
+        lines.RemoveAt(2);
+        File.WriteAllText(files[0], string.Join('\n', lines) + "\n");
+        var before = ReadAllBytes(files);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Equal(before, ReadAllBytes(files));
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedRunWithAnUnreadableReport_RewritesIt()
+    {
+        var files = await CloseAThreeDayRun();
+        var jsonlBefore = File.ReadAllBytes(files[0]);
+        File.WriteAllText(files[1], "{ not json");
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.False(ReadReport(files[1]).Run.Diagnostic);
+        Assert.Equal(jsonlBefore, File.ReadAllBytes(files[0]));
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("42")]
+    public async Task ARerunOfAClosedRunWhoseReportRootIsNotAnObject_RewritesTheFullReport_WithoutFetching(string reportJson)
+    {
+        // Valid JSON, but no object to look a "run" property up in. TryReadExistingReport throws on
+        // that rather than returning null; the closed-run path must still take the repair, not exit 6.
+        var files = await CloseAThreeDayRun();
+        var jsonlBefore = File.ReadAllBytes(files[0]);
+        File.WriteAllText(files[1], reportJson);
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        AssertIsTheFullReportOfTheThreeDayWindow(ReadReport(files[1]));
+        Assert.Equal(jsonlBefore, File.ReadAllBytes(files[0]));
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedRunWithAHollowReport_RewritesTheFullReport_WithoutFetching()
+    {
+        // TryReadExistingReport accepts this — it only needs a boolean run.diagnostic — but it is not
+        // the finished report of this run, so it must not end the rerun as "already complete".
+        var files = await CloseAThreeDayRun();
+        var jsonlBefore = File.ReadAllBytes(files[0]);
+        File.WriteAllText(files[1], """{"run":{"diagnostic":false}}""");
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        AssertIsTheFullReportOfTheThreeDayWindow(ReadReport(files[1]));
+        Assert.Equal(jsonlBefore, File.ReadAllBytes(files[0]));
+    }
+
+    [Fact]
+    public async Task ARerunOfAClosedRunWhoseReportNamesAForeignWindow_RewritesTheFullReport_WithoutFetching()
+    {
+        var files = await CloseAThreeDayRun();
+        var jsonlBefore = File.ReadAllBytes(files[0]);
+        var report = JsonNode.Parse(File.ReadAllText(files[1]))!;
+        report["run"]!["windowFrom"] = "2026-08-01";
+        File.WriteAllText(files[1], report.ToJsonString());
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        AssertIsTheFullReportOfTheThreeDayWindow(ReadReport(files[1]));
+        Assert.Equal(jsonlBefore, File.ReadAllBytes(files[0]));
+    }
+
+    [Fact]
+    public async Task ARunWhoseMarkdownReportIsMissing_IsNotClosed_AndGetsItsReportsWrittenAgain()
+    {
+        // The half-closed case (a process that died between the two renames) must keep its recovery
+        // path: it is not closed, so a rerun still writes both reports.
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+        File.Delete(Assert.Single(Directory.GetFiles(_directory, "*.report.md")));
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Run(3));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Single(Directory.GetFiles(_directory, "*.report.json"));
+        Assert.Single(Directory.GetFiles(_directory, "*.report.md"));
     }
 
     [Fact]
@@ -1572,6 +1806,39 @@ public class HarnessRunnerTests : IDisposable
     }
 
     private string[] ListFiles() => [.. Directory.GetFiles(_directory).OrderBy(f => f, StringComparer.Ordinal)];
+
+    // A finished three-day run on disk: the .jsonl, the .report.json and the .report.md, in that
+    // order. The #87 rerun tests start from it.
+    private async Task<string[]> CloseAThreeDayRun(bool diagnostic = false)
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3, diagnostic: diagnostic));
+
+        return
+        [
+            Assert.Single(Directory.GetFiles(_directory, "*.jsonl")),
+            Assert.Single(Directory.GetFiles(_directory, "*.report.json")),
+            Assert.Single(Directory.GetFiles(_directory, "*.report.md")),
+        ];
+    }
+
+    private static byte[][] ReadAllBytes(string[] paths) => [.. paths.Select(File.ReadAllBytes)];
+
+    private static void AssertIsTheFullReportOfTheThreeDayWindow(ReplayFinalReport report)
+    {
+        Assert.NotNull(report.Gate);
+        Assert.NotNull(report.Plausibility);
+        Assert.NotNull(report.Diagnostics);
+        Assert.True(report.Run.RunComplete);
+        Assert.Equal(Day1, report.Run.WindowFrom);
+        Assert.Equal(Day3, report.Run.WindowTo);
+        Assert.Equal(3, report.Run.DayLineCount);
+        Assert.False(report.Run.Diagnostic);
+    }
 
     private static ReplayFinalReport ReadReport(string path) =>
         JsonSerializer.Deserialize<ReplayFinalReport>(File.ReadAllText(path), ReadReportOptions)

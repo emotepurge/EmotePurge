@@ -415,9 +415,10 @@ public sealed record ReplayRunInfo(
     DateOnly? ResumePoint,
     bool RunComplete,
     // Not part of HarnessRunIdentity (Plan-Entscheidung 7, D4): a diagnostic run counts exactly the
-    // same as a binding one, it only carries no gate verdict. A binding run may therefore resume a
-    // diagnostic file of the same identity and simply rewrite the report without this marker — that
-    // is intended, not a bug in the resume logic.
+    // same as a binding one, it only carries no gate verdict. An unfinished file of the same identity
+    // can therefore be resumed in either mode. A closed one cannot change mode (#87, operator
+    // decision 2026-10-03): a rerun in the other mode is refused with exit 3, because a run is
+    // binding only if it ran binding from the start — see HarnessRunner.DecideClosedRun.
     bool Diagnostic);
 
 /// <summary>
