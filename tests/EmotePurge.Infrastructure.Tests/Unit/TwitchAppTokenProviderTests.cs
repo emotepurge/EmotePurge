@@ -92,5 +92,8 @@ public class TwitchAppTokenProviderTests
 
         public Task<bool?> ValidateTokenAsync(string accessToken, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<bool> RevokeTokenAsync(string token, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

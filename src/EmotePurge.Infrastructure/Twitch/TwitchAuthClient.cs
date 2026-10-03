@@ -139,6 +139,38 @@ public class TwitchAuthClient(HttpClient httpClient, IConfiguration configuratio
         }
     }
 
+    public async Task<bool> RevokeTokenAsync(string token, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // FormUrlEncodedContent encodes the values itself; the token is never put in the URL.
+            var form = new Dictionary<string, string>
+            {
+                ["client_id"] = GetRequired("Auth:Twitch:ClientId"),
+                ["token"] = token
+            };
+
+            using var response = await httpClient.PostAsync("oauth2/revoke", new FormUrlEncodedContent(form), cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                return true;
+            }
+
+            // Twitch answers 400 for a token it does not know (already expired or revoked), which is
+            // the state we wanted anyway. Logged as a warning regardless: the caller cannot tell the
+            // two apart, and neither blocks anything. The token itself is never logged.
+            logger.LogWarning("Twitch token revocation failed with status {Status}.", response.StatusCode);
+            return false;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            // InvalidOperationException: a missing Auth:Twitch:ClientId (GetRequired) — the same
+            // "could not revoke" outcome, and the deletion must not fail on it.
+            logger.LogWarning(ex, "Twitch token revocation failed.");
+            return false;
+        }
+    }
+
     private async Task<TwitchTokenResult?> ReadTokenResultAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         var dto = await response.Content.ReadFromJsonAsync<TwitchTokenResponseDto>(TwitchJsonOptions.Value, cancellationToken);

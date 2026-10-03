@@ -10,6 +10,160 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-03 — Self-service account deletion: `DELETE /api/auth/me`, `SelfRequest`, best-effort Twitch token revocation after the commit (#243)
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/AuthEndpoints.cs` ·
+`src/EmotePurge.Core/Services/IAccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs` ·
+`src/EmotePurge.Core/Twitch/ITwitchAuthClient.cs` · `src/EmotePurge.Infrastructure/Twitch/TwitchAuthClient.cs` ·
+`web/src/app/shared/ui/account-menu.ts` · `web/src/app/core/auth/auth.service.ts` ·
+`web/e2e/account-deletion.e2e.spec.ts`
+
+The last open acceptance criterion of #243: a logged-in user deletes their own account from the
+account menu. No second deletion path — the endpoint calls `IAccountDeletionService.DeleteAsync` with
+the new `AccountDeletionReason.SelfRequest` (recorded as `selfRequest` in the `user.delete` entry), so
+votes, audit pseudonymisation, row removal and Redis cleanup are exactly those of the admin and
+retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is rejected with an
+`ArgumentException`. No schema change, no migration.
+
+- **Route and identity.** `DELETE /api/auth/me`, next to `GET /api/auth/me`, behind
+  `RequireAuthorization()`. The user id comes from the `NameIdentifier` claim only — there is no route
+  value or body to bind, so a caller can only delete the account their own cookie belongs to. The
+  audit actor is the principal itself, which the service already turns into the `deleted-user` marker
+  on the `user.delete` entry when actor and target are the same.
+- **Rate limit and CSRF.** `Bookkeeping` policy, like the other authenticated mutations on our own
+  database (the `/auth` group is otherwise unlimited on purpose, but that reasoning covers the login
+  path only). No antiforgery token: the repo defends cookie-authenticated mutations through the
+  `SameSite=Lax` session cookie and Minimal API's JSON-only binding, and a `DELETE` is never sent
+  cross-site under `Lax`; this endpoint follows that convention rather than inventing its own.
+- **The deletion answers 204, 410 or 401 — and only 204/410 mean "gone".** The row being gone is the
+  state the caller asked for, so a deletion that finds the row vanished between the session check and
+  the delete (a concurrent admin deletion) signs out and answers 204 for both `Deleted` and
+  `NotFound`. That branch is a narrow race: once the row is gone, `OnValidatePrincipal` rejects the
+  session before the handler runs, so a retry or double submit never reaches it. A 401 in front of
+  this route has four causes: (1) the user row is gone, (2) the session was revoked
+  (`issuedAt < SessionsValidFromUtc` — logout in *any* tab revokes globally, as does the admin
+  session revoke), (3) the cookie is absent or expired, (4) a legacy cookie without the
+  `SessionIssuedAtUtc` claim. Only (1) means the account no longer exists, so the client must not
+  infer deletion from a 401: in (2)-(4) the account is still there, and showing "deleted" would be
+  false. `OnValidatePrincipal` therefore flags `HttpContext.Items` when `CheckSessionAsync` returns
+  null, and `OnRedirectToLogin` answers **410 Gone** only for that flag on `DELETE /api/auth/me`
+  (decision in the pure `SessionRejection.ChallengeStatusCode`); every other rejection and every
+  other route keeps 401. The scoping is deliberate: 410 elsewhere would turn a status code that
+  every other client treats as "sign in again" into something new, for no gain. Client:
+  `AuthService.deleteAccount()` resets to `/welcome` on 204 and 410; a 401 propagates, and the
+  account menu sends the user to `/login` with a one-shot notice that the deletion could not be
+  confirmed and nothing was deleted (`AuthService.handleDeletionSessionEnded`/`takeLoginNotice`;
+  the menu is unmounted by the reset, so the notice lives on the login page). The 401 is
+  ambiguous in both directions — a deletion in *another* tab clears the shared cookie, so this tab's
+  DELETE gets 401 without a 410 — so the notice (`deletionSessionEnded`) is conditional: if you
+  deleted in another tab it is gone, and do not sign in to check (`UpsertLoginAsync` recreates a
+  deleted account on login, silently creating a fresh one); if you did not, nothing was deleted and
+  signing in and repeating is fine. The interceptor
+  keeps `/api/auth/me` in its expected-401 paths so the error reaches the caller.
+- **Twitch token revocation, after the commit.** `ITwitchAuthClient.RevokeTokenAsync` posts
+  `client_id` and `token` as a form to `https://id.twitch.tv/oauth2/revoke` through the existing typed
+  client. The handler reads the stored tokens *before* the deletion (the row, and the encrypted tokens
+  with it, is gone afterwards) but revokes only once the deletion committed: a failed deletion must not
+  leave the user signed in with tokens Twitch has already invalidated. It revokes the distinct set of
+  cookie-claim access token, stored access token and stored refresh token. Revocation is best-effort:
+  the client never throws, logs a warning (never the token), and the outcome cannot change the
+  response. Revocation is best-effort and the stored ciphertext is deleted with the row either way,
+  but a token Twitch was never told about stays valid on its side: refresh tokens do not expire on
+  their own (Twitch's documentation covers revoking access tokens). The up-to-three revocations run
+  in parallel, each isolated, so the request waits for the slowest rather than the sum (bounded by
+  the client's 10 s timeout). If the stored tokens cannot be decrypted (`InvalidOperationException`
+  from the cipher, e.g. a lost key), the handler logs a warning with the Twitch user id only, skips
+  revoking those two and still deletes: a user must not be locked into an account they cannot erase,
+  while a database failure or cancellation (nothing deleted yet) still fails the request.
+  Accepted limit: a token refresh racing between the snapshot read and the deletion commit can leave
+  a freshly issued access token (at most four hours) and a rotated refresh token unrevoked at
+  Twitch, held by nobody. Accepted because revoking a refresh token is not documented to kill the
+  grant anyway; the fix (holding `TwitchTokenRefreshGate` around snapshot and `DeleteAsync`) is
+  recorded for the day a grant-killing revocation path exists. A racing refresh whose UPDATE hits
+  the locked or deleted row fails with `DbUpdateConcurrencyException` — one 500 for a request on an
+  account that is gone; the next request gets 410/401.
+- **A lost answer is an unknown outcome, owned by `AuthService`.** Status 0 and every 5xx do not say
+  whether the account was deleted: a dropped connection, a proxy or CDN answering for the API after
+  the commit (502/503/504, Cloudflare 520–527), and an uncertain commit (the connection drops before
+  Npgsql receives the COMMIT acknowledgement, so `CommitAsync` throws and the API answers 500 although
+  the transaction went through). `deletionState` becomes `unconfirmed`, the session is left alone and
+  the menu says to reload. Only "still signed in after a reload" is reliable (the account exists); a
+  signed-out reload is ambiguous, since `ensureLoaded()` also maps an unreachable API or an expired
+  session to "signed out". The notice therefore says so, warns against signing in to check (login
+  recreates an empty account) and points to the contact form. Only 4xx other than 401/410 are
+  confirmed rejections (`failed`, "nothing changed"). The state lives in the service, not the menu,
+  because the menu is per page and dies on navigation while the request is pending; a menu created
+  later shows the outcome, and the menu's focus work runs in an `effect`, so it dies with the
+  component. An ordinary session reset (another request's 401) does not clear a pending deletion; if
+  the outcome arrives with nobody signed in, the menu cannot show it, so it becomes a login-page
+  notice (`deletionUnknown` for an unknown outcome, `deletionSessionEnded` for a rejection), which
+  the login page picks up even if it was created first. Rule on any later session reset: an `unconfirmed` outcome is carried
+  over as the `deletionUnknown` login notice (the warning must outlive the menu) — also after the
+  user dismissed the menu notice, because dismissal and "unresolved" are separate: the unresolved
+  marker is cleared only when the outcome becomes known (a `/me` that finds a user, a sign-in, a new
+  attempt) or when a reset hands it over; `failed` and `mismatch` (nothing changed or deleted) reset
+  plainly, and after a *confirmed* deletion further
+  expiry reports from requests still in flight are ignored until the next sign-in, so a late 401 does
+  not pull the user from `/welcome` to `/login`.
+  A retry does not clear the unresolved marker unless it establishes the account state (204/410, or a
+  `/me` that finds the user): a 401, 0, 5xx, 409 or other 4xx on the retry leaves it set, so a session
+  that ends afterwards shows `deletionUnknown` — never "nothing was deleted", since the earlier attempt
+  may have deleted the account. While a deletion is *pending* and another request's 401 ends the
+  session, the login page shows a `deletionPending` notice and disables sign-in (`aria-disabled`, the
+  notice as its description; `AuthService.login()` refuses too), because an OAuth login before the
+  answer arrives could recreate the account; the late outcome replaces the notice, and a 204/410 ends
+  on `/welcome` as for any confirmed deletion.
+- **The deletion is bound to the account the user confirmed.** The session cookie is shared across
+  tabs: tab 1 may have cached account A and asked for A's login while tab 2 has since signed in as B,
+  so "the session's account" is not the confirmed one. The client sends the cached account's
+  immutable Twitch id as the query parameter `expectedTwitchUserId` (not a body: DELETE bodies are
+  discouraged); the server answers **409 `account_mismatch`** (new `ApiErrorCodes` value, mirrored in
+  `api-error.ts` and both locales) when it is missing or differs from the principal's
+  `NameIdentifier`, before reading tokens or deleting anything, and without signing out. Missing is a
+  409 rather than a 400 because the only caller without it is a stale cached bundle, for which the
+  remedy is the same reload. The client does **not** re-read `/api/auth/me` or adopt the other account
+  in place: account-scoped client state (the 7TV write token, cached channel permissions, …) would
+  carry over from A to B. It shows the notice (nothing deleted, signed in as a different account,
+  reload) and leaves everything as it is; a full reload rebuilds all client state, the isolation-safe
+  path. The same binding applies to 410: `OnValidatePrincipal` also stores the rejected principal's
+  id, and `SessionRejection.ChallengeStatusCode` answers 410 only when the request is
+  `DELETE /api/auth/me` *and* its `expectedTwitchUserId` equals that id — otherwise 401, so "your
+  account is gone" is never claimed about an account the user did not confirm.
+- **Known audit gap, accepted for self-deletion too.** An audit entry with the deleted user as
+  *actor*, written by that user's own in-flight request after the commit, can survive un-pseudonymised
+  (the row lock cannot close it). `AccountDeletionService` already accepted this for an admin
+  request; self-deletion is the same case and accepted likewise.
+- **Votes are deleted, not anonymised (operator decision).** Anonymising was estimated at two to four
+  days against about one for deletion: a nullable `Vote.UserId` plus a manual production migration,
+  NULL semantics in roughly eight queries, all three deletion paths changing together, and a residual
+  re-identification risk in small sessions. Deleting costs little in practice: the chance that someone
+  deletes their account exactly while a moderator is evaluating a voting is negligible, and a vote
+  result never deletes anything automatically — it is advisory, the moderator still decides what gets
+  removed. The dialog says so plainly, including that running votings change.
+- **Frontend.** A destructive entry at the end of the account menu opens `TypedConfirmDialog` (retype
+  the Twitch login); the copy names irreversibility, the removed votes (also in running votings) and
+  that audit entries stay, pseudonymised. `AuthService.deleteAccount()` resets the client session only
+  after the server answered and then navigates to `/welcome` (there is no account to log in to any
+  more). On failure nothing is reset and the menu reopens with the reason, since nothing was deleted,
+  and focus moves to the notice. While the request runs the menu's delete row is disabled, carries
+  `aria-busy` and reads "Deleting account …", so it cannot be submitted twice.
+- **Not in the repo.** The privacy policy is operator-owned markdown outside the repository; its
+  deletion section has to be updated by the operator (suggested wording is in the PR description).
+- **Set-owner identity in other actors' entries is pseudonymised too (#315).** Epic #200 writes
+  `targetOwnerTwitchLogin` and `targetOwnerSevenTvUserId` into the details of `emotes.syncImported`,
+  `emotes.syncDeleted` and `emotes.syncRestored` entries of *other* actors, which neither the actor rule
+  nor the `"user"`-target rule reaches. `DeleteAsync` (the one path of admin, retention and self deletion)
+  now rewrites, in the same transaction, every entry whose `targetOwnerTwitchLogin` equals the account's
+  normalised login (case-insensitive; `abc` never matches `abcd`) to the marker, together with that
+  entry's `targetOwnerSevenTvUserId`; all other keys stay. Counted separately as
+  `ownerEntriesPseudonymised` in the `user.delete` details and `AuditEntriesPseudonymisedAsOwner` on the
+  result, not in `auditEntriesPseudonymised`. Lives in this PR rather than on the epic branch because it
+  needs only the two key names: on `main` no entry carries them (no-op), and once the epic merges its
+  entries are covered at once, so the gap never opens. The key names are duplicated in
+  `AccountDeletionService` until the epic's `AuditLogQueryService` constant can be unified. The `unresolved*`
+  keys name a channel, not an owner, and stay.
+
 ### 2026-10-03 — Paging query parameters bind as strings, so binding cannot fail
 
 **Betrifft:** `src/EmotePurge.Api/Validation/PagingQuery.cs` · `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` · `ChannelEndpoints.cs` · `VoteSessionEndpoints.cs` · `tests/EmotePurge.Api.Tests/PagingBindingTests.cs`

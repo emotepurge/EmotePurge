@@ -4,6 +4,7 @@ using System.Text.Json;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.Twitch;
 using NSubstitute;
 using Xunit;
 
@@ -42,6 +43,8 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         factory.ResyncCooldown.ClearReceivedCalls();
         factory.Emotes.ClearReceivedCalls();
         factory.AccountDeletion.ClearReceivedCalls();
+        factory.Users.ClearReceivedCalls();
+        factory.TwitchAuth.ClearReceivedCalls();
 
         // Default to "the slot was free", so the cooldown never masks the status code a test is
         // actually asserting. The one case that cares sets it explicitly.
@@ -269,6 +272,133 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         var response = await SendAsync("DELETE", "/api/admin/users/12345", NewUserId());
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers401_WithoutASession_AndDeletesNothing()
+    {
+        var response = await SendAsync("DELETE", "/api/auth/me", userId: null);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers409AccountMismatch_AndDeletesNothing_WhenTheExpectedIdIsNotTheSessions()
+    {
+        var response = await SendAsync("DELETE", "/api/auth/me?expectedTwitchUserId=someone-else", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("account_mismatch", await ReadErrorCodeAsync(response));
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.DidNotReceive().RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers409AccountMismatch_AndDeletesNothing_WhenTheExpectedIdIsMissing()
+    {
+        var response = await SendAsync("DELETE", "/api/auth/me", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("account_mismatch", await ReadErrorCodeAsync(response));
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers204_AndDeletesTheSessionsOwnAccountWithSelfRequestAndNoCutoff()
+    {
+        var userId = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+        _factory.Users.GetTwitchTokensAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(new TwitchStoredTokens("refresh-1", "access-1", DateTime.UtcNow.AddHours(1), "scopes"));
+
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId, login: "selfuser");
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.AccountDeletion.Received(1).DeleteAsync(
+            userId,
+            Arg.Is<AuditActor>(a => a.TwitchUserId == userId && a.Login == "selfuser"),
+            AccountDeletionReason.SelfRequest,
+            null,
+            Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.Received(1).RevokeTokenAsync("access-1", Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.Received(1).RevokeTokenAsync("refresh-1", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_TakesTheIdFromTheSession_NotFromARouteSegmentOrABody()
+    {
+        var sessionUser = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                Arg.Any<string>(), Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+
+        // A victim id smuggled in as a route segment matches no route; in a body it is never bound.
+        var viaRoute = await SendAsync("DELETE", $"/api/auth/me/victim-id?expectedTwitchUserId={sessionUser}", sessionUser);
+        var viaBody = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={sessionUser}", sessionUser, body: "{\"twitchUserId\":\"victim-id\"}");
+
+        Assert.Equal(HttpStatusCode.NotFound, viaRoute.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, viaBody.StatusCode);
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            "victim-id", Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+        await _factory.AccountDeletion.Received(1).DeleteAsync(
+            sessionUser, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers204_ButRevokesNothing_WhenTheAccountWasAlreadyGone()
+    {
+        var userId = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.NotFound));
+
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.TwitchAuth.DidNotReceive().RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_StillAnswers204_WhenTheTokenRevocationFails()
+    {
+        var userId = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+        _factory.Users.GetTwitchTokensAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(new TwitchStoredTokens("refresh-2", "access-2", DateTime.UtcNow.AddHours(1), null));
+        _factory.TwitchAuth.RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(false);
+
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteMe_StillDeletesAndAnswers204_WhenTheStoredTokensCannotBeRead()
+    {
+        // The cipher throws InvalidOperationException for a lost or rotated key. The user must still be
+        // able to erase the account; only the revocation of the unreadable tokens is skipped. The test
+        // session carries no access-token claim, so there is nothing left to revoke at all.
+        var userId = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+        _factory.Users.GetTwitchTokensAsync(userId, Arg.Any<CancellationToken>())
+            .Returns<TwitchStoredTokens?>(_ => throw new InvalidOperationException("key unavailable"));
+
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.AccountDeletion.Received(1).DeleteAsync(
+            userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.DidNotReceive().RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
