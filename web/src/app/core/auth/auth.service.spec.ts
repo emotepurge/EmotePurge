@@ -306,6 +306,55 @@ describe('AuthService', () => {
       expect(service.takeLoginNotice()).toBeNull();
     });
 
+    it('an unconfirmed outcome survives another request ending the session, as a login notice shown once', () => {
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+      start().error(new ProgressEvent('error'), { status: 0, statusText: '' });
+      expect(service.deletionState()).toEqual({ status: 'unconfirmed' });
+
+      service.handleSessionExpired(); // some other request 401'd
+
+      expect(service.deletionState()).toEqual({ status: 'idle' });
+      expect(navigateSpy).toHaveBeenLastCalledWith('/login');
+      expect(service.takeLoginNotice()).toBe('deletionUnknown');
+      expect(service.takeLoginNotice()).toBeNull();
+    });
+
+    it('a rejected deletion leaves no notice when the session ends afterwards', () => {
+      start().flush(null, { status: 403, statusText: 'Forbidden' });
+      service.handleSessionExpired();
+
+      expect(service.takeLoginNotice()).toBeNull();
+    });
+
+    it('a late 401 from another request after a confirmed deletion does not leave /welcome', () => {
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+      start().flush(null, { status: 204, statusText: 'No Content' });
+      navigateSpy.mockClear();
+
+      service.handleSessionExpired();
+
+      expect(navigateSpy).not.toHaveBeenCalled();
+      expect(service.takeLoginNotice()).toBeNull();
+    });
+
+    it('a genuine expiry after a fresh sign-in still redirects to /login', () => {
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+      start().flush(null, { status: 204, statusText: 'No Content' });
+      const original = window.location;
+      Object.defineProperty(window, 'location', {
+        value: { ...original, href: '' },
+        writable: true,
+      });
+      service.login();
+      Object.defineProperty(window, 'location', { value: original, writable: true });
+      service.currentUser.set(USER);
+      navigateSpy.mockClear();
+
+      service.handleSessionExpired();
+
+      expect(navigateSpy).toHaveBeenCalledWith('/login');
+    });
+
     it('401 resets to the login page with the one-shot notice and no lingering state', () => {
       start().flush(null, { status: 401, statusText: 'Unauthorized' });
 

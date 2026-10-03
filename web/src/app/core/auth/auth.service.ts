@@ -55,6 +55,13 @@ export class AuthService {
   private readonly isLoaded = signal(false);
   private readonly loginNotice = signal<LoginNotice | null>(null);
   private readonly deletion = signal<DeletionState>({ status: 'idle' });
+  /**
+   * Set once a deletion was confirmed and the client reset to /welcome. Requests that were in
+   * flight then (permission lookups, …) may still 401 and report an expiry; there is no session
+   * left to expire, and acting on it would drag the user from /welcome to /login. Cleared by a new
+   * sign-in or a /me that finds a user.
+   */
+  private deletionConfirmed = false;
 
   /** Progress and outcome of the current account deletion; survives the account menu being destroyed. */
   readonly deletionState = this.deletion.asReadonly();
@@ -79,6 +86,9 @@ export class AuthService {
     return this.http.get<AuthUser>('/api/auth/me').pipe(
       catchError(() => of(null)),
       tap((user) => {
+        if (user) {
+          this.deletionConfirmed = false;
+        }
         this.currentUser.set(user);
         this.isLoaded.set(true);
       }),
@@ -92,6 +102,7 @@ export class AuthService {
    * backend always uses.
    */
   login(returnUrl?: string): void {
+    this.deletionConfirmed = false;
     if (returnUrl) {
       this.stashReturnUrl(returnUrl);
     }
@@ -145,7 +156,10 @@ export class AuthService {
           ? of(undefined as void)
           : throwError(() => error),
       ),
-      tap(() => this.resetClientSession('/welcome')),
+      tap(() => {
+        this.deletionConfirmed = true;
+        this.resetClientSession('/welcome');
+      }),
     );
   }
 
@@ -198,6 +212,16 @@ export class AuthService {
 
   /** Called when a request 401s mid-session (cookie expired) — resets state and sends the user back to /login. */
   handleSessionExpired(): void {
+    if (this.deletionConfirmed) {
+      return;
+    }
+    if (this.deletion().status === 'unconfirmed') {
+      // The menu is about to disappear with the session, and with it the warning that the account
+      // may already be deleted — signing in again would silently create an empty one. A pending
+      // deletion needs nothing here: its late answer is routed to the login page by itself.
+      this.deletion.set({ status: 'idle' });
+      this.loginNotice.set('deletionUnknown');
+    }
     this.resetClientSession();
   }
 
