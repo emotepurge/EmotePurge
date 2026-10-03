@@ -207,9 +207,11 @@ public sealed class SevenTvLeaderboardService(
                 breaker.ReleaseProbeWithoutOutcome(decision.Generation);
                 breakerResolved = true;
 
-                // A block is 7TV's own lockout seen by someone else, so it answers as a rate limit
-                // with the remaining block as shelf-life; anything else is congestion on our side.
-                return sharedPermit.Refusal == SevenTvSearchRefusal.Blocked
+                // Only a block 7TV imposed — a 429 seen by either process — answers as a rate limit,
+                // stocked for the remaining block (the shelf-life policy keeps that at least 60 s).
+                // A low-watermark block is our own precaution, so it answers like any other
+                // congestion on our side: BudgetRefused, thirty seconds.
+                return sharedPermit is { Refusal: SevenTvSearchRefusal.Blocked, BlockCause: SevenTvSearchBlockCause.RateLimited }
                     ? PageAttempt.Failed(
                         SevenTvLeaderboardStatus.SevenTvRateLimited,
                         SevenTvLeaderboardFillOutcome.RateLimited(sharedPermit.BlockedFor))

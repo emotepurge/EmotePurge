@@ -17,8 +17,15 @@ namespace EmotePurge.Infrastructure.SevenTv;
 /// <para>
 /// <b>In-process on purpose.</b> Only the Worker runs the resolution path, so there is nobody to share
 /// this table with, and a restart costs at most one search per stuck channel. Persisting it would buy
-/// nothing that is worth a migration. Bounded by the number of channel rows; a success forgets the
-/// entry.
+/// nothing that is worth a migration. A success here forgets the entry.
+/// </para>
+/// <para>
+/// <b>Entries this path never sees again stay until the next restart.</b> A channel whose id arrives
+/// another way — the Helix identity reconcile backfilling it, or a rename merge folding the row into
+/// another — and a channel row that is deleted or purged never come back through this resolution, so
+/// nothing calls <see cref="RecordSuccess"/> for them. Harmless: an entry is a few dozen bytes, at
+/// most one exists per channel row that ever got stuck, and a stale one is never consulted, because
+/// only an id-less row asks.
 /// </para>
 /// </remarks>
 public sealed class TwitchIdResolutionBackoff(SevenTvSearchBudgetOptions options, TimeProvider timeProvider)

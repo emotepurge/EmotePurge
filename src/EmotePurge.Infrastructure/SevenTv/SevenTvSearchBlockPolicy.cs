@@ -69,15 +69,5 @@ public static class SevenTvSearchBlockPolicy
     }
 }
 
-/// <summary>Why a block was imposed — carried into the warning that announces it.</summary>
-public enum SevenTvSearchBlockCause
-{
-    /// <summary>7TV answered with a 429, in either form.</summary>
-    RateLimited,
-
-    /// <summary>7TV reported the bucket at or below the low watermark.</summary>
-    LowWatermark,
-}
-
 /// <summary>One block decision: how long, and why.</summary>
 public readonly record struct SevenTvSearchBlock(TimeSpan Duration, SevenTvSearchBlockCause Cause);

@@ -20,6 +20,9 @@ public sealed class RecordingSevenTvSearchBudget : ISevenTvSearchBudget
     /// <summary>The remaining block a <see cref="SevenTvSearchRefusal.Blocked"/> refusal reports.</summary>
     public TimeSpan? BlockedFor { get; set; }
 
+    /// <summary>The cause a <see cref="SevenTvSearchRefusal.Blocked"/> refusal reports.</summary>
+    public SevenTvSearchBlockCause BlockCause { get; set; } = SevenTvSearchBlockCause.RateLimited;
+
     /// <summary>Every consumer that asked for a permit, granted or not, in order.</summary>
     public IReadOnlyList<SevenTvSearchConsumer> Charges => [.. _charges];
 
@@ -31,8 +34,9 @@ public sealed class RecordingSevenTvSearchBudget : ISevenTvSearchBudget
         _charges.Enqueue(consumer);
         return Task.FromResult(NextRefusal == SevenTvSearchRefusal.None
             ? new SevenTvSearchPermit(SevenTvSearchRefusal.None, _charges.Count)
-            : new SevenTvSearchPermit(
-                NextRefusal, 0, NextRefusal == SevenTvSearchRefusal.Blocked ? BlockedFor : null));
+            : NextRefusal == SevenTvSearchRefusal.Blocked
+                ? new SevenTvSearchPermit(NextRefusal, 0, BlockedFor, BlockCause)
+                : new SevenTvSearchPermit(NextRefusal, 0));
     }
 
     public Task ObserveResponseAsync(SevenTvSearchObservation observation, CancellationToken cancellationToken = default)

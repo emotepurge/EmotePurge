@@ -18,11 +18,13 @@ namespace EmotePurge.Core.Services;
 /// the headers and the GraphQL error payload. A new caller of a search query owes both.
 /// </para>
 /// <para>
-/// <b>Fail-closed for charging, fail-open for observing.</b> A charge that cannot reach the store is
-/// refused (<see cref="SevenTvSearchRefusal.StoreUnavailable"/>): an outage of the shared state must
-/// never turn into unguarded traffic on a bucket whose overdraft costs an hour. An observation that
-/// cannot be written is dropped — with the store down, every charge is refused anyway. Neither method
-/// throws for a store failure.
+/// <b>Fail-closed for charging, fail-open for observing.</b> A charge that cannot reach the store in
+/// time is refused (<see cref="SevenTvSearchRefusal.StoreUnavailable"/>): an outage of the shared
+/// state must never turn into unguarded traffic on a bucket whose overdraft costs an hour, and a slow
+/// store must not add seconds to the caller's response either. An observation that cannot be written
+/// is dropped — with the store down, every charge is refused anyway. Neither method throws for a store
+/// failure; <see cref="TryChargeAsync"/> does throw <see cref="OperationCanceledException"/> when the
+/// caller's token is cancelled.
 /// </para>
 /// </remarks>
 public interface ISevenTvSearchBudget
@@ -59,7 +61,8 @@ public enum SevenTvSearchRefusal
 
     /// <summary>
     /// 7TV itself said stop — a rate limit, or a nearly empty bucket — and the reset has not passed
-    /// yet. <see cref="SevenTvSearchPermit.BlockedFor"/> says for how long.
+    /// yet. <see cref="SevenTvSearchPermit.BlockedFor"/> says for how long,
+    /// <see cref="SevenTvSearchPermit.BlockCause"/> which of the two it was.
     /// </summary>
     Blocked,
 
@@ -73,14 +76,37 @@ public enum SevenTvSearchRefusal
     StoreUnavailable,
 }
 
+/// <summary>Why the bucket is blocked — and therefore what a consumer may tell its user about it.</summary>
+public enum SevenTvSearchBlockCause
+{
+    /// <summary>7TV answered with a 429, in either form: a real lockout.</summary>
+    RateLimited,
+
+    /// <summary>
+    /// 7TV reported the bucket at or below the low watermark: a precaution of ours, not a lockout.
+    /// </summary>
+    LowWatermark,
+}
+
 /// <summary>The answer to one <see cref="ISevenTvSearchBudget.TryChargeAsync"/>.</summary>
 /// <param name="Refusal"><see cref="SevenTvSearchRefusal.None"/> if and only if the permit was granted.</param>
 /// <param name="UsedInWindow">
-/// Requests in the shared window once this call is done, including a permit just granted; for a
-/// refusal the count that caused it (zero when unknown).
+/// Requests of <i>all</i> consumers in the shared window once this call is done, including a permit
+/// just granted. For <see cref="SevenTvSearchRefusal.WindowFull"/> and
+/// <see cref="SevenTvSearchRefusal.ConsumerShareFull"/> it is that same total — for the latter
+/// therefore not the consumer's own count, which is what reached its share. Zero for a block or an
+/// unreachable store, where nothing was counted.
 /// </param>
 /// <param name="BlockedFor">The remaining block, set only for <see cref="SevenTvSearchRefusal.Blocked"/>.</param>
-public sealed record SevenTvSearchPermit(SevenTvSearchRefusal Refusal, int UsedInWindow, TimeSpan? BlockedFor = null)
+/// <param name="BlockCause">
+/// Why the bucket is blocked, set only for <see cref="SevenTvSearchRefusal.Blocked"/>. When a rate-limit
+/// block and a low-watermark block are both active, the rate limit is reported.
+/// </param>
+public sealed record SevenTvSearchPermit(
+    SevenTvSearchRefusal Refusal,
+    int UsedInWindow,
+    TimeSpan? BlockedFor = null,
+    SevenTvSearchBlockCause? BlockCause = null)
 {
     /// <summary>Whether the request may be made.</summary>
     public bool Granted => Refusal == SevenTvSearchRefusal.None;

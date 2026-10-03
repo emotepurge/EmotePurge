@@ -120,6 +120,7 @@ public class RedisSevenTvSearchBudgetTests(RedisFixture fixture)
         var refused = await budget.TryChargeAsync(SevenTvSearchConsumer.ChannelIdentity);
         Assert.Equal(SevenTvSearchRefusal.Blocked, refused.Refusal);
         Assert.Equal(TimeSpan.FromSeconds(3583), refused.BlockedFor);
+        Assert.Equal(SevenTvSearchBlockCause.RateLimited, refused.BlockCause);
         Assert.Equal(SevenTvSearchRefusal.Blocked, (await budget.TryChargeAsync(SevenTvSearchConsumer.Leaderboard)).Refusal);
 
         clock.Advance(TimeSpan.FromSeconds(3582));
@@ -139,6 +140,7 @@ public class RedisSevenTvSearchBudgetTests(RedisFixture fixture)
         var refused = await budget.TryChargeAsync(SevenTvSearchConsumer.Leaderboard);
         Assert.Equal(SevenTvSearchRefusal.Blocked, refused.Refusal);
         Assert.Equal(TimeSpan.FromSeconds(20), refused.BlockedFor);
+        Assert.Equal(SevenTvSearchBlockCause.LowWatermark, refused.BlockCause);
     }
 
     [Fact]
@@ -149,7 +151,40 @@ public class RedisSevenTvSearchBudgetTests(RedisFixture fixture)
         await budget.ObserveResponseAsync(new SevenTvSearchObservation(0, null, RateLimited: true, TimeSpan.FromHours(1)));
         await budget.ObserveResponseAsync(new SevenTvSearchObservation(2, 5, RateLimited: false));
 
-        Assert.Equal(TimeSpan.FromHours(1), (await budget.TryChargeAsync(SevenTvSearchConsumer.Leaderboard)).BlockedFor);
+        var refused = await budget.TryChargeAsync(SevenTvSearchConsumer.Leaderboard);
+        Assert.Equal(TimeSpan.FromHours(1), refused.BlockedFor);
+        Assert.Equal(SevenTvSearchBlockCause.RateLimited, refused.BlockCause);
+    }
+
+    [Fact]
+    public async Task ALongerWatermarkBlock_NeverRelabelsARunningRateLimit()
+    {
+        // The two causes are kept apart: while the 429 block runs it is the one reported, and only
+        // once it has passed does the longer precautionary block take over.
+        var (budget, clock, _) = Create();
+
+        await budget.ObserveResponseAsync(new SevenTvSearchObservation(0, null, RateLimited: true, TimeSpan.FromSeconds(60)));
+        await budget.ObserveResponseAsync(new SevenTvSearchObservation(2, 300, RateLimited: false));
+
+        var first = await budget.TryChargeAsync(SevenTvSearchConsumer.Leaderboard);
+        Assert.Equal(SevenTvSearchBlockCause.RateLimited, first.BlockCause);
+        Assert.Equal(TimeSpan.FromSeconds(60), first.BlockedFor);
+
+        clock.Advance(TimeSpan.FromSeconds(60));
+        var second = await budget.TryChargeAsync(SevenTvSearchConsumer.Leaderboard);
+        Assert.Equal(SevenTvSearchBlockCause.LowWatermark, second.BlockCause);
+        Assert.Equal(TimeSpan.FromSeconds(240), second.BlockedFor);
+    }
+
+    [Fact]
+    public async Task ACancelledCaller_GetsItsCancellation_NotARefusal()
+    {
+        var (budget, _, _) = Create();
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => budget.TryChargeAsync(SevenTvSearchConsumer.Leaderboard, cancelled.Token));
     }
 
     [Fact]

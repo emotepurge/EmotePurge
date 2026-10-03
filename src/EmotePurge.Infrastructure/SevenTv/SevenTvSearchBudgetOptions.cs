@@ -25,6 +25,12 @@ public sealed class SevenTvSearchBudgetOptions
     public const int MaxBlockSeconds = 6 * 60 * 60;
 
     /// <summary>
+    /// 7TV's search bucket per window, as measured live (<c>x-ratelimit-search-limit: 100</c>). The
+    /// ceiling the validation below keeps our own figures under.
+    /// </summary>
+    public const int SevenTvBucketSize = 100;
+
+    /// <summary>
     /// Requests all consumers together may start within one rolling window. Default 50, half of 7TV's
     /// 100: the margin covers clock and window offsets to 7TV and traffic we cannot see.
     /// </summary>
@@ -73,10 +79,10 @@ public sealed class SevenTvSearchBudgetOptions
     /// <summary>Throws unless every figure is usable.</summary>
     public void Validate()
     {
-        if (MaxRequestsPerWindow <= 0 || MaxRequestsPerWindow >= 100)
+        if (MaxRequestsPerWindow <= 1 || MaxRequestsPerWindow >= SevenTvBucketSize)
         {
             throw new InvalidOperationException(
-                $"{SectionName}:MaxRequestsPerWindow must be between 1 and 99 (7TV's bucket holds 100), got {MaxRequestsPerWindow}.");
+                $"{SectionName}:MaxRequestsPerWindow must be between 2 and {SevenTvBucketSize - 1} (7TV's bucket holds {SevenTvBucketSize}), got {MaxRequestsPerWindow}.");
         }
 
         if (WindowSeconds < 60)
@@ -85,16 +91,21 @@ public sealed class SevenTvSearchBudgetOptions
                 $"{SectionName}:WindowSeconds must be at least 60 (7TV's own window), got {WindowSeconds}.");
         }
 
-        if (ChannelIdentityMaxRequestsPerWindow <= 0 || ChannelIdentityMaxRequestsPerWindow > MaxRequestsPerWindow)
+        // Strictly below the total: an identity share equal to it would leave the leaderboard no
+        // reserve, and a stuck-channel storm could then lock it out entirely.
+        if (ChannelIdentityMaxRequestsPerWindow <= 0 || ChannelIdentityMaxRequestsPerWindow >= MaxRequestsPerWindow)
         {
             throw new InvalidOperationException(
-                $"{SectionName}:ChannelIdentityMaxRequestsPerWindow must be between 1 and MaxRequestsPerWindow ({MaxRequestsPerWindow}), got {ChannelIdentityMaxRequestsPerWindow}.");
+                $"{SectionName}:ChannelIdentityMaxRequestsPerWindow must be at least 1 and below MaxRequestsPerWindow ({MaxRequestsPerWindow}), got {ChannelIdentityMaxRequestsPerWindow}.");
         }
 
-        if (LowWatermark < 0 || LowWatermark >= 100)
+        // Below what our own permitted traffic can leave in 7TV's bucket of 100: otherwise a window
+        // we filled ourselves, within our own ceiling, would read as "someone else is draining it"
+        // and block every consumer until the reset.
+        if (LowWatermark < 0 || LowWatermark >= SevenTvBucketSize - MaxRequestsPerWindow)
         {
             throw new InvalidOperationException(
-                $"{SectionName}:LowWatermark must be between 0 and 99, got {LowWatermark}.");
+                $"{SectionName}:LowWatermark must be at least 0 and below {SevenTvBucketSize} - MaxRequestsPerWindow ({SevenTvBucketSize - MaxRequestsPerWindow}), got {LowWatermark}.");
         }
 
         if (DefaultLockoutSeconds < 60 || DefaultLockoutSeconds > MaxBlockSeconds)

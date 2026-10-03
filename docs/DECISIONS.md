@@ -40,27 +40,43 @@ every 60-second resync tick, without bound. Design note: `docs/Konzept-7TV-Such-
   headers and the GraphQL error payload. A 429 in either form blocks every consumer until 7TV's reset
   (hint order: search-reset header, GraphQL hint, Retry-After, else 3600 s; clamped to [60 s, 6 h]);
   a reported `remaining` at or below `LowWatermark` (10) blocks until the reset, because our ceiling is
-  half the bucket and seeing it that low means traffic we do not count. A block is an absolute instant
-  in Redis and only ever extended. `ResolveTwitchUserIdAsync` now reads the search headers and detects
+  half the bucket and seeing it that low means traffic we do not count. The two are **separate blocks,
+  one key per cause**, each an absolute instant in Redis and only ever extended; a charge reports the
+  rate-limit block first while both run, so a longer precautionary block never relabels a lockout.
+  The observation writes the block **before** the minimum-remaining telemetry, each in its own
+  try — a failing telemetry write can never cost a block. `ResolveTwitchUserIdAsync` now reads the search headers and detects
   both 429 forms; to its caller it still answers `Unavailable` — `SevenTvLookupStatus` gets no
   rate-limit member, because the UI's failure reasons hang off it.
 - **Fail-closed for charging, fail-open for observing.** Redis unreachable refuses the search
   (`StoreUnavailable`) — the opposite of the resync cooldown's fail-open choice, because this guards a
-  bucket whose overdraft costs every consumer an hour. Nothing else depends on it: channels with a
-  stored id sync without a search. A lost observation lets nothing through, since every charge is
-  refused while the store is down. The budget runs on `TimeProvider.System`, not the DI clock: its
-  window is compared across two processes.
+  bucket whose overdraft costs every consumer an hour. **Slow counts as down:** StackExchange.Redis
+  takes no cancellation token, so every round trip is awaited with a 1 s timeout (and, for a charge,
+  the caller's token, whose cancellation propagates rather than turning into a refusal); a stalled
+  Redis costs the leaderboard one second and a refusal, never a hung request. Observing ignores the
+  caller's token on purpose — 7TV has already answered, and dropping a lockout because a browser went
+  away would let the next charge walk into it. Nothing else depends on the budget: channels with a
+  stored id sync without a search. A lost observation lets nothing through while the store is down,
+  since every charge is refused then.
+- **The clock is the callers'.** "Now" goes into the Lua scripts from `TimeProvider.System` in each
+  process (not the DI clock, and not Redis' `TIME`), and the window and both blocks are compared
+  against it. That is sound while Api and Worker share a host, as they do today; split across
+  machines, their clock skew would shift the window and the blocks by as much, and the scripts should
+  then read Redis' own `TIME` instead.
 - **A refused or backed-off resolution writes nothing.** No failure reason, no attempt timestamp, no
-  backoff step: no search was made, so the last real answer stands. The leaderboard answers a block as
-  `SevenTvRateLimited` stocked for the remaining block, any other refusal as `BudgetRefused`; neither
-  reaches its breaker.
+  backoff step: no search was made, so the last real answer stands. The leaderboard answers only a
+  **429-caused** block as `SevenTvRateLimited`, stocked for the remaining block (at least 60 s by its
+  shelf-life policy); a low-watermark block is our own precaution and answers `BudgetRefused` (30 s),
+  like every other refusal. The refusal carries the cause (`SevenTvSearchPermit.BlockCause`). Neither
+  reaches the leaderboard's breaker.
 - **Per-channel backoff for ids that never resolve.** `TwitchIdResolutionBackoff` (in-process
   singleton, keyed by `Channel.Id`): every resolution that spent a search and stored no id —
   no 7TV account, unavailable, rename duplicate, excluded channel — is a miss; the next attempt waits
   `min(60 s × 2^(n−1), 1 h)`, a success forgets the entry. A stuck channel settles at 24 searches a day
   instead of 1440. In-process on purpose: only the Worker runs this path, a restart costs at most one
-  search per stuck channel, and persisting it would need a migration for nothing. It applies to every
-  trigger, including a manual RESYNC. A concrete class like `SevenTvLeaderboardRequestBudget`, not an
+  search per stuck channel, and persisting it would need a migration for nothing. Entries for rows
+  whose id arrives another way (Helix backfill, rename merge) or that are deleted stay until the next
+  restart — bounded by the row count and never consulted again. It applies to every trigger,
+  including a manual RESYNC. A concrete class like `SevenTvLeaderboardRequestBudget`, not an
   interface: pure state with no external dependency, injected only where it is tested directly.
 - **Telemetry:** the lowest `remaining` observed per UTC hour across all consumers, as
   `seventv:search-budget:min-remaining:{yyyyMMddHH}` (TTL 25 h); a Warning whenever a block is set or
@@ -68,8 +84,11 @@ every 60-second resync tick, without bound. Design note: `docs/Konzept-7TV-Such-
 - **Configuration** `SevenTv:SearchBudget:*` (`MaxRequestsPerWindow`, `WindowSeconds`,
   `ChannelIdentityMaxRequestsPerWindow`, `LowWatermark`, `DefaultLockoutSeconds`,
   `ResolutionBackoffBaseSeconds`, `ResolutionBackoffMaxSeconds`), defaults in the options type and in
-  both `appsettings.json`, validated at startup. Api and Worker must carry the same values: each
-  checks the shared window against the ceiling it knows.
+  both `appsettings.json`, validated at startup — including `ChannelIdentityMaxRequestsPerWindow <
+  MaxRequestsPerWindow` (the leaderboard always keeps a reserve) and `LowWatermark < 100 −
+  MaxRequestsPerWindow` (our own permitted traffic can never trip it). Api and Worker must carry the
+  same values: each checks the shared window against the ceiling it knows. All defaults confirmed by
+  the operator on 2026-10-03.
 - **The 2026-09-14 entry's point 2 still holds.** The leaderboard's lid and stock stay per process,
   and a second Api replica still needs them distributed first; what is coordinated across processes
   now is only the leaderboard's share of the search bucket. Out of scope: an admin view of the budget,

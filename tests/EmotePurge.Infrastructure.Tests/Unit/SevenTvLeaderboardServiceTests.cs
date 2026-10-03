@@ -194,6 +194,7 @@ public class SevenTvLeaderboardServiceTests
         // without asking 7TV itself, and keep saying it for as long as the block lasts.
         var harness = new Harness();
         harness.SearchBudget.NextRefusal = SevenTvSearchRefusal.Blocked;
+        harness.SearchBudget.BlockCause = SevenTvSearchBlockCause.RateLimited;
         harness.SearchBudget.BlockedFor = TimeSpan.FromMinutes(30);
         harness.Answer(Trending, 1, OkPage(1, 1, "e1"));
 
@@ -208,6 +209,43 @@ public class SevenTvLeaderboardServiceTests
         harness.Clock.Advance(TimeSpan.FromMinutes(2));
         Assert.Equal(SevenTvLeaderboardStatus.Ok, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
         Assert.Equal(1, harness.UpstreamRequests);
+    }
+
+    [Fact]
+    public async Task AShortRateLimitBlock_IsStockedForAtLeastAMinute()
+    {
+        var harness = new Harness();
+        harness.SearchBudget.NextRefusal = SevenTvSearchRefusal.Blocked;
+        harness.SearchBudget.BlockedFor = TimeSpan.FromSeconds(5);
+        harness.Answer(Trending, 1, OkPage(1, 1, "e1"));
+
+        Assert.Equal(SevenTvLeaderboardStatus.SevenTvRateLimited, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
+
+        harness.SearchBudget.NextRefusal = SevenTvSearchRefusal.None;
+        harness.Clock.Advance(TimeSpan.FromSeconds(59));
+        Assert.Equal(SevenTvLeaderboardStatus.SevenTvRateLimited, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
+        harness.Clock.Advance(TimeSpan.FromSeconds(2));
+        Assert.Equal(SevenTvLeaderboardStatus.Ok, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
+    }
+
+    [Fact]
+    public async Task ALowWatermarkBlock_IsOurPrecaution_AndAnswersBudgetRefused()
+    {
+        // Nobody rate-limited us: telling the user "7TV is rate limiting" would be false, and
+        // stocking it for the block's length would hide a leaderboard that is fine again in seconds.
+        var harness = new Harness();
+        harness.SearchBudget.NextRefusal = SevenTvSearchRefusal.Blocked;
+        harness.SearchBudget.BlockCause = SevenTvSearchBlockCause.LowWatermark;
+        harness.SearchBudget.BlockedFor = TimeSpan.FromMinutes(10);
+        harness.Answer(Trending, 1, OkPage(1, 1, "e1"));
+
+        Assert.Equal(SevenTvLeaderboardStatus.BudgetRefused, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
+        Assert.Equal(0, harness.UpstreamRequests);
+        Assert.True(harness.Breaker.TryAcquire().Allowed);
+
+        harness.SearchBudget.NextRefusal = SevenTvSearchRefusal.None;
+        harness.Clock.Advance(TimeSpan.FromSeconds(31));
+        Assert.Equal(SevenTvLeaderboardStatus.Ok, (await harness.Service.GetLeaderboardAsync(Trending)).Status);
     }
 
     [Fact]
