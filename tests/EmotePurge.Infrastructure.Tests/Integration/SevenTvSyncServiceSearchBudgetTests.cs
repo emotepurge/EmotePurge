@@ -71,6 +71,32 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task AnAttemptThatThrowsAfterTheCharge_StillBacksTheChannelOff()
+    {
+        // The search is paid for once the permit is granted. If anything below throws — here the
+        // failure record's save, cancelled while 7TV was answering — the channel must still be backed
+        // off, or the next tick spends another search on the same answer.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedIdLessChannelAsync(db, "wstest_budget_throws");
+        var harness = new Harness(db);
+        using var cancellation = new CancellationTokenSource();
+        harness.Client.ResolveTwitchUserIdAsync(channel.ChannelName, Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                cancellation.Cancel();
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => harness.Service.SyncChannelAsync(channel.ChannelName, cancellation.Token));
+
+        Assert.False(harness.Backoff.IsDue(channel.Id, out _));
+        await harness.Service.SyncChannelAsync(channel.ChannelName);
+        Assert.Single(harness.Budget.Charges);
+        await harness.Client.Received(1).ResolveTwitchUserIdAsync(channel.ChannelName, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ARenameDuplicate_CountsAsAMiss()
     {
         // Resolution succeeds, but the id belongs to another row: a search was spent, nothing stored.

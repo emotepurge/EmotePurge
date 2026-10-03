@@ -44,8 +44,8 @@ every 60-second resync tick, without bound. Design note: `docs/Konzept-7TV-Such-
   one key per cause**, each an absolute instant in Redis and only ever extended; a charge reports the
   rate-limit block first while both run, so a longer precautionary block never relabels a lockout.
   The observation writes the block **before** the minimum-remaining telemetry, each in its own
-  try — a failing telemetry write can never cost a block. `ResolveTwitchUserIdAsync` now reads the search headers and detects
-  both 429 forms; to its caller it still answers `Unavailable` — `SevenTvLookupStatus` gets no
+  try — a failing telemetry write can never cost a block. `ResolveTwitchUserIdAsync` now reads the search headers, detects
+  both 429 forms and reports every answer it got, a 5xx and an unparseable 200 included; to its caller it still answers `Unavailable` — `SevenTvLookupStatus` gets no
   rate-limit member, because the UI's failure reasons hang off it.
 - **Fail-closed for charging, fail-open for observing.** Redis unreachable refuses the search
   (`StoreUnavailable`) — the opposite of the resync cooldown's fail-open choice, because this guards a
@@ -72,8 +72,9 @@ every 60-second resync tick, without bound. Design note: `docs/Konzept-7TV-Such-
   singleton, keyed by `Channel.Id`): every resolution that spent a search and stored no id —
   no 7TV account, unavailable, rename duplicate, excluded channel, and also a resolved id the sync
   then could not store (the set lookup failed, the implausible-wipe guard stopped it, or the row
-  vanished under #59's re-read) — is a miss. A fresh resolution therefore records a provisional
-  miss that only the successful save of the id clears; `WarmChannelAsync` (boot recovery) never
+  vanished under #59's re-read) — is a miss. The miss is therefore recorded as soon as the permit
+  is granted, before the request, and only the successful save of the id clears it, so an attempt
+  that throws (a cancelled save, say) still leaves the channel backed off; `WarmChannelAsync` (boot recovery) never
   resolves and never charges; the next attempt waits
   `min(60 s × 2^(n−1), 1 h)`, a success forgets the entry. A stuck channel settles at 24 searches a day
   instead of 1440. In-process on purpose: only the Worker runs this path, a restart costs at most one

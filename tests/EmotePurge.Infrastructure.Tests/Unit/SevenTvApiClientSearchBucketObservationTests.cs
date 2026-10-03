@@ -64,6 +64,30 @@ public class SevenTvApiClientSearchBucketObservationTests
     }
 
     [Fact]
+    public async Task ResolveTwitchUserId_OnAServerError_StillReportsTheBucket_AndAnswersUnavailable()
+    {
+        var budget = new RecordingSevenTvSearchBudget();
+        var client = CreateClient(Json(HttpStatusCode.InternalServerError, "{}", remaining: "5", reset: "45"), budget);
+
+        var result = await client.ResolveTwitchUserIdAsync(Channel);
+
+        Assert.Equal(SevenTvLookupStatus.Unavailable, result.Status);
+        Assert.Equal(new SevenTvSearchObservation(5, 45, RateLimited: false), Assert.Single(budget.Observations));
+    }
+
+    [Fact]
+    public async Task ResolveTwitchUserId_OnAnUnparseable200_StillReportsTheBucket_AndAnswersUnavailable()
+    {
+        var budget = new RecordingSevenTvSearchBudget();
+        var client = CreateClient(Json(HttpStatusCode.OK, "{ not json", remaining: "5", reset: "45"), budget);
+
+        var result = await client.ResolveTwitchUserIdAsync(Channel);
+
+        Assert.Equal(SevenTvLookupStatus.Unavailable, result.Status);
+        Assert.Equal(new SevenTvSearchObservation(5, 45, RateLimited: false), Assert.Single(budget.Observations));
+    }
+
+    [Fact]
     public async Task ResolveTwitchUserId_OnAnImplausibleResetHeader_DropsTheReset()
     {
         // An epoch-shaped value must not become a block duration.

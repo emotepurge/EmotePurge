@@ -136,10 +136,30 @@ public class SevenTvApiClient(
                 return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
             }
 
-            response.EnsureSuccessStatusCode();
+            // Every answer 7TV gave reaches the shared budget, failures included — same rule as
+            // FetchV4PageAsync: a 5xx or an unparseable 200 still carries the bucket's headers, and
+            // a low remaining count there is exactly what the budget must not miss.
+            if (!response.IsSuccessStatusCode)
+            {
+                await ObserveSearchBucketAsync(remaining, resetSeconds, rateLimited: false, retryAfterSeconds: null, cancellationToken);
+                logger.LogWarning(
+                    "7TV user search for {Channel} failed with HTTP {StatusCode}, skipped.",
+                    normalized, (int)response.StatusCode);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
 
-            var dto = await response.Content.ReadFromJsonAsync<SevenTvGqlUsersResponseDto>(
-                SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+            SevenTvGqlUsersResponseDto? dto;
+            try
+            {
+                dto = await response.Content.ReadFromJsonAsync<SevenTvGqlUsersResponseDto>(
+                    SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+            }
+            catch (JsonException ex)
+            {
+                await ObserveSearchBucketAsync(remaining, resetSeconds, rateLimited: false, retryAfterSeconds: null, cancellationToken);
+                logger.LogWarning(ex, "7TV user search for {Channel} returned an unreadable response, skipped.", normalized);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
 
             if (IsRateLimited(dto?.Errors))
             {

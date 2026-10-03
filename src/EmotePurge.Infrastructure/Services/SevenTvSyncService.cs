@@ -451,18 +451,18 @@ public class SevenTvSyncService(
             return null;
         }
 
+        // The search is paid for from here on, so it counts as a miss now — before the request, not
+        // after it. Provisional: only the successful save of the id at the very end of the sync
+        // clears it (SyncChannelAsync). Recording it up front is what keeps every way out of this
+        // attempt honest: a failed lookup, a resolved id the sync then cannot store (no active set,
+        // say), and an exception anywhere below — a cancelled save included — all leave the channel
+        // backed off instead of letting the next tick spend another search.
+        var (misses, delay) = resolutionBackoff.RecordMiss(channel.Id);
+
         var (twitchUserId, excluded) = await ResolveWithChargedSearchAsync(channel, normalized, cancellationToken);
         if (twitchUserId is null)
         {
-            RecordResolutionMiss(channel, excluded);
-        }
-        else
-        {
-            // Provisional: an id is only worth something once it is stored, and that happens at the
-            // very end of the sync, after the set lookup and the reconcile. Until then this counts as
-            // a miss — otherwise a channel whose set lookup keeps failing (no active set, say) would
-            // spend a fresh search on every tick. SyncChannelAsync clears it once the id is saved.
-            resolutionBackoff.RecordMiss(channel.Id);
+            LogResolutionMiss(channel, excluded, misses, delay);
         }
 
         return twitchUserId;
@@ -515,10 +515,8 @@ public class SevenTvSyncService(
         return (twitchUserId, false);
     }
 
-    private void RecordResolutionMiss(Channel channel, bool excluded)
+    private void LogResolutionMiss(Channel channel, bool excluded, int misses, TimeSpan delay)
     {
-        var (misses, delay) = resolutionBackoff.RecordMiss(channel.Id);
-
         // An excluded channel backs off like any other, but silently: a recurring line naming it
         // would tie the block to that channel, which RefuseExcludedChannel keeps at Debug for.
         if (misses >= MissesBeforeLogging && !excluded)
