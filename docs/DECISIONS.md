@@ -142,6 +142,19 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   `aria-busy` and reads "Deleting account …", so it cannot be submitted twice.
 - **Not in the repo.** The privacy policy is operator-owned markdown outside the repository; its
   deletion section has to be updated by the operator (suggested wording is in the PR description).
+- **Set-owner identity in other actors' entries is pseudonymised too (#315).** Epic #200 writes
+  `targetOwnerTwitchLogin` and `targetOwnerSevenTvUserId` into the details of `emotes.syncImported`,
+  `emotes.syncDeleted` and `emotes.syncRestored` entries of *other* actors, which neither the actor rule
+  nor the `"user"`-target rule reaches. `DeleteAsync` (the one path of admin, retention and self deletion)
+  now rewrites, in the same transaction, every entry whose `targetOwnerTwitchLogin` equals the account's
+  normalised login (case-insensitive; `abc` never matches `abcd`) to the marker, together with that
+  entry's `targetOwnerSevenTvUserId`; all other keys stay. Counted separately as
+  `ownerEntriesPseudonymised` in the `user.delete` details and `AuditEntriesPseudonymisedAsOwner` on the
+  result, not in `auditEntriesPseudonymised`. Lives in this PR rather than on the epic branch because it
+  needs only the two key names: on `main` no entry carries them (no-op), and once the epic merges its
+  entries are covered at once, so the gap never opens. The key names are duplicated in
+  `AccountDeletionService` until the epic's `AuditLogQueryService` constant can be unified. The `unresolved*`
+  keys name a channel, not an owner, and stay.
 
 ### 2026-10-03 — Paging query parameters bind as strings, so binding cannot fail
 

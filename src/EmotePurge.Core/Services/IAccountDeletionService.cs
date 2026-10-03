@@ -45,13 +45,18 @@ public enum AccountDeletionOutcome
 /// Distinct entries touched — an entry where the user was actor <em>and</em> target (an admin
 /// revoking their own sessions) counts once here and once in each of the two sets above.
 /// </param>
+/// <param name="AuditEntriesPseudonymisedAsOwner">
+/// Emote-set sync entries written by anyone that named the user as set owner
+/// (<c>targetOwnerTwitchLogin</c>); not part of <paramref name="AuditEntriesPseudonymised"/>.
+/// </param>
 public record AccountDeletionResult(
     AccountDeletionOutcome Outcome,
     int VotesDeleted = 0,
     int VotesInOpenSessionsDeleted = 0,
     int AuditEntriesPseudonymisedAsActor = 0,
     int AuditEntriesPseudonymisedAsTarget = 0,
-    int AuditEntriesPseudonymised = 0);
+    int AuditEntriesPseudonymised = 0,
+    int AuditEntriesPseudonymisedAsOwner = 0);
 
 /// <summary>
 /// The one path that deletes a user account — called by the admin endpoint (on request), by the self-service endpoint (the user themself) and by the

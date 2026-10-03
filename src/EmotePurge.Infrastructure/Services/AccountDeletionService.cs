@@ -50,6 +50,13 @@ public class AccountDeletionService(
     // (user.revokeSessions and user.invalidateRoleCache both write { login }). Every other key stays.
     private const string LoginDetailKey = "login";
 
+    // The set owner's identity in the details of the emote-set sync entries (written by other actors, so
+    // neither the actor nor the "user"-target rule reaches them). Epic #200 (EmoteService, and the
+    // reader AuditLogQueryService) writes and reads these same two keys — unify the constants there
+    // when it merges. The login key is also the match key; the id key is rewritten in the same entry.
+    private const string TargetOwnerLoginDetailKey = "targetOwnerTwitchLogin";
+    private const string TargetOwnerSevenTvUserIdDetailKey = "targetOwnerSevenTvUserId";
+
     public async Task<AccountDeletionResult> DeleteAsync(
         string twitchUserId,
         AuditActor actor,
@@ -116,6 +123,7 @@ public class AccountDeletionService(
                         .SetProperty(e => e.ActorLogin, AuditActor.DeletedUser.Login),
                     cancellationToken);
             var auditEntriesPseudonymised = asActor + asTarget - asBoth;
+            var asOwner = await PseudonymiseOwnerEntriesAsync(user.TwitchUsername, cancellationToken);
 
             // The encrypted Twitch tokens live on the row and go with it.
             db.Users.Remove(user);
@@ -133,7 +141,8 @@ public class AccountDeletionService(
                 {
                     reason = ReasonDetail(reason),
                     votesDeleted,
-                    auditEntriesPseudonymised
+                    auditEntriesPseudonymised,
+                    ownerEntriesPseudonymised = asOwner
                 });
             await db.SaveChangesAsync(cancellationToken);
 
@@ -145,7 +154,8 @@ public class AccountDeletionService(
                 votesInOpenSessions,
                 asActor,
                 asTarget,
-                auditEntriesPseudonymised);
+                auditEntriesPseudonymised,
+                asOwner);
         }
 
         await CleanUpRedisAsync(twitchUserId);
@@ -185,6 +195,60 @@ public class AccountDeletionService(
 
         await db.SaveChangesAsync(cancellationToken);
         return (entries.Count, alsoActor);
+    }
+
+    /// <summary>
+    /// Rewrites the entries that name the account as the <em>owner</em> of an emote set
+    /// (<c>targetOwnerTwitchLogin</c> equal to the account's login, whoever the actor was): that value and
+    /// the entry's <c>targetOwnerSevenTvUserId</c> become the marker, every other key stays. Returns the
+    /// number of entries rewritten.
+    /// </summary>
+    /// <remarks>
+    /// Postgres narrows by the jsonb value (an exact, case-insensitive text match, so a login that merely
+    /// contains the account's — <c>abc</c> in <c>abcd</c> — never qualifies); the exact key check is
+    /// repeated on the parsed JSON after normalisation. Only the login identifies an entry: the user row
+    /// stores no 7TV id to match a renamed owner by. Entries that carry only an
+    /// <c>unresolved*</c> channel name name a channel, not an owner, and are channel data.
+    /// </remarks>
+    private async Task<int> PseudonymiseOwnerEntriesAsync(string twitchLogin, CancellationToken cancellationToken)
+    {
+        var login = ChannelName.Normalize(twitchLogin);
+        if (login.Length == 0 || login == ChannelName.Normalize(AuditActor.DeletedUser.Login))
+        {
+            return 0;
+        }
+
+        var candidates = await db.AuditLogEntries
+            .FromSql($"""
+                SELECT * FROM "AuditLogEntries"
+                WHERE lower(btrim("DetailsJson" ->> {TargetOwnerLoginDetailKey})) = {login}
+                """)
+            .ToListAsync(cancellationToken);
+
+        var rewritten = 0;
+        foreach (var entry in candidates)
+        {
+            if (entry.DetailsJson is null
+                || JsonNode.Parse(entry.DetailsJson) is not JsonObject details
+                || details[TargetOwnerLoginDetailKey] is not JsonValue ownerLogin
+                || !ownerLogin.TryGetValue<string>(out var value)
+                || ChannelName.Normalize(value) != login)
+            {
+                continue;
+            }
+
+            details[TargetOwnerLoginDetailKey] = AuditActor.DeletedUser.Login;
+            if (details.ContainsKey(TargetOwnerSevenTvUserIdDetailKey))
+            {
+                details[TargetOwnerSevenTvUserIdDetailKey] = AuditActor.DeletedUser.TwitchUserId;
+            }
+
+            entry.DetailsJson = details.ToJsonString(JsonSerializerOptions.Default);
+            rewritten++;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return rewritten;
     }
 
     /// <summary>

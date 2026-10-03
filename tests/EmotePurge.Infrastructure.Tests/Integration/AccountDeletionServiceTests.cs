@@ -215,7 +215,8 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
         Assert.Equal("adminRequest", details.RootElement.GetProperty("reason").GetString());
         Assert.Equal(1, details.RootElement.GetProperty("votesDeleted").GetInt32());
         Assert.Equal(1, details.RootElement.GetProperty("auditEntriesPseudonymised").GetInt32());
-        Assert.Equal(3, details.RootElement.EnumerateObject().Count());
+        Assert.Equal(0, details.RootElement.GetProperty("ownerEntriesPseudonymised").GetInt32());
+        Assert.Equal(4, details.RootElement.EnumerateObject().Count());
         await AssertNoEntryNamesAsync(user);
     }
 
@@ -571,6 +572,89 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
 
     private RateLimitTelemetryStore CreateTelemetryStore() =>
         new(redisFixture.Connection, TimeProvider.System, NullLogger<RateLimitTelemetryStore>.Instance);
+
+    [Fact]
+    public async Task Delete_PseudonymisesTheSetOwnerIdentityInEntriesOfOtherActors_AndOnlyThere()
+    {
+        var user = await SeedUserAsync("acctdel-owner");
+        var other = await SeedUserAsync("acctdel-owner-other");
+        var ownedId = await SeedAuditEntryAsync(new AuditLogEntry
+        {
+            ActorTwitchUserId = other.Id,
+            ActorLogin = other.TwitchUsername,
+            Action = AuditActions.EmotesSyncImported,
+            TargetType = "emoteSet",
+            TargetId = "set-1",
+            DetailsJson = """{"emoteCount":3,"targetEmoteSetId":"set-1","targetOwnerSevenTvUserId":"7tv-owner","targetOwnerTwitchLogin":"  AcctDelOwner "}"""
+        });
+        var unresolvedId = await SeedAuditEntryAsync(new AuditLogEntry
+        {
+            ActorTwitchUserId = other.Id,
+            ActorLogin = other.TwitchUsername,
+            Action = AuditActions.EmotesSyncDeleted,
+            TargetType = "emoteSet",
+            TargetId = "set-2",
+            DetailsJson = """{"emoteCount":1,"emoteSetId":"set-2","targetOwnerSevenTvUserId":"7tv-owner","targetOwnerTwitchLogin":"acctdelowner","unresolvedChannelName":"somechan","unresolvedReason":"notTracked"}"""
+        });
+        // Substring of the login on either side, a different owner, the login in an unrelated key only,
+        // and an entry without the keys: all untouched.
+        var longerLoginId = await SeedAuditEntryAsync(OwnerEntry(other, """{"targetOwnerSevenTvUserId":"7tv-x","targetOwnerTwitchLogin":"acctdelownerx"}"""));
+        var shorterLoginId = await SeedAuditEntryAsync(OwnerEntry(other, """{"targetOwnerSevenTvUserId":"7tv-y","targetOwnerTwitchLogin":"acctdelowne"}"""));
+        var otherOwnerId = await SeedAuditEntryAsync(OwnerEntry(other, """{"targetOwnerSevenTvUserId":"7tv-z","targetOwnerTwitchLogin":"someoneelse"}"""));
+        var unrelatedKeyId = await SeedAuditEntryAsync(OwnerEntry(other, """{"sourceChannelName":"acctdelowner","targetOwnerTwitchLogin":"someoneelse"}"""));
+        var noKeysId = await SeedAuditEntryAsync(OwnerEntry(other, """{"emoteCount":2}"""));
+        var watermark = await AuditWatermarkAsync();
+
+        await using var db = fixture.CreateDbContext();
+        var result = await CreateService(db).DeleteAsync(user.Id, Admin, AccountDeletionReason.AdminRequest, null);
+
+        Assert.Equal(2, result.AuditEntriesPseudonymisedAsOwner);
+        Assert.Equal(0, result.AuditEntriesPseudonymised);
+
+        await using var verifyDb = fixture.CreateDbContext();
+        var owned = await verifyDb.AuditLogEntries.AsNoTracking().SingleAsync(e => e.Id == ownedId);
+        using (var details = JsonDocument.Parse(owned.DetailsJson!))
+        {
+            Assert.Equal(AuditActor.DeletedUser.Login, details.RootElement.GetProperty("targetOwnerTwitchLogin").GetString());
+            Assert.Equal(AuditActor.DeletedUser.TwitchUserId, details.RootElement.GetProperty("targetOwnerSevenTvUserId").GetString());
+            Assert.Equal(3, details.RootElement.GetProperty("emoteCount").GetInt32());
+            Assert.Equal("set-1", details.RootElement.GetProperty("targetEmoteSetId").GetString());
+        }
+
+        Assert.Equal(other.Id, owned.ActorTwitchUserId);
+        Assert.Equal("set-1", owned.TargetId);
+
+        var unresolved = await verifyDb.AuditLogEntries.AsNoTracking().SingleAsync(e => e.Id == unresolvedId);
+        using (var details = JsonDocument.Parse(unresolved.DetailsJson!))
+        {
+            Assert.Equal(AuditActor.DeletedUser.Login, details.RootElement.GetProperty("targetOwnerTwitchLogin").GetString());
+            Assert.Equal(AuditActor.DeletedUser.TwitchUserId, details.RootElement.GetProperty("targetOwnerSevenTvUserId").GetString());
+            Assert.Equal("somechan", details.RootElement.GetProperty("unresolvedChannelName").GetString());
+            Assert.Equal("notTracked", details.RootElement.GetProperty("unresolvedReason").GetString());
+        }
+
+        foreach (var id in new[] { longerLoginId, shorterLoginId, otherOwnerId, unrelatedKeyId, noKeysId })
+        {
+            var untouched = await verifyDb.AuditLogEntries.AsNoTracking().SingleAsync(e => e.Id == id);
+            Assert.DoesNotContain(AuditActor.DeletedUser.Login, untouched.DetailsJson!);
+            Assert.DoesNotContain(AuditActor.DeletedUser.TwitchUserId, untouched.DetailsJson!);
+        }
+
+        var deleteEntry = await SingleUserDeleteEntryAfterAsync(watermark);
+        using var deleteDetails = JsonDocument.Parse(deleteEntry.DetailsJson!);
+        Assert.Equal(2, deleteDetails.RootElement.GetProperty("ownerEntriesPseudonymised").GetInt32());
+        Assert.Equal(0, deleteDetails.RootElement.GetProperty("auditEntriesPseudonymised").GetInt32());
+    }
+
+    private static AuditLogEntry OwnerEntry(User actor, string detailsJson) => new()
+    {
+        ActorTwitchUserId = actor.Id,
+        ActorLogin = actor.TwitchUsername,
+        Action = AuditActions.EmotesSyncImported,
+        TargetType = "emoteSet",
+        TargetId = "set-other",
+        DetailsJson = detailsJson
+    };
 
     private AccountDeletionService CreateService(AppDbContext db, IRateLimitTelemetry? telemetry = null) =>
         new(db, CreateRoleCache(), telemetry ?? CreateTelemetryStore(), NullLogger<AccountDeletionService>.Instance);
