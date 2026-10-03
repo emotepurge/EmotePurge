@@ -679,13 +679,29 @@ public class SevenTvApiClient(
     private async Task<SevenTvChannelStateResult> BuildChannelStateResultAsync(
         SevenTvEmoteSetJsonDto emoteSetDto, SevenTvUserRestUserDto? user, CancellationToken cancellationToken)
     {
+        // Two shapes that are not "an empty set" and must not be taken for one. An explicit
+        // `emotes: null` is a broken payload. A positive emote_count next to no emotes means the
+        // list was lost on the way, and answering Ok(0) would feed the sync's wipe guard a zero
+        // that 7TV itself contradicts. A MISSING `emotes` (and missing emote_count) is different
+        // and stays an empty list: that is how 7TV serialises a genuinely empty set.
+        if (emoteSetDto.Emotes is null || (emoteSetDto.EmoteCount is > 0 && emoteSetDto.Emotes.Count == 0))
+        {
+            logger.LogWarning(
+                "7TV-Emote-Set {SetId} ist widersprüchlich (emotes {Emotes}, emote_count {Count}) — als nicht verfügbar behandelt.",
+                emoteSetDto.Id, emoteSetDto.Emotes is null ? "null" : "leer", emoteSetDto.EmoteCount);
+            return SevenTvChannelStateResult.Failed(SevenTvLookupStatus.Unavailable);
+        }
+
         var emotes = emoteSetDto.Emotes.Select(SevenTvEmoteJsonMapper.MapDto).ToList();
 
         // Overlay the real set-entry dates from v4. Null (lookup failed) simply leaves every
         // AddedToSetAt unknown — the sync's correction pass fills the gap on a later resync,
-        // which is strictly better than failing the whole channel sync over a date.
-        var addedAtByEmoteId = await GetSetEntryAddedAtAsync(emoteSetDto.Id, cancellationToken);
-        if (addedAtByEmoteId is not null)
+        // which is strictly better than failing the whole channel sync over a date. The same
+        // lookup's entry count travels along as RemoteEntryCount: it runs for the very set id v3
+        // just named, on every sync and also when v3 lists nothing, so it is the cross-check the
+        // sync's wipe guard holds a v3 zero against (issue #76).
+        var setEntries = await GetSetEntriesAsync(emoteSetDto.Id, cancellationToken);
+        if (setEntries?.AddedAtByEmoteId is { } addedAtByEmoteId)
         {
             emotes = emotes
                 .Select(e => addedAtByEmoteId.TryGetValue(e.Id, out var addedAt)
@@ -704,7 +720,7 @@ public class SevenTvApiClient(
         var capacity = emoteSetDto.Capacity > 0 ? emoteSetDto.Capacity : (int?)null;
 
         return SevenTvChannelStateResult.Ok(
-            new SevenTvChannelState(sevenTvUserId, new SevenTvEmoteSet(emoteSetDto.Id, emotes, capacity)));
+            new SevenTvChannelState(sevenTvUserId, new SevenTvEmoteSet(emoteSetDto.Id, emotes, capacity, setEntries?.EntryCount)));
     }
 
     // Reloads a set that the primary response no longer embeds (issue #43). Any non-success status —
@@ -742,8 +758,15 @@ public class SevenTvApiClient(
         }
     }
 
-    private async Task<Dictionary<string, DateTime>?> GetSetEntryAddedAtAsync(string emoteSetId, CancellationToken cancellationToken)
+    // The dates are all-or-nothing: a failure on any page (HTTP error, timeout, malformed JSON, a set
+    // v4 does not know, a GraphQL error) drops every date, as before. The entry count is not: entries
+    // already seen on earlier pages are positive evidence that the set is not empty, and throwing
+    // them away would let a stale v3 zero through the sync's v4 veto. So a part-way failure after at
+    // least one resolved entry still reports that count as a lower bound; null only when no page
+    // yielded one, so the caller can tell "no v4 evidence" apart from "v4 lists 0 entries".
+    private async Task<SetEntriesOverlay?> GetSetEntriesAsync(string emoteSetId, CancellationToken cancellationToken)
     {
+        var entryCount = 0;
         try
         {
             var result = new Dictionary<string, DateTime>();
@@ -766,12 +789,19 @@ public class SevenTvApiClient(
                     logger.LogWarning(
                         "7TV-v4-addedAt-Abruf für Set {SetId} lieferte keine Daten — Beitrittsdaten bleiben vorerst unbekannt.",
                         emoteSetId);
-                    return null;
+                    return PartialCountOnly(entryCount);
                 }
 
-                foreach (var entry in entryPage.Items.Where(entry => entry.Emote is not null && entry.AddedAt is not null))
+                // An entry whose emote did not resolve (`emote: null`, e.g. a deleted emote still
+                // referenced by the set) is neither dated nor counted: it is nothing the v3 list
+                // could be missing.
+                foreach (var entry in entryPage.Items.Where(entry => entry.Emote is not null))
                 {
-                    result[entry.Emote!.Id] = entry.AddedAt!.Value.UtcDateTime;
+                    entryCount++;
+                    if (entry.AddedAt is { } addedAt)
+                    {
+                        result[entry.Emote!.Id] = addedAt.UtcDateTime;
+                    }
                 }
 
                 if (page >= entryPage.PageCount)
@@ -780,7 +810,7 @@ public class SevenTvApiClient(
                 }
             }
 
-            return result;
+            return new SetEntriesOverlay(result, entryCount);
         }
         // JsonException belongs here rather than in the caller's catch: a malformed v4 answer must
         // stay a missing date, not turn the whole channel Unavailable. The caller now treats
@@ -792,9 +822,14 @@ public class SevenTvApiClient(
             logger.LogWarning(ex,
                 "7TV-v4-addedAt-Abruf für Set {SetId} fehlgeschlagen — Beitrittsdaten bleiben vorerst unbekannt.",
                 emoteSetId);
-            return null;
+            return PartialCountOnly(entryCount);
         }
     }
+
+    // What a v4 read that failed part-way still yields: no dates, and the entries counted so far
+    // when there was at least one (see GetSetEntriesAsync).
+    private static SetEntriesOverlay? PartialCountOnly(int entryCount) =>
+        entryCount > 0 ? new SetEntriesOverlay(null, entryCount) : null;
 
     // Resolution order for issue #43: the top-level id — this whole response *is* the requested
     // Twitch connection — and otherwise that same connection found by its exact Twitch user id in
@@ -808,32 +843,16 @@ public class SevenTvApiClient(
     // truthful failure reason. Same exact-id contract ResolveSevenTvIdentityAsync already holds.
     private static string? ResolveFallbackEmoteSetId(SevenTvUserRestDto dto, string twitchUserId)
     {
-        if (IsUsableSevenTvId(dto.EmoteSetId))
+        if (SevenTvIds.IsUsable(dto.EmoteSetId))
         {
             return dto.EmoteSetId;
         }
 
         var ownConnection = (dto.User?.Connections ?? []).FirstOrDefault(c =>
-            c.Platform == TwitchPlatform && c.Id == twitchUserId && IsUsableSevenTvId(c.EmoteSetId));
+            c.Platform == TwitchPlatform && c.Id == twitchUserId && SevenTvIds.IsUsable(c.EmoteSetId));
 
         return ownConnection?.EmoteSetId;
     }
-
-    // 7TV represents "no id" two different ways depending on the endpoint: sometimes a genuine
-    // absence (null/empty), sometimes a placeholder sentinel of all-zero characters — proven live for
-    // a different lookup on this same client (ResolveSevenTvIdentityAsync's
-    // "00000000000000000000000000" placeholder account id, measured 2026-08-31). Both must read as
-    // "not present" here, or a sentinel would be mistaken for a real emote-set id and forwarded to
-    // GET emote-sets/{id}. Checking "every character is '0'" rather than a fixed-length literal
-    // survives 7TV changing the sentinel's length or format.
-    //
-    // For this particular field the sentinel has not been observed: 62 accounts without an active
-    // set, sampled live 2026-09-01, all answered with a plain null emote_set_id (top level and in
-    // connections[]). The all-zero branch is therefore unproven defence, not a fix for a known
-    // behaviour — the null case, which keeps NoActiveEmoteSet reachable after the rollout, is the
-    // measured one.
-    private static bool IsUsableSevenTvId(string? id) =>
-        !string.IsNullOrWhiteSpace(id) && id.Any(c => c != '0');
 
     // 7TV wraps a GraphQL-level failure as HTTP 200 (see GqlEmoteSetPreviewQuery's comment and
     // SevenTvGqlEmoteSetPreviewResponseDto); a rate limit is one specific `errors[].extensions.status`
@@ -994,4 +1013,9 @@ public class SevenTvApiClient(
 
         public static PreviewPageFetch Failed(SevenTvEmoteSetPreviewResult failure) => new(null, failure);
     }
+
+    // What one v4 read of a set's entries yields (GetSetEntriesAsync): the dates for the AddedToSetAt
+    // overlay (null when paging failed part-way), and the number of entries with a resolved emote,
+    // which becomes RemoteEntryCount (a lower bound in that case).
+    private sealed record SetEntriesOverlay(Dictionary<string, DateTime>? AddedAtByEmoteId, int EntryCount);
 }
