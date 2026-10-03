@@ -7,7 +7,10 @@ public enum AccountDeletionReason
     AdminRequest,
 
     /// <summary>The retention job deleted the account after twelve months without activity.</summary>
-    Inactivity
+    Inactivity,
+
+    /// <summary>The user deleted their own account from the account menu (GDPR Art. 17).</summary>
+    SelfRequest
 }
 
 /// <summary>What <see cref="IAccountDeletionService.DeleteAsync"/> did.</summary>
@@ -51,7 +54,7 @@ public record AccountDeletionResult(
     int AuditEntriesPseudonymised = 0);
 
 /// <summary>
-/// The one path that deletes a user account — called by the admin endpoint (on request) and by the
+/// The one path that deletes a user account — called by the admin endpoint (on request), by the self-service endpoint (the user themself) and by the
 /// retention job (after twelve months of inactivity). Everything happens in one transaction under a
 /// <c>FOR UPDATE</c> lock on the user row: the user's votes are deleted (<c>Vote → User</c> is
 /// <c>Restrict</c>), audit entries naming the user are pseudonymised to
@@ -81,7 +84,7 @@ public interface IAccountDeletionService
     /// Required for <see cref="AccountDeletionReason.Inactivity"/> and rechecked under the row lock
     /// (<c>max(LastLogin, LastSeenAtUtc) &lt; cutoff</c>, otherwise
     /// <see cref="AccountDeletionOutcome.StillActive"/>); must be <c>null</c> for
-    /// <see cref="AccountDeletionReason.AdminRequest"/>. A mismatch throws
+    /// <see cref="AccountDeletionReason.AdminRequest"/> and <see cref="AccountDeletionReason.SelfRequest"/>. A mismatch throws
     /// <see cref="ArgumentException"/>.
     /// </param>
     Task<AccountDeletionResult> DeleteAsync(

@@ -64,8 +64,11 @@ public class AccountDeletionService(
                 throw new ArgumentException("An inactivity deletion needs its cutoff, to recheck it under the row lock.", nameof(onlyIfInactiveBeforeUtc));
             case AccountDeletionReason.AdminRequest when onlyIfInactiveBeforeUtc is not null:
                 throw new ArgumentException("An admin-requested deletion is unconditional and takes no cutoff.", nameof(onlyIfInactiveBeforeUtc));
+            case AccountDeletionReason.SelfRequest when onlyIfInactiveBeforeUtc is not null:
+                throw new ArgumentException("A self-requested deletion is unconditional and takes no cutoff.", nameof(onlyIfInactiveBeforeUtc));
             case AccountDeletionReason.Inactivity:
             case AccountDeletionReason.AdminRequest:
+            case AccountDeletionReason.SelfRequest:
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(reason), reason, "Unknown account deletion reason.");
@@ -245,6 +248,7 @@ public class AccountDeletionService(
     {
         AccountDeletionReason.AdminRequest => "adminRequest",
         AccountDeletionReason.Inactivity => "inactivity",
+        AccountDeletionReason.SelfRequest => "selfRequest",
         _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, null)
     };
 

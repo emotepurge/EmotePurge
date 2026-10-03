@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using EmotePurge.Api.Auth;
+using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.Twitch;
@@ -152,6 +153,49 @@ public static class AuthEndpoints
             });
         }).RequireAuthorization();
 
+        group.MapDelete("/me", async (
+            HttpContext httpContext,
+            ClaimsPrincipal user,
+            IUserService userService,
+            IAccountDeletionService accountDeletionService,
+            ITwitchAuthClient authClient,
+            CancellationToken ct) =>
+        {
+            // The id comes from the session claim and from nowhere else — no route value, no body — so
+            // a caller can only ever delete the account their own cookie belongs to.
+            var actor = user.TryBuildAuditActor();
+            if (actor is null)
+            {
+                // Unreachable behind RequireAuthorization for a real session; guard, not a case.
+                return Results.Unauthorized();
+            }
+
+            // Read before the deletion, because the row (and with it the encrypted tokens) is gone
+            // afterwards. Revoked only after the commit, though: a deletion that fails must not leave
+            // the user logged in with tokens Twitch has already invalidated.
+            var stored = await userService.GetTwitchTokensAsync(actor.TwitchUserId, ct);
+
+            // SelfRequest, so onlyIfInactiveBeforeUtc is null: unconditional, active or not. The service
+            // records the marker as actor on the user.delete entry when actor and target are the same.
+            var result = await accountDeletionService.DeleteAsync(
+                actor.TwitchUserId, actor, AccountDeletionReason.SelfRequest, onlyIfInactiveBeforeUtc: null, ct);
+            if (result.Outcome == AccountDeletionOutcome.Deleted)
+            {
+                await RevokeTwitchTokensBestEffortAsync(
+                    authClient, user.FindFirstValue(TwitchClaimTypes.AccessToken), stored);
+            }
+
+            // NotFound is answered like Deleted: the row is already gone (a concurrent admin deletion,
+            // or a retry after a response got lost), which is the state the caller asked for, and the
+            // cookie still has to be cleared. StillActive cannot occur for SelfRequest.
+            await httpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            return result.Outcome is AccountDeletionOutcome.Deleted or AccountDeletionOutcome.NotFound
+                ? Results.NoContent()
+                : Results.Problem();
+        })
+        .RequireAuthorization()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
         group.MapPost("/logout", async (
             HttpContext httpContext,
             IUserService userService,
@@ -174,5 +218,25 @@ public static class AuthEndpoints
             await httpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             return Results.Ok();
         });
+    }
+
+    // Every token that could still be used on this user's behalf: the cookie claim and the two stored
+    // ones (usually the claim equals the stored access token, hence the distinct set). Failures are
+    // logged by the client and deliberately ignored here — Twitch being unreachable must not keep a
+    // user from erasing their data; an unrevoked token expires on its own.
+    private static async Task RevokeTwitchTokensBestEffortAsync(
+        ITwitchAuthClient authClient, string? claimAccessToken, TwitchStoredTokens? stored)
+    {
+        var tokens = new[] { claimAccessToken, stored?.AccessToken, stored?.RefreshToken }
+            .Where(t => !string.IsNullOrEmpty(t))
+            .Distinct()
+            .ToList();
+
+        foreach (var token in tokens)
+        {
+            // CancellationToken.None: the deletion has committed, so a caller that goes away now must
+            // not leave a token unrevoked. Bounded by the typed client's 10 s timeout.
+            await authClient.RevokeTokenAsync(token!, CancellationToken.None);
+        }
     }
 }

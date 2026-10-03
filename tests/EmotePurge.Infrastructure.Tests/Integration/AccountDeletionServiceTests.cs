@@ -246,6 +246,40 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
     }
 
     [Fact]
+    public async Task Delete_SelfRequest_RecordsTheMarkerAsActor_AndTheSelfRequestReason_AndDeletesTheVotes()
+    {
+        var user = await SeedUserAsync("acctdel-selfreq");
+        var (_, openSession, _, emote) = await SeedChannelWithSessionsAsync("acctdelselfreq");
+        await SeedVotesAsync((openSession.Id, emote.Id, user.Id, VoteType.Keep));
+        var self = new AuditActor(user.Id, user.TwitchUsername);
+        var watermark = await AuditWatermarkAsync();
+
+        await using var db = fixture.CreateDbContext();
+        var result = await CreateService(db).DeleteAsync(user.Id, self, AccountDeletionReason.SelfRequest, null);
+
+        Assert.Equal(AccountDeletionOutcome.Deleted, result.Outcome);
+        Assert.Equal(1, result.VotesDeleted);
+        Assert.Equal(1, result.VotesInOpenSessionsDeleted);
+        var entry = await SingleUserDeleteEntryAfterAsync(watermark);
+        Assert.Equal(AuditActor.DeletedUser.TwitchUserId, entry.ActorTwitchUserId);
+        Assert.Equal(AuditActor.DeletedUser.Login, entry.ActorLogin);
+        using var details = JsonDocument.Parse(entry.DetailsJson!);
+        Assert.Equal("selfRequest", details.RootElement.GetProperty("reason").GetString());
+        await using var verifyDb = fixture.CreateDbContext();
+        Assert.False(await verifyDb.Users.AnyAsync(u => u.Id == user.Id));
+        await AssertNoEntryNamesAsync(user);
+    }
+
+    [Fact]
+    public async Task Delete_SelfRequest_WithACutoff_Throws()
+    {
+        await using var db = fixture.CreateDbContext();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => CreateService(db).DeleteAsync(
+            "acctdel-selfcutoff", Admin, AccountDeletionReason.SelfRequest, DateTime.UtcNow));
+    }
+
+    [Fact]
     public async Task Delete_CalledTwice_ReturnsNotFound_AndWritesNothingTheSecondTime()
     {
         var user = await SeedUserAsync("acctdel-twice");
