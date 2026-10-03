@@ -554,9 +554,9 @@ genügt dem Zweck der Sperre.
 Das adversariale Review des Umsetzungsplans
 ([`superpowers/plans/2026-10-03-broadcaster-self-purge.md`](superpowers/plans/2026-10-03-broadcaster-self-purge.md),
 Abschnitt 10) hat drei Aussagen dieses Konzepts gegen den Code widerlegt und zwei Lücken benannt,
-die das Konzept nicht gesehen hat. Hier nur die Korrekturen; die Entscheidungen dazu (D1–D4)
-stehen im Plan, Abschnitt 9, und sind **offen** — sie ändern Garantien dieses Konzepts erst, wenn
-sie fallen.
+die das Konzept nicht gesehen hat. Hier die Korrekturen; die Entscheidungen dazu (D1–D4 im Plan,
+Abschnitt 9) **sind am 2026-10-03 gefallen** und stehen unten als E13–E16 in der Form von
+Abschnitt 4. Sie ändern die Garantien dieses Konzepts an den genannten Stellen.
 
 - **3.3 „Nachweisgrenze" — falsch für aktive Zeilen.** „Sie ist inaktiv oder wird vom Reconcile
   deaktiviert und läuft in die 180-Tage-Retention" gilt nur für **inaktive** Altzeilen. Eine
@@ -585,3 +585,18 @@ sie fallen.
 - **T3 „LEAVE nach dem Commit"** gilt im Reconcile nur, wenn `ChannelDeactivation` den Publish vom
   Speichern trennt — heute publiziert es direkt nach `SaveChanges` (`:52-57`). Plan P17, kein
   Entscheid.
+
+### 8.1 Entschieden (Betreiber, 2026-10-03)
+
+| | Entscheidung | Warum |
+|---|---|---|
+| **E13** (D1) | **A — Generationsgrenze jetzt.** `GET /{name}/audit-log` liefert nur Einträge ab `CreatedAt` der aktuellen Kanalzeile; die vollständige ID-Bindung per Spalte bleibt Folgearbeit. | Schließt F1 ohne Schema; Rename/Merge behalten `CreatedAt`, nur ein neu angelegter Kanal gleichen Namens verliert die Sicht auf den Vorgänger — dessen Daten sind ohnehin weg, Admins sehen das globale Log. |
+| **E14** (D2) | **A — Reconcile deaktiviert nicht auflösbare aktive Altzeilen nach Schonfrist.** Nur bei definitivem Helix `NotFound`, `CreatedAt` > 7 Tage **und** kein erfolgreicher 7TV-Sync seit 7 Tagen; audit `channel.leave` `{ reason: "loginUnresolvable" }` mit Name, unter Zeilensperre, LEAVE nach Commit. | Macht den Satz in 3.3 wieder wahr: die Zeile läuft in die 180-Tage-Retention. Ein Kanal, dessen Login Twitch nicht kennt, hat weder Chat noch Set — die Deaktivierung nimmt nichts Beobachtbares. Wirkt über #245 hinaus auch für gebannte/gelöschte Konten mit Altzeile. |
+| **E15** (D3) | **A — Id-lose Zeilen wärmen den Match-Cache erst nach Identität und beiden Gates;** bei fehlgeschlagener Auflösung bleibt er leer. Zeilen mit gespeicherter ID unverändert (Warm-up vor dem 7TV-Aufruf, DECISIONS 2026-09-08). | Fail-closed für die Beobachtung gilt dann ab dem ersten Tick, nicht erst ab dem Gate; betroffen sind nur Zeilen aus einem Helix-Ausfall beim Join. |
+| **E16** (D4) | **A — Runbook statt Repo-Umbau:** Worker vor Api deployen, beide laufenden Container per `docker inspect` auf dieselbe Revision prüfen, der neue Reconcile-Zähler `LockedDeactivated` in der Summenzeile ist der Beleg, dass das Worker-Image die Sperre kennt. Unveränderliche Tags (`:<sha>`) bleiben eine spätere Ergänzung. | Derselbe Nachweis ohne Änderung des Deploy-Reflexes; der Zähler kostet eine Zeile. |
+
+Damit gelten in 3.3 („Nachweisgrenze": Altzeile wird nach spätestens 7 Tagen deaktiviert und
+nach 180 Tagen gelöscht), 3.4 Punkt 2 (kein Match-Cache für id-lose Zeilen vor dem Gate; keine
+Live-Abdeckung für gesperrte IDs, Plan P15), 3.2 (Audit-Log nur ab `CreatedAt` der aktuellen
+Zeile) und T7/Abschnitt 6 des Plans (Deploy-Reihenfolge Worker → Api mit Beleg) die so
+korrigierten Garantien.

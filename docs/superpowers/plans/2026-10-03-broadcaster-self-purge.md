@@ -33,9 +33,8 @@ Commit-Trailer laut Sitzungs-Vorgabe des Orchestrators.
 **Quelle der Wahrheit:** das Konzept in seiner dritten Fassung (2026-10-03) mit allen gefallenen
 Entscheidungen. Was dort steht, ist entschieden; was diesem Plan beim Bauen widerspricht, gehört in
 Abschnitt 8 „Offene Punkte für den Betreiber", nicht in eine stille Entscheidung des Tasks. Die
-vier Entscheidungen aus dem Plan-Review (Abschnitt 9, D1–D4) sind **offen**; T4/T5 arbeiten bis
-dahin mit der empfohlenen Variante und streichen bei anderslautender Entscheidung die markierten
-Teilschritte.
+vier Entscheidungen aus dem Plan-Review (Abschnitt 9, D1–D4) sind am 2026-10-03 gefallen — alle
+wie empfohlen (A); T4/T5/T7 und Abschnitt 6 setzen sie ohne Vorbehalt um.
 
 **Nicht im Umfang** (Konzept 1, 3.2, 3.8): ob ein Mod ohne Broadcaster joinen darf; Datenexport;
 die Harness-Sperre (#260); der Fremdkanal-Preview (3.7 b); die **vollständige** ID-Bindung der
@@ -240,7 +239,7 @@ Redis-TTL, nur Anzeige in `/mine` und Admin-Liste) bleibt ungefiltert und wird a
 dokumentiert — er schreibt nichts Dauerhaftes.
 
 **P16 (R2, F3) — Warm-up id-loser Zeilen erst nach Identität und Gates (Entscheidung D3).**
-Vorbehaltlich D3 = A: `SyncChannelAsync` wärmt eine Zeile **ohne** gespeicherte ID erst, nachdem
+Entschieden (D3 = A, 2026-10-03): `SyncChannelAsync` wärmt eine Zeile **ohne** gespeicherte ID erst, nachdem
 `ResolveTwitchUserIdAsync` die ID geliefert hat und beide Gates (env, Sperre) passiert sind; schlägt
 die Auflösung fehl, bleibt der Cache für diese Zeile **leer** (`RemoveChannel`, nicht nur „nicht
 wärmen"). `WarmChannelAsync` überspringt id-lose Zeilen (Boot-Recovery synct sie Sekunden später
@@ -310,9 +309,9 @@ kennt die Tabelle nicht und ignoriert sie; Prod-Migration **von Hand vor dem Dep
   liveChannels, DateOnly dateUtc, int minutes, ct)` — Rückgabe wie heute die Zahl der
   fortgeschriebenen Zeilen, gesperrte/ausgeschlossene IDs zählen nicht.
 - (R2, P19) `ChannelIdentityReconcileSummary(…, Deactivated, LockedDeactivated)`.
-- (R2, D1 = A, vorbehaltlich) `AuditLogFilter(Action, ChannelName, ActorLogin, DateTime?
+- (R2, D1 = A) `AuditLogFilter(Action, ChannelName, ActorLogin, DateTime?
   OccurredAfterUtc = null)` — zusätzliche Untergrenze auf `OccurredAtUtc`, `null` = wie heute.
-- (R2, D2 = A, vorbehaltlich) `IChannelIdentityService`: keine neue Methode; die Deaktivierung
+- (R2, D2 = A) `IChannelIdentityService`: keine neue Methode; die Deaktivierung
   nicht auflösbarer Altzeilen ist ein Zweig des bestehenden id-losen Passes mit Audit
   `channel.leave` `{ reason = "loginUnresolvable" }` **mit** Kanalname (die Zeile ist nicht geheim)
   und eigenem Zähler `UnresolvableDeactivated` in der Summe.
@@ -324,7 +323,7 @@ kennt die Tabelle nicht und ignoriert sie; Prod-Migration **von Hand vor dem Dep
 | `DELETE /api/channels/{name}/data?expectedTwitchUserId=` | Gruppe (Auth, `ChannelNameValidation`) → **`ChannelBroadcasterAuthorizationFilter`** | `Bookkeeping` | 204 · 400 `invalid_channel_name` · 401 · 403 (`Results.Forbid()`, kein Code: ID vorhanden und fremd — Filter **und** Service `NotBroadcaster`) · 404 (keine Zeile, Filter oder Service `NotFound`) · 409 `account_mismatch` (fehlt/ungleich, **vor** dem Service) · 409 `channel_identity_unresolved` |
 | `GET /api/channels/{name}/data-summary` (P5) | Gruppe → `ChannelBroadcasterAuthorizationFilter` | `InteractiveRead` | 200 `{ emoteCount, voteSessionCount, liveDayCount }` · 400 · 401 · 403 · 404 |
 | `POST /api/channels/{name}/join?liftBroadcasterLock=true` (bestehend) | unverändert | unverändert | neu: `LockedByBroadcaster` → **403** `channel_locked_by_broadcaster` für Nicht-Admins; **409** `{ errorCode: channel_locked_by_broadcaster, lockedAtUtc }` für Admins ohne Flag. Mit Flag und Admin-Rolle: gewöhnlicher Join-Ablauf. Das Flag wird als `bool liftBroadcasterLock = false` gebunden (Query) und **nur** als `isGlobalAdmin && liftBroadcasterLock` an den Service gereicht |
-| `GET /api/channels/{name}/audit-log` (bestehend) | Gruppe → **`TrackedChannelFilter`** → `ChannelManagementAuthorizationFilter` | unverändert | neu: 404 `channel_not_found` ohne Zeile, für jeden Principal. (R2, D1 = A, vorbehaltlich) Der Handler reicht `channel.CreatedAt` der **aktuellen** Zeile als `OccurredAfterUtc` an den Filter — Einträge einer früheren Zeile gleichen Namens (Purge → Login-Wiedervergabe → Join des neuen Inhabers) sind nicht mehr lesbar; der `TrackedChannelFilter` legt die geladene Zeile in `HttpContext.Items`, damit der Handler sie nicht erneut lädt |
+| `GET /api/channels/{name}/audit-log` (bestehend) | Gruppe → **`TrackedChannelFilter`** → `ChannelManagementAuthorizationFilter` | unverändert | neu: 404 `channel_not_found` ohne Zeile, für jeden Principal. (R2, D1 = A) Der Handler reicht `channel.CreatedAt` der **aktuellen** Zeile als `OccurredAfterUtc` an den Filter — Einträge einer früheren Zeile gleichen Namens (Purge → Login-Wiedervergabe → Join des neuen Inhabers) sind nicht mehr lesbar; der `TrackedChannelFilter` legt die geladene Zeile in `HttpContext.Items`, damit der Handler sie nicht erneut lädt |
 | `GET /api/channels/{name}/permissions` (bestehend) | unverändert | unverändert | `ChannelPermissionsDto` + `CanPurgeAsBroadcaster` (P6) |
 
 **`ChannelBroadcasterAuthorizationFilter`** (`Api/Auth/`): 400 bei ungültigem Namen → 401 ohne
@@ -655,10 +654,11 @@ jede Helix-ID `IExcludedChannelFilter.IsExcluded` und `IBroadcasterChannelLockSe
 (ein Batch-Lookup, nicht je Zeile) und lässt Treffer aus. Keine Prüfung gegen die gespeicherte
 `TwitchChannelId` der Zeile — die Helix-ID ist die Wahrheit des Augenblicks, auch für id-lose Zeilen.
 
-**Vertrag Warm-up (R2, P16, vorbehaltlich D3 = A):** s. P16. Bei D3 = B entfällt dieser Teil, und
-der DECISIONS-Eintrag nennt das Fenster als akzeptierte Lücke.
+**Vertrag Warm-up (R2, P16, D3 = A):** s. P16; der DECISIONS-Eintrag nennt, dass die Garantie aus
+2026-09-08 („zählt ab Join, auch wenn 7TV nicht antwortet") seither nur für Zeilen mit
+gespeicherter ID gilt.
 
-**Vertrag nicht auflösbare Altzeilen (R2, vorbehaltlich D2 = A):** im id-losen Pass, Zweig
+**Vertrag nicht auflösbare Altzeilen (R2, D2 = A):** im id-losen Pass, Zweig
 `NotFound` (`ChannelIdentityService.cs:320-334`): ist die Zeile aktiv **und** `CreatedAt` älter als
 7 Tage **und** (`LastSyncedAtUtc` ist `null` **oder** älter als 7 Tage) → eigene Transaktion,
 `LoadChannelByIdAsync`-Pendant mit `FOR UPDATE` (neuer `ChannelQueries`-Helfer per Primärschlüssel
@@ -722,7 +722,7 @@ jedes „Verlassen" in die 180-Tage-Retention — damit stimmt der Satz aus Konz
 - [ ] Roster, Sync-Gate (+ Warm-up-Reihenfolge, D3), `ChannelDeactivation` (Stage/Publish),
       Reconcile (Lock-Pass, Commit-dann-Publish, Zähler; D2-Zweig).
 - [ ] Live-Abdeckung (DTO, Helix-Client, Service, Worker-Aufruf).
-- [ ] Tests 1–25 (die D2-/D3-Fälle nur in der vom Betreiber gewählten Variante).
+- [ ] Tests 1–25.
 - [ ] DECISIONS: Absätze „four read points", „who lifts the lock and how it is audited", „Helix
       outage: owner join leaves an id-less row, lock stays, self-healing", „why the reconcile locks
       the row where the exclusion gate does not" im T1-Eintrag; `**Betrifft:**` ergänzen.
@@ -878,8 +878,7 @@ Migration `AddBroadcasterChannelLocks`; ein Rollback dahinter prüft die Tabelle
 Admin-Abschnitt aus T2 bekommt den Deploy-Hinweis `ADMIN_TWITCH_USER_IDS` vor dem Stack-Update;
 „Deploying this feature"-Unterabschnitt im Stil von `:414` — **(R2, D4)** mit der Reihenfolge
 Worker vor Api, dem Revisions-Vergleich beider laufender Container und dem Log-Beleg
-(`LockedDeactivated` in der Reconcile-Summenzeile) als Abnahme; bei D4 = B zusätzlich der
-Tag-Wechsel in `docker-compose.prod.yml`. Außerdem (R2, P15/D1/D2): ein Satz je zur
+(`LockedDeactivated` in der Reconcile-Summenzeile) als Abnahme. Außerdem (R2, P15/D1/D2): ein Satz je zur
 Live-Abdeckung (gesperrte und ausgeschlossene IDs werden nicht mehr fortgeschrieben), zur
 Audit-Log-Generation (ein neu angelegter Kanal gleichen Namens sieht die Einträge seines Vorgängers
 nicht) und zur Deaktivierung nicht auflösbarer Altzeilen nach 7 Tagen. `CLAUDE.md` Statustabelle Zeile E
@@ -1018,9 +1017,9 @@ Passwörter als Platzhalter):
    `GET https://api.twitch.tv/helix/users?login=<login>`). `ADMIN_TWITCH_LOGINS` bleibt vorerst
    stehen (wird mit gesetzter ID-Liste ignoriert — die Startwarnung „ignored" ist der Beleg, dass
    die IDs greifen; sie verschwindet mit dem späteren Entfernen der Login-Liste).
-3. **Worker zuerst, dann Api** (R2, F5 — vorbehaltlich D4): beide Services bekommen das neue Image
-   (`:latest` nach dem Merge-Publish — Memory „Prod-VPS: Betrieb und Fallen"; bei D4 = B den
-   `:<sha>`-Tag per Stack-Variable), aber in dieser Reihenfolge: erst `worker` neu erstellen und
+3. **Worker zuerst, dann Api** (R2, F5, D4 = A): beide Services bekommen das neue Image
+   (`:latest` nach dem Merge-Publish — Memory „Prod-VPS: Betrieb und Fallen"), aber in dieser
+   Reihenfolge: erst `worker` neu erstellen und
    warten, bis seine Reconcile-Summenzeile `LockedDeactivated` nennt (spätestens nach
    `Twitch:IdentityReconcileIntervalMinutes`, Default 60 min — oder sofort im Startlog, falls der
    Zähler dort steht), **dann** `api`. Bis die Api läuft, gibt es den Purge-Endpoint nicht, also
@@ -1092,17 +1091,18 @@ Die Punkte aus dem Plan-Review, die eine Entscheidung brauchen, stehen gesondert
 
 ---
 
-## 9. Betreiberentscheidungen aus dem Plan-Review (R2) — offen
+## 9. Betreiberentscheidungen aus dem Plan-Review (R2) — entschieden am 2026-10-03
 
-Keine davon trifft der Plan still. Bis zur Entscheidung gilt für T4/T5 die jeweils empfohlene
-Variante als Arbeitsannahme; die Tasks sind so geschrieben, dass die Alternative Teilschritte
-streicht, nicht umbaut.
+Keine davon hat der Plan still getroffen. **Der Betreiber hat am 2026-10-03 alle vier wie
+empfohlen entschieden: D1 = A, D2 = A, D3 = A, D4 = A.** Die Optionen bleiben als Begründung
+stehen; T4, T5, T7 und Abschnitt 6 setzen die gewählten Varianten ohne Vorbehalt um, das Konzept
+führt sie in seinem Nachtrag (Abschnitt 8) als E13–E16.
 
 **D1 — Audit-Log eines neu angelegten Kanals gleichen Namens (F1).** Nach Purge, Login-Wiedervergabe
 und Join des neuen Inhabers liest dieser 12 Monate lang die Einträge seines Vorgängers
 (`AuditLogQueryService.cs:93-99` filtert nur den Namen; der `TrackedChannelFilter` greift nur,
 solange keine Zeile existiert). Das Konzept (3.2) hat die ID-Bindung als Folgearbeit eingestuft.
-- **A — Generationsgrenze jetzt (empfohlen):** die Kanal-Route gibt zusätzlich
+- **A — Generationsgrenze jetzt (empfohlen, entschieden):** die Kanal-Route gibt zusätzlich
   `OccurredAfterUtc = channel.CreatedAt` der aktuellen Zeile mit (P-Vertrag 2.3/2.4). Kein Schema,
   kein Backfill, ~20 Zeilen. Preis: wird ein Kanal **vom selben** Broadcaster nach einem
   Admin-Purge neu angelegt, sieht das Mod-Team die alte Historie nur noch über das globale
@@ -1121,7 +1121,7 @@ Nachweisgrenze darauf, dass eine solche Zeile „inaktiv ist oder vom Reconcile 
 Letzteres tut der Reconcile heute nicht (`ChannelIdentityService.cs:320-334`), die Retention
 greift nicht (`DataRetentionService.cs:424`). Ohne Änderung stünde eine aktive id-lose Zeile mit
 totem Login für immer.
-- **A — Reconcile deaktiviert nach Schonfrist (empfohlen):** Helix `NotFound` (definitive Antwort,
+- **A — Reconcile deaktiviert nach Schonfrist (empfohlen, entschieden):** Helix `NotFound` (definitive Antwort,
   nicht `Unavailable`) **und** `CreatedAt` > 7 Tage **und** kein erfolgreicher 7TV-Sync seit 7 Tagen
   (`LastSyncedAtUtc`) → `channel.leave` `{ reason: "loginUnresolvable" }` mit Name, unter
   Zeilensperre, LEAVE nach Commit; Zähler `UnresolvableDeactivated`. Ein Kanal, dessen Login Twitch
@@ -1138,7 +1138,7 @@ totem Login für immer.
 **D3 — Warm-up id-loser Zeilen vor der Identität (F3).** Heute wärmt der Sync (und seit #318 die
 Boot-Recovery) den Match-Cache aus Postgres, bevor die Identität steht; eine id-lose Zeile mit
 Emotes zählt bis zum Gate, bei fehlgeschlagener 7TV-Auflösung bis zum nächsten Erfolg.
-- **A — Id-lose Zeilen erst nach Identität + Gates wärmen (empfohlen, P16):** betrifft nur Zeilen
+- **A — Id-lose Zeilen erst nach Identität + Gates wärmen (empfohlen, entschieden, P16):** betrifft nur Zeilen
   ohne gespeicherte ID — seit 2026-08-29 entstehen die nur bei Helix-Ausfall beim Join. Preis:
   genau diese Zeilen zählen nicht, solange 7TV sie nicht auflöst (die Garantie aus DECISIONS
   2026-09-08 „zählt ab Join, auch wenn 7TV nicht antwortet" gilt dann nur noch für Zeilen mit ID —
@@ -1150,7 +1150,7 @@ Emotes zählt bis zum Gate, bei fehlgeschlagener 7TV-Auflösung bis zum nächste
 **D4 — Rollout-Nachweis (F5).** `:latest` ohne `pull_policy`, getrennte Image-Jobs: nach einem
 Stack-Update ist nicht belegt, dass der Worker die Sperre kennt, während die Api sie schon
 anbietet.
-- **A — Runbook + Log-Beleg (empfohlen):** Reihenfolge Worker → Api (Abschnitt 6), Revisions-
+- **A — Runbook + Log-Beleg (empfohlen, entschieden):** Reihenfolge Worker → Api (Abschnitt 6), Revisions-
   Vergleich beider Container per `docker inspect` (Label `org.opencontainers.image.revision`),
   Reconcile-Summenzeile mit `LockedDeactivated` als Beleg (P19). Kein Repo-Umbau; drei Handgriffe
   im Deploy-Runbook (Operations.md „Deploying this feature").
@@ -1181,6 +1181,7 @@ gegen `origin/main` @ `eb62a2fd` geprüft; **keine war falsch**.
 | F7 (medium) | Signaturänderungen über Task-Grenzen hinweg lassen Aufrufer unkompilierbar | ja — `ChannelEndpoints.cs:155`, `AuthFilterMatrixTests.cs:151,167,182,203,210` (positional vor `ct`); `new ChannelService(` an vier Teststellen | **P18**: jede Signaturänderung mit allen Aufrufern im selben Commit, benannte Argumente; T3/T4 listen die Stellen; Abnahme „drei Testprojekte kompilieren" |
 
 Was das Review verlangt hat und was dieser Plan **nicht** tut: F1 „jetzt binden" wird als D1 mit
-der leichten Variante empfohlen, nicht mit der Spalte — die Spalte bleibt Folgearbeit; F5
-„unveränderliche Digests" wird als D4-Option B geführt, empfohlen ist der Runbook-Weg mit
-Log-Beleg, weil er keinen Deploy-Reflex ändert und denselben Nachweis liefert.
+der leichten Variante umgesetzt, nicht mit der Spalte — die Spalte bleibt Folgearbeit; F5
+„unveränderliche Digests" wird als D4-Option B geführt, gewählt ist der Runbook-Weg mit
+Log-Beleg, weil er keinen Deploy-Reflex ändert und denselben Nachweis liefert. Alle vier
+Empfehlungen hat der Betreiber am 2026-10-03 bestätigt (Abschnitt 9).
