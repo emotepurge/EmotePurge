@@ -319,6 +319,33 @@ describe('AuthService', () => {
       expect(service.takeLoginNotice()).toBeNull();
     });
 
+    it('a dismissed unconfirmed notice still reaches the login page when another request ends the session', () => {
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+      start().error(new ProgressEvent('error'), { status: 0, statusText: '' });
+      service.dismissDeletionOutcome();
+      expect(service.deletionState()).toEqual({ status: 'idle' });
+
+      service.handleSessionExpired();
+
+      expect(navigateSpy).toHaveBeenLastCalledWith('/login');
+      expect(service.takeLoginNotice()).toBe('deletionUnknown');
+    });
+
+    it('a /me that finds the user signed in settles an unconfirmed deletion: a later expiry is a plain /login', () => {
+      const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+      start().error(new ProgressEvent('error'), { status: 0, statusText: '' });
+      service.dismissDeletionOutcome();
+      // A fresh page would probe /me; here the cache is reset to let the service ask again.
+      service['isLoaded'].set(false);
+      service.ensureLoaded().subscribe();
+      httpMock.expectOne('/api/auth/me').flush(USER);
+
+      service.handleSessionExpired();
+
+      expect(navigateSpy).toHaveBeenLastCalledWith('/login');
+      expect(service.takeLoginNotice()).toBeNull();
+    });
+
     it('a rejected deletion leaves no notice when the session ends afterwards', () => {
       start().flush(null, { status: 403, statusText: 'Forbidden' });
       service.handleSessionExpired();

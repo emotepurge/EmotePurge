@@ -62,6 +62,14 @@ export class AuthService {
    * sign-in or a /me that finds a user.
    */
   private deletionConfirmed = false;
+  /**
+   * An unconfirmed deletion that nothing has settled yet. Independent of the menu notice, which the
+   * user may dismiss: the account may still be gone, and a later session reset must carry the
+   * warning to the login page, where a sign-in would silently recreate an empty account. Cleared
+   * when the outcome becomes known (a /me that finds a user, a sign-in, a new attempt) or when a
+   * reset hands it over as a notice.
+   */
+  private deletionUnresolved = false;
 
   /** Progress and outcome of the current account deletion; survives the account menu being destroyed. */
   readonly deletionState = this.deletion.asReadonly();
@@ -88,6 +96,7 @@ export class AuthService {
       tap((user) => {
         if (user) {
           this.deletionConfirmed = false;
+          this.deletionUnresolved = false;
         }
         this.currentUser.set(user);
         this.isLoaded.set(true);
@@ -103,6 +112,7 @@ export class AuthService {
    */
   login(returnUrl?: string): void {
     this.deletionConfirmed = false;
+    this.deletionUnresolved = false;
     if (returnUrl) {
       this.stashReturnUrl(returnUrl);
     }
@@ -179,6 +189,7 @@ export class AuthService {
       return;
     }
     this.deletion.set({ status: 'pending' });
+    this.deletionUnresolved = false;
     this.deleteAccount(expectedTwitchUserId).subscribe({
       complete: () => this.deletion.set({ status: 'idle' }),
       error: (error: unknown) => this.settleFailedDeletion(error),
@@ -198,6 +209,7 @@ export class AuthService {
    * user lands — the account menu that asked is unmounted by the reset.
    */
   handleDeletionSessionEnded(): void {
+    this.deletionUnresolved = false;
     this.deletion.set({ status: 'idle' });
     this.loginNotice.set('deletionSessionEnded');
     this.resetClientSession('/login');
@@ -214,13 +226,6 @@ export class AuthService {
   handleSessionExpired(): void {
     if (this.deletionConfirmed) {
       return;
-    }
-    if (this.deletion().status === 'unconfirmed') {
-      // The menu is about to disappear with the session, and with it the warning that the account
-      // may already be deleted — signing in again would silently create an empty one. A pending
-      // deletion needs nothing here: its late answer is routed to the login page by itself.
-      this.deletion.set({ status: 'idle' });
-      this.loginNotice.set('deletionUnknown');
     }
     this.resetClientSession();
   }
@@ -245,6 +250,7 @@ export class AuthService {
       return;
     }
     if (unknown) {
+      this.deletionUnresolved = true;
       this.deletion.set({ status: 'unconfirmed' });
     } else if (mismatch) {
       // No in-place switch to the other account: account-scoped client state (7TV token, cached
@@ -260,6 +266,13 @@ export class AuthService {
 
   private resetClientSession(target = '/login'): void {
     // A running deletion keeps its state: it settles it (or its outcome is routed to the login page).
+    // An unresolved one (see deletionUnresolved) leaves with the session as a login notice, whether
+    // or not the menu still shows it; a pending one is handled by its own late answer.
+    if (this.deletionUnresolved && target === '/login') {
+      this.deletionUnresolved = false;
+      this.deletion.set({ status: 'idle' });
+      this.loginNotice.set('deletionUnknown');
+    }
     this.currentUser.set(null);
     this.isLoaded.set(true);
     this.sevenTvTokenService.clearToken();

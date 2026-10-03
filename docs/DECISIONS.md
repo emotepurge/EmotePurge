@@ -98,9 +98,12 @@ retention paths. Like `AdminRequest`, it is unconditional: a cutoff argument is 
   component. An ordinary session reset (another request's 401) does not clear a pending deletion; if
   the outcome arrives with nobody signed in, the menu cannot show it, so it becomes a login-page
   notice (`deletionUnknown` for an unknown outcome, `deletionSessionEnded` for a rejection), which
-  the login page picks up even if it was created first. Rule on any later session reset: `unconfirmed`
-  is carried over as the `deletionUnknown` login notice (the warning must outlive the menu), `failed`
-  and `mismatch` (nothing changed or deleted) reset plainly, and after a *confirmed* deletion further
+  the login page picks up even if it was created first. Rule on any later session reset: an `unconfirmed` outcome is carried
+  over as the `deletionUnknown` login notice (the warning must outlive the menu) — also after the
+  user dismissed the menu notice, because dismissal and "unresolved" are separate: the unresolved
+  marker is cleared only when the outcome becomes known (a `/me` that finds a user, a sign-in, a new
+  attempt) or when a reset hands it over; `failed` and `mismatch` (nothing changed or deleted) reset
+  plainly, and after a *confirmed* deletion further
   expiry reports from requests still in flight are ignored until the next sign-in, so a late 401 does
   not pull the user from `/welcome` to `/login`.
 - **The deletion is bound to the account the user confirmed.** The session cookie is shared across
