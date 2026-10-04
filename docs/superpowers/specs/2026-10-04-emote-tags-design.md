@@ -1,6 +1,6 @@
 # Emote-Tags: kanalgebundene Tags, die ein Set zeitweise erweitern und wieder aufräumen — Spec
 
-**Datum:** 2026-10-04 · **Status:** **Dritte Fassung** — die Entscheidungen E1–E25 des Brainstormings vom 2026-10-04 sind eingearbeitet; die acht Befunde der ersten adversarialen Runde (Codex Sol, gpt-6.1-sol, 2026-10-04: vier P1, vier P2) sind in E2, E5, E7–E11, E15 (markiert „rev. 2") und E26–E32 (neu) umgesetzt; die fünf P2-Befunde der **zweiten Runde** (Platzierungs-Revision, verspätete Einspiel-Meldung gegen die Sync-Invalidierung, überlappende Ausräum-Vorschauen, verlorene Set-ID im Import-Flow, Meldebefugnis ohne 7TV-Schreibrecht) sind mit dem Betreiber entschieden und in E8/E9/E26/E27/E29 (markiert „rev. 3") und E33 (neu) umgesetzt, die Gegenbeispiele stehen nachgerechnet in 5.5; die fünf offenen Punkte der ersten Fassung sind entschieden (Abschnitt 13.0); Restrisiken stehen in 13.1 · **Issue:** #201 (ersetzt die Lesart „Liste als Auswahl", s. [Konzept-Liste-als-Auswahl-2026-10-03.md](../../Konzept-Liste-als-Auswahl-2026-10-03.md)) · **Epic:** #200 (Basis) · **Berührt:** #245 (Selbstbereinigung), #243/#244 (Aufbewahrung), #304 (Set-Lesung), #149 (Duplikat-Push) · **Belegt gegen:** `feat/emote-sets-200` @ `2db77d26` (Hauptworktree `/home/dev/projects/EmotePurge`); der Branch dieser Spec, `feat/201-list-as-selection`, steht auf `767b1e3e` und wird vor der Umsetzung auf den Epic-Stand gezogen.
+**Datum:** 2026-10-04 · **Status:** **Vierte Fassung** — nach der Opus-Verifikation der dritten Fassung gegen `2db77d26` (ein neuer P2: der REST-Resync ist keine glaubwürdige Quelle für ein Verlassen; dazu Lese-Zeit-Regel statt Sync-Sperre, Uhrquelle, Deadlock-Ordnung, sechs innere Widersprüche) — E8/E33 „rev. 4", E34 neu, Gegenbeispiele 8/9, R4; davor: **Dritte Fassung** — die Entscheidungen E1–E25 des Brainstormings vom 2026-10-04 sind eingearbeitet; die acht Befunde der ersten adversarialen Runde (Codex Sol, gpt-6.1-sol, 2026-10-04: vier P1, vier P2) sind in E2, E5, E7–E11, E15 (markiert „rev. 2") und E26–E32 (neu) umgesetzt; die fünf P2-Befunde der **zweiten Runde** (Platzierungs-Revision, verspätete Einspiel-Meldung gegen die Sync-Invalidierung, überlappende Ausräum-Vorschauen, verlorene Set-ID im Import-Flow, Meldebefugnis ohne 7TV-Schreibrecht) sind mit dem Betreiber entschieden und in E8/E9/E26/E27/E29 (markiert „rev. 3") und E33 (neu) umgesetzt, die Gegenbeispiele stehen nachgerechnet in 5.5; die fünf offenen Punkte der ersten Fassung sind entschieden (Abschnitt 13.0); Restrisiken stehen in 13.1 · **Issue:** #201 (ersetzt die Lesart „Liste als Auswahl", s. [Konzept-Liste-als-Auswahl-2026-10-03.md](../../Konzept-Liste-als-Auswahl-2026-10-03.md)) · **Epic:** #200 (Basis) · **Berührt:** #245 (Selbstbereinigung), #243/#244 (Aufbewahrung), #304 (Set-Lesung), #149 (Duplikat-Push) · **Belegt gegen:** `feat/emote-sets-200` @ `2db77d26` (Hauptworktree `/home/dev/projects/EmotePurge`); der Branch dieser Spec, `feat/201-list-as-selection`, steht auf `767b1e3e` und wird vor der Umsetzung auf den Epic-Stand gezogen.
 
 Diese Spec ist ein Denkwerkzeug des Betreibers und deshalb deutsch; Bezeichner, Routen und
 Wire-Felder bleiben englisch. Sie enthält keinen fertigen Code — Verträge, Verhalten, Grenzfälle,
@@ -95,6 +95,16 @@ Alles Folgende ist am Branch nachgeprüft; es ist die Begründung für die Vertr
   (`EmotePurge.Infrastructure/Services/UsageStatQueryService.cs:115`, Methode `GetUsageContextAsync`),
   füllt also jede unarchivierte Zeile mit Nullen auf und lässt archivierte weg — die Behauptung aus
   dem Brainstorming („Archivierte sind auf Query-Ebene ausgeschlossen") trifft zu.
+- **Der REST-Vollsync liest eine veraltete Quelle.** `SevenTvSyncService` holt den Kanalzustand über
+  `sevenTvApiClient.GetChannelStateForTwitchUserAsync` (`SevenTvSyncService.cs:103`; REST v3
+  `users/twitch/{id}`, `SevenTvApiClient.cs:233/1140`), dessen Cache 10–30 min hinterherhinken kann
+  (SevenTV/SevenTV#81; eigene Messung: ein Test-Emote kam erst nach ~10 min an,
+  `docs/Untersuchung-7TV-WebSocket-2026-07-30.md:94,98`). Der Code **weiß** das und misst es bereits:
+  `ReconcileAsync` loggt „REST-Resync archiviert Emote …, das vor weniger als 15 Minuten synchronisiert
+  wurde — möglicher 7TV-REST-Cache-Lag" (`SevenTvSyncService.cs:765-773`, Schwelle 15 min, „measurement
+  only (no protection)") und archiviert trotzdem. Ein per EventAPI frisch hinzugefügtes Emote wird vom
+  nächsten Vollsync also regelmäßig **fälschlich** archiviert und vom darauffolgenden wieder entarchiviert.
+  Das ist der Grund für E34.
 - **Archiviert wird an drei Stellen**, alle in `EmotePurge.Infrastructure`: (a) der EventAPI-Delta-Pfad
   `SevenTvSyncService.cs:285-290` (`delta.PulledIds` → `IsArchived = true`, `ArchivedAt`); (b) der
   REST-Vollsync `ReconcileAsync` `:750-790` (Emotes, die im Live-Set fehlen, `:780-781`), aufgerufen aus
@@ -109,6 +119,19 @@ Alles Folgende ist am Branch nachgeprüft; es ist die Begründung für die Vertr
   (`EmoteService.cs:272`: `emote.ArchivedAt = archive ? now : null`; `SevenTvSyncService.cs:833`) —
   die Spalte sagt nur „ist gerade archiviert seit", nicht „hat das Set je verlassen"; für die Frage
   „wurde nach Zeitpunkt t ein Verlassen beobachtet" taugt sie nicht (E33).
+- **Uhrquelle:** jeder Zeitstempel im Sync und in den Services ist `DateTime.UtcNow` der Anwendung
+  (`SevenTvSyncService.cs:277,290-291,401,664`; `EmoteService.cs:272`), nie Postgres `now()`
+  (Transaktionsbeginn). Api und Worker laufen als zwei Container auf **demselben** VPS-Host und teilen
+  dessen Uhr; ein Vergleich eines Api-Zeitstempels (`RegisteredAtUtc`) mit einem Worker-Zeitstempel
+  (`LastObservedAtUtc`) ist deshalb ein Vergleich derselben Uhr. Diese Annahme steht in 12.4; wer die
+  beiden Prozesse je auf verschiedene Hosts verteilt, braucht NTP auf beiden.
+- **Der Sync nimmt keine Sperre und keine explizite Transaktion:** `SevenTvSyncService` und
+  `EmoteService.MarkInSetAsync` schreiben mit einem einfachen `SaveChangesAsync` (implizite
+  Transaktion, `READ COMMITTED`), ohne `FOR UPDATE` und ohne `BeginTransactionAsync` — anders als
+  `PurgeIfInactiveSinceAsync`/`MergeAsync` (3.3). Der Vollsync aktualisiert dabei **auch die
+  Kanalzeile** (`ActiveEmoteSetId`, `ActiveEmoteSetCapacity`, `LastSyncedAtUtc`, `LastSyncAttemptAtUtc`,
+  `LastSyncFailureReason`; `SevenTvSyncService.cs:388-405`). Beides ist für 5.5 Regel 5/6 maßgeblich:
+  eine Sicherheitsregel, die darauf baut, dass der Sync eine gerade laufende Meldung „sieht", hält nicht.
 - Das aktive Set eines Kanals ist `Channel.ActiveEmoteSetId` (`EmotePurge.Core/Entities/Channel.cs`,
   `string`, leer = kein Sync bisher), daneben `ActiveEmoteSetCapacity`. Welche Sets der Kanal wann
   aktiv hatte, hält `ChannelEmoteSetObservation` (FK auf `Channel`, Cascade,
@@ -330,7 +353,8 @@ Alles Folgende ist am Branch nachgeprüft; es ist die Begründung für die Vertr
 
 Jede Zeile: Entscheidung, Begründung in einem Satz, verworfene Alternative. E1–E10 sind
 Betreiberentscheidungen aus dem Brainstorming (ggf. „rev. 2" nach der Zweitmeinung); E11–E25 sind
-Festlegungen der ersten Fassung; E26–E32 sind die Beschlüsse zur Zweitmeinung (Betreiber, 2026-10-04).
+Festlegungen der ersten Fassung; E26–E32 sind die Beschlüsse zur ersten Zweitmeinung, E33 der zur
+zweiten, E34 der zur Verifikation der dritten Fassung (Betreiber, 2026-10-04).
 
 | Nr. | Entscheidung | Begründung | Verworfen |
 |---|---|---|---|
@@ -341,14 +365,14 @@ Festlegungen der ersten Fassung; E26–E32 sind die Beschlüsse zur Zweitmeinung
 | **E5 rev. 2** | **Variante A: Platzierungen werden explizit gespeichert.** Nach dem Einspiel-Lauf meldet der Browser die **tatsächlich** hinzugefügten 7TV-IDs plus Set-ID **plus Operations-ID** (E27). Eine verlorene Meldung ist fail-safe: die Emotes erscheinen beim Ausräumen unangehakt. | Dasselbe Muster wie `sync-imported` (3.3/3.4); der Server behauptet nichts, was er nicht gemeldet bekam. | **Variante B:** Ableiten aus `FirstSeenAt`. |
 | **E6** | Platzierungen und Aktivierungen tragen die **Set-ID**; die eines nicht-aktiven Sets ruhen und gelten wieder, wenn es aktiv ist. Ausräumen wirkt immer auf das **aktive** Set. | Set-Wechsel (Halloween 2026-10-01) ohne Set-ID würde den falschen Stand beschreiben. | Löschen beim Set-Wechsel; set-unabhängig. |
 | **E7 rev. 2** | **Übertragung auf Basis der Aktivierung (E26):** Ein von A platziertes Emote X, das ein **anderes, im selben Set eingespieltes** Tag B enthält, bleibt beim Ausräumen von A im Set, wird unangehakt „wird noch von B gebraucht" gezeigt, und seine Platzierung **wandert** zu B. | „Wird noch gebraucht" muss das System wissen; die Aktivierung sagt, welche Tags gerade gelten — auch eines, dessen Einspielen nichts hinzugefügt hat. Die Gegenbeispiele der Zweitmeinung lösen sich damit (5.5). | Übertragung nur an Tags mit eigener Platzierung in S (ließ B ohne Spur, wenn A schon alles hinzugefügt hatte). |
-| **E8 rev. 3** | **Der Sync räumt Platzierungen weg und merkt sich das Verlassen.** Beobachtet das System, dass ein Emote das aktive Set verlassen hat — EventAPI-Delta, REST-Vollsync oder set-zentrische Lösch-Meldung (3.1 a–c) —, werden im selben `SaveChanges` alle Platzierungen `(Tag des Kanals, 7TV-ID, dieses Set)` gelöscht **und** `EmoteSetLeaveObservation (Kanal, 7TV-ID, Set).LastObservedAtUtc` auf jetzt gesetzt (E33). **Verhaltensänderung des Worker-Prozesses.** Restlücke: Entfernen + Wiederhinzufügen zwischen zwei Beobachtungen bleibt unsichtbar (13.1 R1). | Ein von Hand entferntes und wieder hinzugefügtes Emote darf nicht auf Basis einer alten **oder verspätet gemeldeten** Platzierung vorgeschlagen werden (Runde 1 Befund 1, Runde 2 Befund 2). | Nur passives Herausfallen (erste Fassung); `ArchivedAt` als Beobachtungsmarke (wird beim Entarchivieren gelöscht, 3.1). |
+| **E8 rev. 4** | **Der Sync merkt sich ein glaubwürdiges Verlassen — und löscht selbst nichts.** Beobachtet das System glaubwürdig (E34), dass ein Emote das aktive Set verlassen hat, schreibt es im selben `SaveChangesAsync` wie die Archivierung `EmoteSetLeaveObservation (Kanal, 7TV-ID, Set).LastObservedAtUtc = jetzt` (E33). **Platzierungen werden vom Sync nicht mehr gelöscht**: ob eine Platzierung gilt, entscheidet jede **Lesung** (E33 rev. 4); verfallene Zeilen räumt die nächste Einspiel-Meldung (Upsert) oder der Sweep der nächsten Ausräumung ab. **Verhaltensänderung des Worker-Prozesses** (Beobachtung schreiben, Eintrittszeit stempeln). Restlücke: Entfernen + Wiederhinzufügen zwischen zwei Beobachtungen bleibt unsichtbar (13.1 R1). | Ein Sync ohne Sperre kann eine gleichzeitig entstehende Platzierung nicht sehen (3.1); eine Löschung im Sync wäre deshalb nie die Sicherung, nur Aufräumen — und sie zwänge eine Sperrreihenfolge mit der Kanalzeile, die der Sync ohnehin schreibt (Deadlock 40P01). Die Lese-Zeit-Regel braucht beides nicht. | Löschung im Sync (zweite/dritte Fassung); Kanalsperre an den Archivierungsstellen (Kosten im Worker-Hot-Path: jeder Vollsync jedes Kanals nähme eine Zeilensperre und wartete hinter laufenden Meldungen). |
 | **E9 rev. 3** | **Rechte:** Lesen hinter `UsageStatsAccessAuthorizationFilter`; Pflegen hinter `ChannelManagementAuthorizationFilter`; **Melden und Registrieren** hinter `UsageStatsAccessAuthorizationFilter` **plus** — im Handler, wie `sync-deleted` — der 7TV-Besitzprüfung `IImportTargetOwnershipService.CheckAsync` für das gemeldete Set (3.3). Folge: melden kann nur, wer das Set bei 7TV auch wirklich schreiben darf; ein Twitch-Mod ohne 7TV-Editor-Recht kann keine Platzierungen erzeugen. | Die Kanalfilter prüfen kein 7TV-Recht (3.3); ohne die Besitzprüfung könnte ein Mod ohne Schreibrecht Haken in die Vorschau eines echten Editors setzen (Runde 2 Befund 5). Mit ihr gilt R3 wieder wörtlich: fälschen kann nur, wer ohnehin direkt löschen könnte. | Nur Kanalfilter (zweite Fassung); Melden hinter Management (Editor-Lauf ohne Papierspur). |
-| **E10 rev. 2** | **Meldungen sind idempotent über eine Operations-ID** (E27): eine Wiederholung derselben Operation ändert nichts; eine Ausräum-Meldung berührt nur die in ihrer Vorschau erfassten Platzierungen **in der erfassten Revision**, nie „den Rest". | Retries nach Timeout sind Normalfall (3.4); eine Meldung, die zwischenzeitlich entstandene Platzierungen anderer Operationen löscht, wäre falsch (Runde 1 Befund 5, Runde 2 Befund 1). | Idempotenz nur über Unique-Index (erste Fassung). |
+| **E10 rev. 3** | **Meldungen sind idempotent über eine Operations-ID** (E27): eine Wiederholung derselben Operation ändert nichts; eine Ausräum-Meldung berührt nur die in ihrer Vorschau erfassten Platzierungen **in der erfassten Revision**, nie „den Rest". | Retries nach Timeout sind Normalfall (3.4); eine Meldung, die zwischenzeitlich entstandene Platzierungen anderer Operationen löscht, wäre falsch (Runde 1 Befund 5, Runde 2 Befund 1). | Idempotenz nur über Unique-Index (erste Fassung). |
 | **E11 rev. 2** | **„Im Set"-Status serverseitig** = unarchivierte `Emote`-Zeile des Kanals (3.1), **immer bezogen auf eine explizit genannte Set-ID** (E29); dient Zählern und Tags-Seite. Der **Vorschlag beim Ausräumen** kommt aus der **Live-Lesung** desselben Sets. | Eine Zahl, eine Quelle; vor einem Löschen zählt nur, was 7TV jetzt sagt. | Status aus der Set-Vorschau-Route (#220). |
 | **E12** | **Einspielen ist ein Import-Lauf** über `startImportFlow`/`SevenTvImportService` mit neuem `ImportOrigin` `{ kind: 'tag'; tagId; tagName; channelName }` und neuem `SourceKind` `"tag"` (3.3). Kein neuer `SevenTvRunKind`. | Vorlesung, Konfliktschritt, Kapazitätswarnung, Token, Arbiter, Settlement, Dock existieren. | Eigener Lauf; Origin `'channel'` mit falschem Namen. |
 | **E13** | **Ausräumen ist ein Lösch-Lauf** über `SevenTvDeleteService.startDelete`; Purge-Protokoll, Download und „Wiederherstellen" wie bei jedem Delete. | Unwiderruflichkeit ist Produktversprechen (`PRODUCT.md` Prinzip 4); der Rückweg ist gebaut. | Eigener REMOVE-Lauf ohne Protokoll. |
 | **E14** | **Die Platzierungsmeldungen sind Meldungen am Lauf-Record** (optional, nur für Tag-Läufe): `tagPlacementReport` (Import), `tagRemovalReport` (Delete), je `SyncReportState`; `closed` wartet, der Dock zeigt Fehler und Retry. Läufe ohne 7TV-Queue (7.1/5, 7.2/7) melden direkt aus dem Flow mit sichtbarem Retry. | „Dasselbe Muster wie die Buchführung" wörtlich; der Undo trägt zwei Meldungen am Record (3.4). | Lose Nachmeldung ohne Retry-Oberfläche. |
-| **E15 rev. 2** | **Worker: Quelltext der `EmotePurge.Worker`-Projektdateien unverändert, Verhalten und Binary nicht.** E8 (Sync-Invalidierung) und 5.5/8 (Merge-Guard) liegen in `EmotePurge.Infrastructure`, das der Worker ausführt (3.1, 3.2). **Worker-Image muss neu gebaut und zusammen mit der Api deployt werden** (12.4, 12.5). Die Trockenlauf-Zählung wird **nicht** um Tags erweitert (13.0). | Die erste Fassung sagte „kein Worker-Change" und meinte nur den Quelltext; falsch war die Folgerung, der laufende Worker bleibe gleich (Codex-Befund 7). | Zählfelder + Formatter-Zeile. |
+| **E15 rev. 2** | **Worker: Quelltext der `EmotePurge.Worker`-Projektdateien unverändert, Verhalten und Binary nicht.** E8 (Beobachtungen und Eintrittsstempel im Sync) und 5.5/8 (Merge-Guard) liegen in `EmotePurge.Infrastructure`, das der Worker ausführt (3.1, 3.2). **Worker-Image muss neu gebaut und zusammen mit der Api deployt werden** (12.4, 12.5). Die Trockenlauf-Zählung wird **nicht** um Tags erweitert (13.0). | Die erste Fassung sagte „kein Worker-Change" und meinte nur den Quelltext; falsch war die Folgerung, der laufende Worker bleibe gleich (Codex-Befund 7). | Zählfelder + Formatter-Zeile. |
 | **E16** | **Tag löschen mit Platzierungen ist erlaubt**, mit Hinweis „12 Emotes dieses Tags sind noch eingespielt — vorher ausräumen?"; danach sind sie gewöhnliche Set-Emotes. | Ein Tag ist Organisationsmittel, kein Besitz. | Löschen sperren. |
 | **E17** | **Emote aus Tag herausnehmen** löscht auch dessen Platzierungen (alle Sets); das Emote bleibt im Set. | Was nicht mehr zum Tag gehört, kann das Tag nicht mehr ausräumen. | Platzierung behalten. |
 | **E18** | **Tag-Filter als Dimension von `EmoteUsageFilter`** (`tagId` + Schlüsselmenge); zählt in `isAnyActive()`, „Filter zurücksetzen" löscht ihn mit. Select nur, wenn der Kanal ≥ 1 Tag hat. | Ein Filter unter Filtern; kein Dauer-Control bei Kanälen ohne Tags. | Eigener Zustand; immer sichtbar. |
@@ -366,16 +390,19 @@ Festlegungen der ersten Fassung; E26–E32 sind die Beschlüsse zur Zweitmeinung
 | **E30 neu** | **Audit-Details tragen nur `tagId`, nie `tagName`.** | Tag-Namen sind Freitext, der eine Person benennen kann; eine Kopie in actor-gebundenen Audit-Zeilen fiele unter die 365-Tage-Frist und würde von der Kontolöschung nicht angefasst (3.2). Mit nur der ID ist die Audit-Zeile nach dem Tag-Löschen inhaltsfrei. | `tagName` in den Details (erste Fassung). |
 | **E31 neu** | **Freigabevoraussetzung:** Der Betreiber prüft vor dem Release von T-B seine Datenschutzerklärung darauf, ob Kanal-Inhalte dieser Art (vom Manager eingegebene Bezeichner, 180-Tage-Bindung an den Kanal) abgedeckt sind, und ergänzt sie ggf. | Die erste Fassung behauptete „keine Personendaten"; richtig ist „kein Kontobezug, aber Freitext". | Prüfpunkt ohne Verbindlichkeit. |
 | **E32 neu** | **Lieferung in drei Teilen** (12.1): T-A Extraktion `DeleteProgressSection`/`delete-flow` (reiner Refactor), T-B Tags CRUD + Zuweisen + Tags-Seite lesend + Filter + Aufbewahrung/Datenschutz, T-C Einspielen/Ausräumen mit Aktivierung, Platzierungen, Sync-Invalidierung, Operations-IDs, Worker-Rollout. | Jeder Teil ist allein prüfbar und mergebar; T-C ist der einzige mit Sync-Verhaltensänderung. | Ein Plan, ein PR. |
-| **E33 neu** | **Beobachtetes Verlassen wird gespeichert:** `EmoteSetLeaveObservation (ChannelId, SevenTvEmoteId, SevenTvEmoteSetId, LastObservedAtUtc)`, Upsert an den drei Archivierungsstellen (3.1 a–c). Eine Einspiel-Meldung legt eine Platzierung für X **nur** an, wenn kein Verlassen von X aus diesem Set **nach** `RegisteredAtUtc` der Operation beobachtet wurde; sonst wird X **endgültig** verworfen (`discardedStaleIds`). | Eine verspätete Einspiel-Meldung darf die Sync-Invalidierung nicht unterlaufen (Runde 2 Befund 2). `ArchivedAt` scheidet aus, weil es beim Entarchivieren gelöscht wird (3.1); eine Spalte auf `Emote` scheidet aus, weil die Frage set-bezogen ist und `Emote` keine Set-Dimension hat — die kleinste Form, die beides trägt, ist eine Zeile je `(Kanal, Emote, Set)` mit einem Zeitstempel. | `ArchivedAt` als Marke; Spalte auf `Emote`; Tombstones gelöschter Platzierungen (existieren nicht, wenn die Meldung erst später kommt). |
+| **E33 rev. 4** | **Beobachtetes Verlassen wird gespeichert und bei jeder Lesung angewandt:** `EmoteSetLeaveObservation (ChannelId, SevenTvEmoteId, SevenTvEmoteSetId, LastObservedAtUtc)`, Upsert an den glaubwürdigen Archivierungsstellen (E34). **Lese-Zeit-Regel:** eine Platzierung **gilt** nur, wenn keine Beobachtung `(Kanal, X, Set)` jünger ist als `RegisteredAtUtc` der Operation, die die Platzierung zuletzt anlegte oder übertrug (`Placement.OperationId → Operation.RegisteredAtUtc`); alle Leserouten, Zähler und die Ausräum-Vorschau sehen nur geltende Platzierungen. Eine Einspiel-Meldung legt eine Platzierung für X **nur** an, wenn keine Beobachtung jünger als ihre `RegisteredAtUtc` existiert; sonst wird X **endgültig** verworfen (`discardedStaleIds`). | Mit der Regel an der Lesung gewinnt die Beobachtung **ohne** dass der Sync etwas sehen oder sperren muss (Runde 2 Befund 2; Verifikation: Rennen Sync ↔ Meldung unter `READ COMMITTED`, 5.5 Gegenbeispiel 9). `ArchivedAt` scheidet aus (wird beim Entarchivieren gelöscht, 3.1); eine Spalte auf `Emote` scheidet aus (set-bezogene Frage). | Löschung im Sync als Sicherung (dritte Fassung); `ArchivedAt` als Marke; Spalte auf `Emote`; Tombstones. |
+| **E34 neu** | **Glaubwürdigkeit eines Verlassens:** EventAPI-Delta (3.1 a) und unsere eigene set-zentrische Lösch-Meldung (3.1 c) sind **immer** glaubwürdig. Der **REST-Vollsync** (3.1 b) ist es **nur**, wenn die Zeile das aktive Set nicht innerhalb der letzten **30 Minuten** betreten hat: neue Spalte `Emote.LastEnteredSetAtUtc` (gestempelt beim Anlegen der Zeile und bei jedem Entarchivieren — `UpsertEmote`, `MarkInSetAsync` Richtung Restore); ist sie jünger als `now − 30 min`, archiviert der Vollsync die Zeile wie heute, schreibt aber **keine** Beobachtung. | Der REST-Cache hinkt dokumentiert 10–30 min (SevenTV#81, 3.1); die bestehende 15-min-Schwelle ist ausdrücklich nur Messung. Die Standardnutzung (wöchentlich: archivierte Stronghold-Zeilen → Einspielen → EventAPI entarchiviert → stale Vollsync archiviert erneut) würde sonst jede Platzierung sofort verfallen lassen — fail-safe, aber das Feature wäre im Normalfall wertlos. 30 min ist das dokumentierte obere Ende: ein zu kurzes Fenster kostet das Feature, ein zu langes verzögert nur die Erkennung einer echten manuellen Entfernung bei ausgefallener EventAPI (R1). | 15 min (die Messschwelle — untere Kante, würde den belegten ~10-min-Fall gerade so, den 30-min-Fall nicht abdecken); `LastSyncedAt` als Marke (ändert sich auch bei Umbenennungen, weitet R1 unnötig); REST-Verlassen ganz ignorieren (dann sähe ein Kanal ohne EventAPI nie ein Verlassen). |
 
 ---
 
 ## 5. Datenmodell
 
-Sechs neue Tabellen, alle kanalgebunden, alle über FK-Kaskade am Kanal (3.2). Zwei EF-Migrationen
-(`AddEmoteTags` in T-B: 5.1, 5.2; `AddEmoteTagPlacements` in T-C: 5.3, 5.4 samt
-`EmoteSetLeaveObservation`), in Produktion von Hand vor dem jeweiligen Deploy (CLAUDE.md
-„Prod-Migration").
+**Fünf Tag-Tabellen** (`EmoteTag`, `EmoteTagEntry`, `EmoteTagPlacement`, `EmoteTagActivation`,
+`EmoteTagOperation`) **plus eine Kanal-Tabelle** (`EmoteSetLeaveObservation`, geschrieben für jeden
+Kanal, ob er Tags hat oder nicht) **plus eine Spalte** (`Emote.LastEnteredSetAtUtc`, E34) — alle
+kanalgebunden, alle über FK-Kaskade am Kanal (3.2). Zwei EF-Migrationen (`AddEmoteTags` in T-B: 5.1,
+5.2; `AddEmoteTagPlacements` in T-C: 5.3, 5.4, `EmoteSetLeaveObservation`, `Emote.LastEnteredSetAtUtc`),
+in Produktion von Hand vor dem jeweiligen Deploy (CLAUDE.md „Prod-Migration").
 
 ### 5.1 `EmoteTag` (T-B)
 
@@ -411,11 +438,11 @@ PK/Unique `(TagId, SevenTvEmoteId)`. Limit 1000 je Tag (E20). Kein FK auf `Emote
 | `TagId` | `long` | FK → `EmoteTag.Id`, `OnDelete(Cascade)`. |
 | `SevenTvEmoteId` | `string(24)` | Das Emote. |
 | `SevenTvEmoteSetId` | `string(24)` | Das Set (E6). Formprüfung wie `EmoteSetIdValidation`. |
-| `PlacedAtUtc` | `timestamptz` | Zeitpunkt der Meldung; in der Vorschau als „eingespielt am" sichtbar (E2 rev. 2). |
+| `PlacedAtUtc` | `timestamptz` | Zeitpunkt der Einspiel-Meldung, die das Emote **zuletzt hinzugefügt** hat; in der Vorschau als „eingespielt am" sichtbar (E2 rev. 2). **Bei einer Übertragung bleibt er stehen** — der Mensch fragt „seit wann ist X wegen eines Tags im Set", und das ändert ein Besitzerwechsel nicht; die Gültigkeitsprüfung (E33) läuft nicht über diese Spalte, sondern über die Registrierung der Operation in `OperationId`. **Bei einer Einspiel-Meldung wird er immer überschrieben**, auch wenn die Platzierung schon existierte (5.5 Regel 10). |
 | `OperationId` | `uuid` | **Die Revision der Platzierung:** die Operation, die sie zuletzt anlegte **oder übertrug** (E27 rev. 3). Wird bei jeder Übertragung auf die ausräumende Operation gesetzt. Eine Ausräum-Meldung berührt eine Platzierung nur, wenn deren `OperationId` der in der Vorschau gelesenen entspricht (6.4). |
 
 PK/Unique `(TagId, SevenTvEmoteId, SevenTvEmoteSetId)`. Index `(SevenTvEmoteSetId, SevenTvEmoteId)`
-für „wer hält X in S" und für die Sync-Invalidierung (5.5 Regel 5). **Kein FK auf Entry** (E17
+für „wer hält X in S" und für die Lese-Zeit-Regel (5.5 Regel 5). **Kein FK auf Entry** (E17
 löscht explizit im Service). Eine gesonderte Revisionsspalte ist unnötig: jede Änderung einer
 Platzierung geschieht durch genau eine Operation, deren ID ohnehin gespeichert wird — sie **ist** die
 Revision (Festlegung).
@@ -459,12 +486,23 @@ Klick ist vernachlässigbar, und eine Frist für „verwaist" brächte eine neue
 | `SevenTvEmoteSetId` | `string(24)` | Das Set, in dem das Verlassen beobachtet wurde (5.5 Regel 5). |
 | `LastObservedAtUtc` | `timestamptz` | Serverzeit der Beobachtung; Upsert überschreibt. |
 
-PK `(ChannelId, SevenTvEmoteId, SevenTvEmoteSetId)`. Geschrieben an den drei Archivierungsstellen
-(3.1 a–c) im selben `SaveChangesAsync`, **unabhängig davon, ob der Kanal Tags hat** — die Zeile muss
-schon existieren, wenn eine verspätete Meldung kommt, und der Sync kann nicht wissen, welche Meldung
-noch unterwegs ist. Gelesen nur von der Einspiel-Meldung (6.4). Zeilenzahl ≤ Emotes × je besuchte Sets
-des Kanals, mit dem Kanal kaskadiert. Kein FK auf `Emote` (E22-Haltung: die Frage überlebt die
-Rasterzeile).
+PK `(ChannelId, SevenTvEmoteId, SevenTvEmoteSetId)`. Geschrieben an den **glaubwürdigen**
+Archivierungsstellen (E34: a und c immer, b nur außerhalb des 30-min-Fensters) als Entity-Upsert im
+selben `SaveChangesAsync` wie die Archivierung, **unabhängig davon, ob der Kanal Tags hat** — die
+Zeile muss schon existieren, wenn eine verspätete Meldung kommt, und der Sync kann nicht wissen, welche
+Meldung noch unterwegs ist. **Keine Tag-Tabelle**, sondern Kanal-Beobachtung: sie fällt mit dem
+Kanal-Purge (Kaskade), nicht mit einem Tag. Gelesen von jeder Platzierungslesung (6.2) und von der
+Einspiel-Meldung (6.4). **Keine Pflege nötig:** der Schlüssel ist eindeutig je `(Kanal, Emote, Set)`,
+ein Upsert überschreibt — die Tabelle wächst nicht mit jedem Archivierungsereignis, sondern ist durch
+die Zahl der Emotes mal je besuchter Sets des Kanals beschränkt (HandOfBlood: einige tausend Zeilen) und
+kaskadiert mit dem Kanal. Eine Frist wäre eine zweite Aufräumpflicht ohne Wirkung auf die Größe
+(Festlegung). Kein FK auf `Emote` (E22-Haltung: die Frage überlebt die Rasterzeile).
+
+**`Emote.LastEnteredSetAtUtc`** (`timestamptz?`, E34): wann die Zeile zuletzt als Mitglied des aktiven
+Sets **begonnen** hat — gestempelt beim Anlegen (`UpsertEmote`, neue Zeile) und bei jedem Entarchivieren
+(`UpsertEmote` `SevenTvSyncService.cs:833`, `MarkInSetAsync` Richtung Restore), nie gelöscht. `null`
+für Bestandszeilen vor der Migration = „unbekannt" → ein REST-Verlassen gilt dann als glaubwürdig (die
+Zeile ist sicher älter als 30 min). Gelesen nur in `ReconcileAsync` (3.1 b).
 
 ### 5.5 Invarianten, Regeln, Gegenbeispiele
 
@@ -487,24 +525,39 @@ Rasterzeile).
    „behalten": Übertragung an ein aktives T′ oder Löschung. Nach der Deaktivierung gilt
    **`(T, S) inaktiv ⇒ keine Platzierung (T, ·, S)`** als serverseitig geprüfte Invariante (Test 11).
    Der Mensch hat X behalten; es ist ab jetzt „war schon vorher im Set". **Festlegung** (13.4/2).
-5. **Sync-Invalidierung mit Gedächtnis (E8 rev. 3, E33):** An den drei Archivierungsstellen (3.1 a–c)
-   wird im selben `SaveChangesAsync` jede Platzierung `(Tag des Kanals, SevenTvEmoteId des Emotes, S)`
-   gelöscht **und** `EmoteSetLeaveObservation (Kanal, SevenTvEmoteId, S)` auf jetzt gesetzt, wobei S =
-   das Set, in dem das Verlassen beobachtet wurde: bei (a) und (b) `Channel.ActiveEmoteSetId` des gerade
-   synchronisierten Kanals, bei (c) die `emoteSetId` der Meldung. Die **Aktivierung** bleibt unberührt
-   (das Tag gilt weiter als eingespielt; sein nächstes Ausräumen findet nichts und deaktiviert).
-   Platzierungen **nicht-aktiver** Sets werden vom Sync nie berührt (3.1: er beobachtet nur das aktive
-   Set) — sie werden erst beim nächsten Ausräumen gegen die Live-Lesung geprüft (R1). Die Löschung läuft
-   mengenbasiert (`ExecuteDelete`), ohne Kanalsperre; trifft sie eine Platzierung, die eine gerade
-   laufende Meldung überträgt, scheitert deren Transaktion an der Konkurrenz (EF meldet 0 betroffene
-   Zeilen), wird zurückgerollt und vom Retry mit derselben `operationId` erneut angewandt — der sieht
-   die Platzierung dann nicht mehr. Die Beobachtung gewinnt immer.
-6. **Serialisierung der Meldungen:** Jede Meldung (Einspielen, Ausräumen) und jede Tag-Löschung läuft
-   in einer Transaktion, die zuerst die **Kanalzeile** mit `FOR UPDATE` nimmt
-   (`LoadChannelForUpdateAsync`, 3.3). Damit sind Übertragung, Deaktivierung und Sweep je Kanal — und
-   damit je Set — nacheinander; zwei überlappende Ausräumungen (Gegenbeispiel 7) sehen einander. Eine
-   Sperre je `(Kanal, Set)` wäre feiner, bräuchte aber eine eigene Sperrzeile; die Kanalzeile ist die
-   bestehende Idiomatik und die Meldungen sind selten (zwei je Stream). **Festlegung.**
+5. **Beobachtung statt Invalidierung (E8 rev. 4, E33 rev. 4, E34):** An den glaubwürdigen
+   Archivierungsstellen schreibt der Sync im selben `SaveChangesAsync` wie die Archivierung
+   `EmoteSetLeaveObservation (Kanal, SevenTvEmoteId, S) = jetzt`, wobei S = das Set, in dem das
+   Verlassen beobachtet wurde: bei (a) und (b) `Channel.ActiveEmoteSetId` des gerade synchronisierten
+   Kanals, bei (c) die `emoteSetId` der Meldung. **Er löscht keine Platzierung und nimmt keine Sperre.**
+   Glaubwürdig ist (a) immer, (c) immer, (b) nur für Zeilen mit `LastEnteredSetAtUtc` älter als 30 min
+   oder `null` (E34). **Lese-Zeit-Regel:** eine Platzierung `(T, X, S)` **gilt**, wenn keine
+   Beobachtung `(Kanal, X, S)` mit `LastObservedAtUtc > RegisteredAtUtc` der Operation in
+   `Placement.OperationId` existiert. Nur geltende Platzierungen erscheinen in 6.2 (`placedByThisTag`,
+   `placedByOtherTags`, `placedCount`), nur geltende kommen in einen Snapshot; eine nicht geltende Zeile
+   ist **verfallen** und wird vom nächsten Einspiel-Upsert überschrieben oder vom Sweep der nächsten
+   Deaktivierung abgeräumt (6.4). Die **Aktivierung** bleibt von Beobachtungen unberührt. Platzierungen
+   **nicht-aktiver** Sets bekommen vom Sync nie eine Beobachtung (3.1) — sie werden erst beim nächsten
+   Ausräumen gegen die Live-Lesung geprüft (R1). **Warum die Regel an der Lesung hängt:** der Sync läuft
+   ohne Sperre unter `READ COMMITTED` (3.1); eine Meldung, die gleichzeitig eine Platzierung einfügt oder
+   überträgt, ist für ihn unsichtbar — eine Löschung im Sync könnte sie verfehlen (Gegenbeispiel 9). An
+   der Lesung ist das egal: wer immer die Platzierung schrieb, die Beobachtung ist jünger als deren
+   Registrierung und gewinnt. **Uhr:** beide Zeitstempel sind `DateTime.UtcNow` von Api bzw. Worker auf
+   demselben Host (3.1).
+6. **Serialisierung der Meldungen, Sperrreihenfolge:** Jede Meldung (Einspielen, Ausräumen) und jede
+   Tag-Löschung läuft in einer Transaktion, die zuerst die **Kanalzeile** mit `FOR UPDATE` nimmt
+   (`LoadChannelForUpdateAsync`, 3.3) und danach nur Tag-Tabellen **schreibt** und
+   `EmoteSetLeaveObservation` **liest**. Der Sync schreibt `Emotes`, `EmoteSetLeaveObservation` und die
+   Kanalzeile (als gewöhnliches `UPDATE`, 3.1) und schreibt **keine** Tag-Tabelle. Damit gibt es keinen
+   Zyklus: der Sync wartet höchstens auf die Kanalzeile einer laufenden Meldung, nie umgekehrt — das
+   Deadlock-Muster 40P01 (Meldung hält Kanal und will eine Zeile, die der Sync hält, während der Sync die
+   Kanalzeile will) ist konstruktiv ausgeschlossen, weil der Sync keine Zeile hält, die eine Meldung
+   braucht. Zwei überlappende Ausräumungen (Gegenbeispiel 7) sehen einander über die Kanalsperre. **Retry-
+   Regel:** schlägt eine Meldung trotzdem mit einem Serialisierungs- oder Deadlock-Fehler fehl (SQLSTATE
+   40001/40P01, etwa durch eine künftige Codeänderung), ist das ein transienter Fehler wie ein Timeout —
+   der Lauf-Record zeigt `failed` mit Retry, die Wiederholung trägt dieselbe `operationId` und ist durch
+   E27 harmlos. Eine Sperre je `(Kanal, Set)` wäre feiner, bräuchte aber eine eigene Sperrzeile; die
+   Kanalzeile ist die bestehende Idiomatik und die Meldungen sind selten (zwei je Stream). **Festlegung.**
 7. **Regel 10** bei den Zählern (6.2): Gruppieren nur über die FK-Spalte einer Tabelle, Filter über
    skalare ID-Listen; der „im Set"-Join läuft über eine vorher materialisierte Menge der unarchivierten
    `SevenTvEmoteId`s des Kanals.
@@ -512,6 +565,12 @@ Rasterzeile).
    wird verweigert (eine Bedingung in `MergeAsync`; **läuft im Worker**, E15 rev. 2). **Festlegung.**
 9. **Set-Wechsel ändert keine Tabelle:** Aktivierungen und Platzierungen des alten Sets bleiben
    („ruhen", E6).
+10. **Ein Einspiel-Upsert überschreibt immer** `OperationId` **und** `PlacedAtUtc` — auch dann, wenn die
+   Platzierung schon existierte (`alreadyRecordedCount`). Sonst hielte eine alte, verfallene Zeile ihre
+   alte Revision, ein verspäteter alter Ausräum-Bericht träfe sie noch (Gegenbeispiel 5 in der Variante
+   „Verlassen vor der Beobachtung, Wiederhinzufügen, dann die alte Meldung"), und die Lese-Zeit-Regel
+   hielte sie weiter für verfallen, obwohl sie gerade neu gemeldet wurde. Die Übertragung setzt dagegen
+   nur `OperationId` (5.3).
 
 **Gegenbeispiele der Zweitmeinung, nachgerechnet mit E26/E7 rev. 2** (A und B sind Tags desselben
 Kanals, S das aktive Set, X/Y Emotes):
@@ -567,6 +626,33 @@ Kanals, S das aktive Set, X/Y Emotes):
   genau das, was zwei Menschen soeben zweimal bestätigt haben (behalten). Sequenziell statt gleichzeitig
   ändert nichts: B's Vorschau nach A's Meldung zeigt X als eigen (übertragen), angehakt. **Gelöst.**
 
+**Gegenbeispiele der Verifikation der dritten Fassung, nachgerechnet mit E8/E33 rev. 4 und E34:**
+
+- *8. „Der stale REST-Resync ist eine falsche Quelle für ein Verlassen — Standardfall Stronghold."*
+  Wöchentlich: die Stronghold-Zeilen sind seit dem letzten Stream archiviert. Einspielen (Operation P,
+  registriert t₀) fügt sie hinzu; der EventAPI-Push entarchiviert jede Zeile und stempelt
+  `LastEnteredSetAtUtc = t₁`. Der nächste REST-Vollsync (t₂, Minuten später) liest den 10–30 min alten
+  Cache, sieht die Emotes nicht, **archiviert die Zeilen erneut** (wie heute, `:765-773` loggt es) —
+  aber `LastEnteredSetAtUtc = t₁ > t₂ − 30 min` → **keine Beobachtung** (E34). Die Einspiel-Meldung
+  (ggf. verspätet) findet keine Beobachtung > t₀ → Platzierungen werden angelegt. Der Vollsync nach
+  dem Cache-Lag entarchiviert wieder (Stempel erneuert). Ausräumen nach dem Stream: Live-Lesung zeigt die
+  Emotes, Platzierungen gelten → angehakt. **Gelöst.** Vorher (dritte Fassung): Platzierungen gelöscht,
+  Beobachtung > t₀, Meldung verworfen — das Feature wäre im Normalfall leer gelaufen. Rest: eine echte
+  manuelle Entfernung innerhalb von 30 min nach dem Eintritt bei ausgefallener EventAPI wird erst vom
+  ersten Vollsync **nach** dem Fenster als Beobachtung geschrieben (R1, Fehlrichtung: Platzierung gilt
+  bis dahin weiter — der Mensch sieht in der Vorschau ein Emote, das die Live-Lesung ohnehin nicht mehr
+  zeigt; war es inzwischen wieder hinzugefügt, ist es angehakt mit Datum).
+- *9. „Rennen zwischen Sync und Meldung unter `READ COMMITTED`."* Eine Einspiel-Meldung (Operation P,
+  registriert t₀) hält die Kanalsperre und fügt gerade `(A, X, S)` ein, noch nicht committed; parallel
+  beobachtet der EventAPI-Delta-Pfad, dass X das Set verlassen hat (t₁ > t₀), und schreibt die
+  Beobachtung — er sieht die uncommittete Platzierung nicht und hätte sie (dritte Fassung) nicht
+  gelöscht. Die Meldung prüft Beobachtungen **vor** ihrem Insert und sah t₁ ggf. noch nicht → Platzierung
+  wird committed. **Jetzt:** jede spätere Lesung wendet die Regel an: Beobachtung t₁ > `RegisteredAtUtc`
+  t₀ → Platzierung **gilt nicht**, erscheint nirgends, kommt in keinen Snapshot; der nächste Einspiel-
+  Upsert oder Sweep räumt die Zeile weg. Umgekehrte Reihenfolge (Beobachtung committed, dann Meldung):
+  die Meldung sieht t₁ > t₀ und verwirft X (`discardedStaleIds`). Beide Reihenfolgen enden gleich.
+  **Gelöst** — ohne Sperre im Sync.
+
 ### 5.6 Warum die Form später persönliche Tags zulässt
 
 Ein optionales `OwnerTwitchUserId` (null = Kanal-Tag) auf `EmoteTag` würde reichen; der Unique-Index
@@ -603,7 +689,11 @@ Besitzprüfung, das verrät, ob das Set existiert.
 Beide Leserouten nehmen den Query-Parameter **`emoteSetId`** (E29). Fehlt er, gilt
 `Channel.ActiveEmoteSetId`; die Antwort nennt **immer** `emoteSetId` (die tatsächlich verwendete ID)
 und `isActiveSet`. Ist weder ein Parameter noch ein aktives Set vorhanden, sind die set-bezogenen Felder
-`0`/`false`/leer und `emoteSetId` ist `null`.
+`0`/`false`/leer und `emoteSetId` ist `null`. **Jedes Platzierungsfeld unten meint nur geltende
+Platzierungen** (Lese-Zeit-Regel, 5.5 Regel 5): der Service joint `EmoteTagPlacement → EmoteTagOperation`
+(für `RegisteredAtUtc`) und schließt Zeilen aus, zu denen eine `EmoteSetLeaveObservation` des Kanals für
+dieselbe `(SevenTvEmoteId, emoteSetId)` mit jüngerem `LastObservedAtUtc` existiert — Regel 10 (5.5/7):
+beide Joins laufen über skalare Schlüssel, nicht über Navigationen in ein `GroupBy`.
 
 **`GET …/tags?emoteSetId=`** → 200 `{ emoteSetId, isActiveSet, tags: [...] }`, Tags in
 `CreatedAtUtc`-Reihenfolge:
@@ -668,35 +758,47 @@ Alle drei: `operationId` ist eine UUID (400 `tag_operation_id_invalid` sonst); `
 `EmoteSetIdValidation.IsValid` geprüft (400 `invalid_emote_set_id`); sie **muss nicht** das aktive Set
 sein (E6: gemeldet wird, wohin geschrieben wurde). Vor dem Service-Aufruf die 7TV-Besitzprüfung
 (6.1, E9 rev. 3). Eine Meldung zu einer **nicht registrierten** Operation → 404 `tag_operation_unknown`;
-zu einer Operation mit **anderem `emoteSetId` oder `kind`** → 409 `tag_operation_conflict`; zu einer
-bereits angewandten → 200 `replayed: true`, alle Zähler 0, nichts geschrieben (E27). Jede Meldung läuft
-in **einer Transaktion**, die zuerst die Kanalzeile mit `FOR UPDATE` nimmt (5.5 Regel 6) und am Ende
-`AppliedAtUtc` setzt.
+zu einer Operation mit **anderem `emoteSetId`, anderem `kind` oder anderem Tag** → 409
+`tag_operation_conflict` (dieselben drei Fälle wie bei der Registrierung); zu einer bereits angewandten →
+200 `replayed: true`, alle Zähler 0, nichts geschrieben (E27). Jede Meldung läuft in **einer
+Transaktion**, die zuerst die Kanalzeile mit `FOR UPDATE` nimmt (5.5 Regel 6) und am Ende `AppliedAtUtc`
+setzt; ein Serialisierungs-/Deadlock-Fehler ist transient (5.5 Regel 6, Retry-Regel).
 
 **Einspielen:** je ID mit Eintrag: existiert `EmoteSetLeaveObservation (Kanal, id, emoteSetId)` mit
 `LastObservedAtUtc > RegisteredAtUtc` der Operation → **verworfen**, `discardedStaleIds` (E33); sonst
-Upsert `(tagId, id, emoteSetId)` mit `OperationId = operationId` (`recordedCount` /
-`alreadyRecordedCount`). IDs ohne Eintrag → `notTaggedIds`, nicht platziert. Dann Upsert
+Upsert `(tagId, id, emoteSetId)` — **neu oder bestehend, in beiden Fällen** `OperationId = operationId`
+und `PlacedAtUtc = jetzt` (5.5 Regel 10; `recordedCount` zählt neue, `alreadyRecordedCount` bestehende
+Zeilen). IDs ohne Eintrag → `notTaggedIds`, nicht platziert. **Kausal gelesen:** verworfen wird nur, was
+**nach** der Registrierung als Verlassen beobachtet wurde; ein Emote, das tatsächlich vor der
+Registrierung entfernt, aber erst danach vom Sync gesehen wurde, wird ebenfalls verworfen — fail-safe,
+die Platzierung fehlt dann für ein Emote, das der Lauf wirklich hinzugefügt hat (Fehlrichtung: zu wenig
+vorgeschlagen). Dann Upsert
 `EmoteTagActivation (tagId, emoteSetId)` mit dieser `operationId` — **auch bei leerer ID-Liste** und
 auch, wenn alles verworfen wurde (das Tag wurde eingespielt; was davon noch da ist, sagt die nächste
 Live-Lesung).
 
-**Ausräumen.** Sei P = die Platzierungen `(tagId, ·, emoteSetId)`, die **jetzt** existieren; S = der
-`snapshot`. Ein Snapshot-Eintrag **trifft** eine Platzierung in P nur, wenn ID **und**
-`placementOperationId` übereinstimmen (Revision, 5.3) — ein Eintrag ohne Treffer wird übersprungen.
+**Ausräumen.** Sei P = die Platzierungen `(tagId, ·, emoteSetId)`, die **jetzt** existieren
+(geltende und verfallene — der Sweep räumt beide); S = der `snapshot`. Ein Snapshot-Eintrag **trifft**
+eine Platzierung in P nur, wenn ID **und** `placementOperationId` übereinstimmen (Revision, 5.3) — ein
+Eintrag ohne Treffer wird übersprungen. Zuerst Schritt 4 entscheiden, dann die übrigen:
 
-1. Getroffene Platzierungen mit ID in `removedIds` → löschen (`deletedCount`).
-2. Getroffene mit ID in `keptIds` → Übertragung nach 5.5 Regel 4 (`transferredCount`; die übertragene
-   Platzierung bekommt `OperationId = operationId`), ohne aktives T′ → löschen (`droppedCount`).
-3. Getroffene, deren ID weder in `removedIds` noch in `keptIds` steht → laut Vorschau nicht mehr im Set
-   → löschen (`droppedCount`).
 4. Deaktivieren: `EmoteTagActivation (tagId, emoteSetId)` wird gelöscht, **wenn** ihre `OperationId`
    gleich `activationOperationId` ist (`deactivated: true`); sonst bleibt sie (`deactivated: false` —
-   ein neueres Einspielen hat das Tag erneut aktiviert), und Schritt 5 entfällt.
-5. **Sweep** (E26 rev. 3): jede **weitere** Platzierung in P — nicht getroffen, weil nach der Vorschau
-   hereingewandert, neu platziert oder in anderer Revision — wird wie „behalten" behandelt: Übertragung
-   an ein aktives T′ oder Löschung (`sweptCount`). Danach gilt: keine Platzierung `(tagId, ·,
-   emoteSetId)` mehr.
+   ein neueres Einspielen hat das Tag erneut aktiviert).
+1. Getroffene Platzierungen mit ID in `removedIds` → löschen (`deletedCount`) — in beiden Fällen von 4.
+2. **Nur bei `deactivated: true`:** getroffene mit ID in `keptIds` → Übertragung nach 5.5 Regel 4
+   (`transferredCount`; die übertragene Platzierung bekommt `OperationId = operationId`, behält
+   `PlacedAtUtc`), ohne aktives T′ → löschen (`droppedCount`). Bei `deactivated: false` bleiben sie
+   unberührt: das Tag ist wieder aktiv und hält sie zu Recht (eine Übertragung würde einem aktiven Tag
+   seine Platzierungen nehmen — die dritte Fassung hatte das übersehen).
+3. Getroffene, deren ID weder in `removedIds` noch in `keptIds` steht → laut Vorschau nicht mehr im Set
+   → löschen (`droppedCount`) — in beiden Fällen von 4 (die Vorschau hat gesehen, dass sie weg sind; ein
+   neueres Einspielen hätte sie mit neuer Revision überschrieben, dann gäbe es keinen Treffer).
+5. **Sweep, nur bei `deactivated: true`** (E26 rev. 3): jede **weitere** Platzierung in P — nicht
+   getroffen, weil nach der Vorschau hereingewandert, neu platziert, in anderer Revision oder
+   **verfallen** (5.5 Regel 5) — wird wie „behalten" behandelt: Übertragung an ein aktives T′ oder
+   Löschung (`sweptCount`); eine verfallene Zeile wird nie übertragen, nur gelöscht. Danach gilt: keine
+   Platzierung `(tagId, ·, emoteSetId)` mehr.
 6. IDs in `removedIds`/`keptIds` ohne Treffer sind kein Fehler (ein fremdes, unplatziertes oder
    inzwischen anders revidiertes Emote — erlaubt, 7.2/6).
 
@@ -788,16 +890,24 @@ eingespieltes Tag** erlaubt (nachgetaggte Emotes nachziehen).
    `pinSetId`** nimmt `toTargetSelection` **nicht** den `trackedActive`-Schnellweg, auch wenn die ID die
    aktive ist, sondern `{ kind: 'trackedSet', channelName, emoteSetId }` — der Loader liest dann genau
    dieses Set (Preis: der `trackedSet`-Zweig liest die Mitgliederliste über die #220-Vorschau-Route und
-   kostet ein Permit aus `TrackedEmoteSetPreview`; für zwei Läufe je Stream hinnehmbar). Nach der
-   Zielauflösung prüft der Flow `targetState.setId === emoteSetId` — sonst Abbruch
-   `tags.errors.setChanged`, kein Dialog. Ab hier der bestehende Import: Bestätigungsdialog mit
+   kostet ein Permit aus `TrackedEmoteSetPreview`; für zwei Läufe je Stream hinnehmbar). Der
+   `trackedSet`-Zweig gibt **per Konstruktion** die angefragte ID zurück
+   (`import-target-loader.ts:219`, `setId: loaded.value.emoteSetId`) — ein Vergleich nach der
+   Zielauflösung kann dort nie fehlschlagen und entfällt deshalb (die dritte Fassung hatte ihn samt
+   Test gefordert). Ab hier der bestehende Import: Bestätigungsdialog mit
    Origin-Zeile „aus Tag Stronghold" und Übersprungen-Zeile „3 sind schon im Set"
    (`skippedDuplicates`-Vorgabe aus Schritt 4), Slot-Projektion (warnt), Namenskonflikte im
    Konfliktschritt, Token, `filterAlreadyPresent` (zweite Live-Lesung — bewusst doppelt: sie ist die
    letzte Verteidigung gegen den Doppel-Push, 3.4), `recheckTransferPlan`. **Unmittelbar vor
    `startImport`** (in `start()`, nach dem Arbiter-Check) ein zweiter Vergleich: `targetState.setId`,
    die aktuelle `activeEmoteSetId()` der Seite (vom Flow als Signal mitgegeben) und die eingefrorene ID
-   müssen gleich sein — sonst `noteRefusedStart`-artige Notiz `tags.errors.setChanged`, kein Lauf. Der
+   müssen gleich sein — sonst `noteRefusedStart`-artige Notiz `tags.errors.setChanged`, kein Lauf.
+   **Das ist der eine wirksame Wächter im Browser**; der zweite sitzt im Server (6.4: eine Meldung mit
+   anderer Set-ID als registriert ist 409). **Grenze:** hat der Server den Set-Wechsel noch nicht
+   bemerkt (`ActiveEmoteSetId` hinkt bis zum nächsten Sync hinterher, #253 Spec F13), zeigt auch das
+   Seitensignal noch das alte Set — der Lauf schreibt dann in das alte, nicht mehr aktive Set, die
+   Meldung trägt dieselbe ID, die Platzierungen ruhen dort (E6). Das ist ein Komfortverlust (der Mod
+   muss nach dem Sync erneut einspielen), **keine** falsche Buchführung. Der
    Flow reicht `operationId`, `tagId` und `emoteSetId` in `startImport` hinein (neue optionale
    `tag`-Felder am Ziel-Objekt), damit der Lauf-Record sie trägt; `run.targetSetId` ist damit
    **per Konstruktion** die registrierte ID.
@@ -920,7 +1030,9 @@ Ausräumen → Emotes wieder im Set ohne Platzierung → „war schon vorher im 
 | **Kanal ohne aktives Set** | Tags lesbar/pflegbar; Einspielen/Ausräumen fehlen; Dock-Knopf fehlt (§2.5). |
 | **Shown set ≠ aktives Set** im Raster | Tag-Filter funktioniert; „Tag zuweisen" und die Filterzeilen-Knöpfe **fehlen** (E3/E6/E29); stattdessen der Satz „Einspielen und Ausräumen wirken auf das aktive Set". |
 | **Grober Zeiger** | Dock, Zuweisen, Einspielen, Ausräumen fehlen (§2.5). Tags-Seite lesbar; Umbenennen/Löschen/„Aus Tag entfernen" bleiben (Festlegung). |
-| **Kanal-Purge (Admin, Aufbewahrung, #245)** | FK-Kaskade nimmt alle fünf Tabellen mit (3.2). Keine Codeänderung an `PurgeAsync`; Trockenlauf-Zählung ohne Tags (13.0). **#245 muss in seiner Spec/seinen Tests ausweisen, dass die Tag-Tabellen kaskadieren** (Abschnitt 10). |
+| **Kanal-Purge (Admin, Aufbewahrung, #245)** | FK-Kaskade nimmt die fünf Tag-Tabellen **und** die Kanal-Tabelle `EmoteSetLeaveObservation` mit (3.2); `Emote.LastEnteredSetAtUtc` fällt mit der Emote-Zeile. Keine Codeänderung an `PurgeAsync`; Trockenlauf-Zählung ohne Tags (13.0). **#245 muss in seiner Spec/seinen Tests ausweisen, dass alle sechs Tabellen kaskadieren** (Abschnitt 10). |
+| **Set-Wechsel, den der Server noch nicht bemerkt hat** | Lauf und Meldung gehen ins alte Set, Platzierungen ruhen dort (7.1/6, E6). Komfortverlust, Buchführung korrekt. |
+| **A's Vorschau sieht B inaktiv; B wird dazwischen eingespielt (X schon da, übersprungen); A's Lauf entfernt X** | B ist „eingespielt" ohne X. Der Schaden entsteht bei 7TV, **vor** jeder Meldung — keine Buchführung kann ihn verhindern. **Restrisiko R4** (13.1): B's Tags-Seite zeigt X dimm „nicht im Set"; ein erneutes Einspielen von B holt X zurück. |
 | **Kanalzusammenführung** | Verlierer mit Tags wird verweigert (5.5 Regel 8; Worker, E15 rev. 2). |
 | **Limit erreicht** | 409 mit Code; Grund am gesperrten Knopf. |
 | **Rennen Zuweisen ↔ Sync** | Emote zwischen Rasterladen und Klick archiviert → `skippedNotInSetIds` (E23). |
@@ -1005,9 +1117,9 @@ Zeiger fehlen Einspielen/Ausräumen und die Rasterauswahl; eine Zelle öffnet ni
 ### 9.6 Aktualität
 
 Nach jeder eigenen Aktion lädt die Seite `GET …/tags` (und ggf. `…/entries`) neu. Fremde Änderungen
-erscheinen beim nächsten Laden; kein Live-Event `tags.changed` in v1. Die Sync-Invalidierung (E8) wird
-so sichtbar: nach einem `channel.synced`-Reload der Nutzungsseite stimmen die Zähler beim nächsten
-`GET …/tags`.
+erscheinen beim nächsten Laden; kein Live-Event `tags.changed` in v1. Eine Beobachtung des Syncs (E8)
+wird so sichtbar: nach einem `channel.synced`-Reload der Nutzungsseite wendet das nächste `GET …/tags`
+die Lese-Zeit-Regel an und die Zähler stimmen.
 
 ### 9.7 i18n-Familien (de Referenz, en gleichlautend; Wortlaute Vorschlag)
 
@@ -1054,7 +1166,8 @@ Fassung):**
   es nicht; sie sind Betriebsdaten des Kanals wie Emote-Zeilen. Operationen und Platzierungen leben
   mit ihrem Tag.
 - **#245 (Selbstbereinigung des Broadcasters):** die Umsetzung existiert noch nicht. Wer #245 nach
-  dieser Spec umsetzt, **muss** in Konzept und Tests ausweisen, dass die fünf Tag-Tabellen über die
+  dieser Spec umsetzt, **muss** in Konzept und Tests ausweisen, dass die fünf Tag-Tabellen **und** die
+  Kanal-Tabelle `EmoteSetLeaveObservation` (geschrieben für jeden Kanal, auch ohne Tags) über die
   Kaskade mitgehen (der Mechanismus ist derselbe wie beim Admin-Purge; die Aussage gehört trotzdem in
   #245s Liste, s. `EmotePurge-245/docs/Konzept-Broadcaster-Selbstbereinigung-2026-10-03.md:50-57`).
   Landet #201 zweiter, trägt diese Spec die Pflicht (8: Kanal-Purge).
@@ -1085,12 +1198,23 @@ Fassung):**
   zusätzlich mit zwei gleichzeitig startenden Transaktionen gegen die Kanalsperre); **Invariante**
   „inaktiv ⇒ keine Platzierung" nach jedem Szenario als gemeinsame Assertion; `heldByActiveTags` nur
   bei Aktivierung.
-- *T-C, `SevenTvSyncServiceTests`:* Archivierung über `ReconcileAsync` löscht Platzierungen
-  `(Kanal-Tags, ID, ActiveEmoteSetId)` **und** schreibt `EmoteSetLeaveObservation` im selben Commit
-  (auch für einen Kanal ohne Tags), lässt Aktivierung und Fremd-Set-Platzierungen stehen; dasselbe für
-  den Delta-Pfad (`PulledIds`); `EmoteServiceTests`: `MarkInSetAsync` Richtung Delete löscht
-  Platzierungen des gemeldeten Sets und schreibt die Beobachtung, Richtung Restore legt weder
-  Platzierung noch Beobachtung an und lässt eine bestehende Beobachtung stehen.
+- *T-C, `SevenTvSyncServiceTests`:* `ReconcileAsync` archiviert eine fehlende Zeile **und** schreibt
+  `EmoteSetLeaveObservation (Kanal, ID, ActiveEmoteSetId)` im selben Commit (auch für einen Kanal ohne
+  Tags) — **nur** wenn `LastEnteredSetAtUtc` älter als 30 min oder `null` ist; mit `LastEnteredSetAtUtc`
+  = jetzt − 5 min wird archiviert, aber **keine** Beobachtung geschrieben (E34); der Delta-Pfad
+  (`PulledIds`) schreibt sie **immer**; `UpsertEmote` stempelt `LastEnteredSetAtUtc` beim Anlegen und
+  beim Entarchivieren, nicht bei einer Umbenennung; **Platzierungen bleiben vom Sync unberührt** (keine
+  Löschung, E8 rev. 4). `EmoteServiceTests`: `MarkInSetAsync` Richtung Delete schreibt die Beobachtung
+  (immer), Richtung Restore stempelt `LastEnteredSetAtUtc` und lässt eine bestehende Beobachtung stehen.
+- *T-C, Lese-Zeit-Regel (`EmoteTagServiceTests`):* eine Platzierung mit Beobachtung **jünger** als die
+  Registrierung ihrer Operation fehlt in `placedByThisTag`/`placedByOtherTags`/`placedCount`; eine
+  Beobachtung **älter** als die Registrierung ändert nichts; nach einem erneuten Einspiel-Upsert (neue
+  Registrierung, jünger als die Beobachtung) gilt sie wieder; der Upsert überschreibt `OperationId` und
+  `PlacedAtUtc` auch für eine bestehende Zeile (5.5 Regel 10); **kausal:** eine Beobachtung, die **vor**
+  der Registrierung gestempelt wurde, verwirft nicht, eine danach gestempelte verwirft — unabhängig
+  davon, wann das Verlassen bei 7TV tatsächlich geschah; `deactivated: false` lässt `keptIds` unberührt
+  und löst keinen Sweep aus; eine Übertragung behält `PlacedAtUtc`; Gegenbeispiele 8 und 9 aus 5.5 als
+  Szenarien (9 mit zwei Transaktionen: Beobachtung committed vor/nach der Meldung).
 
 **Backend — `tests/EmotePurge.Api.Tests`:** `AuthFilterMatrixTests` je Route `InlineData` für 401
 anonym/unvollständig; je Gruppe 403-Fact (`CanViewUsageStatsAsync false` → Lesen/Registrieren/Melden
@@ -1117,14 +1241,15 @@ Kanalfilter vor Leiter — ein Nicht-Leseberechtigter bekommt 403 ohne dass die 
   → kein Lauf, Abbruch bei Abweichung, `complete`-Block, No-op-Pfade senden direkt, Retry mit derselben
   `operationId`).
 - `import-flow.spec.ts` (E29 rev. 3): `pinSetId: true` erzwingt `trackedSet` auch bei `emoteSetId ===
-  activeEmoteSetId` (ohne Flag unverändert `trackedActive` — bestehende Fälle bleiben); **Set-Wechsel
-  während der Zielauflösung** (Loader antwortet mit anderer `setId`) → Abbruch, kein Dialog; **Set-Wechsel
-  während der Bestätigung** (Signal `activeEmoteSetId` ändert sich, Dialog bestätigt danach) → kein
-  `startImport`, Notiz; unveränderter Fall → `startImport` mit `targetSetId` = eingefrorene ID.
+  `activeEmoteSetId` (ohne Flag unverändert `trackedActive` — bestehende Fälle bleiben); der Loader wird
+  mit genau der angepinnten ID aufgerufen und `targetState.setId` ist diese ID (kein eigener
+  Abbruchfall — `import-target-loader.ts:219`); **Set-Wechsel während der Bestätigung** (Signal
+  `activeEmoteSetId` ändert sich, Dialog bestätigt danach) → kein `startImport`, Notiz; unveränderter
+  Fall → `startImport` mit `targetSetId` = eingefrorene ID.
 - `seven-tv-import.service.spec.ts`/`seven-tv-delete.service.spec.ts`: optionaler Tag-Report hält
   `closed` auf, `failed` bietet Retry mit gleicher ID, ohne Tag-Origin `null`; Body-Form.
 - `tags-page.spec.ts`: Sperren samt Grund; Knopf „Ausräumen" nur bei `active`; URL-Wahl; Leerzustände.
-- `api-error-locales.spec.ts` deckt die sechs Codes automatisch.
+- `api-error-locales.spec.ts` deckt die acht Codes (6.5: fünf T-B, drei T-C) automatisch.
 
 **Frontend — E2E (`web/e2e/emote-tags.e2e.spec.ts`, `/api/**` gemockt, 7TV über `mockSevenTvGql`
 mit `setRead`/`addEmote`/`removeEmote`; CDN über die `test.ts`-Fixture; `page.clock.install()` vor
@@ -1158,7 +1283,7 @@ mit `setRead`/`addEmote`/`removeEmote`; CDN über die `test.ts`-Fixture; `page.c
 |---|---|---|---|
 | **T-A** | `DeleteProgressSection` + `delete-flow.ts` aus `MassDeletePanel` extrahieren (9.5); `sevenTvRunLeaveGuard`. **Reiner Refactor, keine Verhaltensänderung**; bestehende Specs/E2E unverändert grün. | Frontend-Suiten, E2E, Browser-Blick auf beide Hostseiten. | Nur Api-Image (Frontend liegt im Api-Image). Keine Migration. |
 | **T-B** | Migration `AddEmoteTags` (5.1, 5.2); `IEmoteTagService` CRUD + Zuweisen; Endpoints Lesen/Pflegen (ohne Platzierungsfelder); Fehlercodes; Tags-Seite lesend/pflegend; Tag-Filter mit Zahlen und „→ Übersicht" (ohne Lauf-Knöpfe); Dock „Tag zuweisen…"/„Aus Tag entfernen"; Reiter; Merge-Guard (5.5/8); Abschnitt 10 inkl. **E31 als Freigabevoraussetzung**. | Infrastructure-/Api-Tests, Vitest, E2E Szenario 1, Codex-Review. | Migration von Hand → **Api- und Worker-Image zusammen** (Merge-Guard und EF-Modell laufen im Worker). |
-| **T-C** | Migration `AddEmoteTagPlacements` (5.3, 5.4 inkl. `EmoteSetLeaveObservation`); Platzierungs-/Aktivierungsfelder in 6.2; Registrier- und Melde-Endpoints 6.4 mit Operations-IDs, Revision, Sweep und 7TV-Besitzprüfung; `SourceKind "tag"`; `ImportOrigin 'tag'`; `ImportFlowTarget.pinSetId` und die beiden Set-Vergleiche im Import-Flow (E29 rev. 3); Sync-Invalidierung mit Beobachtung (5.5/5) an drei Stellen; dritte Meldung am Lauf-Record (E14); Einspiel-/Ausräum-Flows und Vorschau-Dialog; Filterzeilen-Knöpfe; Lauf-Dock der Tags-Seite. | Alles aus 11 für T-C, Codex-Review, Live-Verifikation gegen einen Testkanal (Regel 16: Einspielen, Ausräumen, No-op, Set-Wechsel). | Migration von Hand → **Api- und Worker-Image zusammen** (Sync-Invalidierung läuft im Worker) → **erst danach** Tag-Läufe freigeben (Feature-Flag `Tags:RunsEnabled`, Default `false` im ersten Deploy — Festlegung: die Knöpfe Einspielen/Ausräumen rendern nur, wenn das Flag über `GET /api/channels/{channelName}/permissions` oder einen kleinen Config-Endpoint `true` meldet; der Plan wählt den Weg, 13.4/1). |
+| **T-C** | Migration `AddEmoteTagPlacements` (5.3, 5.4 inkl. `EmoteSetLeaveObservation` und `Emote.LastEnteredSetAtUtc`); Platzierungs-/Aktivierungsfelder in 6.2 mit Lese-Zeit-Regel; Registrier- und Melde-Endpoints 6.4 mit Operations-IDs, Revision, Sweep und 7TV-Besitzprüfung; `SourceKind "tag"`; `ImportOrigin 'tag'`; `ImportFlowTarget.pinSetId` und der Set-Vergleich vor dem Start (E29 rev. 3); Beobachtungen und Eintrittsstempel im Sync (5.5/5, E34) an drei Stellen; dritte Meldung am Lauf-Record (E14); Einspiel-/Ausräum-Flows und Vorschau-Dialog; Filterzeilen-Knöpfe; Lauf-Dock der Tags-Seite. | Alles aus 11 für T-C, Codex-Review, Live-Verifikation gegen einen Testkanal (Regel 16: Einspielen, Ausräumen, No-op, Set-Wechsel). | Migration von Hand → **Api- und Worker-Image zusammen** (Sync-Invalidierung läuft im Worker) → **erst danach** Tag-Läufe freigeben (Feature-Flag `Tags:RunsEnabled`, Default `false` im ersten Deploy — Festlegung: die Knöpfe Einspielen/Ausräumen rendern nur, wenn das Flag über `GET /api/channels/{channelName}/permissions` oder einen kleinen Config-Endpoint `true` meldet; der Plan wählt den Weg, 13.4/1). |
 
 Jeder Teil hat seinen eigenen Plan und PR (gegen `main`, nach dem Epic-Merge). Reihenfolge: T-A →
 T-B → T-C; T-A und T-B sind unabhängig voneinander und können parallel geplant werden, T-C braucht
@@ -1194,8 +1319,15 @@ vor dem Messfenster (Memory #69/#73).
   `EmotePurge.Infrastructure` ausführt: T-B über den Merge-Guard in `ChannelIdentityService.MergeAsync`
   (`TwitchIdentityReconcileWorker.cs:61`) und über das erweiterte EF-Modell (`AppDbContext` ist
   geteilt — ein alter Worker gegen die neue Datenbank liefe mit einem veralteten Modell-Snapshot);
-  T-C über die Sync-Invalidierung in `SevenTvSyncService` (`SevenTvPeriodicResyncWorker.cs:53`,
-  `Worker.cs:196,275`; EventAPI-Delta über `SevenTvEventClient`).
+  T-C über die Beobachtungen und den Eintrittsstempel in `SevenTvSyncService`
+  (`SevenTvPeriodicResyncWorker.cs:53`, `Worker.cs:196,275`; EventAPI-Delta über `SevenTvEventClient`;
+  E8 rev. 4, E34). **Kein Sperren, keine Löschung im Sync** — der Hot-Path bekommt je archivierter Zeile
+  einen Upsert und je entarchivierter Zeile einen Stempel, sonst nichts.
+- **Uhr-Annahme:** Api und Worker stempeln mit `DateTime.UtcNow` (3.1) und laufen heute als zwei
+  Container auf demselben VPS-Host, also mit derselben Uhr; die Vergleiche in 5.5 Regel 5 und 6.4 setzen
+  das voraus. Wer die Prozesse je auf getrennte Hosts legt, hält beide per NTP synchron — ein Versatz
+  wirkt wie eine Verschiebung des 30-min-Fensters bzw. der Registrierungsgrenze, in beide Richtungen
+  fail-safe erst ab Minuten, nicht ab Millisekunden.
 - **Folge:** Worker-Image neu bauen und **zusammen mit** dem Api-Image deployen (T-B und T-C). Die
   Trockenlauf-Zählung bleibt unverändert (13.0).
 - **Messfenster:** Deshalb kein Teil vor dem bindenden Lauf (12.2).
@@ -1235,7 +1367,8 @@ für T-C mit Fokus auf 5.5 (Aktivierung, Übertragung, Sweep, Gegenbeispiele 1�
 
 | Nr. | Restrisiko | Warum es bleibt | Abfederung |
 |---|---|---|---|
-| **R1** | **Entfernen + Wiederhinzufügen zwischen zwei Beobachtungen** bleibt unsichtbar: die Platzierung überlebt (oder eine verspätete Einspiel-Meldung legt sie an, weil keine Beobachtung existiert — 5.5 Gegenbeispiel 6, Grenze), das von Hand neu hinzugefügte Emote wird beim Ausräumen vorgeschlagen. Fenster: bei aktiver EventAPI Sekunden; bei deaktivierter oder getrennter EventAPI bis zum nächsten Vollsync (`SevenTv:ResyncIntervalSeconds`, Default 60 s, plus 7TVs REST-Cache von 10–30 min, CLAUDE.md „7TV-EventAPI-Grenzen"); in **nicht-aktiven** Sets unbegrenzt (5.5 Regel 5). | Der Server kann nur beobachten, was 7TV ihm zeigt; eine lückenlose Historie gibt es nicht (kein Resume/Replay der EventAPI). | Vorschau mit Haken und **Einspieldatum** je Zeile; Mensch bestätigt; Protokoll + „Wiederherstellen". |
+| **R1** | **Entfernen + Wiederhinzufügen zwischen zwei glaubwürdigen Beobachtungen** bleibt unsichtbar: die Platzierung gilt weiter (oder eine verspätete Einspiel-Meldung legt sie an, weil keine Beobachtung existiert — 5.5 Gegenbeispiel 6, Grenze), das von Hand neu hinzugefügte Emote wird beim Ausräumen vorgeschlagen. Fenster: bei aktiver EventAPI Sekunden; bei deaktivierter oder getrennter EventAPI bis zum ersten Vollsync, der **sowohl** den REST-Cache-Lag (10–30 min, SevenTV#81) **als auch** das 30-min-Glaubwürdigkeitsfenster nach dem Eintritt der Zeile hinter sich hat (E34, Gegenbeispiel 8) — in der Praxis also bis zu ~30 min nach dem Einspielen plus Cache-Lag; in **nicht-aktiven** Sets unbegrenzt (5.5 Regel 5). | Der Server kann nur beobachten, was 7TV ihm zeigt; eine lückenlose Historie gibt es nicht (kein Resume/Replay der EventAPI), und die REST-Quelle ist dokumentiert veraltet. | Vorschau mit Haken und **Einspieldatum** je Zeile; Mensch bestätigt; Protokoll + „Wiederherstellen". |
+| **R4** | **Vorschau-Rennen zwischen zwei Tags:** A's Vorschau sieht B als nicht eingespielt; zwischen Vorschau und Lauf wird B eingespielt (X schon im Set → übersprungen, keine Platzierung); A's Lauf entfernt X. Ergebnis: B gilt als eingespielt, X fehlt im Set. | Der Schaden entsteht bei 7TV **vor** jeder Meldung; keine Buchführung und keine Sperre im Server kann einen bereits gesendeten REMOVE zurückhalten. Zwei Mods, die dasselbe Set in derselben Minute umbauen, sind nicht die Zielgruppe (`PRODUCT.md`: einzelpersoniger Betrieb). | Fehlrichtung: ein Emote zu wenig im Set, nichts zu viel entfernt (X gehörte A). B's Tags-Seite zeigt X dimm „nicht im Set"; ein erneutes Einspielen von B (Live-Lesung zeigt X fehlend) holt es zurück; A's Purge-Protokoll hat den Rückweg. |
 | **R2** | **Fremdeditor zwischen Live-Lesung und Schreiben** beim Einspielen (oder zwei Mods gleichzeitig): ein Emote wird doppelt gepusht (3.4: 7TV dedupliziert nicht nach ID); beide Einträge erhalten Platzierungen; ein späteres REMOVE nimmt beide. | Keine Transaktion über 7TV hinweg; `complete` schützt vor Verschiebung **innerhalb** der Lesung, nicht vor Änderungen danach. | Zweite Live-Lesung im Import-Flow (`filterAlreadyPresent`) unmittelbar vor dem Start verkleinert das Fenster auf Sekunden; Duplikate sind in der Set-Ansicht als `slotCount`-Fälle sichtbar (#74). |
 | **R3** | **Gefälschte Meldung durch jemanden mit 7TV-Schreibrecht am Set** (Besitzer oder 7TV-Editor des Set-Kontos): kann Platzierungen/Aktivierungen für beliebige getaggte Emotes erzeugen und so Zeilen in der Ausräum-Vorschau vorab anhaken. Ein Twitch-Mod **ohne** 7TV-Schreibrecht kann das seit E9 rev. 3 **nicht** mehr — die Besitzprüfung (`IImportTargetOwnershipService`, 6.1) weist ihn ab, bevor der Service läuft. | Wer die Besitzprüfung besteht, kann bei 7TV direkt löschen — die Meldung verschafft keine Fähigkeit, die er nicht hat; sie beeinflusst nur einen Vorschlag. Die Besitzprüfung ist bis zu 10 min gecacht (#253 Spec F12) — ein soeben entzogenes Editor-Recht meldet noch kurz weiter; dieselbe Grenze gilt für `sync-deleted` heute. | Haken sind Vorschlag; Einspieldatum sichtbar; Mensch bestätigt; Audit `tag.playedIn` mit Actor; Rückweg über das Protokoll. |
 
@@ -1243,8 +1376,8 @@ für T-C mit Fokus auf 5.5 (Aktivierung, Übertragung, Sweep, Gegenbeispiele 1�
 
 Der Restore ist ein eigener Lauf ohne Tag-Bezug (3.4). Nach einem Ausräumen per „Wiederherstellen"
 zurückgeholte Emotes sind im Set, aber unplatziert → beim nächsten Ausräumen „war schon vorher im Set",
-von Hand anhakbar (7.2/6). Mit E8 rev. 2 ist das konsistent: die Sync-Invalidierung hätte die
-Platzierungen beim Entfernen ohnehin gelöscht. Nachläufer: Platzierungs-Rückmeldung am Restore (vierte
+von Hand anhakbar (7.2/6). Mit E8/E33 rev. 4 ist das konsistent: die Beobachtung des Entfernens hätte die
+Platzierungen ohnehin verfallen lassen. Nachläufer: Platzierungs-Rückmeldung am Restore (vierte
 Meldung am Lauf) — in v1 hingenommen; der Hinweistext am Restore-Knopf nach einem Tag-Lauf benennt es.
 
 ### 13.3 Nachläufer (nicht v1, nicht offen — nur notiert)
@@ -1267,5 +1400,11 @@ Trockenlauf-Zähler für Tags (13.0).
    **Empfehlung:** wie festgelegt.
 3. **Kanalsperre statt `(Kanal, Set)`-Sperre** für die Meldungen (5.5 Regel 6, Festlegung): zwei
    Meldungen in **verschiedenen** Sets desselben Kanals warten unnötig aufeinander. Bei zwei Läufen je
-   Stream ist das kein Problem; eine eigene Sperrzeile je Set wäre eine siebte Tabelle ohne messbaren
+   Stream ist das kein Problem; eine eigene Sperrzeile je Set wäre eine weitere Tabelle ohne messbaren
    Nutzen. **Empfehlung:** Kanalsperre.
+4. **30 Minuten Glaubwürdigkeitsfenster** (E34, Festlegung): das dokumentierte obere Ende des
+   REST-Cache-Lags. Alternative 15 min (die bestehende Messschwelle) deckt den belegten ~10-min-Fall,
+   aber nicht den dokumentierten 30-min-Fall; Alternative 60 min weitet R1 ohne belegten Nutzen. Die
+   Zahl ist eine Konstante im Sync (`TagLeaveCredibilityWindow`), kein Konfigurationswert — eine
+   Konfiguration würde einladen, R1 unbemerkt zu vergrößern. **Empfehlung:** 30 min; nach dem ersten
+   Betriebsmonat gegen das bestehende Lag-Log (`:765-773`) nachmessen.
