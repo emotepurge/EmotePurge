@@ -12,9 +12,9 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { catchError, finalize, map, of, timeout } from 'rxjs';
+import { catchError, finalize, of, timeout } from 'rxjs';
 
-import { EmoteAdminService, EmoteSetWarning } from '../../core/emotes/emote-admin.service';
+import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { pluralKey } from '../../core/i18n/plural';
 import {
   DeleteQueueEmote,
@@ -23,11 +23,7 @@ import {
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import {
-  refusedStartMessage,
-  SevenTvRunArbiter,
-  SevenTvRunClaim,
-} from '../../core/seven-tv/seven-tv-run-arbiter';
+import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { unknownCount } from '../../core/seven-tv/seven-tv-run-settlement';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
@@ -46,7 +42,6 @@ import {
   purgeRunJson,
 } from '../export/purge-run-export';
 import { Button } from '../ui/button';
-import { PREVIEW_CAP } from '../ui/name-preview-list';
 import {
   clipToShown,
   filterAlreadyPresentForRestore,
@@ -56,12 +51,18 @@ import {
   restoreConfirmPreviewUnavailable,
   RestoreFilterRow,
 } from './already-present-filter';
-import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
+import {
+  DeleteAbortNotice,
+  DeleteFlowDeps,
+  DeleteFlowRequest,
+  LIVE_ALIAS_READ_TIMEOUT_MS,
+  refusedStartNotice,
+  startDeleteFlow,
+} from './delete-flow';
 import { ResolvedRestoreTarget, restoreStartTarget } from './restore-flow';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
 import { loadRestoreSlotPreview, RestoreSlotPreview } from './restore-slot-preview';
 import { RunProgressPanel } from './run-progress-panel';
-import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 
 /** Maps the shared pre-check's block reason (spec 6.2, `TargetCheckBlockReason`) to this panel's
@@ -80,49 +81,9 @@ function restoreTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
   }
 }
 
-/** Same mapping as {@link restoreTargetCheckReasonKey}, for the delete confirmation's own
- *  pre-check before it opens (spec 4.6 point 20, AK 31) — `massDelete.errors.*`, this panel's own
- *  family for the delete, never `restore.errors.*` (that one names the *restore* entry at a
- *  finished run, a different first mutation with its own copy). `notSelectable` cannot actually
- *  occur in production here — the delete panel is always given a set the host already resolved as
- *  `NORMAL` — but the mapping stays total rather than assuming that at the type level, the same
- *  discipline `restoreTargetCheckReasonKey` keeps. */
-function deleteTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
-  switch (reason) {
-    case 'notEditable':
-      return 'massDelete.errors.targetNotEditable';
-    case 'notSelectable':
-      return 'massDelete.errors.targetNotSelectable';
-    case 'unavailable':
-      return 'massDelete.errors.targetCheckUnavailable';
-  }
-}
-
 /** Per-instance suffix for the lock reason's element id — the panel renders on two pages, and an
  *  `aria-describedby` target has to be unique in the document. */
 let nextDeleteLockReasonId = 0;
-
-/** Dedicated reason keys for the one case this panel blocks by itself: the active set's live
- *  entries, read right before a delete, could not be read or came back incomplete — a list that
- *  only knows half must not delete (spec #200, 8.3's rule, applied here). K5 fix round: these used
- *  to reuse the usage page's own `usageStats.setView.lock.*` texts verbatim, but those say "Deleting
- *  and voting are locked: …" — correct for the sticky lock paragraph they were written for, wrong
- *  here, where this is a one-off, transient abort notice ("Nothing was deleted." + reason), not a
- *  standing lock description. */
-const MEMBER_READ_UNAVAILABLE_REASON_KEY = 'massDelete.memberRead.unavailable';
-const MEMBER_READ_TRUNCATED_REASON_KEY = 'massDelete.memberRead.truncated';
-
-/** Total time budget for the active-set delete's live alias read (K5 fix round) — a hung request
- *  (7TV accepts the connection but never answers) used to leave `liveAliasReadPending` `true`
- *  forever, with the delete button disabled and no way out short of reloading the page. Generous
- *  for a same-origin-adjacent GraphQL call reading at most 10 pages of up to 500 entries each; a
- *  timeout is treated exactly like any other failed read — nothing is deleted, and the reason is
- *  shown. */
-const LIVE_ALIAS_READ_TIMEOUT_MS = 20_000;
-
-/** Outcome of the live alias read `openConfirmDialog` starts for an active-set delete: the entries,
- *  or the translation key of the reason the delete is blocked. */
-type LiveAliasRead = { entries: SevenTvSetEntries } | { blockedReasonKey: string };
 
 /** One row the restore entry hands both duplicate checks: the queue row the run needs, plus the
  *  `uncertain` marker (#275) set from an `unknown` delete row — only the checks read it
@@ -137,18 +98,6 @@ type RestoreCandidate = DeleteQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
  *  function's. */
 function restorableItems(items: readonly RunQueueItem[]): RunQueueItem[] {
   return items.filter((item) => item.status === 'done' || item.status === 'unknown');
-}
-
-/** A confirmed delete, or a restore this panel's own button tried to start, that did not run, and
- *  why — shown until the next attempt. `leadKey` says what happened, `reasonKey` why. Shared by
- *  both: the restore entry's pre-check (spec E16, 4.6 point 22) has no banner of its own, and the
- *  panel's existing abort notice is where the plan puts it (Plan-253 §6, Nr. 3). */
-interface DeleteAbortNotice {
-  leadKey: string;
-  reasonKey: string;
-  /** Extra transloco interpolation params for `reasonKey` (e.g. a count for a plural reason) —
-   *  omitted for every reason that needs none, which the template folds onto `{}`. */
-  reasonParams?: Record<string, unknown>;
 }
 
 export interface DeletableEmote {
@@ -245,7 +194,7 @@ export interface DeletableEmote {
           {{ reasonKey | transloco }}
         </p>
       }
-      <!-- A confirmed delete that the host's lock stopped at the last moment (see startDelete): the
+      <!-- A confirmed delete that the host's lock stopped at the last moment (see delete-flow.ts): the
            confirm dialog outlives the view it was opened on, so a set switch behind it must not
            run — and must not fail silently either. Same two-element split as the vote dialog's
            shrink notice (docs/UI-Designsprache.md §4.4/§4.5): a permanently mounted sr-only status
@@ -395,7 +344,7 @@ export class MassDeletePanel {
    *
    * Opt-in, `false` by default, and mutually exclusive with `readLiveAliasesFromActiveSet` in
    * practice (only one of the two host pages ever sets either) — nothing here enforces that, since
-   * setting both would simply mean the same read fires from the same `wantsLiveAliasRead` check
+   * setting both would simply mean the same read fires from the same `liveAliasRead` check
    * either way.
    */
   readonly readLiveAliasesFromSet = input<boolean>(false);
@@ -436,13 +385,14 @@ export class MassDeletePanel {
   /** The non-active set's live slot preview (spec #200, 8.3, K5) — read only when the restore
    *  confirmation's target set is not the active one; see `openRestoreConfirmDialog`. */
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
-  /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix) — every other read in
-   *  this component goes through `emoteAdminService`. */
+  /** Only for the direct reads against 7TV — `filterAlreadyPresent` (#149 P1 fix) here, the live
+   *  alias read in the delete flow — every other read goes through `emoteAdminService`. */
   private readonly httpClient = inject(HttpClient);
   private readonly dialog = inject(Dialog);
   private readonly destroyRef = inject(DestroyRef);
-  /** Only for the missing-row abort reason's "and N more" tail (#227 P2-c) — every other string in
-   *  this component goes through the template's own `TranslocoPipe`. */
+  /** Only for the refused-start notice's kind noun and, in the delete flow, the missing-row abort
+   *  reason's "and N more" tail (#227 P2-c) — every other string in this component goes through the
+   *  template's own `TranslocoPipe`. */
   private readonly translocoService = inject(TranslocoService);
 
   /** `activeSetId()` with the omitted (`undefined`) case folded onto `setId()` — see that input's
@@ -468,12 +418,11 @@ export class MassDeletePanel {
    *  variable on `<app-mass-delete-panel>` to describe themselves with the very same visible
    *  reason paragraph, instead of duplicating it. */
   readonly deleteLockReasonId = `mass-delete-lock-reason-${nextDeleteLockReasonId++}`;
-  private readonly setWarning = signal<EmoteSetWarning | null>(null);
-  private readonly warningLoading = signal(false);
   // Split by `hidden` for the delete-confirm dialog (Konzept "Auswahl überlebt Suche und Filter"
   // 2.1): the visible names keep today's capped preview, the hidden ones get their own, uncapped
   // block, because a filtered-out delete target must stay identifiable by name right up to the
-  // irreversible action rather than collapsing into "n weitere".
+  // irreversible action rather than collapsing into "n weitere". Owned here and handed to the
+  // delete flow as they are (`DeleteFlowRequest`), so the dialog renders these very signals.
   private readonly visibleSelectedEmoteNames = computed(() =>
     this.selectedEmotes()
       .filter((emote) => !emote.hidden)
@@ -485,9 +434,9 @@ export class MassDeletePanel {
       .map((emote) => emote.name),
   );
 
-  /** What stopped the last confirmed delete right before it started (`startDelete`) — a host lock,
-   *  a set switch, an emptied selection or a failed live alias read — or `null`. Shown until the
-   *  next attempt.
+  /** What stopped the last confirmed delete right before it started (the delete flow's start-time
+   *  re-check, `delete-flow.ts`) — a host lock, a set switch, an emptied selection or a failed live
+   *  alias read — or `null`. Shown until the next attempt.
    *
    *  Deliberately panel-local, unlike `SevenTvDeleteService.duplicateNoticePending`, which sits on
    *  the service because the *service* is what produces it (`startRestore` sets it). Every reason
@@ -502,7 +451,7 @@ export class MassDeletePanel {
   protected readonly abortNotice = signal<DeleteAbortNotice | null>(null);
 
   /** A confirmed delete is waiting for its live alias read (`readLiveAliasesFromActiveSet` or
-   *  `readLiveAliasesFromSet`, see `wantsLiveAliasRead`) — the delete button stays disabled
+   *  `readLiveAliasesFromSet`, folded into `liveAliasRead` below) — the delete button stays disabled
    *  meanwhile, so a second click cannot open a second confirmation for the same selection.
    *
    *  Aliases `SevenTvDeleteService.startCheckPending` since #280 rather than holding a flag of its
@@ -537,7 +486,46 @@ export class MassDeletePanel {
    *  from those never ran — and left both restore entries disabled until a full page reload, not
    *  just this panel's own button, since the flag they share outlives the component. */
   protected readonly restoreConfirmPending = this.restoreService.restorePreCheckPending;
-  private destroyed = false;
+
+  /** The two live-alias-read opt-ins folded into one mode for the delete flow (#227): the vote
+   *  page's own-set read wins, as it always did — it fires unconditionally, while the active-set one
+   *  only fires once the flow has frozen that the targeted set is the active one. */
+  private readonly liveAliasRead = computed(() => {
+    if (this.readLiveAliasesFromSet()) {
+      return 'set' as const;
+    }
+    return this.readLiveAliasesFromActiveSet() ? ('activeSet' as const) : ('none' as const);
+  });
+
+  /** The delete flow's collaborators (`delete-flow.ts`), built once — this panel's own injected
+   *  instances, its `destroyRef` included: a confirmed delete whose panel is gone starts nothing. */
+  private readonly deleteFlowDeps: DeleteFlowDeps = {
+    dialog: this.dialog,
+    emoteAdminService: this.emoteAdminService,
+    emoteSetService: this.emoteSetService,
+    httpClient: this.httpClient,
+    tokenService: this.tokenService,
+    deleteService: this.deleteService,
+    arbiter: this.arbiter,
+    translocoService: this.translocoService,
+    destroyRef: this.destroyRef,
+  };
+
+  /** What the delete flow reads from this panel — signals throughout, so the flow re-reads or
+   *  freezes each one at exactly the point the chain always did. */
+  private readonly deleteFlowRequest: DeleteFlowRequest = {
+    setId: this.setId,
+    activeSetId: this.effectiveActiveSetId,
+    channelName: this.channelName,
+    setName: this.setName,
+    selectedEmotes: this.selectedEmotes,
+    visibleEmoteNames: this.visibleSelectedEmoteNames,
+    hiddenEmoteNames: this.hiddenSelectedEmoteNames,
+    hostLockReasonKey: this.deleteLockReasonKey,
+    liveAliasRead: this.liveAliasRead,
+    notice: this.abortNotice,
+    targetCheckPending: this.deleteTargetCheckPending,
+  };
 
   /** Whether the current run's protocol was downloaded at least once — drives the reminder next
    *  to Close, since reset() leaves the file as the only artifact. */
@@ -574,8 +562,6 @@ export class MassDeletePanel {
   );
 
   constructor() {
-    this.destroyRef.onDestroy(() => (this.destroyed = true));
-
     // The queue settling is not on its own a reason to tell the host page anything: the backend only
     // learns about the deletion through the closing sync-deleted call, and that call can fail (rate
     // limit, session expired mid-run). Emitting on the isRunning edge alone therefore showed a
@@ -660,7 +646,8 @@ export class MassDeletePanel {
     // the click that outraces such a run starting elsewhere on the page. Silent, like the lock guard
     // above — nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2), so this stays
     // quiet the same way `openRestoreConfirm`'s own pre-dialog guard does. The re-check in
-    // `startDelete` is what covers the far side of the dialog, and it does show a reason (#256 T4).
+    // the delete flow (`delete-flow.ts`) is what covers the far side of the dialog, and it does show
+    // a reason (#256 T4).
     // `startLocked`, not `activeRun` alone (#280): a confirmed start of any run still being checked
     // before its start locks this button too, and a click outracing that lock stays quiet as well.
     if (this.arbiter.startLocked()) {
@@ -672,13 +659,13 @@ export class MassDeletePanel {
     if (!this.tokenService.hasToken()) {
       openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
         if (saved) {
-          this.openConfirmDialog();
+          startDeleteFlow(this.deleteFlowDeps, this.deleteFlowRequest);
         }
       });
       return;
     }
 
-    this.openConfirmDialog();
+    startDeleteFlow(this.deleteFlowDeps, this.deleteFlowRequest);
   }
 
   /** Offers the finished run's protocol in both formats — the JSON is the restore list. */
@@ -733,7 +720,7 @@ export class MassDeletePanel {
    *  abort notice with a restore-specific lead line and the `restore.errors.*` reason family
    *  (Plan-253 §6, Nr. 3); nothing opens, nothing is sent to 7TV.
    *
-   *  `timeout`/`error` and `takeUntilDestroyed` mirror `openConfirmDialog`'s own pre-check exactly
+   *  `timeout`/`error` and `takeUntilDestroyed` mirror the delete's own pre-check exactly
    *  (review round 1, finding 4): before this fix the subscription had no `error` branch at all, so
    *  a failed request (429, 503, no connection — spec F3) surfaced nothing and silently left the
    *  restore entry inert; a hung one left it inert forever; and a late answer after this panel was
@@ -847,7 +834,7 @@ export class MassDeletePanel {
           this.openRestoreConfirmDialog(target, restoreItems);
         },
         // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
-        // allowed" (F3) — the same distinction `openConfirmDialog`'s own pre-check makes.
+        // allowed" (F3) — the same distinction the delete's own pre-check makes.
         error: () => {
           this.abortNotice.set({
             leadKey: 'restore.nothingRestored',
@@ -939,7 +926,9 @@ export class MassDeletePanel {
       // vanishing, as it used to.
       const directStartClaim = this.arbiter.activeClaim();
       if (directStartClaim !== null) {
-        this.abortNotice.set(this.refusedStartNotice(directStartClaim, 'restore.nothingRestored'));
+        this.abortNotice.set(
+          refusedStartNotice(this.translocoService, directStartClaim, 'restore.nothingRestored'),
+        );
         return;
       }
       this.restoreService.startRestore(
@@ -1026,7 +1015,11 @@ export class MassDeletePanel {
           const confirmTimeClaim = this.arbiter.activeClaim();
           if (confirmTimeClaim !== null) {
             this.abortNotice.set(
-              this.refusedStartNotice(confirmTimeClaim, 'restore.nothingRestored'),
+              refusedStartNotice(
+                this.translocoService,
+                confirmTimeClaim,
+                'restore.nothingRestored',
+              ),
             );
             return;
           }
@@ -1062,478 +1055,5 @@ export class MassDeletePanel {
           );
         });
     });
-  }
-
-  /** The shared pre-check (spec 4.2, 6.2, E19), before the delete confirmation ever opens (spec 4.6
-   *  point 20, AK 31) — in the normal case a cache hit, because the page's own set view or the
-   *  target picker already warmed the target list this minute. A block shows the panel's existing
-   *  abort notice (`massDelete.nothingDeleted` + `massDelete.errors.*`); no dialog opens, no
-   *  request reaches 7TV.
-   *
-   *  `checkedSetId` is read once, here, and threaded through to {@link openConfirmDialogAfterCheck}
-   *  rather than that method re-reading the live `setId()` input: the request can take a moment
-   *  (a cache miss), and a set switch landing in that window must not let the confirmation open
-   *  for whatever set happens to be selected once the answer arrives — only for the one the answer
-   *  actually vouches for (review round 1, finding 3a). A genuine switch still surfaces, just later
-   *  and visibly: `abortReasonBeforeStart` already compares the live `setId()` against this same
-   *  frozen value once the dialog itself closes.
-   *
-   *  `timeout` (same budget as the live alias read, `LIVE_ALIAS_READ_TIMEOUT_MS`) keeps a hung
-   *  request from leaving the delete button disabled forever — a timeout lands in the `error`
-   *  branch like any other failed check, i.e. `unavailable` (review round 1, finding 3b).
-   *  `takeUntilDestroyed` drops a late answer once this panel is gone, so a torn-down component
-   *  never opens a dialog nobody can see or answer (review round 1, finding 3c). */
-  private openConfirmDialog(): void {
-    const checkedSetId = this.setId();
-    this.deleteTargetCheckPending.set(true);
-    this.emoteSetService
-      // Owner-hint design 3.6, third row: the page knows only its own channel's login — every set
-      // it shows belongs to that one account (spec 6.1).
-      .resolveEditableSet(checkedSetId, { twitchChannelId: null, twitchLogin: this.channelName() })
-      .pipe(timeout(LIVE_ALIAS_READ_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (resolution) => {
-          this.deleteTargetCheckPending.set(false);
-          if (resolution.status !== 'editable') {
-            this.abortNotice.set({
-              leadKey: 'massDelete.nothingDeleted',
-              reasonKey: deleteTargetCheckReasonKey(resolution.status),
-            });
-            return;
-          }
-          // Codex C3 (final fix wave A6): a set switch that lands while the check was still out
-          // used to be caught only once the dialog closed (`abortReasonBeforeStart`), which left
-          // a confirmation open for a set the host was no longer looking at. Caught here instead,
-          // before the dialog ever opens — same lead/reason pair `abortReasonBeforeStart` already
-          // uses for the settled-switch case it still covers.
-          if (this.setId() !== checkedSetId) {
-            this.abortNotice.set({
-              leadKey: 'massDelete.abortedByLock',
-              reasonKey: 'massDelete.setChangedDuringConfirm',
-            });
-            return;
-          }
-          // Frozen from this very answer (owner-hint design, Codex finding 1's own "never
-          // re-resolve" spirit): the confirmation, the run it starts and the purge protocol all
-          // carry this one resolved owner id, never a later re-check's.
-          this.openConfirmDialogAfterCheck(checkedSetId, resolution.target.ownerTwitchChannelId);
-        },
-        // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
-        // allowed" (F3) — the same distinction `FileImportStep`'s own pre-check makes.
-        error: () => {
-          this.deleteTargetCheckPending.set(false);
-          this.abortNotice.set({
-            leadKey: 'massDelete.nothingDeleted',
-            reasonKey: deleteTargetCheckReasonKey('unavailable'),
-          });
-        },
-      });
-  }
-
-  private openConfirmDialogAfterCheck(
-    checkedSetId: string,
-    frozenOwnerTwitchId: string | null,
-  ): void {
-    this.setWarning.set(null);
-    this.warningLoading.set(true);
-
-    // The dialog is already open while this runs — it reads the panel's signals live (see
-    // DeleteConfirmDialogData), so the shared-set warning pops in as soon as the check answers.
-    this.loadSetWarning();
-
-    // `checkedSetId` (the pre-check's own argument, `openConfirmDialog`), not the live `setId()`
-    // input at this later moment: the dialog outlives the view it was opened on, and a
-    // `channel.synced` set switch can move the host's selected set (and thus this input) while it
-    // is still open — or even while the pre-check request itself was still out (review round 1,
-    // finding 3a). Passed into `startDelete` so it can compare against the live value and abort
-    // rather than delete into whatever set happens to be selected once the dialog closes (#200 K5
-    // finding A). `frozenIsActiveSet` follows the same rule — computed against `checkedSetId`
-    // rather than `this.isActiveSet()` (which reads the live `setId()`), so it never claims a
-    // set is active that was not the one actually checked.
-    const frozenSetId = checkedSetId;
-    const activeSetId = this.effectiveActiveSetId();
-    const frozenIsActiveSet = activeSetId !== null && activeSetId === checkedSetId;
-    // Same reasoning, same moment, for the run's channel (K5 fix round item 7): the panel's own
-    // `deleteService.startDelete` call used to read the live `channelName()` input instead, which
-    // just happens to be stable in production (a panel only ever sees one channel across a run's
-    // lifetime) but was the wrong source of truth all the same — the same class of gap finding A
-    // closed for `setId`.
-    const frozenChannelName = this.channelName();
-    const data: DeleteConfirmDialogData = {
-      emotes: this.visibleSelectedEmoteNames,
-      hiddenEmotes: this.hiddenSelectedEmoteNames,
-      warning: this.setWarning.asReadonly(),
-      warningLoading: this.warningLoading.asReadonly(),
-      setName: this.setName() ?? frozenSetId,
-      isActiveSet: frozenIsActiveSet,
-    };
-    // Claimed from the moment the confirmation opens, not from the moment a read starts: the CDK
-    // dialog is opened without a `viewContainerRef`, so it outlives this panel. A pushed reload that
-    // prunes every marked key while the modal is up unmounts the host dock and destroys the panel
-    // under it, the modal stays, the user clicks Delete — and the confirmed delete then runs its
-    // checks against a torn-down component, which by contract starts nothing and has no view left to
-    // say so on. Holding the dock for the whole life of the confirmation is what keeps that from
-    // happening; the no-read branch, which never had a claim at all, is covered by the same move.
-    // Every exit below releases it (`endConfirmedRun` after an attempt, `clearConfirmedRun` when
-    // nothing was confirmed) — a leaked claim pins an empty dock.
-    this.deleteService.beginConfirmedRun();
-    openDeleteConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
-      if (!confirmed) {
-        this.deleteService.clearConfirmedRun();
-        return;
-      }
-      // The exact list the dialog last showed, snapshotted **at confirm** and synchronously, before
-      // anything asynchronous can run (operator decision 2026-09-22, amending the K5 fix round's
-      // open-time freeze). The dialog renders the live `visibleSelectedEmoteNames`/
-      // `hiddenSelectedEmoteNames`, both computed over this very input, so a pushed reload
-      // (`channel.synced`, `usage.flushed` → `retainAmong`) that shrinks the selection behind the
-      // open modal changes what is on screen — and an open-time snapshot would then delete emotes
-      // the confirmation had already stopped naming. Reading the same signal the dialog rendered,
-      // at the moment of the irreversible click, makes "what was shown" and "what is deleted" the
-      // same list by construction. From here on the snapshot is what both branches act on: the
-      // active-set delete's live alias read (`readLiveAliasesThenDelete`) is asynchronous and the
-      // dialog is already closed while it is out, so an id deselected afterwards is still deleted
-      // (it was confirmed) and an id selected afterwards is not swept in (it was never shown).
-      // Unlike `frozenSetId`/`frozenIsActiveSet`/`frozenChannelName` above, which stay frozen at
-      // **open** on purpose: those are compared against their live values here and abort the run on
-      // a mismatch, which only works if they still say what the dialog was built from.
-      // A defensive copy, not just a reference: `selectedEmotes()` is expected to be a fresh array
-      // per host-page change already, but nothing here depends on that staying true.
-      const confirmedSelection = [...this.selectedEmotes()];
-      // The same reload can prune the selection down to nothing. Deleting the confirmed snapshot
-      // then means deleting nothing at all, and `deleteService.startDelete` would refuse the empty
-      // list silently — the one outcome this panel must never produce after a confirmed delete
-      // (before the snapshot moved to confirm time, an emptied selection still started a doomed run
-      // whose failed rows were at least visible). Said out loud instead, like every other
-      // last-moment abort here.
-      if (confirmedSelection.length === 0) {
-        this.abortNotice.set({
-          leadKey: 'massDelete.abortedByLock',
-          reasonKey: 'massDelete.selectionGoneDuringConfirm',
-        });
-        // Not `clearConfirmedRun`: this exit has a notice to show, so it needs the window.
-        this.deleteService.endConfirmedRun();
-        return;
-      }
-      if (!this.wantsLiveAliasRead(frozenIsActiveSet)) {
-        // `finally`, because a leaked claim pins an empty dock until the page is reloaded — a worse
-        // outcome than whatever threw, and one nothing on screen could explain.
-        try {
-          this.startDelete(
-            frozenSetId,
-            frozenChannelName,
-            confirmedSelection,
-            null,
-            frozenOwnerTwitchId,
-          );
-        } finally {
-          this.deleteService.endConfirmedRun();
-        }
-        return;
-      }
-      // Owns the claim from here to the end of the read — see `readLiveAliasesThenDelete`.
-      this.readLiveAliasesThenDelete(
-        frozenSetId,
-        frozenChannelName,
-        confirmedSelection,
-        frozenOwnerTwitchId,
-      );
-    });
-  }
-
-  /**
-   * The live alias read (`readLiveAliasesFromActiveSet` or `readLiveAliasesFromSet`, decided by
-   * `wantsLiveAliasRead`), at **confirm** time, not when the dialog opens: the delete confirmation
-   * shows nothing alias-dependent (names only, one per cell), so reading earlier would buy no
-   * correct number on screen — it would only spend a
-   * read on every cancelled dialog and record aliases as they stood when the dialog opened rather
-   * than at the irreversible moment. The frozen set id (`openConfirmDialog`) is what is read, and
-   * `startDelete` repeats every confirm-time check once the answer is in, since the set can switch
-   * while the read is out.
-   */
-  private readLiveAliasesThenDelete(
-    frozenSetId: string,
-    frozenChannelName: string,
-    confirmedSelection: readonly DeletableEmote[],
-    frozenOwnerTwitchId: string | null,
-  ): void {
-    // The same checks `startDelete` makes, made once before the read as well: a delete that is
-    // already doomed must not wait for (or spend) a 7TV read first.
-    if (this.abortReasonBeforeStart(frozenSetId) !== undefined) {
-      try {
-        this.startDelete(
-          frozenSetId,
-          frozenChannelName,
-          confirmedSelection,
-          null,
-          frozenOwnerTwitchId,
-        );
-      } finally {
-        this.deleteService.endConfirmedRun();
-      }
-      return;
-    }
-    this.liveAliasReadPending.set(true);
-    // The dock claim taken when the confirmation opened (`openConfirmDialog`) is held across this
-    // read and released in the subscribe below — the read is the longest stretch in which a
-    // confirmed delete exists without a run for the dock to see. No `takeUntilDestroyed`, as
-    // before #280: a torn-down panel's `startDelete` starts nothing by contract
-    // (`abortReasonBeforeStart`), and the read is bounded, so its `finalize` always runs.
-    loadSevenTvSetEntries(this.httpClient, frozenSetId)
-      .pipe(
-        // A hung request (7TV accepts the connection but never answers) must not leave the button
-        // disabled forever — treated exactly like any other failed read (K5 fix round item 5).
-        timeout(LIVE_ALIAS_READ_TIMEOUT_MS),
-        map((entries): LiveAliasRead =>
-          entries.complete ? { entries } : { blockedReasonKey: MEMBER_READ_TRUNCATED_REASON_KEY },
-        ),
-        catchError(() =>
-          of<LiveAliasRead>({ blockedReasonKey: MEMBER_READ_UNAVAILABLE_REASON_KEY }),
-        ),
-        // Released here rather than at the end of the `next` handler: `finalize` runs after that
-        // handler on the completing path *and* on every other way out, so a throw inside
-        // `startDelete` cannot leak the claim and pin an empty dock until the page is reloaded.
-        // The service decides from its own `isRunning()` whether the dock still needs holding for
-        // the abort notice or the run now carries it, so the ordering (after `startDelete`) is what
-        // matters, not the call site.
-        //
-        // #280: the start check is released in the same place, for the same reason — and after
-        // `startDelete`, whose run then holds the triggers through the arbiter. `startDelete`'s own
-        // re-check reads `activeClaim`, never `startLocked`, which this very flag would still set.
-        finalize(() => {
-          this.liveAliasReadPending.set(false);
-          this.deleteService.endConfirmedRun();
-        }),
-      )
-      .subscribe((read) => {
-        this.startDelete(
-          frozenSetId,
-          frozenChannelName,
-          confirmedSelection,
-          read,
-          frozenOwnerTwitchId,
-        );
-      });
-  }
-
-  private loadSetWarning(): void {
-    // Explicit `setId()` since K5 (spec 6.8): this panel's delete target is the page's *selected*
-    // set, not necessarily the channel's active one — the old implicit "check the active set" call
-    // would ask the wrong question in a non-active view.
-    this.emoteAdminService.getSetWarning(this.channelName(), this.setId()).subscribe({
-      next: (warning) => {
-        this.setWarning.set(warning);
-        this.warningLoading.set(false);
-      },
-      error: () => {
-        // `available: false` is the signal the dialog acts on — it renders a neutral "couldn't
-        // check" notice instead of the red "confirmed foreign set" alarm, so a failed check no
-        // longer produces a false accusation. `isOwnSet` stays `false` deliberately: it is
-        // meaningless while `available` is false, and should a future reader consume it without
-        // checking `available`, the conservative direction ("not verified as ours") is the safe one.
-        this.setWarning.set({
-          available: false,
-          isOwnSet: false,
-          otherTrackedChannelsSharingSet: [],
-          otherModeratedChannelsSharingSet: [],
-        });
-        this.warningLoading.set(false);
-      },
-    });
-  }
-
-  /** `frozenSetId`/`frozenChannelName` are what the dialog was built from — read once in
-   *  `openConfirmDialog` and compared against their live inputs below, not re-read as the truth
-   *  here (K5 fix round item 7). `confirmedSelection` is the list the dialog last *showed*,
-   *  snapshotted in the `closed` callback at confirm time (operator decision 2026-09-22) — never
-   *  the live `selectedEmotes()` input at this point, which an async live alias read can have let
-   *  move on. `liveAliases` is the active-set delete's live alias read
-   *  (`readLiveAliasesThenDelete`), or `null` when none was made. `frozenOwnerTwitchId` is the
-   *  pre-check's own resolved owner id (`openConfirmDialog`), frozen the same way — never
-   *  re-resolved here. */
-  private startDelete(
-    frozenSetId: string,
-    frozenChannelName: string,
-    confirmedSelection: readonly DeletableEmote[],
-    liveAliases: LiveAliasRead | null,
-    frozenOwnerTwitchId: string | null,
-  ): void {
-    const abort = this.abortReasonBeforeStart(frozenSetId);
-    if (abort !== undefined) {
-      this.abortNotice.set(abort);
-      return;
-    }
-    if (liveAliases !== null && 'blockedReasonKey' in liveAliases) {
-      this.abortNotice.set({
-        leadKey: 'massDelete.nothingDeleted',
-        reasonKey: liveAliases.blockedReasonKey,
-      });
-      return;
-    }
-    // Unconditional, on both paths (K5 fix round 2): the live alias read is the *longer* window in
-    // which another run can claim the arbiter, not the only one — the confirmation itself is a
-    // modal the user can leave open for minutes, and a run started from anywhere else on the page
-    // lands just as well behind it. Qualifying this on `liveAliases !== null` left the no-read
-    // branch relying on `deleteService.startDelete`'s own refusal, which is silent, so a confirmed
-    // delete in a non-active view simply evaporated. This abort is visible, and — since #256 T4 —
-    // so is the restore paths' identical re-check above: the competing run can be any 7TV-writing
-    // kind, running or settling, started from anywhere on the page, and this panel's own dock would
-    // otherwise show nothing at all to explain why a confirmed delete (or restore) just vanished.
-    const claim = this.arbiter.activeClaim();
-    if (claim !== null) {
-      this.abortNotice.set(this.refusedStartNotice(claim, 'massDelete.nothingDeleted'));
-      return;
-    }
-    // The third way `deleteService.startDelete` can refuse without a word — the other two, a run
-    // already going and an empty list, are caught above. The engine needs the stored 7TV token, and
-    // any 401 from 7TV behind the open confirmation clears it (`SevenTvTokenService.clearToken`);
-    // the dock claim of the commits above would then hold an empty dock over a delete that simply
-    // never happened.
-    if (!this.tokenService.hasToken()) {
-      this.abortNotice.set({
-        leadKey: 'massDelete.nothingDeleted',
-        reasonKey: 'massDelete.tokenGoneDuringConfirm',
-      });
-      return;
-    }
-    const liveEntries = liveAliases?.entries;
-    if (liveEntries !== undefined) {
-      // A live read only ever reaches here complete (an incomplete one was already blocked above,
-      // via `blockedReasonKey`) — so an id it does not know at all under either map means 7TV no
-      // longer has it, not merely that it has no alias. Deleting such a row anyway would issue a
-      // `RemoveEmote` for something that is not there: on the vote page specifically the exact
-      // defect #227 point 2 forbids (a departed set-session member reaching the run), and equally a
-      // bug for the active-set path this same read also serves. Fails the WHOLE batch, not just the
-      // missing rows: a partial run would record a protocol that no longer matches what the
-      // confirmation showed as a whole ("gezeigt = gelöscht", spec §8.3, K5 follow-up #229). The
-      // reason names the missing rows (P2-c, Opus review) rather than only a count, and tells the
-      // user to deselect exactly those and start again — not "reload", which on the usage page's own
-      // legitimate normal case (an emote removed on 7TV directly, ahead of our periodic resync
-      // noticing) would not help at all: our own database still shows the row as present until that
-      // resync runs, so every confirmed selection containing it would keep failing the same way
-      // regardless of how many times the page is reloaded.
-      const missingRows = confirmedSelection.filter(
-        (emote) =>
-          !liveEntries.aliasesById.has(emote.sevenTvEmoteId) &&
-          !liveEntries.aliaslessIds.has(emote.sevenTvEmoteId),
-      );
-      if (missingRows.length > 0) {
-        this.abortNotice.set({
-          leadKey: 'massDelete.nothingDeleted',
-          reasonKey: pluralKey(missingRows.length, 'massDelete.memberRead.missingFromSet'),
-          reasonParams: this.missingRowsReasonParams(missingRows.map((emote) => emote.name)),
-        });
-        return;
-      }
-    }
-    const emotes: DeleteQueueEmote[] = confirmedSelection.map((emote) => {
-      // The live read knows every entry the one `REMOVE` will take; a cell it does not know keeps
-      // what the host said.
-      const live = liveEntries?.aliasesById.get(emote.sevenTvEmoteId);
-      // An id that also carries an aliasless entry (spec §37/§38's "aliasless" rule, K5 fix round
-      // item 3) has one more slot than `live` alone shows — 7TV requires an alias string to restore
-      // it, and the read cannot invent one, so this falls back to the emote's own display name
-      // rather than leaving that entry unrecorded (a protocol that looks complete but is not, F3).
-      // Skipped if `live` already happens to contain that exact name — nothing to add twice.
-      const hasAliaslessEntry = liveEntries?.aliaslessIds.has(emote.sevenTvEmoteId) ?? false;
-      const liveWithAliasless =
-        live !== undefined && hasAliaslessEntry && !live.includes(emote.name)
-          ? [...live, emote.name]
-          : live;
-      return {
-        emoteId: emote.emoteId,
-        sevenTvEmoteId: emote.sevenTvEmoteId,
-        name: emote.name,
-        aliases:
-          liveWithAliasless !== undefined && liveWithAliasless.length > 0
-            ? liveWithAliasless
-            : emote.aliases,
-      };
-    });
-    // The page's channel is the expected hit only when the run's set is its active one (spec 4.6
-    // point 21); a non-active set's report is paper only and expects no channel.
-    const expectedChannelName =
-      frozenSetId === this.effectiveActiveSetId() ? frozenChannelName : null;
-    this.deleteService.startDelete(
-      frozenSetId,
-      frozenChannelName,
-      emotes,
-      expectedChannelName,
-      frozenOwnerTwitchId,
-    );
-  }
-
-  /**
-   * Why a confirmed delete must not start now, or `undefined` when nothing stops it — re-evaluated
-   * at confirm time, not only when the dialog opened: the dialog outlives the view it was opened on,
-   * and the host can lock deleting behind it (a set switch in the usage page's dropdown — the rows
-   * and the selection would then belong to a set other than `setId()`). A panel already torn down
-   * (its host's dock unmounted while the dialog was open) has no selection of its own left to vouch
-   * for, so it starts nothing either — `null` then: abort, but with nothing left to show it on.
-   */
-  private abortReasonBeforeStart(frozenSetId: string): DeleteAbortNotice | null | undefined {
-    if (this.destroyed) {
-      return null;
-    }
-    const lockKey = this.deleteLockReasonKey();
-    if (lockKey !== null) {
-      return { leadKey: 'massDelete.abortedByLock', reasonKey: lockKey };
-    }
-    // The lock above only catches a switch still *in progress* — once it settles, the lock clears
-    // and `setId()` has already moved on, silently, to the new set. Comparing against what the
-    // dialog actually named closes that gap: a settled switch behind an open dialog aborts here
-    // too, visibly, instead of deleting into a set the confirmation never showed (#200 K5 finding A).
-    if (this.setId() !== frozenSetId) {
-      return {
-        leadKey: 'massDelete.abortedByLock',
-        reasonKey: 'massDelete.setChangedDuringConfirm',
-      };
-    }
-    return undefined;
-  }
-
-  /** Whether a confirmed delete reads its target set live from 7TV before it starts (#227) — either
-   *  opt-in that applies: the active-set one only for the set this delete is actually targeting
-   *  (`frozenIsActiveSet`), the vote page's own-set one unconditionally. */
-  private wantsLiveAliasRead(frozenIsActiveSet: boolean): boolean {
-    return (
-      (frozenIsActiveSet && this.readLiveAliasesFromActiveSet()) || this.readLiveAliasesFromSet()
-    );
-  }
-
-  /** Comma-joined, capped names for the missing-row abort reason (#227 P2-c, Opus review). A bare
-   *  count told the user nothing they could act on — this run is blocked outright ("gezeigt =
-   *  gelöscht" stays the rule, spec §8.3), so the way forward is deselecting exactly these rows and
-   *  starting again, which needs their names, not just how many. `PREVIEW_CAP`/the "and N more" tail
-   *  are the identical ones `NamePreviewList` uses for the same "many names" problem in a dialog —
-   *  reused here rather than a second threshold, just rendered as one line of status text instead of
-   *  a scrollable list, since the abort notice has no dialog to put a list into. */
-  private missingRowsReasonParams(missingNames: readonly string[]): Record<string, unknown> {
-    const preview = missingNames.slice(0, PREVIEW_CAP);
-    const remaining = missingNames.length - preview.length;
-    const joined = preview.join(', ');
-    if (remaining <= 0) {
-      return { names: joined };
-    }
-    const tail = this.translocoService.translate(pluralKey(remaining, 'common.andMore'), {
-      count: remaining,
-    });
-    return { names: `${joined} ${tail}` };
-  }
-
-  /** This panel's own `abortNotice` for a confirmed start the arbiter refused (#256 contract P2,
-   *  Festlegung Nr. 8) — the shared `sevenTvRun.notStarted.*` family with the blocking kind's own,
-   *  already-translated noun, the same wording `usage-stats-page.ts`'s transient region shows for
-   *  the two flows that have no notice of their own. Every call site below reads `activeClaim()`
-   *  itself, right before this, and only calls this once it is non-null. Deliberately does **not**
-   *  call `SevenTvRunArbiter.noteRefusedStart()`: this panel's `abortNotice` is already the visible,
-   *  persistent explanation for as long as the panel stays mounted, so routing the same refusal
-   *  through the arbiter's own 4-second transient notice too would announce it twice on a page that
-   *  mounts both (`usage-stats-page.html`). */
-  private refusedStartNotice(claim: SevenTvRunClaim, leadKey: string): DeleteAbortNotice {
-    const { messageKey, kind } = refusedStartMessage(claim, (key) =>
-      this.translocoService.translate(key),
-    );
-    return { leadKey, reasonKey: messageKey, reasonParams: { kind } };
   }
 }
