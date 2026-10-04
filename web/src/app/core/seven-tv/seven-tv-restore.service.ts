@@ -321,7 +321,7 @@ export class SevenTvRestoreService {
   /** Whether a restore's shared open-time pre-check chain (`resolveEditableSet`, then the open-time
    *  duplicate check) is out right now, from *either* of the two entry points a restore can start
    *  from — `ImportTrigger`'s restore-file door (`startRestoreFlow`, `restore-flow.ts`) or
-   *  `MassDeletePanel`'s restore button (`openRestoreConfirm`). Root-level and shared on purpose
+   *  `DeleteProgressSection`'s restore button (`openRestoreConfirm`). Root-level and shared on purpose
    *  (#255 P2, Codex review): the two entries used to keep separate, component-local pending flags,
    *  which guarded each button against a second click on *itself* but left the other entry's button
    *  fully enabled while the first's read was still out — both mount together on the usage-stats
@@ -329,14 +329,14 @@ export class SevenTvRestoreService {
    *  flight could open a second confirmation stacked on the first, with a duplicate
    *  `app-dialog-title` id. Both entries now read and set this same signal instead of a field of
    *  their own — see `ImportTrigger.restorePreviewPending`/`RestoreFlowDeps.previewPending` and
-   *  `MassDeletePanel.restoreConfirmPending`, both of which alias this signal rather than holding
+   *  `DeleteProgressSection.restoreConfirmPending`, both of which alias this signal rather than holding
    *  their own. Exposed writable (not `.asReadonly()`), like `RestoreFlowDeps.previewPending`
    *  already was before this fix: both call sites are the ones setting it, this only moves *where*
    *  the shared instance lives. */
   readonly restorePreCheckPending: WritableSignal<boolean> = signal(false);
 
   /** A confirmed restore's confirm-time duplicate check is out, from either entry point
-   *  (`startRestoreFlow`, `MassDeletePanel`'s restore confirmation): the confirmation is closed, but
+   *  (`startRestoreFlow`, `DeleteProgressSection`'s restore confirmation): the confirmation is closed, but
    *  the run has not started yet and may still be refused (#280). The counterpart of
    *  {@link restorePreCheckPending} for the window *after* the confirmation, kept apart from it
    *  because only this one is announced (`DockOutcomeAnnouncer`) — the window before the

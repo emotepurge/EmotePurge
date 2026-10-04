@@ -71,10 +71,10 @@ export const MEMBER_READ_TRUNCATED_REASON_KEY = 'massDelete.memberRead.truncated
  *  delete button disabled and no way out short of reloading the page. Generous for a
  *  same-origin-adjacent GraphQL call reading at most 10 pages of up to 500 entries each; a timeout
  *  is treated exactly like any other failed read — nothing is deleted, and the reason is shown. The
- *  shared pre-check and the panel's restore entry use the same budget. */
+ *  shared pre-check and the section's restore entry use the same budget. */
 export const LIVE_ALIAS_READ_TIMEOUT_MS = 20_000;
 
-/** A confirmed delete, or a restore the panel's own button tried to start, that did not run, and
+/** A confirmed delete, or a restore the section's own button tried to start, that did not run, and
  *  why — shown until the next attempt. `leadKey` says what happened, `reasonKey` why. Shared by
  *  both: the restore entry's pre-check (spec E16, 4.6 point 22) has no banner of its own, and the
  *  panel's existing abort notice is where the plan puts it (Plan-253 §6, Nr. 3). */
@@ -277,7 +277,7 @@ export function startDeleteFlow(deps: DeleteFlowDeps, request: DeleteFlowRequest
  *  `SevenTvRunArbiter.noteRefusedStart()`: the panel's `abortNotice` is already the visible,
  *  persistent explanation for as long as the panel stays mounted, so routing the same refusal
  *  through the arbiter's own 4-second transient notice too would announce it twice on a page that
- *  mounts both (`usage-stats-page.html`). Used by the delete chain here and by the panel's restore
+ *  mounts both (`usage-stats-page.html`). Used by the delete chain here and by the section's restore
  *  entry. */
 export function refusedStartNotice(
   translocoService: TranslocoService,
@@ -547,7 +547,7 @@ function startDelete(
   // lands just as well behind it. Qualifying this on `liveAliases !== null` left the no-read
   // branch relying on `deleteService.startDelete`'s own refusal, which is silent, so a confirmed
   // delete in a non-active view simply evaporated. This abort is visible, and — since #256 T4 —
-  // so is the restore paths' identical re-check in the panel: the competing run can be any
+  // so is the restore paths' identical re-check in the section: the competing run can be any
   // 7TV-writing kind, running or settling, started from anywhere on the page, and the panel's own
   // dock would otherwise show nothing at all to explain why a confirmed delete (or restore) just
   // vanished.

@@ -24,7 +24,7 @@ export interface RestoreSlotPreviewDeps {
 
 /**
  * The slot-preview fork shared by `startRestoreFlow` (`restore-flow.ts`) and
- * `MassDeletePanel`'s `openRestoreConfirmDialog` (spec 4.3, point 8 / spec 8.3) — extracted so the
+ * `DeleteProgressSection`'s `openRestoreConfirmDialog` (spec 4.3, point 8 / spec 8.3) — extracted so the
  * two stop drifting apart (final fix wave A5): a tracked, *active* target reads the cheap,
  * non-7TV-rate-limited channel status; anything else — a non-active set of a tracked channel, or
  * an untracked target — reads the live per-set preview instead, keyed by the tracked channel when

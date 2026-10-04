@@ -12,7 +12,7 @@ import { RunProgressPanel } from './run-progress-panel';
  * projected into `app-mass-delete-panel`: since T9 a restore can be started from a page with no
  * selected set at all (`app-import-trigger` reading a restore file, spec 4.1) or can target a set
  * other than the one on screen (E13/E21), so the panel — bound to *this* channel's set — is the
- * wrong home for it. `MassDeletePanel` keeps only the entry points that still need it: the
+ * wrong home for it. `DeleteProgressSection` keeps only the entry points that still need it: the
  * "Restore" button at a finished delete run and the pre-check + confirmation it opens (E16); this
  * section owns everything about *showing* the run once it exists — notices, progress, the target
  * line, the sync report and the resync acknowledgement (T7).
@@ -102,7 +102,7 @@ import { RunProgressPanel } from './run-progress-panel';
             <ng-container run-actions>
               @if (unknownRowCount() > 0) {
                 <!-- #275: the settled run still has rows 7TV's answer never clarified — see the
-                     identical line and doc comment on the delete panel's own unknownRowsKey. -->
+                     identical line and doc comment on the DeleteProgressSection's own unknownRowsKey. -->
                 <span class="text-xs text-fg-muted">
                   {{ unknownRowsKey() | transloco: { count: unknownRowCount() } }}
                 </span>

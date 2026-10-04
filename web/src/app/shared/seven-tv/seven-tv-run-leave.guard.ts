@@ -9,9 +9,8 @@ import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
 import { ConfirmDialogData, openConfirmDialog } from '../ui/confirm-dialog';
 
 /**
- * Asks before leaving a page that hosts the 7TV run dock (the usage-stats page, and from #201 T-C the
- * tags page) while an import run (K3, #72) or a replace undo (#254,
- * spec 6.5) is still going. Either run lives in its root-provided service, so it keeps going in the
+ * Asks before leaving a page that hosts the 7TV run dock (the usage-stats page, and from #201 T-C
+ * the tags page) while an import run (K3, #72) or a replace undo (#254, spec 6.5) is still going. Either run lives in its root-provided service, so it keeps going in the
  * background regardless of the answer here — this guard never cancels or resets anything, it only
  * asks. Fires only while one of them `isRunning()`; every other navigation away from the page
  * passes through immediately, with no dialog and no delay (R11). A run that has stopped running but
@@ -23,8 +22,8 @@ import { ConfirmDialogData, openConfirmDialog } from '../ui/confirm-dialog';
  * the import's wording wins (plan #254, Festlegung 8).
  *
  * Referenced only from lazily loaded route files (`usage-stats.routes.ts`; T-C also sets it in
- * `tags.routes.ts`) — which keeps both services
- * and their engines out of the initial bundle (#264, #254 F9).
+ * `tags.routes.ts`) — which keeps both services and their engines out of the initial bundle (#264,
+ * #254 F9).
  *
  * A pure channel switch (`/channels/a/usage-stats` -> `/channels/b/usage-stats`) is exempt even
  * while a run is active: `paramsInheritanceStrategy: 'always'` plus the default

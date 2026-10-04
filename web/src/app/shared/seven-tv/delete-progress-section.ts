@@ -358,8 +358,8 @@ export class DeleteProgressSection {
     // `arbiter.activeRun() === null` guard around it) — this only catches a click outracing such a
     // run starting elsewhere on the page, same shape and same reason as
     // `MassDeletePanel.openConfirm`'s own pre-dialog guard: nothing has been confirmed yet
-    // (Festlegung Nr. 8, #256 contract P2), so it stays quiet. The re-checks further down, once a restore actually has something to
-    // confirm, do show a reason (#256 T4).
+    // (Festlegung Nr. 8, #256 contract P2), so it stays quiet. The re-checks further down, once a
+    // restore actually has something to confirm, do show a reason (#256 T4).
     if (!run || this.arbiter.activeRun() !== null) {
       return;
     }
