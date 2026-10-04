@@ -1695,7 +1695,10 @@
     "actions": {
       "assign": "Assign tag…",
       "unassign": "Remove from ‘{{tag}}’ ({{count}})",
-      "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer clear them out either."
+      "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer clear them out either.",
+      "unassignLockReason": {
+        "noneInTag": "None of the marked emotes is in {{tag}}."
+      }
     },
     "filter": {
       "label": "Tag",

@@ -392,10 +392,12 @@
           }
         </span>
       }
-      <!-- A failed removal from the tag, or the tag's entries that could not be loaded (the filter
-           then lets every row through) — a state, not an acknowledgement, so a banner that stays
-           (§4.5). Only while a tag is chosen: both are about the tag filter. -->
-      @if (selectedTag() !== null && tagErrorKey(); as errorKey) {
+      <!-- A failed removal from the tag, the tag's entries that could not be loaded (the filter
+           then lets every row through), or the tag list that could not be loaded while a tag is
+           chosen (select and summary are gone, the grid stays narrowed) — a state, not an
+           acknowledgement, so a banner that stays (§4.5). Gated on the filter's tag id, not on
+           `selectedTag()`: a narrowed grid must never stand without an explanation. -->
+      @if (usageFilter.tagId() !== null && tagErrorKey(); as errorKey) {
         <app-notice-banner variant="error" class="w-full">{{
           errorKey | transloco
         }}</app-notice-banner>
@@ -1291,8 +1293,9 @@
           </ng-container>
           <!-- "Aus ‚Tag' entfernen (n)" (#201, spec 7.0a): only with a tag filter set, after the vote
                button and before the gap to the delete. n counts the marked emotes that are in the
-               tag; at 0 the button is disabled and that count is the reason, the same convention
-               as the vote button's. The title says what else goes with them (E17). -->
+               tag; at 0 the button is disabled and says why in the text beside it, referenced by
+               `aria-describedby` (§10, the vote button's pattern). The title says what else goes
+               with them (E17). -->
           <ng-container ngProjectAs="[selection-actions]">
             @if (tagUnassignShown() && selectedTag(); as tag) {
               <button
@@ -1301,6 +1304,9 @@
                 buttonSize="lg"
                 class="disabled:cursor-not-allowed"
                 [disabled]="tagUnassignCount() === 0 || tagRemovalPending()"
+                [attr.aria-describedby]="
+                  tagUnassignLockReasonKey() ? tagUnassignLockReasonId : null
+                "
                 [title]="'tags.actions.unassignTitle' | transloco"
                 (click)="removeFromTag()"
               >
@@ -1308,6 +1314,11 @@
                   'tags.actions.unassign' | transloco: { tag: tag.name, count: tagUnassignCount() }
                 }}
               </button>
+              @if (tagUnassignLockReasonKey(); as reasonKey) {
+                <span [id]="tagUnassignLockReasonId" class="text-xs text-fg-muted">
+                  {{ reasonKey | transloco: { tag: tag.name } }}
+                </span>
+              }
             }
           </ng-container>
         </app-mass-delete-panel>

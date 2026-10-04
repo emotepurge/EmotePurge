@@ -1400,6 +1400,15 @@ export class UsageStatsPage {
     if (removalError !== null) {
       return removalError;
     }
+    // A failed tag list while a tag is chosen: the select and the inline group are gone (they
+    // need the list), but the filter still narrows the grid with the keys it has — this banner is
+    // what keeps that narrowing from going unexplained. "Filter zurücksetzen" stays as the way out.
+    if (this.usageFilter.tagId() !== null) {
+      const listError = this.tagsResource.error();
+      if (listError instanceof HttpErrorResponse) {
+        return apiErrorTranslationKey(listError);
+      }
+    }
     const loadError = this.tagFilterEntriesResource.error();
     return loadError instanceof HttpErrorResponse ? apiErrorTranslationKey(loadError) : null;
   });
@@ -1443,9 +1452,24 @@ export class UsageStatsPage {
       .filter((id) => keys.has(id));
   });
 
-  /** The removal button's count — and its lock: at 0 it is disabled, and the count in its label is
-   *  the reason, the same convention as the vote button's. */
+  /** The removal button's count; at 0 it is disabled. */
   protected readonly tagUnassignCount = computed(() => this.tagUnassignIds().length);
+
+  /**
+   * Why the removal button is locked, as visible text beside it (§10) — once the tag's keys are
+   * loaded and none of the marked emotes is among them. `null` while the keys are still loading or a
+   * removal is in flight: those are the loading state of an action, a disabled button without text
+   * (§6.1).
+   */
+  protected readonly tagUnassignLockReasonKey = computed(() =>
+    this.usageFilter.tagKeys() !== null && this.tagUnassignCount() === 0
+      ? 'tags.actions.unassignLockReason.noneInTag'
+      : null,
+  );
+
+  /** The reason's element id, for the button's `aria-describedby`. One page instance at a time, so
+   *  a fixed id cannot collide. */
+  protected readonly tagUnassignLockReasonId = 'tag-unassign-lock-reason';
 
   protected readonly tagRemovalPending = signal(false);
 
@@ -1474,6 +1498,8 @@ export class UsageStatsPage {
    */
   protected readonly tagFeedback = signal<readonly CaptionSentence[] | null>(null);
   private tagFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** The channel the tag filter was last set up for — see the channel-switch effect. */
+  private tagFilterChannel: string | null = null;
 
   /**
    * The cell the inspector is describing, held by id rather than by object: a refetch hands out
@@ -2327,12 +2353,19 @@ export class UsageStatsPage {
       }
     });
 
-    // A tag acknowledgement or removal error names the previous channel's tag — gone on a switch,
-    // like the selection-pruned notice (load()), but keyed on the channel alone: a range change
-    // does not touch tags.
+    // Tag state belongs to one channel. On a switch the chosen tag goes too: tag ids are per
+    // channel, and the filter (created once per page instance) would otherwise apply the previous
+    // channel's keys to the new channel's rows — 7TV ids are shared across channels, so some would
+    // match — before the new list could name, or fail to name, that tag. The acknowledgement and a
+    // removal error go with it, like the selection-pruned notice (load()); keyed on the channel
+    // alone, since a range change does not touch tags.
     effect(() => {
-      this.channelName();
+      const channelName = this.channelName();
       untracked(() => {
+        if (this.tagFilterChannel !== null && this.tagFilterChannel !== channelName) {
+          this.usageFilter.setTag(null);
+        }
+        this.tagFilterChannel = channelName;
         this.resetTagFeedback();
         this.tagRemovalErrorKey.set(null);
       });

@@ -6291,7 +6291,7 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     return { sevenTvEmoteId, alias: sevenTvEmoteId, imageUrl: '', inSet: true, currentName: null };
   }
 
-  function configure(coarse: boolean): void {
+  function configure(coarse: boolean, realTemplate = false): void {
     TestBed.resetTestingModule();
     FakeEventSource.instances = [];
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
@@ -6326,9 +6326,11 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
         { provide: Dialog, useValue: { open: openSpy } as unknown as Dialog },
       ],
     });
-    TestBed.overrideComponent(UsageStatsPage, {
-      set: { template: '<div #sheet></div><div #stickyBar></div>' },
-    });
+    if (!realTemplate) {
+      TestBed.overrideComponent(UsageStatsPage, {
+        set: { template: '<div #sheet></div><div #stickyBar></div>' },
+      });
+    }
   }
 
   async function settle(): Promise<void> {
@@ -6364,8 +6366,9 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     coarse?: boolean;
     emoteSetId?: string;
     activeEmoteSetId?: string;
+    realTemplate?: boolean;
   }): Promise<void> {
-    configure(options.coarse ?? false);
+    configure(options.coarse ?? false, options.realTemplate ?? false);
     if (options.emoteSetId) {
       await TestBed.inject(Router).navigate([], {
         queryParams: { emoteSetId: options.emoteSetId },
@@ -6720,5 +6723,71 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     // A new tag choice retires it.
     component['onTagFilterChange']('');
     expect(component['tagErrorKey']()).toBeNull();
+  });
+
+  it('drops a chosen tag on a channel switch, before the new channel has answered its tag list', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    await chooseTag(4, ['7tv-a']);
+
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+
+    // Channel A's keys must never narrow channel B's rows — 7TV ids are shared across channels.
+    expect(component['usageFilter'].tagId()).toBeNull();
+    expect(component['usageFilter'].tagKeys()).toBeNull();
+    expect(httpMock.match((r) => r.url === '/api/channels/b/tags')).toEqual([]);
+    expect(httpMock.match((r) => r.url.startsWith('/api/channels/b/tags/'))).toEqual([]);
+  });
+
+  it('never narrows the grid silently: a failed tag list with a tag chosen is explained by the banner', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    await chooseTag(4, ['7tv-a']);
+
+    component['tagsResource'].reload();
+    await settle();
+    for (const request of tagListRequests()) {
+      request.flush(null, { status: 503, statusText: 'Service Unavailable' });
+    }
+    await settle();
+
+    // The select and the summary need the list and are gone; the filter still narrows the grid.
+    expect(component['selectedTag']()).toBeNull();
+    expect(component['filteredEmotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+    // ...so the banner (gated on the filter's tag id) has to say why.
+    expect(component['usageFilter'].tagId()).toBe(4);
+    expect(component['tagErrorKey']()).not.toBeNull();
+  });
+
+  it('describes the locked "Aus Tag entfernen" button with its reason when none of the marked emotes is in the tag (§10)', async () => {
+    // Real template: the subject is the button's accessible description. A real-looking imageUrl,
+    // since NgOptimizedImage runs for real here (NG02952 on '').
+    const image = 'https://cdn.7tv.app/emote/x/1x.webp';
+    await open({
+      tags: [tag(4, 'Stronghold')],
+      totals: [
+        { ...emote('a', 'PeepoA'), imageUrl: image },
+        { ...emote('b', 'PeepoB'), imageUrl: image },
+      ],
+      realTemplate: true,
+    });
+    await chooseTag(4, ['7tv-a']);
+    mark('7tv-b');
+    fixture.detectChanges();
+
+    const button = Array.from(
+      fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
+    ).find((candidate) => candidate.textContent?.trim() === 'tags.actions.unassign');
+    expect(button).toBeDefined();
+    expect(button?.disabled).toBe(true);
+    const describedBy = button?.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const reason = fixture.nativeElement.querySelector(`#${describedBy}`) as HTMLElement | null;
+    expect(reason?.textContent?.trim()).toBe('tags.actions.unassignLockReason.noneInTag');
+
+    // Once a marked emote is in the tag the lock — and its description — are gone.
+    mark('7tv-a');
+    fixture.detectChanges();
+    expect(button?.disabled).toBe(false);
+    expect(button?.hasAttribute('aria-describedby')).toBe(false);
   });
 });
