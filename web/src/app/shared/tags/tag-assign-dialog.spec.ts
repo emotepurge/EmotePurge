@@ -1,0 +1,208 @@
+import { DIALOG_DATA, DialogRef } from '@angular/cdk/dialog';
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { TranslocoTestingModule } from '@jsverse/transloco';
+import { Subject } from 'rxjs';
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import { TagAssignDialog, TagAssignDialogData, TagAssignDialogResult } from './tag-assign-dialog';
+
+const DE = {
+  common: { cancel: 'Abbrechen', close: 'Schließen', loading: 'Lädt' },
+  errors: {
+    api: {
+      tag_name_taken: 'Name schon vergeben.',
+      tag_name_invalid: 'Ungültiger Name.',
+      tag_entry_limit_reached: 'Tag voll.',
+    },
+    status: { server: 'Serverfehler.' },
+  },
+  tags: {
+    assignDialog: {
+      title: 'Tag zuweisen',
+      listLabel: 'Tags',
+      newTagLabel: 'Neuer Tag',
+      createButton: 'Anlegen',
+      noTagsHint: 'Noch keine Tags.',
+      confirm: { one: '{{count}} Emote zuweisen', other: '{{count}} Emotes zuweisen' },
+      lockReason: { noneChecked: 'Wähle mindestens einen Tag aus.' },
+      partial: 'Schon zugewiesen: {{tags}}.',
+    },
+  },
+};
+
+const BASE = '/api/channels/sensitron/tags';
+
+function tagList(...names: [number, string][]) {
+  return {
+    emoteSetId: 's1',
+    isActiveSet: true,
+    tags: names.map(([id, name]) => ({ id, name, entryCount: 0, inSetCount: 0 })),
+  };
+}
+
+describe('TagAssignDialog', () => {
+  let httpMock: HttpTestingController;
+  let closed: (TagAssignDialogResult | undefined)[];
+  let keydown: Subject<KeyboardEvent>;
+  let backdrop: Subject<MouseEvent>;
+  let dialogRef: { close: (r?: TagAssignDialogResult) => void; disableClose: boolean };
+
+  beforeEach(() => {
+    closed = [];
+    keydown = new Subject();
+    backdrop = new Subject();
+    dialogRef = { close: (r) => closed.push(r), disableClose: false };
+    TestBed.configureTestingModule({
+      imports: [
+        TagAssignDialog,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: DIALOG_DATA,
+          useValue: { channelName: 'sensitron', sevenTvEmoteIds: ['e1', 'e2', 'e3'] },
+        },
+        {
+          provide: DialogRef,
+          useValue: Object.assign(dialogRef, {
+            keydownEvents: keydown,
+            backdropClick: backdrop,
+          }),
+        },
+      ],
+    });
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  function render(list = tagList([1, 'Stronghold'], [2, 'Boss'])) {
+    const fixture: ComponentFixture<TagAssignDialog> = TestBed.createComponent(TagAssignDialog);
+    fixture.detectChanges();
+    if (list) {
+      httpMock.expectOne(BASE).flush(list);
+    }
+    fixture.detectChanges();
+    const host: HTMLElement = fixture.nativeElement;
+    const button = (label: string) =>
+      Array.from(host.querySelectorAll('button')).find(
+        (b) => b.textContent?.trim() === label,
+      ) as HTMLButtonElement;
+    return {
+      fixture,
+      host,
+      confirm: () => button('3 Emotes zuweisen'),
+      checkbox: (i: number) => host.querySelectorAll<HTMLInputElement>('input[type=checkbox]')[i],
+      tick(i: number) {
+        const box = this.checkbox(i);
+        box.checked = !box.checked;
+        box.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+      },
+      typeName(value: string) {
+        const input = host.querySelector<HTMLInputElement>('#tag-assign-new-name')!;
+        input.value = value;
+        input.dispatchEvent(new Event('input'));
+        button('Anlegen').click();
+        fixture.detectChanges();
+      },
+      text: () => host.textContent ?? '',
+    };
+  }
+
+  function added(addedCount: number, skipped: string[] = [], already = 0) {
+    return { addedCount, alreadyTaggedCount: already, skippedNotInSetIds: skipped };
+  }
+
+  it('is a named dialog and locks confirm with a described reason until a tag is ticked', () => {
+    const view = render();
+    expect(view.text()).toContain('Tag zuweisen');
+    expect(view.confirm().disabled).toBe(true);
+    const hintId = view.confirm().getAttribute('aria-describedby')!;
+    expect(view.host.querySelector(`#${hintId}`)?.textContent).toContain('Wähle mindestens');
+    view.tick(0);
+    expect(view.confirm().disabled).toBe(false);
+    expect(view.confirm().getAttribute('aria-describedby')).toBeNull();
+    httpMock.verify();
+  });
+
+  it('shows a skeleton before the list arrives', () => {
+    const fixture = TestBed.createComponent(TagAssignDialog);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('[role=status]')).not.toBeNull();
+    httpMock.expectOne(BASE).flush(tagList());
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Noch keine Tags.');
+  });
+
+  it('creating a tag adds it ticked; a taken name stays a field error and the dialog open', () => {
+    const view = render();
+    view.typeName('Boss');
+    httpMock
+      .expectOne({ method: 'POST', url: BASE })
+      .flush({ errorCode: 'tag_name_taken' }, { status: 409, statusText: 'Conflict' });
+    view.fixture.detectChanges();
+    expect(view.text()).toContain('Name schon vergeben.');
+    expect(closed).toEqual([]);
+
+    view.typeName('Neu');
+    const req = httpMock.expectOne({ method: 'POST', url: BASE });
+    expect(req.request.body).toEqual({ name: 'Neu' });
+    req.flush({ id: 7, name: 'Neu' });
+    view.fixture.detectChanges();
+    expect(view.checkbox(2).checked).toBe(true);
+    expect(view.text()).toContain('Neu');
+    expect(view.confirm().disabled).toBe(false);
+  });
+
+  it('assigns tag by tag in list order and closes with one count over all tags', () => {
+    const view = render();
+    view.tick(1);
+    view.tick(0);
+    view.confirm().click();
+
+    const first = httpMock.expectOne(`${BASE}/1/entries`);
+    expect(first.request.body).toEqual({ sevenTvEmoteIds: ['e1', 'e2', 'e3'] });
+    httpMock.expectNone(`${BASE}/2/entries`);
+    first.flush(added(2, ['e3'], 0));
+    httpMock.expectOne(`${BASE}/2/entries`).flush(added(1, ['e3'], 1));
+
+    expect(closed).toEqual([
+      { tagNames: ['Stronghold', 'Boss'], emoteCount: 2, skippedNotInSetCount: 1 },
+    ]);
+    httpMock.verify();
+  });
+
+  it('a failure on the second tag keeps the first in the result and offers only the rest again', () => {
+    const view = render();
+    view.tick(0);
+    view.tick(1);
+    view.confirm().click();
+    httpMock.expectOne(`${BASE}/1/entries`).flush(added(3));
+    httpMock
+      .expectOne(`${BASE}/2/entries`)
+      .flush({ errorCode: 'tag_entry_limit_reached' }, { status: 409, statusText: 'Conflict' });
+    view.fixture.detectChanges();
+
+    expect(closed).toEqual([]);
+    expect(view.text()).toContain('Tag voll.');
+    expect(view.text()).toContain('Schon zugewiesen: Stronghold.');
+    expect(view.checkbox(0).checked).toBe(false);
+    expect(view.checkbox(1).checked).toBe(true);
+    expect(dialogRef.disableClose).toBe(true);
+
+    keydown.next(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(closed).toEqual([{ tagNames: ['Stronghold'], emoteCount: 3, skippedNotInSetCount: 0 }]);
+  });
+
+  it('Escape without any assignment closes with undefined', () => {
+    render();
+    keydown.next(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(closed).toEqual([undefined]);
+  });
+});

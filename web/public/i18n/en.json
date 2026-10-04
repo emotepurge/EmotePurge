@@ -1668,6 +1668,30 @@
     "dialogTitle": "Add your 7TV token",
     "required": "Enter your 7TV token."
   },
+  "tags": {
+    "assignDialog": {
+      "title": "Assign tag",
+      "listLabel": "Tags",
+      "newTagLabel": "New tag",
+      "createButton": "Create",
+      "noTagsHint": "This channel has no tags yet. Create the first one below.",
+      "confirm": {
+        "one": "Assign {{count}} emote",
+        "other": "Assign {{count}} emotes"
+      },
+      "lockReason": {
+        "noneChecked": "Tick at least one tag."
+      },
+      "partial": "Already assigned: {{tags}}. The rest failed."
+    },
+    "nameDialog": {
+      "createTitle": "New tag",
+      "renameTitle": "Rename tag",
+      "label": "Name",
+      "confirmCreate": "Create",
+      "confirmRename": "Rename"
+    }
+  },
   "errors": {
     "generic": "Something went wrong. Please try again.",
     "status": {

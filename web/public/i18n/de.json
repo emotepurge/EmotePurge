@@ -1668,6 +1668,30 @@
     "dialogTitle": "7TV-Token hinterlegen",
     "required": "7TV-Token eingeben."
   },
+  "tags": {
+    "assignDialog": {
+      "title": "Tag zuweisen",
+      "listLabel": "Tags",
+      "newTagLabel": "Neuer Tag",
+      "createButton": "Anlegen",
+      "noTagsHint": "Dieser Channel hat noch keine Tags. Lege unten den ersten an.",
+      "confirm": {
+        "one": "{{count}} Emote zuweisen",
+        "other": "{{count}} Emotes zuweisen"
+      },
+      "lockReason": {
+        "noneChecked": "Wähle mindestens einen Tag aus."
+      },
+      "partial": "Schon zugewiesen: {{tags}}. Der Rest ist fehlgeschlagen."
+    },
+    "nameDialog": {
+      "createTitle": "Neuer Tag",
+      "renameTitle": "Tag umbenennen",
+      "label": "Name",
+      "confirmCreate": "Anlegen",
+      "confirmRename": "Umbenennen"
+    }
+  },
   "errors": {
     "generic": "Etwas ist schiefgelaufen. Bitte versuch es erneut.",
     "status": {
