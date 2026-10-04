@@ -241,6 +241,58 @@
       >
         {{ 'usageStats.hideObserved' | transloco }}
       </button>
+      <!-- The tag filter (#201, spec 9.2, E18): a filter among filters, so it sits with them, before
+           the reset that clears it too. Not rendered at all until the channel has a tag — no
+           permanent control for channels that never use one. A native select: one choice out of a
+           list of names, no refetch of the rows behind it (the keys narrow what is loaded). Capped
+           in width so a 40-character name cannot push the row apart; the inline group repeats the
+           name in full. -->
+      @if (tagFilterShown()) {
+        <select
+          class="app-input-sm max-w-48"
+          [attr.aria-label]="'tags.filter.label' | transloco"
+          (change)="onTagFilterChange($any($event.target).value)"
+        >
+          <option value="" [selected]="usageFilter.tagId() === null">
+            {{ 'tags.filter.all' | transloco }}
+          </option>
+          @for (tag of tags(); track tag.id) {
+            <option [value]="tag.id" [selected]="tag.id === usageFilter.tagId()">
+              {{ tag.name }}
+            </option>
+          }
+        </select>
+      }
+      <!-- The chosen tag in the same row (spec 9.2): name · k in the set · m not in the set, then
+           the way to the tag's own page. The numbers are counted against the active set and drop
+           out together when there is none to count in (`inSetCount: null`). In a view of another
+           set, the sentence that stands where T-C's buttons will go. Middle dots are separators
+           only and stay out of the accessibility tree. -->
+      @if (selectedTag(); as tag) {
+        <span class="flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-fg-muted">
+          <span class="max-w-60 truncate font-medium text-fg-body">{{ tag.name }}</span>
+          @if (selectedTagCounts(); as counts) {
+            <span aria-hidden="true">·</span>
+            <span>{{ counts.inSetKey | transloco: { count: formatCount(counts.inSet) } }}</span>
+            <span aria-hidden="true">·</span>
+            <span>{{
+              counts.notInSetKey | transloco: { count: formatCount(counts.notInSet) }
+            }}</span>
+          }
+          @if (tagActiveSetOnlyShown()) {
+            <span aria-hidden="true">·</span>
+            <span>{{ 'tags.filter.activeSetOnly' | transloco }}</span>
+          }
+          <!-- min-h-6: a 24 px target (§10) for a link set in 12 px text. -->
+          <a
+            routerLink="../tags"
+            [queryParams]="{ tag: tag.id }"
+            class="inline-flex min-h-6 items-center text-accent-fg underline-offset-2 hover:underline"
+          >
+            <span aria-hidden="true">→&nbsp;</span>{{ 'tags.filter.overview' | transloco }}
+          </a>
+        </span>
+      }
       <!-- Only while something is filtered, like the audit log's. Until now the way back existed
            only when the filter emptied the sheet completely — the reset lived in the empty state.
            Narrow the sheet rather than empty it and you had to undo each control by hand, and
@@ -321,6 +373,32 @@
         <span aria-hidden="true" class="w-full text-xs text-fg-muted">
           {{ notice.messageKey | transloco: { kind: notice.kind } }}
         </span>
+      }
+      <!-- The tag acknowledgements (#201, spec 7.0 step 4 and 7.0a, §4.5) — a third region pair,
+           not the selection-pruned one: two messages that can stand at the same time must not
+           overwrite each other. Here and not in the dock for the same reason as that notice: a
+           removal can empty the filtered grid, and the dock is no place a message survives in. -->
+      <span role="status" class="sr-only">
+        @if (tagFeedback(); as sentences) {
+          @for (sentence of sentences; track sentence.key) {
+            {{ sentence.key | transloco: sentence.params }}
+          }
+        }
+      </span>
+      @if (tagFeedback(); as sentences) {
+        <span aria-hidden="true" class="w-full text-xs text-fg-muted">
+          @for (sentence of sentences; track sentence.key) {
+            {{ sentence.key | transloco: sentence.params }}
+          }
+        </span>
+      }
+      <!-- A failed removal from the tag, or the tag's entries that could not be loaded (the filter
+           then lets every row through) — a state, not an acknowledgement, so a banner that stays
+           (§4.5). Only while a tag is chosen: both are about the tag filter. -->
+      @if (selectedTag() !== null && tagErrorKey(); as errorKey) {
+        <app-notice-banner variant="error" class="w-full">{{
+          errorKey | transloco
+        }}</app-notice-banner>
       }
     </div>
 
@@ -1167,6 +1245,17 @@
           >
             {{ 'import.dockCopyButton' | transloco: { count: importShortcutSelectionCount() } }}
           </button>
+          <!-- "Tag zuweisen…" (#201, spec 7.0/9.1): constructive, so before the vote button and the
+               gap to the delete (§8.7). Projected like the vote button — an @if block carries no
+               selector attribute of its own. Its gate (`tagAssignShown`) includes a view of the
+               active set: tags are written against it (E3). -->
+          <ng-container ngProjectAs="[selection-actions]">
+            @if (tagAssignShown()) {
+              <button type="button" appButton="neutral" buttonSize="lg" (click)="assignTags()">
+                {{ 'tags.actions.assign' | transloco }}
+              </button>
+            }
+          </ng-container>
           <!-- Second consumer of the grid selection besides mass-delete: puts the picked emotes up
                as a curated vote-session ballot. Count in the label + disabled at zero — both read
                `voteBallotSize()`, the size of the ballot `openCreateVoteSession` would actually
@@ -1197,6 +1286,27 @@
                 (click)="openCreateVoteSession()"
               >
                 {{ 'usageStats.createVoteSession' | transloco: { count: voteBallotSize() } }}
+              </button>
+            }
+          </ng-container>
+          <!-- "Aus ‚Tag' entfernen (n)" (#201, spec 7.0a): only with a tag filter set, after the vote
+               button and before the gap to the delete. n counts the marked emotes that are in the
+               tag; at 0 the button is disabled and that count is the reason, the same convention
+               as the vote button's. The title says what else goes with them (E17). -->
+          <ng-container ngProjectAs="[selection-actions]">
+            @if (tagUnassignShown() && selectedTag(); as tag) {
+              <button
+                type="button"
+                appButton="neutral"
+                buttonSize="lg"
+                class="disabled:cursor-not-allowed"
+                [disabled]="tagUnassignCount() === 0 || tagRemovalPending()"
+                [title]="'tags.actions.unassignTitle' | transloco"
+                (click)="removeFromTag()"
+              >
+                {{
+                  'tags.actions.unassign' | transloco: { tag: tag.name, count: tagUnassignCount() }
+                }}
               </button>
             }
           </ng-container>

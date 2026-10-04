@@ -1312,6 +1312,47 @@ export interface MockVoteSession {
   emoteSetId?: string | null;
 }
 
+/** One tag of {@link mockTags}' list (#201, spec 6.2) — counts default to an empty tag. */
+export interface MockTagSummary {
+  id: number;
+  name: string;
+  entryCount?: number;
+  inSetCount?: number | null;
+}
+
+/**
+ * GET /api/channels/{channelName}/tags (#201, spec 6.2) — the channel's tag list the usage page
+ * asks for once the set status is in (`usage-stats-page.ts`'s `tagsResource`). Exact pathname, like
+ * {@link mockVoteSessionList}: the request carries `?emoteSetId=…`, and the `/{tagId}/entries`
+ * sub-routes are not this list. Default: no tags — the page then shows no tag select at all.
+ */
+export async function mockTags(
+  page: Page,
+  channelName: string,
+  tags: MockTagSummary[] = [],
+): Promise<void> {
+  const path = `/api/channels/${channelName}/tags`;
+  await page.route(
+    (url) => url.pathname === path,
+    (route) => {
+      if (route.request().method() !== 'GET') {
+        return route.fallback();
+      }
+      const emoteSetId = new URL(route.request().url()).searchParams.get('emoteSetId');
+      return fulfillJson(route, 200, {
+        emoteSetId,
+        isActiveSet: true,
+        tags: tags.map((tag) => ({
+          id: tag.id,
+          name: tag.name,
+          entryCount: tag.entryCount ?? 0,
+          inSetCount: tag.inSetCount === undefined ? 0 : tag.inSetCount,
+        })),
+      });
+    },
+  );
+}
+
 /**
  * GET /api/channels/{channelName}/vote-sessions — the session list. Matched by an exact pathname
  * predicate rather than a glob: the request carries `?page=…` (whose `?` a glob would read as a

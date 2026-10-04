@@ -201,6 +201,15 @@ describe('EmoteUsageFilter', () => {
       expect(filter.apply(ROWS).map((r) => r.emoteName)).toEqual(['peepoSad', 'catJAM']);
     });
 
+    it('lets nothing through for a loaded but empty key set — empty is not "not loaded"', () => {
+      const filter = new EmoteUsageFilter<Row>();
+      filter.setTag(4);
+
+      filter.setTagKeys(new Set());
+
+      expect(filter.apply(ROWS)).toEqual([]);
+    });
+
     it('intersects with the name filter', () => {
       const filter = new EmoteUsageFilter<Row>();
       filter.setTag(4);

@@ -67,6 +67,7 @@ import {
 import { REFUSED_START_FEEDBACK_MS } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
+import { EmoteTagEntry, EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -75,6 +76,7 @@ import { CSV_MIME } from '../../shared/export/csv';
 import { ExportDialogData } from '../../shared/export/export-dialog';
 import { JSON_MIME } from '../../shared/export/export-envelope';
 import { ExportPurposeId } from '../../shared/export/usage-export-purposes';
+import { TagAssignDialogData, TagAssignDialogResult } from '../../shared/tags/tag-assign-dialog';
 import { CreateVoteSessionDialogData } from './create-vote-session-dialog';
 import { UsageStatsPage } from './usage-stats-page';
 
@@ -6259,5 +6261,464 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     loud[0].flush([emote('a', 'PeepoA')]);
     await settle();
     expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+});
+
+/**
+ * #201 T-B (spec 7.0, 7.0a, 9.1, 9.2, 8): the tag filter in row two, the inline summary of the chosen
+ * tag, the two dock actions and their acknowledgement. Template replaced as in the blocks above —
+ * what is under test is the page's own decisions (what is shown, what is sent, what is said), read
+ * from its signals; which `@if` renders them is the audit harness's and the e2e suite's job.
+ */
+describe('UsageStatsPage — tags: filter, inline summary, dock actions, messages (#201 T-B)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let openSpy: ReturnType<typeof vi.fn>;
+
+  const SERIES = { from: '2026-01-01', to: '2026-09-08', liveDays: [], emotes: [] };
+  const TAGS_URL = '/api/channels/a/tags';
+
+  function tag(
+    id: number,
+    name: string,
+    overrides: Partial<EmoteTagSummary> = {},
+  ): EmoteTagSummary {
+    return { id, name, entryCount: 5, inSetCount: 3, ...overrides };
+  }
+
+  function entry(sevenTvEmoteId: string): EmoteTagEntry {
+    return { sevenTvEmoteId, alias: sevenTvEmoteId, imageUrl: '', inSet: true, currentName: null };
+  }
+
+  function configure(coarse: boolean): void {
+    TestBed.resetTestingModule();
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    if (coarse) {
+      vi.stubGlobal('matchMedia', () => ({
+        matches: true,
+        media: '',
+        onchange: null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        dispatchEvent: () => false,
+      }));
+    }
+    openSpy = vi.fn();
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+        { provide: Dialog, useValue: { open: openSpy } as unknown as Dialog },
+      ],
+    });
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  function tagListRequests(): TestRequest[] {
+    return httpMock.match((r) => r.url === TAGS_URL);
+  }
+
+  function flushTags(tags: EmoteTagSummary[]): void {
+    for (const request of tagListRequests()) {
+      request.flush({ emoteSetId: 'set-a', isActiveSet: true, tags });
+    }
+  }
+
+  function flushEntries(tagId: number, ids: string[]): void {
+    httpMock
+      .expectOne((r) => r.url === `${TAGS_URL}/${tagId}/entries`)
+      .flush({ emoteSetId: 'set-a', isActiveSet: true, entries: ids.map(entry) });
+  }
+
+  /**
+   * Mounts channel 'a' (active set `set-a`) up to the rows being on screen and answers the tag list
+   * with `tags`. `emoteSetId: 'set-b'` opens a view of another set (its member list answered with
+   * the same rows); `activeEmoteSetId: ''` a channel without an active set.
+   */
+  async function open(options: {
+    tags: EmoteTagSummary[];
+    totals?: EmoteUsageTotalDto[];
+    canManage?: boolean;
+    coarse?: boolean;
+    emoteSetId?: string;
+    activeEmoteSetId?: string;
+  }): Promise<void> {
+    configure(options.coarse ?? false);
+    if (options.emoteSetId) {
+      await TestBed.inject(Router).navigate([], {
+        queryParams: { emoteSetId: options.emoteSetId },
+      });
+    }
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: options.canManage ?? true, canViewUsageStats: true });
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: options.activeEmoteSetId ?? 'set-a',
+        trackedSince: '2026-01-01T00:00:00Z',
+      }),
+    );
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock
+      .match((r) => r.url === '/api/channels/a/emote-sets')
+      .forEach((request) =>
+        request.flush(
+          emoteSetList([
+            emoteSet({ id: 'set-a', isActive: true }),
+            emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+          ]),
+        ),
+      );
+    await settle();
+
+    const totals = options.totals ?? [
+      emote('a', 'PeepoA'),
+      emote('b', 'PeepoB'),
+      emote('c', 'PeepoC'),
+    ];
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    httpMock
+      .match((r) => LIVE_LIST_URL.test(r.url))
+      .forEach((request) =>
+        request.flush({
+          channelName: 'a',
+          sevenTvUserId: null,
+          emoteSetId: 'set-b',
+          emoteSetName: 'Halloween',
+          capacity: 1000,
+          totalCount: totals.length,
+          truncated: false,
+          emotes: totals.map((row) => ({
+            sevenTvEmoteId: row.sevenTvEmoteId,
+            name: row.emoteName,
+            defaultName: row.emoteName,
+            imageUrl: '',
+            topAllTime: null,
+            trending: null,
+          })),
+        }),
+      );
+    await settle();
+    flushTags(options.tags);
+    await settle();
+  }
+
+  function mark(...ids: string[]): void {
+    for (const id of ids) {
+      const row = component['emotes']().find((emote) => emote.sevenTvEmoteId === id);
+      if (!row) {
+        throw new Error(`no row ${id}`);
+      }
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+  }
+
+  async function chooseTag(tagId: number, memberIds: string[]): Promise<void> {
+    component['onTagFilterChange'](String(tagId));
+    await settle();
+    flushEntries(tagId, memberIds);
+    await settle();
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('asks for the tag list against the active set, and offers the select only once there is a tag (E18)', async () => {
+    configure(false);
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    await settle();
+    // Not before the set status is in — otherwise it would be asked twice.
+    expect(tagListRequests()).toEqual([]);
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(setStatus({}));
+    await settle();
+
+    const requests = tagListRequests();
+    expect(requests.map((request) => request.request.params.get('emoteSetId'))).toEqual(['set-a']);
+    requests[0].flush({ emoteSetId: 'set-a', isActiveSet: true, tags: [] });
+    await settle();
+    expect(component['tagFilterShown']()).toBe(false);
+
+    await open({ tags: [tag(4, 'Stronghold')] });
+    expect(component['tagFilterShown']()).toBe(true);
+  });
+
+  it('choosing a tag sets the filter, loads its keys and narrows the grid to its members; "Alle Tags" undoes it', async () => {
+    await open({ tags: [tag(4, 'Stronghold', { entryCount: 5, inSetCount: 2 })] });
+
+    component['onTagFilterChange']('4');
+    expect(component['usageFilter'].tagId()).toBe(4);
+    // Keys not loaded yet: nothing is hidden meanwhile.
+    expect(component['filteredEmotes']()).toHaveLength(3);
+    await settle();
+    flushEntries(4, ['7tv-a', '7tv-c']);
+    await settle();
+
+    expect([...(component['usageFilter'].tagKeys() ?? [])].sort()).toEqual(['7tv-a', '7tv-c']);
+    expect(component['filteredEmotes']().map((row) => row.sevenTvEmoteId)).toEqual([
+      '7tv-a',
+      '7tv-c',
+    ]);
+    expect(component['selectedTag']()?.name).toBe('Stronghold');
+    expect(component['selectedTagCounts']()).toMatchObject({ inSet: 2, notInSet: 3 });
+
+    component['onTagFilterChange']('');
+    expect(component['usageFilter'].tagId()).toBeNull();
+    expect(component['filteredEmotes']()).toHaveLength(3);
+  });
+
+  it('drops the numbers when the counts have no set to refer to', async () => {
+    await open({ tags: [tag(4, 'Stronghold', { inSetCount: null })] });
+    await chooseTag(4, ['7tv-a']);
+
+    expect(component['selectedTag']()).not.toBeNull();
+    expect(component['selectedTagCounts']()).toBeNull();
+  });
+
+  it('"Filter zurücksetzen" clears the tag with the other filters', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    await chooseTag(4, ['7tv-a']);
+
+    component['usageFilter'].reset();
+
+    expect(component['usageFilter'].tagId()).toBeNull();
+    expect(component['selectedTag']()).toBeNull();
+    expect(component['filteredEmotes']()).toHaveLength(3);
+  });
+
+  it('drops a chosen tag the reloaded list no longer names (deleted elsewhere)', async () => {
+    await open({ tags: [tag(4, 'Stronghold'), tag(5, 'Spooky')] });
+    await chooseTag(4, ['7tv-a']);
+
+    component['tagsResource'].reload();
+    await settle();
+    flushTags([tag(5, 'Spooky')]);
+    await settle();
+
+    expect(component['usageFilter'].tagId()).toBeNull();
+    expect(component['filteredEmotes']()).toHaveLength(3);
+  });
+
+  it('offers "Tag zuweisen…" for a manager on a fine pointer with a selection in the active view', async () => {
+    await open({ tags: [] });
+    expect(component['tagAssignShown']()).toBe(false);
+
+    mark('7tv-a');
+
+    expect(component['tagAssignShown']()).toBe(true);
+  });
+
+  it('has no tag action without the management right', async () => {
+    await open({ tags: [tag(4, 'Stronghold')], canManage: false });
+    mark('7tv-a');
+
+    expect(component['tagAssignShown']()).toBe(false);
+  });
+
+  it('has no tag action on a coarse pointer', async () => {
+    await open({ tags: [tag(4, 'Stronghold')], coarse: true });
+    // Marked behind the page's back — the coarse-pointer effect would clear it on the next pass;
+    // read before it can, so the pointer is the only reason left.
+    mark('7tv-a');
+
+    expect(component['selection'].selectedItems()).toHaveLength(1);
+    expect(component['tagAssignShown']()).toBe(false);
+  });
+
+  it('has no tag action on a channel without an active set', async () => {
+    await open({ tags: [tag(4, 'Stronghold')], activeEmoteSetId: '' });
+    mark('7tv-a');
+
+    expect(component['tagAssignShown']()).toBe(false);
+  });
+
+  it('in a view of another set: no tag action, the filter still works, and the sentence says why (spec 8)', async () => {
+    await open({ tags: [tag(4, 'Stronghold')], emoteSetId: 'set-b' });
+    mark('7tv-a');
+
+    expect(component['tagAssignShown']()).toBe(false);
+    expect(component['tagActiveSetOnlyShown']()).toBe(false);
+
+    await chooseTag(4, ['7tv-b']);
+
+    expect(component['filteredEmotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-b']);
+    expect(component['tagUnassignShown']()).toBe(false);
+    expect(component['tagActiveSetOnlyShown']()).toBe(true);
+  });
+
+  it('says nothing about the active set in the active view', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    await chooseTag(4, ['7tv-a']);
+
+    expect(component['tagActiveSetOnlyShown']()).toBe(false);
+  });
+
+  it('offers "Aus Tag entfernen" only with a tag filter, counting the marked emotes that are in the tag', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    mark('7tv-a', '7tv-b');
+    expect(component['tagUnassignShown']()).toBe(false);
+
+    await chooseTag(4, ['7tv-a', '7tv-c']);
+
+    expect(component['tagUnassignShown']()).toBe(true);
+    expect(component['tagUnassignCount']()).toBe(1);
+  });
+
+  it('after "Tag zuweisen…": hands the dialog the marked ids, acknowledges for 4 s, reloads the tags and keeps the selection', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    mark('7tv-a', '7tv-b');
+    const result: TagAssignDialogResult = {
+      tagNames: ['Stronghold'],
+      emoteCount: 2,
+      skippedNotInSetCount: 0,
+    };
+    openSpy.mockReturnValue({ closed: of(result) });
+    vi.useFakeTimers();
+
+    component['assignTags']();
+
+    const data = openSpy.mock.calls[0][1].data as TagAssignDialogData;
+    expect(data).toEqual({ channelName: 'a', sevenTvEmoteIds: ['7tv-a', '7tv-b'] });
+    expect(component['tagFeedback']()).toEqual([
+      { key: 'tags.feedback.assigned.other', params: { count: 2, tag: 'Stronghold' } },
+    ]);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+    fixture.detectChanges();
+    expect(tagListRequests()).toHaveLength(1);
+
+    vi.advanceTimersByTime(3999);
+    expect(component['tagFeedback']()).not.toBeNull();
+    vi.advanceTimersByTime(1);
+    expect(component['tagFeedback']()).toBeNull();
+  });
+
+  it('names the number of tags for several, and adds the skipped emotes as a second sentence', async () => {
+    await open({ tags: [tag(4, 'Stronghold'), tag(5, 'Spooky')] });
+    mark('7tv-a', '7tv-b', '7tv-c');
+    openSpy.mockReturnValue({
+      closed: of({ tagNames: ['Stronghold', 'Spooky'], emoteCount: 2, skippedNotInSetCount: 1 }),
+    });
+
+    component['assignTags']();
+
+    expect(component['tagFeedback']()).toEqual([
+      { key: 'tags.feedback.assignedMany.other', params: { count: 2, tags: 2 } },
+      { key: 'tags.feedback.skippedNotInSet.one', params: { count: 1 } },
+    ]);
+  });
+
+  it('reloads the tags even when the dialog closes without assigning — a tag may have been created in it', async () => {
+    await open({ tags: [] });
+    mark('7tv-a');
+    openSpy.mockReturnValue({ closed: of(undefined) });
+
+    component['assignTags']();
+    fixture.detectChanges();
+
+    expect(tagListRequests()).toHaveLength(1);
+    expect(component['tagFeedback']()).toBeNull();
+  });
+
+  it("reloads the chosen tag's keys after an assignment while the tag filter is set", async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    await chooseTag(4, ['7tv-a']);
+    mark('7tv-a');
+    openSpy.mockReturnValue({
+      closed: of({ tagNames: ['Stronghold'], emoteCount: 1, skippedNotInSetCount: 0 }),
+    });
+
+    component['assignTags']();
+    fixture.detectChanges();
+
+    flushEntries(4, ['7tv-a', '7tv-b']);
+    await settle();
+    expect(component['filteredEmotes']().map((row) => row.sevenTvEmoteId)).toEqual([
+      '7tv-a',
+      '7tv-b',
+    ]);
+  });
+
+  it('removes only the marked emotes that are in the tag, acknowledges, and reloads tags and keys', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    await chooseTag(4, ['7tv-a', '7tv-c']);
+    mark('7tv-a', '7tv-b');
+
+    component['removeFromTag']();
+
+    const request = httpMock.expectOne(`${TAGS_URL}/4/entries/remove`);
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({ sevenTvEmoteIds: ['7tv-a'] });
+    expect(component['tagRemovalPending']()).toBe(true);
+    request.flush({ removedCount: 1 });
+
+    expect(component['tagRemovalPending']()).toBe(false);
+    expect(component['tagFeedback']()).toEqual([
+      { key: 'tags.feedback.unassigned.one', params: { count: 1, tag: 'Stronghold' } },
+    ]);
+    await settle();
+    expect(tagListRequests()).toHaveLength(1);
+    flushEntries(4, ['7tv-c']);
+    await settle();
+    expect(component['filteredEmotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-c']);
+    // Still marked — only hidden by the filter now.
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+  });
+
+  it('says why a removal failed, in a banner rather than a fading message', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    await chooseTag(4, ['7tv-a']);
+    mark('7tv-a');
+
+    component['removeFromTag']();
+    httpMock
+      .expectOne(`${TAGS_URL}/4/entries/remove`)
+      .flush({ errorCode: 'emote_ids_invalid' }, { status: 400, statusText: 'Bad Request' });
+
+    expect(component['tagErrorKey']()).toBe('errors.api.emote_ids_invalid');
+    expect(component['tagFeedback']()).toBeNull();
+
+    // A new tag choice retires it.
+    component['onTagFilterChange']('');
+    expect(component['tagErrorKey']()).toBeNull();
   });
 });

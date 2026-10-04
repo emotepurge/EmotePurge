@@ -15,7 +15,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import {
   EMPTY,
@@ -26,6 +26,7 @@ import {
   defer,
   finalize,
   first,
+  map,
   merge,
   of,
   switchMap,
@@ -57,6 +58,8 @@ import { refusedStartMessage, SevenTvRunArbiter } from '../../core/seven-tv/seve
 import { RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
+import { EmoteTagSummary } from '../../core/tags/emote-tag.model';
+import { EmoteTagService } from '../../core/tags/emote-tag.service';
 import {
   CreateVoteSessionDialogData,
   openCreateVoteSessionDialog,
@@ -149,6 +152,7 @@ import { DeletableEmote, MassDeletePanel } from '../../shared/seven-tv/mass-dele
 import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
 import { UndoProgressSection } from '../../shared/seven-tv/undo-progress-section';
 import { ListSelection } from '../../shared/selection/list-selection';
+import { openTagAssignDialog, TagAssignDialogResult } from '../../shared/tags/tag-assign-dialog';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
@@ -263,6 +267,40 @@ const DISTRIBUTION_BUCKETS = 96;
 // channel-workspace-layout's RESYNC_FEEDBACK_MS and admin-channels-page's own feedback timer.
 const SELECTION_PRUNED_FEEDBACK_MS = 4000;
 
+// The tag acknowledgements (#201, spec 7.0/7.0a) follow the same §4.5 pattern with their own timer:
+// they are a different message on a region pair of their own, and must not cut a selection-pruned
+// notice short (or be cut short by one).
+const TAG_FEEDBACK_MS = 4000;
+
+/**
+ * The status message after the assign dialog closed with a result (spec 7.0 step 4): one tag names
+ * it ("3 Emotes zu Stronghold hinzugefügt"), several are counted ("… zu 3 Tags"); emotes the server
+ * skipped because they had left the set meanwhile (E23) add a second sentence. `emoteCount` is the
+ * dialog's own once-per-emote count, never a sum over the tags.
+ */
+function tagAssignedFeedback(result: TagAssignDialogResult): CaptionSentence[] {
+  const count = result.emoteCount;
+  const sentences: CaptionSentence[] = [
+    result.tagNames.length === 1
+      ? {
+          key: pluralKey(count, 'tags.feedback.assigned'),
+          params: { count, tag: result.tagNames[0] },
+        }
+      : {
+          key: pluralKey(count, 'tags.feedback.assignedMany'),
+          params: { count, tags: result.tagNames.length },
+        },
+  ];
+  const skipped = result.skippedNotInSetCount;
+  if (skipped > 0) {
+    sentences.push({
+      key: pluralKey(skipped, 'tags.feedback.skippedNotInSet'),
+      params: { count: skipped },
+    });
+  }
+  return sentences;
+}
+
 function isCounted(emote: EmoteUsageTotal): emote is CountedEmote {
   return emote.totalUseCount !== null;
 }
@@ -317,6 +355,7 @@ function mayHaveChangedTheSet(result: RunResult): boolean {
     SegmentedControl,
     UsageRangeMenu,
     UsageSparkline,
+    RouterLink,
     TranslocoPipe,
   ],
   templateUrl: './usage-stats-page.html',
@@ -348,6 +387,7 @@ export class UsageStatsPage {
    *  watcher (`watchRunSettle`) — not for the registration timing. */
   private readonly undoService = inject(SevenTvUndoService);
   private readonly tokenService = inject(SevenTvTokenService);
+  private readonly tagService = inject(EmoteTagService);
   /** Read here only for the header button's lock (#72, R1) — the template needs it too, hence
    *  `protected` rather than `private`, mirroring the same choice on the mass-delete panel and the
    *  restore panel (#70, Task 4; see docs/DECISIONS.md). */
@@ -1241,6 +1281,200 @@ export class UsageStatsPage {
     this.emotes,
   );
 
+  // --- Tags (#201 T-B: spec 7.0, 7.0a, 9.1, 9.2) -------------------------------------------------
+
+  /**
+   * The tag list's request key. Waits for the permissions (plan 3.2: only where the usage stats may
+   * be read at all) and for the set status's outcome, so the list is asked once, for the active set
+   * the page knows — not first without a set and again once the status lands. Without an active set
+   * (or with a failed status) the server resolves the set itself and answers `inSetCount: null`.
+   * Structural equality, like `liveMembersParams`: a recompute without a content change must not
+   * refetch.
+   */
+  private readonly tagsParams = computed(
+    () => {
+      const permissions = this.permissionsResource.hasValue()
+        ? this.permissionsResource.value()
+        : undefined;
+      if (!permissions?.canViewUsageStats || !this.setStatusOutcomeKnown()) {
+        return undefined;
+      }
+      return { channelName: this.channelName(), emoteSetId: this.activeEmoteSetId() };
+    },
+    {
+      equal: (a, b) =>
+        a === b || (a?.channelName === b?.channelName && a?.emoteSetId === b?.emoteSetId),
+    },
+  );
+
+  /** The channel's tags with their counts against the active set (spec 6.2). Reloaded after every
+   *  own tag action (9.6) and on a loud `channel.synced`, never polled. */
+  protected readonly tagsResource = rxResource({
+    params: () => this.tagsParams(),
+    stream: ({ params }) =>
+      this.tagService.list(params.channelName, params.emoteSetId ?? undefined),
+  });
+
+  /** `hasValue()` first — a failed list re-throws from `value()` (see `emoteSetList`). A failure
+   *  reads as "no tags": the select is a filter, not a place to report that its options are gone. */
+  protected readonly tags = computed<EmoteTagSummary[]>(() =>
+    this.tagsResource.hasValue() ? this.tagsResource.value().tags : [],
+  );
+
+  /** E18: the tag select exists only once the channel has a tag — no permanent control for the
+   *  channels that never use them. */
+  protected readonly tagFilterShown = computed(() => this.tags().length > 0);
+
+  /** The tag the filter is set to, resolved against the loaded list — `null` while no tag is chosen,
+   *  and while the list that would name it is not loaded (yet). T-C hangs its buttons on this. */
+  protected readonly selectedTag = computed<EmoteTagSummary | null>(() => {
+    const tagId = this.usageFilter.tagId();
+    return tagId === null ? null : (this.tags().find((tag) => tag.id === tagId) ?? null);
+  });
+
+  /** The inline group's two numbers (spec 9.2): in the set, and the rest of the tag's entries.
+   *  `null` when the counts have no set to refer to (`inSetCount: null`) — then neither is shown,
+   *  since "not in the set" cannot be derived either. */
+  protected readonly selectedTagCounts = computed(() => {
+    const tag = this.selectedTag();
+    if (tag === null || tag.inSetCount === null) {
+      return null;
+    }
+    const notInSet = tag.entryCount - tag.inSetCount;
+    return {
+      inSet: tag.inSetCount,
+      inSetKey: pluralKey(tag.inSetCount, 'tags.filter.inSet'),
+      notInSet,
+      notInSetKey: pluralKey(notInSet, 'tags.filter.notInSet'),
+    };
+  });
+
+  /** Request key for the chosen tag's entries — keyed on `selectedTag()`, not on the raw filter id,
+   *  so a tag id carried over from another channel (the filter outlives a channel switch) is never
+   *  asked for under this one: the stale-tag effect in the constructor drops it instead. */
+  private readonly tagFilterEntriesParams = computed(
+    () => {
+      const tag = this.selectedTag();
+      return tag === null
+        ? undefined
+        : { channelName: this.channelName(), tagId: tag.id, emoteSetId: this.activeEmoteSetId() };
+    },
+    {
+      equal: (a, b) =>
+        a === b ||
+        (a?.channelName === b?.channelName &&
+          a?.tagId === b?.tagId &&
+          a?.emoteSetId === b?.emoteSetId),
+    },
+  );
+
+  /**
+   * The chosen tag's 7TV ids — the filter's key set (E18). The page loads them, not the filter
+   * (plan 3.2); the constructor hands them to `usageFilter.setTagKeys` once they belong to the tag
+   * still chosen, which is why the answer carries its own `tagId`.
+   */
+  protected readonly tagFilterEntriesResource = rxResource({
+    params: () => this.tagFilterEntriesParams(),
+    stream: ({ params }) =>
+      this.tagService
+        .listEntries(params.channelName, params.tagId, params.emoteSetId ?? undefined)
+        .pipe(
+          map((response) => ({
+            tagId: params.tagId,
+            keys: new Set(
+              response.entries.map((entry) => entry.sevenTvEmoteId),
+            ) as ReadonlySet<string>,
+          })),
+        ),
+  });
+
+  /** A failed "remove from tag" (7.0a) — the dialog-less one of the two tag writes, so the page has
+   *  to say it itself. Cleared by the next attempt, a tag change and a channel switch. */
+  private readonly tagRemovalErrorKey = signal<string | null>(null);
+
+  /** What the tag filter's error banner says: a failed removal first, else the entries load that
+   *  failed (the filter then lets every row through, see `EmoteUsageFilter.apply`, and the banner is
+   *  what keeps that from reading as "every emote is in the tag"). */
+  protected readonly tagErrorKey = computed(() => {
+    const removalError = this.tagRemovalErrorKey();
+    if (removalError !== null) {
+      return removalError;
+    }
+    const loadError = this.tagFilterEntriesResource.error();
+    return loadError instanceof HttpErrorResponse ? apiErrorTranslationKey(loadError) : null;
+  });
+
+  /**
+   * Gate for both tag buttons in the dock (spec 7.0 step 1, 9.1, plan 3.2): a fine pointer, a
+   * manager (E9), a scope that still describes the channel and set on screen, a view of the
+   * *active* set (E3: tags key by `SevenTvEmoteId` and the server checks membership against the
+   * active set) and something marked. `shownSetId() !== null` because a channel without an active
+   * set has `null === null` there, and gets no dock button (spec 8). No `startLocked` — nothing here
+   * writes to 7TV.
+   */
+  protected readonly tagAssignShown = computed(() => {
+    const shown = this.shownSetId();
+    return (
+      !this.isCoarse() &&
+      this.canManage() &&
+      this.importScopeCurrent() &&
+      shown !== null &&
+      shown === this.activeEmoteSetId() &&
+      this.selection.selectedItems().length > 0
+    );
+  });
+
+  /** "Aus ‚Tag' entfernen" (7.0a): the same gate, plus a tag filter that names a loaded tag. */
+  protected readonly tagUnassignShown = computed(
+    () => this.tagAssignShown() && this.selectedTag() !== null,
+  );
+
+  /** The marked emotes that are actually in the chosen tag — what the removal sends and what its
+   *  label counts. Empty until the tag's keys are loaded; a marked emote outside the tag (the
+   *  selection survives the filter) would be a no-op on the server and is not counted. */
+  private readonly tagUnassignIds = computed(() => {
+    const keys = this.usageFilter.tagKeys();
+    if (keys === null || this.usageFilter.tagId() === null) {
+      return [];
+    }
+    return this.selection
+      .selectedItems()
+      .map((emote) => emote.sevenTvEmoteId)
+      .filter((id) => keys.has(id));
+  });
+
+  /** The removal button's count — and its lock: at 0 it is disabled, and the count in its label is
+   *  the reason, the same convention as the vote button's. */
+  protected readonly tagUnassignCount = computed(() => this.tagUnassignIds().length);
+
+  protected readonly tagRemovalPending = signal(false);
+
+  /**
+   * Spec 8 ("Shown set ≠ aktives Set"): in a view of another set the tag filter still works, but the
+   * tag actions are absent, and this sentence says why in their place (T-C puts its buttons exactly
+   * here). Only where those actions could exist at all — a manager on a fine pointer — since what
+   * falls away on a coarse pointer is not explained (§2.5), and a non-manager has nothing missing.
+   */
+  protected readonly tagActiveSetOnlyShown = computed(() => {
+    const active = this.activeEmoteSetId();
+    return (
+      this.selectedTag() !== null &&
+      !this.isCoarse() &&
+      this.canManage() &&
+      active !== null &&
+      this.shownSetId() !== active
+    );
+  });
+
+  /**
+   * The transient acknowledgement of a tag write (§4.5, spec 7.0 step 4 and 7.0a) — on the count
+   * line, which survives the case it reports (the dock does not, once the selection empties), in a
+   * region pair of its own (plan 2026-10-03, 1.3: sharing `selectionPrunedFeedback`'s would let one
+   * message overwrite the other). One or two sentences.
+   */
+  protected readonly tagFeedback = signal<readonly CaptionSentence[] | null>(null);
+  private tagFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
+
   /**
    * The cell the inspector is describing, held by id rather than by object: a refetch hands out
    * fresh instances for the same rows, and an object reference would leave the inspector pinned to
@@ -2066,9 +2300,48 @@ export class UsageStatsPage {
       onCleanup(() => observer.disconnect());
     });
 
+    // The chosen tag's keys reach the filter once they are loaded — and only if they belong to the
+    // tag still chosen: a slow answer for a tag the user has since left must not narrow the grid to
+    // it (rule 14: the filter reads signals, so this is a write into one, not a mutation behind it).
+    effect(() => {
+      if (!this.tagFilterEntriesResource.hasValue()) {
+        return;
+      }
+      const loaded = this.tagFilterEntriesResource.value();
+      if (loaded.tagId === this.usageFilter.tagId()) {
+        this.usageFilter.setTagKeys(loaded.keys);
+      }
+    });
+
+    // A chosen tag the loaded list does not name — deleted meanwhile, or carried over from the
+    // previous channel (the filter outlives a channel switch) — is dropped from the filter rather
+    // than left narrowing the grid with a select that can no longer show it. Only against a list
+    // that actually loaded: a failed or still-loading list proves nothing.
+    effect(() => {
+      const tagId = this.usageFilter.tagId();
+      if (tagId === null || !this.tagsResource.hasValue()) {
+        return;
+      }
+      if (!this.tagsResource.value().tags.some((tag) => tag.id === tagId)) {
+        this.usageFilter.setTag(null);
+      }
+    });
+
+    // A tag acknowledgement or removal error names the previous channel's tag — gone on a switch,
+    // like the selection-pruned notice (load()), but keyed on the channel alone: a range change
+    // does not touch tags.
+    effect(() => {
+      this.channelName();
+      untracked(() => {
+        this.resetTagFeedback();
+        this.tagRemovalErrorKey.set(null);
+      });
+    });
+
     this.destroyRef.onDestroy(() => {
       this.syncPoll?.unsubscribe();
       this.resetSelectionPrunedFeedback();
+      this.resetTagFeedback();
       // Leaving the page must give the reservation back immediately — otherwise a switch to a
       // channel with no active set (dockVisible() never becomes false again on THIS instance,
       // since the component is destroyed first) would leave the footer needlessly clear on every
@@ -2104,6 +2377,9 @@ export class UsageStatsPage {
         // created on 7TV, one renamed) — and this is the one loud signal spec E19 ties a re-fetch
         // to. Never on the silent `usage.flushed` branch below.
         this.emoteSetListResource.reload();
+        // The tags' in-set counts are read against the set's current members (spec 9.6) — a sync
+        // that changed them changes the counts. Same loud-only rule as the set list.
+        this.tagsResource.reload();
         // Same rule one level down (spec 8.3): a non-active view's member list follows the loud
         // reload, never the silent one. A no-op while no non-active set is selected. Deliberately
         // not held back for the status (AK 52): should the status make the chosen set the active
@@ -2525,6 +2801,81 @@ export class UsageStatsPage {
         this.router.navigate(['/channels', this.channelName(), 'vote-sessions', created.id]);
       }
     });
+  }
+
+  /** The tag select's `change` (spec 9.2): `''` is "Alle Tags". A new choice also retires a removal
+   *  error that named the previous tag. */
+  protected onTagFilterChange(value: string): void {
+    const tagId = value === '' ? null : Number(value);
+    this.tagRemovalErrorKey.set(null);
+    this.usageFilter.setTag(tagId !== null && Number.isInteger(tagId) ? tagId : null);
+  }
+
+  /**
+   * "Tag zuweisen…" (spec 7.0): the dialog does the writing, tag by tag; the page acknowledges.
+   * The tag list reloads on *every* close, result or not — a tag created inline and then abandoned
+   * returns `undefined` but exists on the server. The selection stays as it is (step 4).
+   *
+   * A selection beyond the server's 2000-id cap is not chunked: the dialog shows the 400
+   * (`emote_ids_invalid`) through `apiErrorTranslationKey` like any other failed assignment.
+   */
+  protected assignTags(): void {
+    if (!this.tagAssignShown()) {
+      return;
+    }
+    const channelName = this.channelName();
+    const sevenTvEmoteIds = this.selection.selectedItems().map((emote) => emote.sevenTvEmoteId);
+    openTagAssignDialog(this.dialog, { channelName, sevenTvEmoteIds }).closed.subscribe(
+      (result) => {
+        this.tagsResource.reload();
+        if (!result || channelName !== this.channelName()) {
+          return;
+        }
+        if (this.usageFilter.tagId() !== null) {
+          this.tagFilterEntriesResource.reload();
+        }
+        this.showTagFeedback(tagAssignedFeedback(result));
+      },
+    );
+  }
+
+  /**
+   * "Aus ‚Tag' entfernen" (spec 7.0a): no confirmation — nothing leaves 7TV, the emotes stay in the
+   * set. Sends only the marked emotes that are in the tag (`tagUnassignIds`). Afterwards the tag's
+   * keys reload, so the removed emotes drop out of the filtered grid while staying marked.
+   */
+  protected removeFromTag(): void {
+    const tag = this.selectedTag();
+    const ids = this.tagUnassignIds();
+    if (!this.tagUnassignShown() || tag === null || ids.length === 0 || this.tagRemovalPending()) {
+      return;
+    }
+    const channelName = this.channelName();
+    this.tagRemovalErrorKey.set(null);
+    this.tagRemovalPending.set(true);
+    this.tagService
+      .removeEntries(channelName, tag.id, ids)
+      .pipe(finalize(() => this.tagRemovalPending.set(false)))
+      .subscribe({
+        next: (result) => {
+          if (channelName !== this.channelName()) {
+            return;
+          }
+          this.tagsResource.reload();
+          this.tagFilterEntriesResource.reload();
+          this.showTagFeedback([
+            {
+              key: pluralKey(result.removedCount, 'tags.feedback.unassigned'),
+              params: { count: result.removedCount, tag: tag.name },
+            },
+          ]);
+        },
+        error: (error: HttpErrorResponse) => {
+          if (channelName === this.channelName()) {
+            this.tagRemovalErrorKey.set(apiErrorTranslationKey(error));
+          }
+        },
+      });
   }
 
   // Opened from the inspector, not from the cell: the cell click belongs to the selection, and a
@@ -3079,6 +3430,24 @@ export class UsageStatsPage {
     if (this.selectionPrunedFeedbackTimeout !== null) {
       clearTimeout(this.selectionPrunedFeedbackTimeout);
       this.selectionPrunedFeedbackTimeout = null;
+    }
+  }
+
+  // Same §4.5 pattern as showSelectionPrunedFeedback, own signal and own timer (see tagFeedback).
+  private showTagFeedback(sentences: readonly CaptionSentence[]): void {
+    this.resetTagFeedback();
+    this.tagFeedback.set(sentences);
+    this.tagFeedbackTimeout = setTimeout(() => {
+      this.tagFeedback.set(null);
+      this.tagFeedbackTimeout = null;
+    }, TAG_FEEDBACK_MS);
+  }
+
+  private resetTagFeedback(): void {
+    this.tagFeedback.set(null);
+    if (this.tagFeedbackTimeout !== null) {
+      clearTimeout(this.tagFeedbackTimeout);
+      this.tagFeedbackTimeout = null;
     }
   }
 

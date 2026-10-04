@@ -1691,6 +1691,43 @@
       "label": "Name",
       "confirmCreate": "Create",
       "confirmRename": "Rename"
+    },
+    "actions": {
+      "assign": "Assign tag…",
+      "unassign": "Remove from ‘{{tag}}’ ({{count}})",
+      "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer clear them out either."
+    },
+    "filter": {
+      "label": "Tag",
+      "all": "All tags",
+      "inSet": {
+        "one": "{{count}} in the set",
+        "other": "{{count}} in the set"
+      },
+      "notInSet": {
+        "one": "{{count}} not in the set",
+        "other": "{{count}} not in the set"
+      },
+      "overview": "Overview",
+      "activeSetOnly": "Playing in and clearing out act on the active set"
+    },
+    "feedback": {
+      "assigned": {
+        "one": "Added {{count}} emote to {{tag}}.",
+        "other": "Added {{count}} emotes to {{tag}}."
+      },
+      "assignedMany": {
+        "one": "Added {{count}} emote to {{tags}} tags.",
+        "other": "Added {{count}} emotes to {{tags}} tags."
+      },
+      "skippedNotInSet": {
+        "one": "{{count}} emote was no longer in the set and was skipped.",
+        "other": "{{count}} emotes were no longer in the set and were skipped."
+      },
+      "unassigned": {
+        "one": "Removed {{count}} emote from {{tag}}.",
+        "other": "Removed {{count}} emotes from {{tag}}."
+      }
     }
   },
   "errors": {

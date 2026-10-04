@@ -1691,6 +1691,43 @@
       "label": "Name",
       "confirmCreate": "Anlegen",
       "confirmRename": "Umbenennen"
+    },
+    "actions": {
+      "assign": "Tag zuweisen…",
+      "unassign": "Aus ‚{{tag}}‘ entfernen ({{count}})",
+      "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; das Tag räumt sie danach auch nicht mehr aus."
+    },
+    "filter": {
+      "label": "Tag",
+      "all": "Alle Tags",
+      "inSet": {
+        "one": "{{count}} im Set",
+        "other": "{{count}} im Set"
+      },
+      "notInSet": {
+        "one": "{{count}} nicht im Set",
+        "other": "{{count}} nicht im Set"
+      },
+      "overview": "Übersicht",
+      "activeSetOnly": "Einspielen und Ausräumen wirken auf das aktive Set"
+    },
+    "feedback": {
+      "assigned": {
+        "one": "{{count}} Emote zu {{tag}} hinzugefügt.",
+        "other": "{{count}} Emotes zu {{tag}} hinzugefügt."
+      },
+      "assignedMany": {
+        "one": "{{count}} Emote zu {{tags}} Tags hinzugefügt.",
+        "other": "{{count}} Emotes zu {{tags}} Tags hinzugefügt."
+      },
+      "skippedNotInSet": {
+        "one": "{{count}} Emote war nicht mehr im Set und wurde übersprungen.",
+        "other": "{{count}} Emotes waren nicht mehr im Set und wurden übersprungen."
+      },
+      "unassigned": {
+        "one": "{{count}} Emote aus {{tag}} entfernt.",
+        "other": "{{count}} Emotes aus {{tag}} entfernt."
+      }
     }
   },
   "errors": {
