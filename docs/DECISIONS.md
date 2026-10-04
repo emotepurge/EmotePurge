@@ -16,7 +16,11 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/shared/seven-tv/delete-progress-section.ts` ·
 `web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
 `web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
-`web/src/app/shared/seven-tv/delete-progress-section.spec.ts`
+`web/src/app/shared/seven-tv/delete-progress-section.spec.ts` ·
+`web/src/app/shared/seven-tv/seven-tv-run-leave.guard.ts` ·
+`web/src/app/shared/seven-tv/seven-tv-run-leave.guard.spec.ts` ·
+`web/src/app/features/usage-stats/usage-stats-leave.guard.ts` (deleted) ·
+`web/src/app/features/usage-stats/usage-stats-leave.guard.spec.ts` (deleted)
 
 The tag page (#201 T-C) needs the delete engine without the selection panel around it. #201 T-A
 splits `MassDeletePanel` in two steps, with no behaviour change:
@@ -51,6 +55,13 @@ shared-set warning, used to be panel fields and are now created per dialog open 
 This closes a reachable race: cancel dialog A while its `getSetWarning` is still pending, reopen as
 dialog B, and A's late answer used to overwrite B's warning state. Nothing else outside the chain
 ever read the two fields.
+
+**The leave guard is page-neutral.** `usageStatsLeaveGuard` moved to `shared/seven-tv/` as
+`sevenTvRunLeaveGuard`, with no behaviour change: it still reads `SevenTvImportService.isRunning()`
+and `SevenTvUndoService.isRunning()`, keeps the route-identity exemption for a pure channel switch,
+and does not read the arbiter or ask about delete/restore runs (the arbiter's unload guard covers
+the tab). It lives in `shared/`, not `core/`, because it opens a confirm dialog from `shared/ui`
+and `core/` must not depend on `shared/`. T-C registers it on the tags page route.
 
 ---
 

@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
-import { usageStatsLeaveGuard } from './usage-stats-leave.guard';
+import { sevenTvRunLeaveGuard } from './seven-tv-run-leave.guard';
 
 // Two distinct route-definition objects, standing in for the real `usage-stats` and
 // `vote-sessions` config entries from app.routes.ts — what matters for the guard is that they are
@@ -41,7 +41,7 @@ const DE_TRANSLATIONS = {
   },
 };
 
-describe('usageStatsLeaveGuard', () => {
+describe('sevenTvRunLeaveGuard', () => {
   let isRunning: ReturnType<typeof signal<boolean>>;
   let undoRunning: ReturnType<typeof signal<boolean>>;
   let dialogOpen: ReturnType<typeof vi.fn>;
@@ -74,7 +74,7 @@ describe('usageStatsLeaveGuard', () => {
     nextLeafRouteConfig: Route | null = OTHER_ROUTE,
   ): Observable<boolean> {
     return TestBed.runInInjectionContext(() =>
-      usageStatsLeaveGuard(
+      sevenTvRunLeaveGuard(
         {} as never,
         routeSnapshot(currentRouteConfig) as never,
         {} as never,
