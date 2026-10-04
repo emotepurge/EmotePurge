@@ -114,6 +114,14 @@ export const routes: Routes = [
               import('./features/usage-stats/usage-stats.routes').then((m) => m.USAGE_STATS_ROUTES),
           },
           {
+            // Same access as the usage stats (spec 9.3, E25): reading tags is usage-stats access,
+            // writing them is checked per request server-side (channel management). Lazy for the
+            // same reason as usage-stats above — see tags.routes.ts.
+            path: 'tags',
+            canActivate: [usageStatsAccessGuard],
+            loadChildren: () => import('./features/tags/tags.routes').then((m) => m.TAGS_ROUTES),
+          },
+          {
             // Requires login only — the list itself has no per-session role restriction.
             path: 'vote-sessions',
             loadComponent: () =>

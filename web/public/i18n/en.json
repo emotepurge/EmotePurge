@@ -253,6 +253,7 @@
     "leaveConfirm": "Really leave channel #{{ channelName }}? The bot leaves the chat and stops collecting new data. Emotes, usage stats, and votes collected so far are kept and will be there again if you rejoin.",
     "tabs": {
       "usage": "Usage",
+      "tags": "Tags",
       "voting": "Voting",
       "activity": "Activity"
     },

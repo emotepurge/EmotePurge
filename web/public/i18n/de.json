@@ -253,6 +253,7 @@
     "leaveConfirm": "Channel #{{ channelName }} wirklich verlassen? Der Bot verlässt den Chat und erfasst keine neuen Daten mehr. Bereits erfasste Emotes, Nutzungsstatistiken und Abstimmungen bleiben erhalten und sind nach einem erneuten Beitritt wieder da.",
     "tabs": {
       "usage": "Nutzung",
+      "tags": "Tags",
       "voting": "Votings",
       "activity": "Aktivität"
     },

@@ -261,3 +261,53 @@ describe('ChannelWorkspaceLayout — a carried-over run must not be dropped the 
     expect(undoService.run()).toBeNull();
   });
 });
+
+/**
+ * The real template this time: which tabs a user gets is the layout's own decision (spec #201 9.3 —
+ * the tags tab follows the usage tab's visibility, `canViewUsageStats`).
+ */
+describe('ChannelWorkspaceLayout — tabs', () => {
+  function tabLabels(permissions: ChannelPermissions): string[] {
+    TestBed.configureTestingModule({
+      imports: [
+        ChannelWorkspaceLayout,
+        TranslocoTestingModule.forRoot({
+          langs: {
+            de: {
+              channelWorkspace: {
+                tabs: { usage: 'Nutzung', tags: 'Tags', voting: 'Votings', activity: 'Aktivität' },
+              },
+            },
+          },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: Dialog, useValue: { open: vi.fn() } },
+        { provide: ChannelService, useValue: { getPermissions: () => of(permissions) } },
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: () => new FakeEventSource() as unknown as EventSource,
+        },
+      ],
+    });
+    const fixture = TestBed.createComponent(ChannelWorkspaceLayout);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    const nav: HTMLElement = fixture.nativeElement.querySelector('nav');
+    return Array.from(nav.querySelectorAll('a')).map((link) => link.textContent?.trim() ?? '');
+  }
+
+  it('shows the tags tab right after the usage tab when usage stats may be viewed', () => {
+    expect(tabLabels({ ...PERMISSIONS, canManage: false })).toEqual(['Nutzung', 'Tags', 'Votings']);
+  });
+
+  it('hides the tags tab together with the usage tab otherwise', () => {
+    expect(tabLabels({ ...PERMISSIONS, canManage: false, canViewUsageStats: false })).toEqual([
+      'Votings',
+    ]);
+  });
+});
