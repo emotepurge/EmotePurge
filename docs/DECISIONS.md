@@ -10,6 +10,50 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-04 — The delete run's surface is its own component; the delete chain is plain functions
+
+**Betrifft:** `web/src/app/shared/seven-tv/delete-flow.ts` ·
+`web/src/app/shared/seven-tv/delete-progress-section.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
+`web/src/app/shared/seven-tv/delete-progress-section.spec.ts`
+
+The tag page (#201 T-C) needs the delete engine without the selection panel around it. #201 T-A
+splits `MassDeletePanel` in two steps, with no behaviour change:
+
+- **`delete-flow.ts`**: the delete confirmation's pre-check chain (shared set check, confirmation,
+  live alias read, start) as plain functions over `DeleteFlowDeps`/`DeleteFlowRequest`, following
+  `restore-flow.ts`. `resolveDeleteTarget` and `readLiveSetAliases` are exported for T-C, and the
+  chain itself uses them. The panel keeps the steps that belong to its button: clearing the notice,
+  the host and `startLocked` guards, and the token prompt.
+- **`DeleteProgressSection`** (`app-delete-progress-section`): progress, protocol download, unclear
+  rows, and the restore entry with its whole chain. It has one input, `hostSelectedSetId` (the set
+  the host shows, which drives the confirmation's `foreignToView`), and one output, `notice`. The
+  output exists because the status region that announces a notice belongs to the host. The section
+  never emits `null`, since clearing stays with the panel's next delete attempt.
+
+**Mount.** The panel mounts the section in its own template where the progress block was, not as a
+sibling on the host pages. That keeps the DOM nesting, the vote page's `@if` gate around the panel,
+and every E2E locator scoped to `app-mass-delete-panel`. Only T-C mounts the section on its own.
+The host is `display: contents` (`host: { class: 'contents' }`). Otherwise the empty host would be a
+flex item of the panel's column and add a gap under the buttons. The audit harness confirms that
+dock and panel heights are unchanged.
+
+**Restore entry moved verbatim, not unified with `startRestoreFlow`.** It hangs off the last delete
+run, not the selection, so it belongs to the section. `restore-flow.ts` documents that this entry
+runs its own chain on purpose, and merging the two would be a behaviour question of its own, left
+as a follow-up outside T-A. The two run latches (`deleted`/`reloadRequested`) stay in the panel
+because both host pages bind those outputs. Only the `protocolSaved` reset moved, as an effect of the
+section's own on the same `isRunning()` edge.
+
+**Known behaviour delta (benign).** `setWarning`/`warningLoading`, the delete confirmation's
+shared-set warning, used to be panel fields and are now created per dialog open inside the flow.
+This closes a reachable race: cancel dialog A while its `getSetWarning` is still pending, reopen as
+dialog B, and A's late answer used to overwrite B's warning state. Nothing else outside the chain
+ever read the two fields.
+
+---
+
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-set-entries.ts` ·

@@ -44,7 +44,7 @@ import type { DeletableEmote } from './mass-delete-panel';
  *  entry at a finished run, a different first mutation with its own copy). `notSelectable` cannot
  *  actually occur in production here — the delete panel is always given a set the host already
  *  resolved as `NORMAL` — but the mapping stays total rather than assuming that at the type level,
- *  the same discipline the panel's `restoreTargetCheckReasonKey` keeps. */
+ *  the same discipline `DeleteProgressSection`'s `restoreTargetCheckReasonKey` keeps. */
 export function deleteTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
   switch (reason) {
     case 'notEditable':
