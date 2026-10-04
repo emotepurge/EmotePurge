@@ -14,7 +14,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `src/EmotePurge.Core/Entities/EmoteTag.cs` · `src/EmotePurge.Core/Entities/EmoteTagEntry.cs` ·
 `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
-`src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTags.cs`
+`src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTags.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteIdValidation.cs`
 
 Emote tags (#201) are two new tables, added by the purely additive migration `AddEmoteTags`
 (no existing table is touched):
@@ -37,6 +38,24 @@ Both channel purges (`PurgeAsync`, `PurgeIfInactiveSinceAsync`) take the tag tab
 cascades; `EmoteTagCascadeTests` pins that. Product limits are constants, not configuration:
 `EmoteTagLimits.MaxTagsPerChannel = 50`, `MaxEntriesPerTag = 1000`. Audit actions `tag.create`,
 `tag.rename`, `tag.delete` carry only ids and counts in their details, never the name.
+
+**Service contract (`IEmoteTagService`).** Every mutation — create, rename, delete, add entries,
+remove entries — runs in one transaction that first locks the channel row
+(`LoadChannelForUpdateAsync`) and then touches only the tag tables; reads take no lock. The lock is
+what enforces both limits: under READ COMMITTED a count before an insert does not (two concurrent
+assignments of one emote each to a tag at 999 entries would both count 999 and commit 1001). It is
+also the ordering contract the later placement reports build on, which is why removing entries takes
+it too although no limit needs it there. Lock order is channel row first, tag tables second; the sync
+writes no tag table, so no cycle. Two-contender tests in `EmoteTagServiceTests` pin all of this.
+Assigning is partial success by design: ids without an unarchived row are skipped and reported, ids
+already tagged are counted, the rest is written with alias and image taken from the row, never from
+the client; the 1000-entry limit is checked against what would actually be written, before anything
+is written, and a request that would cross it writes nothing. Assigning and removing are not audited.
+"In the set" means an unarchived `Emote` row of the channel; that status is channel-wide, so
+`inSetCount`/`inSet` are only reported for the channel's active set and are `null` for any other set
+id. Inbound 7TV emote ids go through `SevenTvEmoteIdValidation` in Core — the same 1–32
+`[0-9A-Za-z]` rule as the Api's set-id check, kept in Core because the ids arrive in a body and the
+service, not a filter, owns their status codes.
 
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 
