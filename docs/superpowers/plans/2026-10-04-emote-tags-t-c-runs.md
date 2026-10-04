@@ -42,8 +42,9 @@ Lese-Zeit-Regel; 6.4; 6.5 T-C-Codes + `"tag"`-Vokabel; 7.1; 7.2; 8 (alle Lauf-Ze
 T-C, 12.3 Punkte 2, 2a, 3; 12.4; 12.5 Schritte 1–3; 13.2 (Hinweistext am Restore); 13.4/1–4
 als Empfehlungen übernommen.
 
-**Abhängigkeiten:** T-A (konsumiert `DeleteProgressSection`, `resolveDeleteTarget`,
-`readLiveSetAliases`, `DeleteAbortNotice`, `sevenTvRunLeaveGuard`), T-B (konsumiert
+**Abhängigkeiten:** T-A (konsumiert `DeleteProgressSection` mit Input `hostSelectedSetId` und
+Output `notice`, `resolveDeleteTarget`, `readLiveSetAliases`, `DeleteAbortNotice`,
+`sevenTvRunLeaveGuard`), T-B (konsumiert `RemoveEntriesAsync` **unter der Kanalsperre**,
 `IEmoteTagService`, `EmoteTagService` beider Seiten, `TagsPage`, `selectedTag`, Filterzeilen-
 Inline-Gruppe, `tags.*`-Familien).
 
@@ -55,14 +56,17 @@ Inline-Gruppe, `tags.*`-Familien).
 |---|---|---|
 | 6.6: `IImportTargetOwnershipService` ist in `ApiFactory` bereits ersetzt | **Nein.** `ApiFactory.cs:252-277` ersetzt es nicht; `SevenTvEmoteSetSyncBookkeepingEndpointTests.cs` lässt die Besitzprüfung **echt** laufen und stellt die Fakes darunter (`ISevenTvEmoteSetListService`, `ISevenTvApiClient.LookUpEmoteSetOwnerAsync`, Helfer `ArrangeActorWithoutGrants`, `SetList`). | **Abweichung 1:** Die Leiter-Fälle der drei Melde-Routen arrangieren die Fakes wie dort (gleiche Helfer, ggf. in eine gemeinsame Test-Hilfsklasse gezogen) und prüfen zusätzlich, dass `IEmoteTagService` (substituiert) **nicht** aufgerufen wurde. |
 | 3.3/6.1: „exakt die Leiter von `sync-deleted`" | `PassSyncInSetLadderAsync` (`SevenTvEndpoints.cs:638-680`) ist privat und an `SyncInSetRequest` gebunden; `sync-imported` (`:270-288`) hat denselben `switch` inline. | **Planentscheidung:** die Status→`IResult`-Abbildung wird in eine interne statische Hilfe `EmoteSetOwnershipRejection.For(status)` (`src/EmotePurge.Api/Endpoints/EmoteSetOwnershipRejection.cs`) gezogen und von beiden Bestandsstellen **und** den Tag-Routen benutzt — „exakt dieselbe Leiter" per Konstruktion; die bestehenden Bookkeeping-/Imported-Tests sind die Regression. |
-| 7.1/6: der `trackedSet`-Zweig „liest über die #220-Vorschau-Route und kostet ein Permit aus `TrackedEmoteSetPreview`" | `import-target-loader.ts` `trackedSet` → `emoteSetService.loadEmoteSetPreview` → `GET /api/seventv/channels/{c}/emotes` = Policy **`ForeignEmoteLookup`** (10/60 s je Nutzer; Plan #220 ließ den Loader bewusst dort). | **Abweichung 2:** ein Einspielen kostet ein `ForeignEmoteLookup`-Permit, nicht `TrackedEmoteSetPreview`. Für zwei Läufe je Stream unkritisch; kein Umbau des Loaders in T-C (Nachläufer; s. Offene Punkte). |
+| 7.1/6: der `trackedSet`-Zweig „liest über die #220-Vorschau-Route und kostet ein Permit aus `TrackedEmoteSetPreview`" | `import-target-loader.ts` `trackedSet` → `emoteSetService.loadEmoteSetPreview` → `GET /api/seventv/channels/{c}/emotes` = Policy **`ForeignEmoteLookup`** (10/60 s je Nutzer; Plan #220 ließ den Loader bewusst dort). | **Abweichung 2:** ein Einspielen kostet ein `ForeignEmoteLookup`-Permit, nicht `TrackedEmoteSetPreview`. Für zwei Läufe je Stream unkritisch; **vom Betreiber hingenommen (2026-10-04)**; kein Umbau des Loaders in T-C. **Nachläufer** (in den DECISIONS-Eintrag, Task 15): `import-target-loader.ts` liest getrackte Sets über die #220-Route `GET /api/channels/{c}/emote-sets/{id}/emotes` (`TrackedEmoteSetPreview`, 30/min). |
 | 7.1/6: Vergleich „in `start()`, nach dem Arbiter-Check" | Der letzte Punkt vor `startImport` ist `startAfterCheck` (`import-flow.ts:~485-530`, zweiter Arbiter-Check `:507`); `start()` (`:414`) geht bei `replace`-Zeilen erst in `resolveEditableSet`. | Der Set-Vergleich sitzt **unmittelbar vor `startImport`** in `startAfterCheck`, nach `recheckTransferPlan` und dem zweiten Arbiter-Check — das ist „unmittelbar vor dem Start" im Sinn der Spec. |
 | 3.4/E14: „dritte Meldung am Lauf-Record" | `ImportRunInfo` trägt schon **zwei** (`syncReport`, `removalReport`; Lifecycle-OR `seven-tv-import.service.ts:298`); `DeleteRunInfo` eine (`syncReport`); Präzedenz für mehrere ist `UndoRunInfo` (`removalReport`/`restoreReport`, `retryReport(kind)`). | Import: dritte, Delete: zweite Meldung — Muster Undo. Kein `reports[]`-Array (gibt es nicht). |
 | 9.7: `import.origin.tag` | Die Origin-Zeile lebt unter `import.confirm.originChannel|originFile|originFileDetails|originLeaderboard`; der Undo-Dialog unter `undo.confirm.origin.*`. | **Abweichung 3 (Benennung):** `import.confirm.originTag` + `import.confirm.originTagSkipped.{one,other}`, `undo.confirm.origin.tag`. |
 | 6.5: „`ValidateSyncImportedVocabulary` um `"tag"` ergänzen" | Drei Backend-Stellen kennen die Vokabel (`EmoteEndpoints.cs:358,379`; `AuditLogQueryService.cs:62-65, 220-260`; Kommentar `IEmoteService.cs:98`) und im Frontend zwei Literal-Unions (`emote-admin.service.ts:29`, `seven-tv-emote-set.service.ts:225`), `undo-confirm-dialog.ts:863-878` (erschöpfender `switch`), `transfer-run-export.ts:401-438` (`readImportOrigin`, fail-closed), `import-confirm-dialog.ts:234-254, 670-695` (`originChannelName` würde einen Tag-Origin mit `channelName` still als „aus Kanal" zeigen). Memory „ImportOrigin-Union: 6 Bruchstellen". | **Ergänzung:** Task 6 und 7 listen jede Stelle; die Origin-Zeile bekommt einen **eigenen** Zweig vor `originChannelName`. |
 | 7.1/6: „Übersprungen-Zeile ‚3 sind schon im Set' (`skippedDuplicates`-Vorgabe)" | Der Bestätigungsdialog zeigt `preview.alreadyPresent` aus der **geladenen Zielliste** (`import-confirm-dialog.ts:449`), `skippedDuplicates` erscheint erst im Dock (`import-progress-section.ts:68-71`). Einträge, die Schritt 4 schon aussortiert hat, sieht der Dialog nicht. | **Planentscheidung:** der Tag-Origin trägt `alreadyInSetCount`; die Origin-Zeile des Dialogs zeigt „aus Tag Stronghold · 3 sind schon im Set". Keine Änderung an `ImportSource`. |
 | 5.5 Regel 5/E34: Konstante `TagLeaveCredibilityWindow` „im Sync" | `SevenTvSyncService` hat nur `EmoteKeyIndexName`, `MissesBeforeLogging`; die 15-min-Messschwelle ist ein Literal (`:768-778`). | Konstante wie benannt als `private static readonly TimeSpan` in `SevenTvSyncService`; das Literal 15 bleibt (Messung), bekommt aber einen Kommentar, der auf das Fenster verweist. |
-| 3.1: Sync-Speicherstellen | `ApplyEmoteSetUpdateAsync` Pulled-Schleife `:285-293`, Save `:300`; `ReconcileAsync(channelId, liveEmotes)` `:750`, Archiv `:780-782`, Aufruf aus `ApplyAndSaveAsync` `:410`, Save `:411` (zusammen mit Kanalzeile und Observation); `UpsertEmote` `:797-852`, Entarchivieren **teilt den Zweig** mit Umbenennung (`:825` Bedingung `Name != || ImageUrl != || IsArchived`); `IsRowVanishedFor` (`:884-900`) zählt erlaubte Entity-Typen in einem fehlgeschlagenen Save auf. | `ReconcileAsync` braucht die Set-ID als Parameter (steht in `channel.ActiveEmoteSetId`, das `ApplyAndSaveAsync` vorher setzt); der Eintrittsstempel prüft `IsArchived` **vor** dem Zweig; `EmoteSetLeaveObservation` kommt in `IsRowVanishedFor`. |
+| 3.1: Sync-Speicherstellen | `ApplyEmoteSetUpdateAsync` Pulled-Schleife `:285-293`, Save `:300`; `ReconcileAsync(channelId, liveEmotes)` `:750`, Archiv `:780-782`, Aufruf aus `ApplyAndSaveAsync` `:410`, Save `:411` (zusammen mit Kanalzeile und Observation); `UpsertEmote` `:797-852`, Entarchivieren **teilt den Zweig** mit Umbenennung (`:825` Bedingung `Name != || ImageUrl != || IsArchived`); `IsRowVanishedFor` (`:884-900`) zählt erlaubte Entity-Typen in einem fehlgeschlagenen Save auf. | `ReconcileAsync` braucht die Set-ID als Parameter (steht in `channel.ActiveEmoteSetId`, das `ApplyAndSaveAsync` vorher setzt); der Eintrittsstempel prüft `IsArchived` **vor** dem Zweig. **Beide Archivierungsschleifen überspringen schon archivierte Zeilen** (`existing.TryGetValue(...) && !emote.IsArchived` `:287`, `!liveIds.Contains(id) && !emote.IsArchived` `:780`) — eine Beobachtung, die nur „für tatsächlich archivierte IDs" geschrieben würde, verlöre jedes Verlassen einer schon archivierten Zeile (Codex-Befund 2, s. 3.4: Beobachtung **unabhängig** vom Archivübergang). Die Beobachtung wird per rohem `INSERT … ON CONFLICT` geschrieben (Muster `UsageStatFlushService.cs:84-91`), nicht als getrackte Entität — `IsRowVanishedFor` bleibt deshalb unverändert. |
+| 9.5/9.4: Lauf-Fläche der Tags-Seite „mit `app-import-progress-section` und `app-delete-progress-section`" | `actionDockHasContent` (`action-dock.ts:72-90`) hält `deleteShown`/`deleteConfirmPending` **in** der `hasActiveSet`-Klammer; mit `hasActiveSet: false` wäre ein Dock mit nur einem Lösch-Lauf unsichtbar (kein Abbrechen, kein Retry, kein Protokoll, kein „Wiederherstellen" — Codex-Befund 1). Der Restore-Knopf der `DeleteProgressSection` startet `SevenTvRestoreService`, dessen Lauf nur `RestoreProgressSection` zeigt. | **Planentscheidung:** eigene reine Funktion `tagRunDockHasContent` neben `actionDockHasContent` (3.8), und die Tags-Seite mountet **drei** Sections: Import, Delete, Restore. |
+| 5.3: „Kein FK auf Entry (E17 löscht explizit im Service)" | Platzierung und Eintrag teilen den Präfix `(TagId, SevenTvEmoteId)`; ein zusammengesetzter FK mit Kaskade ist im Modell möglich. Ohne FK kann eine Meldung, die unter der Kanalsperre den Eintrag las, nach einem parallelen Herausnehmen eine Waise schreiben (Codex-Befund 3). | **Festlegung 5.3 gekippt (Planentscheidung, s. Offene Punkte):** FK `(TagId, SevenTvEmoteId)` → `EmoteTagEntry` mit `Cascade` **zusätzlich** zur Kanalsperre beim Herausnehmen (T-B). Regel 5.5/2 wird damit von der Datenbank gehalten. |
+| 12.5/3: Freigabe „nachdem ein Vollsync mit dem neuen Worker gelaufen ist (Log: Resync-Zusammenfassung)" | `SevenTvPeriodicResyncWorker` schreibt keine Zusammenfassung (nur Warnungen je Kanal/Durchlauf, `:102, :112`); die Boot-Recovery loggt je Kanal und gibt `BootRecoveryGate` auch nach Fehlern frei. | **Abweichung 4:** die Freigabe hängt an einer **ausführbaren** Prüfung über `Channels` (`LastSyncedAtUtc` nach dem Start des neuen Workers, `LastSyncFailureReason IS NULL` für jeden aktiven Kanal) — Task 15/16. |
 | 3.1: `EmoteService.MarkInSetAsync` | privat (`:208`), Richtung `InSetDirection.Delete/Restore`, Zielzustand-Semantik (`found.Where(e => e.IsArchived != archive)`, `:262-274`), Tests über `MarkDeletedInSetAsync`/`MarkRestoredInSetAsync`. | Beobachtung für **jede gefundene Zeile** des Treffer-Kanals (nicht nur geänderte — die Meldung ist glaubwürdig, egal ob wir schon archiviert hatten); Stempel bei Restore nur für Zeilen, die tatsächlich entarchiviert werden. |
 | 12.1: Flag „über `permissions` oder Config-Endpoint" | `ChannelPermissionsDto` (`ChannelEndpoints.cs:336`, fünf Felder); kein Config-Endpoint außer `GET /api/contact/config`; die Seite lädt `permissions` ohnehin je Kanal. | **Planentscheidung (13.4/1):** Feld `tagRunsEnabled` in `ChannelPermissionsDto`/`ChannelPermissions`, gespeist aus `EmoteTagOptions.RunsEnabled` (Section `Tags`). Keine neue Route, keine Matrix-Zeile, kein zweiter Request. |
 | Sync-Stellen im Worker | `SevenTvPeriodicResyncWorker.cs:75` (nicht :53) ruft `SyncChannelAsync`; `Worker.cs:197/276`; `SevenTvEventClient.cs:380` ruft `ApplyEmoteSetUpdateAsync`. | Nur Zeilenkosmetik; Worker-Quelltext bleibt unberührt (E15 rev. 2). |
@@ -100,7 +104,10 @@ Wie T-B Abschnitt 1, zusätzlich:
 | `src/EmotePurge.Core/Services/IEmoteService.cs` | ändern | Kommentar `:98` (Vokabel). |
 | `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs`, Migration `AddEmoteTagPlacements` | ändern/neu | Tabellen, Spalte, Indizes. |
 | `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` | ändern | Lese-Zeit-Regel, Operationen, Meldungen, Übertragung, Sweep, Deaktivierung. |
-| `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` | ändern | Beobachtungen (Delta, REST mit 30-min-Fenster), Eintrittsstempel, `IsRowVanishedFor`. |
+| `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` | ändern | Beobachtungen (Delta immer; REST mit 30-min-Fenster und Nachbetrachtung archivierter Zeilen), Eintrittsstempel, explizite Transaktion je Speicherversuch. |
+| `src/EmotePurge.Infrastructure/Persistence/EmoteSetLeaveObservations.cs` | neu | Atomarer Upsert der Beobachtungen (`ON CONFLICT … GREATEST`) und die Lesehilfe für die Nachbetrachtung. |
+| `web/src/app/core/seven-tv/tag-run-settlement.ts` (+ Spec) | neu | `deriveTagKeptIds` — `keptIds` aus `DeleteTagContext` und `RunResult` (core, damit der Delete-Service es nutzen darf). |
+| `web/src/app/shared/seven-tv/action-dock.ts` (+ Spec) | ändern | `tagRunDockHasContent` neben `actionDockHasContent`. |
 | `src/EmotePurge.Infrastructure/Services/EmoteService.cs` | ändern | Beobachtung (Delete), Stempel (Restore). |
 | `src/EmotePurge.Infrastructure/Services/EmoteTagOptions.cs`, `ServiceCollectionExtensions.cs` | neu/ändern | `Tags:RunsEnabled`. |
 | `src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs` | ändern | Vokabel `"tag"` in der Import-Projektion. |
@@ -124,12 +131,12 @@ Wie T-B Abschnitt 1, zusätzlich:
 | `web/src/app/core/seven-tv/seven-tv-delete.service.ts` (+ Spec) | ändern | `tag`-Kontext, `tagRemovalReport`, Retry. |
 | `web/src/app/shared/seven-tv/import-confirm-dialog.ts`, `undo-confirm-dialog.ts`, `shared/export/transfer-run-export.ts` (+ Specs) | ändern | Tag-Origin. |
 | `web/src/app/shared/seven-tv/import-progress-section.ts`, `delete-progress-section.ts` (+ Specs) | ändern | Dock-Zeilen `sevenTvRun.tagReport.*`, `discardedStale`, Restore-Hinweis 13.2. |
-| `web/src/app/shared/tags/tag-play-in.ts`, `tag-removal.ts` (+ Specs) | neu | reine Funktionen 7.1/4, 7.2/5, `keptIds`. |
+| `web/src/app/shared/tags/tag-play-in.ts`, `tag-removal.ts` (+ Specs) | neu | reine Funktionen 7.1/4, 7.2/5 (`ownInLiveIds`; die `keptIds`-Ableitung liegt in core). |
 | `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` (+ Spec) | neu | Vorschau = Bestätigung (E19). |
 | `web/src/app/shared/tags/tag-play-in-flow.ts`, `tag-removal-flow.ts` (+ Specs) | neu | Abläufe 7.1, 7.2. |
 | `web/src/app/shared/tags/tag-run-actions.ts` (+ Spec) | neu | Knöpfe Einspielen/Ausräumen + Notiz, gemeinsam für Filterzeile und Tags-Seite. |
 | `web/src/app/features/usage-stats/usage-stats-page.ts/.html` (+ Spec) | ändern | Knöpfe in der Inline-Gruppe. |
-| `web/src/app/features/tags/tags-page.ts/.html`, `tags.routes.ts` (+ Specs) | ändern | Zustand, Knöpfe, Marke, Dock, Announcer, Guard, Platzierungshinweis. |
+| `web/src/app/features/tags/tags-page.ts/.html`, `tags.routes.ts` (+ Specs) | ändern | Zustand, Knöpfe, Marke, Dock mit drei Sections (`tagRunDockHasContent`), Announcer, Guard, Platzierungshinweis. |
 | `web/src/app/shared/audit/audit-actions.ts` | ändern | zwei Aktionen. |
 | `web/public/i18n/de.json`, `en.json` | ändern | 9.7 T-C-Familien. |
 | `web/e2e/support/mocks.ts`, `web/e2e/emote-tags.e2e.spec.ts`, `web/e2e/audit/ui-audit.audit.ts` | ändern | Szenarien 2–8, Dialog-Szenario. |
@@ -143,8 +150,16 @@ Wie T-B Abschnitt 1, zusätzlich:
 
 - `EmoteTagPlacement { long TagId; string SevenTvEmoteId; string SevenTvEmoteSetId; DateTime PlacedAtUtc; Guid OperationId; EmoteTag Tag }` —
   PK `(TagId, SevenTvEmoteId, SevenTvEmoteSetId)`, Index `(SevenTvEmoteSetId, SevenTvEmoteId)`,
-  FK → `EmoteTag` Cascade; **kein** FK auf Entry, **kein** FK auf Operation (Operationen leben
-  gleich lang, aber ein FK zwänge eine Löschreihenfolge, die der Sweep nicht braucht — Festlegung).
+  FK → `EmoteTag` Cascade; **zusammengesetzter FK `(TagId, SevenTvEmoteId)` → `EmoteTagEntry`
+  mit Cascade** (Festlegung 5.3 der Spec gekippt, Plan 0): die Datenbank hält damit Regel 5.5/2
+  („keine Platzierung ohne Eintrag") und E17 (Herausnehmen nimmt Platzierungen aller Sets mit),
+  unabhängig von der Sperrdisziplin eines Aufrufers. Verträglich mit jeder Schreibregel in 3.3:
+  Einspielen platziert nur IDs **mit** Eintrag; die Übertragung setzt `TagId` nur auf ein T′, das
+  per Regel 5.5/4 (b) einen Eintrag für X **hat**; Sweep und Deaktivierung löschen nur. Zwei
+  Kaskadenpfade (Tag → Platzierung, Tag → Eintrag → Platzierung) sind in Postgres zulässig. In EF
+  als Beziehung mit zwei FK-Spalten auf dem Entry-PK konfiguriert, ohne Navigation vom Entry.
+  **Kein** FK auf Operation (ein FK zwänge eine Löschreihenfolge, die der Sweep nicht braucht —
+  Festlegung).
 - `EmoteTagActivation { long TagId; string SevenTvEmoteSetId; DateTime ActivatedAtUtc; Guid OperationId }` — PK `(TagId, SevenTvEmoteSetId)`, FK → `EmoteTag` Cascade.
 - `EmoteTagOperation { Guid OperationId; long TagId; string Kind; string SevenTvEmoteSetId; DateTime RegisteredAtUtc; DateTime? AppliedAtUtc }` —
   PK `OperationId`, FK → `EmoteTag` Cascade, Index `(TagId, SevenTvEmoteSetId)`;
@@ -191,8 +206,8 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
   `api-error.ts`, beide Locales). Die Spec kennt nur drei Codes; `tag_operation_id_invalid` meint
   die UUID, `tag_operation_conflict` eine fremde Registrierung, `invalid_source_kind` ein anderes
   Vokabular — keiner passt, und ein falscher `kind` ist ein Programmierfehler des Browsers, den
-  der Code für die Diagnose benennen soll. **Planentscheidung**, kippbar (Offene Punkte 1): fällt
-  sie anders aus, entfällt der Code und der Handler antwortet 400 `tag_operation_id_invalid`.
+  der Code für die Diagnose benennen soll. **Vom Betreiber entschieden (2026-10-04): der vierte
+  Code kommt** — Task 6 (Konstante, Handler, Api-Test), Task 7 (`api-error.ts`, beide Locales).
 - **Meldung allgemein:** Operation fehlt → `OperationUnknown`; `(TagId, Kind, EmoteSetId)` der
   Operation ≠ Meldung → `OperationConflict` (Kind: Einspiel-Meldung braucht `playIn`,
   Ausräum-Meldung `removal`); `AppliedAtUtc != null` → `Replayed`, alle Zähler 0, nichts
@@ -223,27 +238,69 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
 - **Retry-Regel:** `40001`/`40P01` werden **nicht** im Service gefangen — sie werden zur
   Exception, der Handler antwortet 500, der Browser wiederholt mit derselben `operationId`
   (E27 macht die Wiederholung harmlos). Kein eigener Retry-Code im Server (5.5 Regel 6).
-- `RemoveEntriesAsync` (T-B) löscht jetzt zusätzlich alle Platzierungen `(TagId, id, ·)` (E17);
-  `DeleteAsync` ergänzt `placementCount` in den Audit-Details (6.3).
+- `RemoveEntriesAsync` (T-B, dort schon **unter der Kanalsperre**): die Platzierungen
+  `(TagId, id, ·)` fallen über den FK (3.1) mit dem Eintrag; der Service zählt sie vorher nur für
+  die Antwort/den Log. Die Sperre bleibt trotzdem Pflicht: sie ordnet das Herausnehmen gegenüber
+  einer laufenden Meldung — ohne sie könnte eine Ausräum-Meldung unter der Sperre den Eintrag
+  gelesen haben und nach dem Herausnehmen eine Übertragung an T′ versuchen, die der FK dann mit
+  einer Verletzung abbricht (korrekt, aber ein 500 statt eines sauberen `dropped`). Mit der Sperre
+  sieht jede Meldung den Stand nach dem Herausnehmen. `DeleteAsync` ergänzt `placementCount` in
+  den Audit-Details (6.3).
 
 ### 3.4 Sync (5.5 Regel 5, E34)
 
-- `SevenTvSyncService`: `private static readonly TimeSpan TagLeaveCredibilityWindow = TimeSpan.FromMinutes(30)`;
-  privater Helfer, der für eine Menge `(SevenTvEmoteId)` eines Kanals und Sets die Beobachtungen
-  lädt (ein Query über skalare Liste), fehlende anlegt und `LastObservedAtUtc = UtcNow` setzt —
-  gestaged im **selben** `SaveChangesAsync` wie die Archivierung. Aufrufer: (a) Pulled-Schleife in
-  `ApplyEmoteSetUpdateAsync` für jede tatsächlich archivierte ID, Set = `emoteSetId`; (b)
-  `ReconcileAsync(channelId, activeEmoteSetId, liveEmotes)` für jede archivierte Zeile, **nur**
-  wenn `LastEnteredSetAtUtc is null || LastEnteredSetAtUtc <= UtcNow − Window`; Archivierung
-  selbst wie heute. `UpsertEmote`: neue Zeile → `LastEnteredSetAtUtc = UtcNow`; bestehende Zeile
-  → nur wenn sie **vorher** `IsArchived == true` war (Umbenennung stempelt nicht). `IsRowVanishedFor`
-  akzeptiert `EmoteSetLeaveObservation`.
-- `EmoteService.MarkInSetAsync`: Richtung Delete → Beobachtung für jede **gefundene** Zeile je
-  Treffer-Kanal, Set = `emoteSetId` der Meldung (gleicher Helfer? Der Helfer liegt im Sync-Service;
-  **Festlegung:** kleine interne statische Hilfe `EmoteSetLeaveObservations.Record(db, channelId,
-  setId, ids, now)` in `Infrastructure/Persistence/` neben `AuditLogWrites`, von beiden Services
-  benutzt); Richtung Restore → `LastEnteredSetAtUtc = now` für jede Zeile, die von archiviert auf
-  unarchiviert wechselt; bestehende Beobachtung bleibt.
+- **Schreibhilfe** `EmoteSetLeaveObservations.RecordAsync(db, channelId, setId, ids, observedAtUtc, ct)`
+  in `Infrastructure/Persistence/` (neben `AuditLogWrites`), von Sync **und** `EmoteService`
+  benutzt: **ein** parametrisiertes `INSERT … ON CONFLICT ("ChannelId","SevenTvEmoteId","SevenTvEmoteSetId") DO UPDATE SET "LastObservedAtUtc" = GREATEST(existing, excluded)`
+  über `db.Database.ExecuteSqlRawAsync` mit Array-Parametern für die IDs (Muster
+  `UsageStatFlushService.cs:84-91`). Warum atomar und mit `GREATEST` (Codex-Befund 4): Api
+  (`MarkInSetAsync`) und Worker (Sync) schreiben aus getrennten Kontexten; ein Load/Update-Upsert
+  könnte eine **ältere** Beobachtung nach einer neueren committen und `LastObservedAtUtc`
+  **zurückdrehen** — eine dazwischen registrierte Platzierung gälte dann wieder; zwei erste Inserts
+  derselben Zeile kollidierten am PK, und der Retry von `SaveSyncAsync` kennt nur den
+  Emotes-Index. `GREATEST` macht die Reihenfolge der Commits egal, `ON CONFLICT` die Kollision.
+  Die Entität `EmoteSetLeaveObservation` bleibt für Migration und **Lesen** (Lese-Zeit-Regel,
+  Nachbetrachtung); geschrieben wird sie nie über den ChangeTracker — `IsRowVanishedFor` bleibt
+  unverändert.
+- **Transaktion:** Beobachtung und Archivierung sind nur dann **ein** Commit, wenn eine explizite
+  Transaktion beide umschließt. Deshalb nehmen die drei Schreibstellen je Speicherversuch
+  `BeginTransactionAsync` → `RecordAsync` → `SaveChangesAsync` → `Commit`: `ApplyEmoteSetUpdateAsync`
+  um `:300`, `SaveSyncAsync`/`ApplyAndSaveAsync` um `:411` (der bestehende Einmal-Retry bei
+  `IsEmoteKeyConflict` öffnet je Versuch eine neue Transaktion; der Upsert ist idempotent und darf
+  wiederholt werden), `MarkInSetAsync` um `:330`. **Abweichung vom Spec 3.1** („der Sync nimmt
+  keine explizite Transaktion"): die Transaktion fügt **keine** Sperre hinzu, die der Sync nicht
+  ohnehin durch seine Schreibzugriffe hält (Zeilensperren auf `Emotes`, `EmoteSetLeaveObservations`,
+  `Channels`); die Deadlock-Analyse aus 5.5 Regel 6 bleibt: der Sync schreibt keine Tag-Tabelle,
+  Meldungen schreiben keine Beobachtung und **lesen** sie nur (ein Lesen blockiert unter
+  `READ COMMITTED` nicht auf eine gesperrte Zeile). Reihenfolge innerhalb des Syncs: Upsert zuerst,
+  dann `SaveChanges` (mit dem Kanal-`UPDATE`), dann Commit — der Sync wartet so höchstens auf die
+  Kanalzeile einer laufenden Meldung, nie umgekehrt.
+- **Konstante** `private static readonly TimeSpan TagLeaveCredibilityWindow = TimeSpan.FromMinutes(30)`
+  in `SevenTvSyncService` (13.4/4; Kommentar: SevenTV#81, warum Konstante statt Konfiguration).
+- **Wo beobachtet wird — unabhängig vom Archivübergang** (Codex-Befund 2; beide Schleifen
+  überspringen heute archivierte Zeilen, Plan 0):
+  - (a) `ApplyEmoteSetUpdateAsync`: für **jede** ID in `delta.PulledIds`, ob die Zeile existiert,
+    schon archiviert ist oder gerade archiviert wird — ein Delta ist immer glaubwürdig, und ein
+    REMOVE für eine Zeile, die der REST-Sync kurz zuvor **ohne** Beobachtung (Fenster) archiviert
+    hat, ist genau der Fall, der sonst verloren ginge. Set = `emoteSetId` des Deltas.
+  - (b) `ReconcileAsync(channelId, activeEmoteSetId, liveEmotes)`: für jede Zeile, die **nicht**
+    im Live-Set ist, gilt: (b1) wird sie jetzt archiviert → Beobachtung nur, wenn
+    `LastEnteredSetAtUtc is null || <= now − Window` (E34, wie bisher); (b2) ist sie **schon
+    archiviert** → **Nachbetrachtung:** Beobachtung, wenn `LastEnteredSetAtUtc` älter als das
+    Fenster oder `null` ist **und** keine Beobachtung `(Kanal, X, activeEmoteSetId)` mit
+    `LastObservedAtUtc > LastEnteredSetAtUtc` existiert (bei `null`: keine Beobachtung existiert).
+    Das stempelt ein im Fenster unterdrücktes Verlassen genau **einmal**, sobald das Fenster
+    vorbei ist — und stempelt **nicht** bei jedem Durchlauf neu (sonst verfiele jede Platzierung
+    einer Zeile, die der stale Cache noch als fehlend zeigt, Gegenbeispiel 8). Die Nachbetrachtung
+    liest die vorhandenen Beobachtungen der archivierten Zeilen mit **einer** Abfrage über die
+    skalare ID-Liste (Lesehilfe in `EmoteSetLeaveObservations`).
+  - (c) `EmoteService.MarkInSetAsync` Richtung Delete: für jede **gefundene** Zeile je
+    Treffer-Kanal (auch schon archivierte — die Meldung ist glaubwürdig), Set = `emoteSetId` der
+    Meldung.
+- **Eintrittsstempel:** `UpsertEmote`: neue Zeile → `LastEnteredSetAtUtc = UtcNow`; bestehende
+  Zeile → nur wenn sie **vorher** `IsArchived == true` war (Umbenennung stempelt nicht).
+  `MarkInSetAsync` Richtung Restore → Stempel für jede Zeile, die von archiviert auf unarchiviert
+  wechselt; bestehende Beobachtungen bleiben.
 
 ### 3.5 Api (6.1 Gruppe „Registrieren und Melden", 6.4, 6.5)
 
@@ -273,7 +330,7 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
 - `EmoteTagOptions { const SectionName = "Tags"; bool RunsEnabled = false; Validate() }`,
   Singleton wie `ChannelCapacityOptions`; `ChannelPermissionsDto` + `bool TagRunsEnabled`
   (Handler liest die Options). Fehlercodes `TagOperationIdInvalid`, `TagOperationUnknown`,
-  `TagOperationConflict` (+ ggf. `TagOperationKindInvalid`, Offene Punkte 1).
+  `TagOperationConflict`, `TagOperationKindInvalid` (vier, Betreiberentscheidung 2026-10-04).
 
 ### 3.6 Frontend — Kern
 
@@ -296,12 +353,20 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
   `import.confirm.originTag` + bei `alreadyInSetCount > 0` `import.confirm.originTagSkipped.{one,other}`.
 - `ImportFlowTarget` `'chosen'` += `pinSetId?: true`; `toTargetSelection`: mit `pinSetId` nie
   `trackedActive`, sondern `trackedSet` mit `choice.emoteSetId`; **ohne** Flag byte-identisch.
-  `startImportFlow(deps, source, target, setGuard?: ImportFlowSetGuard)` mit
-  `ImportFlowSetGuard { frozenSetId: string; activeEmoteSetId: Signal<string | null>; onSetChanged: () => void }`;
-  Vergleich in `startAfterCheck` unmittelbar vor `startImport`: `outcome.targetSetId`,
-  `activeEmoteSetId()`, `frozenSetId` gleich — sonst `onSetChanged()` und kein Lauf. Der
-  `trackedSet`-Zweig liefert per Konstruktion die angefragte ID (kein zweiter Vergleich nach der
-  Zielauflösung — 7.1/6).
+  `startImportFlow(deps, source, target, tagHook?: ImportFlowTagHook)` mit
+  `ImportFlowTagHook { context: ImportTagContext; frozenSetId: string; activeEmoteSetId: Signal<string | null>; onSetChanged(): void; onNothingToImport(): void }`
+  — ein Objekt für alles, was ein Tag-Lauf dem Flow mitgibt; ohne Hook verhält sich der Flow
+  byte-identisch. Zwei Eingriffe in `startAfterCheck`, beide **nach** `recheckTransferPlan` und
+  dem zweiten Arbiter-Check, unmittelbar vor `startImport`: (1) Set-Wächter —
+  `outcome.targetSetId`, `activeEmoteSetId()`, `frozenSetId` gleich, sonst `onSetChanged()` und
+  kein Lauf; (2) **No-op nach der letzten Duplikatprüfung** (Codex-Befund 5): hat der Plan nach
+  `recheckTransferPlan` keine zu sendende Zeile mehr (ein Fremdeditor hat alles während der
+  Bestätigung hinzugefügt), ruft der Flow `onNothingToImport()` statt `startImport` — denn
+  `startImport` weist eine leere Liste ab und verwirft den Record (`seven-tv-import.service.ts:553-558`),
+  `settleRun` liefe nie, die Aktivierung (E26) bliebe ungemeldet und ohne Retry. Der Tag-Flow
+  sendet dann die leere Einspiel-Meldung der registrierten Operation (derselbe Pfad wie 7.1/5).
+  `context` wird als `target.tag` bis `startImport` durchgereicht. Der `trackedSet`-Zweig liefert
+  per Konstruktion die angefragte ID (kein Vergleich nach der Zielauflösung — 7.1/6).
 - `SevenTvImportService.startImport(target, origin, plan, skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift)`:
   `target` += `tag?: ImportTagContext` mit `ImportTagContext { tagId: number; operationId: string }`
   (`targetOwnerTwitchId` steht schon am Ziel). `ImportRunInfo` += `tag: ImportTagContext | null`,
@@ -314,11 +379,16 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
   `retryTagPlacementReport()` (gleiche `operationId`); Signale `tagPlacementReport`,
   `tagPlacementReportReason`, `tagPlacementDiscardedStaleCount` als `linkedSignal` wie beim Undo.
 - `SevenTvDeleteService.startDelete(setId, channelName, emotes, expectedChannelName, targetOwnerTwitchId, tag?: DeleteTagContext)`
-  mit `DeleteTagContext { tagId; operationId; activationOperationId: string | null; snapshot: TagPlacementSnapshotEntry[]; uncheckedOwnIds: string[]; channelName }`;
+  mit `DeleteTagContext { tagId; operationId; activationOperationId: string | null; snapshot: TagPlacementSnapshotEntry[]; checkedOwnIds: string[]; uncheckedOwnIds: string[]; channelName }`
+  (definiert in `core/seven-tv/seven-tv-delete.service.ts`; `checkedOwnIds` = angehakte **eigene**
+  Platzierungen, `uncheckedOwnIds` = unangehakte eigene, beide `inLive`);
   `DeleteRunInfo` += `tag`, `tagRemovalReport`, `tagRemovalReportReason`; Lifecycle-OR;
   `settleRun` → `pending` bei `tag`; `reportTagRemoval(runId)`: `removedIds = result.doneKeys`,
-  `keptIds = uncheckedOwnIds ∪ (angehakte eigene IDs, deren Zeile nicht done)` — berechnet in
-  der reinen Funktion `deriveKeptIds` (3.7); `retryTagRemovalReport()`.
+  `keptIds = deriveTagKeptIds(run.tag, run.result)` — **reine Funktion in
+  `core/seven-tv/tag-run-settlement.ts`** (core, nicht `shared/tags`: der Delete-Service darf
+  nichts aus `shared/` importieren — Codex-Befund 8): `uncheckedOwnIds ∪ { id ∈ checkedOwnIds |
+  keine Zeile mit Status done }`; bei `result === null` (kein Lauf) `uncheckedOwnIds ∪ checkedOwnIds`.
+  `retryTagRemovalReport()`.
 - Dock-Zeilen: `import-progress-section.ts` zeigt bei `tag !== null` eine Zeile
   `sevenTvRun.tagReport.{pending,succeeded,failed}` mit Retry-Knopf („Erneut melden", bestehender
   Wortlaut `sevenTvRun`-Familie, konstantes Label) und bei `discardedStaleCount > 0`
@@ -339,9 +409,10 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
   (alle `placedByThisTag`-Einträge, sichtbar oder nicht), `ownInLiveIds: string[]`;
   `TagRemovalRow { sevenTvEmoteId; aliases: string[]; checked: boolean; reason: 'placed' | 'heldBy' | 'alreadyPresent'; heldBy: EmoteTagRef[]; placedAtUtc: string | null }`
   nach den fünf Fällen 7.2/5 (`heldBy` = `heldByActiveTags` bei eigener Platzierung, sonst
-  `placedByOtherTags`). `deriveKeptIds(proposal, checkedIds, result: RunResult | null): string[]`
-  = `ownInLiveIds \ checkedIds` ∪ `{ id ∈ checkedIds ∩ ownInLiveIds | Zeile nicht done }` (bei
-  `result === null`, also ohne Lauf: alle `ownInLiveIds`).
+  `placedByOtherTags`). `ownInLiveIds` ist die Grundlage, aus der der Flow nach dem Dialog
+  `checkedOwnIds = ownInLiveIds ∩ checkedIds` und `uncheckedOwnIds = ownInLiveIds \ checkedIds` für
+  den `DeleteTagContext` bildet; die Ableitung der `keptIds` nach dem Lauf liegt in **core**
+  (`deriveTagKeptIds`, 3.6), nicht hier.
 - `tag-removal-confirm-dialog.ts`: `TagRemovalConfirmDialogData { tagName; setName; isActiveSet; proposal; warning: Signal<EmoteSetWarning | null>; warningLoading: Signal<boolean> }`,
   `TagRemovalConfirmResult { checkedIds: string[] }` (Snapshot und `ownInLiveIds` kennt der Flow
   aus dem Proposal — der Dialog gibt nur die Haken zurück), `openTagRemovalConfirmDialog(dialog, data): DialogRef<TagRemovalConfirmResult | undefined>`.
@@ -373,21 +444,24 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
   `ownershipUnavailable`; andere → `reportFailed`) → 3 (`readLiveSetAliases`; `blocked` →
   `setReadIncomplete`/`setReadUnavailable`) → 4 (Partition) → 5 (leer: direkt `reportPlacements`
   mit `[]`, Erfolg → `onFeedback('tags.feedback.allPresent')`, `onCompleted()`; Fehler → Banner
-  mit Retry) → 6 (`startImportFlow(deps, source, { kind: 'chosen', choice, pinSetId: true }, setGuard)`
-  mit `choice` gebaut wie `toImportTarget` in `import-trigger.ts:56-75`, `target.tag` über einen
-  neuen optionalen Parameter des Flows **oder** über das `choice`-Objekt — Festlegung: eigener
-  fünfter Parameter `tag?: ImportTagContext`, der bis `startImport` durchgereicht wird;
-  `setGuard.onSetChanged` → `notice = tags.errors.setChanged`). Abbruchprüfung „Set gewechselt"
-  nach Schritt 2: Antwort-`emoteSetId` ≠ eingefroren oder `isActiveSet === false`.
+  mit Retry) → 6 (`startImportFlow(deps, source, { kind: 'chosen', choice, pinSetId: true }, tagHook)`
+  mit `choice` gebaut wie `toImportTarget` in `import-trigger.ts:56-75` und `tagHook` nach 3.6:
+  `onSetChanged` → `notice = tags.errors.setChanged`; `onNothingToImport` → **derselbe** Pfad wie
+  Schritt 5 (leere Einspiel-Meldung mit der registrierten `operationId`, Feedback `allPresent`,
+  Fehler → Banner mit Retry) — der Lauf ist dann ein erfolgreicher No-op, obwohl die Partition
+  nicht leer war). Abbruchprüfung „Set gewechselt" nach Schritt 2: Antwort-`emoteSetId` ≠
+  eingefroren oder `isActiveSet === false`.
 - `tag-removal-flow.ts`: `startTagRemovalFlow(deps, request)`: 7.2/1–8: Entries frisch →
   Set-Vergleich → `resolveDeleteTarget` → Registrieren `removal` → `readLiveSetAliases` →
   `proposeTagRemoval` → Shared-Set-Warnung laden (`emoteAdminService.getSetWarning`) → Dialog →
   Bestätigung: Abbruchprüfung (`activeEmoteSetId() !== frozen` → `massDelete.setChangedDuringConfirm`;
   `arbiter.activeRun() !== null` → `noteRefusedStart('delete')`) → n = 0: direkt
-  `reportRemoval` mit `removedIds: []`, `keptIds = deriveKeptIds(proposal, [], null)` →
-  `onFeedback('tags.feedback.removedNothing')`; n > 0: `deleteService.startDelete(frozenSetId, channelName, queue, channelName, ownerTwitchChannelId, tagContext)`
+  `reportRemoval` mit `removedIds: []`, `keptIds = deriveTagKeptIds(tagContext, null)` (= alle
+  eigenen `inLive`) → `onFeedback('tags.feedback.removedNothing')`; n > 0:
+  `deleteService.startDelete(frozenSetId, channelName, queue, channelName, ownerTwitchChannelId, tagContext)`
   mit `queue` aus den angehakten Zeilen (`DeleteQueueEmote { sevenTvEmoteId, name: aliases[0] ?? defaultName, aliases }`),
-  `tagContext.uncheckedOwnIds = ownInLiveIds \ checkedIds`. Token-Prompt vor dem Dialog wie
+  `tagContext.checkedOwnIds = ownInLiveIds ∩ checkedIds`, `tagContext.uncheckedOwnIds = ownInLiveIds \ checkedIds`
+  (3.7 `tag-removal.ts`). Token-Prompt vor dem Dialog wie
   `MassDeletePanel.openConfirm` (nach der Registrierung, damit 403 vor dem Prompt kommt).
   `beginConfirmedRun`/`endConfirmedRun` am `deleteService` wie im Delete-Flow (Dock-Gatter).
 
@@ -404,15 +478,24 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
   `aria-hidden`, Wort im `aria-label` der Zelle), Meta-Zeile zeigt `placedAt`; Löschen-Dialog mit
   `tags.deleteDialog.placedHint.{one,other}` bei `placedCount > 0`; Micro-Zeile links mit
   „eingespielt ({{placed}} platziert)". Lauf-Fläche: eigener `.app-dock` (§2.5) mit
-  `DockClearanceService` (`reserve`/`release` wie `usage-stats-page.ts:358`), Gatter
-  `tagDockVisible = importShown || deleteShown || importNoticePending` (Teilmenge von
-  `actionDockHasContent` — die Funktion in `action-dock.ts:72` wird mit `markedCount: 0`,
-  `hasActiveSet: false`, `restoreShown: false`, `undoShown: false` wiederverwendet, kein zweites
-  Gatter), darin `<app-import-progress-section />` und
-  `<app-delete-progress-section (notice)="runNotice.set($event)" />` (T-A); permanenter
-  `<app-dock-outcome-announcer [withImport]="true" />` außerhalb des Docks; eigene Status-Region
-  für `runNotice`; `tags.routes.ts` bekommt `canDeactivate: [sevenTvRunLeaveGuard]`. Mobile
-  (grober Zeiger): keine Knöpfe, kein Dock (9.4 Festlegung).
+  `DockClearanceService` (`reserve`/`release` wie `usage-stats-page.ts:358`). **Dock-Vertrag der
+  Tags-Seite** (Codex-Befund 1 — `actionDockHasContent` hält den Lösch-Lauf in der
+  `hasActiveSet`-Klammer, `action-dock.ts:78-90`; mit `hasActiveSet: false` bliebe ein Dock mit
+  nur einem Ausräum-Lauf unsichtbar): neue reine Funktion `tagRunDockHasContent(state: TagRunDockState)`
+  in `shared/seven-tv/action-dock.ts` mit `TagRunDockState { deleteShown; deleteConfirmPending; restoreShown; restoreNoticePending; importShown; importNoticePending }`
+  — `true`, sobald **eines** der sechs Felder `true` ist; kein `hasActiveSet`, kein `markedCount`
+  (die Seite hat keine Markierungshälfte), kein Undo (die Seite startet keinen). Die Seite speist
+  die Felder aus denselben Service-Signalen wie `usage-stats-page.ts:1660-1681`
+  (`deleteService.isRunning() || queue().length > 0`, `deleteService.confirmedRunPending()`,
+  `restoreService.isRunning() || queue().length > 0`, `restoreService.duplicateNoticePending()`,
+  `importService.run() !== null && (…)`, `importService.duplicateNoticePending()`). Im Dock
+  **drei** Sections: `<app-import-progress-section />`,
+  `<app-delete-progress-section [hostSelectedSetId]="activeEmoteSetId()" (notice)="runNotice.set($event)" />`
+  (T-A) und `<app-restore-progress-section />` — der „Wiederherstellen"-Knopf der Delete-Section
+  startet `SevenTvRestoreService`, dessen Lauf nur die Restore-Section zeigt (E13, Rückweg für
+  R1–R4). Permanenter `<app-dock-outcome-announcer [withImport]="true" />` außerhalb des Docks;
+  eigene Status-Region für `runNotice`; `tags.routes.ts` bekommt `canDeactivate: [sevenTvRunLeaveGuard]`.
+  Mobile (grober Zeiger): keine Knöpfe, kein Dock (9.4 Festlegung).
 
 ### 3.9 i18n (T-C-Familien, de Referenz)
 
@@ -426,8 +509,8 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
 `registrationFailed`); `sevenTvRun.tagReport.{pending,succeeded,failed,retry}`,
 `sevenTvRun.tagReport.discardedStale.{one,other}`; `tags.filter.active`;
 `import.confirm.originTag`, `import.confirm.originTagSkipped.{one,other}`, `undo.confirm.origin.tag`;
-`restore.afterTagRunHint`; `errors.api.tag_operation_id_invalid|tag_operation_unknown|tag_operation_conflict`
-(+ ggf. `tag_operation_kind_invalid`); `audit.actions.tagPlayedIn|tagRemoved`; Herkunfts-Label
+`restore.afterTagRunHint`; `errors.api.tag_operation_id_invalid|tag_operation_unknown|tag_operation_conflict|tag_operation_kind_invalid`;
+`audit.actions.tagPlayedIn|tagRemoved`; Herkunfts-Label
 `"tag"` im Audit-Detail, wo die anderen Vokabeln eines haben.
 
 ---
@@ -435,7 +518,16 @@ Regeln (alle in **einer** Transaktion mit Kanalsperre zuerst; `AppliedAtUtc` am 
 ## 4. Tasks
 
 Reihenfolge: T1 → T2 → T3 → T4 → T5 → T6 (Backend) ∥ T7 → T8 → T9 → T10 → T11 → T12 → T13
-(Frontend; T7 braucht nur den Vertrag 3.6) → T14 → T15 → T16. T2 und T3 sind unabhängig.
+(Frontend; T7 braucht nur den Vertrag 3.6) → T14 → T15 → T16. T2 und T3 sind unabhängig. T7
+liefert den core-Helfer `deriveTagKeptIds`, **bevor** T9 ihn im Delete-Service benutzt; T10
+(reine `shared/tags`-Funktionen) hängt nur an T7.
+
+**Schichtenprüfung über alle drei Pläne** (Codex-Befund 8): `core/` importiert nur `core/`
+(`tag-run-settlement.ts`, `DeleteTagContext`, `ImportTagContext`, `TagPlacementSnapshotEntry`,
+`EmoteTagRef` liegen alle in `core/`); `shared/tags/*` und `shared/seven-tv/*` importieren
+`core/` und `shared/ui`; `features/` importiert beide. `sevenTvRunLeaveGuard` liegt in
+`shared/seven-tv/` (T-A), weil er `shared/ui/confirm-dialog` öffnet. Jeder Task prüft seine
+Importe gegen diese Tabelle (`npm run lint` kennt die Grenze nicht — Review-Disziplin).
 
 ### Task 1 — Tabellen, Spalte, Migration `AddEmoteTagPlacements`
 
@@ -443,17 +535,22 @@ Reihenfolge: T1 → T2 → T3 → T4 → T5 → T6 (Backend) ∥ T7 → T8 → T
 `AppDbContext.cs`; `ChannelRetentionPurgeTests.cs` (Kaskade).
 
 - [ ] Vier Entitäten, `EmoteTagOperationKind`, `Emote.LastEnteredSetAtUtc`; `AuditActions.TagPlayedIn/TagRemoved`;
-      `OnModelCreating` nach 3.1; Kommentare englisch (warum kein FK auf Entry/Operation, warum
-      Kanal- statt Tag-Tabelle für Beobachtungen, warum `null` = unbekannt).
-- [ ] `dotnet ef migrations add AddEmoteTagPlacements …`; Migration lesen: rein additiv.
+      `OnModelCreating` nach 3.1 inkl. des zusammengesetzten FK Platzierung → Eintrag mit Cascade;
+      Kommentare englisch (warum FK auf Entry — Regel 5.5/2 in der Datenbank — und kein FK auf
+      Operation, warum Kanal- statt Tag-Tabelle für Beobachtungen, warum `null` = unbekannt).
+- [ ] `dotnet ef migrations add AddEmoteTagPlacements …`; Migration lesen: rein additiv (vier
+      Tabellen, eine nullable Spalte, der FK).
+- [ ] Test (Integration): Löschen eines Eintrags kaskadiert zu allen Platzierungen `(Tag, X, ·)`
+      über mehrere Sets; Löschen eines Tags kaskadiert über beide Pfade ohne Fehler; eine
+      Platzierung ohne Eintrag lässt sich nicht einfügen (FK-Verletzung).
 - [ ] Kaskadentest erweitern: Kanal mit Tag, Platzierung, Aktivierung, Operation und
       Beobachtung → Purge → alle sechs Tabellen leer (Spec 10 Pflichtaussage).
 - [ ] Gates; ein Commit: `feat(core): add tag placement, activation, operation and leave observation tables`.
 
 ### Task 2 — Sync: Beobachtungen und Eintrittsstempel (Worker-Verhalten)
 
-**Modell:** opus (Hot-Path des Workers; drei Schreibstellen; Fehlerpfad `IsRowVanishedFor`;
-30-min-Fenster). **Kontext:** Spec 3.1, 5.5 Regel 5, E8 rev. 4, E33, E34, 12.4, Gegenbeispiel 8;
+**Modell:** opus (Hot-Path des Workers; drei Schreibstellen; explizite Transaktion um den
+Einmal-Retry; 30-min-Fenster; Nachbetrachtung). **Kontext:** Spec 3.1, 5.5 Regel 5, E8 rev. 4, E33, E34, 12.4, Gegenbeispiel 8;
 Plan 0 (Sync-Zeilen), 3.4; `SevenTvSyncService.cs:187-307, 316-359, 375-413, 750-852, 884-900`;
 `EmoteService.cs:208-332`; `AuditLogWrites.cs` (Muster für die Persistence-Hilfe);
 `SevenTvSyncServiceTests.cs` (Fabriken `CreateService`/`CreateRestService*`, Seeds, Tests ab
@@ -462,36 +559,59 @@ Plan 0 (Sync-Zeilen), 3.4; `SevenTvSyncService.cs:187-307, 316-359, 375-413, 750
 **Dateien:** `SevenTvSyncService.cs`, `EmoteService.cs`, neu
 `Infrastructure/Persistence/EmoteSetLeaveObservations.cs`, Tests.
 
-- [ ] Persistence-Hilfe `EmoteSetLeaveObservations.RecordAsync(db, channelId, setId, ids, now, ct)`:
-      lädt vorhandene Zeilen zu den IDs (skalare Liste), aktualisiert `LastObservedAtUtc`, legt
-      fehlende an; **kein** `SaveChanges` (der Aufrufer speichert).
-- [ ] `ApplyEmoteSetUpdateAsync`: nach der Pulled-Schleife für die tatsächlich archivierten IDs
-      aufrufen (Set = `emoteSetId`); `ReconcileAsync` bekommt `activeEmoteSetId`, sammelt die
-      archivierten Zeilen, filtert nach Fenster (`LastEnteredSetAtUtc is null || <= now − TagLeaveCredibilityWindow`)
-      und ruft die Hilfe; `UpsertEmote` stempelt wie 3.4; `IsRowVanishedFor` erweitert; Kommentar
-      an der 15-min-Messzeile verweist auf das Fenster; Konstante benannt wie in der Spec, mit
-      Kommentar, warum 30 (SevenTV#81, 13.4/4) und warum Konstante statt Konfiguration.
-- [ ] `EmoteService.MarkInSetAsync`: Delete → Hilfe für jede gefundene Zeile je Treffer-Kanal;
-      Restore → Stempel für Zeilen, die entarchiviert werden; im selben `SaveChangesAsync`.
-- [ ] Tests `SevenTvSyncServiceTests` (Testcontainers, gegen echte Uhr — die Seeds setzen
-      `LastEnteredSetAtUtc` direkt in der DB): REST-Vollsync archiviert fehlende Zeile **und**
-      schreibt Beobachtung `(Kanal, ID, ActiveEmoteSetId)` für `LastEnteredSetAtUtc = null` und für
+- [ ] Persistence-Hilfe `EmoteSetLeaveObservations` nach 3.4: `RecordAsync(db, channelId, setId, ids, observedAtUtc, ct)`
+      als **ein** parametrisiertes `INSERT … ON CONFLICT … DO UPDATE SET … = GREATEST(…)` über
+      `ExecuteSqlRawAsync` (Tabellen-/Spaltennamen wie im Modell-Snapshot, quoted; IDs als
+      Array-Parameter, leere Liste → kein Statement); dazu
+      `LoadLatestAsync(db, channelId, setId, ids, ct)` → `Dictionary<string, DateTime>` für die
+      Nachbetrachtung und (Task 3) die Lese-Zeit-Regel. Kopfkommentar: warum atomar, warum
+      `GREATEST`, warum nicht über den ChangeTracker.
+- [ ] Explizite Transaktion je Speicherversuch an den drei Stellen (3.4): `ApplyEmoteSetUpdateAsync`,
+      `SaveSyncAsync`/`ApplyAndSaveAsync` (Retry öffnet eine neue), `MarkInSetAsync`; Reihenfolge
+      `RecordAsync` → `SaveChangesAsync` → `Commit`; Kommentar mit der Deadlock-Begründung aus 3.4.
+- [ ] `ApplyEmoteSetUpdateAsync`: Beobachtung für **jede** ID in `delta.PulledIds` (Set =
+      `emoteSetId`), unabhängig von Zeile/Archivzustand. `ReconcileAsync(channelId, activeEmoteSetId, liveEmotes)`:
+      (b1) Archivierung + Beobachtung nur außerhalb des Fensters; (b2) Nachbetrachtung schon
+      archivierter, nicht-live Zeilen nach 3.4 (einmalig, über `LoadLatestAsync`). `UpsertEmote`
+      stempelt wie 3.4. Kommentar an der 15-min-Messzeile (`:768-778`) verweist auf das Fenster;
+      Konstante `TagLeaveCredibilityWindow` mit Kommentar (SevenTV#81, 13.4/4, Konstante statt
+      Konfiguration).
+- [ ] `EmoteService.MarkInSetAsync`: Delete → `RecordAsync` für jede gefundene Zeile je
+      Treffer-Kanal (auch schon archivierte); Restore → Stempel für Zeilen, die entarchiviert
+      werden.
+- [ ] Tests `SevenTvSyncServiceTests` (Testcontainers; Seeds setzen `LastEnteredSetAtUtc` und
+      Beobachtungen direkt): REST-Vollsync archiviert eine fehlende Zeile **und** schreibt die
+      Beobachtung `(Kanal, ID, ActiveEmoteSetId)` für `LastEnteredSetAtUtc = null` und für
       `now − 31 min`; **keine** Beobachtung bei `now − 5 min`, Archivierung trotzdem; Kanal ohne
-      Tags bekommt Beobachtungen; Delta `PulledIds` schreibt **immer**; zweiter Delta zur selben
-      ID überschreibt `LastObservedAtUtc` (eine Zeile, kein Duplikat); `UpsertEmote` stempelt
-      beim Anlegen und beim Entarchivieren, **nicht** bei Umbenennung (Stempel bleibt alt);
-      Platzierungen bleiben vom Sync unberührt (Tag + Platzierung seeden, Vollsync archiviert das
-      Emote → Platzierung existiert noch); Save-Konflikt-Pfad: ein fehlgeschlagener Save mit
-      gestagter Beobachtung läuft durch den Retry (`IsRowVanishedFor`) — Muster
-      `SyncChannel_VoteSessionInsertsTheSameEmoteMidSync_RetriesOnce…`.
+      Tags bekommt Beobachtungen; Delta `PulledIds` schreibt **immer** — auch für eine **schon
+      archivierte** Zeile und für eine ID **ohne** Zeile; zweiter Delta zur selben ID → eine Zeile,
+      `LastObservedAtUtc` neuer; Delta mit **älterem** `observedAtUtc` als die vorhandene Zeile
+      (direkt über die Hilfe) → Wert bleibt (`GREATEST`); **Nachbetrachtung:** archivierte Zeile
+      mit `LastEnteredSetAtUtc = now − 31 min` und ohne Beobachtung → REST-Durchlauf stempelt;
+      zweiter Durchlauf stempelt **nicht** erneut (Wert unverändert); archivierte Zeile mit
+      Beobachtung **jünger** als der Eintritt → kein Stempel; `UpsertEmote` stempelt beim Anlegen
+      und beim Entarchivieren, **nicht** bei Umbenennung; Platzierungen bleiben vom Sync
+      unberührt. **Szenario Codex-Befund 2** als Ablauf: Eintritt (Stempel jetzt) → REST-Durchlauf
+      mit stale Cache archiviert **ohne** Beobachtung → REMOVE-Delta → Beobachtung existiert →
+      PUSH-Delta (Wiederhinzufügen, Eintritt neu gestempelt) → eine Platzierung, deren Operation
+      **vor** dem REMOVE registriert wurde, gilt nicht mehr (Lese-Zeit-Regel über `LoadLatestAsync`);
+      Variante ohne REMOVE-Delta (EventAPI aus): nach Ablauf des Fensters stempelt der nächste
+      REST-Durchlauf per Nachbetrachtung genau einmal. **Zwei Kontexte** (Tagged DbContexts,
+      `PostgresLockProbe`): (i) gleichzeitige erste Inserts derselben Zeile → beide Commits
+      erfolgreich, eine Zeile; (ii) Kontext A stempelt `t₂`, Kontext B stempelt `t₁ < t₂`, B
+      committet **nach** A → Zeile trägt `t₂`. Save-Konflikt-Pfad: der Einmal-Retry von
+      `SaveSyncAsync` läuft mit neuer Transaktion durch und hinterlässt genau eine Beobachtung —
+      Muster `SyncChannel_VoteSessionInsertsTheSameEmoteMidSync_RetriesOnce…`.
 - [ ] Tests `EmoteServiceTests`: `MarkDeletedInSetAsync` schreibt die Beobachtung je Treffer-Kanal
       (auch für eine schon archivierte Zeile); `MarkRestoredInSetAsync` stempelt
       `LastEnteredSetAtUtc` und lässt eine bestehende Beobachtung stehen; untracked Set → keine
-      Beobachtung (kein Treffer-Kanal).
+      Beobachtung (kein Treffer-Kanal); ein Api-Kontext (`MarkDeletedInSetAsync`) und ein
+      Worker-Kontext (Delta) stempeln dieselbe Zeile überlappend → Maximum gewinnt.
 - [ ] Gates; ein Commit: `feat(infra): record credible set leave observations and stamp set entry in the 7TV sync`.
 
-**Abnahme:** `git diff src/EmotePurge.Worker` leer; jeder der drei Archivierungspfade hat einen
-positiven und (REST) einen negativen Beobachtungsfall.
+**Abnahme:** `git diff src/EmotePurge.Worker` leer; jeder der drei Beobachtungspfade hat einen
+positiven und (REST) einen negativen Fall; die Nachbetrachtung hat einen „einmal, nicht zweimal"-
+Fall; die zwei Zwei-Kontexte-Fälle sind grün.
 
 ### Task 3 — Lese-Zeit-Regel und Platzierungsfelder der Leserouten
 
@@ -545,9 +665,19 @@ falsch oder verletzt die Invariante; sieben Gegenbeispiele sind der Prüfstein).
 0a, 5.3, 5.5 Regeln 3, 4, 6, 10 und Gegenbeispiele 1–7; 6.4 „Ausräumen" (Reihenfolge 4 → 1 → 2 →
 3 → 5 → 6); E7 rev. 2, E26 rev. 3, E27; 13.4/2; Plan 3.3; Task 4 (Code und Testhilfen).
 
-- [ ] `ReportRemovalAsync` nach 3.3; `RemoveEntriesAsync` löscht Platzierungen (E17);
-      `DeleteAsync` zählt `placementCount` ins Audit. Kommentare: die Reihenfolge der Schritte
-      und warum (2) nur bei `Deactivated`.
+- [ ] `ReportRemovalAsync` nach 3.3; `RemoveEntriesAsync` zählt die kaskadierenden Platzierungen
+      für Antwort/Log (E17 hält der FK); `DeleteAsync` zählt `placementCount` ins Audit.
+      Kommentare: die Reihenfolge der Schritte und warum (2) nur bei `Deactivated`.
+- [ ] **Rennen Herausnehmen ↔ Meldungen** (Codex-Befund 3; zwei Tagged DbContexts,
+      `PostgresLockProbe`): (i) Einspiel-Meldung hält die Kanalsperre und hat den Eintrag für X
+      gelesen; `RemoveEntriesAsync(X)` startet parallel und wartet; Meldung platziert X und
+      committet; Herausnehmen läuft durch → **keine** Platzierung für X (FK-Kaskade), Eintrag weg;
+      (ii) umgekehrt (Herausnehmen zuerst) → Meldung sieht keinen Eintrag → `NotTaggedIds` enthält
+      X; (iii) Ausräum-Meldung will `(T, X, S)` an T′ übertragen, T′s Eintrag für X wird parallel
+      herausgenommen → serialisiert: läuft das Herausnehmen zuerst, ist T′ nicht mehr Kandidat →
+      `DroppedCount`; läuft die Meldung zuerst, kaskadiert das Herausnehmen die übertragene
+      Platzierung weg. In allen Fällen danach: keine Platzierung ohne Eintrag (Assertion über einen
+      Join Platzierung ⟕ Eintrag).
 - [ ] Tests: Treffer nur bei ID **und** Revision (anderer `placementOperationId` → kein
       Treffer, Zeile bleibt); `RemovedIds` löscht; `KeptIds` wandert zum ältesten aktiven T′ mit
       Eintrag, `OperationId` neu, `PlacedAtUtc` alt; T′ hat schon eine Platzierung → Zeile weg,
@@ -586,7 +716,8 @@ Invariante ist in jedem Szenario geprüft.
       Leiter (Besitz-Fakes so arrangiert, dass die Leiter 404 gäbe — Nachweis der Reihenfolge);
       `CanManageChannelAsync false` + `CanViewUsageStats true` → **nicht** 403 (E9);
       `invalid_channel_name` vor Autorisierung; 400 `tag_operation_id_invalid` (UUID, Snapshot-
-      Revision), 400 `invalid_emote_set_id` am Body **vor** der Leiter; Leiter auf allen drei
+      Revision), 400 `tag_operation_kind_invalid` (`kind` unbekannt oder fehlend, nur
+      Registrier-Route), 400 `invalid_emote_set_id` am Body **vor** der Leiter; Leiter auf allen drei
       Routen: `Forbidden` → 403 leer, `SetNotFound` → 404 `emote_set_not_found`, `Unavailable` →
       503 — jeweils `IEmoteTagService` nicht aufgerufen; `Owner` → Service aufgerufen mit
       normalisiertem Kanalnamen und der `RegisteredAtUtc`-Antwort 201/200; Status-Mapping
@@ -604,7 +735,14 @@ Invariante ist in jedem Szenario geprüft.
 3.6 (Kern); Memory „ImportOrigin-Union: 6 Bruchstellen"; alle in 3.6 genannten Dateien.
 
 - [ ] Modelle/Service-Methoden (+ `HttpTestingController`-Spec: Routen, Bodies, `emoteSetId`
-      nie als Query bei den POSTs); drei (ggf. vier) Codes + Locales; `ChannelPermissions.tagRunsEnabled`.
+      nie als Query bei den POSTs); vier Codes + Locales; `ChannelPermissions.tagRunsEnabled`.
+- [ ] `core/seven-tv/tag-run-settlement.ts`: `deriveTagKeptIds(tag: Pick<DeleteTagContext, 'checkedOwnIds' | 'uncheckedOwnIds'>, result: RunResult | null): string[]`
+      (3.6) — **vor** Task 9, weil der Delete-Service es importiert; `DeleteTagContext` und
+      `ImportTagContext` werden hier als Typen in `core/seven-tv/` angelegt (Service-Dateien
+      erweitern sie in Task 8/9 nicht, sie importieren sie). Spec: ohne Lauf → beide Mengen;
+      mit Lauf → unangehakte + angehakte ohne `done`-Zeile (`failed`/`cancelled`/`unknown`/
+      fehlend); `done` nicht; Reihenfolge stabil (unangehakte zuerst, dann angehakte in
+      Kontextreihenfolge); keine Duplikate.
 - [ ] `ImportOrigin 'tag'` und **jede** Stelle aus 3.6; `import-source.spec.ts`: Helfer liefern
       `null`; `import-confirm-dialog.spec.ts`: Tag-Origin zeigt die Tag-Zeile, **nicht** die
       Kanal-Zeile, mit und ohne `alreadyInSetCount`; `undo-confirm-dialog.spec.ts`: Tag-Origin
@@ -629,8 +767,10 @@ in `startAfterCheck`), 3.6; `import-flow.ts` (`toTargetSelection :143-157`, `sta
 (Zwei-Meldungen-Muster), `import-progress-section.ts:60-120`, `dock-outcome-announcer.ts`;
 Specs `import-flow.spec.ts`, `seven-tv-import.service.spec.ts`, `import-progress-section.spec.ts`.
 
-- [ ] `pinSetId` + `ImportFlowSetGuard` + fünfter Parameter `tag` in `startImportFlow`;
-      `toTargetSelection` respektiert `pinSetId`; Vergleich in `startAfterCheck`.
+- [ ] `pinSetId` + vierter Parameter `tagHook?: ImportFlowTagHook` in `startImportFlow` (3.6);
+      `toTargetSelection` respektiert `pinSetId`; in `startAfterCheck` nach `recheckTransferPlan`
+      und dem zweiten Arbiter-Check: Set-Wächter, dann der No-op-Zweig `onNothingToImport()`
+      (Codex-Befund 5), sonst `startImport` mit `target.tag = tagHook.context`.
 - [ ] `startImport` nimmt `target.tag`; `ImportRunInfo`-Felder, Lifecycle-OR, `settleRun`,
       `reportTagPlacements` parallel zu `reportImported` in `sendFollowUp`, `endReport`-Variante,
       `retryTagPlacementReport`, Signale.
@@ -639,7 +779,11 @@ Specs `import-flow.spec.ts`, `seven-tv-import.service.spec.ts`, `import-progress
       `emoteSetId === activeEmoteSetId` (ohne Flag unverändert `trackedActive`; bestehende Fälle
       bleiben); Loader mit genau der angepinnten ID; **Set-Wechsel während der Bestätigung**
       (Signal ändert sich vor `start`) → kein `startImport`, `onSetChanged` gerufen; unveränderter
-      Fall → `startImport` mit `targetSetId` = eingefroren und `tag` im Ziel.
+      Fall → `startImport` mit `targetSetId` = eingefroren und `tag` im Ziel; **nicht-leere
+      Partition, die `recheckTransferPlan` vollständig leert** (Mock: zweite Live-Lesung enthält
+      alle Zeilen) → kein `startImport`, `onNothingToImport` genau einmal, `onSetChanged` nicht;
+      ohne Hook bleibt der heutige Pfad (Aufruf von `startImport` mit leerer Liste, der Service
+      verwirft — bestehender Fall unverändert).
       `seven-tv-import.service.spec.ts` — ohne Tag `tagPlacementReport === 'idle'` und `closed`
       wartet nicht; mit Tag `pending` hält `closed` auf, `succeeded` schließt; `failed` bietet
       Retry mit **derselben** `operationId` (Body-Vergleich zweier Aufrufe); Body-Form
@@ -651,7 +795,8 @@ Specs `import-flow.spec.ts`, `seven-tv-import.service.spec.ts`, `import-progress
 
 ### Task 9 — Delete-Service: Tag-Kontext und zweite Meldung
 
-**Modell:** sonnet. **Kontext:** Spec 7.2/7–8, E14; Plan 3.6, 3.7 (`deriveKeptIds`);
+**Modell:** sonnet. **Kontext:** Spec 7.2/7–8, E14; Plan 3.6 (`DeleteTagContext`,
+`deriveTagKeptIds` aus Task 7 — core, kein Import aus `shared/`);
 `seven-tv-delete.service.ts` (`startDelete :375`, `DeleteRunInfo :157`, Lifecycle `:202`,
 `reportDeleted :580`, `retrySyncReport :460`), Undo-Muster, `delete-progress-section.ts` (T-A),
 `restore-progress-section.ts`; Specs.
@@ -661,12 +806,13 @@ Specs `import-flow.spec.ts`, `seven-tv-import.service.spec.ts`, `import-progress
 - [ ] Dock-Zeile in `delete-progress-section.ts` + Restore-Hinweis nach Tag-Lauf (13.2) +
       Announcer-Fälle.
 - [ ] Specs: ohne Tag unverändert; mit Tag hält `pending` `closed`; Body: `removedIds = doneKeys`,
-      `keptIds` aus `deriveKeptIds` (Fall: eine angehakte Zeile `failed` → in `keptIds`), `snapshot`
+      `keptIds = deriveTagKeptIds(run.tag, run.result)` (Fall: eine angehakte Zeile `failed` →
+      in `keptIds`; alle `uncheckedOwnIds` immer), `snapshot`
       und `activationOperationId` durchgereicht; Retry gleiche `operationId`; Section-Spec: Zeile
       und Hinweis nur bei Tag-Lauf.
 - [ ] Gates; ein Commit: `feat(web): report tag removals as a second report on the delete run`.
 
-### Task 10 — Reine Funktionen `partitionTagPlayIn`, `proposeTagRemoval`, `deriveKeptIds`
+### Task 10 — Reine Funktionen `partitionTagPlayIn`, `proposeTagRemoval` (`shared/tags/`)
 
 **Modell:** sonnet. **Kontext:** Spec 7.1/4, 7.2/5, 7.2/8, E28, 3.6 des Spec (Namensvettern,
 ordinaler Vergleich); Plan 3.7; `seven-tv-set-entries.ts` (`SevenTvSetEntries`),
@@ -681,8 +827,8 @@ Zeilenstatus).
       nicht in `live` → **in `toAdd`** (kein Fallback).
 - [ ] `tag-removal.spec.ts`: die fünf Zeilenfälle je ein Fall; `notInSetCount`; Reihenfolge =
       Eintragsreihenfolge; `snapshot` enthält unsichtbare eigene Platzierungen mit Revision;
-      `aliases` aus `live`; `deriveKeptIds`: ohne Lauf alle eigenen `inLive`; mit Lauf
-      unangehakte + angehakte mit `failed`/`cancelled`/`unknown`; `done` nicht.
+      `aliases` aus `live`; `ownInLiveIds` = eigene Platzierungen, die `inLive` sind (die
+      `keptIds`-Ableitung selbst liegt in core, Task 7).
 - [ ] Gates; ein Commit: `feat(web): add the pure tag play-in partition and removal proposal`.
 
 ### Task 11 — `TagRemovalConfirmDialog`
@@ -719,9 +865,12 @@ Zeilenstatus).
       `resolveDeleteTarget blocked` → Banner, kein Registrieren; `readLiveSetAliases blocked` →
       `setReadIncomplete`/`setReadUnavailable`, kein Lauf; Partition leer → direkte Meldung mit
       `[]`, `onFeedback('tags.feedback.allPresent')`; Partition nicht leer → `startImportFlow`
-      mit `pinSetId: true`, Guard und `tag`; Removal n = 0 → direkte Meldung mit `keptIds` =
-      eigene `inLive`, Feedback `removedNothing`; n > 0 → `startDelete` mit Queue, Kontext und
-      `uncheckedOwnIds`; Abbruchprüfung bei Bestätigung (Set gewechselt; Arbiter belegt →
+      mit `pinSetId: true` und `tagHook` (Kontext, eingefrorene ID, Signal, beide Callbacks);
+      **`onNothingToImport` aus dem Flow** → dieselbe leere Einspiel-Meldung mit **derselben**
+      `operationId`, Feedback `allPresent`, Fehler → Banner mit Retry (Codex-Befund 5); Removal
+      n = 0 → direkte Meldung mit `keptIds` = alle eigenen `inLive`, Feedback `removedNothing`;
+      n > 0 → `startDelete` mit Queue und Kontext (`checkedOwnIds`, `uncheckedOwnIds` korrekt
+      aus `ownInLiveIds` und den Haken gebildet); Abbruchprüfung bei Bestätigung (Set gewechselt; Arbiter belegt →
       `noteRefusedStart('delete')`); Retry nach Melde-Fehler sendet **dieselbe** `operationId`;
       Token-Prompt abgebrochen → kein Lauf, Registrierung bleibt (kein weiterer Call).
       `tag-run-actions.spec.ts`: „Ausräumen" nur bei `tag.active`; beide gesperrt bei
@@ -738,13 +887,21 @@ Task 7/8 (Member), T-A 3.2 (Section-Output), `usage-stats-page.ts:358, 1660-1681
 
 - [ ] Filterzeile: `<app-tag-run-actions>` statt Platzhalter unter dem Gatter; „eingespielt" in
       der Gruppe; Reloads bei `completed`.
-- [ ] Tags-Seite nach 3.8 inkl. Dock, Announcer, Status-Region, Guard, Platzierungshinweis im
-      Löschdialog, Marke, Meta-Zeile; `DockClearanceService.release()` bei Destroy.
+- [ ] `tagRunDockHasContent` in `action-dock.ts` (3.8) mit Spec: delete-only `true`,
+      restore-only `true`, import-notice-only `true`, delete-confirm-pending-only `true`, alles
+      `false` → `false`; **kein** `hasActiveSet`-Feld im Typ (Kompilat erzwingt es).
+- [ ] Tags-Seite nach 3.8 inkl. Dock mit **drei** Sections (Import, Delete mit
+      `[hostSelectedSetId]="activeEmoteSetId()"`, Restore), Announcer, Status-Region, Guard,
+      Platzierungshinweis im Löschdialog, Marke, Meta-Zeile; `DockClearanceService.release()` bei
+      Destroy.
 - [ ] Specs (Regel 12): Knöpfe fehlen bei `tagRunsEnabled false`, bei `isCoarse`, ohne aktives
       Set; „Ausräumen" nur bei `active`; Zustandszeile folgt `active`/`activatedAtUtc`;
-      Löschdialog-Hinweis nur bei `placedCount > 0`; Dock-Gatter folgt `deleteService`/`importService`
-      (`isShown`-Signale gemockt); `BackLink` im Drilldown unberührt; Guard in `TAGS_ROUTES`
-      registriert (`tags.routes.spec.ts`).
+      Löschdialog-Hinweis nur bei `placedCount > 0`; **Dock-Zustände durch die echte Funktion**
+      (Service-Signale gemockt, kein Mock von `tagRunDockHasContent`): nur Lösch-Lauf → Dock
+      gemountet und `app-delete-progress-section` vorhanden; nur Restore-Lauf → Dock gemountet
+      und `app-restore-progress-section` vorhanden; nur Import-Notiz → gemountet; nichts →
+      kein Dock; `BackLink` im Drilldown unberührt; Guard in `TAGS_ROUTES` registriert
+      (`tags.routes.spec.ts`).
 - [ ] Audit-Harness-Szenarien: `tags-page-active-with-dock` (Lauf-Record gemockt im Service? —
       der Harness mockt nur Routen; stattdessen Szenario mit Platzierungs-Marken und Zustandszeile,
       `requiresFinePointer`), `tag-removal-dialog` (`afterLoad` öffnet den Dialog gegen gemockte
@@ -783,13 +940,23 @@ CLAUDE.md „Tests" (`page.clock`).
 `docs/Architectur.md` (Tabelle, Abschnitt zu Sync-Deviationen `:204`), `docs/UI-Designsprache.md`
 §7, §8.7.
 
-- [ ] `.env.example` `TAGS_RUNS_ENABLED=false` mit Kommentar (Freigabe erst nach erstem Vollsync
-      des neuen Workers); beide Compose-Dateien `Tags__RunsEnabled=${TAGS_RUNS_ENABLED:-false}`
-      am **api**-Dienst.
+- [ ] `.env.example` `TAGS_RUNS_ENABLED=false` mit Kommentar (Freigabe erst, wenn die
+      Bereitschaftsprüfung aus `docs/Operations.md` leer ist); beide Compose-Dateien
+      `Tags__RunsEnabled=${TAGS_RUNS_ENABLED:-false}` am **api**-Dienst.
 - [ ] `docs/Operations.md`: Abschnitt „Emote tags: enabling play-in and removal runs" —
-      Reihenfolge Migration → beide Images → Vollsync-Logzeile abwarten → Flag → Stack-Update;
-      Hinweis auf Uhr-Annahme (12.4) und 30-min-Fenster als Konstante; Satz in „Data retention"
-      zu den sechs Tabellen.
+      Reihenfolge Migration → beide Images → **Bereitschaftsprüfung** → Flag → Stack-Update.
+      Die Prüfung (Codex-Befund 9; es gibt keine Resync-Zusammenfassung im Log, Plan 0) ist eine
+      `psql`-Abfrage über `"Channels"`, die der Betreiber über den Tunnel ausführt: alle Zeilen mit
+      `"IsBotActive" = true`, deren `"LastSyncedAtUtc"` **vor** dem Startzeitpunkt des neuen
+      Worker-Containers liegt oder `NULL` ist **oder** deren `"LastSyncFailureReason"` nicht
+      `NULL` ist — die Antwort muss **leer** sein. Den Startzeitpunkt liest der Betreiber aus
+      Portainer bzw. `docker inspect` des Worker-Containers (`State.StartedAt`) und setzt ihn als
+      Parameter ein; die Abfrage steht als fertiger Befehl mit Platzhalter im Abschnitt, mit dem
+      Satz, warum nur dieser Nachweis zählt (die Boot-Recovery gibt ihr Gate auch nach Fehlern
+      frei; ein Kanal, dessen letzter Vollsync noch vom alten Worker stammt, hätte für seit dem
+      Deploy archivierte Zeilen keine Beobachtungen). Hinweis auf Uhr-Annahme (12.4) und
+      30-min-Fenster als Konstante; Satz in „Data retention" zu den sechs Tabellen; Nachläufer
+      „Loader für getrackte Sets auf die #220-Route" als Satz.
 - [ ] `docs/Architectur.md`: Sync-Absatz um Beobachtungen/Eintrittsstempel ergänzen; Tabelle
       (Task 6 hat die Zeile).
 - [ ] `docs/UI-Designsprache.md`: §7 kurzer Unterabschnitt „Preview-as-confirmation (tag
@@ -802,9 +969,15 @@ CLAUDE.md „Tests" (`page.clock`).
       rev. 4), Glaubwürdigkeit E34 mit 30 min als Konstante; (4) Aktivierung, Übertragung, Sweep,
       Invariante (E26 rev. 3, E7 rev. 2, 13.4/2); (5) Kanalsperre und Sperrreihenfolge (5.5/6,
       13.4/3); (6) Rechte: Kanalfilter + Besitzleiter (E9 rev. 3), geteilte Hilfe; (7) Import-Flow
-      `pinSetId` + Wächter (E29), Foreign-Permit-Kosten (Abweichung 2); (8) dritte/zweite
-      Meldung am Record (E14); (9) Flag in `permissions` (13.4/1) und Rollout 12.5; (10)
-      Restrisiken R1–R4 und 13.2; (11) Worker-Verhalten ohne Quelltextänderung (E15 rev. 2).
+      `pinSetId` + Wächter + No-op-Hook (E29, E26), Foreign-Permit-Kosten hingenommen mit
+      Nachläufer #220-Route (Abweichung 2); (8) dritte/zweite Meldung am Record (E14); (9) Flag
+      in `permissions` (13.4/1) und Rollout 12.5 mit der ausführbaren Bereitschaftsprüfung statt
+      einer Logzeile; (10) Restrisiken R1–R4 und 13.2; (11) Worker-Verhalten ohne
+      Quelltextänderung (E15 rev. 2); (12) FK Platzierung → Eintrag (Festlegung 5.3 gekippt) und
+      die Kanalsperre bei jeder Tag-Mutation; (13) Beobachtungen als atomarer `GREATEST`-Upsert in
+      einer expliziten Transaktion je Speicherversuch, unabhängig vom Archivübergang, mit
+      Nachbetrachtung nach dem Fenster (Spec 3.1 „keine explizite Transaktion" ist damit
+      überholt); (14) Dock-Vertrag der Tags-Seite (`tagRunDockHasContent`, drei Sections).
 - [ ] Ein Commit: `docs: record tag runs, placements and the leave observation rule`.
 
 ### Task 16 — Gates, Live-Verifikation, Migration und Rollout vorbereiten, Zweitmeinung, PR
@@ -834,10 +1007,15 @@ CLAUDE.md „Tests" (`page.clock`).
 - [ ] Prod-Migration vorbereiten (nicht ausführen): Tunnel, `migrations list` (erwartet genau
       `AddEmoteTagPlacements (Pending)`), `database update`, `list`; Platzhalter `<PROD-PW>`.
 - [ ] Rollout-Checkliste für den Betreiber (12.5): 1. Migration; 2. Api- **und** Worker-Image
-      zusammen (Portainer), `TAGS_RUNS_ENABLED` noch `false`; 3. Worker-Log: erste
-      Resync-Zusammenfassung nach dem Start abwarten (ein Vollsync aller Kanäle); 4.
-      `TAGS_RUNS_ENABLED=true` in der `.env`, Stack-Update (Api); 5. Probe: `GET /api/channels/<eigener>/permissions`
-      zeigt `tagRunsEnabled: true`.
+      zusammen (Portainer), `TAGS_RUNS_ENABLED` noch `false`; 3. **Bereitschaftsprüfung** aus
+      `docs/Operations.md` (Task 15): Startzeitpunkt des neuen Worker-Containers ablesen, die
+      `psql`-Abfrage über den Tunnel mit diesem Zeitpunkt ausführen — erst wenn sie **keine**
+      Zeile liefert (jeder aktive Kanal seit dem Start voll synchronisiert, kein
+      `LastSyncFailureReason`), weiter; liefert sie Zeilen, warten bzw. die genannten Kanäle
+      ansehen; 4. `TAGS_RUNS_ENABLED=true` in der `.env`, Stack-Update (Api); 5. Probe:
+      `GET /api/channels/<eigener>/permissions` zeigt `tagRunsEnabled: true`. Der Umsetzer
+      bereitet die Befehle vor (Platzhalter für Passwort und Zeitpunkt), ausgeführt werden sie vom
+      Betreiber.
 - [ ] Codex Sol (Regel 22) aus dem Worktree, `--scope branch --base origin/main` in **einem**
       String, Diff-Gegenprobe vorher; Findings unverändert vorlegen; Widerspruch Opus ↔ Sol →
       Fable mit den strittigen Findings. (12.6 nennt zusätzlich den adversarialen Review **vor**
@@ -855,7 +1033,12 @@ Merge beim Nutzer; Flag in Prod bleibt `false` bis Schritt 3 der Checkliste.
 | Spec-Stelle | Task |
 |---|---|
 | 5.3 `EmoteTagPlacement`, 5.4 Aktivierung/Operation/Beobachtung, `Emote.LastEnteredSetAtUtc` | 1 |
-| 5.5 Regel 2 (Platzierung nur mit Eintrag), Regel 10 (Upsert überschreibt) | 4 |
+| 5.5 Regel 2 (Platzierung nur mit Eintrag — jetzt per FK), Regel 10 (Upsert überschreibt); E17 | 1, 4, 5 |
+| 5.3 Festlegung „kein FK auf Entry" (gekippt, Plan 0) | 1 |
+| 3.1/E34: Beobachtung unabhängig vom Archivübergang, Nachbetrachtung nach dem Fenster, atomarer Upsert, explizite Transaktion | 2 |
+| 7.1/5–6, E26: erfolgreicher No-op auch nach der letzten Duplikatprüfung (`onNothingToImport`) | 8, 12 |
+| 9.5 Dock der Tags-Seite: eigener Vertrag, Restore-Section (E13, R1–R4) | 13 |
+| 12.5/3 Freigabe-Nachweis (ausführbare Prüfung statt Logzeile) | 15, 16 |
 | 5.5 Regel 3 (ältester Halter), Regel 4 (Übertragung, Sweep, Invariante), 13.4/2 | 3, 5 |
 | 5.5 Regel 5 (Beobachtung statt Invalidierung, Lese-Zeit-Regel, Uhr), E34, 13.4/4 | 2, 3 |
 | 5.5 Regel 6 (Kanalsperre, Sperrreihenfolge, Retry-Regel), 13.4/3 | 4, 5, 6 |
@@ -880,15 +1063,28 @@ Merge beim Nutzer; Flag in Prod bleibt `false` bis Schritt 3 der Checkliste.
 | 13.2 Restore ohne Platzierung, Hinweistext | 9 |
 | 13.1 R1–R4 | 15 (DECISIONS), 16 (PR) |
 
-## 6. Offene Punkte für den Betreiber
+## 6. Betreiberentscheidungen und offene Punkte
 
-1. **Vierter Fehlercode `tag_operation_kind_invalid`** für einen ungültigen `kind` im
-   Registrier-Body (Plan 3.3). Die Spec kennt drei Codes; die Alternative — `kind` als 400
-   `tag_operation_id_invalid` mitzubehandeln — verbiegt die Bedeutung des Codes. Empfehlung:
-   vierter Code (eine Zeile in drei Dateien), Task 6/7 setzen ihn um, falls nicht widersprochen.
-2. **Foreign-Permit beim Einspielen** (Abweichung 2): `trackedSet` liest über die Foreign-Route
-   (10/60 s). Für v1 hinnehmen; Nachläufer: Loader für getrackte Sets auf die #220-Route.
-3. **Flag in `permissions`** statt eigenem Config-Endpoint (13.4/1) — Planentscheidung,
+**Entschieden (Betreiber, 2026-10-04):** (1) vierter Fehlercode `tag_operation_kind_invalid`
+(3.3, Task 6/7); (2) Foreign-Permit-Kosten beim Einspielen hingenommen, Nachläufer „Loader für
+getrackte Sets auf die #220-Route" in DECISIONS/Operations (Plan 0, Task 15); (3) T-A: der
+Restore-Einstieg wandert in die `DeleteProgressSection` (dort entschieden).
+
+**Durch die adversariale Zweitmeinung (Codex Sol) geändert — zur Kenntnis, kippbar nur mit
+Ersatzlösung:** FK Platzierung → Eintrag (Festlegung 5.3 der Spec gekippt, 3.1); explizite
+Transaktion je Speicherversuch an den drei Beobachtungsstellen (Spec 3.1 beschreibt den Ist-Zustand
+ohne; 3.4 begründet, warum die Deadlock-Analyse hält); Beobachtung unabhängig vom
+Archivübergang mit Nachbetrachtung (3.4); `tagRunDockHasContent` und drei Sections (3.8);
+No-op-Hook im Import-Flow (3.6).
+
+**Offen (echt):**
+
+1. **Flag in `permissions`** statt eigenem Config-Endpoint (13.4/1) — Planentscheidung,
    kippbar ohne Folgen für die anderen Tasks (nur Task 6 und 7).
-4. **Beobachtung bei `MarkDeletedInSetAsync` für jede gefundene Zeile**, nicht nur für
-   geänderte (Plan 0): fail-safe-Richtung; bestätigen.
+2. **Beobachtung für jede ID in `PulledIds`, auch ohne Zeile, und bei `MarkDeletedInSetAsync`
+   für jede gefundene Zeile** (3.4): fail-safe-Richtung, kostet je Fall eine Upsert-Zeile; bitte
+   bestätigen.
+3. **Nachbetrachtung „einmal je Eintrittsperiode"** (3.4/b2): die Alternative — bei jedem
+   REST-Durchlauf stempeln — würde Gegenbeispiel 8 brechen; die gewählte Regel lässt eine echte
+   Entfernung innerhalb des Fensters bei ausgefallener EventAPI erst **nach** dem Fenster sichtbar
+   werden (R1, unverändert). Bitte bestätigen, dass R1 damit weiter getragen wird.

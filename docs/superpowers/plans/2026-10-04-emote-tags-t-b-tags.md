@@ -196,14 +196,24 @@ Serviceregeln:
   übersprungene) > 1000` → `EntryLimitReached`, nichts geschrieben; unarchivierte Zeilen zu den IDs
   laden; ohne Zeile → `SkippedNotInSetIds` (Eingabereihenfolge); bestehender Eintrag →
   `AlreadyTaggedCount`; Rest anlegen mit `Alias = Emote.Name`, `ImageUrl = Emote.ImageUrl`,
-  `AddedAtUtc = UtcNow`. Unique-Verstoß durch parallelen Zuweiser → als `AlreadyTagged` zählen
-  (Fang `DbUpdateException` auf dem PK, einmal erneut lesen). Kein Audit (6.3 Festlegung). Keine
-  Kanalsperre (nur Tag-Tabellen, kein Zähler-Vertrag außer dem Limit — das Limit wird deshalb mit
-  einem zweiten `Count` **nach** dem Insert abgesichert: liegt es über 1000, Transaktion
-  zurückrollen und `EntryLimitReached`; das ist der billigere Weg gegenüber einer Sperre je
-  Zuweisung). **Festlegung des Plans**, in DECISIONS zu nennen.
-- **RemoveEntries** (E17): Einträge löschen (*T-C: plus alle Platzierungen `(tagId, id, ·)`*),
-  `RemovedCount` = tatsächlich gelöschte. Unbekannte IDs sind kein Fehler.
+  `AddedAtUtc = UtcNow`. Kein Audit (6.3 Festlegung). **Unter der Kanalsperre** wie Create/
+  Rename/Delete: Transaktion → `LoadChannelForUpdateAsync` → Tag laden → Zählen → Schreiben →
+  Commit. Die Sperre ist der Vertrag für das Limit: unter `READ COMMITTED` enforced ein Count
+  nach dem Insert E20 **nicht** (999 Einträge, zwei gleichzeitige disjunkte Zuweisungen je 1 →
+  beide zählen 1000, beide committen, 1001 — Codex-Befund 6; die erste Fassung dieses Plans hatte
+  das falsch). Mit der Sperre sieht der zweite Zuweiser den Stand des ersten; ein Unique-Verstoß
+  auf dem PK ist damit nicht mehr möglich und wird nicht mehr gesondert gefangen. Preis: jede
+  Zuweisung wartet hinter einem laufenden Vollsync-`UPDATE` der Kanalzeile (Millisekunden) und
+  umgekehrt — die Sperrreihenfolge aus Spec 5.5 Regel 6 (Kanalzeile zuerst, danach nur
+  Tag-Tabellen) gilt auch hier, ein Zyklus ist ausgeschlossen. Das 50-Tag-Limit in `CreateAsync`
+  steht aus demselben Grund unter derselben Sperre (war schon so geplant).
+- **RemoveEntries** (E17): **ebenfalls unter der Kanalsperre** (Transaktion →
+  `LoadChannelForUpdateAsync` → Einträge löschen → Commit; *T-C löscht im selben Schritt alle
+  Platzierungen `(tagId, id, ·)` bzw. lässt sie per FK kaskadieren — s. T-C 3.1/3.3*),
+  `RemovedCount` = tatsächlich gelöschte. Unbekannte IDs sind kein Fehler. Die Sperre schon in T-B,
+  damit T-C nur die Löschmenge erweitert und nicht die Sperrstrategie ändert: eine Ausräum-Meldung
+  (T-C), die unter der Kanalsperre Einträge liest und danach Platzierungen schreibt, darf von
+  einem Herausnehmen nicht überholt werden (Codex-Befund 3).
 - **Leseroute Entries**: Reihenfolge `AddedAtUtc`, dann `SevenTvEmoteId` (deterministisch);
   `CurrentName = Emote.Name`, wenn `InSet`, sonst `null`.
 - Audit-Zeilen tragen `ChannelName` als Snapshot-String und `TargetType = "emoteTag"`,
@@ -366,9 +376,10 @@ Registrierung `AddScoped<IEmoteTagService, EmoteTagService>()`.
 
 - [ ] Interface mit Records und Status-Enums nach 3.1; Kommentar am Interface: Set-Auflösung,
       Bedeutung `null` bei `InSetCount`/`InSet`, dass T-C Felder additiv ergänzt.
-- [ ] Implementierung nach den Serviceregeln in 3.1; Klassenkommentar nennt Sperrstrategie
-      (Kanalsperre bei Create/Rename/Delete, keine bei Entries) und die Limit-Absicherung über den
-      zweiten Count.
+- [ ] Implementierung nach den Serviceregeln in 3.1; Klassenkommentar nennt die Sperrstrategie
+      (Kanalsperre bei **jeder** Mutation — Create/Rename/Delete/AddEntries/RemoveEntries — als
+      Vertrag für beide Limits und für die Reihenfolge gegenüber den T-C-Meldungen; Lesen ohne
+      Sperre).
 - [ ] Tests (Testcontainers, Muster `EmoteServiceTests`): Anlegen (Name getrimmt gespeichert,
       Normalform; Duplikat groß/klein/getrimmt → `NameTaken`; 40 ok / 41 → `NameInvalid`;
       Steuerzeichen; 50 ok / 51 → `LimitReached`; fremder Kanal → `ChannelNotFound`); Umbenennen
@@ -381,8 +392,15 @@ Registrierung `AddScoped<IEmoteTagService, EmoteTagService>()`.
       (`RemovedCount`, unbekannte IDs toleriert); Lesen (Zähler `EntryCount`/`InSetCount`;
       `IsActiveSet` mit/ohne Parameter; `InSetCount == null` bei fremdem `emoteSetId`; Kanal ohne
       aktives Set → `EmoteSetId == null`); Entries-Reihenfolge `AddedAtUtc`; `CurrentName` nur bei
-      `InSet`. **Zwei Transaktionen:** paralleler `CreateAsync` mit gleichem Namen (Tagged
-      DbContext aus `PostgresLockProbe`) → genau ein `Ok`, einer `NameTaken`.
+      `InSet`. **Zwei Transaktionen** (Tagged DbContexts aus `PostgresLockProbe`, der zweite
+      Aufruf startet, während der erste die Kanalsperre hält, und wird nach dessen Commit
+      freigegeben): (a) paralleler `CreateAsync` mit gleichem Namen → genau ein `Ok`, einer
+      `NameTaken`; (b) 49 Tags, zwei parallele `CreateAsync` mit verschiedenen Namen → ein `Ok`,
+      einer `LimitReached`, Count = 50; (c) 999 Einträge, zwei parallele `AddEntriesAsync` mit je
+      einer **disjunkten** ID → ein `Ok`, einer `EntryLimitReached`, Count = 1000; (d) 998
+      Einträge, dieselben zwei Aufrufe → beide `Ok`, Count = 1000; (e) `RemoveEntriesAsync`
+      parallel zu `AddEntriesAsync` derselben ID → serialisiert, Endzustand entspricht der
+      Commit-Reihenfolge (kein Fehler, keine Duplikatzeile).
 - [ ] Gates: `dotnet test`, `dotnet format`. Ein Commit:
       `feat(infra): add EmoteTagService for channel tags and tag entries`.
 
@@ -646,15 +664,16 @@ channel, tagId, entries)`, `mockTagMutations(page, channel)` mit Body-Aufzeichnu
 
 **Modell:** sonnet. **Kontext:** `docs/DECISIONS.md:1-15`, `docs/UI-Designsprache.md` §8.1, §8.7
 (Referenzen), `docs/Operations.md` (Abschnitt „Data retention" — ein Satz, dass Tags mit dem Kanal
-fallen), Spec 10, 12.4; Plan 3.1 Festlegungen (Limit-Absicherung ohne Sperre, `entries/remove`
-als POST, keine Audit-Zeile fürs Zuweisen).
+fallen), Spec 10, 12.4; Plan 3.1 Festlegungen (Kanalsperre für jede Mutation als Limit-Vertrag,
+`entries/remove` als POST, keine Audit-Zeile fürs Zuweisen).
 
 - [ ] DECISIONS-Eintrag oben (englisch), Titel
       `### <Commit-Datum> — Channel-bound emote tags: tables, service, endpoints, filter and page (#201 T-B)`,
       `**Betrifft:**` die Dateien der Karte. Punkte: (1) Tags gehören dem Kanal, kein Ersteller
       (E1) und was sie tragen (10); (2) Schlüssel `SevenTvEmoteId`, kein FK auf `Emote` (E22);
-      (3) Grenzen als Konstanten (E20) und die Limit-Absicherung über den zweiten Count statt
-      Sperre; (4) Rechte Lesen/Pflegen (E9 T-B-Teil), `entries/remove` als POST; (5) Audit nur
+      (3) Grenzen als Konstanten (E20), erzwungen unter der Kanalsperre bei **jeder**
+      Tag-Mutation — mit dem Satz, warum ein Count unter `READ COMMITTED` nicht reicht; (4)
+      Rechte Lesen/Pflegen (E9 T-B-Teil), `entries/remove` als POST; (5) Audit nur
       `tagId` (E30), kein Audit fürs Zuweisen; (6) Merge-Guard und Worker-Rebuild (E15 rev. 2);
       (7) UI-Orte (Filterzeile als Dimension, Dock-Knöpfe konstruktiv, vierter Reiter) mit Verweis
       auf §8.7; (8) was T-C ergänzt (Platzierungsfelder additiv, Flag).
@@ -690,9 +709,10 @@ als POST, keine Audit-Zeile fürs Zuweisen).
       (erwartet: genau `AddEmoteTags (Pending)`), `database update`, erneut `list`. Reihenfolge
       12.5: Migration → **Api- und Worker-Image zusammen** (Portainer) — Worker-Rebuild ist
       Pflicht (EF-Modell-Snapshot, Merge-Guard). Nichts freizugeben (kein Flag in T-B).
-- [ ] **E31:** im PR-Body als Deploy-Voraussetzung: Betreiber prüft die Datenschutzerklärung
-      (außerhalb des Repos) auf „vom Kanal-Manager eingegebene Bezeichner, 180 Tage nach
-      Deaktivierung" und ergänzt sie vor dem Deploy. Kein Repo-Artefakt.
+- [ ] **E31 (Betreiberentscheidung 2026-10-04: Deploy-, nicht Merge-Voraussetzung):** im
+      PR-Body als Deploy-Voraussetzung: Betreiber prüft die Datenschutzerklärung (außerhalb des
+      Repos) auf „vom Kanal-Manager eingegebene Bezeichner, 180 Tage nach Deaktivierung" und
+      ergänzt sie vor dem Deploy. Kein Repo-Artefakt; der Merge wartet nicht darauf.
 - [ ] Codex Sol (Regel 22) aus dem Worktree mit `--scope branch --base origin/main` (Flags in
       **einem** String; Diff-Gegenprobe vorher); Findings unverändert vorlegen; Widerspruch → Fable.
 - [ ] PR gegen `main`: Titel englisch; Body: Umfang (T-B ohne Läufe), Gate-Zahlen, Coverage-
@@ -726,9 +746,13 @@ als POST, keine Audit-Zeile fürs Zuweisen).
 | 12.1 T-B Prüfen/Deploy, 12.3/4+5, 12.5 Schritte 1–2 | 5, 3, 12 |
 | 12.6 Codex vor Merge | 12 |
 
-## 6. Offene Punkte für den Betreiber
+## 6. Betreiberentscheidungen und offene Punkte
 
-1. **Limit 1000 ohne Kanalsperre, Absicherung über zweiten Count** (Plan 3.1) — Alternative wäre
-   die Kanalsperre auch beim Zuweisen; sie kostet jede Zuweisung einen `FOR UPDATE` auf der
-   Kanalzeile, die der Sync parallel schreibt. Empfehlung: wie geplant.
-2. **E31** ist Deploy-, nicht Merge-Voraussetzung — so im PR-Body; bitte bestätigen.
+**Entschieden (Betreiber, 2026-10-04):** E31 ist Deploy-, nicht Merge-Voraussetzung (Task 12).
+
+**Durch die adversariale Zweitmeinung (Codex Sol) gekippt:** die erste Fassung wollte das
+1000er-Limit ohne Kanalsperre über einen zweiten Count absichern; das hält unter
+`READ COMMITTED` nicht (3.1, Befund 6). Jetzt steht jede Tag-Mutation unter der Kanalsperre —
+der Preis ist eine Zeilensperre je Zuweisung, die hinter einem laufenden Sync-`UPDATE` wartet.
+
+**Offen:** keine.

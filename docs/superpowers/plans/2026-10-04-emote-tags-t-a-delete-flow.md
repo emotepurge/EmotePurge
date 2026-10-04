@@ -51,7 +51,7 @@ Reihenfolge mergen). **T-C setzt T-A und T-B voraus** und konsumiert aus T-A gen
 
 | Spec sagt | Code | Folge für diesen Plan |
 |---|---|---|
-| 3.4/9.5: „Fortschritt, Protokoll und Restore-Knopf des Delete stecken im `MassDeletePanel`; der Restore wurde für #253 (T9) in eine eigene `RestoreProgressSection` gezogen" | Teilweise. Die **Anzeige** des Restore-Laufs liegt in `restore-progress-section.ts`; der **Einstieg** (Knopf `restore.button`, `openRestoreConfirm`, `openRestoreConfirmDialog`, `handleRestoreConfirmPreview`, Restore-Latch-Effekt; ca. `mass-delete-panel.ts:730-1065`, `:638-648`) liegt weiter im Panel. `restore-progress-section.ts:14-18` sagt das selbst. | **Abweichung 1:** Der Restore-**Einstieg** wandert mit in die `DeleteProgressSection` (er hängt an `deleteService.lastRun()`, nicht an der Auswahl). Er wird **verschoben, nicht auf `startRestoreFlow` umgebaut** — `restore-flow.ts:~100-110` dokumentiert, dass das Panel die Kette bewusst eigenständig führt; eine Vereinheitlichung wäre eine Verhaltensfrage und ist Nachläufer. |
+| 3.4/9.5: „Fortschritt, Protokoll und Restore-Knopf des Delete stecken im `MassDeletePanel`; der Restore wurde für #253 (T9) in eine eigene `RestoreProgressSection` gezogen" | Teilweise. Die **Anzeige** des Restore-Laufs liegt in `restore-progress-section.ts`; der **Einstieg** (Knopf `restore.button`, `openRestoreConfirm`, `openRestoreConfirmDialog`, `handleRestoreConfirmPreview`, Restore-Latch-Effekt; ca. `mass-delete-panel.ts:730-1065`, `:638-648`) liegt weiter im Panel. `restore-progress-section.ts:14-18` sagt das selbst. | **Abweichung 1:** Der Restore-**Einstieg** wandert mit in die `DeleteProgressSection` (er hängt an `deleteService.lastRun()`, nicht an der Auswahl). Er wird **verschoben, nicht auf `startRestoreFlow` umgebaut** — `restore-flow.ts:~100-110` dokumentiert, dass das Panel die Kette bewusst eigenständig führt; eine Vereinheitlichung wäre eine Verhaltensfrage und ist Nachläufer. **Vom Betreiber bestätigt (2026-10-04).** Die Kette liest drei Host-Dinge, die nicht am Lauf hängen: `hostSelectedSetId: this.setId()` (`:831`), daraus `foreignToView` (`:990`), und `emoteAdminService` für die Slot-Vorschau (`:969`) — die Section braucht deshalb einen Input `hostSelectedSetId` und die Injektion von `EmoteAdminService` (3.2). Die Kanal-Identität nimmt sie dagegen aus dem Lauf (`run.channelName`, Festlegung 13 des #256-Plans, Kommentare `:765`, `:822`), nicht vom Host. |
 | 9.5: „`usageStatsLeaveGuard` → seitenneutraler `sevenTvRunLeaveGuard` … der Guard liest nur den Arbiter" | Falsch: `features/usage-stats/usage-stats-leave.guard.ts:46-47` liest `SevenTvImportService.isRunning()` und `SevenTvUndoService.isRunning()`; den Arbiter berührt er nicht, Delete/Restore fragen nie (Kommentar `:16-18`: der Arbiter-Unload-Guard deckt den Tab). | **Abweichung 2:** Umbenennen und verschieben **ohne** Verhaltensänderung; der Guard liest weiterhin die zwei Services. Er zieht nach `shared/seven-tv/`, **nicht** nach `core/` — er öffnet `shared/ui/confirm-dialog`, und `core/` darf nichts aus `shared/` importieren (Schichtentabelle). |
 | 9.5: „Beide Hostseiten mounten die Section **unter** dem Panel" | Alle E2E-Zugriffe auf Fortschritt, „Schließen", „Abbrechen", „Erneut melden", „Protokoll herunterladen" sind auf `page.locator('app-mass-delete-panel')` gescopet (`web/e2e/emote-import.e2e.spec.ts:2540, 2915`, dazu `:3122`); die Vote-Detail-Seite hält das Panel hinter einem eigenen `@if`-Gate (`vote-session-detail-page.html:172-185`), die Restore-Section bewusst **außerhalb** (`:193-195`). Eine Geschwister-Section würde beide Verträge ändern. | **Abweichung 3:** Das **Panel** mountet die Section in seiner eigenen Vorlage an der Stelle des heutigen Fortschrittsblocks (DOM-Verschachtelung bleibt, Gates der Hostseiten bleiben, E2E-Locator bleiben). Die Tags-Seite (T-C) mountet `app-delete-progress-section` **standalone** — dafür ist die Section eigenständig. Hostseiten werden in T-A **nicht** angefasst. |
 | 12.1: „bestehende Specs/E2E unverändert grün" | `mass-delete-panel.spec.ts` (4.584 Zeilen) treibt verschobene Member teils über die Komponenteninstanz (`openProtocolExport`, Restore-Kette) statt über das DOM. | **Abweichung 4 (Präzisierung):** E2E bleibt byte-unverändert. Vitest: **Erwartungen** bleiben wörtlich, aber die Fälle, die einen verschobenen Member über die Instanz treiben, wechseln das Fixture (Section statt Panel) und ziehen in `delete-progress-section.spec.ts`. Fälle, die über das DOM gehen, bleiben im Panel-Spec, weil die Section darin gerendert wird. |
@@ -182,9 +182,20 @@ Nicht angefasst: `usage-stats-page.html/.ts`, `vote-session-detail-page.html/.ts
 ### 3.2 `DeleteProgressSection`
 
 - Selector `app-delete-progress-section`, Imports `Button`, `RunProgressPanel`, `TranslocoPipe`.
-  **Keine Inputs.** Injiziert `deleteService`, `restoreService`, `arbiter`, `tokenService`,
-  `emoteSetService`, `httpClient`, `dialog`, `destroyRef`, `translocoService` — die Teilmenge, die
-  der verschobene Code heute braucht.
+  **Genau ein Input:** `hostSelectedSetId = input.required<string | null>()` — das Set, das die
+  Hostseite **gerade zeigt**. Die Restore-Kette braucht es für `ResolvedRestoreTarget.hostSelectedSetId`
+  (`mass-delete-panel.ts:831`, heute `this.setId()`) und damit für `foreignToView` (`:990`): „der
+  Lauf lief in einem anderen Set als dem, das du gerade siehst" ist eine Aussage über die
+  Host-Ansicht, die das eingefrorene Set des Laufs **nicht** ersetzen kann. Das Panel bindet
+  `[hostSelectedSetId]="setId()"`, die Tags-Seite (T-C) `activeEmoteSetId()`. Keine weiteren
+  Inputs: der Rest der Kette liest den Lauf (`deleteService.lastRun()`, `run.channelName`,
+  `run.setId`). Injiziert `deleteService`, `restoreService`, `arbiter`, `tokenService`,
+  `emoteSetService`, **`emoteAdminService`** (Slot-Vorschau `loadRestoreSlotPreview`, `:969`),
+  `httpClient`, `dialog`, `destroyRef`, `translocoService` — die Teilmenge, die der verschobene
+  Code heute braucht. Task 2 scannt den verschobenen Bereich (`:638-648`, `:685-1065`) vor dem
+  Umzug auf **jeden** `this.<input>()`-Zugriff; findet er einen weiteren, wird er als zweiter
+  Input mit derselben Begründung aufgenommen (und im Commit-Body genannt), nicht aus dem Lauf
+  ersetzt.
 - Output `notice = output<DeleteAbortNotice | null>()`: die Restore-Kette setzt heute
   `abortNotice` des Panels (Blockgründe `restore.errors.*`, Refused-Start-Notiz). Sie emittiert
   stattdessen; `null` heißt „leeren" (heute: Leeren beim Start des nächsten Versuchs). Das Panel
@@ -209,7 +220,8 @@ Nicht angefasst: `usage-stats-page.html/.ts`, `vote-session-detail-page.html/.ts
 
 ### 3.3 `MassDeletePanel` nach dem Umbau
 
-- Vorlage: Aktionszeile, Status-Paar, dann `<app-delete-progress-section (notice)="abortNotice.set($event)" />`
+- Vorlage: Aktionszeile, Status-Paar, dann
+  `<app-delete-progress-section [hostSelectedSetId]="setId()" (notice)="abortNotice.set($event)" />`
   an der Stelle des alten Blocks — als Kind des `div.flex.flex-col.gap-3`. Das Host-Element der
   Section ist ein Block-Element ohne eigene Maße; der innere Flow-Inhalt bleibt ein Flex-Kind. Die
   Section rendert nichts, wenn weder Lauf noch Queue existieren, also entsteht **kein** leerer
@@ -321,17 +333,26 @@ syncReportReason/rateLimitPauseSeconds/cancel/reset/retrySyncReport`,
 `SevenTvRestoreService.startRestore/restorePreCheckPending/startCheckPending/isRunning/queue`,
 `loadRestoreSlotPreview`, `openRestoreConfirmDialog`, `restoreStartTarget`, `ResolvedRestoreTarget`,
 `filterAlreadyPresent*`, `buildPurgeRunProtocol`/`purgeRunCsv`/`purgeRunJson`/`purgeRunFilename`,
-`openExportDialog`, `downloadFile`, aus Task 1 `refusedStartNotice`, `DeleteAbortNotice`.
-**Produziert:** `DeleteProgressSection` (Selector `app-delete-progress-section`, Output `notice`).
+`openExportDialog`, `downloadFile`, `EmoteAdminService` (über `loadRestoreSlotPreview`), aus
+Task 1 `refusedStartNotice`, `DeleteAbortNotice`.
+**Produziert:** `DeleteProgressSection` (Selector `app-delete-progress-section`, Input
+`hostSelectedSetId: string | null` (required), Output `notice`).
 
-- [ ] Section anlegen (Vorlage und Member nach 3.2, Code verschieben). Kopfkommentar: Herkunft,
+- [ ] Vor dem Umzug den Bereich `:638-648` und `:685-1065` auf Host-Abhängigkeiten scannen
+      (`this.setId()`, `this.channelName()`, `this.activeSetId()`, `this.setName()`,
+      `this.selectedEmotes()`, injizierte Services); erwartet: `setId()` (`:831`) und
+      `emoteAdminService` (`:969`), sonst nichts — jede weitere Fundstelle wird nach 3.2
+      behandelt und im Commit-Body genannt.
+- [ ] Section anlegen (Vorlage und Member nach 3.2, Code verschieben; Input `hostSelectedSetId`
+      ersetzt `this.setId()` an `:831`). Kopfkommentar: Herkunft,
       warum der Restore-**Einstieg** hier liegt (er hängt am letzten Lösch-Lauf, nicht an der
       Auswahl), warum die Latches im Panel bleiben (Host-Outputs), warum `notice` ein Output ist
       (die Status-Region gehört dem Host — Panel oder Tags-Seite), und dass die Tags-Seite (T-C)
       die Section ohne Panel mountet.
 - [ ] `protocolSaved`-Reset als eigener Effekt in der Section (3.2); Effekt 1 im Panel verliert
       nur diese eine Zeile.
-- [ ] Panel: Block `:268-329` durch `<app-delete-progress-section (notice)="abortNotice.set($event)" />`
+- [ ] Panel: Block `:268-329` durch
+      `<app-delete-progress-section [hostSelectedSetId]="setId()" (notice)="abortNotice.set($event)" />`
       ersetzen; nicht mehr gebrauchte Imports/Injektionen entfernen; `imports` um die Section
       ergänzen.
 - [ ] Spec-Umzug nach Regel „Erwartungen unverändert, Fixture wechselt": Fälle, die
@@ -340,7 +361,12 @@ syncReportReason/rateLimitPauseSeconds/cancel/reset/retrySyncReport`,
       Assertions, Fixture = Section mit denselben Service-Mocks); Fälle, die über das DOM gehen,
       bleiben im Panel-Spec und müssen grün bleiben, weil die Section darin gerendert wird. Zwei
       neue Fälle für den Output: Restore-Kette blockiert → `notice` emittiert die
-      `restore.errors.*`-Notiz; nächster Versuch → `notice` emittiert `null` zuerst.
+      `restore.errors.*`-Notiz; nächster Versuch → `notice` emittiert `null` zuerst. Die Fälle
+      des Blocks `:3322` („Restore-confirm path resolves target fresh …"), die
+      `hostSelectedSetId`/`foreignToView` prüfen, laufen in der Section mit gesetztem Input;
+      **ein neuer Fall:** ein beendeter Lauf aus Set A, Input wechselt auf Set B → der Restore-
+      Dialog bekommt `foreignToView: true` (Fremd-Set-Warnung), Input zurück auf A → `false` —
+      der Beweis, dass die Host-Ansicht und nicht das eingefrorene Lauf-Set die Warnung steuert.
 - [ ] Panel-Spec, neuer Fall: eine über `notice` gemeldete Notiz steht in der **permanenten**
       `role="status"`-Region des Panels (Rolle + Text, nicht die Klasse) — der Beweis, dass der
       Ort der Ansage gleich geblieben ist.
@@ -448,10 +474,14 @@ CLAUDE.md „Fertig heißt" und „Tests".
 | 12.3/1 | gesamter Plan |
 | 12.6 „Vor jedem Merge `/codex:review`" | Task 4 |
 
-## 6. Offene Punkte für den Betreiber
+## 6. Betreiberentscheidungen und offene Punkte
 
-1. **Restore-Einstieg wandert mit** (Abweichung 1) — bestätigen; Alternative wäre, den Einstieg
-   im Panel zu lassen, dann hätte die Tags-Seite nach einem Ausräumen keinen
-   „Wiederherstellen"-Knopf (13.2 sagt ohnehin, dass ein Restore keine Platzierung erzeugt).
-2. **Mount-Ort im Panel statt als Geschwister** (Abweichung 3) — bestätigen; ändert für T-C
-   nichts, weil die Tags-Seite die Section ohnehin standalone mountet.
+**Entschieden (Betreiber, 2026-10-04):** Der Restore-Einstieg wandert in die
+`DeleteProgressSection` — verschoben, nicht neu gebaut (Abweichung 1). Die adversariale
+Zweitmeinung (Codex Sol) ergänzte dazu die Host-Abhängigkeiten `hostSelectedSetId` und
+`EmoteAdminService` (3.2) — ohne sie kompilierte der wörtliche Umzug nicht und verlöre die
+Fremd-Set-Warnung des Restore-Dialogs.
+
+**Offen (klein):** Mount-Ort **im Panel** statt als Geschwister auf den Hostseiten
+(Abweichung 3) — ändert für T-C nichts, weil die Tags-Seite die Section ohnehin standalone
+mountet; Widerspruch bitte vor Task 2.
