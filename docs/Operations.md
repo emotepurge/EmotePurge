@@ -310,9 +310,11 @@ stand:
 "Last activity" is the later of a login and the daily "last seen" stamp `OnValidatePrincipal`
 writes at most once per 24 hours — without it, a user who never logs out again (the session
 cookie slides for 14 days) but never re-authenticates either would look inactive by `LastLogin`
-alone. Active channels and their statistics are never touched. A channel's emote tags and their entries (#201) have no period of their own: they go with the channel's purge, through the foreign-key cascades. These periods are deliberately
-**not configurable** — a privacy policy quotes them (issue #247), and an environment variable
-that could silently change one would turn that text into a lie. What is configurable is only
+alone. Active channels and their statistics are never touched. A channel's emote tags and
+their entries (#201) have no period of their own: they go with the channel's purge, through
+the foreign-key cascades. These periods are deliberately **not configurable** — a privacy
+policy quotes them (issue #247), and an environment variable that could silently change one
+would turn that text into a lie. What is configurable is only
 whether the job writes and how often it runs (below).
 
 **Migration backfill.** The migration that introduced `LastSeenAtUtc` and `DeactivatedAtUtc`

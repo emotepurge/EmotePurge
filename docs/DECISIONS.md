@@ -12,7 +12,48 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
-**Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/UI-Designsprache.md` · `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Entities/EmoteTag.cs` · `src/EmotePurge.Core/Entities/EmoteTagEntry.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteIdValidation.cs` · `src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTags*.cs` · `src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` · `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` · `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `tests/EmotePurge.Api.Tests/ApiFactory.cs` · `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` · `tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` · `tests/EmotePurge.Api.Tests/EmoteTagEndpointsTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagNameTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Unit/SevenTvEmoteIdValidationTests.cs` · `web/e2e/audit/ui-audit.audit.ts` · `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` · `web/e2e/usage-atlas.e2e.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/src/app/app.routes.ts` · `web/src/app/core/audit/audit.model.ts` · `web/src/app/core/i18n/api-error.ts` · `web/src/app/core/layout/wide-viewport.service.spec.ts` · `web/src/app/core/layout/wide-viewport.service.ts` · `web/src/app/core/tags/emote-tag.model.ts` · `web/src/app/core/tags/emote-tag.service.spec.ts` · `web/src/app/core/tags/emote-tag.service.ts` · `web/src/app/features/channel-workspace/channel-workspace-layout.spec.ts` · `web/src/app/features/channel-workspace/channel-workspace-layout.ts` · `web/src/app/features/tags/tag-name-dialog.spec.ts` · `web/src/app/features/tags/tag-name-dialog.ts` · `web/src/app/features/tags/tags-page.html` · `web/src/app/features/tags/tags-page.spec.ts` · `web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags.routes.spec.ts` · `web/src/app/features/tags/tags.routes.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/shared/audit/audit-actions.spec.ts` · `web/src/app/shared/audit/audit-actions.ts` · `web/src/app/shared/audit/audit-row.spec.ts` · `web/src/app/shared/emotes/emote-usage-filter.spec.ts` · `web/src/app/shared/emotes/emote-usage-filter.ts` · `web/src/app/shared/tags/tag-assign-dialog.spec.ts` · `web/src/app/shared/tags/tag-assign-dialog.ts` · `web/src/app/shared/tags/tag-name-field.spec.ts` · `web/src/app/shared/tags/tag-name-field.ts` · `web/src/styles.css`
+**Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·
+`docs/UI-Designsprache.md` · `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` ·
+`src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Entities/EmoteTag.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagEntry.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
+`src/EmotePurge.Core/SevenTv/SevenTvEmoteIdValidation.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTags*.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` ·
+`tests/EmotePurge.Api.Tests/ApiFactory.cs` · `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteTagEndpointsTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagNameTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/SevenTvEmoteIdValidationTests.cs` ·
+`web/e2e/audit/ui-audit.audit.ts` · `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
+`web/e2e/usage-atlas.e2e.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/app.routes.ts` · `web/src/app/core/audit/audit.model.ts` ·
+`web/src/app/core/i18n/api-error.ts` · `web/src/app/core/layout/wide-viewport.service.spec.ts` ·
+`web/src/app/core/layout/wide-viewport.service.ts` · `web/src/app/core/tags/emote-tag.model.ts` ·
+`web/src/app/core/tags/emote-tag.service.spec.ts` · `web/src/app/core/tags/emote-tag.service.ts` ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.spec.ts` ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` ·
+`web/src/app/features/tags/tag-name-dialog.spec.ts` · `web/src/app/features/tags/tag-name-dialog.ts` ·
+`web/src/app/features/tags/tags-page.html` · `web/src/app/features/tags/tags-page.spec.ts` ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags.routes.spec.ts` ·
+`web/src/app/features/tags/tags.routes.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/shared/audit/audit-actions.spec.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
+`web/src/app/shared/audit/audit-row.spec.ts` ·
+`web/src/app/shared/emotes/emote-usage-filter.spec.ts` ·
+`web/src/app/shared/emotes/emote-usage-filter.ts` ·
+`web/src/app/shared/tags/tag-assign-dialog.spec.ts` · `web/src/app/shared/tags/tag-assign-dialog.ts` ·
+`web/src/app/shared/tags/tag-name-field.spec.ts` · `web/src/app/shared/tags/tag-name-field.ts` ·
+`web/src/styles.css`
 
 Emote tags (#201) are two new tables, added by the purely additive migration `AddEmoteTags`
 (no existing table is touched):
@@ -116,7 +157,7 @@ or tag drops the old keys. The select sits in the filter row, before the reset t
 is not rendered at all until the channel has a tag; the chosen tag shows its name, "k in the set · m
 not in the set" and a link to its page. The dock gains two constructive buttons, in this order:
 "Tag zuweisen…" (before the vote button; fine pointer, channel management, the shown set is the
-active set, a selection exists) and "Aus ‚Tag' entfernen (n)" (after the vote button, before the gap
+active set, a selection exists) and "Aus ‚Tag‘ entfernen (n)" (after the vote button, before the gap
 to the delete; only with a tag filter set). n counts only the marked emotes that are actually in the
 tag. At n = 0 the button is disabled and states why beside it (`noneInTag`, referenced by
 `aria-describedby`); while the keys load or a removal is in flight it is disabled without text (a

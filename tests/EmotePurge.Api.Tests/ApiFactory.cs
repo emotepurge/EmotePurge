@@ -105,6 +105,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// </summary>
     public ISevenTvLeaderboardService Leaderboard { get; } = Substitute.For<ISevenTvLeaderboardService>();
 
+    /// <summary>Substituted like <see cref="Emotes"/>: the handlers take it before any filter runs.</summary>
+    public IEmoteTagService EmoteTags { get; } = Substitute.For<IEmoteTagService>();
+
     /// <summary>
     /// Substituted so the sync-imported contract tests can reach the handler at all: every other
     /// case in that group is answered by a filter or a body check short-circuiting before it, but
@@ -112,9 +115,6 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// real implementation would go to Postgres. It is also what lets a test read back the exact
     /// vocabulary and source name the endpoint forwarded (spec F5/AK 12).
     /// </summary>
-    /// <summary>Substituted like <see cref="Emotes"/>: the handlers take it before any filter runs.</summary>
-    public IEmoteTagService EmoteTags { get; } = Substitute.For<IEmoteTagService>();
-
     public IEmoteService Emotes { get; } = Substitute.For<IEmoteService>();
 
     /// <summary>
