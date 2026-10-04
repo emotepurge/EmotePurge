@@ -10,7 +10,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
-### 2026-10-04 — The delete run's surface is its own component; the delete chain is plain functions
+### 2026-10-04 — The delete run surface and its pre-check chain leave MassDeletePanel (#201 T-A)
 
 **Betrifft:** `web/src/app/shared/seven-tv/delete-flow.ts` ·
 `web/src/app/shared/seven-tv/delete-progress-section.ts` ·
@@ -20,10 +20,17 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/shared/seven-tv/seven-tv-run-leave.guard.ts` ·
 `web/src/app/shared/seven-tv/seven-tv-run-leave.guard.spec.ts` ·
 `web/src/app/features/usage-stats/usage-stats-leave.guard.ts` (deleted) ·
-`web/src/app/features/usage-stats/usage-stats-leave.guard.spec.ts` (deleted)
+`web/src/app/features/usage-stats/usage-stats-leave.guard.spec.ts` (deleted) ·
+`web/src/app/features/usage-stats/usage-stats.routes.ts` ·
+`web/src/app/features/usage-stats/usage-stats.routes.spec.ts` ·
+`web/src/app/shared/seven-tv/import-trigger.ts` (comment) ·
+`web/e2e/emote-import.e2e.spec.ts` (comment only) ·
+`docs/UI-Designsprache.md` (§8.7)
 
-The tag page (#201 T-C) needs the delete engine without the selection panel around it. #201 T-A
-splits `MassDeletePanel` in two steps, with no behaviour change:
+The delete run lived inside `MassDeletePanel`: a dock that only exists with the selection panel, and
+a delete run whose confirmation chain was welded to the panel's own dialog call. The tag page
+(#201 T-C) needs the delete engine without the selection panel around it, so neither was reusable.
+#201 T-A splits `MassDeletePanel` in two steps, with no behaviour change:
 
 - **`delete-flow.ts`**: the delete confirmation's pre-check chain (shared set check, confirmation,
   live alias read, start) as plain functions over `DeleteFlowDeps`/`DeleteFlowRequest`, following
@@ -55,6 +62,10 @@ shared-set warning, used to be panel fields and are now created per dialog open 
 This closes a reachable race: cancel dialog A while its `getSetWarning` is still pending, reopen as
 dialog B, and A's late answer used to overwrite B's warning state. Nothing else outside the chain
 ever read the two fields.
+
+**Follow-ups, outside T-A.** (a) Unify the section's restore entry onto `startRestoreFlow`. (b) Put
+delete and restore runs into the leave guard; today it covers only import and undo, which is the
+unchanged status quo and recorded here as such, not as a decision that they need no guard.
 
 **The leave guard is page-neutral.** `usageStatsLeaveGuard` moved to `shared/seven-tv/` as
 `sevenTvRunLeaveGuard`, with no behaviour change: it still reads `SevenTvImportService.isRunning()`
