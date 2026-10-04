@@ -272,6 +272,8 @@ const SELECTION_PRUNED_FEEDBACK_MS = 4000;
 // notice short (or be cut short by one).
 const TAG_FEEDBACK_MS = 4000;
 
+const TAG_NOT_FOUND_KEY = 'errors.api.tag_not_found';
+
 /**
  * The status message after the assign dialog closed with a result (spec 7.0 step 4): one tag names
  * it ("3 Emotes zu Stronghold hinzugefügt"), several are counted ("… zu 3 Tags"); emotes the server
@@ -2339,6 +2341,18 @@ export class UsageStatsPage {
       }
     });
 
+    // The chosen tag was deleted elsewhere: its entries answer 404 — reload the list so the dead
+    // tag is dropped (the reconciliation below), the way the tags page does.
+    effect(() => {
+      const loadError = this.tagFilterEntriesResource.error();
+      if (
+        loadError instanceof HttpErrorResponse &&
+        apiErrorTranslationKey(loadError) === TAG_NOT_FOUND_KEY
+      ) {
+        untracked(() => this.tagsResource.reload());
+      }
+    });
+
     // A chosen tag the loaded list does not name — deleted meanwhile, or carried over from the
     // previous channel (the filter outlives a channel switch) — is dropped from the filter rather
     // than left narrowing the grid with a select that can no longer show it. Only against a list
@@ -2905,7 +2919,13 @@ export class UsageStatsPage {
         },
         error: (error: HttpErrorResponse) => {
           if (channelName === this.channelName()) {
-            this.tagRemovalErrorKey.set(apiErrorTranslationKey(error));
+            const key = apiErrorTranslationKey(error);
+            this.tagRemovalErrorKey.set(key);
+            // The tag is gone on the server: the list reload drops it from the select (and, via
+            // the reconciliation effect, from the filter).
+            if (key === TAG_NOT_FOUND_KEY) {
+              this.tagsResource.reload();
+            }
           }
         },
       });

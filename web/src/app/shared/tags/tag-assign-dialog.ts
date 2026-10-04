@@ -211,6 +211,9 @@ export class TagAssignDialog {
   }
 
   protected create(name: string): void {
+    if (this.isCreating() || this.isSubmitting()) {
+      return;
+    }
     this.errorKey.set(null);
     this.isCreating.set(true);
     this.tagService.create(this.data.channelName, name).subscribe({

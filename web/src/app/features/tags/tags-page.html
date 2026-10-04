@@ -286,12 +286,31 @@
                   type="button"
                   appButton="neutral"
                   [disabled]="removalPending()"
-                  (click)="removeMarked()"
-                >
-                  {{
+                  [attr.aria-label]="
                     'tags.actions.unassign'
                       | transloco: { tag: tag.name, count: formatCount(markedCount()) }
-                  }}
+                  "
+                  [title]="
+                    ('tags.actions.unassign'
+                      | transloco: { tag: tag.name, count: formatCount(markedCount()) }) +
+                    ' — ' +
+                    ('tags.actions.unassignTitle' | transloco)
+                  "
+                  (click)="removeMarked()"
+                >
+                  <!-- Only the tag's name gives way (up to 40 characters, wider than a 360px
+                       page): the frame stays whole, the full text stays in the accessible name and
+                       the title (as in the usage dock). -->
+                  <span aria-hidden="true" class="inline-flex min-w-0 items-baseline">
+                    <span class="whitespace-pre">{{
+                      'tags.actions.unassignPrefix' | transloco
+                    }}</span>
+                    <span class="max-w-40 truncate">{{ tag.name }}</span>
+                    <span class="whitespace-pre">{{
+                      'tags.actions.unassignSuffix'
+                        | transloco: { count: formatCount(markedCount()) }
+                    }}</span>
+                  </span>
                 </button>
                 <button type="button" appButton="outline" (click)="clearSelection()">
                   {{ 'tags.actions.clearSelection' | transloco }}

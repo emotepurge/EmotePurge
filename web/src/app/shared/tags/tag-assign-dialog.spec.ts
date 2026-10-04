@@ -172,6 +172,18 @@ describe('TagAssignDialog', () => {
     expect(view.confirm().disabled).toBe(false);
   });
 
+  it('sends one create request however often the name is submitted while it is in flight', () => {
+    const view = render();
+    const dialog = view.fixture.componentInstance;
+
+    dialog['create']('Neu');
+    dialog['create']('Neu');
+
+    const req = httpMock.expectOne({ method: 'POST', url: BASE });
+    req.flush({ id: 7, name: 'Neu' });
+    httpMock.verify();
+  });
+
   it('assigns tag by tag in list order and closes with one count over all tags', () => {
     const view = render();
     view.tick(1);

@@ -496,6 +496,18 @@ describe('TagsPage', () => {
       expectEntries(1).flush({ emoteSetId: 'set-a', isActiveSet: true, entries: [entry('e2')] });
     });
 
+    it('the removal button carries the tag name whole in its accessible name', async () => {
+      const { harness } = await openDetail([entry('e1'), entry('e2')]);
+
+      cells(harness)[0].click();
+      await settle(harness);
+
+      const button = buttonByName(harness, 'Aus ‚Stronghold‘ entfernen (1)')!;
+      expect(button.getAttribute('aria-label')).toBe('Aus ‚Stronghold‘ entfernen (1)');
+      // The visible text is the part that may truncate; it is hidden from the accessible name.
+      expect(button.querySelector('[aria-hidden="true"]')).not.toBeNull();
+    });
+
     it('a failed removal shows its reason and keeps the marks', async () => {
       const { harness, page } = await openDetail();
       cells(harness)[0].click();

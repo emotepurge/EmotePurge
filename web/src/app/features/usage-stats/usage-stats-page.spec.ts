@@ -6725,6 +6725,21 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     expect(component['tagErrorKey']()).toBeNull();
   });
 
+  it('reloads the tag list when a removal answers tag_not_found, so the dead tag goes', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    await chooseTag(4, ['7tv-a']);
+    mark('7tv-a');
+
+    component['removeFromTag']();
+    httpMock
+      .expectOne(`${TAGS_URL}/4/entries/remove`)
+      .flush({ errorCode: 'tag_not_found' }, { status: 404, statusText: 'Not Found' });
+    await settle();
+
+    expect(component['tagErrorKey']()).toBe('errors.api.tag_not_found');
+    expect(tagListRequests()).toHaveLength(1);
+  });
+
   it('drops a chosen tag on a channel switch, before the new channel has answered its tag list', async () => {
     await open({ tags: [tag(4, 'Stronghold')] });
     await chooseTag(4, ['7tv-a']);
