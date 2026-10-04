@@ -1,5 +1,7 @@
 # Eine Liste als Auswahl laden (#201, Variante a) — Umsetzungsplan
 
+> **Abgelöst am 2026-10-04 durch [docs/superpowers/specs/2026-10-04-emote-tags-design.md](../specs/2026-10-04-emote-tags-design.md) — das Mod-Team wollte kanalgebundene Tags, keine Datei als Auswahl. Bleibt als Herleitung stehen.**
+
 > **Für ausführende Agenten:** Jeder Task läuft als eigener Subagent mit frischem Kontext
 > (Regel 21). Der Task bekommt diesen Plan, das Konzept
 > `docs/Konzept-Liste-als-Auswahl-2026-10-03.md` und den Issue-Text von #201 samt Kommentar vom

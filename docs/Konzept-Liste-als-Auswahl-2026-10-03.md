@@ -1,5 +1,7 @@
 # Konzept: Eine Liste als Auswahl laden (#201, Variante a) — 2026-10-03
 
+> **Abgelöst am 2026-10-04 durch [docs/superpowers/specs/2026-10-04-emote-tags-design.md](superpowers/specs/2026-10-04-emote-tags-design.md) — das Mod-Team wollte kanalgebundene Tags, keine Datei als Auswahl. Bleibt als Herleitung stehen.**
+
 **Anlass.** Das Mod-Team von HandOfBlood wünscht sich nach dem Aufräumen vom 2026-09-18, „bestimmte Emotes schneller zu entfernen oder hinzuzufügen (z. B. per Purge-Protokoll-Import)". Issue #201 liest daraus zwei Varianten; dieses Konzept gestaltet **nur (a)**: eine Datei (Purge-Protokoll, Emote-Liste, Nutzungs- oder Abstimmungs-Export) wird in das Nutzungsraster **als Auswahl** geladen, und danach wirken die vorhandenen Auswahl-Aktionen — Löschen, Übertragen, Zur Abstimmung stellen, Exportieren. Variante (b), dauerhafte Kategorien, ist ausdrücklich nicht Gegenstand. Basis ist der Stand von `feat/emote-sets-200` (Epic #200), der nach dem 2026-10-08 auf `main` landet.
 
 ## 1. Problem
