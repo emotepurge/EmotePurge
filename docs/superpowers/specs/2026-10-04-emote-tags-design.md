@@ -1,6 +1,6 @@
 # Emote-Tags: kanalgebundene Tags, die ein Set zeitweise erweitern und wieder aufräumen — Spec
 
-**Datum:** 2026-10-04 · **Status:** **Zweite Fassung** — die Entscheidungen E1–E25 des Brainstormings vom 2026-10-04 sind eingearbeitet; die acht Befunde der adversarialen Zweitmeinung (Codex Sol, gpt-6.1-sol, 2026-10-04: vier P1, vier P2) sind mit dem Betreiber entschieden und in E2, E5, E7–E11, E15 (revidiert, markiert „rev. 2") und E26–E32 (neu) umgesetzt; die fünf offenen Punkte der ersten Fassung sind entschieden (Abschnitt 13.0); Restrisiken stehen in 13.1 · **Issue:** #201 (ersetzt die Lesart „Liste als Auswahl", s. [Konzept-Liste-als-Auswahl-2026-10-03.md](../../Konzept-Liste-als-Auswahl-2026-10-03.md)) · **Epic:** #200 (Basis) · **Berührt:** #245 (Selbstbereinigung), #243/#244 (Aufbewahrung), #304 (Set-Lesung), #149 (Duplikat-Push) · **Belegt gegen:** `feat/emote-sets-200` @ `2db77d26` (Hauptworktree `/home/dev/projects/EmotePurge`); der Branch dieser Spec, `feat/201-list-as-selection`, steht auf `767b1e3e` und wird vor der Umsetzung auf den Epic-Stand gezogen.
+**Datum:** 2026-10-04 · **Status:** **Dritte Fassung** — die Entscheidungen E1–E25 des Brainstormings vom 2026-10-04 sind eingearbeitet; die acht Befunde der ersten adversarialen Runde (Codex Sol, gpt-6.1-sol, 2026-10-04: vier P1, vier P2) sind in E2, E5, E7–E11, E15 (markiert „rev. 2") und E26–E32 (neu) umgesetzt; die fünf P2-Befunde der **zweiten Runde** (Platzierungs-Revision, verspätete Einspiel-Meldung gegen die Sync-Invalidierung, überlappende Ausräum-Vorschauen, verlorene Set-ID im Import-Flow, Meldebefugnis ohne 7TV-Schreibrecht) sind mit dem Betreiber entschieden und in E8/E9/E26/E27/E29 (markiert „rev. 3") und E33 (neu) umgesetzt, die Gegenbeispiele stehen nachgerechnet in 5.5; die fünf offenen Punkte der ersten Fassung sind entschieden (Abschnitt 13.0); Restrisiken stehen in 13.1 · **Issue:** #201 (ersetzt die Lesart „Liste als Auswahl", s. [Konzept-Liste-als-Auswahl-2026-10-03.md](../../Konzept-Liste-als-Auswahl-2026-10-03.md)) · **Epic:** #200 (Basis) · **Berührt:** #245 (Selbstbereinigung), #243/#244 (Aufbewahrung), #304 (Set-Lesung), #149 (Duplikat-Push) · **Belegt gegen:** `feat/emote-sets-200` @ `2db77d26` (Hauptworktree `/home/dev/projects/EmotePurge`); der Branch dieser Spec, `feat/201-list-as-selection`, steht auf `767b1e3e` und wird vor der Umsetzung auf den Epic-Stand gezogen.
 
 Diese Spec ist ein Denkwerkzeug des Betreibers und deshalb deutsch; Bezeichner, Routen und
 Wire-Felder bleiben englisch. Sie enthält keinen fertigen Code — Verträge, Verhalten, Grenzfälle,
@@ -157,6 +157,20 @@ Alles Folgende ist am Branch nachgeprüft; es ist die Begründung für die Vertr
   **oder 7TV-Editor** (`CanViewUsageStatsAsync`); `ChannelManagementAuthorizationFilter`: ohne den
   Editor (`CanManageChannelAsync`). Beide antworten 400 bei ungültigem Namen, 401 ohne Twitch-Principal,
   **403 ohne Body** (`Results.Forbid()`). 404 kommt nie aus einem Filter, nur aus Handlern.
+  **Beide Filter sagen nichts über 7TV-Schreibrechte:** `CanViewUsageStatsAsync` gibt für Broadcaster
+  und Live-Mod über `CanManageChannelAsync` `true` zurück, **bevor** irgendein 7TV-Grant geprüft wird
+  (`EmotePurge.Infrastructure/Services/ChannelAccessService.cs:31,36-40`); ein Twitch-Mod ohne
+  7TV-Editor-Recht passiert sie. Das 7TV-Schreibrecht an einem **Set** prüft allein
+  `IImportTargetOwnershipService.CheckAsync(twitchUserId, login, emoteSetId, ct, ownerHint)` — die
+  Leiter der set-zentrischen Meldungen (`SevenTvEndpoints.PassSyncInSetLadderAsync`, `:663-675`:
+  `SetNotFound` → 404 `emote_set_not_found`, `Forbidden` → 403 ohne Body, `Unavailable` → 503
+  `foreign_channel_seventv_unavailable`; Hint aus `request.TargetOwnerTwitchId` über `BuildOwnerHint`).
+  Das ist der Grund für E9 rev. 3.
+- **Serialisierung im Bestand:** wo zwei Schreiber dieselbe Kanalwahrheit ändern, nimmt der Code die
+  Kanalzeile mit `SELECT … FOR UPDATE` in einer expliziten Transaktion
+  (`ChannelQueries.LoadChannelForUpdateAsync`, `Persistence/ChannelQueries.cs:116-133`; Nutzer
+  `PurgeIfInactiveSinceAsync`, `MergeAsync`, `AccountDeletionService` analog auf der User-Zeile) — kein
+  `Serializable`-Isolationslevel, keine Anwendungs-Mutexe. Dieselbe Idiomatik übernimmt 6.4.
 - Rate-Limit-Policies (`EmotePurge.Api/RateLimiting/RateLimitPolicyNames.cs`, Registrierung
   `Program.cs:172-252`): `InteractiveRead` für Lesen beim Navigieren, `Bookkeeping` für jeden
   Schreibzugriff, der nicht verloren gehen darf (sync-*, join, purge), `TrackedEmoteSetPreview`
@@ -211,7 +225,14 @@ Alles Folgende ist am Branch nachgeprüft; es ist die Begründung für die Vertr
   skip | renameSource | replaceTarget | adoptSourceName`, `shared/seven-tv/conflict-resolution.ts:30`),
   holt ggf. das Token, filtert Duplikate live (`filterAlreadyPresent`, `already-present-filter.ts:78`)
   und startet `SevenTvImportService.startImport(target, origin, plan, …)`
-  (`core/seven-tv/seven-tv-import.service.ts:472`). Eingabe ist `ImportSource = { origin: ImportOrigin;
+  (`core/seven-tv/seven-tv-import.service.ts:472`). **Der Flow verliert eine gewählte Set-ID, wenn sie
+  die aktive ist:** `toTargetSelection` bildet eine `'chosen'`-Wahl mit `emoteSetId ===
+  activeEmoteSetId` auf `{ kind: 'trackedActive', channelName }` ab — ohne Set-ID
+  (`import-flow.ts:143-157`) —, und `loadImportTarget` liest in diesem Zweig den **jetzt** aktiven Set
+  des Servers (`core/emotes/import-target-loader.ts:150-174`, `setId: status.value.activeEmoteSetId`);
+  weder `start()` noch `recheckTransferPlan` vergleichen gegen eine vom Aufrufer eingefrorene ID. Ein
+  Set-Wechsel zwischen Klick und Start landet so still im neuen Set (Codex Runde 2, Befund 4 → E29
+  rev. 3). Eingabe ist `ImportSource = { origin: ImportOrigin;
   rows: ImportRow[]; duplicatesCollapsed; discardedRows }` mit `ImportRow = { sevenTvEmoteId; name;
   imageUrl: string | null }` (`core/seven-tv/import-source.ts:9,127`). `ImportOrigin` ist eine
   **erschöpfende** Union (`:45-55`) mit mehreren `switch`-Verbrauchern.
@@ -317,9 +338,9 @@ Festlegungen der ersten Fassung; E26–E32 sind die Beschlüsse zur Zweitmeinung
 | **E5 rev. 2** | **Variante A: Platzierungen werden explizit gespeichert.** Nach dem Einspiel-Lauf meldet der Browser die **tatsächlich** hinzugefügten 7TV-IDs plus Set-ID **plus Operations-ID** (E27). Eine verlorene Meldung ist fail-safe: die Emotes erscheinen beim Ausräumen unangehakt. | Dasselbe Muster wie `sync-imported` (3.3/3.4); der Server behauptet nichts, was er nicht gemeldet bekam. | **Variante B:** Ableiten aus `FirstSeenAt`. |
 | **E6** | Platzierungen und Aktivierungen tragen die **Set-ID**; die eines nicht-aktiven Sets ruhen und gelten wieder, wenn es aktiv ist. Ausräumen wirkt immer auf das **aktive** Set. | Set-Wechsel (Halloween 2026-10-01) ohne Set-ID würde den falschen Stand beschreiben. | Löschen beim Set-Wechsel; set-unabhängig. |
 | **E7 rev. 2** | **Übertragung auf Basis der Aktivierung (E26):** Ein von A platziertes Emote X, das ein **anderes, im selben Set eingespieltes** Tag B enthält, bleibt beim Ausräumen von A im Set, wird unangehakt „wird noch von B gebraucht" gezeigt, und seine Platzierung **wandert** zu B. | „Wird noch gebraucht" muss das System wissen; die Aktivierung sagt, welche Tags gerade gelten — auch eines, dessen Einspielen nichts hinzugefügt hat. Die Gegenbeispiele der Zweitmeinung lösen sich damit (5.5). | Übertragung nur an Tags mit eigener Platzierung in S (ließ B ohne Spur, wenn A schon alles hinzugefügt hatte). |
-| **E8 rev. 2** | **Der Sync räumt Platzierungen weg.** Beobachtet das System, dass ein Emote das aktive Set verlassen hat — EventAPI-Delta, REST-Vollsync oder set-zentrische Lösch-Meldung (3.1 a–c) —, werden alle Platzierungen `(Tag des Kanals, 7TV-ID, dieses Set)` im selben `SaveChanges` gelöscht. **Das ist eine Verhaltensänderung des Worker-Prozesses** (die Sync-Pfade laufen dort). Restlücke: Entfernen + Wiederhinzufügen zwischen zwei Beobachtungen bleibt unsichtbar (13.1 R1). | Ein von Hand entferntes und wieder hinzugefügtes Emote darf nicht auf Basis einer alten Platzierung vorgeschlagen werden (Codex P1-Befund 1). | Nur passives Herausfallen beim nächsten Ausräumen (erste Fassung). |
-| **E9 rev. 2** | **Rechte:** Lesen hinter `UsageStatsAccessAuthorizationFilter`; Pflegen hinter `ChannelManagementAuthorizationFilter`; **Melden** hinter `UsageStatsAccessAuthorizationFilter`. **Ehrliche Einstufung:** ein Berechtigter könnte Meldungen fälschen und so Zeilen vorab anhaken — er kann aber bereits heute auf 7TV direkt alles löschen, und ein Haken ist nur ein Vorschlag in einer menschlich bestätigten Vorschau mit Einspieldatum und Rückweg. Restrisiko, kein P1 für uns (13.1 R3). | Wer mit eigenem 7TV-Token schreiben darf, muss melden dürfen — dieselbe Stufe wie `sync-deleted`. | Melden hinter Management (Editor-Lauf ohne Papierspur); alles hinter Management. |
-| **E10 rev. 2** | **Meldungen sind idempotent über eine Operations-ID** (E27): eine Wiederholung derselben Operation ändert nichts; eine Ausräum-Meldung berührt nur die in ihrer Vorschau erfassten Platzierungen, nie „den Rest". | Retries nach Timeout sind Normalfall (3.4); eine Meldung, die zwischenzeitlich entstandene Platzierungen anderer Operationen löscht, wäre falsch (Codex P2-Befund 5). | Idempotenz nur über Unique-Index (erste Fassung). |
+| **E8 rev. 3** | **Der Sync räumt Platzierungen weg und merkt sich das Verlassen.** Beobachtet das System, dass ein Emote das aktive Set verlassen hat — EventAPI-Delta, REST-Vollsync oder set-zentrische Lösch-Meldung (3.1 a–c) —, werden im selben `SaveChanges` alle Platzierungen `(Tag des Kanals, 7TV-ID, dieses Set)` gelöscht **und** `EmoteSetLeaveObservation (Kanal, 7TV-ID, Set).LastObservedAtUtc` auf jetzt gesetzt (E33). **Verhaltensänderung des Worker-Prozesses.** Restlücke: Entfernen + Wiederhinzufügen zwischen zwei Beobachtungen bleibt unsichtbar (13.1 R1). | Ein von Hand entferntes und wieder hinzugefügtes Emote darf nicht auf Basis einer alten **oder verspätet gemeldeten** Platzierung vorgeschlagen werden (Runde 1 Befund 1, Runde 2 Befund 2). | Nur passives Herausfallen (erste Fassung); `ArchivedAt` als Beobachtungsmarke (wird beim Entarchivieren gelöscht, 3.1). |
+| **E9 rev. 3** | **Rechte:** Lesen hinter `UsageStatsAccessAuthorizationFilter`; Pflegen hinter `ChannelManagementAuthorizationFilter`; **Melden und Registrieren** hinter `UsageStatsAccessAuthorizationFilter` **plus** — im Handler, wie `sync-deleted` — der 7TV-Besitzprüfung `IImportTargetOwnershipService.CheckAsync` für das gemeldete Set (3.3). Folge: melden kann nur, wer das Set bei 7TV auch wirklich schreiben darf; ein Twitch-Mod ohne 7TV-Editor-Recht kann keine Platzierungen erzeugen. | Die Kanalfilter prüfen kein 7TV-Recht (3.3); ohne die Besitzprüfung könnte ein Mod ohne Schreibrecht Haken in die Vorschau eines echten Editors setzen (Runde 2 Befund 5). Mit ihr gilt R3 wieder wörtlich: fälschen kann nur, wer ohnehin direkt löschen könnte. | Nur Kanalfilter (zweite Fassung); Melden hinter Management (Editor-Lauf ohne Papierspur). |
+| **E10 rev. 2** | **Meldungen sind idempotent über eine Operations-ID** (E27): eine Wiederholung derselben Operation ändert nichts; eine Ausräum-Meldung berührt nur die in ihrer Vorschau erfassten Platzierungen **in der erfassten Revision**, nie „den Rest". | Retries nach Timeout sind Normalfall (3.4); eine Meldung, die zwischenzeitlich entstandene Platzierungen anderer Operationen löscht, wäre falsch (Runde 1 Befund 5, Runde 2 Befund 1). | Idempotenz nur über Unique-Index (erste Fassung). |
 | **E11 rev. 2** | **„Im Set"-Status serverseitig** = unarchivierte `Emote`-Zeile des Kanals (3.1), **immer bezogen auf eine explizit genannte Set-ID** (E29); dient Zählern und Tags-Seite. Der **Vorschlag beim Ausräumen** kommt aus der **Live-Lesung** desselben Sets. | Eine Zahl, eine Quelle; vor einem Löschen zählt nur, was 7TV jetzt sagt. | Status aus der Set-Vorschau-Route (#220). |
 | **E12** | **Einspielen ist ein Import-Lauf** über `startImportFlow`/`SevenTvImportService` mit neuem `ImportOrigin` `{ kind: 'tag'; tagId; tagName; channelName }` und neuem `SourceKind` `"tag"` (3.3). Kein neuer `SevenTvRunKind`. | Vorlesung, Konfliktschritt, Kapazitätswarnung, Token, Arbiter, Settlement, Dock existieren. | Eigener Lauf; Origin `'channel'` mit falschem Namen. |
 | **E13** | **Ausräumen ist ein Lösch-Lauf** über `SevenTvDeleteService.startDelete`; Purge-Protokoll, Download und „Wiederherstellen" wie bei jedem Delete. | Unwiderruflichkeit ist Produktversprechen (`PRODUCT.md` Prinzip 4); der Rückweg ist gebaut. | Eigener REMOVE-Lauf ohne Protokoll. |
@@ -335,21 +356,23 @@ Festlegungen der ersten Fassung; E26–E32 sind die Beschlüsse zur Zweitmeinung
 | **E23** | **Alias- und Bild-Snapshot** kommen beim Zuweisen **vom Server** aus der unarchivierten Zeile; IDs ohne Zeile werden ausgelassen und zurückgemeldet (`skippedNotInSetIds`). | Server prüft E3 selbst; Teilerfolg ist ehrlicher als Alles-oder-nichts. | Client liefert; 400. |
 | **E24** | **Rate-Limits:** Lesen `InteractiveRead`, Pflegen und Melden `Bookkeeping`. | Melden darf nie verloren gehen — wie `sync-deleted`. | Alles `InteractiveRead`. |
 | **E25** | **Tags-Seite als vierter Reiter `tags`**, Guard `usageStatsAccessGuard`, lazy (`tags.routes.ts`, #264). | Gleiche Hierarchiestufe wie Nutzung/Votings (§8.1/§8.6); zieht den Import-Graphen. | Unterseite; Dialog. |
-| **E26 neu** | **Aktivierungsmodell:** je `(Tag, Set)` gibt es den Zustand **„eingespielt"** (`EmoteTagActivation`), gesetzt bei **jedem** Einspielen — auch einem, das nichts hinzufügt —, gelöscht bei **jedem** abgeschlossenen Ausräumen — auch einem mit leerer REMOVE-Queue. Ausräumen ist nur für ein eingespieltes Tag anbietbar und **immer abschließbar**. | Platzierungen allein können den geteilten Lebenszyklus nicht abbilden (Codex-Befund 6, Gegenbeispiele in 5.5). | Nur Platzierungen; „eingespielt" = `placedCount > 0`. |
-| **E27 neu** | **Operations-ID:** jeder Einspiel- und Ausräum-Vorgang trägt eine im Browser erzeugte UUID (`crypto.randomUUID()`), die auf jedem Retry mitgeht; der Server speichert angewandte IDs (`EmoteTagOperation`) und ignoriert Wiederholungen. Die Ausräum-Meldung nennt die in der Vorschau erfassten Platzierungen **explizit**. | Idempotenz über Zeit und über zwischenzeitliche Operationen hinweg (E10 rev. 2). | Sequenznummern; Zeitstempelvergleich. |
+| **E26 rev. 3** | **Aktivierungsmodell:** je `(Tag, Set)` gibt es den Zustand **„eingespielt"** (`EmoteTagActivation`), gesetzt bei **jedem** Einspielen — auch einem, das nichts hinzufügt —, gelöscht bei **jedem** abgeschlossenen Ausräumen — auch einem mit leerer REMOVE-Queue. Ausräumen ist nur für ein eingespieltes Tag anbietbar und **immer abschließbar**. **Invariante, serverseitig erzwungen: ein inaktives Tag hält in diesem Set keine Platzierung** — die Deaktivierung räumt **alle** Platzierungen `(Tag, ·, Set)` ab, auch solche, die nach der Vorschau hereingewandert sind (sie durchlaufen dieselbe Übertragungsregel). | Platzierungen allein bilden den geteilten Lebenszyklus nicht ab (Runde 1 Befund 6); zwei überlappende Ausräumungen hinterließen sonst Platzierungen bei einem inaktiven Halter (Runde 2 Befund 3; 5.5 Gegenbeispiel 7). | Nur Platzierungen; „eingespielt" = `placedCount > 0`; Deaktivierung nur über den Snapshot (zweite Fassung). |
+| **E27 rev. 3** | **Operations-ID, vorab registriert:** jeder Einspiel- und Ausräum-Vorgang erzeugt im Browser eine UUID (`crypto.randomUUID()`) und **registriert sie vor dem Lauf** beim Server (`POST …/operations`: Art, eingefrorene Set-ID; der Server stempelt `RegisteredAtUtc`). Jede Meldung muss sich auf eine registrierte, noch nicht angewandte Operation **desselben Sets** beziehen; Wiederholungen werden ignoriert. Die Ausräum-Meldung nennt die erfassten Platzierungen explizit **mit ihrer Revision** (5.3). | Erst die Registrierung gibt dem Server einen Zeitpunkt, gegen den er eine verspätete Einspiel-Meldung mit einem danach beobachteten Verlassen vergleichen kann (E33); zugleich entfällt das nachträgliche Anlegen der Operationszeile und der Set-Bezug ist vor dem ersten 7TV-Schreiben fest (Runde 2 Befunde 1, 2, 4). | Operation erst mit der Meldung anlegen (zweite Fassung); Sequenznummern. |
 | **E28 neu** | **Einspielen partitioniert nach 7TV-ID gegen eine `complete` Live-Lesung**; eine unvollständige Lesung **blockt** das Einspielen. Eine ID, die unter irgendeinem Alias im Set ist (auch aliaslos), wird übersprungen und bekommt keine Platzierung. | 7TV dedupliziert ADDs nicht nach ID (3.4); ein Doppel-ADD wäre ein zweiter Eintrag, den ein REMOVE später mitnimmt. Restrisiko: Fremdeditor zwischen Lesung und Schreiben (13.1 R2). | Partition über `inSet` des Servers; Warnen statt Blocken (erste Fassung). |
-| **E29 neu** | **Set-Bindung:** Einträge- und Platzierungslesungen nehmen die Ziel-Set-ID **explizit** (`emoteSetId`) und geben sie zurück; der Ausräum-Flow friert sie beim Klick ein, liest Einträge und Live-Set für genau diese ID und bricht ab, wenn das aktive Set des Servers oder der Seite bis zum Start davon abweicht. Beide Meldungen tragen dieselbe ID. | Flags ohne Set-Bezug könnten im falschen Set gelesen werden (Codex-Befund 4). | „Aktives Set des Servers" implizit (erste Fassung). |
+| **E29 rev. 3** | **Set-Bindung von Anfang bis Ende:** Einträge- und Platzierungslesungen nehmen die Ziel-Set-ID **explizit** (`emoteSetId`) und geben sie zurück; beide Flows frieren sie beim Klick ein und registrieren sie mit der Operation (E27). **Der Import-Flow bekommt für Tag-Läufe eine angepinnte Set-ID** (`ImportFlowTarget` `{ kind: 'chosen', choice, pinSetId: true }`): `toTargetSelection` nimmt dann **nie** den `trackedActive`-Schnellweg, sondern `trackedSet` mit genau dieser ID; nach der Zielauflösung **und** unmittelbar vor dem Start vergleicht der Flow `targetState.setId`, `activeEmoteSetId()` der Seite und die eingefrorene ID und bricht bei Abweichung ab. Beide Meldungen tragen die registrierte ID; der Server weist eine Meldung mit anderer ID zurück. | Flags ohne Set-Bezug könnten im falschen Set gelesen werden (Runde 1 Befund 4); der heutige Schnellweg wirft die ID weg und liest den jetzt aktiven Set (3.4; Runde 2 Befund 4). | „Aktives Set des Servers" implizit (erste Fassung); `trackedActive`-Schnellweg für Tag-Läufe (zweite Fassung — falsch beschrieben als „Flow prüft sein Ziel selbst"). |
 | **E30 neu** | **Audit-Details tragen nur `tagId`, nie `tagName`.** | Tag-Namen sind Freitext, der eine Person benennen kann; eine Kopie in actor-gebundenen Audit-Zeilen fiele unter die 365-Tage-Frist und würde von der Kontolöschung nicht angefasst (3.2). Mit nur der ID ist die Audit-Zeile nach dem Tag-Löschen inhaltsfrei. | `tagName` in den Details (erste Fassung). |
 | **E31 neu** | **Freigabevoraussetzung:** Der Betreiber prüft vor dem Release von T-B seine Datenschutzerklärung darauf, ob Kanal-Inhalte dieser Art (vom Manager eingegebene Bezeichner, 180-Tage-Bindung an den Kanal) abgedeckt sind, und ergänzt sie ggf. | Die erste Fassung behauptete „keine Personendaten"; richtig ist „kein Kontobezug, aber Freitext". | Prüfpunkt ohne Verbindlichkeit. |
 | **E32 neu** | **Lieferung in drei Teilen** (12.1): T-A Extraktion `DeleteProgressSection`/`delete-flow` (reiner Refactor), T-B Tags CRUD + Zuweisen + Tags-Seite lesend + Filter + Aufbewahrung/Datenschutz, T-C Einspielen/Ausräumen mit Aktivierung, Platzierungen, Sync-Invalidierung, Operations-IDs, Worker-Rollout. | Jeder Teil ist allein prüfbar und mergebar; T-C ist der einzige mit Sync-Verhaltensänderung. | Ein Plan, ein PR. |
+| **E33 neu** | **Beobachtetes Verlassen wird gespeichert:** `EmoteSetLeaveObservation (ChannelId, SevenTvEmoteId, SevenTvEmoteSetId, LastObservedAtUtc)`, Upsert an den drei Archivierungsstellen (3.1 a–c). Eine Einspiel-Meldung legt eine Platzierung für X **nur** an, wenn kein Verlassen von X aus diesem Set **nach** `RegisteredAtUtc` der Operation beobachtet wurde; sonst wird X **endgültig** verworfen (`discardedStaleIds`). | Eine verspätete Einspiel-Meldung darf die Sync-Invalidierung nicht unterlaufen (Runde 2 Befund 2). `ArchivedAt` scheidet aus, weil es beim Entarchivieren gelöscht wird (3.1); eine Spalte auf `Emote` scheidet aus, weil die Frage set-bezogen ist und `Emote` keine Set-Dimension hat — die kleinste Form, die beides trägt, ist eine Zeile je `(Kanal, Emote, Set)` mit einem Zeitstempel. | `ArchivedAt` als Marke; Spalte auf `Emote`; Tombstones gelöschter Platzierungen (existieren nicht, wenn die Meldung erst später kommt). |
 
 ---
 
 ## 5. Datenmodell
 
-Fünf neue Tabellen, alle kanalgebunden, alle über FK-Kaskade am Kanal (3.2). Zwei EF-Migrationen
-(`AddEmoteTags` in T-B: 5.1, 5.2; `AddEmoteTagPlacements` in T-C: 5.3, 5.4), in Produktion von
-Hand vor dem jeweiligen Deploy (CLAUDE.md „Prod-Migration").
+Sechs neue Tabellen, alle kanalgebunden, alle über FK-Kaskade am Kanal (3.2). Zwei EF-Migrationen
+(`AddEmoteTags` in T-B: 5.1, 5.2; `AddEmoteTagPlacements` in T-C: 5.3, 5.4 samt
+`EmoteSetLeaveObservation`), in Produktion von Hand vor dem jeweiligen Deploy (CLAUDE.md
+„Prod-Migration").
 
 ### 5.1 `EmoteTag` (T-B)
 
@@ -386,11 +409,13 @@ PK/Unique `(TagId, SevenTvEmoteId)`. Limit 1000 je Tag (E20). Kein FK auf `Emote
 | `SevenTvEmoteId` | `string(24)` | Das Emote. |
 | `SevenTvEmoteSetId` | `string(24)` | Das Set (E6). Formprüfung wie `EmoteSetIdValidation`. |
 | `PlacedAtUtc` | `timestamptz` | Zeitpunkt der Meldung; in der Vorschau als „eingespielt am" sichtbar (E2 rev. 2). |
-| `OperationId` | `uuid` | Die Operation, die sie anlegte (E27) — Diagnose, keine Fachlogik. |
+| `OperationId` | `uuid` | **Die Revision der Platzierung:** die Operation, die sie zuletzt anlegte **oder übertrug** (E27 rev. 3). Wird bei jeder Übertragung auf die ausräumende Operation gesetzt. Eine Ausräum-Meldung berührt eine Platzierung nur, wenn deren `OperationId` der in der Vorschau gelesenen entspricht (6.4). |
 
 PK/Unique `(TagId, SevenTvEmoteId, SevenTvEmoteSetId)`. Index `(SevenTvEmoteSetId, SevenTvEmoteId)`
 für „wer hält X in S" und für die Sync-Invalidierung (5.5 Regel 5). **Kein FK auf Entry** (E17
-löscht explizit im Service).
+löscht explizit im Service). Eine gesonderte Revisionsspalte ist unnötig: jede Änderung einer
+Platzierung geschieht durch genau eine Operation, deren ID ohnehin gespeichert wird — sie **ist** die
+Revision (Festlegung).
 
 ### 5.4 `EmoteTagActivation` und `EmoteTagOperation` (T-C)
 
@@ -405,19 +430,38 @@ löscht explizit im Service).
 
 PK `(TagId, SevenTvEmoteSetId)`. Existenz der Zeile = eingespielt; Löschung = ausgeräumt.
 
-**`EmoteTagOperation`** — angewandte Operationen (E27):
+**`EmoteTagOperation`** — registrierte und angewandte Operationen (E27 rev. 3):
 
 | Spalte | Typ | Bedeutung |
 |---|---|---|
 | `OperationId` | `uuid` | PK, vom Browser erzeugt. |
 | `TagId` | `long` | FK → `EmoteTag.Id`, Cascade. |
 | `Kind` | `string` | `"playIn"` oder `"removal"` (Konstanten wie `ChannelEmoteSetObservationClosedBy`). |
-| `SevenTvEmoteSetId` | `string(24)` | |
-| `AppliedAtUtc` | `timestamptz` | |
+| `SevenTvEmoteSetId` | `string(24)` | Die beim Registrieren eingefrorene Set-ID (E29). |
+| `RegisteredAtUtc` | `timestamptz` | **Serverzeit** der Registrierung — der Vergleichspunkt für E33. Nicht die Browserzeit. |
+| `AppliedAtUtc` | `timestamptz?` | `null`, bis die Meldung angewandt wurde. |
 
-Eine Meldung mit bekannter `OperationId` wird nicht angewandt (6.4). Operationen leben so lange wie
-ihr Tag (Kaskade); eine eigene Frist gibt es nicht — die Tabelle wächst um eine Zeile je Lauf, das ist
-bei zwei Läufen je Stream vernachlässigbar (Festlegung).
+Eine Meldung ohne registrierte Operation wird abgewiesen, eine mit `AppliedAtUtc ≠ null` nicht noch
+einmal angewandt (6.4). Operationen leben so lange wie ihr Tag (Kaskade); nie angewandte Registrierungen
+(Lauf abgebrochen vor dem ersten Schreiben, Tab geschlossen) bleiben als Zeilen stehen — eine Zeile je
+Klick ist vernachlässigbar, und eine Frist für „verwaist" brächte eine neue Aufräumpflicht ohne Nutzen
+(Festlegung).
+
+**`EmoteSetLeaveObservation`** — „zuletzt beobachtet, dass X das Set S des Kanals verlassen hat" (E33):
+
+| Spalte | Typ | Bedeutung |
+|---|---|---|
+| `ChannelId` | `string` | FK → `Channel.Id`, Cascade. |
+| `SevenTvEmoteId` | `string(24)` | |
+| `SevenTvEmoteSetId` | `string(24)` | Das Set, in dem das Verlassen beobachtet wurde (5.5 Regel 5). |
+| `LastObservedAtUtc` | `timestamptz` | Serverzeit der Beobachtung; Upsert überschreibt. |
+
+PK `(ChannelId, SevenTvEmoteId, SevenTvEmoteSetId)`. Geschrieben an den drei Archivierungsstellen
+(3.1 a–c) im selben `SaveChangesAsync`, **unabhängig davon, ob der Kanal Tags hat** — die Zeile muss
+schon existieren, wenn eine verspätete Meldung kommt, und der Sync kann nicht wissen, welche Meldung
+noch unterwegs ist. Gelesen nur von der Einspiel-Meldung (6.4). Zeilenzahl ≤ Emotes × je besuchte Sets
+des Kanals, mit dem Kanal kaskadiert. Kein FK auf `Emote` (E22-Haltung: die Frage überlebt die
+Rasterzeile).
 
 ### 5.5 Invarianten, Regeln, Gegenbeispiele
 
@@ -429,51 +473,96 @@ bei zwei Läufen je Stream vernachlässigbar (Festlegung).
    gleichzeitig; 7TV lässt beide ADDs durch — 3.4). Der Vorschlag behandelt sie deterministisch: als
    **Besitzer** gilt das älteste Tag (`CreatedAtUtc`, dann `Id`); die anderen gelten als „wird noch
    gebraucht". Hinweis: in diesem Fall liegt X **zweimal** im Set, ein REMOVE nimmt beide.
-4. **Übertragung (E7 rev. 2):** Beim Ausräumen von T in S wandert eine im Vorschau-Snapshot erfasste,
-   nicht entfernte, laut Live-Lesung noch vorhandene Platzierung `(T, X, S)` zu dem anderen Tag T′ des
-   Kanals, das (a) **aktiv in S** ist (`EmoteTagActivation (T′, S)` existiert) und (b) einen Eintrag für
-   X hat; bei mehreren T′ das älteste (Regel 3). Hat T′ bereits `(T′, X, S)`, wird `(T, X, S)` nur
-   gelöscht. **Gibt es kein T′, wird die Platzierung gelöscht** — ausgeräumt heißt: T hält in S nichts
-   mehr (E26: inaktiv = keine Platzierungen). Der Mensch hat X behalten; es ist ab jetzt „war schon
-   vorher im Set". **Festlegung** (13.4/2).
-5. **Sync-Invalidierung (E8 rev. 2):** An den drei Archivierungsstellen (3.1 a–c) wird im selben
-   `SaveChangesAsync` jede Platzierung `(Tag des Kanals, SevenTvEmoteId des Emotes, S)` gelöscht, wobei
-   S = das Set, in dem das Verlassen beobachtet wurde: bei (a) und (b) `Channel.ActiveEmoteSetId` des
-   gerade synchronisierten Kanals, bei (c) die `emoteSetId` der Meldung. Die **Aktivierung** bleibt
-   davon unberührt (das Tag gilt weiter als eingespielt; sein nächstes Ausräumen findet nichts und
-   deaktiviert). Platzierungen **nicht-aktiver** Sets werden vom Sync nie berührt (3.1: er beobachtet
-   nur das aktive Set) — sie werden erst beim nächsten Ausräumen gegen die Live-Lesung geprüft (R1).
-6. **Regel 10** bei den Zählern (6.2): Gruppieren nur über die FK-Spalte einer Tabelle, Filter über
+4. **Übertragung (E7 rev. 2) und Deaktivierungs-Sweep (E26 rev. 3):** Beim Ausräumen von T in S
+   wandert eine nicht entfernte, laut Live-Lesung noch vorhandene Platzierung `(T, X, S)` zu dem
+   anderen Tag T′ des Kanals, das (a) **aktiv in S** ist (`EmoteTagActivation (T′, S)` existiert) und
+   (b) einen Eintrag für X hat; bei mehreren T′ das älteste (Regel 3). Hat T′ bereits `(T′, X, S)`,
+   wird `(T, X, S)` nur gelöscht. **Gibt es kein T′, wird die Platzierung gelöscht** — ausgeräumt heißt:
+   T hält in S nichts mehr. Die Regel gilt **für jede Platzierung von T in S, die beim Anwenden der
+   Meldung existiert** — die im Snapshot erfassten nach dem Urteil der Vorschau (entfernt / behalten /
+   veraltet), die **nicht** erfassten (nach der Vorschau hereingewandert oder neu platziert) wie
+   „behalten": Übertragung an ein aktives T′ oder Löschung. Nach der Deaktivierung gilt
+   **`(T, S) inaktiv ⇒ keine Platzierung (T, ·, S)`** als serverseitig geprüfte Invariante (Test 11).
+   Der Mensch hat X behalten; es ist ab jetzt „war schon vorher im Set". **Festlegung** (13.4/2).
+5. **Sync-Invalidierung mit Gedächtnis (E8 rev. 3, E33):** An den drei Archivierungsstellen (3.1 a–c)
+   wird im selben `SaveChangesAsync` jede Platzierung `(Tag des Kanals, SevenTvEmoteId des Emotes, S)`
+   gelöscht **und** `EmoteSetLeaveObservation (Kanal, SevenTvEmoteId, S)` auf jetzt gesetzt, wobei S =
+   das Set, in dem das Verlassen beobachtet wurde: bei (a) und (b) `Channel.ActiveEmoteSetId` des gerade
+   synchronisierten Kanals, bei (c) die `emoteSetId` der Meldung. Die **Aktivierung** bleibt unberührt
+   (das Tag gilt weiter als eingespielt; sein nächstes Ausräumen findet nichts und deaktiviert).
+   Platzierungen **nicht-aktiver** Sets werden vom Sync nie berührt (3.1: er beobachtet nur das aktive
+   Set) — sie werden erst beim nächsten Ausräumen gegen die Live-Lesung geprüft (R1). Die Löschung läuft
+   mengenbasiert (`ExecuteDelete`), ohne Kanalsperre; trifft sie eine Platzierung, die eine gerade
+   laufende Meldung überträgt, scheitert deren Transaktion an der Konkurrenz (EF meldet 0 betroffene
+   Zeilen), wird zurückgerollt und vom Retry mit derselben `operationId` erneut angewandt — der sieht
+   die Platzierung dann nicht mehr. Die Beobachtung gewinnt immer.
+6. **Serialisierung der Meldungen:** Jede Meldung (Einspielen, Ausräumen) und jede Tag-Löschung läuft
+   in einer Transaktion, die zuerst die **Kanalzeile** mit `FOR UPDATE` nimmt
+   (`LoadChannelForUpdateAsync`, 3.3). Damit sind Übertragung, Deaktivierung und Sweep je Kanal — und
+   damit je Set — nacheinander; zwei überlappende Ausräumungen (Gegenbeispiel 7) sehen einander. Eine
+   Sperre je `(Kanal, Set)` wäre feiner, bräuchte aber eine eigene Sperrzeile; die Kanalzeile ist die
+   bestehende Idiomatik und die Meldungen sind selten (zwei je Stream). **Festlegung.**
+7. **Regel 10** bei den Zählern (6.2): Gruppieren nur über die FK-Spalte einer Tabelle, Filter über
    skalare ID-Listen; der „im Set"-Join läuft über eine vorher materialisierte Menge der unarchivierten
    `SevenTvEmoteId`s des Kanals.
-7. **Kanalzusammenführung** (3.2): Tags zählen beim Merge-Guard wie Emotes — hat der Verlierer Tags,
+8. **Kanalzusammenführung** (3.2): Tags zählen beim Merge-Guard wie Emotes — hat der Verlierer Tags,
    wird verweigert (eine Bedingung in `MergeAsync`; **läuft im Worker**, E15 rev. 2). **Festlegung.**
-8. **Set-Wechsel ändert keine Tabelle:** Aktivierungen und Platzierungen des alten Sets bleiben
+9. **Set-Wechsel ändert keine Tabelle:** Aktivierungen und Platzierungen des alten Sets bleiben
    („ruhen", E6).
 
 **Gegenbeispiele der Zweitmeinung, nachgerechnet mit E26/E7 rev. 2** (A und B sind Tags desselben
 Kanals, S das aktive Set, X/Y Emotes):
 
-- *„B spielt nur Emotes ein, die A schon hinzugefügt hat — B hinterlässt keine Spur."* A = {X, Y}
+- *1. „B spielt nur Emotes ein, die A schon hinzugefügt hat — B hinterlässt keine Spur."* A = {X, Y}
   eingespielt → Platzierungen (A, X, S), (A, Y, S), Aktivierung (A, S). B = {X} eingespielt →
   Live-Lesung sagt X ist im Set → `toAdd` leer → **kein Lauf, aber Aktivierung (B, S)** und
   Operation. Ausräumen von A: X ist von A platziert, B ist aktiv in S und enthält X → **unangehakt
   „wird noch von B gebraucht"**, Y angehakt. Nach Bestätigung: Y entfernt, (A, X, S) wandert zu
   (B, X, S), (A, S) gelöscht. Ausräumen von B: X von B platziert, kein anderes aktives Tag → angehakt →
   entfernt, (B, S) gelöscht. **Gelöst.**
-- *„A und B beide {X, Y}; A eingespielt, B eingespielt (no-op) — beim Ausräumen null angehakte
+- *2. „A und B beide {X, Y}; A eingespielt, B eingespielt (no-op) — beim Ausräumen null angehakte
   Zeilen, Sackgasse."* Ausräumen von A: beide Zeilen unangehakt „wird noch von B gebraucht" → Knopf
   „Ausräumen" bleibt **aktiv** (E26: mit leerer REMOVE-Queue abschließbar) → kein Lösch-Lauf,
   Meldung direkt: beide Platzierungen wandern zu B, (A, S) gelöscht. Ausräumen von B: X, Y von B
   platziert, kein anderes aktives Tag → beide angehakt → entfernt. **Gelöst, keine Sackgasse.**
-- *„Verzögerte Ausräum-Meldung löscht Platzierungen eines neueren Einspielens."* Ausräumen von A
+- *3. „Verzögerte Ausräum-Meldung löscht Platzierungen eines neueren Einspielens (anderes Emote Z)."* Ausräumen von A
   (Snapshot {X, Y}) hängt im Retry; inzwischen spielt jemand A erneut ein → Platzierung (A, Z, S),
   Aktivierung (A, S) erneuert mit neuer Operation. Die verspätete Meldung berührt **nur** {X, Y} (E27)
   und löscht die Aktivierung (A, S) nur, wenn deren `OperationId` noch die ist, die die Vorschau gelesen
   hat — **Festlegung:** die Meldung trägt die beim Vorschau-Laden gelesene `activationOperationId` mit,
   und der Server deaktiviert nur bei Übereinstimmung. Z bleibt platziert, A bleibt aktiv. **Gelöst.**
-- *„Wiederholte Einspiel-Meldung legt Platzierungen neu an."* Zweite Meldung mit derselben
-  `OperationId` → bekannt → ignoriert (`replayed: true`). **Gelöst.**
+- *4. „Wiederholte Einspiel-Meldung legt Platzierungen neu an."* Zweite Meldung mit derselben
+  `OperationId` → `AppliedAtUtc` gesetzt → ignoriert (`replayed: true`). **Gelöst.**
+
+**Gegenbeispiele der zweiten Runde, nachgerechnet mit E26/E27/E29 rev. 3 und E33:**
+
+- *5. „Verspätete Ausräum-Meldung löscht eine neue Platzierung desselben Emotes X."* Ausräumen von
+  A (Operation R₁, Snapshot enthält X mit Revision P₁ = Operation des Einspielens) hängt im Retry;
+  inzwischen: X wird entfernt (Sync löscht (A, X, S) und merkt das Verlassen), A wird erneut
+  eingespielt (Operation P₂, X wird hinzugefügt → neue Platzierung (A, X, S) mit `OperationId = P₂`,
+  Aktivierung mit P₂). Die verspätete Meldung R₁ nennt X **mit Revision P₁**; die vorhandene
+  Platzierung trägt P₂ → **kein Treffer, unberührt**; Deaktivierung nur bei `activationOperationId =
+  P₁` → trägt P₂ → **bleibt aktiv**. Der Sweep (Regel 4) läuft **nur**, wenn deaktiviert wird — hier
+  nicht. **Gelöst** (die zweite Fassung hatte in Gegenbeispiel 3 nur ein anderes Emote Z betrachtet).
+- *6. „Verspätete Einspiel-Meldung unterläuft die Sync-Invalidierung."* Einspielen (Operation P,
+  registriert um t₀); X wird hinzugefügt; die Meldung hängt; X wird von Hand entfernt, der Sync
+  beobachtet das um t₁ > t₀ (Platzierung gibt es noch keine; `EmoteSetLeaveObservation (Kanal, X, S)
+  = t₁`); X wird von Hand wieder hinzugefügt. Die verspätete Meldung kommt: für X existiert eine
+  Beobachtung mit t₁ > `RegisteredAtUtc` = t₀ → X wird **verworfen** (`discardedStaleIds`), keine
+  Platzierung, kein frisches Datum. Y (nie entfernt) wird platziert. Aktivierung wird gesetzt (das
+  Tag wurde eingespielt). **Gelöst.** — Grenze: wurde X entfernt und wieder hinzugefügt, **ohne** dass
+  der Sync das Verlassen sah (Fenster aus R1), gibt es keine Beobachtung und X wird platziert — das ist
+  R1, nicht mehr.
+- *7. „Überlappende Ausräum-Vorschauen hinterlassen Platzierungen bei einem inaktiven Halter."* A und
+  B aktiv in S, beide enthalten X, nur A hält (A, X, S). Beide Vorschauen werden gleichzeitig gelesen:
+  A sieht X eigen mit `heldByActiveTags = [B]`; B sieht X fremd („wird noch von A gebraucht"), eigener
+  Snapshot leer. A meldet zuerst (Kanalsperre): X behalten → wandert zu (B, X, S) mit Revision R_A,
+  (A, S) deaktiviert, Sweep findet nichts weiter. B meldet danach (wartet auf die Sperre): Snapshot
+  leer, `activationOperationId` passt → Deaktivierung von (B, S) → **Sweep über alle Platzierungen
+  (B, ·, S)** findet (B, X, S), prüft Übertragung: kein aktives T′ mehr (A ist inaktiv) → **gelöscht**.
+  Invariante hält: beide inaktiv, keine Platzierung. X bleibt im Set als „war schon vorher im Set" —
+  genau das, was zwei Menschen soeben zweimal bestätigt haben (behalten). Sequenziell statt gleichzeitig
+  ändert nichts: B's Vorschau nach A's Meldung zeigt X als eigen (übertragen), angehakt. **Gelöst.**
 
 ### 5.6 Warum die Form später persönliche Tags zulässt
 
@@ -497,11 +586,14 @@ Platzierungs-/Aktivierungsfelder und liefert 6.4.
 |---|---|---|
 | **Lesen** | `/api/channels/{channelName}/tags` | `RequireAuthorization()` → `ChannelNameValidationFilter` → `UsageStatsAccessAuthorizationFilter` → `RequireRateLimiting(InteractiveRead)`; je Leseroute zusätzlich `EmoteSetIdValidationFilter` (Query-Wert `emoteSetId`). |
 | **Pflegen** | `/api/channels/{channelName}/tags` | `RequireAuthorization()` → `ChannelNameValidationFilter` → `ChannelManagementAuthorizationFilter` → `RequireRateLimiting(Bookkeeping)` |
-| **Melden** | `/api/channels/{channelName}/tags/{tagId}/placements` | `RequireAuthorization()` → `ChannelNameValidationFilter` → `UsageStatsAccessAuthorizationFilter` → `RequireRateLimiting(Bookkeeping)` |
+| **Registrieren und Melden** | `/api/channels/{channelName}/tags/{tagId}/operations` und `…/placements` | `RequireAuthorization()` → `ChannelNameValidationFilter` → `UsageStatsAccessAuthorizationFilter` → `RequireRateLimiting(Bookkeeping)`; **im Handler zusätzlich die 7TV-Besitzprüfung** `IImportTargetOwnershipService.CheckAsync(actor.TwitchUserId, actor.Login, emoteSetId, ct, BuildOwnerHint(request.TargetOwnerTwitchId))` mit exakt der Leiter von `sync-deleted` (3.3): `SetNotFound` → 404 `emote_set_not_found`, `Forbidden` → 403 ohne Body, `Unavailable` → 503 `foreign_channel_seventv_unavailable`, erst dann der Service-Aufruf (E9 rev. 3). |
 
 `{tagId}` ist `long`; ein Tag, das es nicht gibt **oder das einem anderen Kanal gehört**, ist 404
 `tag_not_found` — der Service sucht immer `(ChannelId, Id)`. Ein nicht getrackter Kanal ist 404
-`channel_not_found`.
+`channel_not_found`. Die Besitzprüfung sitzt im Handler und nicht in einem Filter, weil sie den Body
+(`emoteSetId`, `targetOwnerTwitchId`) braucht — dieselbe Begründung, aus der `sync-deleted` sie als
+Leiter im Handler führt. Der Kanalfilter bleibt davor: ohne Leserecht am Kanal gibt es kein 403 aus der
+Besitzprüfung, das verrät, ob das Set existiert.
 
 ### 6.2 Lesen
 
@@ -532,6 +624,7 @@ entries: [...] }`, Einträge in `AddedAtUtc`-Reihenfolge:
 | `currentName` | `Emote.Name` der Zeile, wenn `inSet`, sonst `null`. |
 | `placedByThisTag` | Platzierung `(tagId, id, emoteSetId)` existiert (T-C). |
 | `placedAtUtc` | deren `PlacedAtUtc` oder `null` — die Vorschau zeigt „eingespielt am" (T-C). |
+| `placementOperationId` | deren `OperationId` (Revision, 5.3) oder `null` — der Ausräum-Flow reicht sie je Snapshot-Eintrag zurück (T-C). |
 | `heldByActiveTags` | `{ id, name }[]` der **anderen** Tags des Kanals, die in `emoteSetId` **aktiv** sind und einen Eintrag für dieses Emote haben, sortiert nach 5.5 Regel 3 (T-C). |
 | `placedByOtherTags` | `{ id, name }[]` der anderen Tags mit Platzierung `(·, id, emoteSetId)` (T-C). |
 
@@ -560,49 +653,64 @@ mit Details **nur `{ tagId }`** (bei `delete` zusätzlich `{ entryCount, placeme
 `tagName`** (E30). Zuweisen und Herausnehmen schreiben keinen Audit-Eintrag (Festlegung: Dutzende
 Zeilen ohne Erkenntnis; die Meldungen in 6.4 tragen die Papierspur des 7TV-Schreibens).
 
-### 6.4 Melden (T-C)
+### 6.4 Registrieren und Melden (T-C)
 
 | Route | Body | Antwort |
 |---|---|---|
-| **`POST …/tags/{tagId}/placements`** (Einspielen) | `{ operationId, emoteSetId, sevenTvEmoteIds }` — die **tatsächlich hinzugefügten** IDs (`importedKeys`), **leer erlaubt** (No-op-Einspielen, E26) | 200 `{ replayed, recordedCount, alreadyRecordedCount, notTaggedIds }` |
-| **`POST …/tags/{tagId}/placements/removed`** (Ausräumen) | `{ operationId, emoteSetId, activationOperationId, snapshotIds, removedIds, keptIds }` — `snapshotIds`: die 7TV-IDs der **eigenen Platzierungen, die die Vorschau erfasst hat**; `removedIds`: `doneKeys` des Lösch-Laufs (leer ohne Lauf); `keptIds`: eigene Platzierungen, die im Set bleiben (unangehakt oder Zeile nicht `done`) | 200 `{ replayed, deletedCount, transferredCount, droppedCount, deactivated }` |
+| **`POST …/tags/{tagId}/operations`** (Registrieren, **vor** dem ersten 7TV-Schreiben, E27 rev. 3) | `{ operationId, kind: "playIn" \| "removal", emoteSetId, targetOwnerTwitchId }` | 201 `{ registeredAtUtc }`; dieselbe `operationId` noch einmal → 200 mit demselben Wert (idempotent); `operationId` bereits für ein anderes Tag/Set registriert → 409 `tag_operation_conflict` |
+| **`POST …/tags/{tagId}/placements`** (Einspielen) | `{ operationId, emoteSetId, targetOwnerTwitchId, sevenTvEmoteIds }` — die **tatsächlich hinzugefügten** IDs (`importedKeys`), **leer erlaubt** (No-op-Einspielen, E26) | 200 `{ replayed, recordedCount, alreadyRecordedCount, notTaggedIds, discardedStaleIds }` |
+| **`POST …/tags/{tagId}/placements/removed`** (Ausräumen) | `{ operationId, emoteSetId, targetOwnerTwitchId, activationOperationId, snapshot: { sevenTvEmoteId, placementOperationId }[], removedIds, keptIds }` — `snapshot`: die **eigenen Platzierungen, die die Vorschau erfasst hat, je mit der gelesenen Revision**; `removedIds`: `doneKeys` des Lösch-Laufs (leer ohne Lauf); `keptIds`: eigene Platzierungen, die im Set bleiben (unangehakt oder Zeile nicht `done`) | 200 `{ replayed, deletedCount, transferredCount, droppedCount, sweptCount, deactivated }` |
 
-Beide: `operationId` ist eine UUID (400 `tag_operation_id_invalid` sonst); `emoteSetId` wird mit
+Alle drei: `operationId` ist eine UUID (400 `tag_operation_id_invalid` sonst); `emoteSetId` wird mit
 `EmoteSetIdValidation.IsValid` geprüft (400 `invalid_emote_set_id`); sie **muss nicht** das aktive Set
-sein (E6: gemeldet wird, wohin geschrieben wurde). Eine bekannte `operationId` → 200 mit
-`replayed: true`, alle Zähler 0, nichts geschrieben (E27). Alles in **einer Transaktion**; die
-Operation wird im selben Commit gespeichert.
+sein (E6: gemeldet wird, wohin geschrieben wurde). Vor dem Service-Aufruf die 7TV-Besitzprüfung
+(6.1, E9 rev. 3). Eine Meldung zu einer **nicht registrierten** Operation → 404 `tag_operation_unknown`;
+zu einer Operation mit **anderem `emoteSetId` oder `kind`** → 409 `tag_operation_conflict`; zu einer
+bereits angewandten → 200 `replayed: true`, alle Zähler 0, nichts geschrieben (E27). Jede Meldung läuft
+in **einer Transaktion**, die zuerst die Kanalzeile mit `FOR UPDATE` nimmt (5.5 Regel 6) und am Ende
+`AppliedAtUtc` setzt.
 
-**Einspielen:** je ID mit Eintrag ein Upsert `(tagId, id, emoteSetId)` (`recordedCount` /
-`alreadyRecordedCount`); IDs ohne Eintrag → `notTaggedIds`, nicht platziert. Dann Upsert
-`EmoteTagActivation (tagId, emoteSetId)` mit dieser `operationId` — **auch bei leerer ID-Liste**.
+**Einspielen:** je ID mit Eintrag: existiert `EmoteSetLeaveObservation (Kanal, id, emoteSetId)` mit
+`LastObservedAtUtc > RegisteredAtUtc` der Operation → **verworfen**, `discardedStaleIds` (E33); sonst
+Upsert `(tagId, id, emoteSetId)` mit `OperationId = operationId` (`recordedCount` /
+`alreadyRecordedCount`). IDs ohne Eintrag → `notTaggedIds`, nicht platziert. Dann Upsert
+`EmoteTagActivation (tagId, emoteSetId)` mit dieser `operationId` — **auch bei leerer ID-Liste** und
+auch, wenn alles verworfen wurde (das Tag wurde eingespielt; was davon noch da ist, sagt die nächste
+Live-Lesung).
 
-**Ausräumen**, über P = Platzierungen `(tagId, ·, emoteSetId)` ∩ `snapshotIds` (**nur diese**, E27):
+**Ausräumen.** Sei P = die Platzierungen `(tagId, ·, emoteSetId)`, die **jetzt** existieren; S = der
+`snapshot`. Ein Snapshot-Eintrag **trifft** eine Platzierung in P nur, wenn ID **und**
+`placementOperationId` übereinstimmen (Revision, 5.3) — ein Eintrag ohne Treffer wird übersprungen.
 
-1. P ∩ `removedIds` → löschen (`deletedCount`).
-2. P ∩ `keptIds` → Übertragung nach 5.5 Regel 4: gibt es ein aktives T′ mit Eintrag, wandert die
-   Platzierung (`transferredCount`; existiert `(T′, X, S)` schon, nur Löschung); sonst Löschung
-   (`droppedCount`).
-3. P \ (`removedIds` ∪ `keptIds`) → laut Vorschau nicht mehr im Set → löschen (`droppedCount`).
-4. Platzierungen von `tagId` in `emoteSetId`, die **nicht** in `snapshotIds` stehen, bleiben
-   unberührt (sie stammen aus einer späteren Operation).
-5. Deaktivieren: `EmoteTagActivation (tagId, emoteSetId)` wird gelöscht, **wenn** ihre `OperationId`
-   gleich `activationOperationId` der Meldung ist (`deactivated: true`); sonst bleibt sie
-   (`deactivated: false` — ein neueres Einspielen hat das Tag erneut aktiviert).
-6. IDs in `removedIds`/`keptIds` außerhalb P sind kein Fehler (ein fremdes oder unplatziertes Emote
-   wurde in der Vorschau angehakt — erlaubt, 7.2/6).
+1. Getroffene Platzierungen mit ID in `removedIds` → löschen (`deletedCount`).
+2. Getroffene mit ID in `keptIds` → Übertragung nach 5.5 Regel 4 (`transferredCount`; die übertragene
+   Platzierung bekommt `OperationId = operationId`), ohne aktives T′ → löschen (`droppedCount`).
+3. Getroffene, deren ID weder in `removedIds` noch in `keptIds` steht → laut Vorschau nicht mehr im Set
+   → löschen (`droppedCount`).
+4. Deaktivieren: `EmoteTagActivation (tagId, emoteSetId)` wird gelöscht, **wenn** ihre `OperationId`
+   gleich `activationOperationId` ist (`deactivated: true`); sonst bleibt sie (`deactivated: false` —
+   ein neueres Einspielen hat das Tag erneut aktiviert), und Schritt 5 entfällt.
+5. **Sweep** (E26 rev. 3): jede **weitere** Platzierung in P — nicht getroffen, weil nach der Vorschau
+   hereingewandert, neu platziert oder in anderer Revision — wird wie „behalten" behandelt: Übertragung
+   an ein aktives T′ oder Löschung (`sweptCount`). Danach gilt: keine Platzierung `(tagId, ·,
+   emoteSetId)` mehr.
+6. IDs in `removedIds`/`keptIds` ohne Treffer sind kein Fehler (ein fremdes, unplatziertes oder
+   inzwischen anders revidiertes Emote — erlaubt, 7.2/6).
 
 Beide Meldungen schreiben einen Audit-Eintrag `tag.playedIn` / `tag.removed` mit
-`{ tagId, emoteSetId, operationId, emoteCount }` (E30: ohne Namen). **Kein Resync, kein Live-Event**
-aus diesen Meldungen — die Läufe lösen ihren Resync über `sync-imported`/`sync-deleted` aus (3.4);
-die Platzierungsmeldung ist Buchführung über die Buchführung.
+`{ tagId, emoteSetId, operationId, emoteCount }` (E30: ohne Namen); die Registrierung schreibt keinen
+(sie ist Absicht, kein Ereignis). **Kein Resync, kein Live-Event** aus diesen Meldungen — die Läufe
+lösen ihren Resync über `sync-imported`/`sync-deleted` aus (3.4); die Platzierungsmeldung ist
+Buchführung über die Buchführung.
 
 ### 6.5 Neue Fehlercodes (Regel 7)
 
 T-B: `tag_name_invalid`, `tag_name_taken`, `tag_limit_reached`, `tag_not_found`,
-`tag_entry_limit_reached`. T-C: `tag_operation_id_invalid`. Je ein Eintrag in `ApiErrorCodes.cs`,
-`api-error.ts` und beiden Locale-Dateien. Wiederverwendet: `emote_ids_empty`, `emote_ids_invalid`,
-`invalid_emote_set_id`, `channel_not_found`, `invalid_channel_name`, `invalid_source_kind`.
+`tag_entry_limit_reached`. T-C: `tag_operation_id_invalid`, `tag_operation_unknown`,
+`tag_operation_conflict`. Je ein Eintrag in `ApiErrorCodes.cs`, `api-error.ts` und beiden
+Locale-Dateien. Wiederverwendet: `emote_ids_empty`, `emote_ids_invalid`, `invalid_emote_set_id`,
+`channel_not_found`, `invalid_channel_name`, `invalid_source_kind`, `emote_set_not_found`,
+`foreign_channel_seventv_unavailable` (Besitzprüfung, 6.1).
 **T-C ergänzt** `ValidateSyncImportedVocabulary` um `"tag"` (ohne `SourceChannelName`, ohne
 `LeaderboardSort`, wie `"file"`) — sonst endet jeder Einspiel-Lauf mit 400 **nach** dem 7TV-Schreiben.
 
@@ -610,7 +718,8 @@ T-B: `tag_name_invalid`, `tag_name_taken`, `tag_limit_reached`, `tag_not_found`,
 
 `tests/EmotePurge.Api.Tests/ApiFactory.cs:252-274` ersetzt jeden Handler-Service, weil
 `RequestDelegateFactory` die Handler-Services **vor** der Filter-Pipeline auflöst. `IEmoteTagService`
-kommt dort als Substitute dazu.
+kommt dort als Substitute dazu; `IImportTargetOwnershipService` ist dort bereits ersetzt (die
+Besitzprüfungs-Fälle der Melde-Routen stellen seinen Status je Test).
 
 ---
 
@@ -650,6 +759,14 @@ eingespieltes Tag** erlaubt (nachgetaggte Emotes nachziehen).
 2. `GET …/tags/{tagId}/entries?emoteSetId=` frisch laden; stimmt `emoteSetId` der Antwort nicht mit
    der eingefrorenen überein oder ist `isActiveSet === false` → Abbruch mit Notiz „Das aktive Set hat
    gewechselt — Seite neu laden" (Familie `tags.errors.setChanged`), kein Lauf.
+2a. **Registrieren** `POST …/tags/{tagId}/operations` `{ operationId, kind: "playIn", emoteSetId,
+   targetOwnerTwitchId }` (E27 rev. 3). 403 → der Nutzer darf dieses Set bei 7TV nicht schreiben →
+   Banner `tags.errors.noWriteRight`, kein Lauf (das hätte sonst erst der erste ADD gesagt); 503 →
+   `tags.errors.ownershipUnavailable`, erneut versuchen. `targetOwnerTwitchId` kommt aus
+   `resolveEditableSet` (Schritt 2b), das der Import-Flow für Tag-Läufe ohnehin braucht — Reihenfolge
+   im Plan: 2b vor 2a.
+2b. **Set-Prüfung** `resolveEditableSet(emoteSetId)` (liefert `ownerTwitchChannelId`; Muster
+   `MassDeletePanel.openConfirmDialog`).
 3. **Live-Lesung** `loadSevenTvSetEntries(httpClient, emoteSetId)`; **`complete === false` oder Fehler
    blockt** (E28), Grund als Banner am Knopf (`tags.errors.setReadIncomplete` / `setReadUnavailable`,
    Muster `massDelete.errors.*`), erneut versuchen möglich.
@@ -659,31 +776,47 @@ eingespieltes Tag** erlaubt (nachgetaggte Emotes nachziehen).
    name: alias, imageUrl }`; `source: ImportSource` mit `origin = { kind: 'tag', tagId, tagName,
    channelName }`. **Kein** Fallback auf `inSet` des Servers (E28).
 5. **`toAdd.length === 0`** → kein Lauf; der Flow sendet **direkt** die Einspiel-Meldung
-   `POST …/placements` mit `{ operationId, emoteSetId, sevenTvEmoteIds: [] }` (Aktivierung, E26);
-   Erfolg → vergängliche Meldung „Alle 100 Emotes von Stronghold sind schon im Set — Tag gilt als
-   eingespielt"; Fehler → `NoticeBanner error` mit „Erneut versuchen" (derselbe `operationId`). Fertig.
-6. Sonst **`startImportFlow(deps, source, { kind: 'chosen', choice })`** mit `choice` = aktives Set
-   (wie `import-trigger.ts`'s `toImportTarget`, `'trackedActive'`-Schnellweg). Ab hier der bestehende
-   Import: Ziel laden, Bestätigungsdialog mit Origin-Zeile „aus Tag Stronghold" und Übersprungen-Zeile
-   „3 sind schon im Set" (`skippedDuplicates`-Vorgabe aus Schritt 4), Slot-Projektion (warnt),
-   Namenskonflikte im Konfliktschritt, Token, `filterAlreadyPresent` (zweite Live-Lesung — bewusst
-   doppelt: sie ist die letzte Verteidigung gegen den Doppel-Push, 3.4), `recheckTransferPlan`,
-   `startImport`. Der Flow reicht `operationId` und `tagId` in `startImport` hinein (neue optionale
-   `tag`-Felder am Ziel-Objekt), damit der Lauf-Record sie trägt.
+   `POST …/placements` mit `{ operationId, emoteSetId, targetOwnerTwitchId, sevenTvEmoteIds: [] }`
+   (Aktivierung, E26); Erfolg → vergängliche Meldung „Alle 100 Emotes von Stronghold sind schon im Set
+   — Tag gilt als eingespielt"; Fehler → `NoticeBanner error` mit „Erneut versuchen" (derselbe
+   `operationId`). Fertig.
+6. Sonst **`startImportFlow(deps, source, { kind: 'chosen', choice, pinSetId: true })`** (E29 rev. 3)
+   mit `choice` = das eingefrorene Set (gebaut wie `import-trigger.ts`'s `toImportTarget`). **Mit
+   `pinSetId`** nimmt `toTargetSelection` **nicht** den `trackedActive`-Schnellweg, auch wenn die ID die
+   aktive ist, sondern `{ kind: 'trackedSet', channelName, emoteSetId }` — der Loader liest dann genau
+   dieses Set (Preis: der `trackedSet`-Zweig liest die Mitgliederliste über die #220-Vorschau-Route und
+   kostet ein Permit aus `TrackedEmoteSetPreview`; für zwei Läufe je Stream hinnehmbar). Nach der
+   Zielauflösung prüft der Flow `targetState.setId === emoteSetId` — sonst Abbruch
+   `tags.errors.setChanged`, kein Dialog. Ab hier der bestehende Import: Bestätigungsdialog mit
+   Origin-Zeile „aus Tag Stronghold" und Übersprungen-Zeile „3 sind schon im Set"
+   (`skippedDuplicates`-Vorgabe aus Schritt 4), Slot-Projektion (warnt), Namenskonflikte im
+   Konfliktschritt, Token, `filterAlreadyPresent` (zweite Live-Lesung — bewusst doppelt: sie ist die
+   letzte Verteidigung gegen den Doppel-Push, 3.4), `recheckTransferPlan`. **Unmittelbar vor
+   `startImport`** (in `start()`, nach dem Arbiter-Check) ein zweiter Vergleich: `targetState.setId`,
+   die aktuelle `activeEmoteSetId()` der Seite (vom Flow als Signal mitgegeben) und die eingefrorene ID
+   müssen gleich sein — sonst `noteRefusedStart`-artige Notiz `tags.errors.setChanged`, kein Lauf. Der
+   Flow reicht `operationId`, `tagId` und `emoteSetId` in `startImport` hinein (neue optionale
+   `tag`-Felder am Ziel-Objekt), damit der Lauf-Record sie trägt; `run.targetSetId` ist damit
+   **per Konstruktion** die registrierte ID.
 7. **Lauf** über `SevenTvImportService`; Dock, Abbruch, Settlement, `sync-imported` mit
    `sourceKind: 'tag'`, Resync wie jeder Import ins aktive Set.
 8. **Einspiel-Meldung am Record** (E14): nach `settled` parallel zu `reportImported`:
-   `POST …/placements` mit `{ operationId, emoteSetId: run.targetSetId, sevenTvEmoteIds:
-   importedKeys(run) }` — nur `done`-Zeilen, die hinzugefügt haben (`add`, `renameSource`, `replace`).
-   Bei Abbruch das bis dahin Gelungene. `tagPlacementReport: SyncReportState` am `ImportRunInfo`,
-   `reportsPending` zählt sie, Dock-Zeile `sevenTvRun.tagReport.*` mit Retry (gleiche `operationId`).
-   Verlorene Meldung → fail-safe: Emotes erscheinen beim Ausräumen unter „war schon vorher im Set"
-   **und** das Tag gilt nicht als eingespielt (Aktivierung fehlt) — der Mensch sieht es am Zustand.
+   `POST …/placements` mit `{ operationId, emoteSetId: run.targetSetId, targetOwnerTwitchId,
+   sevenTvEmoteIds: importedKeys(run) }` — nur `done`-Zeilen, die hinzugefügt haben (`add`,
+   `renameSource`, `replace`). Bei Abbruch das bis dahin Gelungene. `tagPlacementReport: SyncReportState`
+   am `ImportRunInfo`, `reportsPending` zählt sie, Dock-Zeile `sevenTvRun.tagReport.*` mit Retry
+   (gleiche `operationId`). Ein `discardedStaleIds` > 0 in der Antwort wird als Dock-Zeile genannt
+   („k Emotes wurden inzwischen entfernt und nicht vermerkt"). Verlorene Meldung → fail-safe: Emotes
+   erscheinen beim Ausräumen unter „war schon vorher im Set" **und** das Tag gilt nicht als eingespielt
+   (Aktivierung fehlt) — der Mensch sieht es am Zustand.
 9. Nach `closed`: `GET …/tags` neu (Zähler, `active`).
 
-**Fehlerpfade:** Token fehlt, Prompt abgebrochen → kein Lauf, keine Meldung. 7TV 401/403 mitten im
-Lauf → Engine-`abortOn`, Token gelöscht, Rest `cancelled`, Meldung nennt das Gelungene. Set wechselt
-nach Schritt 2 → Import-Flow prüft sein Ziel selbst; die Meldung trägt `run.targetSetId`.
+**Fehlerpfade:** Token fehlt, Prompt abgebrochen → kein Lauf; die registrierte Operation bleibt als
+nie angewandte Zeile (5.4). 7TV 401/403 mitten im Lauf → Engine-`abortOn`, Token gelöscht, Rest
+`cancelled`, Meldung nennt das Gelungene. Set wechselt zwischen Schritt 1 und Start → einer der beiden
+Vergleiche in Schritt 6 bricht ab; wechselt es **während** des Laufs, schreibt der Lauf weiter ins
+eingefrorene Set (7TV adressiert Mutationen über die Set-ID, nicht über „aktiv") und die Meldung trägt
+dieselbe ID — die Platzierungen ruhen dann in einem nicht mehr aktiven Set (E6).
 
 ### 7.2 Ausräumen (T-C)
 
@@ -695,10 +828,13 @@ Zustand daneben).
 
 1. `operationId = crypto.randomUUID()`; `emoteSetId = activeEmoteSetId()` einfrieren (E29).
 2. `GET …/tags/{tagId}/entries?emoteSetId=` frisch laden → `activationOperationId`,
-   `placedByThisTag`, `placedAtUtc`, `heldByActiveTags`, `placedByOtherTags`. Antwort-`emoteSetId` ≠
-   eingefroren oder `isActiveSet === false` → Abbruch „aktives Set hat gewechselt".
+   `placedByThisTag`, `placedAtUtc`, `placementOperationId`, `heldByActiveTags`, `placedByOtherTags`.
+   Antwort-`emoteSetId` ≠ eingefroren oder `isActiveSet === false` → Abbruch „aktives Set hat
+   gewechselt".
 3. **Set-Prüfung** `resolveEditableSet(emoteSetId)` mit Timeout; `notEditable`/`notSelectable`/
-   `unavailable` → kein Dialog, Grund als Banner (Familie `massDelete.errors.*`).
+   `unavailable` → kein Dialog, Grund als Banner (Familie `massDelete.errors.*`). Dann
+   **Registrieren** `POST …/operations` `{ operationId, kind: "removal", emoteSetId,
+   targetOwnerTwitchId }` (E27 rev. 3); 403/503 wie 7.1/2a.
 4. **Live-Lesung** `loadSevenTvSetEntries(emoteSetId)`; **`complete === false` oder Fehler blockt**
    (3.4). Liefert zugleich die Aliasse für Queue und Protokoll.
 5. **Vorschlag** (reine Funktion `proposeTagRemoval(entries, live)`, `shared/tags/tag-removal.ts`),
@@ -713,8 +849,10 @@ Zustand daneben).
    - `inLive`, nicht `placedByThisTag`, niemand platziert → **unangehakt**, „war schon vorher im Set"
      (E2 rev. 2; auch der Fall einer verlorenen Einspiel-Meldung).
    Ergebnis `{ rows: { sevenTvEmoteId, aliases, checked, reason, placedAtUtc }[], notInSetCount,
-   snapshotIds }` mit `snapshotIds` = **alle** `placedByThisTag`-IDs, sichtbar oder nicht (die
-   nicht-sichtbaren gehören zum Snapshot, damit der Server sie als `dropped` bereinigt, 6.4/3).
+   snapshot }` mit `snapshot` = **alle** `placedByThisTag`-Einträge als `{ sevenTvEmoteId,
+   placementOperationId }`, sichtbar oder nicht (die nicht-sichtbaren gehören zum Snapshot, damit der
+   Server sie als `dropped` bereinigt, 6.4/3; die Revision, damit er nur die gelesene Platzierung
+   anfasst, 6.4).
 6. **Bestätigung = Vorschau** (E19, `TagRemovalConfirmDialog`, `openTagRemovalConfirmDialog`, §7):
    Titel „Stronghold ausräumen"; Zusammenfassungszeile „n Emotes werden entfernt, k bleiben im Set"
    (folgt den Haken live); Set-Zeile (`massDelete.confirmSetLine`); Shared-Set-Warnung aus
@@ -729,21 +867,21 @@ Zustand daneben).
 7. **Bestätigen** → Abbruchprüfung (`activeEmoteSetId()` ≠ eingefroren → `massDelete.setChangedDuringConfirm`;
    `arbiter.activeRun() !== null` → `noteRefusedStart('delete')`). Dann:
    - **n = 0:** kein Lösch-Lauf. Der Flow sendet **direkt** `POST …/placements/removed` mit
-     `{ operationId, emoteSetId, activationOperationId, snapshotIds, removedIds: [], keptIds: <alle
-     eigenen Platzierungen, die inLive sind> }`; Erfolg → vergängliche Meldung „Stronghold ausgeräumt —
-     nichts zu entfernen"; Fehler → Banner mit Retry (gleiche ID).
+     `{ operationId, emoteSetId, targetOwnerTwitchId, activationOperationId, snapshot, removedIds: [],
+     keptIds: <alle eigenen Platzierungen, die inLive sind> }`; Erfolg → vergängliche Meldung
+     „Stronghold ausgeräumt — nichts zu entfernen"; Fehler → Banner mit Retry (gleiche ID).
    - **n > 0:** **`SevenTvDeleteService.startDelete(emoteSetId, channelName, emotes,
      expectedChannelName: channelName, targetOwnerTwitchId)`** mit `emotes` = angehakte Zeilen als
      `DeleteQueueEmote { sevenTvEmoteId, name, aliases }`; der Flow reicht `operationId`, `tagId`,
-     `activationOperationId`, `snapshotIds` und die unangehakten eigenen IDs in den Record. Ab hier
+     `activationOperationId`, `snapshot` und die unangehakten eigenen IDs in den Record. Ab hier
      der bestehende Delete: Fortschritt, Abbruch, Settlement, Purge-Protokoll, `sync-deleted`, Resync,
      „Wiederherstellen" (E13).
 8. **Ausräum-Meldung am Record** (E14, nur n > 0): nach `settled` parallel zu `reportDeleted`:
-   `POST …/placements/removed` mit `{ operationId, emoteSetId: run.setId, activationOperationId,
-   snapshotIds, removedIds: run.result.doneKeys, keptIds }`, `keptIds` = unangehakte eigene
-   Platzierungen **plus** angehakte eigene, deren Zeile `failed`/`cancelled`/`unknown` endete (sie
-   stehen noch im Set; nach 6.4/2 wandern sie oder werden gelöscht — ausgeräumt heißt ausgeräumt,
-   E26). `tagRemovalReport` am `DeleteRunInfo`, Dock-Zeile, Retry.
+   `POST …/placements/removed` mit `{ operationId, emoteSetId: run.setId, targetOwnerTwitchId,
+   activationOperationId, snapshot, removedIds: run.result.doneKeys, keptIds }`, `keptIds` =
+   unangehakte eigene Platzierungen **plus** angehakte eigene, deren Zeile `failed`/`cancelled`/`unknown`
+   endete (sie stehen noch im Set; nach 6.4/2 wandern sie oder werden gelöscht — ausgeräumt heißt
+   ausgeräumt, E26). `tagRemovalReport` am `DeleteRunInfo`, Dock-Zeile, Retry.
 9. Nach `closed`: Zähler neu laden; `active` ist nun `false`, der Knopf „Ausräumen" verschwindet,
    „Einspielen" bleibt.
 
@@ -771,7 +909,10 @@ Ausräumen → Emotes wieder im Set ohne Platzierung → „war schon vorher im 
 | **Duplikatzelle (#74, zwei Aliasse, eine ID)** | Ein Eintrag (ID). Einspielen: ID ist im Set → übersprungen (E28). Ausräumen: ein REMOVE nimmt beide Einträge; Protokoll trägt alle Aliasse. |
 | **Einspiel-Lauf abgebrochen** | Meldung nennt `importedKeys` (Gelungenes); Aktivierung wird gesetzt. |
 | **Tab geschlossen während des Laufs** | `beforeunload`-Wächter bei destruktiven Läufen; verlorene Meldung → fail-safe (E5). Einspielen ohne Meldung → Tag nicht aktiviert, Emotes „war schon vorher im Set"; der Mod sieht „nicht eingespielt" und kann erneut einspielen (No-op → Aktivierung). |
-| **Zwei Mods räumen gleichzeitig aus** | Der zweite Lauf sieht `failed`-Zeilen oder in der Live-Lesung die Emotes nicht mehr. Beide Meldungen tragen eigene `operationId`s; die zweite findet ihre `snapshotIds` schon gelöscht und `activationOperationId` ggf. nicht mehr passend → `deactivated: false`, nichts Falsches. |
+| **Zwei Mods räumen gleichzeitig aus** (dasselbe Tag) | Der zweite Lauf sieht `failed`-Zeilen oder in der Live-Lesung die Emotes nicht mehr. Beide Meldungen tragen eigene `operationId`s und warten nacheinander auf die Kanalsperre (5.5 Regel 6); die zweite findet ihre Snapshot-Einträge schon gelöscht oder in anderer Revision (kein Treffer), `activationOperationId` passt noch (gleiche Aktivierung) → deaktiviert erneut ins Leere, Sweep findet nichts. |
+| **Zwei Tags, die dasselbe Emote enthalten, werden überlappend ausgeräumt** | Gegenbeispiel 7 in 5.5: der Sweep der zweiten Meldung räumt die hereingewanderte Platzierung ab; beide inaktiv, keine Platzierung, X bleibt im Set. |
+| **Einspiel-Meldung kommt nach einem beobachteten Verlassen** | Gegenbeispiel 6 in 5.5: betroffene IDs werden endgültig verworfen (`discardedStaleIds`), die Dock-Zeile nennt die Zahl; Aktivierung wird trotzdem gesetzt. |
+| **Mod ohne 7TV-Schreibrecht ruft Melden/Registrieren auf** | Kanalfilter lässt durch (3.3), die Besitzprüfung im Handler antwortet 403 (E9 rev. 3). Der Knopf „Einspielen"/„Ausräumen" bleibt für ihn sichtbar — ob er ein Token hat, weiß die Seite erst beim Klick; die Registrierung (7.1/2a, 7.2/3) sagt es ihm **vor** dem ersten 7TV-Schreiben. |
 | **Zwei Mods spielen gleichzeitig ein** | Beide Live-Lesungen sehen X nicht; beide ADDs gehen durch (3.4) → X zweimal im Set, zwei Platzierungen. **Restrisiko R2** (13.1). Ausräumen: ein REMOVE nimmt beide Einträge. |
 | **Kanal ohne aktives Set** | Tags lesbar/pflegbar; Einspielen/Ausräumen fehlen; Dock-Knopf fehlt (§2.5). |
 | **Shown set ≠ aktives Set** im Raster | Tag-Filter funktioniert; „Tag zuweisen" und die Filterzeilen-Knöpfe **fehlen** (E3/E6/E29); stattdessen der Satz „Einspielen und Ausräumen wirken auf das aktive Set". |
@@ -879,7 +1020,9 @@ Tag gilt danach als nicht mehr eingespielt", `confirm` „Ausräumen") · `tags.
 · `tags.feedback.*` (zugewiesen, entfernt, skipped, `allPresent` „Alle {{count}} Emotes von {{tag}}
 sind schon im Set — Tag gilt als eingespielt", `removedNothing` „{{tag}} ausgeräumt — nichts zu
 entfernen") · `tags.errors.*` (`setChanged`, `setReadIncomplete`, `setReadUnavailable`,
-`reportFailed` + `retry`) · `tags.filter.*` (`label`, `all`, `active` „eingespielt", `inSet`, `notInSet`,
+`reportFailed` + `retry`, `noWriteRight` „Du darfst dieses Set bei 7TV nicht bearbeiten",
+`ownershipUnavailable`) · `sevenTvRun.tagReport.discardedStale.{one,other}` „{{count}} Emotes wurden
+inzwischen entfernt und nicht vermerkt" · `tags.filter.*` (`label`, `all`, `active` „eingespielt", `inSet`, `notInSet`,
 `overview`, `activeSetOnly`) · `import.origin.tag` „aus Tag {{tag}}" · `sevenTvRun.tagReport.{pending,failed,retry}`
 · `errors.api.tag_*` (6.5). Button-Labels bleiben konstant (§9).
 
@@ -927,35 +1070,54 @@ Fassung):**
   Limit 1000/1001 vor dem Schreiben, Dedupe); Herausnehmen (Eintrag + Platzierungen aller Sets weg);
   Lesen mit explizitem `emoteSetId` (Zähler, `isActiveSet`, `inSetCount null` für Fremd-Set); Audit ohne
   `tagName`; Kaskade beim Kanal-Purge; Merge-Guard (`ChannelIdentityServiceTests`).
-- *T-C:* Einspiel-Meldung (Upsert, leere Liste aktiviert, `notTaggedIds`, Replay → `replayed`, nichts
-  geschrieben); Ausräum-Meldung (nur `snapshotIds` berührt, `removedIds` löscht, `keptIds` wandert zum
-  ältesten aktiven T′ mit Eintrag / wird gelöscht ohne T′, Rest `dropped`, Platzierungen außerhalb des
-  Snapshots unberührt, Deaktivierung nur bei passender `activationOperationId`, Replay); die vier
-  Gegenbeispiele aus 5.5 als je ein Test-Szenario; `heldByActiveTags` nur bei Aktivierung.
+- *T-C:* Registrierung (idempotent; Konflikt bei anderem Tag/Set/Kind → `tag_operation_conflict`;
+  `RegisteredAtUtc` ist Serverzeit); Einspiel-Meldung (nicht registriert → `tag_operation_unknown`;
+  anderes Set → Konflikt; Upsert mit `OperationId`; leere Liste aktiviert; `notTaggedIds`;
+  **`discardedStaleIds` bei Verlassen nach der Registrierung, nicht bei Verlassen davor**; Replay →
+  `replayed`, nichts geschrieben); Ausräum-Meldung (Treffer nur bei ID **und** Revision; `removedIds`
+  löscht; `keptIds` wandert zum ältesten aktiven T′ mit Eintrag und bekommt die neue Revision / wird
+  gelöscht ohne T′; Rest `dropped`; **Sweep** räumt nach Deaktivierung alle übrigen Platzierungen des
+  Tags im Set ab — übertragen oder gelöscht; kein Sweep bei `deactivated: false`; Replay); die sieben
+  Gegenbeispiele aus 5.5 als je ein Test-Szenario (5 bis 7 mit zwei verschachtelten Operationen, 7
+  zusätzlich mit zwei gleichzeitig startenden Transaktionen gegen die Kanalsperre); **Invariante**
+  „inaktiv ⇒ keine Platzierung" nach jedem Szenario als gemeinsame Assertion; `heldByActiveTags` nur
+  bei Aktivierung.
 - *T-C, `SevenTvSyncServiceTests`:* Archivierung über `ReconcileAsync` löscht Platzierungen
-  `(Kanal-Tags, ID, ActiveEmoteSetId)` im selben Commit, lässt Aktivierung und Fremd-Set-Platzierungen
-  stehen; dasselbe für den Delta-Pfad (`PulledIds`); `EmoteServiceTests`: `MarkInSetAsync` Richtung
-  Delete löscht Platzierungen des gemeldeten Sets, Richtung Restore legt keine an.
+  `(Kanal-Tags, ID, ActiveEmoteSetId)` **und** schreibt `EmoteSetLeaveObservation` im selben Commit
+  (auch für einen Kanal ohne Tags), lässt Aktivierung und Fremd-Set-Platzierungen stehen; dasselbe für
+  den Delta-Pfad (`PulledIds`); `EmoteServiceTests`: `MarkInSetAsync` Richtung Delete löscht
+  Platzierungen des gemeldeten Sets und schreibt die Beobachtung, Richtung Restore legt weder
+  Platzierung noch Beobachtung an und lässt eine bestehende Beobachtung stehen.
 
 **Backend — `tests/EmotePurge.Api.Tests`:** `AuthFilterMatrixTests` je Route `InlineData` für 401
-anonym/unvollständig; je Gruppe 403-Fact (`CanViewUsageStatsAsync false` → Lesen/Melden 403;
-`CanManageChannelAsync false` → Pflegen 403, Melden **nicht** 403 — E9); 400 `invalid_channel_name` vor
-Autorisierung; `invalid_emote_set_id` am Query- und Body-Wert; `tag_operation_id_invalid`;
-Policy je Route; `ApiFactory` substituiert `IEmoteTagService`. `ValidateSyncImportedVocabulary`:
-`"tag"` ohne Namen ok, mit Namen `invalid_source_kind`.
+anonym/unvollständig; je Gruppe 403-Fact (`CanViewUsageStatsAsync false` → Lesen/Registrieren/Melden
+403; `CanManageChannelAsync false` → Pflegen 403, Registrieren/Melden **nicht** 403 — E9); **die
+Besitzleiter auf allen drei Registrier-/Melde-Routen** (`IImportTargetOwnershipService` →
+`Forbidden` ⇒ 403 und `IEmoteTagService` **nicht** aufgerufen; `SetNotFound` ⇒ 404
+`emote_set_not_found`; `Unavailable` ⇒ 503 `foreign_channel_seventv_unavailable`; Reihenfolge:
+Kanalfilter vor Leiter — ein Nicht-Leseberechtigter bekommt 403 ohne dass die Leiter läuft); 400
+`invalid_channel_name` vor Autorisierung; `invalid_emote_set_id` am Query- und Body-Wert;
+`tag_operation_id_invalid`; Policy je Route; `ApiFactory` substituiert `IEmoteTagService`.
+`ValidateSyncImportedVocabulary`: `"tag"` ohne Namen ok, mit Namen `invalid_source_kind`.
 
 **Frontend — Vitest:**
 
 - `shared/tags/tag-play-in.spec.ts`: Partition gegen `aliasesById`/`aliaslessIds` (aliaslose ID zählt
   als im Set), Reihenfolge, `ImportRow`-Abbildung, leeres `toAdd`, Origin-Form; kein Fallback-Pfad.
-- `shared/tags/tag-removal.spec.ts`: die fünf Zeilenfälle; nicht-im-Set gezählt; `snapshotIds`
-  enthält auch nicht-sichtbare eigene Platzierungen; `keptIds`-Ableitung inkl. `failed`/`unknown`.
+- `shared/tags/tag-removal.spec.ts`: die fünf Zeilenfälle; nicht-im-Set gezählt; `snapshot`
+  enthält auch nicht-sichtbare eigene Platzierungen, je mit Revision; `keptIds`-Ableitung inkl. `failed`/`unknown`.
 - `emote-usage-filter.spec.ts`: Tag-Dimension (`isAnyActive`, `reset`, `apply`).
 - `tag-assign-dialog.spec.ts`, `tag-removal-confirm-dialog.spec.ts` (Zusammenfassung folgt den Haken,
   Knopf bei n = 0 aktiv mit Zusatzsatz, Reihenfolge angehakt → nicht vorgeschlagen, Schließwert
-  `{ checkedIds, keptIds, snapshotIds }`), `tag-play-in-flow.spec.ts`/`tag-removal-flow.spec.ts`
-  (Set-Einfrieren, Abbruch bei Abweichung, `complete`-Block, No-op-Pfade senden direkt, Retry
-  mit derselben `operationId`).
+  `{ checkedIds, keptIds, snapshot }` mit Revisionen), `tag-play-in-flow.spec.ts`/`tag-removal-flow.spec.ts`
+  (Set-Einfrieren, Registrierung **vor** jeder 7TV-Mutation und vor dem Dialog, 403 der Registrierung
+  → kein Lauf, Abbruch bei Abweichung, `complete`-Block, No-op-Pfade senden direkt, Retry mit derselben
+  `operationId`).
+- `import-flow.spec.ts` (E29 rev. 3): `pinSetId: true` erzwingt `trackedSet` auch bei `emoteSetId ===
+  activeEmoteSetId` (ohne Flag unverändert `trackedActive` — bestehende Fälle bleiben); **Set-Wechsel
+  während der Zielauflösung** (Loader antwortet mit anderer `setId`) → Abbruch, kein Dialog; **Set-Wechsel
+  während der Bestätigung** (Signal `activeEmoteSetId` ändert sich, Dialog bestätigt danach) → kein
+  `startImport`, Notiz; unveränderter Fall → `startImport` mit `targetSetId` = eingefrorene ID.
 - `seven-tv-import.service.spec.ts`/`seven-tv-delete.service.spec.ts`: optionaler Tag-Report hält
   `closed` auf, `failed` bietet Retry mit gleicher ID, ohne Tag-Origin `null`; Body-Form.
 - `tags-page.spec.ts`: Sperren samt Grund; Knopf „Ausräumen" nur bei `active`; URL-Wahl; Leerzustände.
@@ -974,11 +1136,16 @@ mit `setRead`/`addEmote`/`removeEmote`; CDN über die `test.ts`-Fixture; `page.c
    Liste → Zustand „eingespielt".
 4. *T-C:* „Ausräumen" → Vorschau: eine Zeile angehakt mit Datum, eine unangehakt „war schon vorher im
    Set" → „Ausräumen" → `removeEmote` → `sync-deleted` → `POST …/placements/removed` mit
-   `snapshotIds`, `removedIds`, `keptIds: []`; Protokoll-Download angeboten; Knopf verschwindet.
+   `snapshot` (ID + Revision), `removedIds`, `keptIds: []`; Protokoll-Download angeboten; Knopf verschwindet.
 5. *T-C:* Zwei Tags mit gemeinsamem Emote (Gegenbeispiel 2): Ausräumen mit null angehakten Zeilen →
    kein `removeEmote`, Meldung direkt, Zustand „nicht eingespielt".
 6. *T-C:* Unvollständige `setRead` (Mock: `totalCount` ≠ Items) → Einspielen **und** Ausräumen
    blocken mit Grund, kein `addEmote`/`removeEmote`.
+7. *T-C:* `POST …/operations` antwortet 403 → Banner „kein Schreibrecht", kein `setRead`, kein
+   `addEmote`, kein Dialog.
+8. *T-C:* Set-Wechsel zwischen Klick und Bestätigung (Mock: `active-set` wechselt nach dem ersten
+   Aufruf die ID, Live-Event `channel.synced` ausgelöst) → kein `addEmote`, Notiz „aktives Set hat
+   gewechselt".
 
 ## 12. Lieferung in drei Teilen, Abhängigkeiten, Rollout
 
@@ -988,7 +1155,7 @@ mit `setRead`/`addEmote`/`removeEmote`; CDN über die `test.ts`-Fixture; `page.c
 |---|---|---|---|
 | **T-A** | `DeleteProgressSection` + `delete-flow.ts` aus `MassDeletePanel` extrahieren (9.5); `sevenTvRunLeaveGuard`. **Reiner Refactor, keine Verhaltensänderung**; bestehende Specs/E2E unverändert grün. | Frontend-Suiten, E2E, Browser-Blick auf beide Hostseiten. | Nur Api-Image (Frontend liegt im Api-Image). Keine Migration. |
 | **T-B** | Migration `AddEmoteTags` (5.1, 5.2); `IEmoteTagService` CRUD + Zuweisen; Endpoints Lesen/Pflegen (ohne Platzierungsfelder); Fehlercodes; Tags-Seite lesend/pflegend; Tag-Filter mit Zahlen und „→ Übersicht" (ohne Lauf-Knöpfe); Dock „Tag zuweisen…"/„Aus Tag entfernen"; Reiter; Merge-Guard (5.5/7); Abschnitt 10 inkl. **E31 als Freigabevoraussetzung**. | Infrastructure-/Api-Tests, Vitest, E2E Szenario 1, Codex-Review. | Migration von Hand → **Api- und Worker-Image zusammen** (Merge-Guard und EF-Modell laufen im Worker). |
-| **T-C** | Migration `AddEmoteTagPlacements` (5.3, 5.4); Platzierungs-/Aktivierungsfelder in 6.2; Melde-Endpoints 6.4 mit Operations-IDs; `SourceKind "tag"`; `ImportOrigin 'tag'`; Sync-Invalidierung (5.5/5) an drei Stellen; dritte Meldung am Lauf-Record (E14); Einspiel-/Ausräum-Flows und Vorschau-Dialog; Filterzeilen-Knöpfe; Lauf-Dock der Tags-Seite. | Alles aus 11 für T-C, Codex-Review, Live-Verifikation gegen einen Testkanal (Regel 16: Einspielen, Ausräumen, No-op, Set-Wechsel). | Migration von Hand → **Api- und Worker-Image zusammen** (Sync-Invalidierung läuft im Worker) → **erst danach** Tag-Läufe freigeben (Feature-Flag `Tags:RunsEnabled`, Default `false` im ersten Deploy — Festlegung: die Knöpfe Einspielen/Ausräumen rendern nur, wenn das Flag über `GET /api/channels/{channelName}/permissions` oder einen kleinen Config-Endpoint `true` meldet; der Plan wählt den Weg, 13.4/1). |
+| **T-C** | Migration `AddEmoteTagPlacements` (5.3, 5.4 inkl. `EmoteSetLeaveObservation`); Platzierungs-/Aktivierungsfelder in 6.2; Registrier- und Melde-Endpoints 6.4 mit Operations-IDs, Revision, Sweep und 7TV-Besitzprüfung; `SourceKind "tag"`; `ImportOrigin 'tag'`; `ImportFlowTarget.pinSetId` und die beiden Set-Vergleiche im Import-Flow (E29 rev. 3); Sync-Invalidierung mit Beobachtung (5.5/5) an drei Stellen; dritte Meldung am Lauf-Record (E14); Einspiel-/Ausräum-Flows und Vorschau-Dialog; Filterzeilen-Knöpfe; Lauf-Dock der Tags-Seite. | Alles aus 11 für T-C, Codex-Review, Live-Verifikation gegen einen Testkanal (Regel 16: Einspielen, Ausräumen, No-op, Set-Wechsel). | Migration von Hand → **Api- und Worker-Image zusammen** (Sync-Invalidierung läuft im Worker) → **erst danach** Tag-Läufe freigeben (Feature-Flag `Tags:RunsEnabled`, Default `false` im ersten Deploy — Festlegung: die Knöpfe Einspielen/Ausräumen rendern nur, wenn das Flag über `GET /api/channels/{channelName}/permissions` oder einen kleinen Config-Endpoint `true` meldet; der Plan wählt den Weg, 13.4/1). |
 
 Jeder Teil hat seinen eigenen Plan und PR (gegen `main`, nach dem Epic-Merge). Reihenfolge: T-A →
 T-B → T-C; T-A und T-B sind unabhängig voneinander und können parallel geplant werden, T-C braucht
@@ -1008,6 +1175,10 @@ vor dem Messfenster (Memory #69/#73).
    Bruchstellen"): `importOriginSourceChannelName`, `importOriginLeaderboardSort`, Origin-Zeile in
    `import-preview.ts`/`import-confirm-dialog.ts`, Dock-Zusammenfassung, Protokoll-Envelope,
    Server-Vokabular (T-C).
+2a. `ImportFlowTarget` um `pinSetId` erweitern; `toTargetSelection` respektiert es; `startImportFlow`
+   nimmt optional ein `activeEmoteSetId`-Signal und die eingefrorene ID und vergleicht nach der
+   Zielauflösung und in `start()` (E29 rev. 3). Vertragsänderung an `import-flow.ts`/`import-target-loader.ts`
+   nur additiv: ohne `pinSetId` verhält sich der Flow byte-identisch (T-C).
 3. Optionale dritte Meldung am Lauf-Record in `SevenTvImportService`/`SevenTvDeleteService`, inkl.
    `reportsPending`, Dock-Zeile, Retry (T-C).
 4. `EmoteUsageFilter`-Dimension Tag (T-B).
@@ -1039,8 +1210,9 @@ vor dem Messfenster (Memory #69/#73).
 ### 12.6 Zweitmeinung
 
 Vor jedem Plan: `/codex:adversarial-review --model gpt-6.1-sol` über den jeweiligen Teil dieser Spec;
-für T-C mit Fokus auf 5.5 (Aktivierung, Übertragung, Gegenbeispiele), 6.4 (Snapshot-Semantik,
-`activationOperationId`), 7.2/8 (`keptIds`) und 12.5 (Rollout). Vor jedem Merge `/codex:review`.
+für T-C mit Fokus auf 5.5 (Aktivierung, Übertragung, Sweep, Gegenbeispiele 1–7), 6.4
+(Revisionstreffer, `discardedStaleIds`, Kanalsperre), 7.1/6 (angepinnte Set-ID im Import-Flow) und
+12.5 (Rollout). Vor jedem Merge `/codex:review`.
 
 ---
 
@@ -1060,9 +1232,9 @@ für T-C mit Fokus auf 5.5 (Aktivierung, Übertragung, Gegenbeispiele), 6.4 (Sna
 
 | Nr. | Restrisiko | Warum es bleibt | Abfederung |
 |---|---|---|---|
-| **R1** | **Entfernen + Wiederhinzufügen zwischen zwei Beobachtungen** bleibt unsichtbar: die Platzierung überlebt, das von Hand neu hinzugefügte Emote wird beim Ausräumen vorgeschlagen. Fenster: bei aktiver EventAPI Sekunden; bei deaktivierter oder getrennter EventAPI bis zum nächsten Vollsync (`SevenTv:ResyncIntervalSeconds`, Default 60 s, plus 7TVs REST-Cache von 10–30 min, CLAUDE.md „7TV-EventAPI-Grenzen"); in **nicht-aktiven** Sets unbegrenzt (5.5 Regel 5). | Der Server kann nur beobachten, was 7TV ihm zeigt; eine lückenlose Historie gibt es nicht (kein Resume/Replay der EventAPI). | Vorschau mit Haken und **Einspieldatum** je Zeile; Mensch bestätigt; Protokoll + „Wiederherstellen". |
+| **R1** | **Entfernen + Wiederhinzufügen zwischen zwei Beobachtungen** bleibt unsichtbar: die Platzierung überlebt (oder eine verspätete Einspiel-Meldung legt sie an, weil keine Beobachtung existiert — 5.5 Gegenbeispiel 6, Grenze), das von Hand neu hinzugefügte Emote wird beim Ausräumen vorgeschlagen. Fenster: bei aktiver EventAPI Sekunden; bei deaktivierter oder getrennter EventAPI bis zum nächsten Vollsync (`SevenTv:ResyncIntervalSeconds`, Default 60 s, plus 7TVs REST-Cache von 10–30 min, CLAUDE.md „7TV-EventAPI-Grenzen"); in **nicht-aktiven** Sets unbegrenzt (5.5 Regel 5). | Der Server kann nur beobachten, was 7TV ihm zeigt; eine lückenlose Historie gibt es nicht (kein Resume/Replay der EventAPI). | Vorschau mit Haken und **Einspieldatum** je Zeile; Mensch bestätigt; Protokoll + „Wiederherstellen". |
 | **R2** | **Fremdeditor zwischen Live-Lesung und Schreiben** beim Einspielen (oder zwei Mods gleichzeitig): ein Emote wird doppelt gepusht (3.4: 7TV dedupliziert nicht nach ID); beide Einträge erhalten Platzierungen; ein späteres REMOVE nimmt beide. | Keine Transaktion über 7TV hinweg; `complete` schützt vor Verschiebung **innerhalb** der Lesung, nicht vor Änderungen danach. | Zweite Live-Lesung im Import-Flow (`filterAlreadyPresent`) unmittelbar vor dem Start verkleinert das Fenster auf Sekunden; Duplikate sind in der Set-Ansicht als `slotCount`-Fälle sichtbar (#74). |
-| **R3** | **Gefälschte Meldung durch einen Leseberechtigten** (7TV-Editor): kann Platzierungen/Aktivierungen für beliebige getaggte Emotes erzeugen und so Zeilen in der Ausräum-Vorschau vorab anhaken. | E9: wer melden darf, darf heute schon direkt auf 7TV löschen — die Meldung verschafft keine Fähigkeit, die er nicht hat; sie beeinflusst nur einen Vorschlag. | Haken sind Vorschlag; Einspieldatum sichtbar; Mensch bestätigt; Audit `tag.playedIn` mit Actor; Rückweg über das Protokoll. |
+| **R3** | **Gefälschte Meldung durch jemanden mit 7TV-Schreibrecht am Set** (Besitzer oder 7TV-Editor des Set-Kontos): kann Platzierungen/Aktivierungen für beliebige getaggte Emotes erzeugen und so Zeilen in der Ausräum-Vorschau vorab anhaken. Ein Twitch-Mod **ohne** 7TV-Schreibrecht kann das seit E9 rev. 3 **nicht** mehr — die Besitzprüfung (`IImportTargetOwnershipService`, 6.1) weist ihn ab, bevor der Service läuft. | Wer die Besitzprüfung besteht, kann bei 7TV direkt löschen — die Meldung verschafft keine Fähigkeit, die er nicht hat; sie beeinflusst nur einen Vorschlag. Die Besitzprüfung ist bis zu 10 min gecacht (#253 Spec F12) — ein soeben entzogenes Editor-Recht meldet noch kurz weiter; dieselbe Grenze gilt für `sync-deleted` heute. | Haken sind Vorschlag; Einspieldatum sichtbar; Mensch bestätigt; Audit `tag.playedIn` mit Actor; Rückweg über das Protokoll. |
 
 ### 13.2 Bewusste Lücke: „Wiederherstellen" erzeugt keine Platzierung
 
@@ -1088,4 +1260,9 @@ Trockenlauf-Zähler für Tags (13.0).
 2. **Löschung ohne T′ bei behaltenen Platzierungen** (5.5 Regel 4, Festlegung): „ausgeräumt heißt
    keine Platzierungen" — die behaltenen Emotes werden damit „war schon vorher im Set". Alternative:
    behalten und beim nächsten Ausräumen wieder anhaken (verlangte, dass ein inaktives Tag Platzierungen
-   hält, was E26 widerspräche). **Empfehlung:** wie festgelegt.
+   hält, was E26 widerspräche — und seit E26 rev. 3 ist das eine serverseitig geprüfte Invariante).
+   **Empfehlung:** wie festgelegt.
+3. **Kanalsperre statt `(Kanal, Set)`-Sperre** für die Meldungen (5.5 Regel 6, Festlegung): zwei
+   Meldungen in **verschiedenen** Sets desselben Kanals warten unnötig aufeinander. Bei zwei Läufen je
+   Stream ist das kein Problem; eine eigene Sperrzeile je Set wäre eine siebte Tabelle ohne messbaren
+   Nutzen. **Empfehlung:** Kanalsperre.
