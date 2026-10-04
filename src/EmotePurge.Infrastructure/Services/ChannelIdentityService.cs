@@ -652,8 +652,13 @@ public class ChannelIdentityService(
         // double-count usage or throw half of it away. An emote-less loser has nothing to fuse, and
         // that is the only case handled automatically. Anything else is refused, loudly and without
         // writing, for a human to sort out.
+        //
+        // Tags are the second such case: they are keyed by 7TV emote id, so a loser without emotes
+        // can still own some, and the cascade on the Channels FK would silently delete them with the
+        // loser row. A tag with no entries counts too — the name itself is the moderator's work.
         var loserHasEmotes = await db.Emotes.AnyAsync(e => e.ChannelId == loser.Id, ct);
-        if (loserHasEmotes)
+        var loserHasTags = await db.EmoteTags.AnyAsync(t => t.ChannelId == loser.Id, ct);
+        if (loserHasEmotes || loserHasTags)
         {
             counters.MergesRefused++;
             // Both halves settled: the mirror row would otherwise reach the identical refusal from
@@ -662,7 +667,7 @@ public class ChannelIdentityService(
             settledChannelIds.Add(survivor.Id);
             // Deduplicated like cases 3, 5 and 6, and with the strongest claim of the four: a refusal
             // is by definition never self-resolving — it waits for a person to move or delete the
-            // emotes — so an undeduplicated warning repeats every tick for as long as the process
+            // emotes or tags — so an undeduplicated warning repeats every tick for as long as the process
             // lives. Nothing is lost by warning once: MergesRefused >= 1 makes the summary differ
             // from the empty one, and the worker logs the summary on every tick that does, so the
             // state stays visible hourly; only the second, third and thousandth copy of the same
@@ -670,8 +675,8 @@ public class ChannelIdentityService(
             if (warningState.ShouldWarn(ChannelIdentityWarningState.RefusedKey(loser.Id)))
             {
                 logger.LogWarning(
-                    "Zusammenführung von Kanal {LoserChannelName} ({LoserChannelId}) in {SurvivorChannelName} ({SurvivorChannelId}) verweigert: die aufzulösende Zeile hat noch Emotes.",
-                    loser.ChannelName, loser.Id, survivor.ChannelName, survivor.Id);
+                    "Merge of channel {LoserChannelName} ({LoserChannelId}) into {SurvivorChannelName} ({SurvivorChannelId}) refused: the row to be resolved still has emotes ({HasEmotes}) or tags ({HasTags}).",
+                    loser.ChannelName, loser.Id, survivor.ChannelName, survivor.Id, loserHasEmotes, loserHasTags);
             }
 
             // Nothing was written; disposing the transaction rolls back and releases both locks.

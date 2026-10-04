@@ -15,7 +15,10 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 **Betrifft:** `src/EmotePurge.Core/Entities/EmoteTag.cs` · `src/EmotePurge.Core/Entities/EmoteTagEntry.cs` ·
 `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
 `src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTags.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
-`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteIdValidation.cs`
+`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteIdValidation.cs` ·
+`src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs`
 
 Emote tags (#201) are two new tables, added by the purely additive migration `AddEmoteTags`
 (no existing table is touched):
@@ -75,6 +78,17 @@ add/remove request may carry at most `EmoteTagLimits.MaxIdsPerRequest` (= 2 x `M
 raw ids, counted before de-duplication; more is `EmoteIdsInvalid` (400 `emote_ids_invalid`), so an
 unbounded body never reaches the database while a request that could still fill a tag is never
 refused for its size.
+
+**Merge guard (`ChannelIdentityService`).** The Worker's identity reconcile merges an id-less duplicate
+channel row (the loser) into the row that owns the Twitch id. It already refused when the loser still
+had emotes; it now also refuses when the loser owns any tag (`loserHasTags`, a tag with no entries
+included). Tags are keyed by 7TV emote id with no per-channel row to re-point, there is no correct
+rule for fusing two channels' tag sets, and the cascade on the `Channels` FK would otherwise delete
+the loser's tags silently with its row. The refusal behaves exactly like the emote case: nothing is
+written, `MergesRefused` counts once although the pair is met from both ends, both rows are marked
+settled for the pass, and the warning is deduplicated per loser. The (English) log line names both
+reasons separately (`emotes ({HasEmotes})`, `tags ({HasTags})`). A Worker behaviour change, deployed
+with the next Worker image, not earlier.
 
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 

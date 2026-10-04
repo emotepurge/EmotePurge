@@ -352,6 +352,37 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.Contains(harness.Logger.Entries, e => e.Message.Contains(survivor.Id) && e.Message.Contains(loser.Id));
     }
 
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheLoserHasATagButNoEmotes_RefusesTheMergeAndLeavesBothRowsAlone()
+    {
+        await using var db = fixture.CreateDbContext();
+        var survivor = await SeedChannelAsync(db, "identitytagold", "10501");
+        var loser = await SeedChannelAsync(db, "identitytagnew", twitchChannelId: null);
+        // No emote at all: the tag alone must be reason enough, because tags are keyed by 7TV id and
+        // have no rule for being fused with another channel's tags.
+        db.EmoteTags.Add(new EmoteTag { ChannelId = loser.Id, Name = "Funny", NormalizedName = "funny", CreatedAtUtc = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+        var harness = CreateHarness(db, [new TwitchUserIdentity("10501", "IdentityTagNew")]);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.MergesRefused);
+        Assert.Equal(0, summary.Merged);
+        Assert.Equal(0, summary.Renamed);
+        Assert.Empty(harness.Redis.Messages);
+
+        await using var verify = fixture.CreateDbContext();
+        var untouchedSurvivor = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == survivor.Id);
+        Assert.Equal("identitytagold", untouchedSurvivor.ChannelName);
+        Assert.Null(untouchedSurvivor.TrackingResumedAt);
+        var untouchedLoser = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == loser.Id);
+        Assert.Equal("identitytagnew", untouchedLoser.ChannelName);
+        Assert.Equal(1, await verify.EmoteTags.AsNoTracking().CountAsync(t => t.ChannelId == loser.Id));
+        Assert.Empty(await verify.AuditLogEntries.AsNoTracking().Where(e => e.ChannelName == "identitytagnew").ToListAsync());
+        Assert.Contains(harness.Logger.Entries, e => e.Message.Contains(survivor.Id) && e.Message.Contains(loser.Id) && e.Message.Contains("tags"));
+    }
+
     // GDPR Art. 21 objection gate (issue #252, revised #260): before this revision a merge was the
     // one place this pass could flip an inactive row active again
     // (`survivor.IsBotActive |= loser.IsBotActive`), so a blocked id refused it. Since this revision
