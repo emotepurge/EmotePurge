@@ -1,0 +1,365 @@
+<div class="flex flex-col gap-6">
+  <!-- Page header (§8.7): only commands that are complete without a selection. "Neuer Tag" is the
+       one in T-B; it needs channel management, so it is absent for everybody else. -->
+  <header class="flex flex-col gap-1">
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <h2 class="text-lg font-semibold">{{ 'tags.page.title' | transloco }}</h2>
+      <div class="ml-auto flex flex-wrap items-center gap-3">
+        <!-- Permanent sr-only region, visible aria-hidden twin (§4.5): a region that mounts with
+             its text announces nothing. Here, not in the detail: the delete and "tag gone"
+             messages report exactly the event that takes the detail away. -->
+        <span role="status" class="sr-only">
+          @if (feedback(); as message) {
+            {{ message.key | transloco: message.params }}
+          }
+        </span>
+        @if (feedback(); as message) {
+          <span aria-hidden="true" class="text-sm text-fg-muted">
+            {{ message.key | transloco: message.params }}
+          </span>
+        }
+        @if (canManage()) {
+          <button type="button" appButton="primary" (click)="openCreate()">
+            {{ 'tags.actions.create' | transloco }}
+          </button>
+        }
+      </div>
+    </div>
+    <!-- Which set the in-set numbers count against (spec 9.3). min-h holds the line while the set's
+         name is still being looked up, so the page below does not move when it arrives. -->
+    <p class="min-h-5 text-sm text-fg-muted">
+      @if (activeSetName(); as setName) {
+        {{ 'tags.page.setLine' | transloco: { set: setName } }}
+      } @else if (noActiveSet()) {
+        {{ 'tags.page.noActiveSet' | transloco }}
+      }
+    </p>
+  </header>
+
+  @if (actionErrorKey(); as key) {
+    <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
+  }
+
+  @if (tagsErrorKey(); as key) {
+    <app-notice-banner variant="error">
+      {{ key | transloco }}
+      <button notice-action type="button" appButton="neutral" (click)="retryTags()">
+        {{ 'tags.page.retry' | transloco }}
+      </button>
+    </app-notice-banner>
+  } @else if (!tagsLoaded()) {
+    <app-skeleton-rows [count]="3" />
+  } @else if (tags().length === 0) {
+    <!-- The way to a first tag is a selection on the usage grid. That pointer is only shown to whom
+         it leads somewhere: a manager with a mouse (§2.5 — what would point into the void on a
+         coarse pointer is not offered). -->
+    @if (canManage() && !isCoarse()) {
+      <app-empty-state
+        [title]="'tags.page.empty.title' | transloco"
+        [description]="'tags.page.empty.description' | transloco"
+      >
+        <a appButton="neutral" [routerLink]="usageStatsLink()">
+          {{ 'tags.page.empty.cta' | transloco }}
+        </a>
+      </app-empty-state>
+    } @else {
+      <app-empty-state [title]="'tags.page.empty.title' | transloco" />
+    }
+  } @else {
+    <!-- From lg: list and detail side by side. Below: one or the other, by ?tag= (spec 9.4). The
+         columns are the page's own; the shell frame around them never changes per route. -->
+    <div class="grid items-start gap-8 lg:grid-cols-[18rem_minmax(0,1fr)]">
+      @if (showList()) {
+        <!-- Ruled rows with a stretched link (§2.1/§2.3): the name is the link, the whole row its
+             target. The chosen row is marked as current in the accessibility tree, not by colour
+             alone. -->
+        <ul
+          class="-mx-3 divide-y divide-border border-y border-border"
+          [attr.aria-label]="'tags.page.listLabel' | transloco"
+        >
+          @for (tag of tags(); track tag.id) {
+            <li
+              [class]="
+                'relative flex flex-col gap-0.5 px-3 py-3 transition-colors hover:bg-surface-inset ' +
+                (tag.id === selectedTagId() ? 'bg-surface-inset' : '')
+              "
+            >
+              <a
+                [routerLink]="tagsLink()"
+                [queryParams]="{ tag: tag.id }"
+                [attr.aria-current]="tag.id === selectedTagId() ? 'true' : null"
+                [class]="
+                  'app-card-link min-w-0 truncate font-medium ' +
+                  (tag.id === selectedTagId() ? 'text-accent-fg' : '')
+                "
+              >
+                {{ tag.name }}
+              </a>
+              <span class="flex flex-wrap gap-x-2 text-xs text-fg-muted">
+                <span>{{
+                  plural(tag.entryCount, 'tags.page.micro.entries')
+                    | transloco: { count: formatCount(tag.entryCount) }
+                }}</span>
+                @if (tag.inSetCount !== null) {
+                  <span aria-hidden="true">·</span>
+                  <span>{{
+                    plural(tag.inSetCount, 'tags.page.micro.inSet')
+                      | transloco: { count: formatCount(tag.inSetCount) }
+                  }}</span>
+                }
+              </span>
+            </li>
+          }
+        </ul>
+      }
+
+      @if (showDetail()) {
+        @if (selectedTag(); as tag) {
+          <section class="flex min-w-0 flex-col gap-4" aria-labelledby="tag-detail-title">
+            <!-- Detail head: the up-link (drilldown only, §8.6 — in one row with the heading), the
+                 name, the actions. -->
+            <div class="flex flex-col gap-1">
+              <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+                @if (isDrilldown()) {
+                  <app-back-link
+                    [link]="tagsLink()"
+                    [label]="'channelWorkspace.tabs.tags' | transloco"
+                  />
+                }
+                <h3 id="tag-detail-title" class="min-w-0 truncate text-base font-semibold">
+                  {{ tag.name }}
+                </h3>
+                <!-- Header actions, §8.7 order: constructive, then destructive after a gap.
+                     T-C: "Einspielen" (neutral) goes first in the constructive group, "Ausräumen"
+                     (danger) first in the destructive one. -->
+                @if (canManage()) {
+                  <div class="ml-auto flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      appButton="neutral"
+                      [disabled]="deletePending()"
+                      (click)="openRename()"
+                    >
+                      {{ 'tags.actions.rename' | transloco }}
+                    </button>
+                    <button
+                      type="button"
+                      appButton="danger"
+                      class="ml-2"
+                      [disabled]="deletePending()"
+                      (click)="confirmDelete()"
+                    >
+                      {{ 'tags.actions.delete' | transloco }}
+                    </button>
+                  </div>
+                }
+              </div>
+              <p class="flex flex-wrap gap-x-2 text-xs text-fg-muted">
+                <span>{{
+                  plural(tag.entryCount, 'tags.page.micro.entries')
+                    | transloco: { count: formatCount(tag.entryCount) }
+                }}</span>
+                @if (tag.inSetCount !== null) {
+                  <span aria-hidden="true">·</span>
+                  <span>{{
+                    plural(tag.inSetCount, 'tags.page.micro.inSet')
+                      | transloco: { count: formatCount(tag.inSetCount) }
+                  }}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{{
+                    plural(tag.entryCount - tag.inSetCount, 'tags.page.micro.notInSet')
+                      | transloco: { count: formatCount(tag.entryCount - tag.inSetCount) }
+                  }}</span>
+                }
+              </p>
+            </div>
+
+            <!-- The element the column count is measured against (atlasColumns). -->
+            <div #sheet class="min-w-0">
+              @if (entriesErrorKey(); as key) {
+                <app-notice-banner variant="error">
+                  {{ key | transloco }}
+                  <button notice-action type="button" appButton="neutral" (click)="retryEntries()">
+                    {{ 'tags.page.retry' | transloco }}
+                  </button>
+                </app-notice-banner>
+              } @else if (!entriesLoaded()) {
+                <div role="status" [attr.aria-label]="'common.loading' | transloco">
+                  <div class="flex flex-wrap gap-1" aria-hidden="true">
+                    @for (cell of skeletonCells; track cell) {
+                      <div class="app-skeleton h-16 w-16 rounded-none"></div>
+                    }
+                  </div>
+                </div>
+              } @else if (entries().length === 0) {
+                @if (canManage() && !isCoarse()) {
+                  <app-empty-state
+                    [title]="'tags.page.emptyEntries.title' | transloco"
+                    [description]="'tags.page.emptyEntries.description' | transloco"
+                  >
+                    <a appButton="neutral" [routerLink]="usageStatsLink()">
+                      {{ 'tags.page.empty.cta' | transloco }}
+                    </a>
+                  </app-empty-state>
+                } @else {
+                  <app-empty-state [title]="'tags.page.emptyEntries.title' | transloco" />
+                }
+              } @else {
+                @if (selectable()) {
+                  <p id="tag-grid-hint" class="sr-only">
+                    {{ 'tags.page.keyboardHint' | transloco }}
+                  </p>
+                }
+                @if (virtualized()) {
+                  <!-- Window-scrolled like the usage atlas (§8.5): no inner scroll box. -->
+                  <cdk-virtual-scroll-viewport
+                    scrollWindow
+                    [itemSize]="rowHeight"
+                    [minBufferPx]="rowHeight * 4"
+                    [maxBufferPx]="rowHeight * 8"
+                    role="group"
+                    [attr.aria-label]="'tags.page.gridLabel' | transloco: { tag: tag.name }"
+                    [attr.aria-describedby]="selectable() ? 'tag-grid-hint' : null"
+                    (keydown)="onGridKeydown($event)"
+                  >
+                    <div
+                      *cdkVirtualFor="let row of gridRows(); trackBy: trackRow"
+                      [style.height.px]="rowHeight"
+                    >
+                      <ng-container
+                        *ngTemplateOutlet="cellRow; context: { $implicit: row }"
+                      ></ng-container>
+                    </div>
+                  </cdk-virtual-scroll-viewport>
+                } @else {
+                  <div
+                    role="group"
+                    [attr.aria-label]="'tags.page.gridLabel' | transloco: { tag: tag.name }"
+                    [attr.aria-describedby]="selectable() ? 'tag-grid-hint' : null"
+                    (keydown)="onGridKeydown($event)"
+                  >
+                    @for (row of gridRows(); track $index) {
+                      <div [style.height.px]="rowHeight">
+                        <ng-container
+                          *ngTemplateOutlet="cellRow; context: { $implicit: row }"
+                        ></ng-container>
+                      </div>
+                    }
+                  </div>
+                }
+
+                <!-- Meta line (spec 9.4): the hovered or focused cell in words. aria-hidden, because
+                     each cell's own accessible name already says the same; min-h keeps the dock
+                     below from jumping when it fills. -->
+                <p
+                  class="mt-2 flex min-h-5 flex-wrap gap-x-2 text-xs text-fg-muted"
+                  aria-hidden="true"
+                >
+                  @if (inspected(); as entry) {
+                    <span class="font-medium text-fg-body">{{ entry.alias }}</span>
+                    @if (renamedTo(entry); as current) {
+                      <span>·</span>
+                      <span>{{ 'tags.page.currentName' | transloco: { name: current } }}</span>
+                    }
+                    @if (entry.inSet === false) {
+                      <span>·</span>
+                      <span>{{ 'tags.page.notInSetBadge' | transloco }}</span>
+                    }
+                  }
+                </p>
+              }
+            </div>
+
+            <!-- The small dock in the flow (spec 9.4, §8.7 — no .app-dock on this page in T-B).
+                 Only while something is marked. -->
+            @if (dockShown()) {
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="mr-2 text-sm text-fg-secondary">
+                  {{
+                    plural(markedCount(), 'tags.page.marked')
+                      | transloco: { count: formatCount(markedCount()) }
+                  }}
+                </span>
+                <button
+                  type="button"
+                  appButton="neutral"
+                  [disabled]="removalPending()"
+                  (click)="removeMarked()"
+                >
+                  {{
+                    'tags.actions.unassign'
+                      | transloco: { tag: tag.name, count: formatCount(markedCount()) }
+                  }}
+                </button>
+                <button type="button" appButton="outline" (click)="clearSelection()">
+                  {{ 'tags.actions.clearSelection' | transloco }}
+                </button>
+              </div>
+            }
+
+            <!-- T-C: the run surface (import/delete progress sections, DockOutcomeAnnouncer) goes
+                 here, under the grid. -->
+          </section>
+        } @else if (selectedTagId() === null) {
+          <app-empty-state [title]="'tags.page.emptySelection' | transloco" />
+        }
+      }
+    </div>
+  }
+</div>
+
+<!-- One row of cells. A button where the grid selects, a labelled image where it does not (a coarse
+     pointer or no management right): there a cell opens nothing (spec 9.4). -->
+<ng-template #cellRow let-row>
+  <div
+    class="grid gap-1"
+    [style.grid-template-columns]="'repeat(' + columns() + ', ' + cellPx + 'px)'"
+  >
+    @for (entry of row.items; track entry.sevenTvEmoteId; let i = $index) {
+      @if (selectable()) {
+        <button
+          type="button"
+          [class]="
+            'app-sprite-cell relative block h-16 w-16 scroll-mt-48 transition-shadow ' +
+            (entry.inSet === false ? 'app-sprite-cell-void ' : '') +
+            (selection.isSelected(entry) ? '' : 'hover:inset-ring-1 hover:inset-ring-border-strong')
+          "
+          [attr.data-tag-cell-index]="row.startIndex + i"
+          [attr.tabindex]="activeIndex() === row.startIndex + i ? 0 : -1"
+          [attr.aria-pressed]="selection.isSelected(entry)"
+          [attr.aria-label]="entryLabel(entry)"
+          (click)="onCellClick(entry, row.startIndex + i, $event)"
+          (mousedown)="$event.shiftKey && $event.preventDefault()"
+          (mouseenter)="inspect(entry)"
+          (focus)="onCellFocus(entry, row.startIndex + i)"
+        >
+          <app-emote-sprite [url]="entry.imageUrl" [size]="64" [dimmed]="entry.inSet === false" />
+          @if (selection.isSelected(entry)) {
+            <!-- Same marking as the usage atlas: wash and inset ring on one element drawn last,
+                 plus the corner square. -->
+            <span
+              class="pointer-events-none absolute inset-0 bg-accent-wash/70 inset-ring-2 inset-ring-accent-fg"
+              aria-hidden="true"
+            ></span>
+            <span
+              class="pointer-events-none absolute top-0 right-0 h-2.5 w-2.5 bg-accent-fg"
+              aria-hidden="true"
+            ></span>
+          }
+        </button>
+      } @else {
+        <div
+          role="img"
+          [class]="
+            'app-sprite-cell relative block h-16 w-16 ' +
+            (entry.inSet === false ? 'app-sprite-cell-void' : '')
+          "
+          [attr.aria-label]="entryLabel(entry)"
+          (mouseenter)="inspect(entry)"
+        >
+          <app-emote-sprite [url]="entry.imageUrl" [size]="64" [dimmed]="entry.inSet === false" />
+        </div>
+      }
+    }
+  </div>
+</ng-template>

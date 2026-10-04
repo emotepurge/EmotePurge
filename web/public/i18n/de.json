@@ -1669,6 +1669,47 @@
     "required": "7TV-Token eingeben."
   },
   "tags": {
+    "page": {
+      "title": "Tags",
+      "listLabel": "Tags",
+      "setLine": "Die Zahlen beziehen sich auf das aktive Set {{set}}.",
+      "noActiveSet": "Dieser Channel hat kein aktives Set; Zahlen „im Set“ gibt es deshalb nicht.",
+      "empty": {
+        "title": "Noch keine Tags.",
+        "description": "Wähle im Nutzungsraster Emotes aus und weise ihnen einen Tag zu.",
+        "cta": "Zum Nutzungsraster"
+      },
+      "emptySelection": "Wähle links einen Tag.",
+      "emptyEntries": {
+        "title": "Dieser Tag hat noch keine Emotes.",
+        "description": "Markiere im Nutzungsraster Emotes und weise sie mit „Tag zuweisen…“ zu."
+      },
+      "micro": {
+        "entries": {
+          "one": "{{count}} Eintrag",
+          "other": "{{count}} Einträge"
+        },
+        "inSet": {
+          "one": "{{count}} im Set",
+          "other": "{{count}} im Set"
+        },
+        "notInSet": {
+          "one": "{{count}} nicht im Set",
+          "other": "{{count}} nicht im Set"
+        }
+      },
+      "currentName": "heute: {{name}}",
+      "notInSetBadge": "nicht im Set",
+      "gridLabel": "Emotes in {{tag}}",
+      "keyboardHint": "Pfeiltasten bewegen den Fokus, Leertaste markiert, Shift-Klick markiert einen Bereich.",
+      "marked": {
+        "one": "{{count}} markiert",
+        "other": "{{count}} markiert"
+      },
+      "retry": "Erneut laden",
+      "deleted": "{{tag}} gelöscht.",
+      "tagGone": "Dieser Tag wurde inzwischen gelöscht."
+    },
     "assignDialog": {
       "title": "Tag zuweisen",
       "listLabel": "Tags",
@@ -1693,6 +1734,10 @@
       "confirmRename": "Umbenennen"
     },
     "actions": {
+      "create": "Neuer Tag",
+      "rename": "Umbenennen",
+      "delete": "Löschen",
+      "clearSelection": "Auswahl aufheben",
       "assign": "Tag zuweisen…",
       "unassign": "Aus ‚{{tag}}‘ entfernen ({{count}})",
       "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; das Tag räumt sie danach auch nicht mehr aus.",
@@ -1731,6 +1776,10 @@
         "one": "{{count}} Emote aus {{tag}} entfernt.",
         "other": "{{count}} Emotes aus {{tag}} entfernt."
       }
+    },
+    "deleteDialog": {
+      "message": "{{tag}} wird gelöscht; die Emotes bleiben im Set.",
+      "confirm": "Tag löschen"
     }
   },
   "errors": {

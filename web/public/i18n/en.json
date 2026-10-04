@@ -1669,6 +1669,47 @@
     "required": "Enter your 7TV token."
   },
   "tags": {
+    "page": {
+      "title": "Tags",
+      "listLabel": "Tags",
+      "setLine": "The numbers refer to the active set {{set}}.",
+      "noActiveSet": "This channel has no active set, so there are no “in the set” numbers.",
+      "empty": {
+        "title": "No tags yet.",
+        "description": "Select emotes on the usage grid and assign them a tag.",
+        "cta": "Go to the usage grid"
+      },
+      "emptySelection": "Choose a tag on the left.",
+      "emptyEntries": {
+        "title": "This tag has no emotes yet.",
+        "description": "Mark emotes on the usage grid and assign them with “Assign tag…”."
+      },
+      "micro": {
+        "entries": {
+          "one": "{{count}} entry",
+          "other": "{{count}} entries"
+        },
+        "inSet": {
+          "one": "{{count}} in the set",
+          "other": "{{count}} in the set"
+        },
+        "notInSet": {
+          "one": "{{count}} not in the set",
+          "other": "{{count}} not in the set"
+        }
+      },
+      "currentName": "today: {{name}}",
+      "notInSetBadge": "not in the set",
+      "gridLabel": "Emotes in {{tag}}",
+      "keyboardHint": "Arrow keys move the focus, space marks, shift-click marks a range.",
+      "marked": {
+        "one": "{{count}} marked",
+        "other": "{{count}} marked"
+      },
+      "retry": "Reload",
+      "deleted": "Deleted {{tag}}.",
+      "tagGone": "This tag has been deleted in the meantime."
+    },
     "assignDialog": {
       "title": "Assign tag",
       "listLabel": "Tags",
@@ -1693,6 +1734,10 @@
       "confirmRename": "Rename"
     },
     "actions": {
+      "create": "New tag",
+      "rename": "Rename",
+      "delete": "Delete",
+      "clearSelection": "Clear selection",
       "assign": "Assign tag…",
       "unassign": "Remove from ‘{{tag}}’ ({{count}})",
       "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer clear them out either.",
@@ -1731,6 +1776,10 @@
         "one": "Removed {{count}} emote from {{tag}}.",
         "other": "Removed {{count}} emotes from {{tag}}."
       }
+    },
+    "deleteDialog": {
+      "message": "{{tag}} will be deleted; the emotes stay in the set.",
+      "confirm": "Delete tag"
     }
   },
   "errors": {
