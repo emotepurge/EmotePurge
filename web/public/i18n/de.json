@@ -1743,6 +1743,8 @@
       "delete": "Löschen",
       "clearSelection": "Auswahl aufheben",
       "assign": "Tag zuweisen…",
+      "unassignPrefix": "Aus ‚",
+      "unassignSuffix": "‘ entfernen ({{count}})",
       "unassign": "Aus ‚{{tag}}‘ entfernen ({{count}})",
       "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; das Tag räumt sie danach auch nicht mehr aus.",
       "unassignLockReason": {

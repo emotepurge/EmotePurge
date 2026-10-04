@@ -42,7 +42,7 @@ import {
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
-import { TranslocoTestingModule } from '@jsverse/transloco';
+import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { of, Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -6758,6 +6758,32 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     expect(component['tagErrorKey']()).not.toBeNull();
   });
 
+  it('keeps the full tag name in the accessible name and title of the "Aus Tag entfernen" button', async () => {
+    const image = 'https://cdn.7tv.app/emote/x/1x.webp';
+    const longName = 'Fuer-die-Halloween-Wochen-Auswahl-2026-xx';
+    await open({
+      tags: [tag(4, longName)],
+      totals: [{ ...emote('a', 'PeepoA'), imageUrl: image }],
+      realTemplate: true,
+    });
+    TestBed.inject(TranslocoService).setTranslation(
+      {
+        'tags.actions.unassign': 'Aus ‚{{tag}}‘ entfernen ({{count}})',
+        'tags.actions.unassignTitle': 'Erklärung',
+      },
+      'de',
+    );
+    await chooseTag(4, ['7tv-a']);
+    mark('7tv-a');
+    fixture.detectChanges();
+
+    const button = fixture.nativeElement.querySelector(
+      'button[aria-label^="Aus"]',
+    ) as HTMLButtonElement | null;
+    expect(button?.getAttribute('aria-label')).toBe(`Aus ‚${longName}‘ entfernen (1)`);
+    expect(button?.title).toContain(`Aus ‚${longName}‘ entfernen (1)`);
+  });
+
   it('describes the locked "Aus Tag entfernen" button with its reason when none of the marked emotes is in the tag (§10)', async () => {
     // Real template: the subject is the button's accessible description. A real-looking imageUrl,
     // since NgOptimizedImage runs for real here (NG02952 on '').
@@ -6776,7 +6802,7 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
 
     const button = Array.from(
       fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
-    ).find((candidate) => candidate.textContent?.trim() === 'tags.actions.unassign');
+    ).find((candidate) => candidate.getAttribute('aria-label') === 'tags.actions.unassign');
     expect(button).toBeDefined();
     expect(button?.disabled).toBe(true);
     const describedBy = button?.getAttribute('aria-describedby');

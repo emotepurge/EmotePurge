@@ -1743,6 +1743,8 @@
       "delete": "Delete",
       "clearSelection": "Clear selection",
       "assign": "Assign tag…",
+      "unassignPrefix": "Remove from ‘",
+      "unassignSuffix": "’ ({{count}})",
       "unassign": "Remove from ‘{{tag}}’ ({{count}})",
       "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer clear them out either.",
       "unassignLockReason": {

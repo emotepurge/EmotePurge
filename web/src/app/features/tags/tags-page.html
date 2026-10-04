@@ -68,7 +68,9 @@
   } @else {
     <!-- From lg: list and detail side by side. Below: one or the other, by ?tag= (spec 9.4). The
          columns are the page's own; the shell frame around them never changes per route. -->
-    <div class="grid items-start gap-8 lg:grid-cols-[18rem_minmax(0,1fr)]">
+    <div
+      class="grid grid-cols-[minmax(0,1fr)] items-start gap-8 lg:grid-cols-[18rem_minmax(0,1fr)]"
+    >
       @if (showList()) {
         <!-- Ruled rows with a stretched link (§2.1/§2.3): the name is the link, the whole row its
              target. The chosen row is marked as current in the accessibility tree, not by colour

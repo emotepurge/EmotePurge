@@ -68,6 +68,10 @@ const VIEWPORTS = [
   // 480 is only a single sample of that whole sub-768px range, though: an overflow that starts
   // somewhere between 480 and 768 still passes here unnoticed. This viewport narrows the blind
   // spot, it does not close it.
+  // A mouse at 360px: no phone produces it, but a squeezed desktop window does, and the fine-pointer
+  // write surfaces (dock, assign dialog) never mount on `mobile`. Runs only the scenarios that opt
+  // in with `includeMouseAt360` — not the whole matrix.
+  { name: 'mobile-mouse', width: 360, height: 800, pointerCoarse: false },
   { name: 'narrow', width: 480, height: 800, pointerCoarse: false },
   { name: 'tablet', width: 768, height: 1024, pointerCoarse: false },
   // Two desktop cases, because one cannot cover both ends of the lg range.
@@ -369,6 +373,14 @@ interface Scenario {
    * mobile state to begin with, only an artifact of the harness's former pointer bug.
    */
   requiresFinePointer?: boolean;
+  /** Also runs at the `mobile-mouse` viewport (360 px, fine pointer). */
+  includeMouseAt360?: boolean;
+  /**
+   * Fails the case on any horizontal overflow or any interactive element past the right edge.
+   * `horizontalOverflowPx` alone is blind to `position: fixed` surfaces (the action dock), whose
+   * overhang never widens the document — `beyondRightEdge` sees them.
+   */
+  strictRightEdge?: boolean;
 }
 
 const LONG_TAG = 'Fuer-die-Halloween-Wochen-Auswahl-2026-xx';
@@ -1441,6 +1453,7 @@ const SCENARIOS: Scenario[] = [
     // (void plate + dimmed sprite + "today: ..." line), and the deep link `?tag=` that opens the
     // detail on narrow viewports as well.
     slug: 'tags-page-list-detail',
+    strictRightEdge: true,
     path: '/channels/sensitron/tags?tag=7',
     setup: async (page) => {
       await authedShell(page);
@@ -1453,6 +1466,7 @@ const SCENARIOS: Scenario[] = [
   {
     // The list alone on the drilldown viewports (no `?tag=`): every tag row, long name truncating.
     slug: 'tags-page-list',
+    strictRightEdge: true,
     path: '/channels/sensitron/tags',
     setup: async (page) => {
       await authedShell(page);
@@ -1464,6 +1478,7 @@ const SCENARIOS: Scenario[] = [
   {
     // More than VIRTUALIZE_ABOVE (200) entries: the window-scrolled virtual viewport path.
     slug: 'tags-page-virtualized',
+    strictRightEdge: true,
     path: '/channels/sensitron/tags?tag=7',
     setup: async (page) => {
       await authedShell(page);
@@ -1475,6 +1490,7 @@ const SCENARIOS: Scenario[] = [
   {
     // A tag without entries: the detail's own empty state beside a populated list.
     slug: 'tags-page-tag-empty',
+    strictRightEdge: true,
     path: '/channels/sensitron/tags?tag=8',
     setup: async (page) => {
       await authedShell(page);
@@ -1486,6 +1502,7 @@ const SCENARIOS: Scenario[] = [
   {
     // No tag at all: the page's empty state with its way to the usage grid.
     slug: 'tags-page-empty',
+    strictRightEdge: true,
     path: '/channels/sensitron/tags',
     setup: async (page) => {
       await authedShell(page);
@@ -1499,6 +1516,8 @@ const SCENARIOS: Scenario[] = [
     // "Remove from '...' (n)" carrying a 40-character tag name — the longest label the dock gets.
     // Fine pointer only: the dock's write buttons do not exist on a coarse one.
     slug: 'usage-filter-with-tag',
+    includeMouseAt360: true,
+    strictRightEdge: true,
     path: '/channels/sensitron/usage-stats',
     requiresFinePointer: true,
     setup: async (page) => {
@@ -1510,6 +1529,7 @@ const SCENARIOS: Scenario[] = [
       await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
     },
     afterLoad: async (page) => {
+      // The select's name is "Tag" in both locales.
       await page.getByRole('combobox', { name: /^Tag$/ }).selectOption('7');
       await page.getByRole('button', { name: /^Emote1PogU ·/ }).click();
       await page.locator('.app-dock').waitFor();
@@ -1519,6 +1539,8 @@ const SCENARIOS: Scenario[] = [
     // The assign dialog (#201, spec 7.0) over two marked emotes: the tag checklist with a
     // 40-character name, the create row and the confirm button. Fine pointer only (the write path).
     slug: 'tag-assign-dialog',
+    includeMouseAt360: true,
+    strictRightEdge: true,
     path: '/channels/sensitron/usage-stats',
     requiresFinePointer: true,
     setup: async (page) => {
@@ -1720,6 +1742,10 @@ for (const theme of THEMES) {
           locale === 'en' && (vp.name === 'tablet' || vp.name === 'narrow'),
           'en only in mobile+desktop-narrow+desktop',
         );
+        test.skip(
+          vp.name === 'mobile-mouse' && !sc.includeMouseAt360,
+          'the 360 px mouse viewport only runs the scenarios that opt in',
+        );
         test.skip(theme === 'light' && vp.name !== 'desktop', 'light only at the widest viewport');
         test.skip(
           Boolean(sc.requiresFinePointer) && vp.pointerCoarse,
@@ -1818,6 +1844,13 @@ for (const theme of THEMES) {
         );
         const metrics = await collectMetrics(page);
         const contrastViolations = await collectContrastViolations(page);
+        if (sc.strictRightEdge) {
+          expect(metrics.horizontalOverflowPx, 'horizontal overflow').toBe(0);
+          expect(
+            metrics.beyondRightEdge.map((t) => `${t.tag} "${t.text}" ends at ${t.x + t.w}`),
+            'interactive elements past the right edge (fixed surfaces included)',
+          ).toEqual([]);
+        }
         fs.writeFileSync(
           path.join(OUT, 'metrics', `${base}.json`),
           JSON.stringify(
