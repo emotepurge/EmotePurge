@@ -3316,6 +3316,21 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     );
   });
 
+  // Companion to the case above: a panel showing a different set than the finished run's must
+  // flag the restore as foreign. Together they pin the binding to the panel's own `setId` — a
+  // `null` binding fails the equal-set case, a binding to the run's set id fails this one.
+  it("passes the panel's set to the section, so restoring a run of another set is flagged as foreign", () => {
+    fixture.componentRef.setInput('setId', 'set-other');
+    fixture.detectChanges();
+
+    progressSection(fixture)['openRestoreConfirm']();
+    flushTargetsResponse();
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect((dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData).foreignToView).toBe(true);
+  });
+
   // #256 P3-3, fail-closed: `DeleteRunInfo.channelName` is a required field and never empty in
   // practice, but the button must not silently mis-attribute a restore if some future run shape
   // ever left it unset — this locks the button with a reason instead, before the pre-check chain
