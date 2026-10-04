@@ -1680,7 +1680,8 @@
         "other": "{{count}} Emotes zuweisen"
       },
       "lockReason": {
-        "noneChecked": "Wähle mindestens einen Tag aus."
+        "noneChecked": "Wähle mindestens einen Tag aus.",
+        "submitting": "Die Zuweisung läuft."
       },
       "partial": "Schon zugewiesen: {{tags}}. Der Rest ist fehlgeschlagen."
     },

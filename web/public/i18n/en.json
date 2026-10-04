@@ -1680,7 +1680,8 @@
         "other": "Assign {{count}} emotes"
       },
       "lockReason": {
-        "noneChecked": "Tick at least one tag."
+        "noneChecked": "Tick at least one tag.",
+        "submitting": "Assigning is in progress."
       },
       "partial": "Already assigned: {{tags}}. The rest failed."
     },

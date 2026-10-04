@@ -108,7 +108,15 @@ export interface TagAssignDialogResult {
           {{ reasonKey | transloco }}
         </p>
       }
-      <button dialog-actions type="button" appButton="outline" buttonSize="lg" (click)="dismiss()">
+      <button
+        dialog-actions
+        type="button"
+        appButton="outline"
+        buttonSize="lg"
+        [disabled]="isSubmitting()"
+        [attr.aria-describedby]="isSubmitting() ? 'tag-assign-lock-hint' : null"
+        (click)="dismiss()"
+      >
         {{ (partial() ? 'common.close' : 'common.cancel') | transloco }}
       </button>
       <button
@@ -148,9 +156,12 @@ export class TagAssignDialog {
   );
 
   /** Why confirming is blocked right now, or `null` (§10: a locked button names its reason). */
-  protected readonly lockReasonKey = computed(() =>
-    this.checked().size === 0 ? 'tags.assignDialog.lockReason.noneChecked' : null,
-  );
+  protected readonly lockReasonKey = computed(() => {
+    if (this.isSubmitting()) {
+      return 'tags.assignDialog.lockReason.submitting';
+    }
+    return this.checked().size === 0 ? 'tags.assignDialog.lockReason.noneChecked' : null;
+  });
 
   constructor() {
     this.tagService
@@ -172,7 +183,13 @@ export class TagAssignDialog {
       this.dialogRef.backdropClick,
     )
       .pipe(takeUntilDestroyed())
-      .subscribe(() => this.dismiss());
+      .subscribe(() => {
+        // Only reached by the CDK's own close being switched off (disableClose): while a request is
+        // in flight the dialog must stay, afterwards only a partial failure keeps it open.
+        if (!this.isSubmitting() && this.partial() !== null) {
+          this.dismiss();
+        }
+      });
   }
 
   protected nameField(): TagNameField {
@@ -226,6 +243,9 @@ export class TagAssignDialog {
 
     this.errorKey.set(null);
     this.isSubmitting.set(true);
+    // Not dismissible while requests are in flight: closing now would orphan them, and the caller
+    // would never hear about what went through.
+    this.dialogRef.disableClose = true;
     // concatMap: one request at a time, in list order — the next starts when the previous completed.
     from(chosen)
       .pipe(
@@ -246,6 +266,8 @@ export class TagAssignDialog {
           this.errorKey.set(apiErrorTranslationKey(error));
           if (succeeded.length > 0) {
             this.keepPartial(succeeded, emoteCount, skipped);
+          } else if (this.partial() === null) {
+            this.dialogRef.disableClose = false;
           }
         },
         complete: () => {
@@ -269,7 +291,6 @@ export class TagAssignDialog {
       succeeded.forEach((tag) => next.delete(tag.id));
       return next;
     });
-    this.dialogRef.disableClose = true;
   }
 
   private buildResult(

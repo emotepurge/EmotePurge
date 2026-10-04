@@ -3,7 +3,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoTestingModule } from '@jsverse/transloco';
-import { Subject } from 'rxjs';
+import { Subject, filter } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { TagAssignDialog, TagAssignDialogData, TagAssignDialogResult } from './tag-assign-dialog';
@@ -26,7 +26,10 @@ const DE = {
       createButton: 'Anlegen',
       noTagsHint: 'Noch keine Tags.',
       confirm: { one: '{{count}} Emote zuweisen', other: '{{count}} Emotes zuweisen' },
-      lockReason: { noneChecked: 'Wähle mindestens einen Tag aus.' },
+      lockReason: {
+        noneChecked: 'Wähle mindestens einen Tag aus.',
+        submitting: 'Die Zuweisung läuft.',
+      },
       partial: 'Schon zugewiesen: {{tags}}.',
     },
   },
@@ -54,6 +57,15 @@ describe('TagAssignDialog', () => {
     keydown = new Subject();
     backdrop = new Subject();
     dialogRef = { close: (r) => closed.push(r), disableClose: false };
+    // Stand-in for the CDK's own handling, which is what the dialog has to cooperate with: Escape
+    // and a backdrop click close with `undefined` unless `disableClose` is set.
+    const cdkDismiss = () => {
+      if (!dialogRef.disableClose) {
+        dialogRef.close(undefined);
+      }
+    };
+    keydown.pipe(filter((e) => e.key === 'Escape')).subscribe(cdkDismiss);
+    backdrop.subscribe(cdkDismiss);
     TestBed.configureTestingModule({
       imports: [
         TagAssignDialog,
@@ -200,8 +212,40 @@ describe('TagAssignDialog', () => {
     expect(closed).toEqual([{ tagNames: ['Stronghold'], emoteCount: 3, skippedNotInSetCount: 0 }]);
   });
 
-  it('Escape without any assignment closes with undefined', () => {
+  it('Escape or a backdrop click without any assignment closes once with undefined', () => {
     render();
+    keydown.next(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(closed).toEqual([undefined]);
+    closed.length = 0;
+    backdrop.next(new MouseEvent('click'));
+    expect(closed).toEqual([undefined]);
+  });
+
+  it('cannot be dismissed while a request is pending, then closes once with the result', () => {
+    const view = render();
+    view.tick(0);
+    view.confirm().click();
+    view.fixture.detectChanges();
+    const cancel = Array.from(view.host.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Abbrechen',
+    ) as HTMLButtonElement;
+    expect(cancel.disabled).toBe(true);
+
+    keydown.next(new KeyboardEvent('keydown', { key: 'Escape' }));
+    backdrop.next(new MouseEvent('click'));
+    expect(closed).toEqual([]);
+
+    httpMock.expectOne(`${BASE}/1/entries`).flush(added(3));
+    expect(closed).toEqual([{ tagNames: ['Stronghold'], emoteCount: 3, skippedNotInSetCount: 0 }]);
+  });
+
+  it('a first-request failure makes the dialog dismissible again', () => {
+    const view = render();
+    view.tick(0);
+    view.confirm().click();
+    httpMock.expectOne(`${BASE}/1/entries`).flush({}, { status: 500, statusText: 'x' });
+    view.fixture.detectChanges();
+    expect(dialogRef.disableClose).toBe(false);
     keydown.next(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(closed).toEqual([undefined]);
   });
