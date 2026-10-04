@@ -247,6 +247,10 @@ test.describe('emote tags on a touch device', () => {
 
     // The usage grid on the same device: a tap opens the drilldown, so no assign button either.
     await gotoUsage(page);
+    await page.locator('[data-atlas-index="0"]').tap();
+    await expect(page.locator('#app-dialog-title')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#app-dialog-title')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Tag zuweisen…' })).toHaveCount(0);
   });
 });

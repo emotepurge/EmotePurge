@@ -1464,6 +1464,31 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    // The tags page with one entry marked (#201, spec 7.0a/E17): the small dock in the flow carries
+    // "Remove from '...' (n)" with a 40-character tag name -- appButton is nowrap, so the whole
+    // label used to push the page past a 360px viewport under a fine pointer. Fine pointer only
+    // (the dock's write buttons do not exist on a coarse one).
+    slug: 'tags-page-marked',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(24));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      await page
+        .getByRole('button', { name: /Emote2PogU/ })
+        .first()
+        .click();
+      await page.getByRole('button', { name: /^(Auswahl aufheben|Clear selection)/ }).waitFor();
+    },
+  },
+  {
     // The list alone on the drilldown viewports (no `?tag=`): every tag row, long name truncating.
     slug: 'tags-page-list',
     strictRightEdge: true,
