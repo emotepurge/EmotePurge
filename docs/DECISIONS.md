@@ -57,6 +57,25 @@ id. Inbound 7TV emote ids go through `SevenTvEmoteIdValidation` in Core — the 
 `[0-9A-Za-z]` rule as the Api's set-id check, kept in Core because the ids arrive in a body and the
 service, not a filter, owns their status codes.
 
+**HTTP surface (`EmoteTagEndpoints`).** Seven routes under `/api/channels/{channelName}/tags`, in two
+`MapGroup`s on the same prefix. Reads (`GET ""`, `GET "/{tagId:long}/entries"`) sit behind
+`UsageStatsAccessAuthorizationFilter` on the `InteractiveRead` policy, with `EmoteSetIdValidationFilter`
+per route (so a malformed `emoteSetId` is a 400 only after authorization, like the tracked-set
+preview): anyone who may look at the channel's statistics may see its tags. Maintenance (`POST ""`,
+`PATCH`/`DELETE "/{tagId:long}"`, `POST "/{tagId:long}/entries"`, `POST ".../entries/remove"`) sits
+behind `ChannelManagementAuthorizationFilter` on `Bookkeeping`; a caller who may view but not manage
+gets the reads and a 403 on the rest. `ChannelNameValidationFilter` precedes both authorization
+filters. No new rate-limit policy. A non-numeric `{tagId}` is a routing 404 without a body. Status
+mapping: 400 `tag_name_invalid` (a missing body or `name` included), 409 `tag_name_taken`, 409
+`tag_limit_reached`, 409 `tag_entry_limit_reached`, 404 `tag_not_found` (also for a tag of another
+channel), 404 `channel_not_found`, 400 `emote_ids_empty`/`emote_ids_invalid`. The five `tag_*` codes
+are new in `ApiErrorCodes`; the frontend half follows with the tag UI. Input form is checked before
+the channel lock and lookups, so a malformed body is a 400 even for an unknown channel or tag. One
+add/remove request may carry at most `EmoteTagLimits.MaxIdsPerRequest` (= 2 x `MaxEntriesPerTag`)
+raw ids, counted before de-duplication; more is `EmoteIdsInvalid` (400 `emote_ids_invalid`), so an
+unbounded body never reaches the database while a request that could still fill a tag is never
+refused for its size.
+
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-set-entries.ts` ·

@@ -136,4 +136,16 @@ internal static class ApiErrorCodes
     // three, same reasoning as ForeignChannelSevenTvUnavailable — "not now" is the only actionable
     // fact in any of the three cases.
     public const string ContactUnavailable = "contact_unavailable";
+
+    // Channel emote tags (#201). 400: the name is missing, blank, over 40 characters or carries control
+    // characters (a missing request body counts as a missing name).
+    public const string TagNameInvalid = "tag_name_invalid";
+    // 409: another tag of the channel has the same name after trimming and lower-casing.
+    public const string TagNameTaken = "tag_name_taken";
+    // 409: the channel already has EmoteTagLimits.MaxTagsPerChannel tags.
+    public const string TagLimitReached = "tag_limit_reached";
+    // 404: no such tag in this channel (a tag of another channel is the same answer).
+    public const string TagNotFound = "tag_not_found";
+    // 409: adding would push the tag past EmoteTagLimits.MaxEntriesPerTag; nothing was written.
+    public const string TagEntryLimitReached = "tag_entry_limit_reached";
 }

@@ -386,6 +386,7 @@ app.MapChannelEndpoints();
 app.MapEmoteEndpoints();
 app.MapUsageStatsEndpoints();
 app.MapVoteSessionEndpoints();
+app.MapEmoteTagEndpoints();
 app.MapAuthEndpoints();
 app.MapWorkerHealthEndpoints();
 app.MapAdminEndpoints();

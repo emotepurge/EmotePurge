@@ -421,7 +421,7 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         return (setId, string.Equals(setId, channel.ActiveEmoteSetId, StringComparison.Ordinal));
     }
 
-    /// <summary>Dedupes ordinally in request order; empty wins over unfit.</summary>
+    /// <summary>Dedupes ordinally in request order; empty wins over unfit, and an oversized request counts as unfit.</summary>
     private static (EmoteIdsInputStatus? Rejected, List<string> Ids) CheckEmoteIds(IReadOnlyList<string>? sevenTvEmoteIds)
     {
         if (sevenTvEmoteIds is null || sevenTvEmoteIds.Count == 0)
@@ -429,7 +429,8 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
             return (EmoteIdsInputStatus.Empty, []);
         }
 
-        if (!sevenTvEmoteIds.All(SevenTvEmoteIdValidation.IsValid))
+        if (sevenTvEmoteIds.Count > EmoteTagLimits.MaxIdsPerRequest
+            || !sevenTvEmoteIds.All(SevenTvEmoteIdValidation.IsValid))
         {
             return (EmoteIdsInputStatus.Invalid, []);
         }

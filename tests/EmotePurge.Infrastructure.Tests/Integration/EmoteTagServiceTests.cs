@@ -409,6 +409,25 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task EntryRequests_AreCappedAtTwiceTheEntryLimitInRawIds()
+    {
+        var channel = await SeedChannelAsync("tagrequestcap");
+        var tag = await SeedTagAsync(channel.Id, "Funny");
+        var id = NewSevenTvId();
+        var atCap = Enumerable.Repeat(id, EmoteTagLimits.MaxIdsPerRequest).ToList();
+        var overCap = Enumerable.Repeat(id, EmoteTagLimits.MaxIdsPerRequest + 1).ToList();
+
+        // Exactly the cap passes (duplicates collapse, the id has no row, so it is merely skipped).
+        var add = await AddAsync("tagrequestcap", tag.Id, atCap);
+        Assert.Equal(EmoteTagAddEntriesStatus.Ok, add.Status);
+        Assert.Equal([id], add.SkippedNotInSetIds);
+        Assert.Equal(EmoteTagRemoveEntriesStatus.Ok, (await RemoveAsync("tagrequestcap", tag.Id, atCap)).Status);
+
+        Assert.Equal(EmoteTagAddEntriesStatus.EmoteIdsInvalid, (await AddAsync("tagrequestcap", tag.Id, overCap)).Status);
+        Assert.Equal(EmoteTagRemoveEntriesStatus.EmoteIdsInvalid, (await RemoveAsync("tagrequestcap", tag.Id, overCap)).Status);
+    }
+
+    [Fact]
     public async Task AddEntries_ToAnUnknownTag_OrATagOfAnotherChannel_IsTagNotFound()
     {
         var mine = await SeedChannelAsync("tagaddmine");

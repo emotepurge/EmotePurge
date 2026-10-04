@@ -60,4 +60,11 @@ public static class EmoteTagLimits
 {
     public const int MaxTagsPerChannel = 50;
     public const int MaxEntriesPerTag = 1000;
+
+    /// <summary>
+    /// Raw ids (before de-duplication) one add/remove request may carry: twice the entry limit, so a
+    /// request that could still fit a full tag is never refused for its size, while an unbounded body
+    /// never reaches the database.
+    /// </summary>
+    public const int MaxIdsPerRequest = 2 * MaxEntriesPerTag;
 }

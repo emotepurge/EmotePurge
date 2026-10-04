@@ -44,6 +44,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         factory.Channels.ClearReceivedCalls();
         factory.ResyncCooldown.ClearReceivedCalls();
         factory.Emotes.ClearReceivedCalls();
+        factory.EmoteTags.ClearReceivedCalls();
         factory.EmoteSetList.ClearReceivedCalls();
         factory.TrackedEmoteSetMembership.ClearReceivedCalls();
         factory.EmoteSetOwnership.ClearReceivedCalls();
@@ -67,6 +68,13 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/testchannel/permissions")]
     [InlineData("GET", "/api/channels/mine")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
+    [InlineData("GET", "/api/channels/testchannel/tags")]
+    [InlineData("GET", "/api/channels/testchannel/tags/1/entries")]
+    [InlineData("POST", "/api/channels/testchannel/tags")]
+    [InlineData("PATCH", "/api/channels/testchannel/tags/1")]
+    [InlineData("DELETE", "/api/channels/testchannel/tags/1")]
+    [InlineData("POST", "/api/channels/testchannel/tags/1/entries")]
+    [InlineData("POST", "/api/channels/testchannel/tags/1/entries/remove")]
     [InlineData("GET", "/api/channels/testchannel/emotes")]
     [InlineData("GET", "/api/channels/testchannel/emote-sets")]
     [InlineData("GET", "/api/channels/testchannel/emote-sets/01GV88A38G0006FW5TVZVMG507/emotes")]
@@ -111,6 +119,8 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/testchannel/resync")]
     [InlineData("DELETE", "/api/channels/testchannel/purge")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
+    [InlineData("GET", "/api/channels/testchannel/tags")]
+    [InlineData("POST", "/api/channels/testchannel/tags")]
     [InlineData("GET", "/api/channels/testchannel/emote-sets/01GV88A38G0006FW5TVZVMG507/emotes")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions/1/results")]
     [InlineData("POST", "/api/channels/testchannel/vote-sessions/1/votes")]
@@ -710,6 +720,92 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(string.Empty, await response.Content.ReadAsStringAsync());
+    }
+
+    // #201: the tag routes — reads behind the usage-stats check, maintenance behind the management
+    // check. The 400 on the set id comes after authorization, like the tracked-set preview.
+
+    [Theory]
+    [InlineData("GET", "/api/channels/{0}/tags")]
+    [InlineData("GET", "/api/channels/{0}/tags/1/entries")]
+    [InlineData("POST", "/api/channels/{0}/tags")]
+    [InlineData("PATCH", "/api/channels/{0}/tags/1")]
+    [InlineData("DELETE", "/api/channels/{0}/tags/1")]
+    [InlineData("POST", "/api/channels/{0}/tags/1/entries")]
+    [InlineData("POST", "/api/channels/{0}/tags/1/entries/remove")]
+    public async Task TagRoutes_Answer400InvalidChannelName_BeforeAnyAccessFilterRuns(string method, string pathFormat)
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, "bad-name"), NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
+    }
+
+    [Theory]
+    [InlineData("/api/channels/testchannel/tags")]
+    [InlineData("/api/channels/testchannel/tags/1/entries")]
+    public async Task TagReads_Answer403_WithoutUsageStatsAccess_AndNeverCallTheService(string path)
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        // A malformed set id must not outrank the 403.
+        var response = await SendAsync("GET", path + "?emoteSetId=..x", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Empty(_factory.EmoteTags.ReceivedCalls());
+    }
+
+    [Theory]
+    [InlineData("/api/channels/testchannel/tags")]
+    [InlineData("/api/channels/testchannel/tags/1/entries")]
+    public async Task TagReads_Answer400InvalidEmoteSetId_AfterAuthorization(string path)
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var response = await SendAsync("GET", path + "?emoteSetId=..x", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        Assert.Empty(_factory.EmoteTags.ReceivedCalls());
+    }
+
+    [Theory]
+    [InlineData("POST", "/api/channels/testchannel/tags")]
+    [InlineData("PATCH", "/api/channels/testchannel/tags/1")]
+    [InlineData("DELETE", "/api/channels/testchannel/tags/1")]
+    [InlineData("POST", "/api/channels/testchannel/tags/1/entries")]
+    [InlineData("POST", "/api/channels/testchannel/tags/1/entries/remove")]
+    public async Task TagMaintenance_Answers403_WithoutManagementRights_AndNeverCallsTheService(string method, string path)
+    {
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync(method, path, NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Empty(_factory.EmoteTags.ReceivedCalls());
+    }
+
+    [Fact]
+    public async Task TagReads_StayOpen_ToACallerWhoMayViewButNotManage()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+        _factory.EmoteTags.ListAsync(Channel, Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(new EmoteTagListResult(EmoteTagListStatus.Ok, null, false, []));
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/tags", NewUserId());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]
@@ -1431,7 +1527,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             }
         }
 
-        if (method is "POST" or "PUT")
+        if (method is "POST" or "PUT" or "PATCH")
         {
             request.Content = new StringContent(body ?? "{}", Encoding.UTF8, "application/json");
         }
