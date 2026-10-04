@@ -10,6 +10,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<UsageStat> UsageStats => Set<UsageStat>();
     public DbSet<ChannelLiveDay> ChannelLiveDays => Set<ChannelLiveDay>();
     public DbSet<ChannelEmoteSetObservation> ChannelEmoteSetObservations => Set<ChannelEmoteSetObservation>();
+    public DbSet<EmoteTag> EmoteTags => Set<EmoteTag>();
+    public DbSet<EmoteTagEntry> EmoteTagEntries => Set<EmoteTagEntry>();
     public DbSet<User> Users => Set<User>();
     public DbSet<VoteSession> VoteSessions => Set<VoteSession>();
     public DbSet<VoteSessionEmote> VoteSessionEmotes => Set<VoteSessionEmote>();
@@ -90,6 +92,36 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasOne(o => o.Channel)
                 .WithMany()
                 .HasForeignKey(o => o.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTag>(entity =>
+        {
+            entity.Property(t => t.Name).HasMaxLength(EmoteTagName.MaxLength);
+            entity.Property(t => t.NormalizedName).HasMaxLength(EmoteTagName.MaxLength);
+
+            // "Funny" and "funny" are one tag per channel.
+            entity.HasIndex(t => new { t.ChannelId, t.NormalizedName }).IsUnique();
+            // The tag list reads "this channel's tags in creation order".
+            entity.HasIndex(t => new { t.ChannelId, t.CreatedAtUtc });
+
+            // No inverse collection on Channel, same as ChannelEmoteSetObservation above.
+            entity.HasOne(t => t.Channel)
+                .WithMany()
+                .HasForeignKey(t => t.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTagEntry>(entity =>
+        {
+            // Pure join-style table: the natural key is the primary key.
+            entity.HasKey(e => new { e.TagId, e.SevenTvEmoteId });
+            entity.Property(e => e.SevenTvEmoteId).HasMaxLength(32);
+
+            // Deliberately no FK to Emote: a tag outlives the emote row (E22, rule 8).
+            entity.HasOne(e => e.Tag)
+                .WithMany()
+                .HasForeignKey(e => e.TagId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

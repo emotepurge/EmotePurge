@@ -10,6 +10,34 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/EmoteTag.cs` · `src/EmotePurge.Core/Entities/EmoteTagEntry.cs` ·
+`src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTags.cs`
+
+Emote tags (#201) are two new tables, added by the purely additive migration `AddEmoteTags`
+(no existing table is touched):
+
+- `EmoteTags(Id, ChannelId, Name, NormalizedName, CreatedAtUtc)` — name and normalized name max 40
+  characters; unique `(ChannelId, NormalizedName)` so "Funny" and "funny" are one tag per channel
+  (`EmoteTagName.Normalize` = trim + lowercase, analogous to `ChannelName`); index
+  `(ChannelId, CreatedAtUtc)` for the creation-ordered list; FK to `Channels` with `Cascade`, no
+  inverse collection on `Channel`.
+- `EmoteTagEntries(TagId, SevenTvEmoteId, Alias, ImageUrl, AddedAtUtc)` — primary key
+  `(TagId, SevenTvEmoteId)`; FK to `EmoteTags` with `Cascade`. `SevenTvEmoteId` is capped at 32
+  characters (real 7TV ids are 26-character ULIDs; the cap is headroom, not a format claim).
+
+**No foreign key from an entry to `Emote`.** A tag belongs to the channel and must survive its emote
+leaving the set and coming back; `Emote` rows are archived and recreated by the sync, and
+`Emote.Id` is an internal guid (rule 8). Entries therefore carry a snapshot (`Alias`, `ImageUrl`)
+and are matched to live emotes by 7TV id at read time.
+
+Both channel purges (`PurgeAsync`, `PurgeIfInactiveSinceAsync`) take the tag tables down through the
+cascades; `EmoteTagCascadeTests` pins that. Product limits are constants, not configuration:
+`EmoteTagLimits.MaxTagsPerChannel = 50`, `MaxEntriesPerTag = 1000`. Audit actions `tag.create`,
+`tag.rename`, `tag.delete` carry only ids and counts in their details, never the name.
+
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-set-entries.ts` ·
