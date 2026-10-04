@@ -1,6 +1,6 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, DestroyRef, computed, inject, signal, viewChild } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { concatMap, filter, from, map, merge } from 'rxjs';
@@ -113,7 +113,7 @@ export interface TagAssignDialogResult {
         type="button"
         appButton="outline"
         buttonSize="lg"
-        [disabled]="isSubmitting()"
+        [disabled]="isSubmitting() || isCreating()"
         [attr.aria-describedby]="isSubmitting() ? 'tag-assign-lock-hint' : null"
         (click)="dismiss()"
       >
@@ -137,6 +137,7 @@ export class TagAssignDialog {
   protected readonly data = inject<TagAssignDialogData>(DIALOG_DATA);
   private readonly dialogRef = inject<DialogRef<TagAssignDialogResult | undefined>>(DialogRef);
   private readonly tagService = inject(EmoteTagService);
+  private readonly destroyRef = inject(DestroyRef);
 
   private readonly nameFieldRef = viewChild.required(TagNameField);
   // Across retries after a partial failure, so the caller's count stays honest.
@@ -168,7 +169,12 @@ export class TagAssignDialog {
       .list(this.data.channelName)
       .pipe(takeUntilDestroyed())
       .subscribe({
-        next: (result) => this.tags.set(result.tags),
+        // Merge, not replace: a tag created inline before this response arrived must stay listed.
+        next: (result) =>
+          this.tags.update((current) => [
+            ...result.tags,
+            ...(current ?? []).filter((t) => !result.tags.some((r) => r.id === t.id)),
+          ]),
         error: (error: HttpErrorResponse) => {
           this.tags.set(null);
           this.loadErrorKey.set(apiErrorTranslationKey(error));
@@ -186,7 +192,7 @@ export class TagAssignDialog {
       .subscribe(() => {
         // Only reached by the CDK's own close being switched off (disableClose): while a request is
         // in flight the dialog must stay, afterwards only a partial failure keeps it open.
-        if (!this.isSubmitting() && this.partial() !== null) {
+        if (!this.isSubmitting() && !this.isCreating() && this.partial() !== null) {
           this.dismiss();
         }
       });
@@ -216,23 +222,28 @@ export class TagAssignDialog {
     }
     this.errorKey.set(null);
     this.isCreating.set(true);
-    this.tagService.create(this.data.channelName, name).subscribe({
-      next: (tag) => {
-        this.isCreating.set(false);
-        this.tags.update((list) => [
-          ...(list ?? []),
-          { id: tag.id, name: tag.name, entryCount: 0, inSetCount: null },
-        ]);
-        this.checked.update((current) => new Set(current).add(tag.id));
-        this.nameFieldRef().reset();
-      },
-      error: (error: HttpErrorResponse) => {
-        this.isCreating.set(false);
-        if (!this.nameFieldRef().applyServerError(error)) {
-          this.errorKey.set(apiErrorTranslationKey(error));
-        }
-      },
-    });
+    // Closing now would drop the pending create; afterwards only a partial result keeps it locked.
+    this.dialogRef.disableClose = true;
+    this.tagService
+      .create(this.data.channelName, name)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (tag) => {
+          this.settleCreate();
+          this.tags.update((list) => [
+            ...(list ?? []),
+            { id: tag.id, name: tag.name, entryCount: 0, inSetCount: null },
+          ]);
+          this.checked.update((current) => new Set(current).add(tag.id));
+          this.nameFieldRef().reset();
+        },
+        error: (error: HttpErrorResponse) => {
+          this.settleCreate();
+          if (!this.nameFieldRef().applyServerError(error)) {
+            this.errorKey.set(apiErrorTranslationKey(error));
+          }
+        },
+      });
   }
 
   protected assign(): void {
@@ -240,6 +251,9 @@ export class TagAssignDialog {
       return;
     }
     const chosen = (this.tags() ?? []).filter((tag) => this.checked().has(tag.id));
+    if (chosen.length === 0) {
+      return;
+    }
     const succeeded: EmoteTagSummary[] = [];
     let emoteCount = this.partial()?.emoteCount ?? 0;
     const skipped = this.skippedIds;
@@ -277,6 +291,11 @@ export class TagAssignDialog {
           this.dialogRef.close(this.buildResult(this.partial(), succeeded, emoteCount, skipped));
         },
       });
+  }
+
+  private settleCreate(): void {
+    this.isCreating.set(false);
+    this.dialogRef.disableClose = this.partial() !== null;
   }
 
   /**

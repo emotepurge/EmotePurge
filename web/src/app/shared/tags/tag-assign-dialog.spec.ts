@@ -184,6 +184,49 @@ describe('TagAssignDialog', () => {
     httpMock.verify();
   });
 
+  it('inline create while the list is still loading: the new tag stays listed and ticked, confirm sends one POST', () => {
+    const fixture = TestBed.createComponent(TagAssignDialog);
+    fixture.detectChanges();
+    const dialog = fixture.componentInstance;
+    dialog['create']('Neu');
+    httpMock.expectOne({ method: 'POST', url: BASE }).flush({ id: 7, name: 'Neu' });
+    httpMock.expectOne(BASE).flush(tagList([1, 'Stronghold']));
+    fixture.detectChanges();
+
+    const host: HTMLElement = fixture.nativeElement;
+    const boxes = host.querySelectorAll<HTMLInputElement>('input[type=checkbox]');
+    expect(boxes.length).toBe(2);
+    expect(boxes[1].checked).toBe(true);
+    expect(host.textContent).toContain('Neu');
+
+    const confirm = Array.from(host.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === '3 Emotes zuweisen',
+    ) as HTMLButtonElement;
+    confirm.click();
+    httpMock.expectOne(`${BASE}/7/entries`).flush(added(3));
+    expect(closed).toEqual([{ tagNames: ['Neu'], emoteCount: 3, skippedNotInSetCount: 0 }]);
+    httpMock.verify();
+  });
+
+  it('cannot be dismissed while an inline create is pending, and can be afterwards', () => {
+    const view = render();
+    view.fixture.componentInstance['create']('Neu');
+    view.fixture.detectChanges();
+    const cancel = Array.from(view.host.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Abbrechen',
+    ) as HTMLButtonElement;
+    expect(cancel.disabled).toBe(true);
+    keydown.next(new KeyboardEvent('keydown', { key: 'Escape' }));
+    backdrop.next(new MouseEvent('click'));
+    expect(closed).toEqual([]);
+
+    httpMock.expectOne({ method: 'POST', url: BASE }).flush({ id: 7, name: 'Neu' });
+    view.fixture.detectChanges();
+    expect(cancel.disabled).toBe(false);
+    keydown.next(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(closed).toEqual([undefined]);
+  });
+
   it('assigns tag by tag in list order and closes with one count over all tags', () => {
     const view = render();
     view.tick(1);
