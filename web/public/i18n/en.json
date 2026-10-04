@@ -1724,7 +1724,12 @@
       "legal_document_not_found": "This document is not available.",
       "contact_invalid": "Please check your details.",
       "contact_captcha_failed": "The security check could not be confirmed. Please try again.",
-      "contact_unavailable": "The contact form is currently unreachable. Please try again later."
+      "contact_unavailable": "The contact form is currently unreachable. Please try again later.",
+      "tag_name_invalid": "The tag name is invalid. It must not be empty and at most 40 characters long.",
+      "tag_name_taken": "This channel already has a tag with that name.",
+      "tag_limit_reached": "This channel has reached the maximum number of tags.",
+      "tag_not_found": "This tag no longer exists.",
+      "tag_entry_limit_reached": "This tag has reached the maximum number of emotes. Nothing was added."
     }
   }
 }

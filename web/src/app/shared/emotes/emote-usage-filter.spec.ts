@@ -4,6 +4,7 @@ import { EmoteUsageFilter } from './emote-usage-filter';
 
 interface Row {
   emoteName: string;
+  sevenTvEmoteId: string;
   totalUseCount: number | null;
   firstSeenAt?: string | null;
 }
@@ -11,9 +12,9 @@ interface Row {
 const NOW = new Date('2026-08-01T12:00:00Z');
 
 const ROWS: Row[] = [
-  { emoteName: 'peepoHappy', totalUseCount: 0 },
-  { emoteName: 'peepoSad', totalUseCount: 5 },
-  { emoteName: 'catJAM', totalUseCount: 120 },
+  { emoteName: 'peepoHappy', sevenTvEmoteId: 'A', totalUseCount: 0 },
+  { emoteName: 'peepoSad', sevenTvEmoteId: 'B', totalUseCount: 5 },
+  { emoteName: 'catJAM', sevenTvEmoteId: 'C', totalUseCount: 120 },
 ];
 
 describe('EmoteUsageFilter', () => {
@@ -75,8 +76,8 @@ describe('EmoteUsageFilter', () => {
 
   it('null usage never matches a usage bound — including "unused" — but passes without bounds', () => {
     const rows: Row[] = [
-      { emoteName: 'withData', totalUseCount: 0 },
-      { emoteName: 'withheld', totalUseCount: null },
+      { emoteName: 'withData', sevenTvEmoteId: 'X1', totalUseCount: 0 },
+      { emoteName: 'withheld', sevenTvEmoteId: 'X2', totalUseCount: null },
     ];
     const filter = new EmoteUsageFilter<Row>();
 
@@ -94,8 +95,18 @@ describe('EmoteUsageFilter', () => {
 
   it('toggleHideObserved() hides only emotes still inside their observation period', () => {
     const rows: Row[] = [
-      { emoteName: 'established', totalUseCount: 0, firstSeenAt: '2026-01-01T00:00:00Z' },
-      { emoteName: 'justAdded', totalUseCount: 0, firstSeenAt: '2026-07-28T00:00:00Z' },
+      {
+        emoteName: 'established',
+        sevenTvEmoteId: 'X3',
+        totalUseCount: 0,
+        firstSeenAt: '2026-01-01T00:00:00Z',
+      },
+      {
+        emoteName: 'justAdded',
+        sevenTvEmoteId: 'X4',
+        totalUseCount: 0,
+        firstSeenAt: '2026-07-28T00:00:00Z',
+      },
     ];
     const filter = new EmoteUsageFilter<Row>();
 
@@ -111,8 +122,8 @@ describe('EmoteUsageFilter', () => {
     // Right after the column was introduced most rows have no date; hiding them would empty the
     // grid for a filter the user reads as "hide the new ones".
     const rows: Row[] = [
-      { emoteName: 'noDate', totalUseCount: 0 },
-      { emoteName: 'nullDate', totalUseCount: 0, firstSeenAt: null },
+      { emoteName: 'noDate', sevenTvEmoteId: 'X5', totalUseCount: 0 },
+      { emoteName: 'nullDate', sevenTvEmoteId: 'X6', totalUseCount: 0, firstSeenAt: null },
     ];
     const filter = new EmoteUsageFilter<Row>();
 
@@ -134,9 +145,24 @@ describe('EmoteUsageFilter', () => {
 
   it('combines the observation toggle with the unused filter instead of overriding it', () => {
     const rows: Row[] = [
-      { emoteName: 'oldUnused', totalUseCount: 0, firstSeenAt: '2026-01-01T00:00:00Z' },
-      { emoteName: 'newUnused', totalUseCount: 0, firstSeenAt: '2026-07-28T00:00:00Z' },
-      { emoteName: 'oldUsed', totalUseCount: 40, firstSeenAt: '2026-01-01T00:00:00Z' },
+      {
+        emoteName: 'oldUnused',
+        sevenTvEmoteId: 'X7',
+        totalUseCount: 0,
+        firstSeenAt: '2026-01-01T00:00:00Z',
+      },
+      {
+        emoteName: 'newUnused',
+        sevenTvEmoteId: 'X8',
+        totalUseCount: 0,
+        firstSeenAt: '2026-07-28T00:00:00Z',
+      },
+      {
+        emoteName: 'oldUsed',
+        sevenTvEmoteId: 'X9',
+        totalUseCount: 40,
+        firstSeenAt: '2026-01-01T00:00:00Z',
+      },
     ];
     const filter = new EmoteUsageFilter<Row>();
 
@@ -146,5 +172,77 @@ describe('EmoteUsageFilter', () => {
 
     filter.toggleHideObserved();
     expect(filter.apply(rows, NOW).map((row) => row.emoteName)).toEqual(['oldUnused']);
+  });
+
+  describe('tag dimension', () => {
+    it('counts a chosen tag alone as an active filter', () => {
+      const filter = new EmoteUsageFilter<Row>();
+
+      filter.setTag(4);
+
+      expect(filter.isAnyActive()).toBe(true);
+    });
+
+    it('lets everything through while the tag keys are not loaded', () => {
+      const filter = new EmoteUsageFilter<Row>();
+
+      filter.setTag(4);
+
+      expect(filter.tagKeys()).toBeNull();
+      expect(filter.apply(ROWS)).toEqual(ROWS);
+    });
+
+    it('keeps only the tag members once the keys are loaded', () => {
+      const filter = new EmoteUsageFilter<Row>();
+      filter.setTag(4);
+
+      filter.setTagKeys(new Set(['B', 'C']));
+
+      expect(filter.apply(ROWS).map((r) => r.emoteName)).toEqual(['peepoSad', 'catJAM']);
+    });
+
+    it('intersects with the name filter', () => {
+      const filter = new EmoteUsageFilter<Row>();
+      filter.setTag(4);
+      filter.setTagKeys(new Set(['A', 'C']));
+      filter.setNameFilter('peepo');
+
+      expect(filter.apply(ROWS).map((r) => r.emoteName)).toEqual(['peepoHappy']);
+    });
+
+    it('ignores loaded keys once the tag is cleared, and setTag(null) drops them', () => {
+      const filter = new EmoteUsageFilter<Row>();
+      filter.setTag(4);
+      filter.setTagKeys(new Set(['A']));
+
+      filter.setTag(null);
+
+      expect(filter.tagKeys()).toBeNull();
+      expect(filter.isAnyActive()).toBe(false);
+      expect(filter.apply(ROWS)).toEqual(ROWS);
+    });
+
+    it('drops a stale key set when another tag is chosen', () => {
+      const filter = new EmoteUsageFilter<Row>();
+      filter.setTag(4);
+      filter.setTagKeys(new Set(['A']));
+
+      filter.setTag(5);
+
+      expect(filter.tagKeys()).toBeNull();
+      expect(filter.apply(ROWS)).toEqual(ROWS);
+    });
+
+    it('reset clears the tag and its keys', () => {
+      const filter = new EmoteUsageFilter<Row>();
+      filter.setTag(4);
+      filter.setTagKeys(new Set(['A']));
+
+      filter.reset();
+
+      expect(filter.tagId()).toBeNull();
+      expect(filter.tagKeys()).toBeNull();
+      expect(filter.isAnyActive()).toBe(false);
+    });
   });
 });

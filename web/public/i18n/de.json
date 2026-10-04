@@ -1724,7 +1724,12 @@
       "legal_document_not_found": "Dieses Dokument ist nicht verfügbar.",
       "contact_invalid": "Bitte überprüfe deine Angaben.",
       "contact_captcha_failed": "Die Sicherheitsabfrage konnte nicht bestätigt werden. Bitte versuch es erneut.",
-      "contact_unavailable": "Das Kontaktformular ist gerade nicht erreichbar. Bitte versuch es später erneut."
+      "contact_unavailable": "Das Kontaktformular ist gerade nicht erreichbar. Bitte versuch es später erneut.",
+      "tag_name_invalid": "Der Tag-Name ist ungültig. Er darf nicht leer sein und höchstens 40 Zeichen lang.",
+      "tag_name_taken": "Einen Tag mit diesem Namen gibt es in diesem Channel schon.",
+      "tag_limit_reached": "Dieser Channel hat die maximale Zahl an Tags erreicht.",
+      "tag_not_found": "Dieser Tag existiert nicht mehr.",
+      "tag_entry_limit_reached": "Dieser Tag hat die maximale Zahl an Emotes erreicht. Es wurde nichts hinzugefügt."
     }
   }
 }
