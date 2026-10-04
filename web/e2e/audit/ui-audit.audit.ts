@@ -26,6 +26,8 @@ import {
   mockLegalAvailability,
   mockLegalDocument,
   mockSetWarning,
+  mockTagEntries,
+  mockTags,
   mockTurnstile,
   failLive,
   mockLiveQuota,
@@ -369,6 +371,24 @@ interface Scenario {
   requiresFinePointer?: boolean;
 }
 
+const LONG_TAG = 'Fuer-die-Halloween-Wochen-Auswahl-2026-xx';
+
+const TAG_LIST = [
+  { id: 7, name: LONG_TAG, entryCount: 24, inSetCount: 20 },
+  { id: 8, name: 'Leer', entryCount: 0, inSetCount: 0 },
+  { id: 9, name: 'Favoriten', entryCount: 12, inSetCount: 12 },
+];
+
+/** Entries of one tag: every sixth has left the set, the first carries a 40-character alias. */
+function tagEntries(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    sevenTvEmoteId: `7tv-${i + 1}`,
+    alias: i === 0 ? 'xXSuperMegaLangerAliasMitVierzigZeichen' : `Emote${i + 1}PogU`,
+    inSet: i % 6 === 5 ? false : true,
+    currentName: i % 6 === 5 ? `Renamed${i + 1}` : null,
+  }));
+}
+
 const SCENARIOS: Scenario[] = [
   {
     slug: 'welcome',
@@ -706,9 +726,17 @@ const SCENARIOS: Scenario[] = [
         {
           1: Array.from({ length: 25 }, (_, i) => ({
             id: 100 - i,
-            action: ['channel.join', 'channel.leave', 'channel.purge', 'voteSession.create'][i % 4],
+            action: [
+              'channel.join',
+              'channel.leave',
+              'channel.purge',
+              'voteSession.create',
+              'tag.create',
+              'tag.rename',
+              'tag.delete',
+            ][i % 7],
             channelName: i % 3 === 0 ? 'superlangertwitchchannelx' : 'sensitron',
-            targetType: i % 4 === 3 ? 'VoteSession' : 'Channel',
+            targetType: i % 7 === 3 ? 'VoteSession' : i % 7 >= 4 ? 'emoteTag' : 'Channel',
             targetId: String(i + 1),
           })),
         },
@@ -1276,14 +1304,21 @@ const SCENARIOS: Scenario[] = [
       await mockChannelAuditLog(page, 'sensitron', {
         1: Array.from({ length: 25 }, (_, i) => ({
           id: 100 - i,
-          action: ['channel.join', 'channel.resync', 'voteSession.delete', 'emotes.syncDeleted'][
-            i % 4
-          ],
+          // The three tag actions carry id-only details the server projects to no detail line.
+          action: [
+            'channel.join',
+            'channel.resync',
+            'voteSession.delete',
+            'emotes.syncDeleted',
+            'tag.create',
+            'tag.rename',
+            'tag.delete',
+          ][i % 7],
           actorLogin: i % 2 === 0 ? 'sensitron' : 'averylongmoderatorname',
           detail:
-            i % 4 === 2
+            i % 7 === 2
               ? { kind: 'title', count: null, text: 'Sommer-Purge 2026' }
-              : i % 4 === 3
+              : i % 7 === 3
                 ? { kind: 'emoteCount', count: 128, text: null }
                 : null,
         })),
@@ -1398,6 +1433,105 @@ const SCENARIOS: Scenario[] = [
       await authedShell(page);
       await channelWorkspace(page);
       await mockVoteResults(page, 5, false, { voterCount: 3 });
+    },
+  },
+  {
+    // The tags page (#201, spec 9.4): list and detail side by side from lg, drilldown below. Long
+    // names on both sides (a 40-character tag, a 40-character alias), entries that left the set
+    // (void plate + dimmed sprite + "today: ..." line), and the deep link `?tag=` that opens the
+    // detail on narrow viewports as well.
+    slug: 'tags-page-list-detail',
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(24));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+  },
+  {
+    // The list alone on the drilldown viewports (no `?tag=`): every tag row, long name truncating.
+    slug: 'tags-page-list',
+    path: '/channels/sensitron/tags',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(24));
+    },
+  },
+  {
+    // More than VIRTUALIZE_ABOVE (200) entries: the window-scrolled virtual viewport path.
+    slug: 'tags-page-virtualized',
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', [{ ...TAG_LIST[0], entryCount: 250, inSetCount: 230 }]);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(250));
+    },
+  },
+  {
+    // A tag without entries: the detail's own empty state beside a populated list.
+    slug: 'tags-page-tag-empty',
+    path: '/channels/sensitron/tags?tag=8',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 8, []);
+    },
+  },
+  {
+    // No tag at all: the page's empty state with its way to the usage grid.
+    slug: 'tags-page-empty',
+    path: '/channels/sensitron/tags',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', []);
+    },
+  },
+  {
+    // The filter row with the tag select chosen (#201, spec 9.2): select, inline group (name · k in
+    // the set · m not in the set, the way to the tag page) and, with one emote marked, the dock's
+    // "Remove from '...' (n)" carrying a 40-character tag name — the longest label the dock gets.
+    // Fine pointer only: the dock's write buttons do not exist on a coarse one.
+    slug: 'usage-filter-with-tag',
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(3));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      await page.getByRole('combobox', { name: /^Tag$/ }).selectOption('7');
+      await page.getByRole('button', { name: /^Emote1PogU ·/ }).click();
+      await page.locator('.app-dock').waitFor();
+    },
+  },
+  {
+    // The assign dialog (#201, spec 7.0) over two marked emotes: the tag checklist with a
+    // 40-character name, the create row and the confirm button. Fine pointer only (the write path).
+    slug: 'tag-assign-dialog',
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockTags(page, 'sensitron', TAG_LIST);
+    },
+    afterLoad: async (page) => {
+      await page.getByRole('button', { name: /^Emote1PogU ·/ }).click();
+      await page.getByRole('button', { name: /^Emote3PogU ·/ }).click();
+      await page.getByRole('button', { name: /^(Tag zuweisen|Assign tag)/ }).click();
+      await page.getByRole('dialog').waitFor();
     },
   },
 ];

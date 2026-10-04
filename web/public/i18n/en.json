@@ -601,6 +601,9 @@
       "emotesSyncDeleted": "Emotes marked as deleted",
       "emotesSyncRestored": "Emotes restored",
       "emotesSyncImported": "Emotes imported",
+      "tagCreate": "Tag created",
+      "tagRename": "Tag renamed",
+      "tagDelete": "Tag deleted",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
       "userDelete": "Account deleted"

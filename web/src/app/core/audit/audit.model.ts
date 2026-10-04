@@ -25,6 +25,9 @@ export type AuditAction =
   | 'emotes.syncDeleted'
   | 'emotes.syncRestored'
   | 'emotes.syncImported'
+  | 'tag.create'
+  | 'tag.rename'
+  | 'tag.delete'
   | 'user.revokeSessions'
   | 'user.invalidateRoleCache'
   | 'user.delete';

@@ -34,6 +34,23 @@ describe('toAuditRows', () => {
     expect(row.action).toBe('voteSession.delete');
   });
 
+  it.each([
+    ['tag.create', 'audit.actions.tagCreate'],
+    ['tag.rename', 'audit.actions.tagRename'],
+    ['tag.delete', 'audit.actions.tagDelete'],
+  ])('labels %s and shows no detail line for its id-only payload', (action, key) => {
+    // The server projects `{ tagId }` / `{ tagId, entryCount }` to no detail (names never reach the
+    // log), so the row keeps just its action, actor and time.
+    const [row] = toAuditRows(
+      [entry({ action, targetType: 'emoteTag', targetId: '7', detail: null })],
+      'de-DE',
+      IDENTITY_TRANSLATE,
+    );
+
+    expect(row.actionKey).toBe(key);
+    expect(row.detail).toBeNull();
+  });
+
   it('leaves an unknown action without a key but keeps it verbatim', () => {
     // An entry written by a newer backend: showing the raw string beats hiding the row.
     const [row] = toAuditRows(
