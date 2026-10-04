@@ -3302,6 +3302,20 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     });
   });
 
+  // #201 T-A seam: the panel hands its own `setId` to the section as `hostSelectedSetId`, so the
+  // confirmation's "not the set on screen" warning follows the set the panel shows. A `null` binding
+  // would read as "foreign" for every run — so the guard is the *absence* of the warning here.
+  it("passes the panel's set to the section, so restoring the set on screen is not flagged as foreign", () => {
+    progressSection(fixture)['openRestoreConfirm']();
+    flushTargetsResponse();
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect((dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData).foreignToView).toBe(
+      false,
+    );
+  });
+
   // #256 P3-3, fail-closed: `DeleteRunInfo.channelName` is a required field and never empty in
   // practice, but the button must not silently mis-attribute a restore if some future run shape
   // ever left it unset — this locks the button with a reason instead, before the pre-check chain
