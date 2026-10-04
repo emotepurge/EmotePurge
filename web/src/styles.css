@@ -513,11 +513,12 @@
   /* A cell with nothing behind it: an archived emote on a ballot. Flat page colour with a hairline
      outline, so it reads as an empty slot rather than as artwork.
 
-     Ballot only, since 2026-08-06. The atlas used it for "no usage in the range" and that was the
-     same mistake the checker made one layer up: the never-used emotes there sit as a closed block
-     under a heading that already says so, each printing a 0, so a third statement distinguished
-     nothing — it only broke the evenness of the sheet. On a ballot the archived ones are mixed in
-     among live ones with no heading to separate them, which is exactly the case a plate is for.
+     For mixed grids without a heading: the ballot and the tags page, not the atlas (since
+     2026-08-06). The atlas used it for "no usage in the range" and that was the same mistake the
+     checker made one layer up: the never-used emotes there sit as a closed block under a heading
+     that already says so, each printing a 0, so a third statement distinguished nothing — it only
+     broke the evenness of the sheet. On a ballot the archived ones are mixed in among live ones
+     with no heading to separate them, which is exactly the case a plate is for.
      The tags page's entries grid (#201) is the same case: entries that left the set stand among
      those still in it. */
   .app-sprite-cell-void {

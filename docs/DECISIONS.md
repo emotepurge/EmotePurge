@@ -12,17 +12,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
-**Betrifft:** `src/EmotePurge.Core/Entities/EmoteTag.cs` · `src/EmotePurge.Core/Entities/EmoteTagEntry.cs` ·
-`src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
-`src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTags.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
-`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteIdValidation.cs` ·
-`src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
-`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` ·
-`web/src/app/app.routes.ts` · `web/src/app/features/tags/tags.routes.ts` ·
-`web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags-page.html` ·
-`web/src/app/features/channel-workspace/channel-workspace-layout.ts` ·
-`web/src/app/core/layout/wide-viewport.service.ts` · `web/src/styles.css` · `docs/UI-Designsprache.md`
+**Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/UI-Designsprache.md` · `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Entities/EmoteTag.cs` · `src/EmotePurge.Core/Entities/EmoteTagEntry.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteIdValidation.cs` · `src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTags*.cs` · `src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` · `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` · `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `tests/EmotePurge.Api.Tests/ApiFactory.cs` · `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` · `tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` · `tests/EmotePurge.Api.Tests/EmoteTagEndpointsTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagNameTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Unit/SevenTvEmoteIdValidationTests.cs` · `web/e2e/audit/ui-audit.audit.ts` · `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` · `web/e2e/usage-atlas.e2e.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/src/app/app.routes.ts` · `web/src/app/core/audit/audit.model.ts` · `web/src/app/core/i18n/api-error.ts` · `web/src/app/core/layout/wide-viewport.service.spec.ts` · `web/src/app/core/layout/wide-viewport.service.ts` · `web/src/app/core/tags/emote-tag.model.ts` · `web/src/app/core/tags/emote-tag.service.spec.ts` · `web/src/app/core/tags/emote-tag.service.ts` · `web/src/app/features/channel-workspace/channel-workspace-layout.spec.ts` · `web/src/app/features/channel-workspace/channel-workspace-layout.ts` · `web/src/app/features/tags/tag-name-dialog.spec.ts` · `web/src/app/features/tags/tag-name-dialog.ts` · `web/src/app/features/tags/tags-page.html` · `web/src/app/features/tags/tags-page.spec.ts` · `web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags.routes.spec.ts` · `web/src/app/features/tags/tags.routes.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/shared/audit/audit-actions.spec.ts` · `web/src/app/shared/audit/audit-actions.ts` · `web/src/app/shared/audit/audit-row.spec.ts` · `web/src/app/shared/emotes/emote-usage-filter.spec.ts` · `web/src/app/shared/emotes/emote-usage-filter.ts` · `web/src/app/shared/tags/tag-assign-dialog.spec.ts` · `web/src/app/shared/tags/tag-assign-dialog.ts` · `web/src/app/shared/tags/tag-name-field.spec.ts` · `web/src/app/shared/tags/tag-name-field.ts` · `web/src/styles.css`
 
 Emote tags (#201) are two new tables, added by the purely additive migration `AddEmoteTags`
 (no existing table is touched):
@@ -117,6 +107,35 @@ structure by width before; every earlier width decision was purely visual and st
 On a coarse pointer the tags grid selects nothing, so "Aus Tag entfernen" is fine-pointer-only,
 following spec 9.4 ("auf grobem Zeiger fehlen … die Rasterauswahl"); spec 8's row saying it stays on
 a coarse pointer contradicts that and is an open operator question.
+
+**Usage page: the filter dimension, the assign dialog and the dock (frontend).** The tag is one more
+dimension of `EmoteUsageFilter` (`tagId` plus `tagKeys`, the chosen tag's 7TV ids): a row passes when
+its `sevenTvEmoteId` is in the key set. While the keys are not loaded yet everything passes —
+filtering to empty meanwhile would flash the empty state on every tag switch — and switching channel
+or tag drops the old keys. The select sits in the filter row, before the reset that clears it too, and
+is not rendered at all until the channel has a tag; the chosen tag shows its name, "k in the set · m
+not in the set" and a link to its page. The dock gains two constructive buttons, in this order:
+"Tag zuweisen…" (before the vote button; fine pointer, channel management, the shown set is the
+active set, a selection exists) and "Aus ‚Tag' entfernen (n)" (after the vote button, before the gap
+to the delete; only with a tag filter set). n counts only the marked emotes that are actually in the
+tag. At n = 0 the button is disabled and states why beside it (`noneInTag`, referenced by
+`aria-describedby`); while the keys load or a removal is in flight it is disabled without text (a
+loading state, §6.1). The dock label keeps its structure constant, but only the tag-name part is
+truncated (`max-w-40` on an inner span) because a name may have 40 characters and the label was 446 px
+wide at 360 px; the full name stays in the accessible name and `title` (found by the audit harness).
+The assign dialog (`TagAssignDialog`, `shared/tags/`) returns `{ tagNames, emoteCount,
+skippedNotInSetCount }` — emotes counted once across all chosen tags — or `undefined` when nothing was
+assigned; the page turns that into its status sentences. A selection of more than 2000 ids is capped
+by the server (400 `emote_ids_invalid`), which the set capacity makes hard to reach.
+
+The tags page has no sprite-sheet bands: §2.5's bands belong to the usage atlas, where the grid is
+sorted by usage; the tags grid is a plain list of entries. Its multi-select action sits in the flow
+beneath the grid, not in a dock (UI design doc §8.7).
+
+**What T-C adds.** Placement fields on the entries, additively (a migration of its own, no change to
+the two tables' existing columns), and the feature flag the placement work sits behind. The
+delete-tag confirm label stays constant ("Tag löschen"); the "even though placed" wording is carried
+by the hint text (`placedHint`), not by the label.
 
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 

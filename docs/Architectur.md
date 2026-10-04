@@ -244,6 +244,8 @@ Not part of the original specification, but in scope a module of its own: a vert
 >
 > **`AuditLogEntry`** (migrations `20260731101655` and `20260731134345` for the `ChannelName` index) logs privileged actions: `OccurredAtUtc`, `ActorTwitchUserId`/`ActorLogin`, `Action` (one of the ten values from `AuditActions`, e.g. `channel.purge`, `voteSession.delete`, `user.revokeSessions`), optionally `ChannelName`, `TargetType`/`TargetId` and a free-form `DetailsJson`.
 >
+> **`EmoteTag` / `EmoteTagEntry`** (migration `AddEmoteTags`, #201) are the channel-owned emote tags: `EmoteTags(Id, ChannelId, Name, NormalizedName, CreatedAtUtc)` with a unique `(ChannelId, NormalizedName)` and an FK to `Channels` (`Cascade`), and `EmoteTagEntries(TagId, SevenTvEmoteId, Alias, ImageUrl, AddedAtUtc)` with the key `(TagId, SevenTvEmoteId)` and an FK to `EmoteTags` (`Cascade`). There is deliberately **no** FK to `Emote` — an entry is keyed by the 7TV id and carries an alias/image snapshot, so a tag survives its emote leaving and re-entering the set. A channel purge removes both tables through the cascades. Limits (50 tags per channel, 1000 entries per tag) are constants enforced under the channel row lock; see DECISIONS 2026-10-04.
+>
 > **Columns that were added later and are easily overlooked:**
 >
 > | Entity | Column | Migration | Purpose |
