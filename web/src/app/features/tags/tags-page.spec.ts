@@ -432,6 +432,30 @@ describe('TagsPage', () => {
       expect(view(page).feedback()).toBeNull();
     });
 
+    it('a tag picked while another tag is being deleted stays selected when the delete completes', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const { harness, page } = await openDetail();
+      dialogResult = true;
+
+      buttonByName(harness, 'Löschen')!.click();
+      const del = httpMock.expectOne(`${BASE}/1`);
+
+      await harness.navigateByUrl('/channels/a/tags?tag=2');
+      await settle(harness);
+      expectEntries(2).flush({ emoteSetId: 'set-a', isActiveSet: true, entries: [] });
+      await settle(harness);
+      expect(page.selectedTagId()).toBe(2);
+
+      del.flush(null);
+      await settle(harness);
+      expectList().flush(tagList(tag(2, 'Halloween')));
+      await settle(harness);
+
+      expect(page.selectedTagId()).toBe(2);
+      expect(TestBed.inject(Router).url).toBe('/channels/a/tags?tag=2');
+      expect(view(page).feedback()?.key).toBe('tags.page.deleted');
+    });
+
     it('delete dismissed: nothing is sent', async () => {
       const { harness } = await openDetail();
       dialogResult = false;

@@ -560,10 +560,13 @@ export class TagsPage {
         if (this.channelName() !== channel) {
           return;
         }
-        // Our own deletion: no "deleted elsewhere" sentence from the reconciliation.
-        this.confirmedTagId = null;
-        this.selection.clear();
-        this.clearTagParam();
+        // A tag picked while this request was in flight is not ours to drop.
+        if (this.selectedTagId() === tag.id) {
+          // Our own deletion: no "deleted elsewhere" sentence from the reconciliation.
+          this.confirmedTagId = null;
+          this.selection.clear();
+          this.clearTagParam();
+        }
         this.tagsResource.reload();
         this.showFeedback('tags.page.deleted', { tag: tag.name });
       },
