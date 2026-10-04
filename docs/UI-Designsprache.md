@@ -745,7 +745,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   occurrences are not a pattern).
 - **Reference:** `web/src/app/shared/export/export-dialog.ts`, `export-dialog.spec.ts`; callers
   `features/usage-stats/usage-stats-page.ts`, `features/voting/vote-session-detail-page.ts`,
-  `shared/seven-tv/mass-delete-panel.ts`.
+  `shared/seven-tv/delete-progress-section.ts`.
 
 ## 8. Navigation
 

@@ -106,8 +106,8 @@ export interface RestoreFlowDeps {
    *  injection context of its own to pull one from (see the class doc on this interface), so every
    *  caller supplies its own via `inject(DestroyRef)`. Guards the open-time duplicate check's
    *  timeout-bounded read (`RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS`) the same way
-   *  `delete-progress-section.ts`'s own reads already guard theirs, so a late answer after the caller is
-   *  gone cannot open a confirmation nobody can see or answer. */
+   *  `delete-progress-section.ts`'s own reads already guard theirs, so a late answer after the
+   *  caller is gone cannot open a confirmation nobody can see or answer. */
   destroyRef: DestroyRef;
 }
 
@@ -119,8 +119,8 @@ type RestoreFlowRow = RestoreQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
  * Confirms and starts one restore run: 7TV token → confirmation with a live slot preview → run.
  *
  * **The token prompt comes before the confirmation**, unlike the import flow, which asks only
- * after the confirmation (see the note on that in `startImportFlow`). Unchanged from the delete
- * section this was extracted from: restoring an already-validated restore file has no read-only
+ * after the confirmation (see the note on that in `startImportFlow`). Unchanged from the chain
+ * `DeleteProgressSection` still runs: restoring an already-validated restore file has no read-only
  * preview step worth protecting the token prompt's ordering against — do not "align" this with
  * the import flow.
  *

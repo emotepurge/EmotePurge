@@ -294,14 +294,14 @@ export class SevenTvDeleteService {
    */
   readonly confirmedRunPending = signal(false);
 
-  /** A confirmed delete's live alias read (`MassDeletePanel.readLiveAliasesThenDelete`, spec §37/§38)
-   *  is out: the confirmation is closed, the run does not exist yet, and the read may still block it
-   *  (#280). Narrower than `confirmedRunPending`, which spans the open confirmation too. Registered
-   *  with the arbiter, whose `startLocked` every 7TV start trigger binds to, and spoken by
-   *  `DockOutcomeAnnouncer`. Root-level, not the panel's own, so the announcer the page mounts can
-   *  read it; set and cleared by the panel around that one bounded read, released by its `finalize`
-   *  on every exit — the read is not dropped with the panel, so a torn-down panel cannot leave it
-   *  set. */
+  /** A confirmed delete's live alias read (`readLiveAliasesThenDelete` in `delete-flow.ts`, spec
+   *  §37/§38) is out: the confirmation is closed, the run does not exist yet, and the read may
+   *  still block it (#280). Narrower than `confirmedRunPending`, which spans the open confirmation
+   *  too. Registered with the arbiter, whose `startLocked` every 7TV start trigger binds to, and
+   *  spoken by `DockOutcomeAnnouncer`. Root-level, not the panel's own, so the announcer the page
+   *  mounts can read it; set and cleared by the panel around that one bounded read, released by its
+   *  `finalize` on every exit — the read is not dropped with the panel, so a torn-down panel cannot
+   *  leave it set. */
   readonly startCheckPending = signal(false);
 
   private confirmedRunTimeout: ReturnType<typeof setTimeout> | undefined;

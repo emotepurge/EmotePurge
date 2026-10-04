@@ -17,6 +17,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
 `web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
 `web/src/app/shared/seven-tv/delete-progress-section.spec.ts` ·
+`web/src/app/shared/seven-tv/delete-flow.spec.ts` ·
 `web/src/app/shared/seven-tv/seven-tv-run-leave.guard.ts` ·
 `web/src/app/shared/seven-tv/seven-tv-run-leave.guard.spec.ts` ·
 `web/src/app/features/usage-stats/usage-stats-leave.guard.ts` (deleted) ·
@@ -25,6 +26,21 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/features/usage-stats/usage-stats.routes.spec.ts` ·
 `web/src/app/shared/seven-tv/import-trigger.ts` (comment) ·
 `web/e2e/emote-import.e2e.spec.ts` (comment only) ·
+`web/src/app/shared/seven-tv/action-dock.ts` (comment only) ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` (comment only) ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` (comment only) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (comment only) ·
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (comment only) ·
+`web/src/app/shared/seven-tv/restore-slot-preview.ts` (comment only) ·
+`web/src/app/shared/seven-tv/delete-confirm-dialog.ts` (comment only) ·
+`web/src/app/shared/seven-tv/recovery-file-gate.ts` (comment only) ·
+`web/src/app/shared/ui/name-preview-list.ts` (comment only) ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (comment only) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (comment only) ·
+`web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (comment only) ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` (comment only) ·
+`web/src/app/core/emotes/import-target-loader.ts` (comment only) ·
+`web/src/app/features/voting/vote-session-detail-page.ts` (comment only) ·
 `docs/UI-Designsprache.md` (§8.7)
 
 The delete run lived inside `MassDeletePanel`: a dock that only exists with the selection panel, and
@@ -48,7 +64,8 @@ sibling on the host pages. That keeps the DOM nesting, the vote page's `@if` gat
 and every E2E locator scoped to `app-mass-delete-panel`. Only T-C mounts the section on its own.
 The host is `display: contents` (`host: { class: 'contents' }`). Otherwise the empty host would be a
 flex item of the panel's column and add a gap under the buttons. The audit harness confirms that
-dock and panel heights are unchanged.
+dock and panel heights are unchanged in all 48 dock/panel states, none of which has a delete run on
+screen; the in-run state rests on `display: contents` plus the unchanged e2e suite.
 
 **Restore entry moved verbatim, not unified with `startRestoreFlow`.** It hangs off the last delete
 run, not the selection, so it belongs to the section. `restore-flow.ts` documents that this entry
@@ -73,6 +90,9 @@ and `SevenTvUndoService.isRunning()`, keeps the route-identity exemption for a p
 and does not read the arbiter or ask about delete/restore runs (the arbiter's unload guard covers
 the tab). It lives in `shared/`, not `core/`, because it opens a confirm dialog from `shared/ui`
 and `core/` must not depend on `shared/`. T-C registers it on the tags page route.
+
+**For T-C.** A standalone `DeleteProgressSection` (tags page) has no panel latches: the host must
+itself reload after a finished delete or restore, and render or clear the `notice` output.
 
 ---
 

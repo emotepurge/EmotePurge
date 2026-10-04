@@ -24,10 +24,10 @@ export interface RestoreSlotPreviewDeps {
 
 /**
  * The slot-preview fork shared by `startRestoreFlow` (`restore-flow.ts`) and
- * `DeleteProgressSection`'s `openRestoreConfirmDialog` (spec 4.3, point 8 / spec 8.3) — extracted so the
- * two stop drifting apart (final fix wave A5): a tracked, *active* target reads the cheap,
- * non-7TV-rate-limited channel status; anything else — a non-active set of a tracked channel, or
- * an untracked target — reads the live per-set preview instead, keyed by the tracked channel when
+ * `DeleteProgressSection`'s `openRestoreConfirmDialog` (spec 4.3, point 8 / spec 8.3) — extracted
+ * so the two stop drifting apart (final fix wave A5): a tracked, *active* target reads the cheap,
+ * non-7TV-rate-limited channel status; anything else — a non-active set of a tracked channel, or an
+ * untracked target — reads the live per-set preview instead, keyed by the tracked channel when
  * there is one, otherwise the account's own `twitchLogin` (the active-set status endpoint has no
  * set-scoped or untracked form at all). A failed read of either kind resolves to `null`, never an
  * error — the confirmation still opens, just without a slot number.

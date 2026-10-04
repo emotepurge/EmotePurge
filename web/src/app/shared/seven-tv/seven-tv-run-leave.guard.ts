@@ -10,12 +10,13 @@ import { ConfirmDialogData, openConfirmDialog } from '../ui/confirm-dialog';
 
 /**
  * Asks before leaving a page that hosts the 7TV run dock (the usage-stats page, and from #201 T-C
- * the tags page) while an import run (K3, #72) or a replace undo (#254, spec 6.5) is still going. Either run lives in its root-provided service, so it keeps going in the
- * background regardless of the answer here — this guard never cancels or resets anything, it only
- * asks. Fires only while one of them `isRunning()`; every other navigation away from the page
- * passes through immediately, with no dialog and no delay (R11). A run that has stopped running but
- * still settles or reports is not asked about here — the arbiter's unload guard covers the tab, and
- * the run completes on its own record wherever the user goes (#256).
+ * the tags page) while an import run (K3, #72) or a replace undo (#254, spec 6.5) is still going.
+ * Either run lives in its root-provided service, so it keeps going in the background regardless of
+ * the answer here — this guard never cancels or resets anything, it only asks. Fires only while one
+ * of them `isRunning()`; every other navigation away from the page passes through immediately, with
+ * no dialog and no delay (R11). A run that has stopped running but still settles or reports is not
+ * asked about here — the arbiter's unload guard covers the tab, and the run completes on its own
+ * record wherever the user goes (#256).
  *
  * Each run asks in its own words (`import.leaveWhileRunning.*`, `undo.leaveWhileRunning.*`). Both
  * running at once is not a product case (the arbiter starts one run at a time); should it happen,
@@ -36,11 +37,11 @@ import { ConfirmDialogData, openConfirmDialog } from '../ui/confirm-dialog';
  * this makes no assumption about the concrete path string.
  *
  * It deliberately does not ask about delete or restore runs (it reads neither the arbiter nor those
- * services): the arbiter's unload guard covers the tab. That is the current behaviour, unchanged
- * by the move out of `features/usage-stats/` (#201 T-A).
+ * services): the arbiter's unload guard covers the tab. That is the current behaviour, unchanged by
+ * the move out of `features/usage-stats/` (#201 T-A).
  *
- * `closed` resolves to `undefined` on Escape/backdrop dismissal, same as every other confirm
- * dialog in the app — only an explicit `true` lets the navigation through.
+ * `closed` resolves to `undefined` on Escape/backdrop dismissal, same as every other confirm dialog
+ * in the app — only an explicit `true` lets the navigation through.
  */
 export const sevenTvRunLeaveGuard: CanDeactivateFn<unknown> = (
   _component,

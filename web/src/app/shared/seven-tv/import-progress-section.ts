@@ -355,8 +355,8 @@ export class ImportProgressSection {
   );
 
   /** The `finished`-stage transfer-run protocol — offered after every settled run, mirroring
-   *  `DeleteProgressSection.openProtocolExport()`. Built from `run.result.items`, never from the engine's
-   *  queue, so a superseded run cannot leak its rows into a newer one's file. */
+   *  `DeleteProgressSection.openProtocolExport()`. Built from `run.result.items`, never from the
+   *  engine's queue, so a superseded run cannot leak its rows into a newer one's file. */
   protected openProtocolExport(): void {
     const run = this.importService.run();
     if (!run || run.settlement !== 'settled' || run.result === null) {
