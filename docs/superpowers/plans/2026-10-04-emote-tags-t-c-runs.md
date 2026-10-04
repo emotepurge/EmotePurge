@@ -1178,7 +1178,7 @@ ohne; 3.4 begründet, warum die Deadlock-Analyse hält); Beobachtung unabhängig
 Archivübergang mit Nachbetrachtung (3.4); `tagRunDockHasContent` und drei Sections (3.8);
 No-op-Hook im Import-Flow (3.6).
 
-**Empfehlung, Bestätigung durch Betreiber ausstehend** (die Pläne sind darauf geschrieben):
+**Entschieden (Betreiber, 2026-10-04)** — alle drei Empfehlungen bestätigt (die Pläne sind darauf geschrieben):
 
 1. **Beobachtung für jede ID in `PulledIds`, auch ohne Zeile, und bei `MarkDeletedInSetAsync`
    für jede gefundene Zeile** (3.4): fail-safe-Richtung, kostet je Fall eine Upsert-Zeile.

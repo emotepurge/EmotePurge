@@ -488,6 +488,6 @@ Zweitmeinung (Codex Sol) ergänzte dazu die Host-Abhängigkeiten `hostSelectedSe
 `EmoteAdminService` (3.2) — ohne sie kompilierte der wörtliche Umzug nicht und verlöre die
 Fremd-Set-Warnung des Restore-Dialogs.
 
-**Empfehlung, Bestätigung durch Betreiber ausstehend:** Mount-Ort **im Panel** statt als
+**Entschieden (Betreiber, 2026-10-04):** Mount-Ort **im Panel** statt als
 Geschwister auf den Hostseiten (Abweichung 3) — ändert für T-C nichts, weil die Tags-Seite die
 Section ohnehin standalone mountet; der Plan ist darauf geschrieben.
