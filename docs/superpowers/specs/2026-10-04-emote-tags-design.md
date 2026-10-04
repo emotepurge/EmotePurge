@@ -105,7 +105,10 @@ Alles Folgende ist am Branch nachgeprüft; es ist die Begründung für die Vertr
   Takt `SevenTv:ResyncIntervalSeconds` Default 60, `SevenTvPeriodicResyncWorker.cs:28`; EventAPI hinter
   `SevenTv:EventApi:Enabled`, `SevenTvEventWorker.cs:19-22`), (c) im Api-Prozess. **Emote-Zeilen
   werden nirgends gelöscht** außer über die Kanal-Kaskade (grep über `src/` ohne Migrationen: kein
-  `Emotes.Remove`/`ExecuteDelete`).
+  `Emotes.Remove`/`ExecuteDelete`). **`ArchivedAt` wird beim Entarchivieren auf `null` gesetzt**
+  (`EmoteService.cs:272`: `emote.ArchivedAt = archive ? now : null`; `SevenTvSyncService.cs:833`) —
+  die Spalte sagt nur „ist gerade archiviert seit", nicht „hat das Set je verlassen"; für die Frage
+  „wurde nach Zeitpunkt t ein Verlassen beobachtet" taugt sie nicht (E33).
 - Das aktive Set eines Kanals ist `Channel.ActiveEmoteSetId` (`EmotePurge.Core/Entities/Channel.cs`,
   `string`, leer = kein Sync bisher), daneben `ActiveEmoteSetCapacity`. Welche Sets der Kanal wann
   aktiv hatte, hält `ChannelEmoteSetObservation` (FK auf `Channel`, Cascade,
@@ -345,7 +348,7 @@ Festlegungen der ersten Fassung; E26–E32 sind die Beschlüsse zur Zweitmeinung
 | **E12** | **Einspielen ist ein Import-Lauf** über `startImportFlow`/`SevenTvImportService` mit neuem `ImportOrigin` `{ kind: 'tag'; tagId; tagName; channelName }` und neuem `SourceKind` `"tag"` (3.3). Kein neuer `SevenTvRunKind`. | Vorlesung, Konfliktschritt, Kapazitätswarnung, Token, Arbiter, Settlement, Dock existieren. | Eigener Lauf; Origin `'channel'` mit falschem Namen. |
 | **E13** | **Ausräumen ist ein Lösch-Lauf** über `SevenTvDeleteService.startDelete`; Purge-Protokoll, Download und „Wiederherstellen" wie bei jedem Delete. | Unwiderruflichkeit ist Produktversprechen (`PRODUCT.md` Prinzip 4); der Rückweg ist gebaut. | Eigener REMOVE-Lauf ohne Protokoll. |
 | **E14** | **Die Platzierungsmeldungen sind Meldungen am Lauf-Record** (optional, nur für Tag-Läufe): `tagPlacementReport` (Import), `tagRemovalReport` (Delete), je `SyncReportState`; `closed` wartet, der Dock zeigt Fehler und Retry. Läufe ohne 7TV-Queue (7.1/5, 7.2/7) melden direkt aus dem Flow mit sichtbarem Retry. | „Dasselbe Muster wie die Buchführung" wörtlich; der Undo trägt zwei Meldungen am Record (3.4). | Lose Nachmeldung ohne Retry-Oberfläche. |
-| **E15 rev. 2** | **Worker: Quelltext der `EmotePurge.Worker`-Projektdateien unverändert, Verhalten und Binary nicht.** E8 (Sync-Invalidierung) und 5.5/7 (Merge-Guard) liegen in `EmotePurge.Infrastructure`, das der Worker ausführt (3.1, 3.2). **Worker-Image muss neu gebaut und zusammen mit der Api deployt werden** (12.4, 12.5). Die Trockenlauf-Zählung wird **nicht** um Tags erweitert (13.0). | Die erste Fassung sagte „kein Worker-Change" und meinte nur den Quelltext; falsch war die Folgerung, der laufende Worker bleibe gleich (Codex-Befund 7). | Zählfelder + Formatter-Zeile. |
+| **E15 rev. 2** | **Worker: Quelltext der `EmotePurge.Worker`-Projektdateien unverändert, Verhalten und Binary nicht.** E8 (Sync-Invalidierung) und 5.5/8 (Merge-Guard) liegen in `EmotePurge.Infrastructure`, das der Worker ausführt (3.1, 3.2). **Worker-Image muss neu gebaut und zusammen mit der Api deployt werden** (12.4, 12.5). Die Trockenlauf-Zählung wird **nicht** um Tags erweitert (13.0). | Die erste Fassung sagte „kein Worker-Change" und meinte nur den Quelltext; falsch war die Folgerung, der laufende Worker bleibe gleich (Codex-Befund 7). | Zählfelder + Formatter-Zeile. |
 | **E16** | **Tag löschen mit Platzierungen ist erlaubt**, mit Hinweis „12 Emotes dieses Tags sind noch eingespielt — vorher ausräumen?"; danach sind sie gewöhnliche Set-Emotes. | Ein Tag ist Organisationsmittel, kein Besitz. | Löschen sperren. |
 | **E17** | **Emote aus Tag herausnehmen** löscht auch dessen Platzierungen (alle Sets); das Emote bleibt im Set. | Was nicht mehr zum Tag gehört, kann das Tag nicht mehr ausräumen. | Platzierung behalten. |
 | **E18** | **Tag-Filter als Dimension von `EmoteUsageFilter`** (`tagId` + Schlüsselmenge); zählt in `isAnyActive()`, „Filter zurücksetzen" löscht ihn mit. Select nur, wenn der Kanal ≥ 1 Tag hat. | Ein Filter unter Filtern; kein Dauer-Control bei Kanälen ohne Tags. | Eigener Zustand; immer sichtbar. |
@@ -629,7 +632,7 @@ entries: [...] }`, Einträge in `AddedAtUtc`-Reihenfolge:
 | `placedByOtherTags` | `{ id, name }[]` der anderen Tags mit Platzierung `(·, id, emoteSetId)` (T-C). |
 
 `activationOperationId` ist die `OperationId` der Aktivierung `(tagId, emoteSetId)` oder `null`; der
-Ausräum-Flow reicht sie in seiner Meldung zurück (5.5 Gegenbeispiel 3). Regel 10 (5.5/6) gilt für beide
+Ausräum-Flow reicht sie in seiner Meldung zurück (5.5 Gegenbeispiel 3). Regel 10 (5.5/7) gilt für beide
 Abfragen.
 
 ### 6.3 Pflegen (T-B)
@@ -918,7 +921,7 @@ Ausräumen → Emotes wieder im Set ohne Platzierung → „war schon vorher im 
 | **Shown set ≠ aktives Set** im Raster | Tag-Filter funktioniert; „Tag zuweisen" und die Filterzeilen-Knöpfe **fehlen** (E3/E6/E29); stattdessen der Satz „Einspielen und Ausräumen wirken auf das aktive Set". |
 | **Grober Zeiger** | Dock, Zuweisen, Einspielen, Ausräumen fehlen (§2.5). Tags-Seite lesbar; Umbenennen/Löschen/„Aus Tag entfernen" bleiben (Festlegung). |
 | **Kanal-Purge (Admin, Aufbewahrung, #245)** | FK-Kaskade nimmt alle fünf Tabellen mit (3.2). Keine Codeänderung an `PurgeAsync`; Trockenlauf-Zählung ohne Tags (13.0). **#245 muss in seiner Spec/seinen Tests ausweisen, dass die Tag-Tabellen kaskadieren** (Abschnitt 10). |
-| **Kanalzusammenführung** | Verlierer mit Tags wird verweigert (5.5 Regel 7; Worker, E15 rev. 2). |
+| **Kanalzusammenführung** | Verlierer mit Tags wird verweigert (5.5 Regel 8; Worker, E15 rev. 2). |
 | **Limit erreicht** | 409 mit Code; Grund am gesperrten Knopf. |
 | **Rennen Zuweisen ↔ Sync** | Emote zwischen Rasterladen und Klick archiviert → `skippedNotInSetIds` (E23). |
 | **Meldung für ein Set, das nicht mehr aktiv ist** | Angenommen (E6). Platzierungen/Aktivierung landen beim gemeldeten Set und ruhen. |
@@ -1154,7 +1157,7 @@ mit `setRead`/`addEmote`/`removeEmote`; CDN über die `test.ts`-Fixture; `page.c
 | Teil | Inhalt | Prüft | Deploy |
 |---|---|---|---|
 | **T-A** | `DeleteProgressSection` + `delete-flow.ts` aus `MassDeletePanel` extrahieren (9.5); `sevenTvRunLeaveGuard`. **Reiner Refactor, keine Verhaltensänderung**; bestehende Specs/E2E unverändert grün. | Frontend-Suiten, E2E, Browser-Blick auf beide Hostseiten. | Nur Api-Image (Frontend liegt im Api-Image). Keine Migration. |
-| **T-B** | Migration `AddEmoteTags` (5.1, 5.2); `IEmoteTagService` CRUD + Zuweisen; Endpoints Lesen/Pflegen (ohne Platzierungsfelder); Fehlercodes; Tags-Seite lesend/pflegend; Tag-Filter mit Zahlen und „→ Übersicht" (ohne Lauf-Knöpfe); Dock „Tag zuweisen…"/„Aus Tag entfernen"; Reiter; Merge-Guard (5.5/7); Abschnitt 10 inkl. **E31 als Freigabevoraussetzung**. | Infrastructure-/Api-Tests, Vitest, E2E Szenario 1, Codex-Review. | Migration von Hand → **Api- und Worker-Image zusammen** (Merge-Guard und EF-Modell laufen im Worker). |
+| **T-B** | Migration `AddEmoteTags` (5.1, 5.2); `IEmoteTagService` CRUD + Zuweisen; Endpoints Lesen/Pflegen (ohne Platzierungsfelder); Fehlercodes; Tags-Seite lesend/pflegend; Tag-Filter mit Zahlen und „→ Übersicht" (ohne Lauf-Knöpfe); Dock „Tag zuweisen…"/„Aus Tag entfernen"; Reiter; Merge-Guard (5.5/8); Abschnitt 10 inkl. **E31 als Freigabevoraussetzung**. | Infrastructure-/Api-Tests, Vitest, E2E Szenario 1, Codex-Review. | Migration von Hand → **Api- und Worker-Image zusammen** (Merge-Guard und EF-Modell laufen im Worker). |
 | **T-C** | Migration `AddEmoteTagPlacements` (5.3, 5.4 inkl. `EmoteSetLeaveObservation`); Platzierungs-/Aktivierungsfelder in 6.2; Registrier- und Melde-Endpoints 6.4 mit Operations-IDs, Revision, Sweep und 7TV-Besitzprüfung; `SourceKind "tag"`; `ImportOrigin 'tag'`; `ImportFlowTarget.pinSetId` und die beiden Set-Vergleiche im Import-Flow (E29 rev. 3); Sync-Invalidierung mit Beobachtung (5.5/5) an drei Stellen; dritte Meldung am Lauf-Record (E14); Einspiel-/Ausräum-Flows und Vorschau-Dialog; Filterzeilen-Knöpfe; Lauf-Dock der Tags-Seite. | Alles aus 11 für T-C, Codex-Review, Live-Verifikation gegen einen Testkanal (Regel 16: Einspielen, Ausräumen, No-op, Set-Wechsel). | Migration von Hand → **Api- und Worker-Image zusammen** (Sync-Invalidierung läuft im Worker) → **erst danach** Tag-Läufe freigeben (Feature-Flag `Tags:RunsEnabled`, Default `false` im ersten Deploy — Festlegung: die Knöpfe Einspielen/Ausräumen rendern nur, wenn das Flag über `GET /api/channels/{channelName}/permissions` oder einen kleinen Config-Endpoint `true` meldet; der Plan wählt den Weg, 13.4/1). |
 
 Jeder Teil hat seinen eigenen Plan und PR (gegen `main`, nach dem Epic-Merge). Reihenfolge: T-A →
