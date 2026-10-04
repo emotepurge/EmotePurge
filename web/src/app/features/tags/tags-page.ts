@@ -96,7 +96,7 @@ export function parseTagParam(raw: string | null): number | null {
  *
  * Reading needs usage-stats access (route guard); every write needs channel management, so the
  * write controls are absent rather than locked for everybody else. On a coarse pointer the grid
- * selects nothing (spec 8, "Grober Zeiger"): no 7TV-writing work starts from a phone, and the one
+ * selects nothing (spec 9.4): no 7TV-writing work starts from a phone, and the one
  * selection-bound action in T-B is not worth a selection mode of its own there.
  *
  * T-C docks onto `selectedTag`, `entriesResource`, `activeEmoteSetId`, `canManage`, `isCoarse`, the

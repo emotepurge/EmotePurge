@@ -517,7 +517,9 @@
      same mistake the checker made one layer up: the never-used emotes there sit as a closed block
      under a heading that already says so, each printing a 0, so a third statement distinguished
      nothing — it only broke the evenness of the sheet. On a ballot the archived ones are mixed in
-     among live ones with no heading to separate them, which is exactly the case a plate is for. */
+     among live ones with no heading to separate them, which is exactly the case a plate is for.
+     The tags page's entries grid (#201) is the same case: entries that left the set stand among
+     those still in it. */
   .app-sprite-cell-void {
     background-color: var(--ep-page);
     box-shadow: inset 0 0 0 1px var(--ep-border);

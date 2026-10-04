@@ -18,7 +18,11 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteIdValidation.cs` ·
 `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
 `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs`
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` ·
+`web/src/app/app.routes.ts` · `web/src/app/features/tags/tags.routes.ts` ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` ·
+`web/src/app/core/layout/wide-viewport.service.ts` · `web/src/styles.css` · `docs/UI-Designsprache.md`
 
 Emote tags (#201) are two new tables, added by the purely additive migration `AddEmoteTags`
 (no existing table is touched):
@@ -89,6 +93,30 @@ written, `MergesRefused` counts once although the pair is met from both ends, bo
 settled for the pass, and the warning is deduplicated per loser. The (English) log line names both
 reasons separately (`emotes ({HasEmotes})`, `tags ({HasTags})`). A Worker behaviour change, deployed
 with the next Worker image, not earlier.
+
+**Tags page, route and tab (frontend).** The page lives at `channels/:channelName/tags`, loaded lazily
+through `loadChildren` (`TAGS_ROUTES`, the same split as `usage-stats`, #264) with
+`usageStatsAccessGuard` on the parent entry: reading tags is the same right as reading the usage
+stats. The channel workspace gets a fourth tab, "Tags", right after "Nutzung" and under the same
+condition (`canViewUsageStats`); the shell frame and the tab bar's `h-10` contract are unchanged. No
+leave guard on the route yet: the page starts no 7TV run before T-C.
+
+The entries grid marks an entry that is no longer in the set with `.app-sprite-cell-void` plus a
+dimmed sprite (spec 9.4). That is a second use of a plate design doc §2.4 had called ballot-only, and
+§2.4's own reasoning covers it: the tags grid mixes in-set and gone entries with no heading saying
+which is which, the exact case the plate exists for. §2.4 now names both places; the atlas still
+does not use it.
+
+From `lg` up the page shows list and detail side by side; below it, `?tag=` turns the page into a
+drilldown with an up-link to the list. That is a change of *structure* (which part renders, whether
+the up-link exists), which CSS `lg:` variants cannot decide, so it is decided in code by
+`WideViewportService` (`core/layout/`, `(min-width: 64rem)`, Tailwind's `lg`), modelled on
+`PointerModeService`/`ReducedMotionService`. No such service existed because no page had switched
+structure by width before; every earlier width decision was purely visual and stayed in CSS.
+
+On a coarse pointer the tags grid selects nothing, so "Aus Tag entfernen" is fine-pointer-only,
+following spec 9.4 ("auf grobem Zeiger fehlen … die Rasterauswahl"); spec 8's row saying it stays on
+a coarse pointer contradicts that and is an open operator question.
 
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 
