@@ -211,10 +211,10 @@ public static class EmoteTagEndpoints
                 return Results.BadRequest(new { errorCode = formError });
             }
 
-            var ladder = await PassOwnershipLadderAsync(request!.EmoteSetId!, request.TargetOwnerTwitchId, httpContext, ownershipService, ct);
-            if (ladder is not null)
+            var (rejection, actor) = await PassOwnershipLadderAsync(request!.EmoteSetId!, request.TargetOwnerTwitchId, httpContext, ownershipService, ct);
+            if (rejection is not null)
             {
-                return ladder;
+                return rejection;
             }
 
             var result = await tagService.RegisterOperationAsync(
@@ -250,17 +250,17 @@ public static class EmoteTagEndpoints
                 return Results.BadRequest(new { errorCode = formError });
             }
 
-            var ladder = await PassOwnershipLadderAsync(request!.EmoteSetId!, request.TargetOwnerTwitchId, httpContext, ownershipService, ct);
-            if (ladder is not null)
+            var (rejection, actor) = await PassOwnershipLadderAsync(request!.EmoteSetId!, request.TargetOwnerTwitchId, httpContext, ownershipService, ct);
+            if (rejection is not null)
             {
-                return ladder;
+                return rejection;
             }
 
             var result = await tagService.ReportPlacementsAsync(
                 ChannelName.Normalize(channelName),
                 tagId,
                 new TagPlacementReport(operationId, request.EmoteSetId!, request.SevenTvEmoteIds!),
-                httpContext.User.TryBuildAuditActor()!,
+                actor!,
                 ct);
             return MapReportFailure(result.Status) ?? Results.Ok(new
             {
@@ -310,17 +310,17 @@ public static class EmoteTagEndpoints
                 return Results.BadRequest(new { errorCode = formError });
             }
 
-            var ladder = await PassOwnershipLadderAsync(request!.EmoteSetId!, request.TargetOwnerTwitchId, httpContext, ownershipService, ct);
-            if (ladder is not null)
+            var (rejection, actor) = await PassOwnershipLadderAsync(request!.EmoteSetId!, request.TargetOwnerTwitchId, httpContext, ownershipService, ct);
+            if (rejection is not null)
             {
-                return ladder;
+                return rejection;
             }
 
             var result = await tagService.ReportRemovalAsync(
                 ChannelName.Normalize(channelName),
                 tagId,
                 new TagRemovalReport(operationId, request.EmoteSetId!, activationOperationId, snapshot!, request.RemovedIds!, request.KeptIds!),
-                httpContext.User.TryBuildAuditActor()!,
+                actor!,
                 ct);
             var failure = MapReportFailure(result.Status);
             if (failure is not null)
@@ -361,7 +361,7 @@ public static class EmoteTagEndpoints
     private static bool TryParseOperationId(string? value, out Guid parsed)
     {
         parsed = Guid.Empty;
-        return value is not null && Guid.TryParseExact(value, "D", out parsed);
+        return value is not null && Guid.TryParseExact(value, "D", out parsed) && parsed != Guid.Empty;
     }
 
     // A report's id list may be empty (a run that added or removed nothing is a legal report), but a
@@ -404,8 +404,9 @@ public static class EmoteTagEndpoints
     }
 
     // Stage 3 of the handler order: the actor, then the shared ownership ladder. Null means "the
-    // actor owns the set (or edits its owner's account)"; anything else ends the request.
-    private static async Task<IResult?> PassOwnershipLadderAsync(
+    // actor owns the set (or edits its owner's account)"; anything else ends the request. The actor
+    // it built comes back with the verdict, so the handler never rebuilds it.
+    private static async Task<(IResult? Rejection, AuditActor? Actor)> PassOwnershipLadderAsync(
         string emoteSetId,
         string? targetOwnerTwitchId,
         HttpContext httpContext,
@@ -415,12 +416,12 @@ public static class EmoteTagEndpoints
         var actor = httpContext.User.TryBuildAuditActor();
         if (actor is null)
         {
-            return Results.Unauthorized();
+            return (Results.Unauthorized(), null);
         }
 
         var ownership = await ownershipService.CheckAsync(
             actor.TwitchUserId, actor.Login, emoteSetId, ct, EmoteSetOwnershipRejection.BuildOwnerHint(targetOwnerTwitchId));
-        return EmoteSetOwnershipRejection.For(ownership.Status);
+        return (EmoteSetOwnershipRejection.For(ownership.Status), actor);
     }
 
     private static DateTime RequireRegisteredAt(TagOperationRegistrationResult result) =>

@@ -332,7 +332,9 @@ every id list — `sevenTvEmoteIds`, the snapshot's ids, `removedIds`, `keptIds`
 snapshot id are `emote_ids_invalid`; the null is refused in the handler *before* `Check`, because
 `Check(null)` answers `Empty`, which a report accepts. Empty lists stay legal (a run that added or
 removed nothing is a report). A snapshot revision that is not a UUID is `tag_operation_id_invalid`,
-checked after all ids. A missing body is a missing operation id. `RegisterOperationAsync` takes no
+checked after all ids. The nil UUID counts as "not a UUID" for the operation id, the activation
+operation id and every revision: operation ids are a global key, and a client that sent nil twice
+would otherwise collide with itself. A missing body is a missing operation id. `RegisterOperationAsync` takes no
 `AuditActor`: a registration is intent, not an event, and writes no audit entry.
 
 **Status mapping.** Registration: `Ok` 201 and `Replayed` 200, both `{ registeredAtUtc }`; `Conflict`
@@ -341,7 +343,8 @@ checked after all ids. A missing body is a missing operation id. `RegisterOperat
 `ChannelNotFound` 404. **A removal replay is answered by the handler itself**, `replayed: true` with
 every counter 0 and `deactivated: false`, not by forwarding the service result: on a replay those fields
 carry no outcome (the first application's figures are not reconstructed), so the client must not show or
-act on them and re-reads the tag instead. The channel name reaches the service normalized (rule 9).
+act on them and re-reads the tag instead. The same holds for the placement replay, which forwards the
+service's empty lists: under `replayed: true` no outcome field of either report carries meaning. The channel name reaches the service normalized (rule 9).
 
 **New error codes** (rule 7; the frontend side is Task 7): `tag_operation_id_invalid`,
 `tag_operation_unknown`, `tag_operation_conflict`, `tag_operation_kind_invalid`.
@@ -356,7 +359,8 @@ write. The audit projection gets its own detail kind `ImportedFromTag` (count on
 channel page already loads, so no route, no filter-matrix row, no second request. The routes behind the
 runs exist whatever the flag says; it only lets the frontend offer the buttons.
 
-**Betrifft (Task 6):** `src/EmotePurge.Api/Endpoints/EmoteSetOwnershipRejection.cs` ·
+**Betrifft (Task 6):** `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` ·
+`src/EmotePurge.Api/Endpoints/EmoteSetOwnershipRejection.cs` ·
 `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` · `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` ·
 `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
 `src/EmotePurge.Api/appsettings.json` · `src/EmotePurge.Core/Services/IAuditLogQueryService.cs` ·
@@ -366,6 +370,8 @@ runs exist whatever the flag says; it only lets the frontend offer the buttons.
 `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
 `tests/EmotePurge.Api.Tests/EmoteTagReportLadderTests.cs` ·
 `tests/EmotePurge.Api.Tests/OwnershipLadderArrangements.cs` ·
+`tests/EmotePurge.Api.Tests/SevenTvEmoteSetSyncBookkeepingEndpointTests.cs` ·
+`tests/EmotePurge.Api.Tests/SevenTvEmoteSetSyncImportedEndpointTests.cs` ·
 `tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
 `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagOptionsTests.cs` ·

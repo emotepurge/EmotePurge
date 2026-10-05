@@ -35,6 +35,8 @@ public class EmoteTagReportLadderTests : IClassFixture<ApiFactory>
     private const string ActivationOperationId = "11111111-2222-4333-8444-555555555555";
     private const string RevisionId = "99999999-8888-4777-8666-555555555555";
 
+    private static readonly object Missing = new();
+
     private readonly ApiFactory _factory;
 
     public EmoteTagReportLadderTests(ApiFactory factory)
@@ -112,6 +114,64 @@ public class EmoteTagReportLadderTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ApiErrorCodes.TagOperationIdInvalid, await ReadErrorCodeAsync(response));
+        await AssertNothingAskedAsync();
+    }
+
+    [Theory]
+    [InlineData(Operations)]
+    [InlineData(Placements)]
+    [InlineData(Removed)]
+    public async Task TheNilOperationId_Gets400_BeforeTheLadder(string route)
+    {
+        var userId = NewUserId();
+        ArrangeSetUnknown(userId);
+
+        var response = await SendAsync(route, userId, body: Body(route, ("operationId", Guid.Empty.ToString())));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.TagOperationIdInvalid, await ReadErrorCodeAsync(response));
+        await AssertNothingAskedAsync();
+    }
+
+    [Fact]
+    public async Task ANilSnapshotRevision_Gets400TagOperationIdInvalid_BeforeTheLadder()
+    {
+        var userId = NewUserId();
+        ArrangeSetUnknown(userId);
+        var snapshot = new JsonArray(new JsonObject { ["sevenTvEmoteId"] = "emote1", ["placementOperationId"] = Guid.Empty.ToString() });
+
+        var response = await SendAsync(Removed, userId, body: Body(Removed, ("snapshot", snapshot)));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.TagOperationIdInvalid, await ReadErrorCodeAsync(response));
+        await AssertNothingAskedAsync();
+    }
+
+    [Fact]
+    public async Task ANilActivationOperationId_Gets400TagOperationIdInvalid_BeforeTheLadder()
+    {
+        var userId = NewUserId();
+        ArrangeSetUnknown(userId);
+
+        var response = await SendAsync(Removed, userId, body: Body(Removed, ("activationOperationId", Guid.Empty.ToString())));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.TagOperationIdInvalid, await ReadErrorCodeAsync(response));
+        await AssertNothingAskedAsync();
+    }
+
+    [Fact]
+    public async Task ASnapshotOverTheRequestLimit_Gets400EmoteIdsInvalid_BeforeTheLadder()
+    {
+        var userId = NewUserId();
+        ArrangeSetUnknown(userId);
+        var tooMany = new JsonArray([.. Enumerable.Range(0, EmoteTagLimits.MaxIdsPerRequest + 1)
+            .Select(i => (JsonNode?)new JsonObject { ["sevenTvEmoteId"] = $"e{i}", ["placementOperationId"] = RevisionId })]);
+
+        var response = await SendAsync(Removed, userId, body: Body(Removed, ("snapshot", tooMany)));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.EmoteIdsInvalid, await ReadErrorCodeAsync(response));
         await AssertNothingAskedAsync();
     }
 
@@ -583,8 +643,6 @@ public class EmoteTagReportLadderTests : IClassFixture<ApiFactory>
     }
 
     // Marks a property to be left out of the body entirely (as opposed to JSON null).
-    private static readonly object Missing = new();
-
     private static string Body(string route, params (string Name, object? Value)[] overrides)
     {
         var body = route switch
