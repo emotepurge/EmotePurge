@@ -10,11 +10,25 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
-### 2026-10-05 — Tag-Raster: Emotes animieren beim Überfahren, nach dem Muster des Import-Rasters
+### 2026-10-05 — Tags grid: emotes animate on hover, following the import grid's pattern
 
 **Betrifft:** `web/src/app/features/tags/tags-page.{ts,html}`, `docs/UI-Designsprache.md` (§2.5)
 
-Auf Betreiberwunsch spielt die Zelle unter dem Zeiger (oder mit Fokus) im Tag-Raster nach 200 ms Verweilzeit ihre Animation. Das ist **dasselbe** Muster wie im `ForeignEmoteGrid` (§7.3) und dieselbe Komponente (`EmoteSpriteAnimated`, `isAnimatedEmoteUrl`): genau ein Spiel-Schlüssel pro Raster, Zeiger vor Fokus, Standbild bleibt gemountet und verschwindet erst, wenn die Animation gemalt ist. Das Nutzungs-Raster der Usage-Seite animiert seine Zellen **nicht** (nur Sidecar, Drilldown, Stimmzettel); die Prämisse „wie dort" stimmte nur für das Import-Raster. Reduced Motion entscheidet weiterhin `EmoteSpriteAnimated` selbst. Auf einem groben Zeiger spielt nichts (kein Hover, Raster dort ohnehin nicht wählbar). Der Schlüssel endet bei Verlassen/Blur, beim Scrollen (Zeiger — abonniert über `viewport.scrollable.elementScrolled()`, weil das virtuelle Raster mit dem Fenster scrollt (`scrollWindow`) und das Viewport-Element selbst dann nie ein `scroll` sieht; Codex-Review 2026-10-05), und wenn die Zelle den gerenderten Bereich der virtuellen Liste verlässt oder aus den Einträgen fällt. Einträge ohne `_static` in der gespeicherten URL (stille Emotes) mounten nichts und fragen nichts an, auch Void-Plates nicht anders: sie animieren, sofern ihre gespeicherte URL `_static` trägt, gedimmt wie das Standbild. Die Entfernen-Dialog-Vorschauen (32 px) und der Zuweisen-Dialog bleiben still: nirgends sonst animieren vergleichbare Miniaturen.
+At the operator's request, the cell under the pointer (or with focus) in the tags grid plays its animation
+after a 200 ms dwell. This is **the same** pattern as in `ForeignEmoteGrid` (§7.3) and the same component
+(`EmoteSpriteAnimated`, `isAnimatedEmoteUrl`): exactly one play key per grid, pointer before focus, the still
+stays mounted and hides only once the animation has painted. The usage page's grid does **not** animate its
+cells (only the sidecar, the drilldown and the ballot); the premise "as there" held only for the import grid.
+Reduced motion is still decided by `EmoteSpriteAnimated` itself. On a coarse pointer nothing plays (no hover,
+and the grid does not select there anyway). The key ends on leave/blur, on a scroll (pointer only —
+subscribed through `viewport.scrollable.elementScrolled()`, because the virtualized grid scrolls with the
+window (`scrollWindow`) and the viewport element itself then never sees a `scroll` event; Codex review
+2026-10-05), and when the cell leaves the virtual list's rendered range or drops out of the entries. Entries
+without `_static` in the stored url (still emotes) mount nothing and request nothing; void plates are no
+different: they animate when their stored url carries `_static`, dimmed like the still. The removal dialog's
+previews (32 px) and the assign dialog stay still: comparable thumbnails animate nowhere else. The same
+latent scroll defect exists in `ForeignEmoteGrid` (`viewport.elementScrolled()` under the usage page's
+`scrollWindow`); it is outside this change and left for a follow-up.
 
 ### 2026-10-05 — Tags gain placements: play-in and removal runs, keyed against leave observations (#201 T-C)
 
@@ -688,7 +702,8 @@ UI-Designsprache §8.7 (9.4).
   (`confirmTimeEntriesDrift`). A ticked emote that has gained a holder since the dialog opened (another
   active tag's entry, another tag's placement), a ticked emote no longer in the tag, another activation or
   snapshot of the tag, or another set aborts the whole clear-out with nothing deleted ("Der Tag hat sich
-  inzwischen geändert — öffne „Ausräumen“ bitte erneut.", with a retry that opens it afresh; another set
+  inzwischen geändert — öffne „Aus dem Set entfernen“ bitte erneut." — "„Ausräumen“" when first written,
+  `tags.errors.changedDuringConfirm` — with a retry that opens it afresh; another set
   gets the delete's set-switch notice). A failed or stalled read aborts too (fail closed). The window
   shrinks from "as long as the dialog stays open" to that read plus the run. It matters most for a tag
   that is not played in, where every emote of it in the set is ticked, not only its own placements. A
@@ -702,12 +717,17 @@ UI-Designsprache §8.7 (9.4).
   like a failed one (the comparison runs in a `map`, so a throw reaches the abort path).
 - **13.2** — "Restore" after a clear-out creates no placement: restored emotes are in the set without being
   recorded as played in by the tag. While the tag is not played in, the next clear-out proposes them like any
-  emote of the tag (since 2026-10-05); once it is played in again they read "not played in by this tag" and can
-  be ticked by hand. The restore button says so after a tag run. The
+  emote of the tag (since 2026-10-05); once it is played in again they read "nicht über diesen Tag ins Set
+  gekommen" / "not added to the set via this tag" (first worded "not played in by this tag") and can be ticked
+  by hand. The restore button says so after a tag run. The
   converse, an **undo of a tag play-in** (usage page, #254), sends no tag report: its adds leave 7TV, the
-  undo's own set-centric `sync-deleted` observations expire the placements, and the tag reads
-  "eingespielt" (no placement count at 0) until a clear-out with nothing ticked (n = 0) deactivates it — fail-safe,
-  since an expired placement is never proposed.
+  undo's own set-centric `sync-deleted` observations expire the placements, and the tag stays active until a
+  clear-out with nothing ticked (n = 0) deactivates it — fail-safe, since an expired placement is never
+  proposed. (Superseded display, same day: it first read "eingespielt" with no placement count at 0; since the
+  operator feedback "an active tag without placements says nothing" it shows no state at all — list and detail
+  head — and only the usable "Aus dem Set entfernen" remains, its dialog explaining the deactivation. With a
+  grid marking that button counts the marked emotes in the set and is locked at 0, see "the clear-out's count
+  mirrors the play-in's".)
 
 #### Rollout (spec 12.5)
 
@@ -721,6 +741,10 @@ cannot sync) is information only. The boot recovery's gate is released even afte
 completed sync by the new worker proves that observations exist. Follow-up noted there: the tracked-set
 loader of the tag flows is not yet on the #220 route (foreign-permit cost accepted). Open for live
 verification: the per-tick post-check read on the largest channel and the first-tick backfill. The run-less tag report (an empty play-in, a clear-out with nothing ticked) is bounded by the same 30 s report timeout as the run-backed reports, so a stalled request ends in the `tags.errors.reportFailed` banner with its same-operation-id retry instead of leaving both buttons locked. Tag-report 404s are classified by their error code (`classifyTagReportFailure`): `emote_set_not_found` stays `setNotFound`, while `tag_not_found`, `channel_not_found` and `tag_operation_unknown` become the new reason `tagUnknown` ("EmotePurge no longer knows this tag or operation"), so a deleted tag never reads as a missing 7TV set.
+
+**Betrifft (Tasks 14, 15):** `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
+`docs/Operations.md` · `docs/UI-Designsprache.md` · `docs/Architectur.md` · `.env.example` ·
+`docker-compose.yml` · `docker-compose.prod.yml`
 
 #### Operator feedback after the live test (2026-10-05)
 
@@ -745,7 +769,8 @@ The operator tried the runs in the browser and changed three things; all are fro
   tag (that half superseded the same day: "Ausräumen" now exists for an inactive tag with an emote in the
   set, see "Clearing out a tag that is not played in" below). The flow's "all present" path stays for the race between loading the page and the click. The state
   "nicht eingespielt" is no longer shown anywhere (list, detail head); only "eingespielt" is, and the
-  list's "(n platziert)" only for n > 0.
+  list's "(n platziert)" only for n > 0. (Superseded the same day: an active tag without placements shows
+  no state either, see "Every tag action names its target".)
 - **Accepted consequence:** a tag whose emotes are all in the set cannot be played in any more, so it
   cannot be activated and does not shield its emotes from another tag's clear-out ("wird noch von X
   gebraucht"). If an emote goes missing later, "Einspielen" returns and the tag can be played in again.
@@ -764,14 +789,21 @@ The operator tried the runs in the browser and changed three things; all are fro
   dismissed dialog or token prompt, an abort or a blocked step forgets it, so a later live reload after
   another tab's run never moves focus. The play-in's hand-over to the import flow cannot tell a
   dismissed import dialog from a started run; there only an abort with a notice forgets the click. Without a run button
-  on the page (the tag is neither missing an emote nor played in), `TagRunActions` also drops its button row
+  on the page (the tag is neither missing an emote nor played in — since the inactive clear-out below:
+  nor has anything in the set), `TagRunActions` also drops its button row
   and the lock reason, so no text explains a lock on a button that is not there; its error banner stays.
 - **The tags page explains itself.** Under the title: "A tag remembers emotes, even when they are not in
   the set right now." plus, only where the run buttons exist (`tagRunsShown`: runs on, a fine pointer, a
   known active set — the buttons' own gate), "Playing in puts them into the set, clearing out takes them
-  out again." The set line stays as it was. A tag with no entries replaces its former empty text with
+  out again." (wording at the time; reworded with "Every tag action names its target" below, current copy
+  `tags.page.introRuns`). The set line stays as it was. A tag with no entries replaces its former empty text with
   "No emotes yet. Select them on the usage page and assign them to this tag." (the existing manager-only
   button to the usage page stays).
+
+**Betrifft (feedback 1):** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/shared/tags/tag-run-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts` · `docs/UI-Designsprache.md`
 
 #### Every tag action names its target (operator decision 2026-10-05, later that day)
 
@@ -789,6 +821,16 @@ set — see "the clear-out's count mirrors the play-in's" below). The detail hea
 actions (`TagRunActions`) on the left, tag actions (rename, delete) on the right; each button stays
 conditional, so the header does not shift when one appears. This supersedes the order "Einspielen ·
 Ausräumen · Umbenennen · [gap] · Löschen" quoted in the entries above and in UI-Designsprache §8.7.
+
+UI copy quoted anywhere in this entry — above and below this subsection — is the wording at the time it
+was written ("Einspielen", "Ausräumen", "eingespielt", …); the current copy is in `web/public/i18n/de.json`
+and `web/public/i18n/en.json`. Statements about current *behaviour* that a later paragraph changed are
+marked as superseded where they stand.
+
+**Betrifft (every tag action names its target):** `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/tags/tags-page.ts` · `web/e2e/emote-tags.e2e.spec.ts` · `docs/UI-Designsprache.md`
+(§8.7)
 
 #### Clearing out a tag that is not played in (operator decision 2026-10-05)
 
@@ -839,7 +881,9 @@ for an active tag — so there was no way to clear it out. The operator decided 
   vorher im Set" at the next clear-out — while the tag is not played in they are proposed again; the hint
   now says they are not recorded as played in, and read that way only if the tag is played in later (not
   "again": the tag may never have been played in — review m9, same day). The
-  tags-page explainer ("Einspielen holt sie ins Set, Ausräumen nimmt sie wieder heraus.") stays true.
+  tags-page explainer as it then read ("Einspielen holt sie ins Set, Ausräumen nimmt sie wieder heraus.")
+  stayed true. (Superseded the same day: that sentence no longer exists; the intro now reads "Ein Tag merkt
+  sich Emotes, auch wenn sie gerade nicht im Set sind." plus the run sentence `tags.page.introRuns`.)
 - **One article for "Tag" in German copy: "der Tag".** The catalogue mixed both genders; counted over the
   unambiguous forms in `de.json` (articles and adjective endings, not dative "dem/einem/diesem"), 12 were
   masculine ("einen Tag", "Dieser Tag", "Neuer Tag", …) and 2 neuter ("das Tag" in
@@ -858,27 +902,23 @@ for an active tag — so there was no way to clear it out. The operator decided 
 `web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/e2e/emote-tags.e2e.spec.ts` ·
 `web/e2e/support/mocks.ts` · `docs/UI-Designsprache.md`
 
-**Betrifft (feedback 1):** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
-`web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/tags/tags-page.html` ·
-`web/src/app/features/tags/tags-page.ts` · `web/src/app/shared/tags/tag-run-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
-`web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts` · `docs/UI-Designsprache.md`
-
-**Betrifft (Tasks 14, 15):** `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
-`docs/Operations.md` · `docs/UI-Designsprache.md` · `docs/Architectur.md` · `.env.example` ·
-`docker-compose.yml` · `docker-compose.prod.yml`
+#### Operator feedback on the clear-out dialog and the grid marking (2026-10-05)
 
 **Operator feedback: the placement mark is gone.** Spec 9.4's small square at the bottom left of an entry
 tile ("placed by this tag") is removed, together with the word it added to the tile's accessible name
 (`tags.page.placedMark`) and its spec case. The operator found that it looks like a checkbox, which
 invites a click that does nothing. The placement data itself stays: `placedByThisTag`/`placedAtUtc` still
-drive the clear-out dialog ("eingespielt am ..."), so nothing behind the surface changed.
+drive the clear-out dialog (then "eingespielt am ...", now "am <date> ins Set geholt"), so nothing behind
+the surface changed.
 
 **Operator feedback: the not-proposed reason is worded for what the protection does.** The clear-out
 dialog's reason `alreadyPresent` for a row this tag did not place read "war schon vorher im Set" /
 "was already in the set before". That claims a history the app does not know: the row may have been put
 there by a person, by an older tag run, or by a restore (13.2), and the only thing the logic establishes
-is that this tag did not play it in. The line now reads "nicht von diesem Tag eingespielt" / "not played
-in by this tag" (`tags.removalDialog.reason.alreadyPresent`, the key keeps its name). The protection
+is that this tag did not play it in. The line then read "nicht von diesem Tag eingespielt" / "not played
+in by this tag" (`tags.removalDialog.reason.alreadyPresent`, the key keeps its name); since "Every tag
+action names its target" it reads "nicht über diesen Tag ins Set gekommen" / "not added to the set via this
+tag". The protection
 itself is unchanged (only active tags hold); the restore hint and every quote of the old wording in this
 log, UI-Designsprache 7.5 and the code comments follow the new wording.
 
@@ -897,7 +937,9 @@ log, UI-Designsprache 7.5 and the code comments follow the new wording.
 ticked rows already are that list, so each name appeared twice. The irreversibility sentence, the
 foreign-channels hint and the n = 0 sentence stay. The regular delete dialog keeps its list (it has no
 checkbox rows); the two never shared the component instance, so no variant flag was needed.
-`docs/UI-Designsprache.md` 7.5, `tag-removal-confirm-dialog.ts` and its spec.
+
+**Betrifft (feedback, duplicate name list):** `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.spec.ts` · `docs/UI-Designsprache.md` (§7.5)
 
 **Operator feedback: a grid marking is the clear-out's proposal.** With two of a tag's four in-set
 emotes marked on the tags page, "Ausräumen" still pre-ticked all four (the tag was not played in). Now,
@@ -909,12 +951,14 @@ whether marked or not: `heldBy` wins over `notMarked`, because the confirm-time 
 holder the dialog showed as known, so a holder must never hide behind another reason. The sentence
 above the list then reads "Vorgeschlagen sind deine {{count}} markierten Emotes." (one: "Vorgeschlagen
 ist dein markiertes Emote."; with none proposed, e.g. all held: "Keines deiner markierten Emotes ist
-vorgeschlagen.") instead of the not-played-in sentence; the count is the proposed rows. Without a marking
+vorgeschlagen.") instead of the not-played-in sentence; the count is the proposed rows (since the final
+review, "n von m" when a marked row is held, see "the clear-out dialog's lead sentences" below). Without a marking
 nothing changed. The marking travels as data (`TagRunActions.markedIds` → `TagRunRequest.markedIds`,
 copied at the click, so the open dialog does not follow the grid; a "Try again" replays that copy);
 `shared/` never reads the page. The re-read is unchanged — it judges the ticked rows whatever ticked
 them. The page clears its marking when the confirmed clear-out goes ahead (`onClearOutCommitted` →
-`clearOutCommitted`: after `startDelete`, or when the report for nothing ticked goes out), only for the
+`clearOutCommitted`, since renamed `onRunCommitted` → `runCommitted`, see "a grid marking narrows the
+play-in too": after `startDelete`, or when the report for nothing ticked goes out), only for the
 tag still shown; a cancel or any abort before that keeps it.
 
 **Betrifft (feedback, marking as proposal):** `web/src/app/shared/tags/tag-removal.ts` ·
