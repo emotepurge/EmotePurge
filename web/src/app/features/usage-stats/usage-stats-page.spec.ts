@@ -6810,6 +6810,22 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(countLine()?.hasAttribute('aria-busy')).toBe(false);
   });
 
+  it('a held hidden-by-filter count cannot outlive a selection cleared while a tag loads', async () => {
+    await open({ tags: [tag(4, 'Stronghold')], totals: withImages() });
+    mark('7tv-a', '7tv-b');
+    component['usageFilter'].setNameFilter('PeepoC');
+    expect(component['shownHiddenSelectedCount']()).toBe(2);
+
+    component['onTagFilterChange']('4');
+    await settle();
+    expect(component['tagFilterPending']()).toBe(true);
+    expect(component['shownHiddenSelectedCount']()).toBe(2);
+
+    component['selection'].clear();
+    await settle();
+    expect(component['shownHiddenSelectedCount']()).toBe(0);
+  });
+
   it("a failed set switch outranks a tag's pending emotes: its retry shows instead of the skeleton", async () => {
     await open({ tags: [tag(4, 'Stronghold')], realTemplate: true, totals: withImages() });
     component['onTagFilterChange']('4');

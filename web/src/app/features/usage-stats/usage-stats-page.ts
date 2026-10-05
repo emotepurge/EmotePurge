@@ -2078,7 +2078,10 @@ export class UsageStatsPage {
       pending: this.tagFilterPending(),
       count: this.selection.hiddenSelectedCount(),
     }),
-    computation: ({ pending, count }, previous) => (pending ? (previous?.value ?? 0) : count),
+    // While pending the view is empty, so `count` is the whole marked count: it caps the held
+    // value, which therefore cannot outlive a selection cleared inside that window.
+    computation: ({ pending, count }, previous) =>
+      pending ? Math.min(previous?.value ?? 0, count) : count,
   });
 
   /**
