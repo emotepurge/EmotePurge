@@ -767,7 +767,10 @@ for an active tag — so there was no way to clear it out. The operator decided 
   tag nothing changes (own unheld placement → proposed; already there before, or held → not proposed).
   For a tag that is **not active** (never played in, or cleared out before) there is no placement to tell
   its own emotes from ones that were there before, and its point is the person's tagging: every emote of
-  it in the set is proposed (new reason `tagged`, no second line under the name) except one another active
+  it in the set is proposed (new reason `tagged`, no second line under the name, but one quiet sentence
+  above the list — review I2, same day, security model rule 3: "Der Tag ist nicht eingespielt —
+  vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
+  `tags.removalDialog.notPlayedInLead`) except one another active
   tag still needs — `heldByActiveTags`, merged with `placedByOtherTags` so a read that broke "inactive ⇒ no
   placement" still withholds the tick — which stays "Nicht vorgeschlagen" with "wird noch von X
   gebraucht". "War schon vorher im Set" is a statement about a play-in and never appears for such a tag.

@@ -125,6 +125,15 @@ type ListItem =
         </p>
       }
 
+      @if (!data.proposal.tagActive && items().length > 0) {
+        <!-- Security model rule 3: the human is the last safeguard, so a preview whose ticks follow
+             another rule than the familiar one says so. Without a play-in there is no "was already
+             in the set" to leave unticked: everything of the tag is proposed. -->
+        <p class="text-sm text-fg-secondary">
+          {{ 'tags.removalDialog.notPlayedInLead' | transloco }}
+        </p>
+      }
+
       @if (items().length > 0) {
         <!-- One scroll container for the list (§7): the virtual viewport, or a capped box for short
              lists, both sized against dvh so the pane does not scroll as well. The wrapper rule
@@ -217,7 +226,7 @@ type ListItem =
                     {{ 'tags.removalDialog.reason.alreadyPresent' | transloco }}
                   }
                   <!-- 'tagged' (a tag that is not played in): proposed for its tagging alone,
-                       nothing to add under the name. -->
+                       nothing to add under the name — the sentence above the list says why. -->
                 }
               </span>
             </span>

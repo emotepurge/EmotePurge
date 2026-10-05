@@ -1847,6 +1847,7 @@
       },
       "nothingToDelete": "Nothing will be deleted on 7TV; the tag then counts as no longer played in.",
       "nothingToDeleteNotPlayedIn": "Nothing will be deleted on 7TV.",
+      "notPlayedInLead": "The tag is not played in — all its emotes in the set are proposed except those another tag needs.",
       "confirm": "Clear out"
     },
     "errors": {

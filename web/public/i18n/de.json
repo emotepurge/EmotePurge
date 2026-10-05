@@ -1847,6 +1847,7 @@
       },
       "nothingToDelete": "Es wird nichts bei 7TV gelöscht; das Tag gilt danach als nicht mehr eingespielt.",
       "nothingToDeleteNotPlayedIn": "Es wird nichts bei 7TV gelöscht.",
+      "notPlayedInLead": "Der Tag ist nicht eingespielt — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
       "confirm": "Ausräumen"
     },
     "errors": {

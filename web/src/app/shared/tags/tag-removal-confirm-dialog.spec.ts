@@ -44,6 +44,7 @@ const DE = {
       notInSet: { one: '{{count}} weiterer nicht im Set', other: '{{count}} weitere nicht im Set' },
       nothingToDelete: 'Es wird nichts gelöscht; danach nicht mehr eingespielt.',
       nothingToDeleteNotPlayedIn: 'Es wird nichts gelöscht.',
+      notPlayedInLead: 'Nicht eingespielt — alles vorgeschlagen.',
       confirm: 'Ausräumen',
     },
   },
@@ -243,6 +244,24 @@ describe('TagRemovalConfirmDialog', () => {
       await settle();
       expect(host.textContent).toContain('Es wird nichts gelöscht.');
       expect(host.textContent).not.toContain('nicht mehr eingespielt');
+    });
+
+    it('says in one sentence why everything is proposed, only for such a tag and only with rows', async () => {
+      const lead = 'Nicht eingespielt — alles vorgeschlagen.';
+      let host = notPlayedIn([row('a', { reason: 'tagged', placedAtUtc: null })]);
+      await settle();
+      expect(host.textContent).toContain(lead);
+      ref.close();
+
+      host = open([row('a')]);
+      await settle();
+      expect(host.textContent).not.toContain(lead);
+      ref.close();
+
+      // Nothing of the tag in the set: no list, nothing to explain.
+      host = notPlayedIn([]);
+      await settle();
+      expect(host.textContent).not.toContain(lead);
     });
 
     it('proposes a tagged row without a reason line', async () => {

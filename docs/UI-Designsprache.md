@@ -759,7 +759,10 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   the set before, one another active tag still needs) comes unticked, each with its reason and, where
   there is one, the date it was played in. For a tag that is not played in (never, or cleared out
   before) every emote of it in the set comes ticked, without a second line, except one another active
-  tag still needs ("wird noch von X gebraucht"); "war schon vorher im Set" never appears there. **Block membership is the proposal's start state and never changes.** A tick
+  tag still needs ("wird noch von X gebraucht"); "war schon vorher im Set" never appears there. Because
+  those ticks follow another rule than the familiar one, one quiet sentence above the list says so: "Der
+  Tag ist nicht eingespielt — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer
+  Tag braucht." (only with at least one row). **Block membership is the proposal's start state and never changes.** A tick
   toggles *in place*, in either direction, for every row — the human decides — and changes only the
   checkbox and the summary line; a row never jumps under the pointer and a keyboard user keeps their
   position.
