@@ -861,6 +861,13 @@ log, UI-Designsprache 7.5 and the code comments follow the new wording.
 `web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags-page.spec.ts` ·
 `web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/e2e/audit/ui-audit.audit.ts`
 
+**Feedback (clear-out dialog, operator).** The clear-out confirm dialog no longer renders the plain
+`NamePreviewList` of the names to be deleted below the "Vorgeschlagen"/"Nicht vorgeschlagen" rows: the
+ticked rows already are that list, so each name appeared twice. The irreversibility sentence, the
+foreign-channels hint and the n = 0 sentence stay. The regular delete dialog keeps its list (it has no
+checkbox rows); the two never shared the component instance, so no variant flag was needed.
+`docs/UI-Designsprache.md` 7.5, `tag-removal-confirm-dialog.ts` and its spec.
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

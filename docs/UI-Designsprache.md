@@ -751,8 +751,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 
 - **What applies:** Clearing a tag out of a set (#201) has no separate preview step: the confirmation
   dialog `TagRemovalConfirmDialog` (`shared/tags/tag-removal-confirm-dialog.ts`) *is* the preview,
-  built from the delete dialog's pieces (set line, shared-set banner, quiet sentences,
-  `NamePreviewList`) and opened through `openAppDialog`. Its confirm button is the §4.2 execution
+  built from the delete dialog's pieces (set line, shared-set banner, quiet sentences) and opened
+  through `openAppDialog`. It has **no plain name list** below the rows (unlike the delete dialog's
+  `NamePreviewList`): the ticked rows are that list, and a second copy only duplicated them. Its confirm button is the §4.2 execution
   (`danger-solid`). Like the delete dialog, the token prompt comes before the confirmation (after the registration, before the live read).
 - **Two blocks, "Vorgeschlagen" above "Nicht vorgeschlagen".** The server's proposal sorts the rows.
   For a played-in tag, placements it can vouch for come ticked, everything else (an emote that was in
@@ -769,7 +770,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **The button is never disabled by the count.** With n = 0 a tag is still cleared out (it is
   deactivated without a delete run); the dialog then says so in a sentence ("Es wird nichts bei 7TV
   gelöscht; der Tag gilt danach als nicht mehr eingespielt.", for a tag that is not played in only
-  "Es wird nichts bei 7TV gelöscht.") instead of the name list. The button is
+  "Es wird nichts bei 7TV gelöscht.") in the list's place. The button is
   locked only while the shared-set check is still running, as in the delete dialog.
 - **The summary is the dialog's only status region** ("n Emotes werden entfernt, m bleiben im Set"),
   present from the start so it announces changes, not its arrival (§4.5).

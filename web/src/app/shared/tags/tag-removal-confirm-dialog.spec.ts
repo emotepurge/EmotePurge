@@ -138,6 +138,16 @@ describe('TagRemovalConfirmDialog', () => {
     expect(labelled?.textContent?.trim()).toBe('Stronghold ausräumen');
   });
 
+  it('lists each emote once, as a checkbox row, and not a second time as a plain name list', async () => {
+    const host = open([row('a'), row('b', { checked: false })]);
+    await settle();
+    expect(rowIds(host)).toEqual(['a', 'b']);
+    expect(host.querySelectorAll('ul, [role="list"], [role="listitem"]').length).toBe(0);
+    // The irreversibility sentence still closes the dialog's body.
+    expect(host.textContent).toContain('Nicht rückgängig zu machen.');
+    expect(host.textContent).toContain('Fremde Channels nicht erkennbar.');
+  });
+
   it('keeps the summary in step with the ticks', async () => {
     const host = open([row('a'), row('b')]);
     await settle();

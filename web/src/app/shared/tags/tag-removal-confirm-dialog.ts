@@ -23,7 +23,6 @@ import { EmoteSprite } from '../emotes/emote-sprite';
 import { Button } from '../ui/button';
 import { openAppDialog } from '../ui/dialog';
 import { DialogShell } from '../ui/dialog-shell';
-import { NamePreviewList } from '../ui/name-preview-list';
 import { NoticeBanner } from '../ui/notice-banner';
 import { TagRemovalProposal, TagRemovalRow } from './tag-removal';
 
@@ -57,7 +56,7 @@ type ListItem =
 /**
  * Preview and confirmation of a tag clear-out in one dialog (spec E19) — the last screen before
  * emotes leave 7TV. Built from the delete dialog's pieces: set line, shared-set banner, quiet
- * sentences, `NamePreviewList`.
+ * sentences. No plain name list: the ticked rows are the list.
  *
  * Every row can be ticked either way (the human decides, PRODUCT principle 1). The two blocks
  * ("proposed" / "not proposed") are the system's proposal, fixed when the dialog opens: a toggle
@@ -74,7 +73,6 @@ type ListItem =
     Button,
     DialogShell,
     EmoteSprite,
-    NamePreviewList,
     NgTemplateOutlet,
     NoticeBanner,
     ScrollingModule,
@@ -240,12 +238,12 @@ type ListItem =
         </p>
       }
 
+      <!-- No plain name list below the rows: the ticked rows above already are that list, and a
+           second copy of every name only pushes the irreversibility sentence out of view. -->
       @if (removeCount() === 0) {
         <p class="text-sm text-fg-secondary">
           {{ nothingToDeleteKey() | transloco }}
         </p>
-      } @else {
-        <app-name-preview-list [names]="checkedNames()" [cap]="null" />
       }
 
       <div class="flex flex-col gap-1">
@@ -410,7 +408,6 @@ export class TagRemovalConfirmDialog {
     () => this.data.proposal.rows.length > TAG_REMOVAL_VIRTUAL_THRESHOLD,
   );
 
-  protected readonly checkedNames = computed(() => this.checkedRows().map((r) => r.displayName));
   protected readonly notInSetKey = computed(() =>
     pluralKey(this.data.proposal.notInSetCount, 'tags.removalDialog.notInSet'),
   );
