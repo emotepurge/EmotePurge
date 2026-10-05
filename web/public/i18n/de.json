@@ -1809,6 +1809,23 @@
     "deleteDialog": {
       "message": "{{tag}} wird gelöscht; die Emotes bleiben im Set.",
       "confirm": "Tag löschen"
+    },
+    "removalDialog": {
+      "title": "{{tag}} ausräumen",
+      "summary": "{{removeCount}} Emotes werden entfernt, {{keepCount}} bleiben im Set",
+      "proposedHeading": "Wird entfernt",
+      "notProposedHeading": "Nicht vorgeschlagen",
+      "placedAt": "eingespielt am {{date}}",
+      "reason": {
+        "alreadyPresent": "war schon vorher im Set",
+        "heldBy": "wird noch von {{tag}} gebraucht"
+      },
+      "notInSet": {
+        "one": "{{count}} weiterer Emote dieses Tags ist nicht im Set.",
+        "other": "{{count}} weitere Emotes dieses Tags sind nicht im Set."
+      },
+      "nothingToDelete": "Es wird nichts bei 7TV gelöscht; das Tag gilt danach als nicht mehr eingespielt.",
+      "confirm": "Ausräumen"
     }
   },
   "errors": {

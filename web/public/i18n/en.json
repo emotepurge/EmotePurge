@@ -1809,6 +1809,23 @@
     "deleteDialog": {
       "message": "{{tag}} will be deleted; the emotes stay in the set.",
       "confirm": "Delete tag"
+    },
+    "removalDialog": {
+      "title": "Clear out {{tag}}",
+      "summary": "{{removeCount}} emotes will be removed, {{keepCount}} stay in the set",
+      "proposedHeading": "Will be removed",
+      "notProposedHeading": "Not proposed",
+      "placedAt": "played in on {{date}}",
+      "reason": {
+        "alreadyPresent": "was already in the set before",
+        "heldBy": "is still needed by {{tag}}"
+      },
+      "notInSet": {
+        "one": "{{count}} more emote of this tag is not in the set.",
+        "other": "{{count}} more emotes of this tag are not in the set."
+      },
+      "nothingToDelete": "Nothing will be deleted on 7TV; the tag then counts as no longer played in.",
+      "confirm": "Clear out"
     }
   },
   "errors": {
