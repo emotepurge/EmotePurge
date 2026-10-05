@@ -259,10 +259,13 @@ tag in the set as it exists at apply time, valid and expired alike.
   the responsibility passed. A target whose own row for the emote has *expired* is treated as not
   holding it (operator ruling on the Task 5 review, spec addendum in Task 15): that row is rewritten
   with the transferred values (removal as revision and anchor, the giver's `PlacedAtUtc`) instead of
-  being kept — keeping it would delete the emote's only valid placement. The rewritten row holds: the
-  giving row holds at its anchor, so no leave is observed after it, nor after the later removal
-  anchor. No target → dropped. Transfer is delete plus insert (`TagId` is part of the
-  primary key); the new row keeps `PlacedAtUtc`, takes the removal operation as `OperationId` and that
+  being kept — keeping it would delete the emote's only valid placement. For a kept hit the rewritten
+  row holds: the giving row holds at its anchor, so no leave is observed after it, nor after the later
+  removal anchor. On the sweep path a row that came in with a later own anchor can come out expired,
+  exactly like a fresh transfer (F30). An expired giving row never touches the target's row, expired
+  or not — it is only deleted. No target → dropped. Transfer is delete plus insert (`TagId` is part of
+  the primary key), or an in-place update when the target's own row for the emote expired; the new row keeps
+  `PlacedAtUtc`, takes the removal operation as `OperationId` and that
   operation's `RegisteredAtUtc` as its anchor (F30) — so deleting the giving tag afterwards, which
   cascades its operations away, leaves the transferred placement holding.
 - **An expired placement is never transferred, only deleted** — in the sweep, where the spec says so,

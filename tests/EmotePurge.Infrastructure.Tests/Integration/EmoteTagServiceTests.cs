@@ -1713,6 +1713,72 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         await fixture.AssertPlacementInvariantsAsync(channel.Id);
     }
 
+    // The giving row itself expired (a leave observed after its anchor) AND the target's row for X
+    // expired too: nothing is handed over, the giving row is deleted, and the target's row stays
+    // exactly as it was — still expired. Rewriting it would revive it at the removal's anchor, which
+    // is later than the observation (spec 0a).
+    [Theory]
+    [InlineData("tagrmbothexpiredkept", false)]
+    [InlineData("tagrmbothexpiredswept", true)]
+    public async Task Removal_AnExpiredGivingRow_NeverRevivesTheTargetsExpiredRow(string channelName, bool swept)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        var bPlayIn = await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-8), x);
+        var aPlayIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-7), x);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, T0.AddDays(-6));
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync(channelName, a.Id, removal);
+
+        var result = await ReportRemovalAsync(channelName, a.Id, swept
+            ? Removal(removal, aPlayIn, Snapshot(), removed: [], kept: [])
+            : Removal(removal, aPlayIn, Snapshot((x, aPlayIn)), removed: [], kept: [x]));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: swept ? 0 : 1, swept: swept ? 1 : 0, deactivated: true);
+        Assert.Empty(await LoadPlacementsAsync(a.Id));
+        var row = Assert.Single(await LoadPlacementsAsync(b.Id));
+        Assert.Equal((x, bPlayIn, T0.AddDays(-8), T0.AddDays(-8)),
+            (row.SevenTvEmoteId, row.OperationId, row.RegisteredAtUtc, row.PlacedAtUtc));
+        Assert.False(Assert.Single((await ListEntriesAsync(channelName, b.Id)).Entries).PlacedByThisTag);
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Two qualifying tags created at the very same instant: the lower Id is the target (rule 3's
+    // tie-break), although the higher Id was activated first.
+    [Fact]
+    public async Task Removal_TagsCreatedAtTheSameInstant_TheLowerIdIsTheTarget()
+    {
+        var channel = await SeedChannelAsync("tagrmtie");
+        var sameInstant = T0.AddDays(-3);
+        var low = await SeedTagAsync(channel.Id, "Low", sameInstant);
+        var high = await SeedTagAsync(channel.Id, "High", sameInstant);
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        Assert.True(low.Id < high.Id);
+        var x = NewSevenTvId();
+        foreach (var tag in new[] { low, high, a })
+        {
+            await SeedEntryAsync(tag.Id, x, "X", T0);
+        }
+
+        await SeedPlayInAsync(high.Id, ActiveSetId, T0.AddDays(-3));
+        await SeedPlayInAsync(low.Id, ActiveSetId, T0.AddDays(-2));
+        var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-1), x);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmtie", a.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmtie", a.Id,
+            Removal(removal, playIn, Snapshot((x, playIn)), removed: [], kept: [x]));
+
+        AssertCounts(result, deleted: 0, transferred: 1, dropped: 0, swept: 0, deactivated: true);
+        Assert.Single(await LoadPlacementsAsync(low.Id));
+        Assert.Empty(await LoadPlacementsAsync(high.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
     // No target: an inactive tag with the entry does not count, nor does an active tag without it.
     [Fact]
     public async Task Removal_AKeptHitWithoutAnActiveTagWithAnEntry_IsDropped()
