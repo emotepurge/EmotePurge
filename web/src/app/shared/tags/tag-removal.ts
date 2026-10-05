@@ -20,6 +20,13 @@ import type {
  *   so every emote of it in the set is proposed — except one another active tag still needs
  *   (`heldByActiveTags`, or a valid placement of another tag), which stays unchecked with that
  *   reason. "Not played in by this tag" is a statement about a play-in and does not apply.
+ * - **A marking on the tags page grid takes precedence** (operator decision 2026-10-05): with at least
+ *   one marked entry, the proposal is the marking — every marked emote in the set is proposed, own
+ *   placement or not, played in or not — and every unmarked one is not (`notMarked`). One another
+ *   active tag still needs stays unticked with that reason either way: `heldBy` wins over
+ *   `notMarked` too, because the confirm-time re-read treats every holder the dialog showed as known,
+ *   so a holder must never hide behind another reason. A marked id that is not in the set is no row,
+ *   like any other entry not in the set.
  * - The snapshot carries **all** of the tag's own placements, visible in the set or not (6.4/3): the
  *   ones no longer in the set are not rows, but they belong to the report so the server can drop
  *   them, and each carries the revision it was read at so the server touches only that placement.
@@ -29,8 +36,9 @@ import type {
  */
 /** `placed`: this tag's own placement. `heldBy`: another active tag still needs it. `alreadyPresent`:
  *  in the set before this (played-in) tag's play-in. `tagged`: an emote of a tag that is not played
- *  in — proposed for its tagging alone, with no further line. */
-export type TagRemovalReason = 'placed' | 'heldBy' | 'alreadyPresent' | 'tagged';
+ *  in — proposed for its tagging alone, with no further line. `notMarked`: the grid had a marking and
+ *  this emote was not part of it. */
+export type TagRemovalReason = 'placed' | 'heldBy' | 'alreadyPresent' | 'tagged' | 'notMarked';
 
 export interface TagRemovalRow {
   sevenTvEmoteId: string;
@@ -62,15 +70,20 @@ export interface TagRemovalProposal {
   ownInLiveIds: string[];
   /** Whether the entry read found the tag played in to the set — the dialog words n = 0 by it. */
   tagActive: boolean;
+  /** Whether the proposal follows a grid marking — the dialog's sentence above the list says so. */
+  fromMarking: boolean;
 }
 
 /** `tagActive`: the entry read found an activation of the tag in the set (`activationOperationId
- *  !== null`) — the same read the snapshot comes from, never the page's older summary. */
+ *  !== null`) — the same read the snapshot comes from, never the page's older summary. `markedIds`:
+ *  the grid's marking as it stood at the click; empty (or absent) means there was none. */
 export function proposeTagRemoval(
   entries: readonly EmoteTagEntry[],
   live: SevenTvSetEntries,
   tagActive: boolean,
+  markedIds: readonly string[] = [],
 ): TagRemovalProposal {
+  const marked = markedIds.length > 0 ? new Set(markedIds) : null;
   const rows: TagRemovalRow[] = [];
   const snapshot: TagPlacementSnapshotEntry[] = [];
   const ownInLiveIds: string[] = [];
@@ -93,16 +106,17 @@ export function proposeTagRemoval(
     if (isOwn) {
       ownInLiveIds.push(id);
     }
-    rows.push(toRow(entry, isOwn, tagActive, live));
+    rows.push(toRow(entry, isOwn, tagActive, marked, live));
   }
 
-  return { rows, notInSetCount, snapshot, ownInLiveIds, tagActive };
+  return { rows, notInSetCount, snapshot, ownInLiveIds, tagActive, fromMarking: marked !== null };
 }
 
 function toRow(
   entry: EmoteTagEntry,
   isOwn: boolean,
   tagActive: boolean,
+  marked: ReadonlySet<string> | null,
   live: SevenTvSetEntries,
 ): TagRemovalRow {
   const id = entry.sevenTvEmoteId;
@@ -114,34 +128,29 @@ function toRow(
     aliases: [...aliases],
     displayName,
     imageUrl: entry.imageUrl || null,
+    placedAtUtc: isOwn ? entry.placedAtUtc : null,
   };
-  if (isOwn) {
-    const holders = mergeRefs(entry.heldByActiveTags, entry.placedByOtherTags);
-    const held = holders.length > 0;
-    return {
-      ...base,
-      checked: !held,
-      reason: held ? 'heldBy' : 'placed',
-      heldBy: holders,
-      placedAtUtc: entry.placedAtUtc,
-    };
-  }
-  if (!tagActive) {
-    // Every other tag with a valid placement is active (inactive => no placement) and has an entry
-    // (the foreign key), so it is among `heldByActiveTags`; merged anyway, so a read that broke that
-    // rule still withholds the tick (propose less).
-    const heldBy = mergeRefs(entry.heldByActiveTags, entry.placedByOtherTags);
-    return heldBy.length > 0
-      ? { ...base, checked: false, reason: 'heldBy', heldBy, placedAtUtc: null }
-      : { ...base, checked: true, reason: 'tagged', heldBy: [], placedAtUtc: null };
-  }
-  // Played in: an emote another active tag needs through an entry alone (no placement) is held too,
-  // so the dialog names that tag — the re-read treats every shown holder as known.
+  // Held comes first on every path, marked or not: an emote another active tag needs (through a
+  // placement or an entry alone) stays unticked and names that tag — the re-read treats every shown
+  // holder as known. Every other tag with a valid placement is active (inactive => no placement) and
+  // has an entry (the foreign key), so it is among `heldByActiveTags`; merged anyway, so a read that
+  // broke that rule still withholds the tick (propose less).
   const holders = mergeRefs(entry.heldByActiveTags, entry.placedByOtherTags);
   if (holders.length > 0) {
-    return { ...base, checked: false, reason: 'heldBy', heldBy: holders, placedAtUtc: null };
+    return { ...base, checked: false, reason: 'heldBy', heldBy: holders };
   }
-  return { ...base, checked: false, reason: 'alreadyPresent', heldBy: [], placedAtUtc: null };
+  if (marked !== null && !marked.has(id)) {
+    return { ...base, checked: false, reason: 'notMarked', heldBy: [] };
+  }
+  if (isOwn) {
+    return { ...base, checked: true, reason: 'placed', heldBy: [] };
+  }
+  // A played-in tag proposes only its own placements, unless the person marked this one; the fact
+  // that the tag did not play it in stays on the row either way. A tag that is not played in
+  // proposes it for its tagging alone.
+  return tagActive
+    ? { ...base, checked: marked !== null, reason: 'alreadyPresent', heldBy: [] }
+    : { ...base, checked: true, reason: 'tagged', heldBy: [] };
 }
 
 /** `first` in its order, then whatever of `second` it lacks (by id). */

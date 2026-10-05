@@ -98,6 +98,13 @@ export interface TagRunRequest {
   onFeedback(key: string, params: Record<string, unknown>): void;
   /** A report without a run succeeded — the host reloads the tag. */
   onCompleted(): void;
+  /** The host grid's marking (emote ids), copied at the click so nothing done to the grid while the
+   *  flow runs reaches its proposal. Empty or absent: no marking. Only the clear-out reads it. */
+  markedIds?: readonly string[];
+  /** A confirmed clear-out went ahead — its run was handed over, or (nothing ticked) its report
+   *  without a run went out. The host lets go of the marking the proposal came from. Not called on a
+   *  cancel or on any abort: there the marking still stands for the next attempt. */
+  onClearOutCommitted?(): void;
 }
 
 type NoticeRouting = Pick<

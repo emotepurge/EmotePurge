@@ -40,11 +40,17 @@ const DE = {
       reason: {
         alreadyPresent: 'nicht von diesem Tag eingespielt',
         heldBy: 'wird noch von {{tag}} gebraucht',
+        notMarked: 'nicht markiert',
       },
       notInSet: { one: '{{count}} weiterer nicht im Set', other: '{{count}} weitere nicht im Set' },
       nothingToDelete: 'Es wird nichts gelöscht; danach nicht mehr eingespielt.',
       nothingToDeleteNotPlayedIn: 'Es wird nichts gelöscht.',
       notPlayedInLead: 'Nicht eingespielt — alles vorgeschlagen.',
+      markedLead: {
+        one: 'Dein markiertes vorgeschlagen.',
+        other: '{{count}} markierte vorgeschlagen.',
+      },
+      markedLeadNone: 'Keines der markierten vorgeschlagen.',
       confirm: 'Ausräumen',
     },
   },
@@ -103,7 +109,14 @@ describe('TagRemovalConfirmDialog', () => {
     const data: TagRemovalConfirmDialogData = {
       tagName: 'Stronghold',
       setName: 'Hauptset',
-      proposal: { rows, notInSetCount: 0, snapshot: [], ownInLiveIds: [], tagActive: true },
+      proposal: {
+        rows,
+        notInSetCount: 0,
+        snapshot: [],
+        ownInLiveIds: [],
+        tagActive: true,
+        fromMarking: false,
+      },
       warning,
       warningLoading,
       ...over,
@@ -239,7 +252,14 @@ describe('TagRemovalConfirmDialog', () => {
   describe('for a tag that is not played in', () => {
     const notPlayedIn = (rows: TagRemovalRow[]) =>
       open(rows, {
-        proposal: { rows, notInSetCount: 0, snapshot: [], ownInLiveIds: [], tagActive: false },
+        proposal: {
+          rows,
+          notInSetCount: 0,
+          snapshot: [],
+          ownInLiveIds: [],
+          tagActive: false,
+          fromMarking: false,
+        },
       });
 
     it('at n = 0 says nothing is deleted without promising a change of state', async () => {
@@ -280,6 +300,74 @@ describe('TagRemovalConfirmDialog', () => {
       expect(box(host, 'a').checked).toBe(true);
       expect(host.textContent).not.toContain('nicht von diesem Tag eingespielt');
       expect(host.textContent).not.toContain('eingespielt am');
+    });
+  });
+
+  // Operator decision 2026-10-05: a marking on the tags page grid is the proposal.
+  describe('for a proposal from a grid marking', () => {
+    const fromMarking = (rows: TagRemovalRow[], tagActive: boolean) =>
+      open(rows, {
+        proposal: {
+          rows,
+          notInSetCount: 0,
+          snapshot: [],
+          ownInLiveIds: [],
+          tagActive,
+          fromMarking: true,
+        },
+      });
+
+    it('says how many marked emotes are proposed, instead of the not-played-in sentence', async () => {
+      let host = fromMarking(
+        [
+          row('a', { reason: 'tagged', placedAtUtc: null }),
+          row('b', { reason: 'tagged', placedAtUtc: null }),
+          row('c', { checked: false, reason: 'notMarked', placedAtUtc: null }),
+        ],
+        false,
+      );
+      await settle();
+      expect(host.textContent).toContain('2 markierte vorgeschlagen.');
+      expect(host.textContent).not.toContain('Nicht eingespielt — alles vorgeschlagen.');
+      ref.close();
+
+      // A played-in tag says it as well; the count follows the start state, not later ticks.
+      host = fromMarking([row('a'), row('b', { checked: false, reason: 'notMarked' })], true);
+      await settle();
+      expect(host.textContent).toContain('Dein markiertes vorgeschlagen.');
+      box(host, 'b').click();
+      await settle();
+      expect(host.textContent).toContain('Dein markiertes vorgeschlagen.');
+    });
+
+    it('says that none is proposed when every marked emote is held', async () => {
+      const host = fromMarking(
+        [
+          row('a', {
+            checked: false,
+            reason: 'heldBy',
+            placedAtUtc: null,
+            heldBy: [{ id: 2, name: 'Raid' }],
+          }),
+        ],
+        false,
+      );
+      await settle();
+      expect(host.textContent).toContain('Keines der markierten vorgeschlagen.');
+    });
+
+    it('gives an unmarked row its reason, with the date of an own placement', async () => {
+      const host = fromMarking(
+        [
+          row('own', { checked: false, reason: 'notMarked' }),
+          row('other', { checked: false, reason: 'notMarked', placedAtUtc: null }),
+        ],
+        true,
+      );
+      await settle();
+      expect(box(host, 'own').checked).toBe(false);
+      expect(host.textContent!.match(/nicht markiert/g)).toHaveLength(2);
+      expect(host.textContent!.match(/eingespielt am/g)).toHaveLength(1);
     });
   });
 

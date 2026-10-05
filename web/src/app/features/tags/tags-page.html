@@ -200,7 +200,8 @@
                      delete need one. TagRunActions is mounted on gates that a live reload does not
                      move — a reload that tore it down would read as a set switch and abort an open
                      dialog — and gets the live active set, which its flows' confirm-time guard
-                     compares against. -->
+                     compares against. It also gets the grid's marking: a clear-out started with one
+                     proposes the marked emotes, and the marking goes once that clear-out went ahead. -->
                 @if (tagRunsShown() || canManage()) {
                   <div class="ml-auto flex flex-wrap items-start gap-2">
                     @if (tagRunsShown()) {
@@ -211,8 +212,10 @@
                         [setName]="activeSetName()"
                         [enabled]="true"
                         [unshownRunKinds]="unshownRunKinds"
+                        [markedIds]="selection.selectedKeys()"
                         (started)="onTagRunStarted()"
                         (completed)="onTagRunCompleted()"
+                        (clearOutCommitted)="clearSelection()"
                         (feedback)="onTagRunFeedback($event)"
                         (focusLost)="focusDetailHeading()"
                       />

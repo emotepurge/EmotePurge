@@ -123,12 +123,13 @@ type ListItem =
         </p>
       }
 
-      @if (!data.proposal.tagActive && items().length > 0) {
+      @if (leadKey(); as lead) {
         <!-- Security model rule 3: the human is the last safeguard, so a preview whose ticks follow
-             another rule than the familiar one says so. Without a play-in there is no "not played in by
-             this tag" to leave unticked: everything of the tag is proposed. -->
+             another rule than the familiar one says so — the grid's marking, or (without one) a tag
+             that is not played in, where there is no "not played in by this tag" to leave unticked
+             and everything of the tag is proposed. -->
         <p class="text-sm text-fg-secondary">
-          {{ 'tags.removalDialog.notPlayedInLead' | transloco }}
+          {{ lead | transloco: { count: proposedRows().length } }}
         </p>
       }
 
@@ -223,6 +224,15 @@ type ListItem =
                   @case ('alreadyPresent') {
                     {{ 'tags.removalDialog.reason.alreadyPresent' | transloco }}
                   }
+                  @case ('notMarked') {
+                    {{ 'tags.removalDialog.reason.notMarked' | transloco }}
+                    @if (item.row.placedAtUtc; as placedAt) {
+                      ·
+                      {{
+                        'tags.removalDialog.placedAt' | transloco: { date: formatDate(placedAt) }
+                      }}
+                    }
+                  }
                   <!-- 'tagged' (a tag that is not played in): proposed for its tagging alone,
                        nothing to add under the name — the sentence above the list says why. -->
                 }
@@ -303,7 +313,9 @@ export class TagRemovalConfirmDialog {
   protected readonly flipped = signal<ReadonlySet<string>>(new Set());
 
   /** Block membership is the proposal's own start state and never changes; only the ticks do. */
-  private readonly proposedRows = computed(() => this.data.proposal.rows.filter((r) => r.checked));
+  protected readonly proposedRows = computed(() =>
+    this.data.proposal.rows.filter((r) => r.checked),
+  );
   private readonly notProposedRows = computed(() =>
     this.data.proposal.rows.filter((r) => !r.checked),
   );
@@ -328,6 +340,25 @@ export class TagRemovalConfirmDialog {
       ? 'tags.removalDialog.nothingToDelete'
       : 'tags.removalDialog.nothingToDeleteNotPlayedIn',
   );
+
+  /**
+   * The sentence above the list, only with rows to explain: with a grid marking, how many marked
+   * emotes the proposal holds (a held one is not among them, its row says why); without one, a tag
+   * that is not played in proposes everything of it. A played-in tag's own placements need no word.
+   */
+  protected readonly leadKey = computed<string | null>(() => {
+    const proposal = this.data.proposal;
+    if (proposal.rows.length === 0) {
+      return null;
+    }
+    if (proposal.fromMarking) {
+      const count = this.proposedRows().length;
+      return count === 0
+        ? 'tags.removalDialog.markedLeadNone'
+        : pluralKey(count, 'tags.removalDialog.markedLead');
+    }
+    return proposal.tagActive ? null : 'tags.removalDialog.notPlayedInLead';
+  });
 
   private readonly rowOrder = computed(() => [...this.proposedRows(), ...this.notProposedRows()]);
   /** The item ids in list order (headings included) — the positions the viewport renders by. */

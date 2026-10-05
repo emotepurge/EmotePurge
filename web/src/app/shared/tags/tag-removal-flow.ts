@@ -52,6 +52,12 @@ import { openTagRemovalConfirmDialog } from './tag-removal-confirm-dialog';
  * nothing deleted; a failed read, or one that outlasts the reports' 30 s bound, aborts too (fail
  * closed). The person opens it again and sees the new state; no row is unticked behind their back.
  *
+ * **A grid marking changes the proposal, not the checks.** The marking (`TagRunRequest.markedIds`)
+ * is copied at the click and only decides which rows start ticked (`proposeTagRemoval`); the entry
+ * re-read above judges the ticked rows the same way whatever ticked them. The host drops the
+ * marking once the clear-out goes ahead (`onClearOutCommitted`), never on a cancel or an abort,
+ * where it still stands — and a "Try again" replays the click, its marking included.
+ *
  * The 7TV set itself is not read again, unlike the delete chain's #227 read. The one live read
  * before the dialog supplies both the proposal and the aliases the queue and the protocol record
  * (spec 7.2/4), and the engine does not re-read before its `REMOVE`s either — so with a dialog left
@@ -152,6 +158,7 @@ function openConfirmation(
     prepared.entries.entries,
     prepared.live,
     prepared.entries.activationOperationId !== null,
+    request.markedIds,
   );
   const warning = signal<EmoteSetWarning | null>(null);
   const warningLoading = signal(true);
@@ -240,6 +247,7 @@ function confirm(
   if (checkedRows.length === 0) {
     // No run, so nothing for the dock to hold.
     deps.deleteService.clearConfirmedRun();
+    request.onClearOutCommitted?.();
     sendTagReport(
       request,
       () =>
@@ -321,6 +329,7 @@ function confirm(
         prepared.ownerTwitchChannelId,
         tagContext,
       );
+      request.onClearOutCommitted?.();
     } finally {
       // `finally`, as in the delete chain: a leaked claim pins an empty dock.
       deps.deleteService.endConfirmedRun();

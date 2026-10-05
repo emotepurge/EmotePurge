@@ -140,6 +140,7 @@ interface Harness {
   notice: WritableSignal<TagRunNotice | null>;
   onFeedback: ReturnType<typeof vi.fn>;
   onCompleted: ReturnType<typeof vi.fn>;
+  onClearOutCommitted: ReturnType<typeof vi.fn>;
   /** The page-level surface the flow falls back to once the host is gone. */
   sink: TagRunNoticeSink;
   sinkEvents: OrphanedTagRunEvent[];
@@ -168,6 +169,8 @@ function setup(
     report?: () => Observable<TagRemovalResult>;
     /** The entry read at confirm time (every read after the first); default: the first one's. */
     reread?: () => Observable<EmoteTagEntries>;
+    /** The host grid's marking at the click. */
+    markedIds?: string[];
   } = {},
 ): Harness {
   const calls: string[] = [];
@@ -250,6 +253,7 @@ function setup(
   const notice = signal<TagRunNotice | null>(null);
   const onFeedback = vi.fn();
   const onCompleted = vi.fn();
+  const onClearOutCommitted = vi.fn();
   const host = fakeHost();
   const sink = new TagRunNoticeSink();
   const sinkEvents: OrphanedTagRunEvent[] = [];
@@ -266,6 +270,8 @@ function setup(
     sink,
     onFeedback,
     onCompleted,
+    markedIds: options.markedIds,
+    onClearOutCommitted,
   };
   const deps = {
     dialog,
@@ -291,6 +297,7 @@ function setup(
     notice,
     onFeedback,
     onCompleted,
+    onClearOutCommitted,
     sink,
     sinkEvents,
     listEntries,
@@ -1031,6 +1038,79 @@ describe('startTagRemovalFlow', () => {
       });
       expect(harness.onCompleted).toHaveBeenCalledOnce();
       expect(harness.notice()).toBeNull();
+      expect(harness.startDelete).not.toHaveBeenCalled();
+    });
+  });
+
+  // Operator decision 2026-10-05: a marking on the tags page grid is the proposal.
+  describe('with a grid marking', () => {
+    it('proposes the marked emotes, and the re-read and the run treat the ticks as always', () => {
+      const harness = setup({ markedIds: ['before', 'gone'] });
+      harness.run();
+
+      const proposal = confirmationData(harness).proposal;
+      expect(proposal.fromMarking).toBe(true);
+      expect(proposal.rows.map((row) => [row.sevenTvEmoteId, row.checked, row.reason])).toEqual([
+        ['placed', false, 'notMarked'],
+        ['held', false, 'heldBy'],
+        ['before', true, 'alreadyPresent'],
+      ]);
+      confirmationClosed(harness).next({ checkedIds: ['before'] });
+
+      expect(harness.listEntries).toHaveBeenCalledTimes(2);
+      expect(harness.startDelete).toHaveBeenCalledExactlyOnceWith(
+        'set-active',
+        CHANNEL,
+        [expect.objectContaining({ sevenTvEmoteId: 'before' })],
+        CHANNEL,
+        'tw-owner',
+        expect.objectContaining({ checkedOwnIds: [], uncheckedOwnIds: ['placed', 'held'] }),
+      );
+      // After the hand-over, before the claim ends.
+      const order = (mock: ReturnType<typeof vi.fn>) => mock.mock.invocationCallOrder[0];
+      expect(order(harness.onClearOutCommitted)).toBeGreaterThan(order(harness.startDelete));
+      expect(order(harness.onClearOutCommitted)).toBeLessThan(order(harness.endConfirmedRun));
+    });
+
+    it('keeps the marking on a cancel', () => {
+      const harness = setup({ markedIds: ['before'] });
+      harness.run();
+
+      confirmationClosed(harness).next(undefined);
+
+      expect(harness.onClearOutCommitted).not.toHaveBeenCalled();
+    });
+
+    it('keeps the marking when the re-read aborts the confirmed clear-out', () => {
+      const harness = setup({
+        markedIds: ['before'],
+        reread: () =>
+          of({
+            ...ENTRIES,
+            entries: ENTRIES.entries.map((e) =>
+              e.sevenTvEmoteId === 'before'
+                ? { ...e, heldByActiveTags: [{ id: 9, name: 'Halloween' }] }
+                : e,
+            ),
+          }),
+      });
+      harness.run();
+
+      confirmationClosed(harness).next({ checkedIds: ['before'] });
+
+      expect(harness.startDelete).not.toHaveBeenCalled();
+      expect(harness.notice()?.key).toBe('tags.errors.changedDuringConfirm');
+      expect(harness.onClearOutCommitted).not.toHaveBeenCalled();
+    });
+
+    it('lets go of it when a confirmation with nothing ticked sends its report', () => {
+      const harness = setup({ markedIds: ['before'] });
+      harness.run();
+
+      confirmationClosed(harness).next({ checkedIds: [] });
+
+      expect(harness.onClearOutCommitted).toHaveBeenCalledOnce();
+      expect(harness.reportRemoval).toHaveBeenCalledOnce();
       expect(harness.startDelete).not.toHaveBeenCalled();
     });
   });

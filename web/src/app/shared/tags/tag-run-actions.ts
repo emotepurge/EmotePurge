@@ -183,6 +183,9 @@ export class TagRunActions {
   /** Run kinds whose surface (dock section) this host does not mount — a lock by one of them is
    *  explained in text here, since nothing else on the page would (plan 3.8). */
   readonly unshownRunKinds = input<readonly SevenTvRunKind[]>([]);
+  /** The host grid's marking (emote ids). A clear-out started with one proposes exactly the marked
+   *  emotes; it is copied at the click, so the open dialog does not follow the grid. */
+  readonly markedIds = input<readonly string[]>([]);
 
   readonly completed = output<void>();
   /** A click (or a retry) started a flow. */
@@ -191,6 +194,9 @@ export class TagRunActions {
   /** The clicked run button left the DOM under the user and the other one is not there to take
    *  focus — the host moves it to a stable target of its own. */
   readonly focusLost = output<void>();
+  /** A confirmed clear-out of the tag this host still shows went ahead (`onClearOutCommitted`) — the
+   *  host drops its marking. */
+  readonly clearOutCommitted = output<void>();
 
   protected readonly arbiter = inject(SevenTvRunArbiter);
   private readonly dialog = inject(Dialog);
@@ -415,8 +421,8 @@ export class TagRunActions {
     }
   }
 
-  /** Channel, tag and set name frozen at the click; the active set stays live for the flow's own
-   *  comparisons. */
+  /** Channel, tag, set name and the grid's marking frozen at the click; the active set stays live
+   *  for the flow's own comparisons. */
   private request(): TagRunRequest {
     const tag = this.tag();
     const subject = this.subject();
@@ -434,6 +440,14 @@ export class TagRunActions {
       onCompleted: () => {
         this.reportCompletedSinceClick = true;
         this.completed.emit();
+      },
+      markedIds: [...this.markedIds()],
+      // Only for the tag it was clicked on: once the host shows another one, the marking it would
+      // clear belongs to that one.
+      onClearOutCommitted: () => {
+        if (!this.destroyRef.destroyed && this.subject() === subject) {
+          this.clearOutCommitted.emit();
+        }
       },
     };
   }

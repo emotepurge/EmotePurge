@@ -236,3 +236,81 @@ describe('proposeTagRemoval for a tag that is not played in', () => {
     expect(proposePlayedIn([entry('a')], live({ a: ['x'] })).tagActive).toBe(true);
   });
 });
+
+// Operator decision 2026-10-05: a marking on the tags page grid is the proposal.
+describe('proposeTagRemoval with a grid marking', () => {
+  const rowsOf = (p: ReturnType<typeof proposeTagRemoval>) =>
+    p.rows.map((r) => [r.sevenTvEmoteId, r.checked, r.reason]);
+
+  it('proposes the marked emotes of a tag that is not played in and leaves the rest "not marked"', () => {
+    const p = proposeTagRemoval(
+      [entry('a'), entry('b'), entry('c'), entry('d')],
+      live({ a: ['w'], b: ['x'], c: ['y'], d: ['z'] }),
+      false,
+      ['b', 'd'],
+    );
+    expect(rowsOf(p)).toEqual([
+      ['a', false, 'notMarked'],
+      ['b', true, 'tagged'],
+      ['c', false, 'notMarked'],
+      ['d', true, 'tagged'],
+    ]);
+    expect(p.fromMarking).toBe(true);
+  });
+
+  it('for a played-in tag, proposes a marked emote it did not place and leaves an unmarked own placement, with its date', () => {
+    const p = proposeTagRemoval([own('a'), entry('b')], live({ a: ['x'], b: ['y'] }), true, ['b']);
+    expect(p.rows).toEqual([
+      expect.objectContaining({
+        sevenTvEmoteId: 'a',
+        checked: false,
+        reason: 'notMarked',
+        placedAtUtc: '2026-10-01T10:00:00Z',
+      }),
+      expect.objectContaining({
+        sevenTvEmoteId: 'b',
+        checked: true,
+        reason: 'alreadyPresent',
+        placedAtUtc: null,
+      }),
+    ]);
+    // The own placements stay in the snapshot and the own ids whatever the ticks.
+    expect(p.ownInLiveIds).toEqual(['a']);
+  });
+
+  it('a marked own placement is proposed as placed', () => {
+    const [row] = proposeTagRemoval([own('a')], live({ a: ['x'] }), true, ['a']).rows;
+    expect(row).toMatchObject({ checked: true, reason: 'placed' });
+  });
+
+  it('withholds a marked emote another active tag still needs, and names the holder of an unmarked one too', () => {
+    const p = proposeTagRemoval(
+      [
+        entry('a', { heldByActiveTags: [T2] }),
+        own('b', { placedByOtherTags: [T3] }),
+        entry('c', { heldByActiveTags: [T2] }),
+      ],
+      live({ a: ['x'], b: ['y'], c: ['z'] }),
+      false,
+      ['a', 'b'],
+    );
+    expect(p.rows.map((r) => [r.sevenTvEmoteId, r.checked, r.reason, r.heldBy])).toEqual([
+      ['a', false, 'heldBy', [T2]],
+      ['b', false, 'heldBy', [T3]],
+      ['c', false, 'heldBy', [T2]],
+    ]);
+  });
+
+  it('a marked emote not in the set is no row, only counted', () => {
+    const p = proposeTagRemoval([entry('a'), entry('gone')], live({ a: ['x'] }), false, ['gone']);
+    expect(rowsOf(p)).toEqual([['a', false, 'notMarked']]);
+    expect(p.notInSetCount).toBe(1);
+    expect(p.fromMarking).toBe(true);
+  });
+
+  it('an empty marking is no marking', () => {
+    const p = proposeTagRemoval([entry('a')], live({ a: ['x'] }), false, []);
+    expect(rowsOf(p)).toEqual([['a', true, 'tagged']]);
+    expect(p.fromMarking).toBe(false);
+  });
+});

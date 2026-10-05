@@ -32,7 +32,10 @@ import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { EmoteTagEntry, EmoteTagList, EmoteTagSummary } from '../../core/tags/emote-tag.model';
-import { TagRemovalConfirmDialog } from '../../shared/tags/tag-removal-confirm-dialog';
+import {
+  TagRemovalConfirmDialog,
+  TagRemovalConfirmDialogData,
+} from '../../shared/tags/tag-removal-confirm-dialog';
 import { TagRunActions } from '../../shared/tags/tag-run-actions';
 import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { TagNameDialog } from './tag-name-dialog';
@@ -722,6 +725,32 @@ describe('TagsPage', () => {
       return opened;
     }
 
+    const GQL = 'https://7tv.io/v4/gql';
+
+    /** Answers the flow's live 7TV read with the given emotes in the set (alias `alias-<id>`). */
+    function flushLiveRead(ids: string[] = ['e1']): void {
+      for (let round = 0; round < 5; round++) {
+        for (const request of httpMock.match(GQL)) {
+          request.flush({
+            data: {
+              emoteSets: {
+                emoteSet: {
+                  emotes: {
+                    totalCount: ids.length,
+                    pageCount: 1,
+                    items: ids.map((id) => ({
+                      alias: `alias-${id}`,
+                      emote: { id, defaultName: id.toUpperCase() },
+                    })),
+                  },
+                },
+              },
+            },
+          });
+        }
+      }
+    }
+
     function runActions(harness: RouterTestingHarness): TagRunActions | null {
       const found = harness.fixture.debugElement.query(By.directive(TagRunActions));
       return found ? (found.componentInstance as TagRunActions) : null;
@@ -1031,7 +1060,6 @@ describe('TagsPage', () => {
     });
 
     describe('reloads (spec 9.6)', () => {
-      const GQL = 'https://7tv.io/v4/gql';
       const OWN = entry('e1', {
         placedByThisTag: true,
         placedAtUtc: '2026-10-01T10:00:00Z',
@@ -1043,26 +1071,6 @@ describe('TagsPage', () => {
           .find((source) => source.url === channelLiveUrl('a'))!
           .emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
         return new Promise((resolve) => setTimeout(resolve, CHANNEL_RELOAD_DEBOUNCE_MS + 20));
-      }
-
-      function flushLiveRead(): void {
-        for (let round = 0; round < 5; round++) {
-          for (const request of httpMock.match(GQL)) {
-            request.flush({
-              data: {
-                emoteSets: {
-                  emoteSet: {
-                    emotes: {
-                      totalCount: 1,
-                      pageCount: 1,
-                      items: [{ alias: 'alias-e1', emote: { id: 'e1', defaultName: 'E1' } }],
-                    },
-                  },
-                },
-              },
-            });
-          }
-        }
       }
 
       /** Opens the clear-out dialog of a played-in tag and leaves it open on `closed`. */
@@ -1235,6 +1243,106 @@ describe('TagsPage', () => {
         expectList().flush(tagList(tag(1, 'Stronghold'), tag(2, 'Halloween')));
         expectEntries(1).flush({ emoteSetId: 'set-a', isActiveSet: true, entries: [] });
         restore.run.set(null);
+      });
+    });
+
+    // Operator decision 2026-10-05: a marking on the grid is what the clear-out proposes.
+    describe('a clear-out with a grid marking', () => {
+      const PLACED = entry('e1', {
+        placedByThisTag: true,
+        placedAtUtc: '2026-10-01T10:00:00Z',
+        placementOperationId: 'rev-1',
+      });
+      const ENTRIES = [PLACED, entry('e2'), entry('e3')];
+      const TAG_ENTRIES = {
+        emoteSetId: 'set-a',
+        isActiveSet: true,
+        activationOperationId: 'act-1',
+        entries: ENTRIES,
+      };
+
+      /** Clicks "Ausräumen" and answers the flow's reads; `meanwhile` runs between the click and the
+       *  dialog, while the flow is still reading. */
+      async function clickClearOut(
+        harness: RouterTestingHarness,
+        closed: Subject<unknown>,
+        meanwhile: () => Promise<void> = async () => undefined,
+      ): Promise<TagRemovalConfirmDialogData> {
+        dialogOpen.mockImplementation((component: unknown) =>
+          component === TagRemovalConfirmDialog ? { closed } : { closed: of(dialogResult) },
+        );
+        buttonByName(harness, 'Ausräumen')!.click();
+        await settle(harness);
+        await meanwhile();
+        expectEntries(1).flush(TAG_ENTRIES);
+        await settle(harness);
+        httpMock
+          .expectOne(`${BASE}/1/operations`)
+          .flush({ registeredAtUtc: '2026-10-05T10:00:00Z' });
+        await settle(harness);
+        flushLiveRead(['e1', 'e2', 'e3']);
+        await settle(harness);
+        const call = dialogOpen.mock.calls.find(
+          ([component]) => component === TagRemovalConfirmDialog,
+        ) as unknown as [unknown, { data: TagRemovalConfirmDialogData }];
+        return call[1].data;
+      }
+
+      it('proposes the marking as it stood at the click, and keeps it on a cancel', async () => {
+        const { harness, page } = await openTag(activeTag(1, 'Stronghold'), ENTRIES);
+        cells(harness)[1].click();
+        await settle(harness);
+        const closed = new Subject<unknown>();
+
+        const data = await clickClearOut(harness, closed, async () => {
+          // Marked after the click: not part of this clear-out.
+          cells(harness)[2].click();
+          await settle(harness);
+        });
+
+        expect(data.proposal.fromMarking).toBe(true);
+        expect(
+          data.proposal.rows.map((row) => [row.sevenTvEmoteId, row.checked, row.reason]),
+        ).toEqual([
+          ['e1', false, 'notMarked'],
+          ['e2', true, 'alreadyPresent'],
+          ['e3', false, 'notMarked'],
+        ]);
+
+        closed.next(undefined);
+        await settle(harness);
+        expect(page.selection.selectedKeys()).toEqual(['e2', 'e3']);
+      });
+
+      it('drops the marking once the confirmed clear-out has started', async () => {
+        const { harness, page } = await openTag(activeTag(1, 'Stronghold'), ENTRIES);
+        const startDelete = vi
+          .spyOn(TestBed.inject(SevenTvDeleteService), 'startDelete')
+          .mockImplementation(() => undefined);
+        cells(harness)[1].click();
+        await settle(harness);
+        const closed = new Subject<unknown>();
+        await clickClearOut(harness, closed);
+
+        closed.next({ checkedIds: ['e2'] });
+        await settle(harness);
+        // Still marked while the entry re-read is out: nothing has started yet.
+        expect(page.selection.selectedKeys()).toEqual(['e2']);
+        expectEntries(1).flush(TAG_ENTRIES);
+        await settle(harness);
+
+        expect(startDelete).toHaveBeenCalledTimes(1);
+        expect(page.selection.selectedKeys()).toEqual([]);
+      });
+
+      it('proposes as before without a marking', async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold'), ENTRIES);
+        const data = await clickClearOut(harness, new Subject<unknown>());
+
+        expect(data.proposal.fromMarking).toBe(false);
+        expect(
+          data.proposal.rows.filter((row) => row.checked).map((row) => row.sevenTvEmoteId),
+        ).toEqual(['e1']);
       });
     });
   });

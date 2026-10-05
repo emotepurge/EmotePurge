@@ -1838,7 +1838,8 @@
       "placedAt": "played in on {{date}}",
       "reason": {
         "alreadyPresent": "not played in by this tag",
-        "heldBy": "is still needed by {{tag}}"
+        "heldBy": "is still needed by {{tag}}",
+        "notMarked": "not marked"
       },
       "notInSet": {
         "one": "{{count}} more emote of this tag is not in the set.",
@@ -1847,6 +1848,11 @@
       "nothingToDelete": "Nothing will be deleted on 7TV; the tag then counts as no longer played in.",
       "nothingToDeleteNotPlayedIn": "Nothing will be deleted on 7TV.",
       "notPlayedInLead": "The tag is not played in — all its emotes in the set are proposed except those another tag needs.",
+      "markedLead": {
+        "one": "Your marked emote is proposed.",
+        "other": "Your {{count}} marked emotes are proposed."
+      },
+      "markedLeadNone": "None of your marked emotes is proposed.",
       "confirm": "Clear out"
     },
     "errors": {

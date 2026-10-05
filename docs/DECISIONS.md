@@ -868,6 +868,31 @@ foreign-channels hint and the n = 0 sentence stay. The regular delete dialog kee
 checkbox rows); the two never shared the component instance, so no variant flag was needed.
 `docs/UI-Designsprache.md` 7.5, `tag-removal-confirm-dialog.ts` and its spec.
 
+**Operator feedback: a grid marking is the clear-out's proposal.** With two of a tag's four in-set
+emotes marked on the tags page, "Ausräumen" still pre-ticked all four (the tag was not played in). Now,
+when the grid holds at least one marked entry at the click, the dialog proposes exactly the marked
+emotes that are in the set, own placement or not, played in or not; every unmarked one is "Nicht
+vorgeschlagen" with the new reason "nicht markiert" / "not marked" (`notMarked`, with the placement date
+when the tag placed it). A row another active tag needs stays unticked with "wird noch von X gebraucht"
+whether marked or not: `heldBy` wins over `notMarked`, because the confirm-time re-read (I1) treats every
+holder the dialog showed as known, so a holder must never hide behind another reason. The sentence
+above the list then reads "Vorgeschlagen sind deine {{count}} markierten Emotes." (one: "Vorgeschlagen
+ist dein markiertes Emote."; with none proposed, e.g. all held: "Keines deiner markierten Emotes ist
+vorgeschlagen.") instead of the not-played-in sentence; the count is the proposed rows. Without a marking
+nothing changed. The marking travels as data (`TagRunActions.markedIds` → `TagRunRequest.markedIds`,
+copied at the click, so the open dialog does not follow the grid; a "Try again" replays that copy);
+`shared/` never reads the page. The re-read is unchanged — it judges the ticked rows whatever ticked
+them. The page clears its marking when the confirmed clear-out goes ahead (`onClearOutCommitted` →
+`clearOutCommitted`: after `startDelete`, or when the report for nothing ticked goes out), only for the
+tag still shown; a cancel or any abort before that keeps it.
+
+**Betrifft (feedback, marking as proposal):** `web/src/app/shared/tags/tag-removal.ts` ·
+`web/src/app/shared/tags/tag-removal-flow.ts` · `web/src/app/shared/tags/tag-play-in-flow.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.ts` · `web/src/app/shared/tags/tag-run-actions.ts` ·
+`web/src/app/features/tags/tags-page.html` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+the specs of the first four and of the tags page · `web/e2e/emote-tags.e2e.spec.ts` ·
+`docs/UI-Designsprache.md`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·
