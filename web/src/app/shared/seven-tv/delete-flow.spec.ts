@@ -4,9 +4,13 @@ import { TestBed } from '@angular/core/testing';
 import { NEVER, Observable, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
+import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { EditableSetResolution } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import {
+  confirmTimeRefusal,
   DeleteTargetResolution,
   LIVE_ALIAS_READ_TIMEOUT_MS,
   LiveAliasReadResult,
@@ -14,9 +18,11 @@ import {
   MEMBER_READ_UNAVAILABLE_REASON_KEY,
   readLiveSetAliases,
   resolveDeleteTarget,
+  toDeleteQueueEmotes,
 } from './delete-flow';
+import type { DeletableEmote } from './mass-delete-panel';
 
-// Only the two building blocks the tag page's clear-out run (#201 T-C) consumes on its own. The
+// Only the building blocks the tag page's clear-out run (#201 T-C) consumes on its own. The
 // chain that strings them together (`startDeleteFlow`) is characterized end to end by
 // `mass-delete-panel.spec.ts` through the panel's button, dialog and service mocks, and is not
 // re-tested here.
@@ -194,5 +200,106 @@ describe('readLiveSetAliases', () => {
 
     expect(request.cancelled).toBe(true);
     expect(result()).toEqual({ status: 'blocked', reasonKey: MEMBER_READ_UNAVAILABLE_REASON_KEY });
+  });
+});
+
+describe('confirmTimeRefusal', () => {
+  function refusal(options: {
+    claim: { kind: 'import'; phase: 'running' } | null;
+    hasToken: boolean;
+  }) {
+    const noteRefusedStart = vi.fn();
+    const deps = {
+      arbiter: {
+        activeClaim: () => options.claim,
+        noteRefusedStart,
+      } as unknown as SevenTvRunArbiter,
+      tokenService: { hasToken: () => options.hasToken } as unknown as SevenTvTokenService,
+      translocoService: { translate: (key: string) => `t:${key}` } as never,
+    };
+    return { notice: confirmTimeRefusal(deps), noteRefusedStart };
+  }
+
+  it('lets a free arbiter with a stored token through', () => {
+    expect(refusal({ claim: null, hasToken: true }).notice).toBeUndefined();
+  });
+
+  it("names the blocking run with the shared notStarted wording and the kind's own noun", () => {
+    const { notice } = refusal({ claim: { kind: 'import', phase: 'running' }, hasToken: true });
+
+    expect(notice).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'sevenTvRun.notStarted.running',
+      reasonParams: { kind: expect.stringContaining('t:') },
+    });
+  });
+
+  it('refuses without a token, naming that the token went away during the confirmation', () => {
+    expect(refusal({ claim: null, hasToken: false }).notice).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.tokenGoneDuringConfirm',
+    });
+  });
+
+  it('reports the arbiter first when both stop the start, and never notes a refused start', () => {
+    const { notice, noteRefusedStart } = refusal({
+      claim: { kind: 'import', phase: 'running' },
+      hasToken: false,
+    });
+
+    expect(notice?.reasonKey).toBe('sevenTvRun.notStarted.running');
+    expect(noteRefusedStart).not.toHaveBeenCalled();
+  });
+});
+
+describe('toDeleteQueueEmotes', () => {
+  function entries(
+    aliasesById: Record<string, string[]>,
+    aliaslessIds: string[] = [],
+  ): SevenTvSetEntries {
+    return {
+      aliasesById: new Map(Object.entries(aliasesById)),
+      aliaslessIds: new Set(aliaslessIds),
+      complete: true,
+    } as unknown as SevenTvSetEntries;
+  }
+
+  const emote = (overrides: Partial<DeletableEmote> = {}): DeletableEmote => ({
+    emoteId: 'local-1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'PogU',
+    aliases: ['Hosted'],
+    hidden: false,
+    ...overrides,
+  });
+
+  it("keeps the host's aliases when no live read was made", () => {
+    expect(toDeleteQueueEmotes([emote()], undefined)).toEqual([
+      { emoteId: 'local-1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['Hosted'] },
+    ]);
+  });
+
+  it("replaces them with every alias the live read knows, the host's cell included", () => {
+    const [row] = toDeleteQueueEmotes([emote()], entries({ '7tv-1': ['PogU', 'PogU2'] }));
+
+    expect(row.aliases).toEqual(['PogU', 'PogU2']);
+  });
+
+  it('adds the emote name for an id that also carries an aliasless entry', () => {
+    const [row] = toDeleteQueueEmotes([emote()], entries({ '7tv-1': ['Named'] }, ['7tv-1']));
+
+    expect(row.aliases).toEqual(['Named', 'PogU']);
+  });
+
+  it('does not add the name twice when the live aliases already hold it', () => {
+    const [row] = toDeleteQueueEmotes([emote()], entries({ '7tv-1': ['PogU'] }, ['7tv-1']));
+
+    expect(row.aliases).toEqual(['PogU']);
+  });
+
+  it("falls back to the host's aliases for an id the live read does not know", () => {
+    const [row] = toDeleteQueueEmotes([emote()], entries({ other: ['X'] }));
+
+    expect(row.aliases).toEqual(['Hosted']);
   });
 });
