@@ -29,6 +29,10 @@ public enum EmoteTagIdListStatus
 /// </summary>
 public static class EmoteTagIdList
 {
+    /// <remarks>
+    /// <c>Check(null)</c> returns <see cref="EmoteTagIdListStatus.Empty"/>, which a report accepts, so
+    /// report callers must reject a <c>null</c> list themselves.
+    /// </remarks>
     public static EmoteTagIdListStatus Check(IReadOnlyList<string>? sevenTvEmoteIds)
     {
         if (sevenTvEmoteIds is null || sevenTvEmoteIds.Count == 0)

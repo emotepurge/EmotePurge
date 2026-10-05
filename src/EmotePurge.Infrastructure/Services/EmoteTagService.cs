@@ -19,9 +19,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// nothing on its own (two assignments of one emote each to a tag at 999 would both count 999 and both
 /// commit 1001), while behind the lock the second caller counts what the first committed. It is also
 /// the ordering contract part C of #201 builds on: its reports read entries under the same lock, so a
-/// removal can never overtake one half-way. The sync updates the channel row without a lock and writes
-/// no tag table, so the order is always channel row first, tag tables second — no cycle. Reads take no
-/// lock.
+/// removal can never overtake one half-way. The sync updates the channel row without an explicit lock and
+/// writes no tag table, so the order is always channel row first, tag tables second — no cycle. Reads
+/// take no lock.
 /// </para>
 /// <para>
 /// <b>Read-time rule.</b> The sync never deletes a placement; it records leave observations. Whether a
@@ -450,7 +450,9 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         })
         {
             // The same id registered at the same moment in another channel, whose lock does not order
-            // the two. That registration is for another tag, so this one is a conflict.
+            // the two. That registration is for another tag, so this one is a conflict. The failed
+            // entity stays tracked otherwise; clear it so the request context holds nothing stale.
+            db.ChangeTracker.Clear();
             return new TagOperationRegistrationResult(TagOperationRegistrationStatus.Conflict, null);
         }
 
@@ -463,11 +465,15 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
     {
         ArgumentNullException.ThrowIfNull(report);
         ArgumentNullException.ThrowIfNull(actor);
+        // Check(null) answers Empty, which is legal for a report, so a null list must be refused here.
+        ArgumentNullException.ThrowIfNull(report.SevenTvEmoteIds);
         var ids = DistinctOrdinal(report.SevenTvEmoteIds);
 
-        // Lock order (spec 5.5 rule 6): the channel row first, then only tag tables are written and
-        // leave observations read. The sync writes observations without this lock and no tag table,
-        // so it can wait for a report but never the other way round.
+        // Lock order (spec 5.5 rule 6): the channel row first, then tag tables (plus the audit row)
+        // are written and leave observations read. Either side can wait for the other — the sync for
+        // the channel row a report holds, the report for an observation row the sync holds — but the
+        // report waits only for its first lock, while holding nothing, and neither transaction does
+        // network I/O. So there is no cycle and the waits last milliseconds.
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var (status, channel, tag) = await LoadForMutationAsync(channelName, tagId, cancellationToken);
         if (status != EmoteTagMutationStatus.Ok)

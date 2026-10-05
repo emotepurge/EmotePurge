@@ -198,7 +198,7 @@ defaults, so every construction site had to name the new values.
 
 `IEmoteTagService` gains `RegisterOperationAsync` and `ReportPlacementsAsync` (the handlers follow
 in Task 6). Both run in one transaction that takes the channel row `FOR UPDATE` first, writes only tag
-tables and reads leave observations — the lock order of spec 5.5 rule 6.
+tables (plus the audit row) and reads leave observations — the lock order of spec 5.5 rule 6.
 
 - **Registration before the run (E27).** The browser registers each run's operation id with its kind
   and frozen set id before it writes to 7TV; the server stamps `RegisteredAtUtc` from its own clock,
@@ -226,8 +226,8 @@ tables and reads leave observations — the lock order of spec 5.5 rule 6.
   lock — an update of an existing observation row commits in parallel; a first observation waits on
   the channel lock through its foreign-key check and commits right after — is not seen by the
   report, which commits the placement; every read after both commits applies the rule against the
-  placement's anchor and does not count it. Both orders end with no valid placement, without a lock
-  in the sync.
+  placement's anchor and does not count it. Both orders end with no valid placement, without an explicit
+  lock in the sync.
 - **One id-list rule, moved to Core (`EmoteTagIdList.Check`).** At most
   `EmoteTagLimits.MaxIdsPerRequest` raw ids, each in the `SevenTvEmoteIdValidation` format; `Empty` is
   its own verdict because an empty list is malformed for tagging but legal in a report. The service's
@@ -308,7 +308,8 @@ what enforces both limits: under READ COMMITTED a count before an insert does no
 assignments of one emote each to a tag at 999 entries would both count 999 and commit 1001). It is
 also the ordering contract the later placement reports build on, which is why removing entries takes
 it too although no limit needs it there. Lock order is channel row first, tag tables second; the sync
-writes no tag table, so no cycle. Two-contender tests in `EmoteTagServiceTests` pin all of this.
+writes no tag table, so no cycle (either side can wait for the other, but the report waits only for
+its first lock while holding nothing, and neither does network I/O). Two-contender tests in `EmoteTagServiceTests` pin all of this.
 Assigning is partial success by design: ids without an unarchived row are skipped and reported, ids
 already tagged are counted, the rest is written with alias and image taken from the row, never from
 the client; the 1000-entry limit is checked against what would actually be written, before anything

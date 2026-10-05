@@ -1167,6 +1167,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         var result = await ReportAsync("tagrepappliedconflict", tag.Id, operationId, OtherSetId);
 
         Assert.Equal((TagReportStatus.OperationConflict, false), (result.Status, result.Replayed));
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
     }
 
     [Fact]
@@ -1362,6 +1363,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
             (root.GetProperty("tagId").GetInt64(), root.GetProperty("emoteSetId").GetString(),
                 root.GetProperty("operationId").GetGuid(), root.GetProperty("emoteCount").GetInt32()));
         Assert.DoesNotContain("secret", entry.DetailsJson, StringComparison.OrdinalIgnoreCase);
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
     }
 
     // Counterexample 4: a repeated play-in report must not lay placements down again — the repeat is
