@@ -1410,3 +1410,17 @@ Trockenlauf-Zähler für Tags (13.0).
    Zahl ist eine Konstante im Sync (`TagLeaveCredibilityWindow`), kein Konfigurationswert — eine
    Konfiguration würde einladen, R1 unbemerkt zu vergrößern. **Empfehlung:** 30 min; nach dem ersten
    Betriebsmonat gegen das bestehende Lag-Log (`:765-773`) nachmessen.
+
+### 13.5 Nachtrag vom Plan T-C (2026-10-05)
+
+Kein Umschreiben des Spec-Texts; eine Zeile je Punkt, die Spec und Plan lesbar nebeneinander hält.
+
+- **5.3:** Vom Plan T-C am 2026-10-05 überholt: Kein FK Platzierung → Eintrag (5.3); die Platzierung hat einen zusammengesetzten FK auf den Eintrag mit Cascade — Begründung in docs/DECISIONS.md (#201 T-C).
+- **3.1, 12.4:** Vom Plan T-C am 2026-10-05 überholt: Der Sync nimmt je Speicherversuch eine explizite Transaktion; ein Upsert je `PulledId` (nicht je archivierter Zeile) plus eine Beobachtungslesung je REST-Takt für die Nachbetrachtung — Begründung in docs/DECISIONS.md (#201 T-C).
+- **5.3, 5.4:** Vom Plan T-C am 2026-10-05 ergänzt: Alle T-C-Id-Spalten sind `varchar(32)`, Set-Ids eingeschlossen (statt 24; F1) — Begründung in docs/DECISIONS.md (#201 T-C).
+- **5.3, 5.5:** Vom Plan T-C am 2026-10-05 ergänzt: Die Platzierung trägt eine eigene `RegisteredAtUtc` als Gültigkeitsanker (Registrierungszeit der Operation, die sie zuletzt schrieb; bei Übertragung die der Entfernen-Operation); `OperationId` ist nur Herkunft/Revision (F30) — Begründung in docs/DECISIONS.md (#201 T-C).
+- **5.5:** Vom Plan T-C am 2026-10-05 ergänzt: Eine abgelaufene Zielzeile gilt bei der Übertragung als nicht vorhanden und wird umgeschrieben — Begründung in docs/DECISIONS.md (#201 T-C).
+- **13.1:** Vom Plan T-C am 2026-10-05 ergänzt, neben R1: Die Nachbetrachtung vergleicht gegen den einen `LastEnteredSetAtUtc` der Zeile, egal in welches Set sie eintrat; ein Einspielen in ein frisch gewechseltes Set mit verpasstem PUSH und veraltetem REST-Cache kann seine Platzierung binnen eines Taktes verlieren (eine Platzierung zu wenig, nie zu viel; F28) — Begründung in docs/DECISIONS.md (#201 T-C).
+- **9.6:** Vom Plan T-C am 2026-10-05 überholt: Die Tags-Seite lädt bei `channel.synced` für ihren Kanal neu (Set-Status, Tags, Einträge) — schließt T-B-Codex C2 (F3) — Begründung in docs/DECISIONS.md (#201 T-C).
+- **7.2/7:** Vom Plan T-C am 2026-10-05 überholt: Die Bestätigungskette des Ausräumens ist die des Delete-Flows (Arbiter-Anspruch plus Token-Prüfung, ohne `noteRefusedStart('delete')`), nicht der Wortlaut „Arbiter-Anspruch → `noteRefusedStart('delete')`“ (F4) — Begründung in docs/DECISIONS.md (#201 T-C).
+- **9.4:** Vom Plan T-C am 2026-10-05 ergänzt: Die Kopfzeile der Tags-Seite (Einspielen · Ausräumen · Umbenennen · [Lücke] · Löschen) ist eine benannte Ausnahme in UI-Designsprache §8.7: das Laufpaar kommt aus einer Komponente, das unumkehrbare Löschen bleibt nach der Lücke zuletzt (F39) — Begründung in docs/DECISIONS.md (#201 T-C).
