@@ -10,6 +10,7 @@ import {
   effect,
   inject,
   input,
+  linkedSignal,
   signal,
   untracked,
   viewChild,
@@ -1115,7 +1116,13 @@ export class UsageStatsPage {
   // left for it to call. What used to be pruned here now only shows up as selection.hiddenSelectedCount().
   protected readonly usageFilter = new EmoteUsageFilter<EmoteUsageTotal>();
 
-  protected readonly filteredEmotes = computed(() => this.usageFilter.apply(this.emotes()));
+  /** The rows the filters let through — none while a chosen tag's keys are still on their way
+   *  (`tagFilterPending`): the filter would let every row through for that window, and everything
+   *  built on this list (the grid, mark-all, "Übertragen", the export, the count line) would act
+   *  on the whole set for a tag that may hold nothing. */
+  protected readonly filteredEmotes = computed(() =>
+    this.tagFilterPending() ? [] : this.usageFilter.apply(this.emotes()),
+  );
 
   /**
    * Every row that has a count under the shown set — the only rows bands, sort, sums, the Pareto
@@ -1374,11 +1381,13 @@ export class UsageStatsPage {
 
   /**
    * The chosen tag's keys are on their way: the filter lets every row through until they land
-   * (`EmoteUsageFilter.apply`), so for that window `filteredEmotes()`/`atlasOrder()` still describe
-   * the UNFILTERED list. Everything derived from it (the grid, the mark-all button, the curve) must
-   * wait instead of flashing — a tag without emotes would otherwise offer "alle markieren" over the
-   * whole set for a moment. Not pending when the load failed (the filter then deliberately lets
-   * every row through, and the error banner says so) nor when no tag list can name the tag.
+   * (`EmoteUsageFilter.apply`), so for that window the unfiltered list would stand in for the tag's.
+   * `filteredEmotes()` is therefore empty meanwhile, and everything derived from it (the grid, the
+   * mark-all button, "Übertragen", the export, the count line) waits instead of flashing — a tag
+   * without emotes would otherwise offer "alle markieren" over the whole set for a moment. The
+   * sheet shows its skeleton for the window. Not pending when the load failed (the filter then
+   * deliberately lets every row through, and the error banner says so) nor when no tag list can
+   * name the tag.
    */
   protected readonly tagFilterPending = computed(
     () =>
@@ -1493,17 +1502,37 @@ export class UsageStatsPage {
    */
   // Held by 7TV id, like the selection (7.2).
   private readonly inspectedId = signal<string | null>(null);
-  protected readonly inspected = computed(() => {
-    // A failed switch keeps the previous set's rows loaded but not on screen (`setSwitchFailed`) —
-    // the sidecar must not go on describing one of them either.
-    if (this.setSwitchFailed()) {
-      return null;
-    }
-    const order = this.atlasOrder();
-    const id = this.inspectedId();
-    return (
-      (id ? order.find((emote) => emote.sevenTvEmoteId === id) : undefined) ?? order[0] ?? null
-    );
+  protected readonly inspected = linkedSignal<
+    {
+      failed: boolean;
+      pending: boolean;
+      order: readonly EmoteUsageTotal[];
+      id: string | null;
+    },
+    EmoteUsageTotal | null
+  >({
+    source: () => ({
+      failed: this.setSwitchFailed(),
+      pending: this.tagFilterPending(),
+      order: this.atlasOrder(),
+      id: this.inspectedId(),
+    }),
+    computation: ({ failed, pending, order, id }, previous) => {
+      // A failed switch keeps the previous set's rows loaded but not on screen (`setSwitchFailed`)
+      // — the sidecar must not go on describing one of them either.
+      if (failed) {
+        return null;
+      }
+      // While a chosen tag's emotes load the view is empty on purpose (`filteredEmotes`). The
+      // sidecar and the inspector line keep what they showed, so neither the sidecar column nor
+      // the sticky bar collapses for one request and comes back (no layout jump).
+      if (pending) {
+        return previous?.value ?? null;
+      }
+      return (
+        (id ? order.find((emote) => emote.sevenTvEmoteId === id) : undefined) ?? order[0] ?? null
+      );
+    },
   });
 
   protected readonly inspectedRank = computed(() => {
@@ -1978,11 +2007,7 @@ export class UsageStatsPage {
    *  query until `loadTotals()`'s response lands (see that method's own comment) — which is exactly
    *  the state this excludes. */
   protected readonly sheetShowsRows = computed(
-    () =>
-      !this.viewLoading() &&
-      !this.tagFilterPending() &&
-      !this.isAwaitingSync() &&
-      this.atlasOrder().length > 0,
+    () => !this.viewLoading() && !this.isAwaitingSync() && this.atlasOrder().length > 0,
   );
 
   /** Whether the toolbar's mark-all control exists at all — a fine pointer (no write path off a
@@ -2033,13 +2058,28 @@ export class UsageStatsPage {
   );
 
   /** Wording for the dock's hidden-by-filter secondary line (Konzept "Auswahl überlebt Suche und
-   *  Filter" 2.2) — only ever read from the template behind `selection.hiddenSelectedCount() > 0`,
+   *  Filter" 2.2) — only ever read from the template behind `shownHiddenSelectedCount() > 0`,
    *  so the "no permanent control" rule (Frontend-Zurückhaltung) lives in the `@if`, not here.
    *  The key comes from the same helper the announcer uses, so the shown and the spoken sentence
    *  cannot drift apart. */
   protected readonly hiddenSelectedFilterKey = computed(() =>
-    hiddenByFilterNoticeKey(this.selection.hiddenSelectedCount()),
+    hiddenByFilterNoticeKey(this.shownHiddenSelectedCount()),
   );
+
+  /** `selection.hiddenSelectedCount()` as the dock shows and speaks it: held at its last value while
+   *  a chosen tag's emotes load. The view is empty for that window on purpose (`filteredEmotes`),
+   *  which would read every marked emote as hidden for one request — a dock line that would come
+   *  and go (a layout jump) and be spoken. */
+  protected readonly shownHiddenSelectedCount = linkedSignal<
+    { pending: boolean; count: number },
+    number
+  >({
+    source: () => ({
+      pending: this.tagFilterPending(),
+      count: this.selection.hiddenSelectedCount(),
+    }),
+    computation: ({ pending, count }, previous) => (pending ? (previous?.value ?? 0) : count),
+  });
 
   /**
    * The same number again, but 0 whenever the dock's hidden-by-filter line is not on screen —
@@ -2050,9 +2090,7 @@ export class UsageStatsPage {
    * implied by an active set plus a non-zero marked count and is therefore not repeated here.
    */
   protected readonly dockHiddenSelectedCount = computed(() =>
-    !this.isCoarse() && this.selectedEmoteSetId() !== null
-      ? this.selection.hiddenSelectedCount()
-      : 0,
+    !this.isCoarse() && this.selectedEmoteSetId() !== null ? this.shownHiddenSelectedCount() : 0,
   );
 
   /**

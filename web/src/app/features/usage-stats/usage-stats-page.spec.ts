@@ -6513,8 +6513,8 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
 
     component['onTagFilterChange']('4');
     expect(component['usageFilter'].tagId()).toBe(4);
-    // Keys not loaded yet: nothing is hidden meanwhile.
-    expect(component['filteredEmotes']()).toHaveLength(3);
+    // Keys not loaded yet: the view holds nothing meanwhile, never the whole set (tagFilterPending).
+    expect(component['filteredEmotes']()).toHaveLength(0);
     await settle();
     flushEntries(4, ['7tv-a', '7tv-c']);
     await settle();
@@ -6744,16 +6744,23 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(tagListRequests()).toHaveLength(1);
   });
 
-  it("while a chosen tag's emotes are loading, mark-all is not offered and the skeleton stands in for the unfiltered grid", async () => {
+  it("while a chosen tag's emotes are loading, nothing acts on the unfiltered list: no mark-all, no transfer or export of the set, no count of it", async () => {
     await open({ tags: [tag(4, 'Stronghold')] });
     expect(component['showMarkAll']()).toBe(true);
     expect(component['tagFilterPending']()).toBe(false);
+    expect(component['transferButtonDisabled']()).toBe(false);
+    expect(component['exportButtonDisabled']()).toBe(false);
 
     component['onTagFilterChange']('4');
     await settle();
-    // Keys in flight: the filter lets everything through, the page must not act on that.
+    // Keys in flight: the filter would let everything through, the page must not act on that.
     expect(component['tagFilterPending']()).toBe(true);
     expect(component['showMarkAll']()).toBe(false);
+    expect(component['atlasOrder']()).toHaveLength(0);
+    // "Übertragen" pushes the visible grid and the export's default scope is it: neither may
+    // carry the whole set for a tag that may hold nothing.
+    expect(component['transferButtonDisabled']()).toBe(true);
+    expect(component['exportButtonDisabled']()).toBe(true);
 
     // A tag without emotes: it ends on the empty state, mark-all never came back in between.
     flushEntries(4, []);
@@ -6761,6 +6768,70 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['tagFilterPending']()).toBe(false);
     expect(component['atlasOrder']()).toHaveLength(0);
     expect(component['showMarkAll']()).toBe(false);
+  });
+
+  /** The default rows with an image each: the real template renders the sidecar's sprite. */
+  function withImages(): EmoteUsageTotalDto[] {
+    return [emote('a', 'PeepoA'), emote('b', 'PeepoB'), emote('c', 'PeepoC')].map((row) => ({
+      ...row,
+      imageUrl: `https://cdn.example/${row.sevenTvEmoteId}.webp`,
+    }));
+  }
+
+  it("keeps the count line quiet, the sidecar and the dock's hidden-by-filter count steady while a tag's emotes load", async () => {
+    await open({ tags: [tag(4, 'Stronghold')], realTemplate: true, totals: withImages() });
+    mark('7tv-a', '7tv-b');
+    fixture.detectChanges();
+    const inspectedBefore = component['inspected']();
+    expect(inspectedBefore).not.toBeNull();
+    expect(component['shownHiddenSelectedCount']()).toBe(0);
+    const countLine = () =>
+      Array.from(
+        fixture.nativeElement.querySelectorAll('p[role="status"]') as NodeListOf<HTMLElement>,
+      ).find((candidate) => candidate.textContent?.includes('emoteCount'));
+    expect(countLine()?.hasAttribute('aria-busy')).toBe(false);
+
+    component['onTagFilterChange']('4');
+    await settle();
+    expect(component['tagFilterPending']()).toBe(true);
+    // The empty view would read both marks as hidden for one request — not shown, not spoken.
+    expect(component['selection'].hiddenSelectedCount()).toBe(2);
+    expect(component['shownHiddenSelectedCount']()).toBe(0);
+    expect(component['dockHiddenSelectedCount']()).toBe(0);
+    // The sidecar keeps its emote, so its column does not collapse and come back.
+    expect(component['inspected']()).toBe(inspectedBefore);
+    // The count line announces the tag's count once it is known, not the window's "0 of 3".
+    expect(countLine()?.getAttribute('aria-busy')).toBe('true');
+
+    flushEntries(4, ['7tv-a']);
+    await settle();
+    expect(component['shownHiddenSelectedCount']()).toBe(1);
+    expect(component['inspected']()?.sevenTvEmoteId).toBe('7tv-a');
+    expect(countLine()?.hasAttribute('aria-busy')).toBe(false);
+  });
+
+  it("a failed set switch outranks a tag's pending emotes: its retry shows instead of the skeleton", async () => {
+    await open({ tags: [tag(4, 'Stronghold')], realTemplate: true, totals: withImages() });
+    component['onTagFilterChange']('4');
+    await settle();
+    expect(component['tagFilterPending']()).toBe(true);
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    httpMock
+      .match((r) => r.url === '/api/channels/a/usage-stats/totals')
+      .forEach((request) => request.flush({}, { status: 500, statusText: 'Error' }));
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    httpMock
+      .match((r) => LIVE_LIST_URL.test(r.url))
+      .forEach((request) => request.flush({}, { status: 500, statusText: 'Error' }));
+    await settle();
+
+    expect(component['setSwitchFailed']()).toBe(true);
+    expect(component['tagFilterPending']()).toBe(true);
+    const sheet = fixture.nativeElement as HTMLElement;
+    expect(sheet.querySelector('[aria-label="usageStats.loading"]')).toBeNull();
+    expect(sheet.textContent).toContain('usageStats.setView.loadFailedTitle');
   });
 
   it('a tag with emotes offers mark-all only once its keys narrowed the grid; "Alle Tags" is never pending', async () => {

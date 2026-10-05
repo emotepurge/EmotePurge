@@ -302,6 +302,7 @@
           'ml-auto whitespace-nowrap ' +
           (usageFilter.isAnyActive() ? 'font-medium text-accent-fg' : 'text-fg-muted')
         "
+        [attr.aria-busy]="tagFilterPending() ? 'true' : null"
       >
         {{ emoteCountKey() | transloco: { shown: atlasOrder().length, total: emotes().length } }}
       </p>
@@ -606,11 +607,11 @@
     <!-- The element the column count is measured against (see atlasColumns). It wraps every result
        state, so it exists from the first frame and the ResizeObserver never has nothing to watch. -->
     <div #sheet>
-      @if (viewLoading() || tagFilterPending()) {
+      @if (viewLoading() || (tagFilterPending() && !setSwitchFailed())) {
         <!-- Atlas-shaped skeleton (NN/g: skeleton for page loads); one status element carries the
            accessible loading text, the shimmer blocks are decorative. Also up while a chosen tag's
-           emotes are still loading (`tagFilterPending`): until they land the grid would show the
-           whole set, with a mark-all over it. -->
+           emotes are still loading (`tagFilterPending`, the view is empty meanwhile) — but a failed
+           set switch outranks that wait: its retry must stay reachable even if the entries hang. -->
         <div role="status" [attr.aria-label]="'usageStats.loading' | transloco">
           <div class="flex flex-wrap gap-1" aria-hidden="true">
             @for (cell of skeletonCells; track cell) {
@@ -1172,7 +1173,7 @@
              aria-hidden here, so it is not read twice. The button is NOT inside that aria-hidden
              span — hiding a focusable control is its own defect (axe aria-hidden-focus); it keeps
              the same label as the filter bar's own reset. -->
-        @if (selection.hiddenSelectedCount(); as hiddenSelectedCount) {
+        @if (shownHiddenSelectedCount(); as hiddenSelectedCount) {
           <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
             <span aria-hidden="true">
               {{ hiddenSelectedFilterKey() | transloco: { count: hiddenSelectedCount } }}

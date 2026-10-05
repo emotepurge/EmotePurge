@@ -62,7 +62,9 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
     const nameRegex = this.nameFilterRegex();
     const hideObserved = this.hideObserved();
     // A tag whose keys are not loaded yet lets everything through: filtering to empty meanwhile
-    // would flash the empty state on every tag switch.
+    // would flash the empty state on every tag switch. The usage page does not show that pass-through
+    // while the keys are merely on their way — it holds its view empty under a skeleton
+    // (`tagFilterPending`) — only once their load failed, under its error banner.
     const tagKeys = this.selectedTagId() === null ? null : this.selectedTagKeys();
     return items.filter((item) => {
       if (min !== null && (item.totalUseCount === null || item.totalUseCount < min)) return false;
