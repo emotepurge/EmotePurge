@@ -29,7 +29,7 @@ Legende: ✅ umgesetzt · 🟡 teilweise · ⬜ offen
 | **A5** Emote-Drilldown | ✅ 2026-08-02 | DECISIONS „Der Emote-Drilldown bekommt einen eigenen … Endpoint" |
 | **A6** Purge-Sicherheitsnetz | ✅ 2026-08-02 | DECISIONS „Restore läuft im Browser …" + „`Emote.ArchivedAt` wird geschrieben …" |
 | **A7** Kanal-Aktivitätsverlauf | ✅ 2026-08-02 | DECISIONS „Der Channel bekommt seinen eigenen Audit-Log" |
-| **A8** Resync für Channel-Manager | ✅ 2026-08-02 | DECISIONS „Resync als Self-Service" |
+| **A8** Resync für Channel-Manager | ✅ 2026-08-02, Button 2026-10-05 wieder entfernt | DECISIONS „Resync als Self-Service", überholt durch „Channel workspace: the user-facing resync button is removed, the endpoint stays" |
 | **A9** Globale Verbreitung | ⬜ | — |
 | **A10** Nutzung pro Live-Stunde | 🟡 2026-08-03 | Stufe 1 (Datenerfassung + Chart-Markierung) — DECISIONS „Live-Abdeckung pro Tag …"; Stufe 2 (umschaltbare Metrik) offen |
 | **A11** Duplikat-Erkennung | ⬜ | — |
@@ -276,7 +276,7 @@ Projektion wie im Admin-UI.
 
 ### A8 — Resync-Button für Channel-Manager
 
-**Status: ✅ umgesetzt am 2026-08-02.** `POST /api/channels/{c}/resync` hinter
+**Status: ✅ umgesetzt am 2026-08-02; der Button ist seit 2026-10-05 wieder entfernt** (der 60-s-Resync des Workers deckt den Fall ab, ein Klick liest denselben 7TV-Cache; der Endpoint bleibt für Import/Löschen/Undo/Restore und den Admin-Resync — s. DECISIONS „Channel workspace: the user-facing resync button is removed, the endpoint stays"). `POST /api/channels/{c}/resync` hinter
 `UsageStatsAccessAuthorizationFilter` — also wie hier gefordert **inklusive 7TV-Editoren**, im
 Gegensatz zum Aktivitätsverlauf (A7) direkt daneben. Der geforderte Missbrauchsschutz ist beides
 geworden: die neue Policy `ChannelResync` (5/min) **plus** `IChannelResyncCooldown`, ein

@@ -10,6 +10,25 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-05 — Channel workspace: the user-facing resync button is removed, the endpoint stays
+
+**Betrifft:** `web/src/app/features/channel-workspace/channel-workspace-layout.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` (`usageStats.autoSyncNote`) · `web/public/i18n/{de,en}.json` (`channelWorkspace.resync.*` removed) · `web/e2e/channel-workspace.e2e.spec.ts` · `docs/UI-Designsprache.md` · `docs/Feature-Ideen-2026-08-01.md` (A8)
+
+**Supersedes the button half of "Resync als Self-Service" (2026-08-02).** The "Neu synchronisieren" button in the channel workspace header is gone. `POST /api/channels/{channel}/resync`, the `UsageStatsAccessAuthorizationFilter`, the `ChannelResync` rate-limit policy and the per-channel cooldown are untouched: the import, delete, undo and restore flows still call the endpoint programmatically, and the admin resync in `/admin/channels` stays as the escape hatch. Audit rows (`channel.resync`) keep being written by those paths.
+
+**Why the button no longer earns its place:**
+
+- A join already runs a full 7TV sync, and the usage page says "Emote-Set wird geladen" until it lands. The audit log nevertheless regularly showed `channel.resync` right after `channel.join`: a click in that window does no harm (`ChannelSyncGate` serialises the two syncs) but costs a second 7TV REST fetch and a second `channel.synced` fan-out to every open page, and the person learns nothing new.
+- The worker resyncs every active channel every 60 s (`SevenTv:ResyncIntervalSeconds`, `SevenTvPeriodicResyncWorker`), so a click saved at most a minute.
+- The usual reason a new emote "does not show" is 7TV's REST cache, which can be 10-30 min stale. A click reads the same cache as the periodic resync, so clicking and seeing nothing change was the confusing outcome, not a fix.
+- After a failed sync (`LastSyncFailureReason`) the next periodic tick retries on its own.
+
+**What replaces it:** one quiet caption (`text-xs text-fg-muted`) under the slot-budget bar on the usage page, inside the same `@if (setStatus())` as the bar so both arrive in one frame: "Wird regelmäßig automatisch mit 7TV abgeglichen. Neue Emotes können bei 7TV bis zu 30 Minuten verzögert ankommen." The wording says "regelmäßig", not "jede Minute", on purpose: the 60 s is a configurable default that operators are expected to stretch once the EventAPI path has proven itself (see the comment in `SevenTvPeriodicResyncWorker`).
+
+**Consequence for the live stream:** the layout no longer subscribes to `channel.synced`; the transient "queued / finished" acknowledgement existed only for the button. The programmatic flows keep their own dock notices (`DockOutcomeAnnouncer`).
+
+---
+
 ### 2026-10-03 — Harness: the run mode is recorded in the .jsonl header and checked on every existing file
 
 **Betrifft:** `src/EmotePurge.Worker/Harness/HarnessReportFile.cs` ·
@@ -8449,6 +8468,8 @@ Betrieblich relevant für alle Anleitungen mit `<VPS-USER>`-Platzhaltern (Prod-M
 ---
 
 ### 2026-08-02 — Resync als Self-Service: der weitere Filter, ein Per-Channel-Cooldown und eine achtmal strengere Policy
+
+> **Teilweise überholt am 2026-10-05:** Der Button im Channel-Workspace ist wieder entfernt (s. „Channel workspace: the user-facing resync button is removed, the endpoint stays“); Endpoint, Filter, Cooldown und Policy gelten unverändert.
 
 **Betrifft:** `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Program.cs` (Policy `ChannelResync`) · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `src/EmotePurge.Core/Services/IChannelResyncCooldown.cs` (neu) · `src/EmotePurge.Infrastructure/Redis/ChannelResyncCooldown.cs` (neu) · `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` (Kommentar) · `web/src/app/core/i18n/api-error.ts` · beide Locale-Dateien
 

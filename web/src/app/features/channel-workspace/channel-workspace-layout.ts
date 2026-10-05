@@ -1,13 +1,11 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, effect, inject, input, signal } from '@angular/core';
+import { Component, effect, inject, input, signal } from '@angular/core';
 import { Router, RouterOutlet } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { ChannelService } from '../../core/channels/channel.service';
 import { apiErrorTranslationKey } from '../../core/i18n/api-error';
-import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
-import { liveEvents } from '../../core/live/live-reload';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { BackLink } from '../../shared/ui/back-link';
@@ -15,9 +13,6 @@ import { Button } from '../../shared/ui/button';
 import { ConfirmDialogData, openConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { TabLink } from '../../shared/ui/tab-link';
-
-/** Long enough to read, short enough that a stale "queued" never lingers on screen. */
-const RESYNC_FEEDBACK_MS = 4000;
 
 @Component({
   selector: 'app-channel-workspace-layout',
@@ -36,34 +31,6 @@ const RESYNC_FEEDBACK_MS = 4000;
         <!-- One wrapper carries the ml-auto, not each button: with it on two siblings they would be
              pushed to opposite ends and collide with the title's order-last/md:flex-1 contract. -->
         <div class="ml-auto flex flex-wrap items-center gap-2">
-          <!-- A role="status" region that enters the DOM together with its content announces
-               nothing to most screen reader/browser pairings — only a mutation *inside* an
-               already-mounted region is announced. So the sr-only region below is permanent and
-               only its text comes and goes; the visible twin stays an @if (it must not occupy
-               layout space when there is nothing to say) and is aria-hidden so the message is not
-               spoken twice — once from the live region, once from the visible text a screen
-               reader would otherwise also read. Same split as usage-stats-page.html's
-               selection-pruned notice and app-shell.ts's live-quota announcement
-               (docs/UI-Designsprache.md §4.5). -->
-          <span role="status" class="sr-only">
-            @if (resyncFeedbackKey(); as key) {
-              {{ key | transloco }}
-            }
-          </span>
-          @if (resyncFeedbackKey(); as key) {
-            <span aria-hidden="true" class="text-sm text-fg-muted">{{ key | transloco }}</span>
-          }
-          @if (canViewUsageStats() && isBotActive()) {
-            <button
-              type="button"
-              appButton="outline"
-              [disabled]="resyncInProgress()"
-              (click)="resync()"
-              [title]="'channelWorkspace.resync.title' | transloco"
-            >
-              {{ 'channelWorkspace.resync.label' | transloco }}
-            </button>
-          }
           @if (canManage()) {
             @if (isBotActive()) {
               <button type="button" appButton="danger" (click)="leave()">
@@ -141,12 +108,7 @@ export class ChannelWorkspaceLayout {
   protected readonly isBotActive = signal(true);
   protected readonly rejoinInProgress = signal(false);
 
-  protected readonly resyncInProgress = signal(false);
-  protected readonly resyncFeedbackKey = signal<string | null>(null);
-
   protected readonly errorMessage = signal<string | null>(null);
-
-  private feedbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     effect(() => {
@@ -155,36 +117,6 @@ export class ChannelWorkspaceLayout {
       this.deleteService.resetIfChannelChanged(channelName);
       this.restoreService.resetIfChannelChanged(channelName);
       this.loadPermissions(channelName);
-    });
-
-    // The 202 only means "the worker was told". This is what turns "angestoßen" into
-    // "abgeschlossen": the RESYNC path publishes channel.synced unconditionally, unlike the
-    // periodic one, precisely so this confirmation can exist. The stream is already scoped to this
-    // channel, so no event needs inspecting beyond its type — but the upgrade only fires while a
-    // resync of ours is still on screen, otherwise the periodic sync of any channel would announce
-    // itself.
-    //
-    // liveEvents, undebounced, on purpose (see the two regression tests in
-    // channel-workspace.e2e.spec.ts): a channel.synced that arrived before the click (the periodic
-    // resync, say) must not sit in a debounce window and fire after resyncFeedbackKey was set by the
-    // click, reporting "abgeschlossen" for a resync that had barely started. And during a dense burst
-    // (7TV mass delete, ~275 ms apart) a debounce window never elapses at all, so a resync started
-    // mid-burst would show "angestoßen" and then lose the confirmation entirely once
-    // RESYNC_FEEDBACK_MS cleared it. This handler only sets a signal — it makes no HTTP request — so
-    // none of that debouncing applies to it, unlike usage-stats-page.ts's own reload of this same
-    // channel's live stream for its totals/set-status refetch.
-    //
-    // This costs nothing extra: since 5f4cd14 ("share one live sse connection per url")
-    // LiveUpdateService.stream() is shared and ref-counted per URL, so this subscription and
-    // usage-stats-page.ts's separate one against the same channelLiveUrl share one EventSource
-    // rather than opening two.
-    liveEvents(
-      computed(() => channelLiveUrl(this.channelName())),
-      [LIVE_EVENT_TYPES.channelSynced],
-    ).subscribe(() => {
-      if (this.resyncFeedbackKey() !== null) {
-        this.showResyncFeedback('channelWorkspace.resync.completed');
-      }
     });
   }
 
@@ -230,7 +162,7 @@ export class ChannelWorkspaceLayout {
         // 403 keeps its own copy (same wording as leave(), unusual for a rejoin but pre-existing);
         // everything else — including a 409 channel_capacity_reached — goes through the generic
         // mapping instead of the single hardcoded "could not reactivate" this used to fall back to,
-        // the same pattern resync() below already follows.
+        // the same generic mapping the other channel actions use.
         this.errorMessage.set(
           error.status === 403
             ? 'channelWorkspace.errors.leaveForbidden'
@@ -238,40 +170,6 @@ export class ChannelWorkspaceLayout {
         );
       },
     });
-  }
-
-  /**
-   * The answer to "I added an emote and it is not showing up". No confirmation: it is
-   * non-destructive and only asks the worker to re-read from 7TV.
-   *
-   * The server keeps a per-channel cooldown, so a second click within the window answers 429 with
-   * `resync_cooldown_active` — rendered like any other API error rather than hidden, because "wait
-   * a moment" is the useful answer there.
-   */
-  protected resync(): void {
-    this.resyncInProgress.set(true);
-    this.errorMessage.set(null);
-
-    this.channelService.resync(this.channelName()).subscribe({
-      next: () => {
-        this.resyncInProgress.set(false);
-        this.showResyncFeedback('channelWorkspace.resync.queued');
-      },
-      error: (error: HttpErrorResponse) => {
-        this.resyncInProgress.set(false);
-        this.errorMessage.set(apiErrorTranslationKey(error));
-      },
-    });
-  }
-
-  // A transient inline status rather than a toast — there is no toast service, and the admin
-  // channel page solves the same problem the same way.
-  private showResyncFeedback(key: string): void {
-    this.resyncFeedbackKey.set(key);
-    if (this.feedbackTimeout !== null) {
-      clearTimeout(this.feedbackTimeout);
-    }
-    this.feedbackTimeout = setTimeout(() => this.resyncFeedbackKey.set(null), RESYNC_FEEDBACK_MS);
   }
 
   private loadPermissions(channelName: string): void {

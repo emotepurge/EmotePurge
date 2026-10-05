@@ -1796,7 +1796,7 @@ export class UsageStatsPage {
   }
 
   // A transient inline status rather than a toast — there is no toast service (see
-  // channel-workspace-layout's showResyncFeedback and admin-channels-page's counterpart, the two
+  // admin-channels-page's showResyncFeedback and this one, the two
   // existing instances of this exact pattern). Placed at the emote-count line rather than the dock,
   // because the dock unmounts the moment the selection it is bound to reaches zero — precisely the
   // case where every selected emote turned out to be gone (#94).
