@@ -57,7 +57,7 @@ export type ImportTargetSelection =
       emoteSetId: string;
     };
 
-/** Same fallback shape `mass-delete-panel.ts` uses when its own set-warning check fails — a
+/** Same fallback shape `delete-flow.ts` uses when its own set-warning check fails — a
  *  failed check must read as "not verified", never as a false all-clear or a false alarm. Also
  *  what an *untracked* target's warning always is (spec 8.6): there is no channel to run
  *  `EmoteSetOwnershipService` against at all, so "not checked" is not a fallback there, it is the

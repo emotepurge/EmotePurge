@@ -6,23 +6,25 @@ import { map, Observable, of } from 'rxjs';
 
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
-import { ConfirmDialogData, openConfirmDialog } from '../../shared/ui/confirm-dialog';
+import { ConfirmDialogData, openConfirmDialog } from '../ui/confirm-dialog';
 
 /**
- * Asks before leaving the usage-stats page while an import run (K3, #72) or a replace undo (#254,
- * spec 6.5) is still going. Either run lives in its root-provided service, so it keeps going in the
- * background regardless of the answer here — this guard never cancels or resets anything, it only
- * asks. Fires only while one of them `isRunning()`; every other navigation away from the page
- * passes through immediately, with no dialog and no delay (R11). A run that has stopped running but
- * still settles or reports is not asked about here — the arbiter's unload guard covers the tab, and
- * the run completes on its own record wherever the user goes (#256).
+ * Asks before leaving a page that hosts the 7TV run dock (the usage-stats page, and from #201 T-C
+ * the tags page) while an import run (K3, #72) or a replace undo (#254, spec 6.5) is still going.
+ * Either run lives in its root-provided service, so it keeps going in the background regardless of
+ * the answer here — this guard never cancels or resets anything, it only asks. Fires only while one
+ * of them `isRunning()`; every other navigation away from the page passes through immediately, with
+ * no dialog and no delay (R11). A run that has stopped running but still settles or reports is not
+ * asked about here — the arbiter's unload guard covers the tab, and the run completes on its own
+ * record wherever the user goes (#256).
  *
  * Each run asks in its own words (`import.leaveWhileRunning.*`, `undo.leaveWhileRunning.*`). Both
  * running at once is not a product case (the arbiter starts one run at a time); should it happen,
  * the import's wording wins (plan #254, Festlegung 8).
  *
- * Referenced only from `usage-stats.routes.ts`, a lazily loaded file — which keeps both services
- * and their engines out of the initial bundle (#264, #254 F9).
+ * Referenced only from lazily loaded route files (`usage-stats.routes.ts`; T-C also sets it in
+ * `tags.routes.ts`) — which keeps both services and their engines out of the initial bundle (#264,
+ * #254 F9).
  *
  * A pure channel switch (`/channels/a/usage-stats` -> `/channels/b/usage-stats`) is exempt even
  * while a run is active: `paramsInheritanceStrategy: 'always'` plus the default
@@ -34,10 +36,14 @@ import { ConfirmDialogData, openConfirmDialog } from '../../shared/ui/confirm-di
  * reference is stable per route definition regardless of which segment holds the channel name, so
  * this makes no assumption about the concrete path string.
  *
- * `closed` resolves to `undefined` on Escape/backdrop dismissal, same as every other confirm
- * dialog in the app — only an explicit `true` lets the navigation through.
+ * It deliberately does not ask about delete or restore runs (it reads neither the arbiter nor those
+ * services): the arbiter's unload guard covers the tab. That is the current behaviour, unchanged by
+ * the move out of `features/usage-stats/` (#201 T-A).
+ *
+ * `closed` resolves to `undefined` on Escape/backdrop dismissal, same as every other confirm dialog
+ * in the app — only an explicit `true` lets the navigation through.
  */
-export const usageStatsLeaveGuard: CanDeactivateFn<unknown> = (
+export const sevenTvRunLeaveGuard: CanDeactivateFn<unknown> = (
   _component,
   currentRoute,
   _currentState,

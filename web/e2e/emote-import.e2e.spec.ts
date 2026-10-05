@@ -1988,7 +1988,7 @@ test.describe('running import: channel switch', () => {
   // navigation, not a reload.
   //
   // What this does NOT establish (see the final report): whether the leave guard's `leadsToSameRoute`
-  // exemption (usage-stats-leave.guard.ts) is reachable while `isRunning()` is still true. The one
+  // exemption (seven-tv-run-leave.guard.ts) is reachable while `isRunning()` is still true. The one
   // link that goes from one channel's usage-stats page straight to another's
   // (`app-import-progress-section`'s "Zielkanal öffnen") only renders once the run has settled
   // (`run-progress-panel.ts`: the run-actions slot is gated on `!isRunning()`), so by the time it is
@@ -2402,7 +2402,7 @@ test.describe('running import: the wait before the start (#280)', () => {
 
 test.describe('running import: leaving the page', () => {
   /**
-   * The half of R11 that asks (`usageStatsLeaveGuard`). Its exemption for a pure channel switch has
+   * The half of R11 that asks (`sevenTvRunLeaveGuard`). Its exemption for a pure channel switch has
    * no reachable trigger in the browser (see the channel-switch test above), but the branch that
    * *asks* has one: any navigation to a different KIND of page while the run is still going — here
    * the workspace's own "Votings" tab, which is a different route definition and therefore not the

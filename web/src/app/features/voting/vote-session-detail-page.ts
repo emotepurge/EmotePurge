@@ -318,9 +318,9 @@ export class VoteSessionDetailPage {
    * selectability the same way they always have), which is why this never fetches for one. That
    * does **not** mean a null-session's delete goes unchecked, though: the mass-delete panel's own
    * `readLiveAliasesFromSet` (bound unconditionally below, K6-K7 fix round #227) still reads the
-   * panel's target set live at confirm time for every session kind and fails the whole run closed if
-   * a confirmed row turns out missing there (`MassDeletePanel.startDelete`) — this resource is the
-   * earlier, page-level half of the fix, not the only one.
+   * panel's target set live at confirm time for every session kind and fails the whole run closed
+   * if a confirmed row turns out missing there (`startDelete` in `delete-flow.ts`) — this resource
+   * is the earlier, page-level half of the fix, not the only one.
    */
   private sessionSetMembersRefreshRequested = false;
   private readonly sessionSetMembersResource = rxResource({

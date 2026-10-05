@@ -2,7 +2,7 @@
  * Issue #264 split `usage-stats` out of app.routes.ts into its own lazy `loadChildren` module (this
  * file's sibling, usage-stats.routes.ts) purely to shrink the initial bundle — the leave-guard's
  * dependency on `SevenTvImportService` was pulling the whole import engine into every page load.
- * The issue's own stated risk is that `usageStatsLeaveGuard`'s `leadsToSameRoute` helper compares
+ * The issue's own stated risk is that `sevenTvRunLeaveGuard`'s `leadsToSameRoute` helper compares
  * `routeConfig` object identity, and reshaping the route into a child module changes the shape of
  * the objects Angular hands back — "it needs an explicit check, not just 'the build still
  * compiles'". This file is that check, in two parts:
@@ -18,7 +18,7 @@
  *   built by splicing the REAL `channels/:channelName` child routes (`usage-stats`, and the
  *   redirect that sends a bare channel URL to it) out of the actual `routes` export — not copied,
  *   the exact same objects, including the real `usageStatsAccessGuard` and the real
- *   `loadChildren`/`usageStatsLeaveGuard` chain underneath it. Only the parts these tests have no
+ *   `loadChildren`/`sevenTvRunLeaveGuard` chain underneath it. Only the parts these tests have no
  *   stake in (the app shell, the channel workspace layout, the vote-sessions page) are replaced
  *   with bare stand-ins, the same way legal-page.spec.ts and admin-users-page.spec.ts already stand
  *   routed pages up next to dummy siblings rather than mounting the whole app. `UsageStatsPage`

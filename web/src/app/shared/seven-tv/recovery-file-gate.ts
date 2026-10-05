@@ -1,7 +1,7 @@
 import { DestroyRef, Signal, WritableSignal, computed, linkedSignal, signal } from '@angular/core';
 import { Observable, Subscription, timeout } from 'rxjs';
 
-/** Same budget as the other live reads of a set before a destructive step (`mass-delete-panel.ts`,
+/** Same budget as the other live reads of a set before a destructive step (`delete-flow.ts`,
  *  `seven-tv-import.service.ts`). */
 export const LIVE_READ_TIMEOUT_MS = 20_000;
 

@@ -15,7 +15,7 @@ import { NoticeBanner } from '../ui/notice-banner';
  *
  *  The two name lists are live for a second reason, and it is load-bearing rather than incidental:
  *  a pushed reload can prune the host's selection while this dialog is open, and the last screen
- *  before an irreversible write must name what will actually be deleted. `MassDeletePanel` reads
+ *  before an irreversible write must name what will actually be deleted. `delete-flow.ts` reads
  *  the very same signals again, synchronously, in the `closed` callback (operator decision
  *  2026-09-22), so what the confirmation last showed and what the run deletes are the same list by
  *  construction. Whoever changes these two to plain values must move that snapshot with them. */
@@ -29,16 +29,16 @@ export interface DeleteConfirmDialogData {
   hiddenEmotes: Signal<string[]>;
   warning: Signal<EmoteSetWarning | null>;
   warningLoading: Signal<boolean>;
-  /** The set the run deletes from (spec #200, 8.8) — the page's *selected* set, not necessarily
-   *  the active one. Named here so the confirmation never leaves it to the reader to remember
-   *  which set the dropdown showed when the dialog opened. Falls back to the set id itself when
-   *  the host page's set list has not (or no longer) named it, the same convention every other
-   *  unnamed-set reader in this app uses. A plain value, not a signal: the panel reads it once,
-   *  right before opening the dialog — the very same read the panel freezes into the `frozenSetId`
-   *  it later compares its live `setId()` input against in `startDelete`. That comparison, not this
-   *  dialog changing under it, is what catches a set switch behind an open dialog: the panel aborts
-   *  visibly (`abortedByLock`) when the two disagree at confirm time, whether the switch is still in
-   *  progress (an active host lock) or has already settled (#200 K5 finding A). */
+  /** The set the run deletes from (spec #200, 8.8) — the page's *selected* set, not necessarily the
+   *  active one. Named here so the confirmation never leaves it to the reader to remember which set
+   *  the dropdown showed when the dialog opened. Falls back to the set id itself when the host
+   *  page's set list has not (or no longer) named it, the same convention every other unnamed-set
+   *  reader in this app uses. A plain value, not a signal: the flow reads it once, right before
+   *  opening the dialog — the very same read it freezes into the `frozenSetId` it later compares
+   *  the panel's live `setId()` against in `startDelete` (`delete-flow.ts`). That comparison, not
+   *  this dialog changing under it, is what catches a set switch behind an open dialog: the panel
+   *  aborts visibly (`abortedByLock`) when the two disagree at confirm time, whether the switch is
+   *  still in progress (an active host lock) or has already settled (#200 K5 finding A). */
   setName: string;
   /** Whether `setName` is the channel's currently active 7TV set — gates the "this set is not
    *  currently active" addition (spec 8.8). */

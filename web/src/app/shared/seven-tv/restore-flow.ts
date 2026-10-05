@@ -41,7 +41,7 @@ import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
  *
  * Produced by `resolveEditableSet` plus these two fields, in two places: `FileImportStep` for a
  * restore file (the set the file names, spec 6.1 — `ImportTrigger` passes it on unchanged) and
- * `MassDeletePanel`'s `openRestoreConfirm` for the finished delete run (E16).
+ * `DeleteProgressSection`'s `openRestoreConfirm` for the finished delete run (E16).
  */
 export interface ResolvedRestoreTarget {
   emoteSetId: string;
@@ -95,7 +95,7 @@ export interface RestoreFlowDeps {
    *  opens this flow — `ImportTrigger` is the only one today.
    *
    *  `ImportTrigger` passes its `SevenTvRestoreService.restorePreCheckPending` here, not a signal
-   *  of its own (#255 P2, Codex review): `MassDeletePanel`'s restore button runs the identical
+   *  of its own (#255 P2, Codex review): `DeleteProgressSection`'s restore button runs the identical
    *  pre-check chain through its own code path (it does not call this function) and mounts on the
    *  same page, so two component-local flags left the *other* entry's button enabled for the
    *  whole read — a click there could open a second confirmation stacked on this one. This
@@ -106,8 +106,8 @@ export interface RestoreFlowDeps {
    *  injection context of its own to pull one from (see the class doc on this interface), so every
    *  caller supplies its own via `inject(DestroyRef)`. Guards the open-time duplicate check's
    *  timeout-bounded read (`RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS`) the same way
-   *  `mass-delete-panel.ts`'s own reads already guard theirs, so a late answer after the caller is
-   *  gone cannot open a confirmation nobody can see or answer. */
+   *  `delete-progress-section.ts`'s own reads already guard theirs, so a late answer after the
+   *  caller is gone cannot open a confirmation nobody can see or answer. */
   destroyRef: DestroyRef;
 }
 
@@ -119,8 +119,8 @@ type RestoreFlowRow = RestoreQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
  * Confirms and starts one restore run: 7TV token → confirmation with a live slot preview → run.
  *
  * **The token prompt comes before the confirmation**, unlike the import flow, which asks only
- * after the confirmation (see the note on that in `startImportFlow`). Unchanged from the panel
- * this was extracted from: restoring an already-validated restore file has no read-only
+ * after the confirmation (see the note on that in `startImportFlow`). Unchanged from the chain
+ * `DeleteProgressSection` still runs: restoring an already-validated restore file has no read-only
  * preview step worth protecting the token prompt's ordering against — do not "align" this with
  * the import flow.
  *
@@ -170,7 +170,7 @@ export function startRestoreFlow(
     // slot preview above, and confirmed below for why the confirm-time check still runs again
     // fresh rather than reusing this result.
     //
-    // #255 P2a: bounded by the same timeout budget as the read `mass-delete-panel.ts`'s
+    // #255 P2a: bounded by the same timeout budget as the read `delete-progress-section.ts`'s
     // `resolveEditableSet` calls already guard, and dropped on teardown via `deps.destroyRef` —
     // `startRestoreFlow` has no injection context of its own, hence the caller-supplied ref. A
     // `timeout` error lands outside `loadRestoreConfirmPreview`'s own `catchError`, so it is
@@ -235,7 +235,7 @@ export function startRestoreFlow(
       // spend a 7TV request the "everything already there" outcome above then throws away
       // unread — this way it fires exactly once per flow, only when there is a confirmation for it
       // to populate. The read itself is the fork `loadRestoreSlotPreview` shares with
-      // `MassDeletePanel.openRestoreConfirmDialog` (spec 4.3, point 8 / spec 8.3, final fix wave
+      // `DeleteProgressSection.openRestoreConfirmDialog` (spec 4.3, point 8 / spec 8.3, final fix wave
       // A5) — same fork `loadImportTarget` also uses. Unrelated to the duplicate check above: this
       // one reads occupied/capacity counts, never entries.
       const slots = signal<RestoreSlotPreview>(null);
@@ -378,7 +378,7 @@ export function startRestoreFlow(
  *  DECISIONS.md, 2026-09-25, and the design doc's §18 addendum). An untracked target sends neither.
  *  `ownerOrChannelLabel` prefers the tracked
  *  channel, falling back to the owner's display name for an untracked target — display only
- *  (the dock's target line), never compared. Exported: `MassDeletePanel`'s own restore-confirm
+ *  (the dock's target line), never compared. Exported: `DeleteProgressSection`'s own restore-confirm
  *  chain (spec E16) needs the identical derivation and stays its own chain rather than folding
  *  into `startRestoreFlow` — its rows come from a finished delete run's `RunQueueItem`s, not from
  *  a file's `RestoreRow`s, so the two `filterAlreadyPresentForRestore`/`startRestore` call sites
