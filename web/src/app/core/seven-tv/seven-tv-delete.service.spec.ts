@@ -13,11 +13,13 @@ import {
   REPORT_TIMEOUT_MS,
   SevenTvDeleteService,
 } from './seven-tv-delete.service';
+import { TagRemovalResult } from '../tags/emote-tag.model';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import { flushApplied, flushWithoutResult } from './seven-tv-mutation.testing';
+import { DeleteTagContext } from './tag-run-settlement';
 
 // Only the keys this service actually translates — not the full app translation file.
 const DE_TRANSLATIONS = {
@@ -1779,6 +1781,197 @@ describe('SevenTvDeleteService', () => {
       vi.advanceTimersByTime(1);
 
       expect(service.confirmedRunPending()).toBe(true);
+    });
+  });
+
+  // #201 T-C: a tag removal reports a second time, to the tag's own endpoint.
+  describe('tag removal report', () => {
+    const TAG: DeleteTagContext = {
+      tagId: 7,
+      operationId: 'op-1',
+      activationOperationId: 'act-1',
+      snapshot: [
+        { sevenTvEmoteId: '7tv-1', placementOperationId: 'p-1' },
+        { sevenTvEmoteId: '7tv-2', placementOperationId: 'p-2' },
+        { sevenTvEmoteId: '7tv-9', placementOperationId: 'p-9' },
+      ],
+      checkedOwnIds: ['7tv-1', '7tv-2'],
+      uncheckedOwnIds: ['7tv-9'],
+      channelName: 'sensitron',
+    };
+    const REMOVED = '/api/channels/sensitron/tags/7/placements/removed';
+
+    function removalAnswer(overrides: Partial<TagRemovalResult> = {}): TagRemovalResult {
+      return {
+        replayed: false,
+        deletedCount: 0,
+        transferredCount: 0,
+        droppedCount: 0,
+        sweptCount: 0,
+        deactivated: true,
+        ...overrides,
+      };
+    }
+
+    /** Both rows of `EMOTES`: the first `REMOVE` is applied, the second ends as given. */
+    function runTwoRows(
+      second: 'applied' | 'failed' = 'applied',
+      tag: DeleteTagContext | null = TAG,
+    ) {
+      if (tag === null) {
+        service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', 'tw-owner');
+      } else {
+        service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', 'tw-owner', tag);
+      }
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      if (second === 'applied') {
+        flushApplied(httpMock.expectOne(GQL_ENDPOINT));
+      } else {
+        httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'emote not found' }] });
+      }
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+    }
+
+    function answerSync(): void {
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer({ reportedCount: 2 }));
+    }
+
+    it('stays idle without a tag, and the run closes without waiting for it', () => {
+      runTwoRows('applied', null);
+      answerSync();
+
+      expect(service.run()?.tag).toBeUndefined();
+      expect(service.tagRemovalReport()).toBe('idle');
+      expect(service.run()?.phase).toBe('closed');
+      httpMock.expectNone(REMOVED);
+    });
+
+    it('holds the run open while pending and closes it once the report succeeds', () => {
+      runTwoRows();
+      answerSync();
+
+      expect(service.tagRemovalReport()).toBe('pending');
+      expect(service.run()?.phase).toBe('reporting');
+      expect(service.isSettling()).toBe(true);
+      expect(service.destructiveOpen()).toBe(true);
+
+      httpMock.expectOne(REMOVED).flush(removalAnswer());
+
+      expect(service.tagRemovalReport()).toBe('succeeded');
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.isSettling()).toBe(false);
+    });
+
+    it('holds the run open for the sync report too when the removal report answers first', () => {
+      runTwoRows();
+      httpMock.expectOne(REMOVED).flush(removalAnswer());
+
+      expect(service.run()?.phase).toBe('reporting');
+      answerSync();
+      expect(service.run()?.phase).toBe('closed');
+    });
+
+    it('sends the done keys as removedIds, the registered operation, set, owner and snapshot', () => {
+      runTwoRows();
+      const report = httpMock.expectOne(REMOVED);
+      answerSync();
+
+      expect(report.request.method).toBe('POST');
+      expect(report.request.body).toEqual({
+        operationId: 'op-1',
+        emoteSetId: 'set-1',
+        targetOwnerTwitchId: 'tw-owner',
+        activationOperationId: 'act-1',
+        snapshot: TAG.snapshot,
+        removedIds: ['7tv-1', '7tv-2'],
+        keptIds: ['7tv-9'],
+      });
+      report.flush(removalAnswer());
+    });
+
+    it('derives keptIds from the run result: a ticked row that failed stays, the unticked always do', () => {
+      runTwoRows('failed');
+      const report = httpMock.expectOne(REMOVED);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+
+      expect(report.request.body.removedIds).toEqual(['7tv-1']);
+      expect(report.request.body.keptIds).toEqual(['7tv-9', '7tv-2']);
+      report.flush(removalAnswer());
+    });
+
+    it('passes a null activation operation through unchanged', () => {
+      runTwoRows('applied', { ...TAG, activationOperationId: null });
+      const report = httpMock.expectOne(REMOVED);
+      answerSync();
+
+      expect(report.request.body.activationOperationId).toBeNull();
+      report.flush(removalAnswer());
+    });
+
+    it('still reports, with nothing removed, after a cancel before the first row', () => {
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron', 'tw-owner', TAG);
+      const first = httpMock.expectOne(GQL_ENDPOINT);
+
+      service.cancel();
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+      httpMock.expectOne(isSetRead).flush(
+        setEntriesPage([
+          { id: '7tv-1', alias: 'PogU' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+      expect(first.cancelled).toBe(true);
+      const report = httpMock.expectOne(REMOVED);
+      expect(report.request.body.removedIds).toEqual([]);
+      expect(report.request.body.keptIds).toEqual(['7tv-9', '7tv-1', '7tv-2']);
+      report.flush(removalAnswer());
+      // The unknown row has nothing to report to sync-deleted, so the fallback resync stands in.
+      flushFallbackResync();
+      expect(service.run()?.phase).toBe('closed');
+    });
+
+    it('fails a 403 as forbidden without an automatic retry', () => {
+      runTwoRows();
+      answerSync();
+
+      httpMock.expectOne(REMOVED).flush({}, { status: 403, statusText: 'Forbidden' });
+      vi.advanceTimersByTime(60_000);
+
+      httpMock.expectNone(REMOVED);
+      expect(service.tagRemovalReport()).toBe('failed');
+      expect(service.tagRemovalReportReason()).toBe('forbidden');
+      expect(service.run()?.phase).toBe('closed');
+    });
+
+    it('retries a failed report with the same body, and treats a replay as a plain success', () => {
+      runTwoRows();
+      answerSync();
+      const first = httpMock.expectOne(REMOVED);
+      const firstBody: unknown = first.request.body;
+      first.flush({}, { status: 403, statusText: 'Forbidden' });
+      expect(service.tagRemovalReport()).toBe('failed');
+
+      service.retryTagRemovalReport();
+
+      expect(service.tagRemovalReport()).toBe('pending');
+      const second = httpMock.expectOne(REMOVED);
+      expect(second.request.body).toEqual(firstBody);
+      // F34: a replay carries no outcome — success, nothing else read from it.
+      second.flush(removalAnswer({ replayed: true, deactivated: false }));
+      expect(service.tagRemovalReport()).toBe('succeeded');
+      expect(service.tagRemovalReportReason()).toBeNull();
+    });
+
+    it('offers no retry for a run without a tag', () => {
+      runTwoRows('applied', null);
+      answerSync();
+
+      service.retryTagRemovalReport();
+
+      httpMock.expectNone(REMOVED);
+      expect(service.tagRemovalReport()).toBe('idle');
     });
   });
 });

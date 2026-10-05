@@ -1676,7 +1676,8 @@
       "discardedStale": {
         "one": "{{ count }} emote was removed again in the meantime and not recorded.",
         "other": "{{ count }} emotes were removed again in the meantime and not recorded."
-      }
+      },
+      "restoreHint": "Restored emotes are back in the set afterwards but belong to no tag — the next clear-out lists them as “was already in the set before”."
     }
   },
   "sevenTvToken": {

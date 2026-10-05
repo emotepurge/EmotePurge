@@ -51,6 +51,7 @@ import {
   restoreConfirmPreviewUnavailable,
   RestoreFilterRow,
 } from './already-present-filter';
+import { tagPlacementReportNoticeKey, tagPlacementReportReasonKey } from './dock-outcome-announcer';
 import { DeleteAbortNotice, LIVE_ALIAS_READ_TIMEOUT_MS, refusedStartNotice } from './delete-flow';
 import { ResolvedRestoreTarget, restoreStartTarget } from './restore-flow';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
@@ -157,7 +158,40 @@ function restorableItems(items: readonly RunQueueItem[]): RunQueueItem[] {
                 {{ unknownInProtocolKey() | transloco }}
               </span>
             }
+            <!-- A tag removal's report (#201 T-C, spec 7.2/8) — only on a tag run, whose state is
+                 never idle once settled. The text lines are aria-hidden: the page's
+                 DockOutcomeAnnouncer speaks them. The retry button is not — it must stay reachable
+                 — and borrows the state line as its description, since its label is the same
+                 constant "report again" as the sync report's. -->
+            @if (tagReportKey(); as key) {
+              <span id="delete-tag-report-state" aria-hidden="true" class="text-xs text-fg-muted">
+                {{ key | transloco }}
+              </span>
+              @if (tagReportReasonKey(); as reasonKey) {
+                <span aria-hidden="true" class="text-xs text-fg-muted">
+                  {{ reasonKey | transloco }}
+                </span>
+              }
+              @if (tagRetryOffered()) {
+                <button
+                  type="button"
+                  appButton="outline"
+                  aria-describedby="delete-tag-report-state"
+                  (click)="deleteService.retryTagRemovalReport()"
+                >
+                  {{ 'sevenTvRun.tagReport.retry' | transloco }}
+                </button>
+              }
+            }
             @if (restoreOffered() && arbiter.activeRun() === null) {
+              <!-- Spec 13.2: a restore is a run of its own without a tag, so what it brings back
+                   is in the set but placed by no tag. Said where the button is, and only after a
+                   tag removal. -->
+              @if (deleteService.run()?.tag !== undefined) {
+                <span class="text-xs text-fg-muted">
+                  {{ 'sevenTvRun.tagReport.restoreHint' | transloco }}
+                </span>
+              }
               <!-- The two-tier *shape* of the destructive convention, not its colour: outline
                    triggers, the dialog's primary-solid executes — restore is constructive.
                    Disabled while restoreConfirmPending() (#255 P2a): the target check and the
@@ -250,6 +284,25 @@ export class DeleteProgressSection {
    *  only from those never ran — and left both restore entries disabled until a full page reload,
    *  not just this button, since the flag they share outlives the component. */
   protected readonly restoreConfirmPending = this.restoreService.restorePreCheckPending;
+
+  /** The removal report's line (#201 T-C) — same key the page's DockOutcomeAnnouncer speaks for
+   *  the end states; `null` for a run without a tag. */
+  protected readonly tagReportKey = computed(() =>
+    tagPlacementReportNoticeKey(this.deleteService.tagRemovalReport()),
+  );
+
+  protected readonly tagReportReasonKey = computed(() =>
+    tagPlacementReportReasonKey(
+      this.deleteService.tagRemovalReport(),
+      this.deleteService.tagRemovalReportReason(),
+    ),
+  );
+
+  /** A retry only for a report that ended without success — the service's own guard repeats it. */
+  protected readonly tagRetryOffered = computed(() => {
+    const state = this.deleteService.tagRemovalReport();
+    return state === 'failed' || state === 'partial';
+  });
 
   /** Whether the finished run has anything the restore entry could offer — a `done` or, since
    *  #275, an `unknown` row (`restorableItems`). An `unknown`-only run shows the entry too, even

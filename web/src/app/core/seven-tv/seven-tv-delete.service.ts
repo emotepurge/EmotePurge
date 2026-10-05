@@ -15,6 +15,7 @@ import {
 } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
+import { EmoteTagService } from '../tags/emote-tag.service';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import {
@@ -44,6 +45,7 @@ import {
   classifySyncInSetResponse,
   isChannelMismatch,
 } from './sync-report-outcome';
+import { DeleteTagContext, deriveTagKeptIds } from './tag-run-settlement';
 
 /** Kept under its historical name — the engine's constant is the same value. */
 export { RUN_DELAY_MS as DELETE_DELAY_MS } from './seven-tv-run-engine';
@@ -182,12 +184,25 @@ export interface DeleteRunInfo extends RunRecordBase {
   syncReport: SyncReportState;
   /** Projected by `syncReportReason`. */
   syncReportReason: SyncReportReason | null;
+  /** The tag removal this run executes (#201 T-C, spec 7.2/7) — the registered operation, the
+   *  snapshot of the placements read in the preview and the ticked/unticked own ids, frozen at
+   *  `startDelete`; absent for every other delete. Optional (like the two report fields) so the
+   *  run records T-A's specs build by hand stay valid. */
+  tag?: DeleteTagContext;
+  /** This run's removal report (#201 T-C, spec E14) — `'idle'` for every run without `tag`, and
+   *  then never anything else. A tag run always sends it once settled, with nothing removed too: the
+   *  report is also what moves the unremoved own placements and deactivates the tag. Projected by
+   *  `tagRemovalReport`. */
+  tagRemovalReport?: SyncReportState;
+  /** Projected by `tagRemovalReportReason`. */
+  tagRemovalReportReason?: SyncReportReason | null;
 }
 
 @Injectable({ providedIn: 'root' })
 export class SevenTvDeleteService {
   private readonly channelService = inject(ChannelService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
+  private readonly emoteTagService = inject(EmoteTagService);
   private readonly httpClient = inject(HttpClient);
 
   /** Own engine instance (not a shared singleton), so `isRunning` can never mean "the *other*
@@ -201,7 +216,8 @@ export class SevenTvDeleteService {
   /** Every open run of this service, by id, plus the one the dock shows (#256). */
   private readonly lifecycle = new SevenTvRunLifecycle<DeleteRunInfo>(
     'delete',
-    (run) => run.syncReport === 'pending',
+    // A tag run's removal report holds `closed` like the sync report does (#201 T-C, E14).
+    (run) => run.syncReport === 'pending' || run.tagRemovalReport === 'pending',
   );
 
   readonly isRunning = this.engine.isRunning;
@@ -248,6 +264,17 @@ export class SevenTvDeleteService {
    *  its own line under the report notice. Projection, like `syncReport`. */
   readonly syncReportReason = linkedSignal<SyncReportReason | null>(
     () => this.run()?.syncReportReason ?? null,
+  );
+
+  /** State of the shown run's tag removal report (#201 T-C) — `'idle'` for a run that is not a tag
+   *  removal. Projection of the shown record, like `syncReport`. */
+  readonly tagRemovalReport = linkedSignal<SyncReportState>(
+    () => this.run()?.tagRemovalReport ?? 'idle',
+  );
+
+  /** Why `tagRemovalReport` is `'failed'`, `null` otherwise. */
+  readonly tagRemovalReportReason = linkedSignal<SyncReportReason | null>(
+    () => this.run()?.tagRemovalReportReason ?? null,
   );
 
   /** The finished run, kept for the summary/protocol UI (A6) — unchanged shape for
@@ -371,13 +398,16 @@ export class SevenTvDeleteService {
    *  otherwise (spec 6.5) — the caller knows which, this service does not. `targetOwnerTwitchId` is
    *  the owner hint the pre-check that led to this call resolved (owner-hint design 3.6) — frozen
    *  onto the record here, never re-resolved by this service. A run that starts is shown at once;
-   *  the run shown before it goes on to close on its own record (#256). */
+   *  the run shown before it goes on to close on its own record (#256). `tag` is only for a tag
+   *  removal (#201 T-C, `tag-removal-flow.ts`): frozen onto the record, it makes the settled run
+   *  send the removal report as a second report beside `sync-deleted`. */
   startDelete(
     setId: string,
     channelName: string,
     emotes: DeleteQueueEmote[],
     expectedChannelName: string | null,
     targetOwnerTwitchId: string | null,
+    tag?: DeleteTagContext,
   ): void {
     const previousShown = this.lifecycle.shown();
     const runId = this.lifecycle.createRunId();
@@ -392,6 +422,7 @@ export class SevenTvDeleteService {
       result: null,
       syncReport: 'idle',
       syncReportReason: null,
+      ...(tag === undefined ? {} : { tag, tagRemovalReport: 'idle', tagRemovalReportReason: null }),
     };
     // Opened *before* the engine is asked to start (#256 review finding): the engine answers
     // asynchronously in practice, but only this ordering guarantees that a synchronous
@@ -475,6 +506,24 @@ export class SevenTvDeleteService {
     this.reportDeleted(current.runId, current.result.doneKeys);
   }
 
+  /** Manual retry for the removal report of the shown run (#201 T-C) — sends the same body again,
+   *  the same `operationId` included, so the server answers a report it already applied as a
+   *  replay. Not gated on any removed key: a report with nothing removed is what moves the own
+   *  placements and deactivates the tag. Like `retrySyncReport` it never reopens a closed run. */
+  retryTagRemovalReport(): void {
+    const current = this.run();
+    if (
+      current === null ||
+      current.tag === undefined ||
+      current.tagRemovalReport === 'pending' ||
+      current.result === null
+    ) {
+      return;
+    }
+
+    this.reportTagRemoval(current.runId);
+  }
+
   /**
    * Turns the engine's snapshot into the run's outcome, always on the run's own record (#256:
    * there is no early return for a run that is no longer shown; its confirmed removals are
@@ -546,6 +595,11 @@ export class SevenTvDeleteService {
       phase: 'reporting',
       syncReport: reportsDeleted ? 'pending' : run.syncReport,
       syncReportReason: reportsDeleted ? null : run.syncReportReason,
+      // A tag run reports even with nothing removed (spec 7.2/8): a cancel before the first row, or
+      // a run whose every row failed, still moves the own placements and deactivates the tag.
+      ...(run.tag === undefined
+        ? {}
+        : { tagRemovalReport: 'pending', tagRemovalReportReason: null }),
     }));
     if (settled === null) {
       // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
@@ -556,6 +610,11 @@ export class SevenTvDeleteService {
       this.reportDeleted(runId, result.doneKeys, () => this.fallbackResync(settled));
     } else if (unknownCount(result.items) > 0) {
       this.fallbackResync(settled);
+    }
+    // Independent of the above: the two reports go to different books — what 7TV's set now holds,
+    // and which emotes this tag put there — and either can fail without the other.
+    if (settled.tag !== undefined) {
+      this.reportTagRemoval(runId);
     }
   }
 
@@ -629,6 +688,55 @@ export class SevenTvDeleteService {
       });
   }
 
+  /**
+   * The removal report of a tag removal (#201 T-C, spec 7.2/8): `POST …/tags/{tagId}/placements/
+   * removed` with the registered `operationId`, the run's own set and owner, the activation and
+   * snapshot from the preview, `removedIds` = the run's `doneKeys` and `keptIds` derived from the
+   * **run result** (`deriveTagKeptIds`): the unticked own placements plus every ticked one without a
+   * `done` row — a removal 7TV did not confirm is still in the set, and the server must not forget
+   * it. Same transport rules as `sync-deleted`: one `timeoutReportAttempt` per attempt, automatic
+   * retries for anything but a 401/403, an end state on every path.
+   *
+   * A replayed answer (`replayed: true`) is a success that says nothing else (F34): the server had
+   * already applied this operation, so no counts are read from it. The reading happens in `map`,
+   * ahead of the retries, so a malformed answer ends like a transient failure instead of throwing
+   * inside `next`.
+   */
+  private reportTagRemoval(runId: string): void {
+    const run = this.patchRun(runId, { tagRemovalReport: 'pending', tagRemovalReportReason: null });
+    if (run === null || run.tag === undefined || run.result === null) {
+      return;
+    }
+    const tag = run.tag;
+
+    this.emoteTagService
+      .reportRemoval(tag.channelName, tag.tagId, {
+        operationId: tag.operationId,
+        emoteSetId: run.setId,
+        targetOwnerTwitchId: run.targetOwnerTwitchId,
+        activationOperationId: tag.activationOperationId,
+        snapshot: tag.snapshot,
+        removedIds: run.result.doneKeys,
+        keptIds: deriveTagKeptIds(tag, run.result),
+      })
+      .pipe(
+        timeoutReportAttempt(),
+        map(() => undefined),
+        retry({
+          count: MAX_AUTOMATIC_SYNC_RETRIES,
+          delay: (error: HttpErrorResponse, attempt) =>
+            error.status === 401 || error.status === 403
+              ? throwError(() => error)
+              : timer(SYNC_RETRY_DELAY_MS * attempt),
+        }),
+      )
+      .subscribe({
+        next: () => this.endTagReport(runId, { state: 'succeeded', reason: null }),
+        error: (error: HttpErrorResponse) =>
+          this.endTagReport(runId, classifySyncInSetFailure(error.status)),
+      });
+  }
+
   /** addendum N1, AK 36: a report that failed for good (any status, or a network error, after the
    *  retries) never reached the backend's resync stage, so nothing would pull the page's rows until
    *  the worker's periodic resync. The client stands in for it — for `expectedChannelName` only: a
@@ -662,7 +770,24 @@ export class SevenTvDeleteService {
       syncReport: outcome.state,
       syncReportReason: outcome.reason,
     });
-    if (run === null || outcome.state === 'succeeded' || this.lifecycle.isShown(runId)) {
+    this.reshowUnlessSucceeded(run, 'sync-deleted', outcome);
+  }
+
+  /** `endReport` for the tag removal report — the same lifecycle rules, its own record fields. */
+  private endTagReport(runId: string, outcome: SyncReportOutcome): void {
+    const run = this.patchRun(runId, {
+      tagRemovalReport: outcome.state,
+      tagRemovalReportReason: outcome.reason,
+    });
+    this.reshowUnlessSucceeded(run, 'tag-removal', outcome);
+  }
+
+  private reshowUnlessSucceeded(
+    run: DeleteRunInfo | null,
+    report: 'sync-deleted' | 'tag-removal',
+    outcome: SyncReportOutcome,
+  ): void {
+    if (run === null || outcome.state === 'succeeded' || this.lifecycle.isShown(run.runId)) {
       return;
     }
     if (run.result !== null && !this.engine.isRunning() && this.lifecycle.reshow(run)) {
@@ -672,7 +797,8 @@ export class SevenTvDeleteService {
       this.lifecycle.detach();
     }
     console.warn('[EmotePurge] 7TV delete report of a run no longer shown did not succeed', {
-      runId,
+      runId: run.runId,
+      report,
       state: outcome.state,
       reason: outcome.reason,
     });

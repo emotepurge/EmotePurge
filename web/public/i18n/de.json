@@ -1676,7 +1676,8 @@
       "discardedStale": {
         "one": "{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.",
         "other": "{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt."
-      }
+      },
+      "restoreHint": "Wiederhergestellte Emotes sind danach wieder im Set, aber keinem Tag zugeordnet — beim nächsten Ausräumen gelten sie als „war schon vorher im Set“."
     }
   },
   "sevenTvToken": {

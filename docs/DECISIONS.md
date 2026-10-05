@@ -472,6 +472,47 @@ the end states, never the pending line. Keys: `sevenTvRun.tagReport.{pending,suc
 `web/src/app/shared/seven-tv/import-progress-section.ts` ·
 `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
+#### Delete run (Task 9)
+
+**The removal report is a second report on the delete run, independent of `sync-deleted`.**
+`startDelete` takes an optional sixth parameter `tag` (`DeleteTagContext`: operation, activation
+operation, the preview's snapshot, the ticked and unticked own ids, the channel); `DeleteRunInfo` carries
+`tag`, `tagRemovalReport` and `tagRemovalReportReason` (projected as `linkedSignal`s). The three fields are
+optional and absent for a plain delete, so every run record that existed before stays valid byte for byte.
+`settleRun` marks the report `pending` for every tag run — with nothing removed too (a cancel before the
+first row, every row failed): the report is what moves or deletes the own placements the run did not
+remove and deactivates the tag (E26). It goes out next to `reportDeleted`, never chained to it, for the
+reason the import's third report is not chained either: the two answer different questions (what 7TV's set
+holds now vs. which emotes this tag put there), use different routes and permission ladders, and either can
+fail without the other. The lifecycle predicate counts it, so `closed` waits for both; transport is the
+other reports' (per-attempt timeout, automatic retries except 401/403, an end state on every path), and
+`retryTagRemovalReport` re-sends the same body with the same `operationId`, which the server answers as a
+replay. A replayed answer is a plain success (F34): no counts are read from it.
+
+**`keptIds` is derived from the run result, not taken from the preview.** The body is `removedIds` = the
+run's `doneKeys`, and `keptIds` = `deriveTagKeptIds(tag, result)`: every unticked own placement plus every
+ticked one that has no `done` row. A removal 7TV did not confirm (`failed`, `cancelled`, `unknown`, or a row
+that was never reached) is still in the set; reporting it as removed would make the server forget a
+placement for an emote that is still there. The preview only knows what was ticked, the run result is what
+happened, and only the latter can say which ticked rows did not make it.
+
+**The confirm-time chain is the delete flow's, exported — not a looser re-implementation.** `delete-flow.ts`
+now exports `confirmTimeRefusal(deps)` (the arbiter claim plus the stored-token check, returning the abort
+notice or `undefined`, never calling `noteRefusedStart('delete')`) and `toDeleteQueueEmotes(selection,
+liveEntries)` (the queue rows with the live aliases and the aliasless fallback); the usage page's own chain
+calls both, so there is one copy. Spec 7.2/7 words the confirm-time check as "arbiter claim ->
+`noteRefusedStart('delete')`" and says nothing of the token; the tag removal flow follows the existing
+chain instead, because the engine refuses a start without a token silently (a dock claim over a delete that
+never happened) and `noteRefusedStart` would announce the refusal a second time next to the flow's own
+notice. The dock shows the state line, the failure reason and a retry button, plus — after a tag run only
+— the hint that "Restore" brings emotes back unplaced (13.2: they read as "was already in the set before"
+at the next clear-out); the announcer speaks the end states on every page, never the pending line. Keys:
+the `sevenTvRun.tagReport.*` family, plus `restoreHint`.
+
+**Betrifft (Task 9):** `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
+`web/src/app/shared/seven-tv/delete-flow.ts` · `web/src/app/shared/seven-tv/delete-progress-section.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

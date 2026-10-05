@@ -320,6 +320,17 @@ export function markedCountNoticeKey(count: number): string {
     @if (deleteStartCheckAudible()) {
       <p>{{ 'massDelete.startChecking' | transloco }}</p>
     }
+    <!-- A tag removal's report (#201 T-C), the delete run's own outcome — outside the withImport()
+         gate like the wait above, since the delete section is mounted on every page. Its end state
+         only; the dock also shows the pending line, which would only be noise here. The reason
+         rides in the same sentence (one text node). -->
+    @if (deleteTagReportKey(); as key) {
+      @if (deleteTagReportReasonKey(); as reasonKey) {
+        <p>{{ key | transloco }} {{ reasonKey | transloco }}</p>
+      } @else {
+        <p>{{ key | transloco }}</p>
+      }
+    }
     <!-- #280: a confirmed restore whose last live check is still out — the confirmation has
          closed and nothing in the dock says so yet; the buttons that would start another restore
          are disabled meanwhile, and this is what says why. First in the restore group: it comes
@@ -468,6 +479,16 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importRenamedNotActive = computed(() =>
     renamedNotActiveNotice(this.importService.run()),
+  );
+  protected readonly deleteTagReportKey = computed(() => {
+    const state = this.deleteService.tagRemovalReport();
+    return state === 'pending' ? null : tagPlacementReportNoticeKey(state);
+  });
+  protected readonly deleteTagReportReasonKey = computed(() =>
+    tagPlacementReportReasonKey(
+      this.deleteService.tagRemovalReport(),
+      this.deleteService.tagRemovalReportReason(),
+    ),
   );
   protected readonly importTagReportKey = computed(() => {
     const state = this.importService.tagPlacementReport();

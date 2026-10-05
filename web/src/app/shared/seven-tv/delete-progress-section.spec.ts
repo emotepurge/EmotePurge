@@ -112,6 +112,8 @@ type DeleteServiceFake = Pick<
   | 'run'
   | 'syncReport'
   | 'syncReportReason'
+  | 'tagRemovalReport'
+  | 'tagRemovalReportReason'
   | 'rateLimitPauseSeconds'
   | 'lastRun'
 >;
@@ -123,6 +125,8 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     run: signal<DeleteRunInfo | null>(null),
     syncReport: signal<SyncReportState>('idle'),
     syncReportReason: signal<SyncReportReason | null>(null),
+    tagRemovalReport: signal<SyncReportState>('idle'),
+    tagRemovalReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
     lastRun: signal<{
       setId: string;
@@ -1182,5 +1186,144 @@ describe('DeleteProgressSection — unclear rows of a finished delete run are of
       expect(startCheckPending()).toBe(false);
       expect(startRestore).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('DeleteProgressSection — a tag removal run (#201 T-C)', () => {
+  const DE = {
+    ...DE_TRANSLATIONS,
+    restore: { button: 'Wiederherstellen' },
+    sevenTvRun: {
+      tagReport: {
+        pending: 'Wird beim Tag vermerkt …',
+        succeeded: 'Beim Tag vermerkt.',
+        failed: 'Nicht beim Tag vermerkt.',
+        retry: 'Erneut melden',
+        restoreHint: 'Wiederhergestellte Emotes gehören keinem Tag.',
+      },
+    },
+    syncReportReason: { unavailable: 'Grund: nicht erreichbar.' },
+  };
+  const DONE_ITEM: RunQueueItem = {
+    key: '7tv-1',
+    emoteId: 'e-1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'PogU',
+    status: 'done',
+    completedSteps: 1,
+    failedStep: null,
+  };
+
+  let fixture: ComponentFixture<DeleteProgressSection>;
+  let deleteService: DeleteServiceFake & { retryTagRemovalReport: ReturnType<typeof vi.fn> };
+
+  async function mount(options: { tagRun: boolean; report: SyncReportState }): Promise<void> {
+    const base = {
+      runId: 'run-1',
+      phase: 'reporting',
+      destructive: true,
+      channelName: 'sensitron',
+      expectedChannelName: 'sensitron',
+      setId: 'set-1',
+      targetOwnerTwitchId: null,
+      result: null,
+      syncReport: 'succeeded',
+      syncReportReason: null,
+    } as const;
+    const run: DeleteRunInfo = options.tagRun
+      ? {
+          ...base,
+          tag: {
+            tagId: 7,
+            operationId: 'op-1',
+            activationOperationId: null,
+            snapshot: [],
+            checkedOwnIds: ['7tv-1'],
+            uncheckedOwnIds: [],
+            channelName: 'sensitron',
+          },
+          tagRemovalReport: options.report,
+        }
+      : base;
+    deleteService = {
+      ...fakeDeleteService({
+        queue: signal([DONE_ITEM]),
+        run: signal<DeleteRunInfo | null>(run),
+        tagRemovalReport: signal<SyncReportState>(options.tagRun ? options.report : 'idle'),
+        tagRemovalReportReason: signal<SyncReportReason | null>(
+          options.report === 'failed' ? 'unavailable' : null,
+        ),
+        lastRun: signal({
+          setId: 'set-1',
+          channelName: 'sensitron',
+          targetOwnerTwitchId: null,
+          result: { doneKeys: ['7tv-1'], items: [DONE_ITEM], startedAt: 0, finishedAt: 1 },
+        }),
+      }),
+      retryTagRemovalReport: vi.fn(),
+    };
+    await TestBed.configureTestingModule({
+      imports: [
+        DeleteProgressSection,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: sectionProviders({
+        deleteService: deleteService as unknown as DeleteServiceFake,
+        restoreService: fakeRestoreService(),
+        dialogOpen: vi.fn(),
+        emoteAdminService: {},
+      }),
+    }).compileComponents();
+    await TestBed.inject(TranslocoService).load('de');
+    fixture = TestBed.createComponent(DeleteProgressSection);
+    fixture.componentRef.setInput('hostSelectedSetId', 'set-1');
+    fixture.detectChanges();
+  }
+
+  const text = (): string => (fixture.nativeElement as HTMLElement).textContent ?? '';
+  const retryButton = (): HTMLButtonElement | undefined =>
+    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Erneut melden',
+    );
+
+  it('shows neither the report line nor the restore hint for a run without a tag', async () => {
+    await mount({ tagRun: false, report: 'idle' });
+
+    expect(text()).not.toContain('Tag vermerkt');
+    expect(text()).not.toContain('keinem Tag');
+    expect(text()).toContain('Wiederherstellen');
+  });
+
+  it('shows the pending line and the restore hint on a tag run, with no retry yet', async () => {
+    await mount({ tagRun: true, report: 'pending' });
+
+    expect(text()).toContain('Wird beim Tag vermerkt …');
+    expect(text()).toContain('Wiederhergestellte Emotes gehören keinem Tag.');
+    expect(retryButton()).toBeUndefined();
+  });
+
+  it('keeps the state line out of the accessibility tree, the announcer speaks it', async () => {
+    await mount({ tagRun: true, report: 'succeeded' });
+
+    const line = (fixture.nativeElement as HTMLElement).querySelector('#delete-tag-report-state');
+    expect(line?.textContent?.trim()).toBe('Beim Tag vermerkt.');
+    expect(line?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('offers a reachable retry with its reason on a failed report, and the button calls the retry', async () => {
+    await mount({ tagRun: true, report: 'failed' });
+
+    expect(text()).toContain('Nicht beim Tag vermerkt.');
+    expect(text()).toContain('Grund: nicht erreichbar.');
+    const button = retryButton();
+    expect(button?.getAttribute('aria-describedby')).toBe('delete-tag-report-state');
+    expect(button?.closest('[aria-hidden="true"]')).toBeNull();
+
+    button?.click();
+
+    expect(deleteService.retryTagRemovalReport).toHaveBeenCalledOnce();
   });
 });

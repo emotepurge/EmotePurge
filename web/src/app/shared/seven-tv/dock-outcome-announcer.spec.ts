@@ -248,8 +248,11 @@ describe('DockOutcomeAnnouncer', () => {
   let restoreService: FakeOutcomeSource;
   let importService: FakeOutcomeSource;
   let undoService: FakeUndoSource;
-  /** `SevenTvDeleteService.startCheckPending` (#280) — the only delete signal the announcer reads. */
+  /** `SevenTvDeleteService.startCheckPending` (#280) and, since #201 T-C, the tag removal report —
+   *  the only delete signals the announcer reads. */
   let deleteStartCheckPending: WritableSignal<boolean>;
+  let deleteTagRemovalReport: WritableSignal<SyncReportState>;
+  let deleteTagRemovalReportReason: WritableSignal<SyncReportReason | null>;
   let fixture: ComponentFixture<HostPage>;
 
   beforeEach(async () => {
@@ -257,6 +260,8 @@ describe('DockOutcomeAnnouncer', () => {
     importService = createFakeSource();
     undoService = createFakeUndoSource();
     deleteStartCheckPending = signal(false);
+    deleteTagRemovalReport = signal<SyncReportState>('idle');
+    deleteTagRemovalReportReason = signal<SyncReportReason | null>(null);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -272,7 +277,11 @@ describe('DockOutcomeAnnouncer', () => {
         { provide: SevenTvUndoService, useValue: undoService },
         {
           provide: SevenTvDeleteService,
-          useValue: { startCheckPending: deleteStartCheckPending },
+          useValue: {
+            startCheckPending: deleteStartCheckPending,
+            tagRemovalReport: deleteTagRemovalReport,
+            tagRemovalReportReason: deleteTagRemovalReportReason,
+          },
         },
       ],
     }).compileComponents();
@@ -684,6 +693,22 @@ describe('DockOutcomeAnnouncer', () => {
     fixture.detectChanges();
 
     expect(spoken()).toEqual(['Nicht beim Tag vermerkt. Grund: nicht erreichbar.']);
+  });
+
+  // #201 T-C: a tag removal's report belongs to the delete run, which every page mounts.
+  it('speaks the end state of a tag removal report on a page without an import section', () => {
+    fixture.componentInstance.withImport.set(false);
+
+    deleteTagRemovalReport.set('pending');
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+
+    deleteTagRemovalReport.set('failed');
+    deleteTagRemovalReportReason.set('forbidden');
+    fixture.detectChanges();
+
+    expect(spoken()).toHaveLength(1);
+    expect(spoken()[0]).toContain('Nicht beim Tag vermerkt.');
   });
 
   it('does not speak for an import on a page that shows no import section', () => {
