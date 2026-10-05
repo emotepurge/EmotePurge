@@ -441,10 +441,10 @@ public class SevenTvSyncService(
         // in-memory and ride the same save. A failed attempt rolls back on dispose, and the E10 retry
         // in SaveSyncAsync runs this method again with a new transaction — the upsert is idempotent.
         // Lock order inside: observation rows, then the save's emote rows and the channel UPDATE. The
-        // sync writes no tag table and a tag report only reads observations. Either side can wait for
-        // the other (the sync for the channel row a report holds, the report for an observation row),
-        // but the report waits only for its first lock while holding nothing, and neither transaction
-        // does network I/O: no cycle, millisecond waits (spec 5.5 rule 6).
+        // sync writes no tag table and a tag report only reads observations with a plain SELECT, so
+        // the report never waits on an observation row. The only wait is the sync's, for the channel
+        // row a report holds; the report holds nothing while it waits for its first lock, and neither
+        // transaction does network I/O: no cycle, millisecond waits (spec 5.5 rule 6).
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var inventoryChanged = await ReconcileAsync(channel.Id, emoteSet.Id, emoteSet.Emotes, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);

@@ -518,6 +518,40 @@ the `sevenTvRun.tagReport.*` family, plus `restoreHint`.
 `web/src/app/shared/seven-tv/delete-flow.ts` · `web/src/app/shared/seven-tv/delete-progress-section.ts` ·
 `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
+#### Flows and dialog (Tasks 10–12)
+
+Pure helpers first: `tag-play-in.ts` partitions a tag's entries against the complete live read (already in
+the set / to add) and builds the `'tag'` import source; `tag-removal.ts` turns the entry read plus the
+live read into the removal proposal. Only placements the server reports as valid reach the rows (no
+fallback to "in the set" — spec 0a rule 1); an own placement with a missing revision is not own, in
+the row and in the snapshot alike. `tag-play-in-flow.ts`/`tag-removal-flow.ts` run the shared steps
+(`prepareTagRun`: operation registration, ownership ladder via the 403/404/503 answers, set freeze, the
+complete live read) and then hand over to `startImportFlow` or the delete flow; `TagRunActions` hosts
+both buttons on the usage page and the tags page. Choices that are not obvious from the code:
+
+- **One dialog, ticks in place.** `TagRemovalConfirmDialog` is preview and confirmation at once (E19). Rows
+  are grouped by the *proposal's* start state — "Vorgeschlagen" above "Nicht vorgeschlagen" — and a tick
+  toggles in place, in both directions. The button is never disabled by the count: n = 0 is a clear-out
+  without a delete run (E26), with its own sentence. Past 50 rows the list is virtual with a roving
+  tabindex. UI-Designsprache §7.5 is the contract.
+- **The browser set guard decides, and a destroyed host authorises nothing.** At confirm time the frozen
+  set and the page's live active set must be one set (play-in additionally: the loaded target); an unknown or destroyed host
+  counts as a switch and aborts. The token half of the confirm-time check is skipped only for n = 0
+  (nothing goes to 7TV). The pre-dialog chain is not under `startCheckPending`, consistent with T-A.
+- **A flow reports nothing back to its starter** once it handed over (dismissed dialog, cancelled token
+  prompt, arbiter refusal, pre-check block, drift): `pending` ends at the hand-over. A banner raised
+  after the host moved on to another tag or channel is dropped.
+- **No-tag is `null` on import run info but `undefined` on delete run info.** Consumers test `!== null`
+  for import runs and `!== undefined` for delete runs and never cross them.
+
+**Betrifft (Tasks 10–12):** `web/src/app/shared/tags/tag-play-in.ts` ·
+`web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-removal.ts` ·
+`web/src/app/shared/tags/tag-removal-flow.ts` · `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
+`web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/shared/seven-tv/import-trigger.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`
+
+#### Surfaces (Task 13)
+
 **Surfaces (Task 13) — the usage page's filter row: the buttons take the sentence's slot.** With a tag
 chosen, the inline group shows "eingespielt" for a tag active in the active set and then either the
 sentence "Einspielen und Ausräumen wirken auf das aktive Set" or `TagRunActions` — never both. The buttons
@@ -570,38 +604,6 @@ the message while the button keeps its "Tag löschen" label.
 `web/src/app/shared/seven-tv/action-dock.ts` · `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
 `web/e2e/audit/ui-audit.audit.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
-#### Flows and dialog (Tasks 10–12)
-
-Pure helpers first: `tag-play-in.ts` partitions a tag's entries against the complete live read (already in
-the set / to add) and builds the `'tag'` import source; `tag-removal.ts` turns the entry read plus the
-live read into the removal proposal. Only placements the server reports as valid reach the rows (no
-fallback to "in the set" — spec 0a rule 1); an own placement with a missing revision is not own, in
-the row and in the snapshot alike. `tag-play-in-flow.ts`/`tag-removal-flow.ts` run the shared steps
-(`prepareTagRun`: operation registration, ownership ladder via the 403/404/503 answers, set freeze, the
-complete live read) and then hand over to `startImportFlow` or the delete flow; `TagRunActions` hosts
-both buttons on the usage page and the tags page. Choices that are not obvious from the code:
-
-- **One dialog, ticks in place.** `TagRemovalConfirmDialog` is preview and confirmation at once (E19). Rows
-  are grouped by the *proposal's* start state — "Vorgeschlagen" above "Nicht vorgeschlagen" — and a tick
-  toggles in place, in both directions. The button is never disabled by the count: n = 0 is a clear-out
-  without a delete run (E26), with its own sentence. Past 50 rows the list is virtual with a roving
-  tabindex. UI-Designsprache §7.5 is the contract.
-- **The browser set guard decides, and a destroyed host authorises nothing.** At confirm time the frozen
-  set, the page's live active set and the loaded target must be one set; an unknown or destroyed host
-  counts as a switch and aborts. The token half of the confirm-time check is skipped only for n = 0
-  (nothing goes to 7TV). The pre-dialog chain is not under `startCheckPending`, consistent with T-A.
-- **A flow reports nothing back to its starter** once it handed over (dismissed dialog, cancelled token
-  prompt, arbiter refusal, pre-check block, drift): `pending` ends at the hand-over. A banner raised
-  after the host moved on to another tag or channel is dropped.
-- **No-tag is `null` on import run info but `undefined` on delete run info.** Consumers test `!== null`
-  for import runs and `!== undefined` for delete runs and never cross them.
-
-**Betrifft (Tasks 10–12):** `web/src/app/shared/tags/tag-play-in.ts` ·
-`web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-removal.ts` ·
-`web/src/app/shared/tags/tag-removal-flow.ts` · `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
-`web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/shared/seven-tv/import-trigger.ts` ·
-`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`
-
 #### Security model (spec 0a)
 
 Placements are a well-kept **proposal, not a guarantee**: the 7TV writes happen in the browser (zero-knowledge
@@ -615,12 +617,14 @@ way back. A placement is never authority to delete — it is the tick the person
 
 #### Overruled spec sentences
 
-The plan overrules three sentences of the spec; each is recorded in the spec's addendum:
+The plan overrules five sentences of the spec; each is recorded in the spec's addendum:
 
 - **3.1 "the sync takes no explicit transaction"** — it takes one per save attempt (Task 2).
 - **12.4 "one upsert per archived row, nothing else"** — one upsert per `PulledId` (with the set-centric
   delete report), one observation read per REST tick for the post-check, one transaction per attempt.
 - **5.3 "no foreign key to the entry"** — the composite FK with cascade exists (Task 1).
+- **12.5 "resync summary in the log"** — replaced by the executable readiness check in docs/Operations.md (Rollout).
+- **5.5 "a kept hit that expired is transferred"** — an expired kept hit is dropped, not transferred (Task 5).
 
 Also changed, with the reasons in the paragraphs above: all T-C id columns are `varchar(32)` including
 set ids (the spec said 24); a placement carries its own `RegisteredAtUtc` as the validity anchor (5.3/5.5);

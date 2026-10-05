@@ -444,10 +444,10 @@ sync by the new worker counts.
 
 Read the new worker container's start time (Portainer, or `docker inspect <worker> --format
 '{{.State.StartedAt}}'`) and put it into both queries as `<WORKER_STARTED_AT>`. You run them through the
-SSH tunnel, as for the migration (the password stays out of shell history and the repository):
+SSH tunnel, as for the migration (psql prompts for the password, so it stays out of shell history and the repository):
 
 ```
-psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge password=<PROD-PW>'
+psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge'
 ```
 
 ```sql
@@ -475,11 +475,10 @@ ORDER BY "ChannelName";
 - **List A** is empty one tick after the start (`SevenTv:ResyncIntervalSeconds`, default 60) on a healthy
   system. A channel with a transient failure (`seventv_unavailable`, `seventv_response_unusable`) or
   one held back by the wipe guard (no save, old `LastSyncedAtUtc`) stays listed: wait for the next tick
-  or read that channel's worker log. While A is not empty, the flag stays off.
+  or read that channel's worker log. A channel just added to `Channels:ExcludedChannelIds` stays listed too (the sync refuses it, so its `LastSyncedAtUtc` never advances) until the identity reconcile deactivates it. While A is not empty, the flag stays off.
 - **List B** does not block the release. Those channels cannot carry tag runs (no active set, no
-  Twitch id, a permanent 7TV reason, or an id from `Channels:ExcludedChannelIds`); check only that it
-  matches the permanent cases you expect. If `"LastSyncedAtUtc"` turns out to be a `timestamp without
-  time zone`, drop the `::timestamptz` cast.
+  Twitch id, or a permanent 7TV reason); check only that it
+  matches the permanent cases you expect.
 
 **Two assumptions.** Clock: Api and Worker stamp with `DateTime.UtcNow` and run on the same host; if
 they ever move apart, keep both on NTP (an offset acts like a shifted credibility window). The window
