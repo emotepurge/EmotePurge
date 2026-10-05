@@ -1678,7 +1678,7 @@
         "one": "{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.",
         "other": "{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt."
       },
-      "restoreHint": "Wiederhergestellte Emotes sind danach wieder im Set, aber nicht als vom Tag eingespielt vermerkt — wird der Tag erneut eingespielt, gelten sie beim Ausräumen als „war schon vorher im Set“."
+      "restoreHint": "Wiederhergestellte Emotes sind danach wieder im Set, aber nicht als vom Tag eingespielt vermerkt — wird der Tag später eingespielt, gelten sie beim Ausräumen als „war schon vorher im Set“."
     }
   },
   "sevenTvToken": {
@@ -1780,7 +1780,7 @@
       "unassignPrefix": "Aus ‚",
       "unassignSuffix": "‘ entfernen ({{count}})",
       "unassign": "Aus ‚{{tag}}‘ entfernen ({{count}})",
-      "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; das Tag räumt sie danach auch nicht mehr aus.",
+      "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; der Tag räumt sie danach auch nicht mehr aus.",
       "unassignLockReason": {
         "noneInTag": "Keins der markierten Emotes gehört zu {{tag}}."
       },
@@ -1845,7 +1845,7 @@
         "one": "{{count}} weiteres Emote dieses Tags ist nicht im Set.",
         "other": "{{count}} weitere Emotes dieses Tags sind nicht im Set."
       },
-      "nothingToDelete": "Es wird nichts bei 7TV gelöscht; das Tag gilt danach als nicht mehr eingespielt.",
+      "nothingToDelete": "Es wird nichts bei 7TV gelöscht; der Tag gilt danach als nicht mehr eingespielt.",
       "nothingToDeleteNotPlayedIn": "Es wird nichts bei 7TV gelöscht.",
       "notPlayedInLead": "Der Tag ist nicht eingespielt — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
       "confirm": "Ausräumen"

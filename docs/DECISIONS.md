@@ -800,8 +800,14 @@ for an active tag — so there was no way to clear it out. The operator decided 
   same filter the play-in report applies; the response's `deletedCount` keeps its meaning.
 - **The restore hint** (`sevenTvRun.tagReport.restoreHint`) no longer says restored emotes read "war schon
   vorher im Set" at the next clear-out — while the tag is not played in they are proposed again; the hint
-  now says they are not recorded as played in, and read that way only if the tag is played in again. The
+  now says they are not recorded as played in, and read that way only if the tag is played in later (not
+  "again": the tag may never have been played in — review m9, same day). The
   tags-page explainer ("Einspielen holt sie ins Set, Ausräumen nimmt sie wieder heraus.") stays true.
+- **One article for "Tag" in German copy: "der Tag".** The catalogue mixed both genders; counted over the
+  unambiguous forms in `de.json` (articles and adjective endings, not dative "dem/einem/diesem"), 12 were
+  masculine ("einen Tag", "Dieser Tag", "Neuer Tag", …) and 2 neuter ("das Tag" in
+  `tags.removalDialog.nothingToDelete` and `tags.actions.unassignTitle`). The two now read "der Tag";
+  new copy follows the majority.
 - The e2e mock of the removal report now takes the removed emotes out of the set for the next read
   (`inSetCount`, the entry's `inSet`), as the real server does after the run's `sync-deleted`; the
   scenarios that cleared a tag out while another of its emotes stayed in the set now expect "Ausräumen" to

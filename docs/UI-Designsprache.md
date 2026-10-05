@@ -768,7 +768,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   position.
 - **The button is never disabled by the count.** With n = 0 a tag is still cleared out (it is
   deactivated without a delete run); the dialog then says so in a sentence ("Es wird nichts bei 7TV
-  gelöscht; das Tag gilt danach als nicht mehr eingespielt.", for a tag that is not played in only
+  gelöscht; der Tag gilt danach als nicht mehr eingespielt.", for a tag that is not played in only
   "Es wird nichts bei 7TV gelöscht.") instead of the name list. The button is
   locked only while the shared-set check is still running, as in the delete dialog.
 - **The summary is the dialog's only status region** ("n Emotes werden entfernt, m bleiben im Set"),
