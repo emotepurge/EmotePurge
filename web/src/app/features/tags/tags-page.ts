@@ -488,12 +488,18 @@ export class TagsPage {
   constructor() {
     // A cell recycled under a resting pointer fires no mouseleave, so a scroll clears the pointer key
     // (focus survives: Tab scrolls a partly hidden cell into view and that cell should play).
+    // Through `viewport.scrollable`, not the viewport's own `elementScrolled()`: the grid scrolls
+    // with the window (`scrollWindow`), where the scrollable is the document and the viewport
+    // element itself never sees a `scroll` event; without `scrollWindow` the scrollable is the
+    // viewport, so one expression serves both.
     effect((onCleanup) => {
       const viewport = this.viewport();
       if (!viewport) {
         return;
       }
-      const subscription = viewport.elementScrolled().subscribe(() => this.pointerKey.set(null));
+      const subscription = viewport.scrollable
+        .elementScrolled()
+        .subscribe(() => this.pointerKey.set(null));
       this.renderedRange.set(viewport.getRenderedRange());
       subscription.add(
         viewport.renderedRangeStream.subscribe((range) => this.renderedRange.set(range)),

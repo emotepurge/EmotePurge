@@ -41,9 +41,10 @@ import {
   ImportConfirmDialogData,
 } from '../../shared/seven-tv/import-confirm-dialog';
 import { TagRunActions } from '../../shared/tags/tag-run-actions';
+import { EmoteSpriteAnimated } from '../../shared/emotes/emote-sprite-animated';
 import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { TagNameDialog } from './tag-name-dialog';
-import { TAG_FEEDBACK_MS, TagsPage } from './tags-page';
+import { TAG_FEEDBACK_MS, TagsPage, VIRTUALIZE_ABOVE } from './tags-page';
 
 /** jsdom has no ResizeObserver; the grid's column count is irrelevant here (it falls back to 1). */
 class FakeResizeObserver {
@@ -479,6 +480,73 @@ describe('TagsPage', () => {
       isCoarse.set(true);
       await settle(harness);
       expect(page.selection.selectedKeys()).toEqual([]);
+    });
+  });
+
+  // The grid's hover animation (feedback commit "animate tag grid emotes on hover"): one cell plays
+  // at a time — the hovered one before the focused one — and only an animated emote mounts the
+  // animation at all. Asserted through the cell that carries the animated sprite, by its name.
+  describe('hover animation', () => {
+    /** An animated emote: its stored still ends in `/4x_static.webp`. */
+    function animated(id: string): EmoteTagEntry {
+      return entry(id, { imageUrl: `https://cdn.7tv.app/emote/${id}/4x_static.webp` });
+    }
+
+    /** The names of the cells that mount the animated sprite right now. */
+    function playing(harness: RouterTestingHarness): string[] {
+      return harness.fixture.debugElement
+        .queryAll(By.directive(EmoteSpriteAnimated))
+        .map(
+          (sprite) =>
+            (sprite.nativeElement as HTMLElement)
+              .closest('[aria-label^="alias-"]')
+              ?.getAttribute('aria-label') ?? '',
+        );
+    }
+
+    function cell(harness: RouterTestingHarness, name: string): HTMLElement {
+      return cells(harness).find((candidate) => candidate.getAttribute('aria-label') === name)!;
+    }
+
+    async function fire(
+      harness: RouterTestingHarness,
+      target: EventTarget,
+      type: string,
+    ): Promise<void> {
+      target.dispatchEvent(new Event(type));
+      await settle(harness);
+    }
+
+    describe('in the virtualized grid, which scrolls with the window', () => {
+      const MANY = Array.from({ length: VIRTUALIZE_ABOVE + 1 }, (_, i) => animated(`v${i}`));
+
+      async function openVirtualized() {
+        const opened = await openDetail(MANY);
+        // jsdom has no layout: the CDK renders the rows its buffer covers on an animation frame.
+        for (let attempt = 0; attempt < 50 && cells(opened.harness).length === 0; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          await settle(opened.harness);
+        }
+        expect(cells(opened.harness).length).toBeGreaterThan(0);
+        return opened;
+      }
+
+      it('stops pointer playback when the window scrolls, but keeps a cell keyboard focus holds', async () => {
+        const { harness } = await openVirtualized();
+        await fire(harness, cell(harness, 'alias-v0'), 'mouseenter');
+        expect(playing(harness)).toEqual(['alias-v0']);
+
+        // The window's scroll: the document is what the CDK listens on under `scrollWindow`; the
+        // viewport element itself never sees it. The cell stays rendered — only the scroll ends it.
+        await fire(harness, document, 'scroll');
+        expect(cells(harness).map((each) => each.getAttribute('aria-label'))).toContain('alias-v0');
+        expect(playing(harness)).toEqual([]);
+
+        cell(harness, 'alias-v0').focus();
+        await settle(harness);
+        await fire(harness, document, 'scroll');
+        expect(playing(harness)).toEqual(['alias-v0']);
+      });
     });
   });
 
