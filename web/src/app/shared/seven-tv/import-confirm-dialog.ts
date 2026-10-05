@@ -1240,6 +1240,7 @@ export class ImportConfirmDialog {
       return;
     }
     if (plan.rows.length === 0) {
+      // Defensive: the button is already disabled in this state.
       if (this.emptyConfirmable() && !this.executeDisabled()) {
         this.dialogRef.close({
           targetSetId: target.setId,

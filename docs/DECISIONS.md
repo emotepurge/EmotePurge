@@ -445,7 +445,11 @@ when every offered row is already in the set, and the flow skips token prompt, r
 (nothing goes to 7TV), keeping only the set guard. Two empty plans deliberately do **not** count:
 one emptied by name collisions or other aliases (the dialog stays locked as before), and one emptied by
 held-back replace rows (`replaceSkippedDrift > 0` — it falls through to `startImport`, whose drift notice
-names it, and the tag stays unplayed). Both err towards "not played in", in line with spec 0a.
+names it, and the tag stays unplayed). Neither counts as a play-in, in line with spec 0a: a refused start does not activate the tag, whereas a
+run whose rows all failed does activate it (E26). The nothing-to-add exit decides on the dialog's first
+load, which may come from the preview cache (up to 60 s old). That is accepted because it is not
+destructive: a later removal finds no hits and deactivates the tag, and play-in stays available. The plan
+deliberately skips a re-read there.
 
 **Betrifft (Task 8, flow):** `web/src/app/shared/seven-tv/import-flow.ts` ·
 `web/src/app/shared/seven-tv/import-confirm-dialog.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts`
