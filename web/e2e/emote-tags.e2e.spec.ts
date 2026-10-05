@@ -920,6 +920,56 @@ test.describe('emote tag runs', () => {
     await expect(grid.locator('[aria-pressed="true"]')).toHaveCount(0);
   });
 
+  // Operator decision 2026-10-05, mirroring the clear-out: a marking narrows the play-in.
+  test('adds only the emotes marked in the grid: the button and the dialog count 2, two ADDs, and the marking goes once the run starts', async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await mockChannel(page);
+    // The operator's case: none of the tag's four emotes is in the set, two of them are marked.
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 4, inSetCount: 0 },
+    ]);
+    await mockTagEntries(page, CHANNEL, TAG_ID, [
+      { sevenTvEmoteId: '7tv-1', alias: 'catJAM', inSet: false },
+      { sevenTvEmoteId: '7tv-2', alias: 'monkaW', inSet: false },
+      { sevenTvEmoteId: '7tv-3', alias: 'KEKW', inSet: false },
+      { sevenTvEmoteId: '7tv-4', alias: 'PogU', inSet: false },
+    ]);
+    const operations = await mockTagOperations(page, CHANNEL, TAG_ID);
+    const placements = await mockTagPlacements(page, CHANNEL, TAG_ID);
+    const { sevenTv } = await mockRunBackend(page, [{ id: '7tv-9', alias: 'OMEGALUL' }]);
+    await gotoTagWithMissing(page);
+
+    const grid = page.getByRole('group', { name: 'Emotes in Favoriten' });
+    await grid.getByRole('button', { name: /^monkaW/ }).click();
+    await grid.getByRole('button', { name: /^PogU/ }).click();
+    await expect(page.getByText('2 markiert', { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Ins Set holen (2)' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('#app-dialog-title')).toContainText('2 Emotes');
+    await dialog.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(3_000);
+    await expect(page.getByText('2 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    await expect.poll(() => placements.requests.length).toBe(1);
+    expect([...sevenTv.adds].sort()).toEqual(['7tv-2', '7tv-4']);
+    expect(sevenTv.removes).toEqual([]);
+    // The placement report names exactly the two added emotes, under the registered operation.
+    const registered = operations.requests[0].body as { operationId: string };
+    expect(placements.requests[0].body).toEqual({
+      operationId: registered.operationId,
+      emoteSetId: ACTIVE_SET_ID,
+      targetOwnerTwitchId: OWNER_TWITCH_ID,
+      sevenTvEmoteIds: ['7tv-2', '7tv-4'],
+    });
+    // The marking went with the started run.
+    await expect(page.getByText('2 markiert', { exact: true })).toHaveCount(0);
+    await expect(grid.locator('[aria-pressed="true"]')).toHaveCount(0);
+  });
+
   test('an incompletely read set blocks both the play-in and the clear-out without a write', async ({
     page,
   }) => {
