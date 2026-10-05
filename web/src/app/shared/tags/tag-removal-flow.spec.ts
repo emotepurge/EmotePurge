@@ -829,6 +829,21 @@ describe('startTagRemovalFlow', () => {
         expect(harness.pending()).toBe(false);
       });
 
+      it('fails closed when the re-read answers malformed: nothing deleted, claim and pending released', () => {
+        const harness = setup({
+          entries: of(INACTIVE),
+          reread: () => of({ ...INACTIVE, entries: null } as unknown as EmoteTagEntries),
+        });
+        harness.run();
+
+        confirmationClosed(harness).next({ checkedIds: ['placed'] });
+
+        expect(harness.startDelete).not.toHaveBeenCalled();
+        expect(harness.notice()?.key).toBe('tags.errors.entriesUnavailable');
+        expect(harness.endConfirmedRun).toHaveBeenCalledOnce();
+        expect(harness.pending()).toBe(false);
+      });
+
       it('fails closed when the re-read never answers', () => {
         vi.useFakeTimers();
         try {

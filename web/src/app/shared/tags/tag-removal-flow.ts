@@ -111,7 +111,7 @@ export function splitOwnPlacements(
  * active one. `stateChanged`: the tag's activation or its own placements (the snapshot) differ, a
  * ticked emote is no longer an entry of the tag, or a ticked emote has a holder it did not have when
  * the dialog opened — another active tag that needs it, or another tag's placement. A holder the
- * dialog already showed is no change: the person ticked that row knowingly.
+ * dialog already showed (`toRow` lists both holder kinds on every path) is no change: the person ticked that row knowingly.
  */
 export function confirmTimeEntriesDrift(
   frozenSetId: string,
@@ -266,15 +266,21 @@ function confirm(
   const restart = (): void => startTagRemovalFlow(deps, request);
   deps.tagService
     .listEntries(request.channelName, request.tag.id, prepared.frozenSetId)
-    .pipe(timeoutReportAttempt())
-    .subscribe({
-      next: (fresh) => {
-        const drift = confirmTimeEntriesDrift(
+    .pipe(
+      timeoutReportAttempt(),
+      // In a `map`, so a malformed answer that makes the comparison throw reaches `error` (fail
+      // closed) instead of an unhandled throw in `next` that would leave the claim and `pending` set.
+      map((fresh) =>
+        confirmTimeEntriesDrift(
           prepared.frozenSetId,
           prepared.entries,
           fresh,
           checkedRows.map((row) => row.sevenTvEmoteId),
-        );
+        ),
+      ),
+    )
+    .subscribe({
+      next: (drift) => {
         if (drift === 'setChanged') {
           abort('massDelete.abortedByLock', 'massDelete.setChangedDuringConfirm');
           return;
