@@ -61,13 +61,15 @@ import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-sec
 import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
 import { ImportProgressSection } from '../../shared/seven-tv/import-progress-section';
 import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
-import { markedMissingCount } from '../../shared/tags/tag-play-in';
+import { markedInSetCount, markedMissingCount } from '../../shared/tags/tag-play-in';
 import {
   TagRunActions,
   TagRunFeedback,
   playInMarkingLocked,
+  removeMarkingLocked,
   settledTagPlayIn,
   settledTagRemoval,
+  tagHasSomethingToClear,
   tagMissesAnEmote,
 } from '../../shared/tags/tag-run-actions';
 import { TagRunOrphanNotice } from '../../shared/tags/tag-run-orphan-notice';
@@ -424,6 +426,23 @@ export class TagsPage {
   });
   /** The reason's element id, for the button's `aria-describedby`; one detail at a time. */
   protected readonly playInMarkingLockReasonId = 'tag-play-in-marking-lock-reason';
+  /** How many marked entries this page shows as in the set — the number "Aus dem Set entfernen"
+   *  carries with a marking, the mirror of `markedMissingCount` (operator decision 2026-10-05). */
+  protected readonly markedInSetCount = computed(() =>
+    markedInSetCount(this.entries(), this.selection.selectedKeys()),
+  );
+  /** Whether the marking locks "Aus dem Set entfernen" (nothing marked is in the set while the tag
+   *  has something to clear out) — explained in the same dock line, for the same reason. */
+  protected readonly removeMarkingLockShown = computed(() => {
+    const tag = this.selectedTag();
+    return (
+      tag !== null &&
+      this.tagRunsShown() &&
+      tagHasSomethingToClear(tag) &&
+      removeMarkingLocked(this.markedCount(), this.markedInSetCount())
+    );
+  });
+  protected readonly removeMarkingLockReasonId = 'tag-remove-marking-lock-reason';
   /** The small dock in the flow under the grid (spec 9.4, §8.7) — only while something is marked. */
   protected readonly dockShown = computed(() => this.selectable() && this.markedCount() > 0);
 

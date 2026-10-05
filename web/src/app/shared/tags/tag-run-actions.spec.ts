@@ -17,6 +17,7 @@ import { EmoteTagService } from '../../core/tags/emote-tag.service';
 import {
   TagRunActions,
   TagRunFeedback,
+  removeMarkingLocked,
   runButtonFocusTarget,
   settledTagPlayIn,
   settledTagRemoval,
@@ -32,6 +33,7 @@ const DE = {
       playInLockReason: { allMarkedInSet: 'Alle markierten Emotes sind schon im Set.' },
       remove: 'Aus dem Set entfernen',
       removeCount: 'Aus dem Set entfernen ({{count}})',
+      removeLockReason: { noneMarkedInSet: 'Keines der markierten Emotes ist im Set.' },
     },
     errors: {
       otherRunActive: 'Ein Lauf ({{kind}}) läuft auf einer anderen Seite.',
@@ -246,9 +248,12 @@ describe('TagRunActions', () => {
     });
   });
 
-  describe('the set-removal button carries the number of marked emotes', () => {
+  // Operator decision 2026-10-05: the mirror of "Ins Set holen (n)" — n counts the marked emotes the
+  // host shows in the set, and a marking with none of them there locks the button with its reason.
+  describe('the set-removal button carries the number of marked emotes in the set', () => {
     beforeEach(() => {
-      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3 }));
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 2 }));
+      fixture.componentRef.setInput('removeMarkedLockReasonId', 'host-remove-reason');
       fixture.detectChanges();
     });
 
@@ -256,15 +261,70 @@ describe('TagRunActions', () => {
       expect(button('Aus dem Set entfernen')).toBeDefined();
     });
 
-    it('shows how many are marked, and follows the marking', () => {
-      fixture.componentRef.setInput('markedIds', ['a', 'b']);
+    it('shows how many marked emotes are in the set, and follows the marking', () => {
+      fixture.componentRef.setInput('markedIds', ['a', 'b', 'c']);
+      fixture.componentRef.setInput('markedInSetCount', 2);
       fixture.detectChanges();
-      expect(button('Aus dem Set entfernen (2)')).toBeDefined();
+      const remove = button('Aus dem Set entfernen (2)')!;
+      expect(remove.disabled).toBe(false);
+      expect(remove.hasAttribute('aria-describedby')).toBe(false);
+      expect(remove.hasAttribute('title')).toBe(false);
       expect(button('Aus dem Set entfernen')).toBeUndefined();
 
       fixture.componentRef.setInput('markedIds', []);
+      fixture.componentRef.setInput('markedInSetCount', 0);
       fixture.detectChanges();
       expect(button('Aus dem Set entfernen')).toBeDefined();
+    });
+
+    it('stays, locked and explained, when none of the marked emotes is in the set', () => {
+      fixture.componentRef.setInput('markedIds', ['c']);
+      fixture.componentRef.setInput('markedInSetCount', 0);
+      fixture.detectChanges();
+
+      const remove = button('Aus dem Set entfernen (0)')!;
+      expect(remove.disabled).toBe(true);
+      expect(remove.getAttribute('aria-describedby')).toBe('host-remove-reason');
+      expect(remove.getAttribute('title')).toBe('Keines der markierten Emotes ist im Set.');
+    });
+
+    it('starts no flow from a click that outraces the marking lock', () => {
+      fixture.componentRef.setInput('markedIds', ['c']);
+      fixture.detectChanges();
+
+      (fixture.componentInstance as unknown as { remove(): void }).remove();
+
+      expect(listEntries).not.toHaveBeenCalled();
+    });
+
+    it('locks a played-in tag with nothing in the set only by a marking — without one it stays usable', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0, active: true }));
+      fixture.detectChanges();
+      expect(button('Aus dem Set entfernen')!.disabled).toBe(false);
+
+      fixture.componentRef.setInput('markedIds', ['a']);
+      fixture.detectChanges();
+      expect(button('Aus dem Set entfernen (0)')!.disabled).toBe(true);
+    });
+
+    it('links both reasons when a hidden run locks it as well', () => {
+      fixture.componentRef.setInput('markedIds', ['c']);
+      fixture.componentRef.setInput('unshownRunKinds', ['undo']);
+      startLocked.set(true);
+      activeRun.set('undo');
+      fixture.detectChanges();
+
+      const ids = button('Aus dem Set entfernen (0)')!.getAttribute('aria-describedby')!.split(' ');
+      expect(ids).toHaveLength(2);
+      expect(ids).toContain('host-remove-reason');
+    });
+  });
+
+  describe('removeMarkingLocked', () => {
+    it('locks only a marking with nothing of it in the set', () => {
+      expect(removeMarkingLocked(0, 0)).toBe(false);
+      expect(removeMarkingLocked(2, 0)).toBe(true);
+      expect(removeMarkingLocked(2, 1)).toBe(false);
     });
   });
 
@@ -334,8 +394,6 @@ describe('TagRunActions', () => {
       expect(playIn.disabled).toBe(false);
       expect(playIn.hasAttribute('aria-describedby')).toBe(false);
       expect(playIn.hasAttribute('title')).toBe(false);
-      // The clear-out still counts every marked emote.
-      expect(button('Aus dem Set entfernen (3)')).toBeDefined();
 
       fixture.componentRef.setInput('markedIds', []);
       fixture.componentRef.setInput('markedMissingCount', 0);
@@ -346,6 +404,7 @@ describe('TagRunActions', () => {
     it('stays, locked and explained, when none of the marked emotes is missing', () => {
       fixture.componentRef.setInput('markedIds', ['a']);
       fixture.componentRef.setInput('markedMissingCount', 0);
+      fixture.componentRef.setInput('markedInSetCount', 1);
       fixture.detectChanges();
 
       const playIn = button('Ins Set holen (0)')!;

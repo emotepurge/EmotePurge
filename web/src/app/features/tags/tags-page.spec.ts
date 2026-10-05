@@ -626,9 +626,8 @@ describe('TagsPage', () => {
 
       it("drops a focused cell's key once its row leaves the rendered range", async () => {
         const { harness } = await openVirtualized();
-        const viewport = harness.fixture.debugElement.query(
-          By.directive(CdkVirtualScrollViewport),
-        ).componentInstance as CdkVirtualScrollViewport;
+        const viewport = harness.fixture.debugElement.query(By.directive(CdkVirtualScrollViewport))
+          .componentInstance as CdkVirtualScrollViewport;
         cell(harness, 'alias-v0').focus();
         await settle(harness);
         expect(playing(harness)).toEqual(['alias-v0']);
@@ -1690,6 +1689,30 @@ describe('TagsPage', () => {
         expect(buttonByName(harness, 'Ins Set holen (1)')!.hasAttribute('aria-describedby')).toBe(
           false,
         );
+      });
+
+      it('counts the marked emotes in the set on "Aus dem Set entfernen", and locks it with the reason beside the marking when none is', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold', 4, 1), ENTRIES);
+        // e2 and e3 are not in the set.
+        cells(harness)[1].click();
+        cells(harness)[2].click();
+        await settle(harness);
+
+        const remove = buttonByName(harness, 'Aus dem Set entfernen (0)')!;
+        expect(remove.disabled).toBe(true);
+        const reason = (harness.routeNativeElement as HTMLElement).querySelector(
+          `#${remove.getAttribute('aria-describedby')}`,
+        );
+        expect(reason?.textContent?.trim()).toBe(de.tags.actions.removeLockReason.noneMarkedInSet);
+        expect(remove.getAttribute('title')).toBe(de.tags.actions.removeLockReason.noneMarkedInSet);
+
+        // e1 is in the set: the count follows, the lock and its reason go.
+        cells(harness)[0].click();
+        await settle(harness);
+        const unlocked = buttonByName(harness, 'Aus dem Set entfernen (1)')!;
+        expect(unlocked.disabled).toBe(false);
+        expect(unlocked.hasAttribute('aria-describedby')).toBe(false);
+        expect(text(harness)).not.toContain(de.tags.actions.removeLockReason.noneMarkedInSet);
       });
     });
   });

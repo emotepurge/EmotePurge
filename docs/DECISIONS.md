@@ -783,8 +783,9 @@ entfernen (n)"/"Remove from tag (n)" and "Tag löschen"/"Delete tag" act on the 
 unchanged. The tag status reads "n über den Tag ins Set geholt"/"n added to the set via this tag" (nothing
 at all for an active tag without placements); the same holds for the detail status line ("über den Tag ins Set geholt am …"), which is hidden when the tag is active but holds 0 placements. The tag-dock button names the tag only in its accessible
 name and title, after the visible words ("Aus dem Tag entfernen (2) – Name"), so the visible label stays
-contained in the accessible name. With a grid marking the set-removal button carries the number of marked
-entries like the dock does. The detail header is two groups with a visible gap (`gap-x-6`) between them: set
+contained in the accessible name. With a grid marking the set-removal button carries a number (first the
+number of marked entries like the dock does; since the same day's final review, the marked entries in the
+set — see "the clear-out's count mirrors the play-in's" below). The detail header is two groups with a visible gap (`gap-x-6`) between them: set
 actions (`TagRunActions`) on the left, tag actions (rename, delete) on the right; each button stays
 conditional, so the header does not shift when one appears. This supersedes the order "Einspielen ·
 Ausräumen · Umbenennen · [gap] · Löschen" quoted in the entries above and in UI-Designsprache §8.7.
@@ -955,6 +956,23 @@ placed; a new Testcontainers test pins a report of a subset of the missing entri
 `web/public/i18n/de.json` · `web/public/i18n/en.json` · the specs of the first four and of the tags
 page · `web/e2e/emote-tags.e2e.spec.ts` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` · `docs/UI-Designsprache.md`
+
+**Operator decision: the clear-out's count mirrors the play-in's (2026-10-05, final review M1).** "Aus dem
+Set entfernen (n)" counted every marked emote, so a marking of two missing emotes read "Aus dem Set
+entfernen (2)" on a clear-out that would propose nothing — and for an active tag its n = 0 report would
+deactivate the tag. Now n is the marked entries the page shows as in the set (`markedInSetCount`, the
+mirror of `markedMissingCount`; a label, the live read still decides what is proposed). A marking none of
+whose entries is in the set leaves the button standing but locked (`removeMarkingLocked`), with "Keines der
+markierten Emotes ist im Set." / "None of the marked emotes is in the set." in the marking's dock line,
+as its `aria-describedby` and title — the same mechanism as the play-in's lock. Without a marking nothing
+changes: an active tag with nothing in the set keeps a usable "Aus dem Set entfernen" (13.2). A marked
+entry is either in the set or not, so at most one of the two reasons stands at a time.
+
+**Betrifft (clear-out count mirrors the play-in):** `web/src/app/shared/tags/tag-play-in.ts`
+(`markedInSetCount`) · `web/src/app/shared/tags/tag-run-actions.ts` (`removeMarkingLocked`,
+`tagHasSomethingToClear`) · `web/src/app/features/tags/tags-page.ts` ·
+`web/src/app/features/tags/tags-page.html` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · the
+specs of the first three · `docs/UI-Designsprache.md` (§8.7)
 
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 

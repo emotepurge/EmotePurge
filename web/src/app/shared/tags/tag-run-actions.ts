@@ -87,6 +87,23 @@ export function playInMarkingLocked(markedCount: number, markedMissingCount: num
   return markedCount > 0 && markedMissingCount === 0;
 }
 
+/** Whether the tag has something to clear out — where "Aus dem Set entfernen" exists at all
+ *  (operator decision 2026-10-05, superseding spec 7.2's "only for a played-in tag"): an emote of the
+ *  tag in the set, or the tag being played in at all (13.2: the clear-out with nothing ticked is what
+ *  ends an activation with nothing left in the set). */
+export function tagHasSomethingToClear(
+  tag: Pick<EmoteTagSummary, 'active' | 'inSetCount'>,
+): boolean {
+  return tag.active || (tag.inSetCount ?? 0) > 0;
+}
+
+/** "Aus dem Set entfernen" with a grid marking none of whose entries is in the set — the mirror of
+ *  {@link playInMarkingLocked}: shown, locked, explained (operator decision 2026-10-05). Without a
+ *  marking the button stays usable, also for an active tag with nothing in the set. */
+export function removeMarkingLocked(markedCount: number, markedInSetCount: number): boolean {
+  return markedCount > 0 && markedInSetCount === 0;
+}
+
 /** The same for a tag clear-out. A tag-less delete run has **no** `tag` field (`undefined`). */
 export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
   return run !== null && run.tag !== undefined && run.phase === 'closed'
@@ -114,8 +131,10 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
  *
  * **A grid marking narrows both runs** (operator decisions 2026-10-05): the clear-out proposes the
  * marked emotes, the play-in adds only the marked ones that are missing, and each button carries the
- * number. A marking that misses nothing locks "Ins Set holen" without removing it
- * (`playInMarkingLocked`); the host shows the reason under `markedLockReasonId`. `runCommitted` tells
+ * number of marked emotes it is about (missing for one, in the set for the other). A marking that
+ * misses nothing locks "Ins Set holen" without removing it (`playInMarkingLocked`), one with nothing
+ * in the set locks "Aus dem Set entfernen" the same way (`removeMarkingLocked`); the host shows each
+ * reason under `markedLockReasonId` / `removeMarkedLockReasonId`. `runCommitted` tells
  * the host when either run went ahead, so it drops the marking.
  *
  * `completed` fires when a tag run this page can see closes, or its tag report succeeds on a
@@ -163,12 +182,17 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
                 type="button"
                 appButton="danger"
                 class="disabled:cursor-not-allowed"
-                [disabled]="locked()"
-                [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
+                [disabled]="locked() || removeLocked()"
+                [attr.aria-describedby]="removeDescribedBy()"
+                [attr.title]="
+                  removeLocked()
+                    ? ('tags.actions.removeLockReason.noneMarkedInSet' | transloco)
+                    : null
+                "
                 (click)="remove()"
               >
                 @if (markedCount() > 0) {
-                  {{ 'tags.actions.removeCount' | transloco: { count: markedCount() } }}
+                  {{ 'tags.actions.removeCount' | transloco: { count: markedInSetCount() } }}
                 } @else {
                   {{ 'tags.actions.remove' | transloco }}
                 }
@@ -231,6 +255,12 @@ export class TagRunActions {
    *  tags page in the marking's own dock line under the grid — and under the same condition
    *  (`playInMarkingLocked`); the button points `aria-describedby` at it and repeats it as its title. */
   readonly markedLockReasonId = input<string | null>(null);
+  /** How many of the marked entries the host shows as in the set (`markedInSetCount`) — the number
+   *  "Aus dem Set entfernen" carries with a marking. A label, not a decision, like its mirror above. */
+  readonly markedInSetCount = input(0);
+  /** The id of the host's visible text saying why "Aus dem Set entfernen" is locked by the marking —
+   *  rendered like `markedLockReasonId`, under `removeMarkingLocked`. */
+  readonly removeMarkedLockReasonId = input<string | null>(null);
 
   readonly completed = output<void>();
   /** A click (or a retry) started a flow. */
@@ -274,16 +304,18 @@ export class TagRunActions {
    *  active — or the tag being played in at all. The latter keeps a played-in tag with nothing in
    *  the set clearable (an undo of its play-in, entries taken out of it): the clear-out with nothing
    *  ticked is what deactivates it (13.2). */
-  protected readonly removeShown = computed(() => {
-    const tag = this.tag();
-    return tag.active || (tag.inSetCount ?? 0) > 0;
-  });
-  /** How many emotes the host's grid has marked. The clear-out button carries the number, as the
-   *  tags page's own dock button does — a marking is the clear-out's proposal (spec 9.4). */
+  protected readonly removeShown = computed(() => tagHasSomethingToClear(this.tag()));
+  /** How many emotes the host's grid has marked — whether a marking exists; each run button then
+   *  carries the number of marked emotes it is about. */
   protected readonly markedCount = computed(() => this.markedIds().length);
   /** "Ins Set holen" with a marking that misses nothing — shown, locked, explained. */
   protected readonly markingLocked = computed(() =>
     playInMarkingLocked(this.markedCount(), this.markedMissingCount()),
+  );
+  /** "Aus dem Set entfernen" with a marking none of whose emotes is in the set — shown, locked,
+   *  explained. */
+  protected readonly removeLocked = computed(() =>
+    removeMarkingLocked(this.markedCount(), this.markedInSetCount()),
   );
   /** At least one run button stands; the button row and the lock reason exist only then. */
   protected readonly anyButton = computed(() => this.playInShown() || this.removeShown());
@@ -300,6 +332,14 @@ export class TagRunActions {
   /** Both reasons "Ins Set holen" can be locked for, as one `aria-describedby`. */
   protected readonly playInDescribedBy = computed(() => {
     const markedReason = this.markingLocked() ? this.markedLockReasonId() : null;
+    const ids = [this.otherRunKey() ? this.otherRunReasonId : null, markedReason].filter(
+      (id): id is string => id !== null,
+    );
+    return ids.length > 0 ? ids.join(' ') : null;
+  });
+  /** Both reasons "Aus dem Set entfernen" can be locked for, as one `aria-describedby`. */
+  protected readonly removeDescribedBy = computed(() => {
+    const markedReason = this.removeLocked() ? this.removeMarkedLockReasonId() : null;
     const ids = [this.otherRunKey() ? this.otherRunReasonId : null, markedReason].filter(
       (id): id is string => id !== null,
     );
@@ -412,7 +452,7 @@ export class TagRunActions {
   }
 
   protected remove(): void {
-    if (this.locked()) {
+    if (this.locked() || this.removeLocked()) {
       return;
     }
     this.started.emit();

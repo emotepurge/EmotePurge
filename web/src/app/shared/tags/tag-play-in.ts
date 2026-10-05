@@ -73,6 +73,23 @@ export function markedMissingCount(
   return entries.filter((entry) => marked.has(entry.sevenTvEmoteId) && entry.inSet !== true).length;
 }
 
+/**
+ * How many of the marked entries the host page shows as in the set — the number "Aus dem Set
+ * entfernen" carries with a marking, the mirror of {@link markedMissingCount}. A label, not a
+ * decision: the clear-out proposes what the live read finds in the set. An entry with no known
+ * state (`inSet: null`) is not known to be present and does not count.
+ */
+export function markedInSetCount(
+  entries: readonly EmoteTagEntry[],
+  markedIds: readonly string[],
+): number {
+  if (markedIds.length === 0) {
+    return 0;
+  }
+  const marked = new Set(markedIds);
+  return entries.filter((entry) => marked.has(entry.sevenTvEmoteId) && entry.inSet === true).length;
+}
+
 /** The import source of a tag play-in: the rows to add, tagged with the `tag` origin. Nothing is
  *  collapsed or discarded here — a tag's entries are unique by id already. */
 export function buildTagImportSource(

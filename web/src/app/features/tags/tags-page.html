@@ -215,6 +215,8 @@
                         [markedIds]="selection.selectedKeys()"
                         [markedMissingCount]="markedMissingCount()"
                         [markedLockReasonId]="playInMarkingLockReasonId"
+                        [markedInSetCount]="markedInSetCount()"
+                        [removeMarkedLockReasonId]="removeMarkingLockReasonId"
                         (started)="onTagRunStarted()"
                         (completed)="onTagRunCompleted()"
                         (runCommitted)="clearSelection()"
@@ -416,12 +418,19 @@
                 <button type="button" appButton="outline" (click)="clearSelection()">
                   {{ 'tags.actions.clearSelection' | transloco }}
                 </button>
-                <!-- Why "Ins Set holen" in the head is locked by this marking (§10). Here, beside the
-                     marking, and not under the button: the line exists only with a marking anyway,
-                     so the reason coming and going moves neither the header nor the grid. -->
+                <!-- Why "Ins Set holen" or "Aus dem Set entfernen" in the head is locked by this
+                     marking (§10). Here, beside the marking, and not under the button: the line
+                     exists only with a marking anyway, so the reason coming and going moves neither
+                     the header nor the grid. At most one holds: a marked entry is either in the set
+                     or not. -->
                 @if (playInMarkingLockShown()) {
                   <span [id]="playInMarkingLockReasonId" class="text-xs text-fg-muted">
                     {{ 'tags.actions.playInLockReason.allMarkedInSet' | transloco }}
+                  </span>
+                }
+                @if (removeMarkingLockShown()) {
+                  <span [id]="removeMarkingLockReasonId" class="text-xs text-fg-muted">
+                    {{ 'tags.actions.removeLockReason.noneMarkedInSet' | transloco }}
                   </span>
                 }
               </div>

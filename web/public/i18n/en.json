@@ -1787,7 +1787,10 @@
         "allMarkedInSet": "All marked emotes are already in the set."
       },
       "remove": "Remove from set",
-      "removeCount": "Remove from set ({{count}})"
+      "removeCount": "Remove from set ({{count}})",
+      "removeLockReason": {
+        "noneMarkedInSet": "None of the marked emotes is in the set."
+      }
     },
     "filter": {
       "label": "Tag",

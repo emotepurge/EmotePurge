@@ -4,6 +4,7 @@ import type { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries
 import type { EmoteTagEntry } from '../../core/tags/emote-tag.model';
 import {
   buildTagImportSource,
+  markedInSetCount,
   markedMissingCount,
   partitionTagPlayIn,
   playInCandidates,
@@ -121,5 +122,24 @@ describe('markedMissingCount', () => {
   it('is 0 without a marking and for a marking of entries all in the set', () => {
     expect(markedMissingCount(entries, [])).toBe(0);
     expect(markedMissingCount(entries, ['in'])).toBe(0);
+  });
+});
+
+describe('markedInSetCount', () => {
+  const entries = [
+    entry('in', { inSet: true }),
+    entry('in-2', { inSet: true }),
+    entry('out', { inSet: false }),
+    entry('unknown', { inSet: null }),
+  ];
+
+  it('counts the marked entries the page shows in the set — an unknown state is not "in the set"', () => {
+    expect(markedInSetCount(entries, ['in', 'out', 'unknown', 'gone'])).toBe(1);
+    expect(markedInSetCount(entries, ['in', 'in-2'])).toBe(2);
+  });
+
+  it('is 0 without a marking and for a marking of entries none of which is in the set', () => {
+    expect(markedInSetCount(entries, [])).toBe(0);
+    expect(markedInSetCount(entries, ['out', 'unknown'])).toBe(0);
   });
 });
