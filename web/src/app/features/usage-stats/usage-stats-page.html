@@ -245,8 +245,8 @@
            the reset that clears it too. Not rendered at all until the channel has a tag — no
            permanent control for channels that never use one. A native select: one choice out of a
            list of names, no refetch of the rows behind it (the keys narrow what is loaded). Capped
-           in width so a 40-character name cannot push the row apart; the inline group repeats the
-           name in full. -->
+           in width so a 40-character name cannot push the row apart. The tag's runs and its
+           not-in-the-set numbers are on the tags page, not here (#201 T-C feedback). -->
       @if (tagFilterShown()) {
         <select
           class="app-input-sm max-w-48"
@@ -262,58 +262,6 @@
             </option>
           }
         </select>
-      }
-      <!-- The chosen tag in the same row (spec 9.2): name · played in · k in the set · m not in
-           the set, then "Einspielen"/"Ausräumen" (#201 T-C), then the way to the tag's own page.
-           The numbers are counted against the active set and drop out together when there is none
-           to count in (`inSetCount: null`). In a view of another set the sentence stands in the
-           buttons' slot instead (spec 8). Middle dots are separators only and stay out
-           of the accessibility tree. -->
-      @if (selectedTag(); as tag) {
-        <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-muted">
-          <span class="max-w-60 truncate font-medium text-fg-body">{{ tag.name }}</span>
-          @if (tag.active) {
-            <span aria-hidden="true">·</span>
-            <span>{{ 'tags.filter.active' | transloco }}</span>
-          }
-          @if (selectedTagCounts(); as counts) {
-            <span aria-hidden="true">·</span>
-            <span>{{ counts.inSetKey | transloco: { count: formatCount(counts.inSet) } }}</span>
-            <span aria-hidden="true">·</span>
-            <span>{{
-              counts.notInSetKey | transloco: { count: formatCount(counts.notInSet) }
-            }}</span>
-          }
-          @if (tagActiveSetOnlyShown()) {
-            <span aria-hidden="true">·</span>
-            <span>{{ 'tags.filter.activeSetOnly' | transloco }}</span>
-          } @else if (tagRunActionsShown()) {
-            <!-- Mounted on the gate rather than always with [enabled]: everything in it is stable
-                 across a live reload (the tag list keeps its value while it reloads, the active set
-                 and the shown set only move together on a real set switch), so the component — and
-                 a dialog its flow has open — survives a channel.synced reload, which must not read
-                 as a set switch. The active set is the live one from the set status, never the shown set: the flows'
-                 confirm-time guard compares against exactly this input. -->
-            <app-tag-run-actions
-              class="text-sm"
-              [channelName]="channelName()"
-              [tag]="tag"
-              [activeEmoteSetId]="activeEmoteSetId()"
-              [setName]="activeEmoteSetName()"
-              [enabled]="true"
-              (completed)="onTagRunCompleted()"
-              (feedback)="onTagRunFeedback($event)"
-            />
-          }
-          <!-- min-h-6: a 24 px target (§10) for a link set in 12 px text. -->
-          <a
-            routerLink="../tags"
-            [queryParams]="{ tag: tag.id }"
-            class="inline-flex min-h-6 items-center text-accent-fg underline-offset-2 hover:underline"
-          >
-            <span aria-hidden="true">→&nbsp;</span>{{ 'tags.filter.overview' | transloco }}
-          </a>
-        </span>
       }
       <!-- Only while something is filtered, like the audit log's. Until now the way back existed
            only when the filter emptied the sheet completely — the reset lived in the empty state.
@@ -414,18 +362,9 @@
           }
         </span>
       }
-      <!-- What a tag flow still said after its TagRunActions above was torn down — a live set
-           switch unmounts it behind an open dialog (TagRunNoticeSink, #201 T-C): the abort that
-           would otherwise pass in silence, or a report's failure with its retry. Its own region
-           pair, for the same reason as the acknowledgements above. -->
-      <app-tag-run-orphan-notice
-        [channelName]="channelName()"
-        (completed)="onTagRunCompleted()"
-        (feedback)="onTagRunFeedback($event)"
-      />
       <!-- A failed removal from the tag, the tag's entries that could not be loaded (the filter
            then lets every row through), or the tag list that could not be loaded while a tag is
-           chosen (select and summary are gone, the grid stays narrowed) — a state, not an
+           chosen (the select is gone, the grid stays narrowed) — a state, not an
            acknowledgement, so a banner that stays (§4.5). Gated on the filter's tag id, not on
            `selectedTag()`: a narrowed grid must never stand without an explanation. -->
       @if (usageFilter.tagId() !== null && tagErrorKey(); as errorKey) {

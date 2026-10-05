@@ -1788,18 +1788,7 @@
     },
     "filter": {
       "label": "Tag",
-      "all": "Alle Tags",
-      "inSet": {
-        "one": "{{count}} im Set",
-        "other": "{{count}} im Set"
-      },
-      "notInSet": {
-        "one": "{{count}} nicht im Set",
-        "other": "{{count}} nicht im Set"
-      },
-      "overview": "Übersicht",
-      "activeSetOnly": "Einspielen und Ausräumen wirken auf das aktive Set",
-      "active": "eingespielt"
+      "all": "Alle Tags"
     },
     "feedback": {
       "assigned": {

@@ -139,7 +139,10 @@ test.describe('emote tags', () => {
     await expect(cell(page, 'KEKW')).toHaveCount(0);
     await expect(cell(page, 'Sadge')).toHaveCount(0);
 
-    await page.getByRole('link', { name: 'Übersicht', exact: true }).click();
+    // The usage page has no summary of the tag and no link on: the way to the tags page is the
+    // channel's tab, and the list's link chooses the tag.
+    await page.getByRole('link', { name: 'Tags', exact: true }).first().click();
+    await page.getByRole('list', { name: 'Tags' }).getByRole('link', { name: 'Favoriten' }).click();
     await expect(page).toHaveURL(
       new RegExp(`/channels/${CHANNEL}/tags\\?tag=${FIRST_NEW_TAG_ID}$`),
     );
@@ -178,11 +181,11 @@ test.describe('emote tags', () => {
     await expect(page.getByText('Beste gelöscht.').first()).toBeVisible();
   });
 
-  test('without the active set in view there is no assign button, and the filter says why', async ({
+  test('without the active set in view there is no assign button; the usage page never offers tag runs', async ({
     page,
   }) => {
-    // The sentence explains the missing tag-run buttons, so it needs tag runs switched on (#201
-    // T-C, spec 8: it stands in the buttons' slot).
+    // Tag runs are on, and still not here: Einspielen/Ausräumen live on the tags page only
+    // (operator feedback 2026-10-05).
     await mockChannel(page, { tagRunsEnabled: true });
     await mockTags(page, CHANNEL, [{ id: 7, name: 'Favoriten', entryCount: 1, inSetCount: 1 }]);
     await mockTagEntries(page, CHANNEL, 7, [{ sevenTvEmoteId: '7tv-1', alias: 'catJAM' }]);
@@ -199,6 +202,8 @@ test.describe('emote tags', () => {
     await cell(page, 'catJAM').click();
     await expect(page.getByRole('button', { name: 'Tag zuweisen…' })).toBeVisible();
     await page.getByRole('combobox', { name: 'Tag' }).selectOption({ label: 'Favoriten' });
+    await expect(page.getByRole('button', { name: 'Einspielen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Ausräumen' })).toHaveCount(0);
 
     // Deep-link to the other set (the URL is what carries the view); the tag filter set above is
     // page state, so choose it again there.
@@ -208,10 +213,8 @@ test.describe('emote tags', () => {
     await page.getByRole('combobox', { name: 'Tag' }).selectOption({ label: 'Favoriten' });
     await cell(page, 'catJAM').click();
 
-    await expect(
-      page.getByText('Einspielen und Ausräumen wirken auf das aktive Set'),
-    ).toBeVisible();
     await expect(page.getByRole('button', { name: 'Tag zuweisen…' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Einspielen' })).toHaveCount(0);
   });
 });
 
@@ -268,8 +271,8 @@ test.describe('emote tags on a touch device', () => {
 });
 
 /**
- * Tag play-in and clear-out (#201 T-C, spec 11 scenarios 2-8): the run buttons on the usage page's
- * filter row and the tags page, against mocked `/api/**` and a mocked 7TV GQL that holds the live
+ * Tag play-in and clear-out (#201 T-C, spec 11 scenarios 2-8): the run buttons on the tags page
+ * (the only surface that offers them), against mocked `/api/**` and a mocked 7TV GQL that holds the live
  * set. Every scenario counts the mutations 7TV saw (`addEmote`/`removeEmote`) and asserts the exact
  * number, 0 where nothing may be written.
  */
@@ -396,10 +399,10 @@ async function mockSwitchableActiveSet(page: Page): Promise<(emoteSetId: string)
   };
 }
 
-/** The usage page with `Favoriten` chosen in the tag filter. */
-async function gotoUsageWithTag(page: Page): Promise<void> {
-  await gotoUsage(page);
-  await page.getByRole('combobox', { name: 'Tag' }).selectOption({ label: 'Favoriten' });
+/** The tags page with `Favoriten` chosen — and "Einspielen" there, so the tag has a missing emote. */
+async function gotoTagWithMissing(page: Page): Promise<void> {
+  await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
+  await expect(page.getByRole('heading', { name: 'Favoriten', level: 3 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Einspielen' })).toBeVisible();
 }
 
@@ -424,7 +427,7 @@ test.describe('emote tag runs', () => {
     const { sevenTv, syncImported } = await mockRunBackend(page, [
       { id: '7tv-1', alias: 'catJAM' },
     ]);
-    await gotoUsageWithTag(page);
+    await gotoTagWithMissing(page);
 
     await playIn(page).click();
     const dialog = page.getByRole('dialog');
@@ -487,7 +490,7 @@ test.describe('emote tag runs', () => {
     const { sevenTv, syncImported } = await mockRunBackend(page, [
       { id: '7tv-1', alias: 'catJAM' },
     ]);
-    await gotoUsageWithTag(page);
+    await gotoTagWithMissing(page);
     await expect(clearOut(page)).toHaveCount(0);
 
     await playIn(page).click();
@@ -509,9 +512,10 @@ test.describe('emote tag runs', () => {
     expect(sevenTv.adds).toEqual([]);
     expect(sevenTv.removes).toEqual([]);
     expect(syncImported).toEqual([]);
-    // Played in: the filter row now offers the clear-out and says so.
+    // Played in: the tag's page now offers the clear-out and says so.
     await expect(clearOut(page)).toBeVisible();
-    await expect(page.getByText('eingespielt', { exact: true }).first()).toBeVisible();
+    // "eingespielt" opens the state wherever it stands (list line, detail head), whatever follows.
+    await expect(page.getByText(/^eingespielt\b/).first()).toBeVisible();
   });
 
   test('clears a tag out: only the ticked placement goes, the report names ids and revisions, and the tag is no longer played in', async ({
@@ -692,7 +696,7 @@ test.describe('emote tag runs', () => {
       [{ id: '7tv-1', alias: 'catJAM' }],
       { incompleteRead: true },
     );
-    await gotoUsageWithTag(page);
+    await gotoTagWithMissing(page);
 
     const reason =
       'Die Einträge des Sets konnten nur teilweise von 7TV gelesen werden — es wurde nichts geändert.';
@@ -738,7 +742,7 @@ test.describe('emote tag runs', () => {
     const { sevenTv, syncImported } = await mockRunBackend(page, [
       { id: '7tv-1', alias: 'catJAM' },
     ]);
-    await gotoUsageWithTag(page);
+    await gotoTagWithMissing(page);
 
     await playIn(page).click();
 
@@ -770,22 +774,21 @@ test.describe('emote tag runs', () => {
     const { sevenTv, syncImported } = await mockRunBackend(page, [
       { id: '7tv-1', alias: 'catJAM' },
     ]);
-    await gotoUsageWithTag(page);
+    await gotoTagWithMissing(page);
 
     await playIn(page).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByText('Aus Tag Favoriten')).toBeVisible();
 
-    // The channel's active set moves on while the dialog is open: the usage page reads it again on
+    // The channel's active set moves on while the dialog is open: the tags page reads it again on
     // `channel.synced`.
     switchActiveSet(OTHER_SET_ID);
     await emitLive(page, { type: 'channel.synced', channel: CHANNEL });
     await page.clock.runFor(2_000);
-    // The page has taken over the new set before the confirmation is clicked, and the run buttons
-    // were torn down with the old one. (The open dialog hides the page behind it from the
-    // accessibility tree.)
+    // The page has taken over the new set before the confirmation is clicked: its header line
+    // names it. (A text query, since the open dialog hides the page from the accessibility tree.)
     await expect(
-      page.getByRole('button', { name: 'Set: Halloween', includeHidden: true }),
+      page.getByText('Die Zahlen beziehen sich auf das aktive Set Halloween.'),
     ).toBeVisible();
 
     await dialog.getByRole('button', { name: 'Kopieren' }).click();
@@ -819,7 +822,7 @@ test.describe('emote tag runs', () => {
     const { sevenTv, syncImported } = await mockRunBackend(page, [
       { id: '7tv-1', alias: 'catJAM' },
     ]);
-    await gotoUsageWithTag(page);
+    await gotoTagWithMissing(page);
 
     // The server moved the channel to another set; the page has not heard of it yet.
     await mockTagEntries(page, CHANNEL, TAG_ID, entries, { isActiveSet: false });

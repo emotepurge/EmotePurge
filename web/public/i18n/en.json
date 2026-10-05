@@ -1788,18 +1788,7 @@
     },
     "filter": {
       "label": "Tag",
-      "all": "All tags",
-      "inSet": {
-        "one": "{{count}} in the set",
-        "other": "{{count}} in the set"
-      },
-      "notInSet": {
-        "one": "{{count}} not in the set",
-        "other": "{{count}} not in the set"
-      },
-      "overview": "Overview",
-      "activeSetOnly": "Playing in and clearing out act on the active set",
-      "active": "played in"
+      "all": "All tags"
     },
     "feedback": {
       "assigned": {

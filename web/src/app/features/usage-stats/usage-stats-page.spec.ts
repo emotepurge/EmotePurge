@@ -78,7 +78,6 @@ import { ExportDialogData } from '../../shared/export/export-dialog';
 import { JSON_MIME } from '../../shared/export/export-envelope';
 import { ExportPurposeId } from '../../shared/export/usage-export-purposes';
 import { TagAssignDialogData, TagAssignDialogResult } from '../../shared/tags/tag-assign-dialog';
-import { TagRunActions } from '../../shared/tags/tag-run-actions';
 import { CreateVoteSessionDialogData } from './create-vote-session-dialog';
 import { UsageStatsPage } from './usage-stats-page';
 
@@ -6267,12 +6266,11 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
 });
 
 /**
- * #201 T-B (spec 7.0, 7.0a, 9.1, 9.2, 8): the tag filter in row two, the inline summary of the chosen
- * tag, the two dock actions and their acknowledgement. Template replaced as in the blocks above —
+ * #201 T-B (spec 7.0, 7.0a, 9.1, 9.2, 8): the tag filter in row two, the two dock actions and their acknowledgement. Template replaced as in the blocks above —
  * what is under test is the page's own decisions (what is shown, what is sent, what is said), read
  * from its signals; which `@if` renders them is the audit harness's and the e2e suite's job.
  */
-describe('UsageStatsPage — tags: filter, inline summary, dock actions, messages (#201 T-B)', () => {
+describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', () => {
   let fixture: ComponentFixture<UsageStatsPage>;
   let component: UsageStatsPage;
   let httpMock: HttpTestingController;
@@ -6385,7 +6383,6 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     tags: EmoteTagSummary[];
     totals?: EmoteUsageTotalDto[];
     canManage?: boolean;
-    tagRunsEnabled?: boolean;
     coarse?: boolean;
     emoteSetId?: string;
     activeEmoteSetId?: string;
@@ -6407,7 +6404,7 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     httpMock.expectOne('/api/channels/a/permissions').flush({
       canManage: options.canManage ?? true,
       canViewUsageStats: true,
-      tagRunsEnabled: options.tagRunsEnabled ?? false,
+      tagRunsEnabled: false,
     });
     httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
       setStatus({
@@ -6528,19 +6525,10 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
       '7tv-c',
     ]);
     expect(component['selectedTag']()?.name).toBe('Stronghold');
-    expect(component['selectedTagCounts']()).toMatchObject({ inSet: 2, notInSet: 3 });
 
     component['onTagFilterChange']('');
     expect(component['usageFilter'].tagId()).toBeNull();
     expect(component['filteredEmotes']()).toHaveLength(3);
-  });
-
-  it('drops the numbers when the counts have no set to refer to', async () => {
-    await open({ tags: [tag(4, 'Stronghold', { inSetCount: null })] });
-    await chooseTag(4, ['7tv-a']);
-
-    expect(component['selectedTag']()).not.toBeNull();
-    expect(component['selectedTagCounts']()).toBeNull();
   });
 
   it('"Filter zurücksetzen" clears the tag with the other filters', async () => {
@@ -6600,25 +6588,16 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     expect(component['tagAssignShown']()).toBe(false);
   });
 
-  it('in a view of another set: no tag action, the filter still works, and the sentence says why (spec 8)', async () => {
-    await open({ tags: [tag(4, 'Stronghold')], emoteSetId: 'set-b', tagRunsEnabled: true });
+  it('in a view of another set: no tag action, the filter still works', async () => {
+    await open({ tags: [tag(4, 'Stronghold')], emoteSetId: 'set-b' });
     mark('7tv-a');
 
     expect(component['tagAssignShown']()).toBe(false);
-    expect(component['tagActiveSetOnlyShown']()).toBe(false);
 
     await chooseTag(4, ['7tv-b']);
 
     expect(component['filteredEmotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-b']);
     expect(component['tagUnassignShown']()).toBe(false);
-    expect(component['tagActiveSetOnlyShown']()).toBe(true);
-  });
-
-  it('says nothing about the active set in the active view', async () => {
-    await open({ tags: [tag(4, 'Stronghold')] });
-    await chooseTag(4, ['7tv-a']);
-
-    expect(component['tagActiveSetOnlyShown']()).toBe(false);
   });
 
   it('offers "Aus Tag entfernen" only with a tag filter, counting the marked emotes that are in the tag', async () => {
@@ -6855,156 +6834,5 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     fixture.detectChanges();
     expect(button?.disabled).toBe(false);
     expect(button?.hasAttribute('aria-describedby')).toBe(false);
-  });
-
-  describe('tag runs in the inline group (#201 T-C, spec 9.2)', () => {
-    const IMAGE = 'https://cdn.7tv.app/emote/x/1x.webp';
-    const TOTALS = (): EmoteUsageTotalDto[] => [
-      { ...emote('a', 'PeepoA'), imageUrl: IMAGE },
-      { ...emote('b', 'PeepoB'), imageUrl: IMAGE },
-    ];
-
-    function runActions(): TagRunActions | null {
-      const found = fixture.debugElement.query(By.directive(TagRunActions));
-      return found ? (found.componentInstance as TagRunActions) : null;
-    }
-
-    it('offers them in a view of the active set, to a non-manager too (E9), fed the live active set', async () => {
-      await open({
-        tags: [tag(4, 'Stronghold')],
-        totals: TOTALS(),
-        canManage: false,
-        tagRunsEnabled: true,
-        realTemplate: true,
-      });
-      await chooseTag(4, ['7tv-a']);
-
-      const actions = runActions();
-      expect(actions).not.toBeNull();
-      // The active set from the set status — what the flows' confirm-time guard compares against.
-      expect(actions!.activeEmoteSetId()).toBe(component['activeEmoteSetId']());
-      expect(actions!.activeEmoteSetId()).toBe('set-a');
-      expect(actions!.tag().id).toBe(4);
-      expect(component['tagActiveSetOnlyShown']()).toBe(false);
-    });
-
-    it('has neither the buttons nor the sentence while tag runs are switched off', async () => {
-      await open({ tags: [tag(4, 'Stronghold')], totals: TOTALS(), realTemplate: true });
-      await chooseTag(4, ['7tv-a']);
-      expect(runActions()).toBeNull();
-
-      await open({ tags: [tag(4, 'Stronghold')], emoteSetId: 'set-b' });
-      await chooseTag(4, ['7tv-b']);
-      expect(component['tagActiveSetOnlyShown']()).toBe(false);
-    });
-
-    it('puts the sentence, not the buttons, in a view of another set', async () => {
-      await open({ tags: [tag(4, 'Stronghold')], emoteSetId: 'set-b', tagRunsEnabled: true });
-      await chooseTag(4, ['7tv-b']);
-
-      expect(component['tagRunActionsShown']()).toBe(false);
-      expect(component['tagActiveSetOnlyShown']()).toBe(true);
-    });
-
-    it('has no buttons on a coarse pointer, nor without an active set', async () => {
-      await open({ tags: [tag(4, 'Stronghold')], tagRunsEnabled: true, coarse: true });
-      await chooseTag(4, ['7tv-a']);
-      expect(component['tagRunActionsShown']()).toBe(false);
-
-      await open({ tags: [tag(4, 'Stronghold')], tagRunsEnabled: true, activeEmoteSetId: '' });
-      await chooseTag(4, ['7tv-a']);
-      expect(component['tagRunActionsShown']()).toBe(false);
-    });
-
-    it('says "eingespielt" in the group only for a tag played in to the active set', async () => {
-      await open({
-        tags: [tag(4, 'Stronghold', { active: true }), tag(5, 'Spooky')],
-        totals: TOTALS(),
-        realTemplate: true,
-      });
-      await chooseTag(4, ['7tv-a']);
-      expect(fixture.nativeElement.textContent).toContain('tags.filter.active');
-
-      await chooseTag(5, ['7tv-a']);
-      expect(fixture.nativeElement.textContent).not.toContain('tags.filter.active');
-    });
-
-    it("reloads the tag and its keys when a run completes, and shows the run's feedback on the count line", async () => {
-      await open({
-        tags: [tag(4, 'Stronghold')],
-        totals: TOTALS(),
-        tagRunsEnabled: true,
-        realTemplate: true,
-      });
-      await chooseTag(4, ['7tv-a']);
-
-      runActions()!.feedback.emit({
-        key: 'tags.feedback.allPresent.one',
-        params: { count: 1, tag: 'Stronghold' },
-      });
-      runActions()!.completed.emit();
-      fixture.detectChanges();
-
-      expect(component['tagFeedback']()).toEqual([
-        { key: 'tags.feedback.allPresent.one', params: { count: 1, tag: 'Stronghold' } },
-      ]);
-      expect(tagListRequests()).toHaveLength(1);
-      flushTags([tag(4, 'Stronghold', { active: true })]);
-      flushEntries(4, ['7tv-a']);
-      await settle();
-    });
-
-    it('keeps the same TagRunActions through a channel.synced reload of the same set, and drops it on a set switch', async () => {
-      await open({
-        tags: [tag(4, 'Stronghold')],
-        totals: TOTALS(),
-        tagRunsEnabled: true,
-        realTemplate: true,
-      });
-      await chooseTag(4, ['7tv-a']);
-      const before = runActions();
-      expect(before).not.toBeNull();
-
-      const reload = async (activeEmoteSetId: string): Promise<void> => {
-        const source = FakeEventSource.instances.find(
-          (candidate) => candidate.url === channelLiveUrl('a'),
-        )!;
-        source.emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
-        await new Promise((resolve) => setTimeout(resolve, CHANNEL_RELOAD_DEBOUNCE_MS + 20));
-        fixture.detectChanges();
-        // Mid-reload: the tag list is out again, the component must still be the same one.
-        expect(runActions()).toBe(before);
-        httpMock
-          .expectOne('/api/channels/a/emotes/active-set')
-          .flush(setStatus({ activeEmoteSetId, trackedSince: '2026-01-01T00:00:00Z' }));
-        await settle();
-        httpMock
-          .match((r) => r.url === '/api/channels/a/emote-sets')
-          .forEach((request) =>
-            request.flush(
-              emoteSetList([
-                emoteSet({ id: activeEmoteSetId, isActive: true }),
-                emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
-              ]),
-            ),
-          );
-        flushTags([tag(4, 'Stronghold')]);
-        await settle();
-      };
-
-      await reload('set-a');
-      httpMock
-        .match((r) => r.url.startsWith('/api/channels/a/usage-stats/'))
-        .forEach((request) =>
-          request.flush(request.request.url.endsWith('totals') ? TOTALS() : SERIES),
-        );
-      await settle();
-      expect(runActions()).toBe(before);
-
-      // The active set moves on 7TV: the status names set-c while the rows on screen are still
-      // set-a's — no longer a view of the active set, so the buttons go.
-      await reload('set-c');
-      expect(runActions()).toBeNull();
-    });
   });
 });

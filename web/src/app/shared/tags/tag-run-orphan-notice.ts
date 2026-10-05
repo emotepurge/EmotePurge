@@ -12,8 +12,8 @@ let nextRegionId = 0;
 
 /**
  * The page's rendering of `TagRunNoticeSink` (#201 T-C): what a tag flow still said after its
- * `TagRunActions` was torn down — on the usage page by a live set switch, on the tags page by a tag
- * list reloaded with a new set — for the channel this page shows.
+ * `TagRunActions` was torn down (on the tags page, by a tag list reloaded with a new set) — for the
+ * channel this page shows.
  *
  * The notice stands in for the destroyed component's error banner, so it stays like that banner did
  * (§4.5: a state, not an acknowledgement) until the user closes it or a new tag run starts. A

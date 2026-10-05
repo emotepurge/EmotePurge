@@ -530,7 +530,8 @@ fallback to "in the set" — spec 0a rule 1); an own placement with a missing re
 the row and in the snapshot alike. `tag-play-in-flow.ts`/`tag-removal-flow.ts` run the shared steps
 (`prepareTagRun`: operation registration, ownership ladder via the 403/404/503 answers, set freeze, the
 complete live read) and then hand over to `startImportFlow` or the delete flow; `TagRunActions` hosts
-both buttons on the usage page and the tags page. Choices that are not obvious from the code:
+both buttons (on the tags page only since 2026-10-05, see "Operator feedback after the live test" below;
+it was first hosted on the usage page too). Choices that are not obvious from the code:
 
 - **One dialog, ticks in place.** `TagRemovalConfirmDialog` is preview and confirmation at once (E19). Rows
   are grouped by the *proposal's* start state — "Vorgeschlagen" above "Nicht vorgeschlagen" — and a tick
@@ -545,15 +546,15 @@ both buttons on the usage page and the tags page. Choices that are not obvious f
   prompt, arbiter refusal, pre-check block, drift): `pending` ends at the hand-over. A banner raised
   after the host moved on to another tag or channel is dropped.
 - **A flow whose host is gone speaks through a page-level sink.** The dialogs, the import hook and a
-  report without a run outlive `TagRunActions`: a live set switch on the usage page, or a tag list
-  reloaded with a new set on the tags page, tears it down behind them. The guard then aborts correctly,
+  report without a run outlive `TagRunActions`: a tag list reloaded with a new set on the tags page tears it
+  down behind them (a live set switch on the usage page did too, until 2026-10-05). The guard then aborts correctly,
   but a notice written into the destroyed component is never seen, and a confirmed run that silently
   does nothing reads as success. So once the host is destroyed (its `DestroyRef`), the flows hand
   their notices — the import hook's "set changed", the "all present" guard, the clear-out confirm's
   abort and `confirmTimeRefusal`, a report failure — to the root-provided `TagRunNoticeSink` instead,
   and their acknowledgement and "completed" become sink events instead of emits on a dead output.
-  Both pages render the sink through `TagRunOrphanNotice` in their run status region (a permanent
-  sr-only region plus a visible twin, §4.5), for their own channel, the way they render the arbiter's
+  The tags page renders the sink through `TagRunOrphanNotice` in its run status region (a permanent
+  sr-only region plus a visible twin, §4.5; the usage page did too until 2026-10-05), for its own channel, the way they render the arbiter's
   `refusedStart`. It stays until closed or until a new tag run starts. Only a report failure keeps its
   retry there (resending the same operation needs no host); a retry that would restart the flow goes
   with the host. A live host on another tag still drops a stale banner (`isCurrent`), as before.
@@ -569,6 +570,8 @@ both buttons on the usage page and the tags page. Choices that are not obvious f
 `web/src/app/features/usage-stats/usage-stats-page.html`
 
 #### Surfaces (Task 13)
+
+**Superseded by "Operator feedback after the live test" below: the usage page no longer shows a tag summary or any run button.**
 
 **Surfaces (Task 13) — the usage page's filter row: the buttons take the sentence's slot.** With a tag
 chosen, the inline group shows "eingespielt" for a tag active in the active set and then either the
@@ -684,6 +687,29 @@ cannot sync) is information only. The boot recovery's gate is released even afte
 completed sync by the new worker proves that observations exist. Follow-up noted there: the tracked-set
 loader of the tag flows is not yet on the #220 route (foreign-permit cost accepted). Open for live
 verification: the per-tick post-check read on the largest channel and the first-tick backfill. The run-less tag report (an empty play-in, a clear-out with nothing ticked) is bounded by the same 30 s report timeout as the run-backed reports, so a stalled request ends in the `tags.errors.reportFailed` banner with its same-operation-id retry instead of leaving both buttons locked. Tag-report 404s are classified by their error code (`classifyTagReportFailure`): `emote_set_not_found` stays `setNotFound`, while `tag_not_found`, `channel_not_found` and `tag_operation_unknown` become the new reason `tagUnknown` ("EmotePurge no longer knows this tag or operation"), so a deleted tag never reads as a missing 7TV set.
+
+#### Operator feedback after the live test (2026-10-05)
+
+The operator tried the runs in the browser and changed how the tag runs are offered; all of it is frontend-only.
+
+- **Runs start on the tags page only.** The usage page's filter row keeps nothing but the tag dropdown:
+  the name, "eingespielt", the "k in the set / m not in the set" counts, "Einspielen"/"Ausräumen"
+  (`TagRunActions`), the link "Übersicht" and the page's `TagRunOrphanNotice` are gone. Reasoning: the
+  usage page shows what is in the set; what is not in the set is the tags page's subject. The usage page's
+  own dock still locks on `SevenTvRunArbiter.startLocked()` while a tag run (an import or delete run with
+  a tag) holds the start, and its dock sections show that run, so no lock reason had to be carried over.
+  `TagRunNoticeSink` and `TagRunOrphanNotice` stay, now with the tags page as their only host. Codex finding
+  C1 (the usage page going stale after a switch to "all tags" mid-run) is moot with the summary gone. The
+  tags page's `unshownRunKinds` (`undo`) stays: an undo is still started on the usage page and holds the
+  start lock while its dock is not mounted here.
+- **A run notice can now wait for the tags page.** A report without a run (a clear-out with n = 0, an "all
+  present" play-in) that fails after the user went to the usage page is no longer shown there; it stays in
+  `TagRunNoticeSink` and appears when the tags page is opened again — delayed, not lost.
+
+**Betrifft (feedback 1):** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` · `web/public/i18n/de.json` ·
+`web/public/i18n/en.json` · `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts` ·
+`docs/UI-Designsprache.md`
 
 **Betrifft (Tasks 14, 15):** `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
 `docs/Operations.md` · `docs/UI-Designsprache.md` · `docs/Architectur.md` · `.env.example` ·

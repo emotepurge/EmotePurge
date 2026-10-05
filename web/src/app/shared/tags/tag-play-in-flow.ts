@@ -46,8 +46,8 @@ import { TagRunNotice, TagRunNoticeSink } from './tag-run-notice-sink';
  *
  * The confirm/start set guards (the clear-out's confirm, the import hook's start) never read the
  * host's raw `activeEmoteSetId` input: both dialogs outlive the host, and a host destroyed behind
- * them keeps its input at the old id forever — on the usage page exactly when a set switch unmounts
- * it before the new id arrives. They read `PreparedTagRun.activeEmoteSetId` instead
+ * them keeps its input at the old id forever — exactly when a set switch unmounts it before the
+ * new id arrives. They read `PreparedTagRun.activeEmoteSetId` instead
  * (`hostBoundActiveSet`), which turns `null` with the host's teardown: an unknown set, so the guard
  * treats it as a switch and aborts — the tag flows' counterpart of the delete chain's
  * `destroyRef.destroyed` abort in `delete-flow.ts`. A destroyed host never authorises a 7TV write.

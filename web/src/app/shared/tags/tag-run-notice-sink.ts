@@ -28,12 +28,11 @@ export type OrphanedTagRunEvent =
  * The page-level surface for whatever a tag flow still produces after its host is gone (#201 T-C).
  *
  * `TagRunActions` hosts the flows, but both of its dialogs, an import hook and an in-flight report
- * outlive it: a live set switch on the usage page, or a tag-list reload with a new set on the tags
- * page, tears the host down behind them. The set guard then aborts correctly — but a notice written
+ * outlive it: a tag-list reload with a new set on the tags page tears the host down behind them. The set guard then aborts correctly — but a notice written
  * into the destroyed component's banner is never seen, and a confirmed run that silently does
  * nothing reads as success. So the flows hand such notices here instead (`raiseNotice`,
- * `sendTagReport`), and both pages render this one root-provided notice in their run status
- * region, the way they render `SevenTvRunArbiter.refusedStart()`.
+ * `sendTagReport`), and the tags page renders this one root-provided notice in its run status
+ * region, the way it renders `SevenTvRunArbiter.refusedStart()`.
  *
  * The notice stays until it is dismissed or a new tag run starts, like the banner it stands in for.
  * A retry survives only for a report without a run (resending the same operation needs no host); a

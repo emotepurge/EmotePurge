@@ -1629,8 +1629,8 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    // The filter row with the tag select chosen (#201, spec 9.2): select, inline group (name · k in
-    // the set · m not in the set, the way to the tag page) and, with one emote marked, the dock's
+    // The filter row with the tag select chosen (#201, spec 9.2): the select alone (no summary, no run
+    // buttons) and, with one emote marked, the dock's
     // "Remove from '...' (n)" carrying a 40-character tag name — the longest label the dock gets.
     // Fine pointer only: the dock's write buttons do not exist on a coarse one.
     slug: 'usage-filter-with-tag',
@@ -1721,27 +1721,6 @@ const SCENARIOS: Scenario[] = [
     afterLoad: async (page) => {
       await page.getByRole('button', { name: /^(Ausräumen|Clear out)$/ }).click();
       await page.getByRole('dialog').waitFor();
-    },
-  },
-  {
-    // The filter row with a played-in tag chosen and tag runs on (#201 T-C, spec 9.2): name ·
-    // eingespielt · counts, then "Einspielen"/"Ausräumen" in the sentence's slot, then the way to
-    // the tag page — the row has to wrap rather than push past 360 px.
-    slug: 'usage-filter-with-tag-run-actions',
-    includeMouseAt360: true,
-    strictRightEdge: true,
-    requiresFinePointer: true,
-    path: '/channels/sensitron/usage-stats',
-    setup: async (page) => {
-      await authedShell(page);
-      await channelWorkspace(page, { tagRunsEnabled: true });
-      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
-      await mockTagRuns(page);
-      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
-    },
-    afterLoad: async (page) => {
-      await page.getByRole('combobox', { name: /^Tag$/ }).selectOption('7');
-      await page.getByRole('button', { name: /^(Einspielen|Play in)$/ }).waitFor();
     },
   },
 ];

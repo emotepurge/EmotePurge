@@ -15,7 +15,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { Router, RouterLink } from '@angular/router';
+import { Router } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import {
   EMPTY,
@@ -153,8 +153,6 @@ import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-s
 import { UndoProgressSection } from '../../shared/seven-tv/undo-progress-section';
 import { ListSelection } from '../../shared/selection/list-selection';
 import { openTagAssignDialog, TagAssignDialogResult } from '../../shared/tags/tag-assign-dialog';
-import { TagRunActions, TagRunFeedback } from '../../shared/tags/tag-run-actions';
-import { TagRunOrphanNotice } from '../../shared/tags/tag-run-orphan-notice';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
@@ -354,14 +352,11 @@ function mayHaveChangedTheSet(result: RunResult): boolean {
     UndoProgressSection,
     ImportTrigger,
     SlotBudgetBar,
-    TagRunActions,
-    TagRunOrphanNotice,
     DateRangeMenu,
     EmoteSetMenu,
     SegmentedControl,
     UsageRangeMenu,
     UsageSparkline,
-    RouterLink,
     TranslocoPipe,
   ],
   templateUrl: './usage-stats-page.html',
@@ -1332,27 +1327,10 @@ export class UsageStatsPage {
   protected readonly tagFilterShown = computed(() => this.tags().length > 0);
 
   /** The tag the filter is set to, resolved against the loaded list — `null` while no tag is chosen,
-   *  and while the list that would name it is not loaded (yet). T-C hangs its buttons on this. */
+   *  and while the list that would name it is not loaded (yet). */
   protected readonly selectedTag = computed<EmoteTagSummary | null>(() => {
     const tagId = this.usageFilter.tagId();
     return tagId === null ? null : (this.tags().find((tag) => tag.id === tagId) ?? null);
-  });
-
-  /** The inline group's two numbers (spec 9.2): in the set, and the rest of the tag's entries.
-   *  `null` when the counts have no set to refer to (`inSetCount: null`) — then neither is shown,
-   *  since "not in the set" cannot be derived either. */
-  protected readonly selectedTagCounts = computed(() => {
-    const tag = this.selectedTag();
-    if (tag === null || tag.inSetCount === null) {
-      return null;
-    }
-    const notInSet = tag.entryCount - tag.inSetCount;
-    return {
-      inSet: tag.inSetCount,
-      inSetKey: pluralKey(tag.inSetCount, 'tags.filter.inSet'),
-      notInSet,
-      notInSetKey: pluralKey(notInSet, 'tags.filter.notInSet'),
-    };
   });
 
   /** Request key for the chosen tag's entries — keyed on `selectedTag()`, not on the raw filter id,
@@ -1406,8 +1384,8 @@ export class UsageStatsPage {
     if (removalError !== null) {
       return removalError;
     }
-    // A failed tag list while a tag is chosen: the select and the inline group are gone (they
-    // need the list), but the filter still narrows the grid with the keys it has — this banner is
+    // A failed tag list while a tag is chosen: the select is gone (it
+    // needs the list), but the filter still narrows the grid with the keys it has — this banner is
     // what keeps that narrowing from going unexplained. "Filter zurücksetzen" stays as the way out.
     if (this.usageFilter.tagId() !== null) {
       const listError = this.tagsResource.error();
@@ -1478,53 +1456,6 @@ export class UsageStatsPage {
   protected readonly tagUnassignLockReasonId = 'tag-unassign-lock-reason';
 
   protected readonly tagRemovalPending = signal(false);
-
-  /**
-   * Spec 8 ("Shown set ≠ aktives Set"): in a view of another set the tag filter still works, but the
-   * tag actions are absent, and this sentence says why in their place (T-C puts its buttons exactly
-   * here). Only where those actions could exist at all — a manager on a fine pointer — since what
-   * falls away on a coarse pointer is not explained (§2.5), and a non-manager has nothing missing.
-   */
-  protected readonly tagActiveSetOnlyShown = computed(() => {
-    const active = this.activeEmoteSetId();
-    return (
-      this.selectedTag() !== null &&
-      !this.isCoarse() &&
-      this.canManage() &&
-      this.tagRunsEnabled() &&
-      active !== null &&
-      this.shownSetId() !== active
-    );
-  });
-
-  /** The operator switch for tag runs (`Tags:RunsEnabled`, #201 T-C) as the permissions answer
-   *  carries it; `false` until they are in. */
-  protected readonly tagRunsEnabled = computed(() =>
-    this.permissionsResource.hasValue() ? this.permissionsResource.value().tagRunsEnabled : false,
-  );
-
-  /**
-   * "Einspielen"/"Ausräumen" in the inline group (spec 9.2) — in the very slot of the
-   * sentence above, which they replace: a chosen tag, a view of the *active* set (spec 8: in another
-   * set's view the sentence stands instead), runs switched on and a fine pointer. Not gated on
-   * `canManage` (E9): whether the user may write the set is the registration's 403 to say, before
-   * anything is written.
-   */
-  protected readonly tagRunActionsShown = computed(() => {
-    const active = this.activeEmoteSetId();
-    return (
-      this.selectedTag() !== null &&
-      this.tagRunsEnabled() &&
-      !this.isCoarse() &&
-      active !== null &&
-      this.shownSetId() === active
-    );
-  });
-
-  /** The active set's name for the tag runs' confirmations; `null` falls back to its id there. */
-  protected readonly activeEmoteSetName = computed(
-    () => this.emoteSetList()?.sets.find((set) => set.id === this.activeEmoteSetId())?.name ?? null,
-  );
 
   /**
    * The transient acknowledgement of a tag write (§4.5, spec 7.0 step 4 and 7.0a) — on the count
@@ -2963,19 +2894,6 @@ export class UsageStatsPage {
           }
         },
       });
-  }
-
-  /** A tag run settled (or its report did): the tag's numbers and its keys are read again (9.6). */
-  protected onTagRunCompleted(): void {
-    this.tagsResource.reload();
-    this.tagFilterEntriesResource.reload();
-  }
-
-  /** A tag run's transient acknowledgement goes to the count line's tag region (§4.5). */
-  protected onTagRunFeedback(feedback: TagRunFeedback): void {
-    this.showTagFeedback([
-      { key: feedback.key, params: feedback.params as CaptionSentence['params'] },
-    ]);
   }
 
   // Opened from the inspector, not from the cell: the cell click belongs to the selection, and a
