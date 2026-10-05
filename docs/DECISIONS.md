@@ -665,7 +665,11 @@ UI-Designsprache §8.7 (9.4).
 - **R4** — a preview race between two tags can leave one emote too few in the set (never one too many); a
   fresh play-in brings it back.
 - **13.2** — "Restore" after a clear-out creates no placement: restored emotes read "was already in the set"
-  at the next clear-out and can be ticked by hand. The restore button says so after a tag run.
+  at the next clear-out and can be ticked by hand. The restore button says so after a tag run. The
+  converse, an **undo of a tag play-in** (usage page, #254), sends no tag report: its adds leave 7TV, the
+  undo's own set-centric `sync-deleted` observations expire the placements, and the tag reads
+  "eingespielt (0 platziert)" until a clear-out with nothing ticked (n = 0) deactivates it — fail-safe,
+  since an expired placement is never proposed.
 
 #### Rollout (spec 12.5)
 

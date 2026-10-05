@@ -62,7 +62,7 @@ public enum TagOperationRegistrationStatus
 }
 
 /// <summary>
-/// Outcome of a tag report (play-in now, removal later). <see cref="OperationUnknown"/>: no operation
+/// Outcome of a tag report (play-in or removal). <see cref="OperationUnknown"/>: no operation
 /// with that id is registered. <see cref="OperationConflict"/>: it is registered for another tag, set or
 /// kind. A report of an operation that was already applied is <see cref="Ok"/> with <c>Replayed</c> set.
 /// </summary>
@@ -250,9 +250,10 @@ public sealed record TagRemovalReportResult(
 /// <b>Placements and activations</b> (part C of #201) are per set, so both reads compute them for any
 /// resolved set, active or not, and leave them empty without one. Every placement field counts only
 /// <em>valid</em> placements — the read-time rule: a placement holds unless the channel has a leave
-/// observation for the same emote and set that is later than the registration of the operation that
-/// last wrote the placement. A placement whose operation is missing does not hold either. Activations
-/// are never affected by observations.
+/// observation for the same emote and set that is later than the placement's own
+/// <c>RegisteredAtUtc</c> (the registration time of the operation that last wrote it, carried on the
+/// placement itself; the operation row is not consulted). Activations are never affected by
+/// observations.
 /// </para>
 /// </summary>
 public interface IEmoteTagService
