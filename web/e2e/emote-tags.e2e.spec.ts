@@ -208,25 +208,39 @@ test.describe('emote tags', () => {
     const markAll = page.getByRole('button', { name: 'alle markieren' });
     await expect(markAll.first()).toBeVisible();
 
-    // Record every moment the button exists from here on, not just the ones an assertion hits.
+    const select = page.getByRole('combobox', { name: 'Tag' });
+    await select.selectOption({ label: 'Leer' });
+    // Gone while the entries are held back (the original bug kept it here for the whole window).
+    await expect(markAll).toHaveCount(0);
+
+    // From now on, record every moment the button exists, not just the ones an assertion hits.
+    // Installed only now that it is gone, so the mutations around it while it still stood cannot
+    // set the flag; the first check runs at once, not only on the next mutation.
     await page.evaluate(() => {
       const w = window as unknown as { __markAllSeen: boolean };
-      w.__markAllSeen = false;
-      new MutationObserver(() => {
+      const check = (): void => {
         const found = [...document.querySelectorAll('button')].some(
           (button) => button.textContent?.trim() === 'alle markieren',
         );
         if (found) w.__markAllSeen = true;
-      }).observe(document.body, { childList: true, subtree: true, characterData: true });
+      };
+      w.__markAllSeen = false;
+      check();
+      new MutationObserver(check).observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
     });
+    const markAllSeen = () =>
+      page.evaluate(() => (window as unknown as { __markAllSeen: boolean }).__markAllSeen);
 
-    const select = page.getByRole('combobox', { name: 'Tag' });
-    await select.selectOption({ label: 'Leer' });
-    await expect(markAll).toHaveCount(0);
     release();
-    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    // The empty tag's own state renders only once its entries have landed — the flag is read after
+    // that, so a button coming back with the answer would be on record.
+    await expect(page.getByText('Keine Emotes passen zu den aktuellen Filtern.')).toBeVisible();
     await expect(markAll).toHaveCount(0);
-    expect(await page.evaluate(() => (window as any).__markAllSeen)).toBe(false);
+    expect(await markAllSeen()).toBe(false);
 
     // A tag with an emote: nothing offered while loading, then the one row's own button.
     gate = new Promise<void>((resolve) => (release = resolve));
