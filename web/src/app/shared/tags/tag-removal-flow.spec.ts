@@ -24,7 +24,11 @@ import {
   TagRemovalConfirmDialogData,
   TagRemovalConfirmResult,
 } from './tag-removal-confirm-dialog';
-import { splitOwnPlacements, startTagRemovalFlow } from './tag-removal-flow';
+import {
+  confirmTimeEntriesDrift,
+  splitOwnPlacements,
+  startTagRemovalFlow,
+} from './tag-removal-flow';
 import { OrphanedTagRunEvent, TagRunNotice, TagRunNoticeSink } from './tag-run-notice-sink';
 
 /*
@@ -162,11 +166,18 @@ function setup(
     resolution?: Observable<EditableSetResolution>;
     registration?: () => Observable<unknown>;
     report?: () => Observable<TagRemovalResult>;
+    /** The entry read at confirm time (every read after the first); default: the first one's. */
+    reread?: () => Observable<EmoteTagEntries>;
   } = {},
 ): Harness {
   const calls: string[] = [];
+  let entryReads = 0;
   const listEntries = vi.fn(() => {
     calls.push('entries');
+    entryReads++;
+    if (entryReads > 1 && options.reread !== undefined) {
+      return options.reread();
+    }
     return options.entries ?? of(ENTRIES);
   });
   const registerOperation = vi.fn(() => {
@@ -296,6 +307,11 @@ function setup(
     destroy: host.destroy,
     run: () => startTagRemovalFlow(deps, request),
   };
+}
+
+function dialogCount(harness: Harness): number {
+  return harness.dialogOpen.mock.calls.filter(([opened]) => opened === TagRemovalConfirmDialog)
+    .length;
 }
 
 function dialogIndex(harness: Harness, component: unknown): number {
@@ -693,6 +709,154 @@ describe('startTagRemovalFlow', () => {
       );
     });
 
+    describe('the entry read right before the delete (R4: a holder appearing behind the dialog)', () => {
+      /** The tag of the operator's case: not played in, so every emote of it in the set is ticked. */
+      const INACTIVE: EmoteTagEntries = {
+        ...ENTRIES,
+        activationOperationId: null,
+        entries: [entry('placed'), entry('before')],
+      };
+
+      it('reads the entries again after the confirmation and starts the delete when nothing changed', () => {
+        const harness = setup({ entries: of(INACTIVE) });
+        harness.run();
+
+        confirmationClosed(harness).next({ checkedIds: ['placed', 'before'] });
+
+        expect(harness.listEntries).toHaveBeenCalledTimes(2);
+        expect(harness.listEntries).toHaveBeenLastCalledWith(CHANNEL, TAG.id, 'set-active');
+        expect(harness.calls.slice(-3)).toEqual(['entries', 'startDelete', 'endClaim']);
+        expect(harness.notice()).toBeNull();
+        expect(harness.pending()).toBe(false);
+      });
+
+      it('aborts with nothing deleted when a ticked emote is held by another active tag by now, and its retry opens the clear-out afresh', () => {
+        const harness = setup({
+          entries: of(INACTIVE),
+          // Another tab played in "Halloween", which has an entry for `before`.
+          reread: () =>
+            of({
+              ...INACTIVE,
+              entries: [
+                entry('placed'),
+                entry('before', { heldByActiveTags: [{ id: 9, name: 'Halloween' }] }),
+              ],
+            }),
+        });
+        harness.run();
+
+        confirmationClosed(harness).next({ checkedIds: ['placed', 'before'] });
+
+        expect(harness.startDelete).not.toHaveBeenCalled();
+        expect(harness.reportRemoval).not.toHaveBeenCalled();
+        expect(harness.notice()).toEqual({
+          leadKey: 'massDelete.nothingDeleted',
+          key: 'tags.errors.changedDuringConfirm',
+          retry: expect.any(Function),
+        });
+        expect(harness.endConfirmedRun).toHaveBeenCalledOnce();
+        expect(harness.pending()).toBe(false);
+
+        harness.notice()!.retry!();
+        expect(dialogCount(harness)).toBe(2);
+      });
+
+      it('aborts as well for a played-in tag when a ticked own placement gained a holder', () => {
+        const harness = setup({
+          reread: () =>
+            of({
+              ...ENTRIES,
+              entries: ENTRIES.entries.map((current) =>
+                current.sevenTvEmoteId === 'placed'
+                  ? { ...current, placedByOtherTags: [{ id: 11, name: 'Lieblinge' }] }
+                  : current,
+              ),
+            }),
+        });
+        harness.run();
+
+        confirmationClosed(harness).next({ checkedIds: ['placed'] });
+
+        expect(harness.startDelete).not.toHaveBeenCalled();
+        expect(harness.notice()?.key).toBe('tags.errors.changedDuringConfirm');
+      });
+
+      it('lets a row through whose holder the dialog already showed — the person ticked it knowingly', () => {
+        const harness = setup();
+        harness.run();
+
+        confirmationClosed(harness).next({ checkedIds: ['placed', 'held'] });
+
+        expect(harness.startDelete).toHaveBeenCalledOnce();
+        expect(harness.notice()).toBeNull();
+      });
+
+      it('aborts when the set moved behind the re-read, with the set-switch notice', () => {
+        const reread = new Subject<EmoteTagEntries>();
+        const harness = setup({ entries: of(INACTIVE), reread: () => reread });
+        harness.run();
+
+        confirmationClosed(harness).next({ checkedIds: ['placed'] });
+        expect(harness.pending()).toBe(true);
+        harness.active.set('set-new');
+        reread.next(INACTIVE);
+
+        expect(harness.startDelete).not.toHaveBeenCalled();
+        expect(harness.notice()).toEqual({
+          leadKey: 'massDelete.abortedByLock',
+          key: 'massDelete.setChangedDuringConfirm',
+        });
+        expect(harness.endConfirmedRun).toHaveBeenCalledOnce();
+        expect(harness.pending()).toBe(false);
+      });
+
+      it('fails closed when the re-read fails: nothing deleted, a retry that opens it again', () => {
+        const harness = setup({
+          entries: of(INACTIVE),
+          reread: () => throwError(() => new HttpErrorResponse({ status: 500 })),
+        });
+        harness.run();
+
+        confirmationClosed(harness).next({ checkedIds: ['placed', 'before'] });
+
+        expect(harness.startDelete).not.toHaveBeenCalled();
+        expect(harness.notice()).toEqual({
+          leadKey: 'massDelete.nothingDeleted',
+          key: 'tags.errors.entriesUnavailable',
+          retry: expect.any(Function),
+        });
+        expect(harness.endConfirmedRun).toHaveBeenCalledOnce();
+        expect(harness.pending()).toBe(false);
+      });
+
+      it('fails closed when the re-read never answers', () => {
+        vi.useFakeTimers();
+        try {
+          const harness = setup({ entries: of(INACTIVE), reread: () => NEVER });
+          harness.run();
+
+          confirmationClosed(harness).next({ checkedIds: ['placed'] });
+          vi.advanceTimersByTime(REPORT_TIMEOUT_MS);
+
+          expect(harness.startDelete).not.toHaveBeenCalled();
+          expect(harness.notice()?.key).toBe('tags.errors.entriesUnavailable');
+          expect(harness.pending()).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('makes no second read when nothing is ticked — nothing goes to 7TV', () => {
+        const harness = setup();
+        harness.run();
+
+        confirmationClosed(harness).next({ checkedIds: [] });
+
+        expect(harness.listEntries).toHaveBeenCalledOnce();
+        expect(harness.reportRemoval).toHaveBeenCalledOnce();
+      });
+    });
+
     it('aborts when the active set moved behind the open dialog', () => {
       const harness = setup();
       harness.run();
@@ -854,6 +1018,64 @@ describe('startTagRemovalFlow', () => {
       expect(harness.notice()).toBeNull();
       expect(harness.startDelete).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('confirmTimeEntriesDrift', () => {
+  it('reads an unchanged tag as no drift', () => {
+    expect(
+      confirmTimeEntriesDrift('set-active', ENTRIES, ENTRIES, ['placed', 'before']),
+    ).toBeNull();
+  });
+
+  it('reads another set, or a set that is no longer active, as a set switch', () => {
+    expect(
+      confirmTimeEntriesDrift('set-active', ENTRIES, { ...ENTRIES, emoteSetId: 'set-new' }, []),
+    ).toBe('setChanged');
+    expect(
+      confirmTimeEntriesDrift('set-active', ENTRIES, { ...ENTRIES, isActiveSet: false }, []),
+    ).toBe('setChanged');
+  });
+
+  it('reads another activation, another placement revision, or a ticked entry gone as a changed state', () => {
+    expect(
+      confirmTimeEntriesDrift(
+        'set-active',
+        ENTRIES,
+        { ...ENTRIES, activationOperationId: 'act-2' },
+        [],
+      ),
+    ).toBe('stateChanged');
+    const revised = {
+      ...ENTRIES,
+      entries: ENTRIES.entries.map((current) =>
+        current.sevenTvEmoteId === 'gone'
+          ? { ...current, placementOperationId: 'rev-new' }
+          : current,
+      ),
+    };
+    expect(confirmTimeEntriesDrift('set-active', ENTRIES, revised, [])).toBe('stateChanged');
+    const unassigned = {
+      ...ENTRIES,
+      entries: ENTRIES.entries.filter((current) => current.sevenTvEmoteId !== 'before'),
+    };
+    expect(confirmTimeEntriesDrift('set-active', ENTRIES, unassigned, ['placed'])).toBeNull();
+    expect(confirmTimeEntriesDrift('set-active', ENTRIES, unassigned, ['before'])).toBe(
+      'stateChanged',
+    );
+  });
+
+  it('looks at new holders of ticked rows only', () => {
+    const held = {
+      ...ENTRIES,
+      entries: ENTRIES.entries.map((current) =>
+        current.sevenTvEmoteId === 'before'
+          ? { ...current, heldByActiveTags: [{ id: 9, name: 'Halloween' }] }
+          : current,
+      ),
+    };
+    expect(confirmTimeEntriesDrift('set-active', ENTRIES, held, ['placed'])).toBeNull();
+    expect(confirmTimeEntriesDrift('set-active', ENTRIES, held, ['before'])).toBe('stateChanged');
   });
 });
 

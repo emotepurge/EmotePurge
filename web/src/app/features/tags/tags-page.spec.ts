@@ -1131,6 +1131,15 @@ describe('TagsPage', () => {
         closed.next({ checkedIds: ['e1'] });
         closed.complete();
         await settle(harness);
+        // The entry read right before the delete (R4): unchanged, so the clear-out goes ahead.
+        expect(startDelete).not.toHaveBeenCalled();
+        expectEntries(1).flush({
+          emoteSetId: 'set-a',
+          isActiveSet: true,
+          activationOperationId: 'act-1',
+          entries: [OWN],
+        });
+        await settle(harness);
 
         expect(startDelete).toHaveBeenCalledTimes(1);
         expect(startDelete.mock.calls[0][0]).toBe('set-a');

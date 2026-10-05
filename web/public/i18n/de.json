@@ -1852,6 +1852,7 @@
     "errors": {
       "setChanged": "Das aktive Set hat gewechselt — Seite neu laden.",
       "entriesUnavailable": "Die Einträge des Tags konnten gerade nicht geladen werden.",
+      "changedDuringConfirm": "Der Tag hat sich inzwischen geändert — öffne „Ausräumen“ bitte erneut.",
       "setReadIncomplete": "Die Einträge des Sets konnten nur teilweise von 7TV gelesen werden — es wurde nichts geändert.",
       "setReadUnavailable": "Die Einträge des Sets konnten nicht von 7TV gelesen werden — es wurde nichts geändert.",
       "noWriteRight": "Du darfst dieses Set bei 7TV nicht bearbeiten.",

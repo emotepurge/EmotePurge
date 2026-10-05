@@ -2,7 +2,9 @@ import { signal } from '@angular/core';
 import { Observable, map, of } from 'rxjs';
 
 import { EmoteSetWarning } from '../../core/emotes/emote-admin.service';
+import { timeoutReportAttempt } from '../../core/seven-tv/seven-tv-delete.service';
 import { DeleteTagContext, deriveTagKeptIds } from '../../core/seven-tv/tag-run-settlement';
+import { EmoteTagEntries, EmoteTagEntry } from '../../core/tags/emote-tag.model';
 import { confirmTimeRefusal, toDeleteQueueEmotes } from '../seven-tv/delete-flow';
 import { openSevenTvTokenPromptDialog } from '../seven-tv/seven-tv-token-prompt-dialog';
 import {
@@ -40,14 +42,24 @@ import { openTagRemovalConfirmDialog } from './tag-removal-confirm-dialog';
  * With nothing ticked the token half of the refusal is skipped (`requireToken: false`): that
  * confirm writes nothing to 7TV, only the report.
  *
- * **No second live read at confirm time**, unlike the delete chain's #227 read. The one read before
- * the dialog supplies both the proposal and the aliases the queue and the protocol record (spec
- * 7.2/4), and the engine does not re-read before its `REMOVE`s either — so with a dialog left open
- * for minutes, those aliases can be minutes old. Accepted, for two reasons:
+ * **A second entry read at confirm time, but no second live read.** With something ticked, the
+ * tag's entries are read again from our own API right before the delete starts
+ * (`confirmTimeEntriesDrift`): the dialog can stay open for minutes, and a tag played in meanwhile
+ * (another tab, another manager) may now need a ticked emote — for a tag that is not played in,
+ * every emote of it in the set is ticked, so that window covers all of them (risk R4). Anything
+ * the proposal no longer stands on — a new holder of a ticked row, a ticked entry gone from the
+ * tag, another activation or snapshot of this tag, another set — aborts the whole clear-out with
+ * nothing deleted; a failed read, or one that outlasts the reports' 30 s bound, aborts too (fail
+ * closed). The person opens it again and sees the new state; no row is unticked behind their back.
  *
- * - The case a second read would be meant to catch — another tag re-adding an emote of this one
- *   while the dialog was open — puts that emote in **both** reads; a fresh read would wave it
- *   through just the same. That is risk R4, accepted in spec 13.1.
+ * The 7TV set itself is not read again, unlike the delete chain's #227 read. The one live read
+ * before the dialog supplies both the proposal and the aliases the queue and the protocol record
+ * (spec 7.2/4), and the engine does not re-read before its `REMOVE`s either — so with a dialog left
+ * open for minutes, those aliases can be minutes old. Accepted, for two reasons:
+ *
+ * - Another tag re-adding an emote of this one while the dialog was open puts that emote in
+ *   **both** live reads; a fresh one would wave it through just the same. A *holder* appearing is
+ *   what matters, and the entry read above catches it.
  * - The delete chain fails the whole batch when a ticked row is missing from 7TV (#227), because a
  *   partial run would record a protocol that no longer matches what its dialog showed. Here such a
  *   row simply ends `failed` in the run and lands in the report's kept ids — no extra deletion, no
@@ -60,9 +72,10 @@ import { openTagRemovalConfirmDialog } from './tag-removal-confirm-dialog';
  * - **Nothing ticked (n = 0):** no run — nothing goes to 7TV, so there is no settlement to send the
  *   report. The flow sends it itself, with no removed ids and every own placement in the set as
  *   kept; that report is what deactivates the tag (E26: a clear-out always completes).
- * - **n > 0:** `SevenTvDeleteService.startDelete` with the ticked rows and the tag context; the
- *   run's settlement sends the removal report. `pending` ends at that hand-over: a run reports
- *   nothing back to this flow.
+ * - **n > 0:** the tag's entries are read once more (`confirmTimeEntriesDrift`, see above); only
+ *   when they still back the proposal, `SevenTvDeleteService.startDelete` with the ticked rows and
+ *   the tag context; the run's settlement sends the removal report. `pending` ends at that
+ *   hand-over: a run reports nothing back to this flow.
  */
 export function startTagRemovalFlow(deps: TagRunFlowDeps, request: TagRunRequest): void {
   prepareTagRun(
@@ -90,6 +103,44 @@ export function splitOwnPlacements(
     checkedOwnIds: proposal.ownInLiveIds.filter((id) => checked.has(id)),
     uncheckedOwnIds: proposal.ownInLiveIds.filter((id) => !checked.has(id)),
   };
+}
+
+/**
+ * Whether the entry read made at confirm time still backs what the dialog proposed — `null` when it
+ * does. `setChanged`: the read no longer describes the frozen set, or that set is no longer the
+ * active one. `stateChanged`: the tag's activation or its own placements (the snapshot) differ, a
+ * ticked emote is no longer an entry of the tag, or a ticked emote has a holder it did not have when
+ * the dialog opened — another active tag that needs it, or another tag's placement. A holder the
+ * dialog already showed is no change: the person ticked that row knowingly.
+ */
+export function confirmTimeEntriesDrift(
+  frozenSetId: string,
+  before: EmoteTagEntries,
+  now: EmoteTagEntries,
+  checkedIds: readonly string[],
+): 'setChanged' | 'stateChanged' | null {
+  if (now.emoteSetId !== frozenSetId || !now.isActiveSet) {
+    return 'setChanged';
+  }
+  if (now.activationOperationId !== before.activationOperationId) {
+    return 'stateChanged';
+  }
+  if (ownSnapshotKey(before.entries) !== ownSnapshotKey(now.entries)) {
+    return 'stateChanged';
+  }
+  const beforeById = new Map(before.entries.map((entry) => [entry.sevenTvEmoteId, entry]));
+  const nowById = new Map(now.entries.map((entry) => [entry.sevenTvEmoteId, entry]));
+  for (const id of checkedIds) {
+    const fresh = nowById.get(id);
+    if (fresh === undefined) {
+      return 'stateChanged';
+    }
+    const knownHolders = holderIds(beforeById.get(id));
+    if ([...holderIds(fresh)].some((holder) => !knownHolders.has(holder))) {
+      return 'stateChanged';
+    }
+  }
+  return null;
 }
 
 function openConfirmation(
@@ -155,18 +206,25 @@ function confirm(
   };
   const checked = new Set(checkedIds);
   const checkedRows = proposal.rows.filter((row) => checked.has(row.sevenTvEmoteId));
-
-  // The set the dialog showed must still be the active one (spec 7.2/7) — and its host still there:
-  // a torn-down host reads `null` here (`hostBoundActiveSet`), never its stale last id.
-  if (prepared.activeEmoteSetId() !== prepared.frozenSetId) {
-    abort('massDelete.abortedByLock', 'massDelete.setChangedDuringConfirm');
-    return;
-  }
-  // With nothing ticked nothing goes to 7TV, so a token a 401 cleared meanwhile does not matter;
-  // a run holding the arbiter still does, as for any confirm.
-  const refusal = confirmTimeRefusal(deps, { requireToken: checkedRows.length > 0 });
-  if (refusal !== undefined) {
-    abort(refusal.leadKey, refusal.reasonKey, refusal.reasonParams);
+  /** The confirm-time guards; `false` after an abort. Run again after the entry re-read, which
+   *  takes a moment of its own. */
+  const guardsPass = (): boolean => {
+    // The set the dialog showed must still be the active one (spec 7.2/7) — and its host still
+    // there: a torn-down host reads `null` here (`hostBoundActiveSet`), never its stale last id.
+    if (prepared.activeEmoteSetId() !== prepared.frozenSetId) {
+      abort('massDelete.abortedByLock', 'massDelete.setChangedDuringConfirm');
+      return false;
+    }
+    // With nothing ticked nothing goes to 7TV, so a token a 401 cleared meanwhile does not matter;
+    // a run holding the arbiter still does, as for any confirm.
+    const refusal = confirmTimeRefusal(deps, { requireToken: checkedRows.length > 0 });
+    if (refusal !== undefined) {
+      abort(refusal.leadKey, refusal.reasonKey, refusal.reasonParams);
+      return false;
+    }
+    return true;
+  };
+  if (!guardsPass()) {
     return;
   }
 
@@ -201,29 +259,85 @@ function confirm(
     return;
   }
 
-  const queue = toDeleteQueueEmotes(
-    checkedRows.map((row) => ({
-      sevenTvEmoteId: row.sevenTvEmoteId,
-      name: row.displayName,
-      hidden: false,
-    })),
-    prepared.live,
-  );
-  try {
-    deps.deleteService.startDelete(
-      prepared.frozenSetId,
-      request.channelName,
-      queue,
-      // The frozen set is the active one (checked above), so its report expects this channel.
-      request.channelName,
-      prepared.ownerTwitchChannelId,
-      tagContext,
-    );
-  } finally {
-    // `finally`, as in the delete chain: a leaked claim pins an empty dock.
+  // Fail closed: whatever keeps the re-read from confirming the proposal deletes nothing. Its
+  // "Try again" opens the clear-out afresh — the new state, in a new dialog. Not bound to the host's
+  // lifetime: a host torn down meanwhile is a set switch to the guards below, so the abort still
+  // ends the claim and reaches the page-level sink.
+  const restart = (): void => startTagRemovalFlow(deps, request);
+  deps.tagService
+    .listEntries(request.channelName, request.tag.id, prepared.frozenSetId)
+    .pipe(timeoutReportAttempt())
+    .subscribe({
+      next: (fresh) => {
+        const drift = confirmTimeEntriesDrift(
+          prepared.frozenSetId,
+          prepared.entries,
+          fresh,
+          checkedRows.map((row) => row.sevenTvEmoteId),
+        );
+        if (drift === 'setChanged') {
+          abort('massDelete.abortedByLock', 'massDelete.setChangedDuringConfirm');
+          return;
+        }
+        if (drift === 'stateChanged') {
+          abortWithRetry('tags.errors.changedDuringConfirm');
+          return;
+        }
+        if (guardsPass()) {
+          startRun();
+        }
+      },
+      error: () => abortWithRetry('tags.errors.entriesUnavailable'),
+    });
+
+  function abortWithRetry(key: string): void {
+    raiseNotice(request, { leadKey: 'massDelete.nothingDeleted', key, retry: restart });
     deps.deleteService.endConfirmedRun();
     request.pending.set(false);
   }
+
+  function startRun(): void {
+    const queue = toDeleteQueueEmotes(
+      checkedRows.map((row) => ({
+        sevenTvEmoteId: row.sevenTvEmoteId,
+        name: row.displayName,
+        hidden: false,
+      })),
+      prepared.live,
+    );
+    try {
+      deps.deleteService.startDelete(
+        prepared.frozenSetId,
+        request.channelName,
+        queue,
+        // The frozen set is the active one (checked above), so its report expects this channel.
+        request.channelName,
+        prepared.ownerTwitchChannelId,
+        tagContext,
+      );
+    } finally {
+      // `finally`, as in the delete chain: a leaked claim pins an empty dock.
+      deps.deleteService.endConfirmedRun();
+      request.pending.set(false);
+    }
+  }
+}
+
+/** The tag's own placements with their revisions, as one comparable string. */
+function ownSnapshotKey(entries: readonly EmoteTagEntry[]): string {
+  return entries
+    .filter((entry) => entry.placedByThisTag)
+    .map((entry) => `${entry.sevenTvEmoteId}:${entry.placementOperationId ?? ''}`)
+    .sort()
+    .join('\n');
+}
+
+/** Every other tag an entry names as needing it: active holders and other tags' placements. */
+function holderIds(entry: EmoteTagEntry | undefined): ReadonlySet<number> {
+  if (entry === undefined) {
+    return new Set();
+  }
+  return new Set([...entry.heldByActiveTags, ...entry.placedByOtherTags].map((ref) => ref.id));
 }
 
 /** The token prompt before the dialog, as `MassDeletePanel.openConfirm` asks it: `true` when a

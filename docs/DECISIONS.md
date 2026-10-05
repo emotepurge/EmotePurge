@@ -673,7 +673,17 @@ UI-Designsprache §8.7 (9.4).
   7TV directly anyway, the ownership check (cached up to 10 minutes) gates the routes, the audit row names the
   actor, and the human still confirms.
 - **R4** — a preview race between two tags can leave one emote too few in the set (never one too many); a
-  fresh play-in brings it back.
+  fresh play-in brings it back. **Narrowed on 2026-10-05 (review of the inactive clear-out, I1):** right
+  before a clear-out's deletes start, the flow reads the tag's entries again from our API
+  (`confirmTimeEntriesDrift`). A ticked emote that has gained a holder since the dialog opened (another
+  active tag's entry, another tag's placement), a ticked emote no longer in the tag, another activation or
+  snapshot of the tag, or another set aborts the whole clear-out with nothing deleted ("Der Tag hat sich
+  inzwischen geändert — öffne „Ausräumen“ bitte erneut.", with a retry that opens it afresh; another set
+  gets the delete's set-switch notice). A failed or stalled read aborts too (fail closed). The window
+  shrinks from "as long as the dialog stays open" to that read plus the run. It matters most for a tag
+  that is not played in, where every emote of it in the set is ticked, not only its own placements. A
+  holder the dialog already showed is no change: a row ticked against "wird noch von X gebraucht" was
+  ticked knowingly.
 - **13.2** — "Restore" after a clear-out creates no placement: restored emotes are in the set without being
   recorded as played in by the tag. While the tag is not played in, the next clear-out proposes them like any
   emote of the tag (since 2026-10-05); once it is played in again they read "was already in the set" and can
@@ -770,6 +780,9 @@ for an active tag — so there was no way to clear it out. The operator decided 
   play-in of the same tag lands between preview and report, the null activation cannot match it: the tag
   stays active with its fresh placements, which only expire once the leave of the removed emotes is
   observed (fail-safe, spec 0a).
+- **The proposal is checked once more at confirm time** (review I1, same day): with every emote of the tag
+  in the set ticked, a tag played in behind the open dialog could otherwise lose emotes it now needs. The
+  re-read and its abort are described under R4 above; they apply to active and inactive tags alike.
 - **The audit count changed:** `tag.removed`'s `emoteCount` is now the reported removed ids the tag has an
   entry for, placed by it or not, instead of `deletedCount` (own placements deleted). With the old count
   every clear-out of an inactive tag would have read "0 Emotes" however many left 7TV, and an active

@@ -1852,6 +1852,7 @@
     "errors": {
       "setChanged": "The active set has changed — reload the page.",
       "entriesUnavailable": "The tag's entries could not be loaded just now.",
+      "changedDuringConfirm": "The tag has changed in the meantime — please open “Clear out” again.",
       "setReadIncomplete": "The set's entries could only partly be read from 7TV — nothing was changed.",
       "setReadUnavailable": "The set's entries could not be read from 7TV — nothing was changed.",
       "noWriteRight": "You may not edit this set on 7TV.",
