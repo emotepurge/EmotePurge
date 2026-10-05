@@ -167,7 +167,10 @@ describe('TagRunActions', () => {
           provide: SevenTvImportService,
           useValue: { run: importRunSignal, startCheckPending: signal(false) },
         },
-        { provide: SevenTvDeleteService, useValue: { run: deleteRunSignal } },
+        {
+          provide: SevenTvDeleteService,
+          useValue: { run: deleteRunSignal, startCheckPending: signal(false) },
+        },
         {
           provide: SevenTvRunArbiter,
           useValue: { startLocked, activeClaim: signal(null), activeRun },
@@ -500,6 +503,17 @@ describe('TagRunActions', () => {
 
       expect(focusLost).toBe(1);
     });
+
+    it('hands over to the host when the other button is there but locked — a run still settling', () => {
+      // The reload after `channel.synced` lands while the run's reports are still out.
+      startLocked.set(true);
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1, active: true }));
+      fixture.detectChanges();
+
+      expect(button('Aus dem Set entfernen')!.disabled).toBe(true);
+      expect(document.activeElement).not.toBe(button('Aus dem Set entfernen'));
+      expect(focusLost).toBe(1);
+    });
   });
 
   describe('focus when a clear-out takes "Aus dem Set entfernen" away', () => {
@@ -587,12 +601,13 @@ describe('TagRunActions', () => {
 
   describe('runButtonFocusTarget', () => {
     it('leaves focus alone when the user has already moved it', () => {
-      expect(runButtonFocusTarget({ focusLost: false, otherShown: true })).toBe('none');
+      expect(runButtonFocusTarget({ focusLost: false, otherUsable: true })).toBe('none');
     });
 
-    it('prefers the other run button, then the host fallback', () => {
-      expect(runButtonFocusTarget({ focusLost: true, otherShown: true })).toBe('other');
-      expect(runButtonFocusTarget({ focusLost: true, otherShown: false })).toBe('fallback');
+    it('prefers the other run button while it is usable, then the host fallback', () => {
+      expect(runButtonFocusTarget({ focusLost: true, otherUsable: true })).toBe('other');
+      // Absent or disabled alike: a disabled button ignores focus().
+      expect(runButtonFocusTarget({ focusLost: true, otherUsable: false })).toBe('fallback');
     });
   });
 

@@ -59,16 +59,18 @@ export type TagRunButton = 'playIn' | 'remove';
 
 /** Where focus goes when the run button the user clicked leaves the DOM under them ("Ins Set holen"
  *  after a play-in left nothing missing, "Aus dem Set entfernen" after a clear-out left nothing to clear): the
- *  other run button if it is there, otherwise the host's stable fallback (the detail heading).
+ *  other run button if it is there and usable, otherwise the host's stable fallback (the detail
+ *  heading). A disabled button ignores `focus()` — the run that removed the clicked one can still be
+ *  settling and lock the other — so `otherUsable` is "shown *and* not disabled".
  *  `none` when focus is not lost — the user has moved on, leave it alone. */
 export function runButtonFocusTarget(state: {
   focusLost: boolean;
-  otherShown: boolean;
+  otherUsable: boolean;
 }): 'other' | 'fallback' | 'none' {
   if (!state.focusLost) {
     return 'none';
   }
-  return state.otherShown ? 'other' : 'fallback';
+  return state.otherUsable ? 'other' : 'fallback';
 }
 
 /** Whether the tag has an emote missing from the set — where "Ins Set holen" exists at all (spec
@@ -467,7 +469,7 @@ export class TagRunActions {
     const other = gone === 'playIn' ? this.removeButton() : this.playInButton();
     const target = runButtonFocusTarget({
       focusLost: active === null || active === this.document.body,
-      otherShown: other !== undefined,
+      otherUsable: other !== undefined && !other.nativeElement.disabled,
     });
     if (target === 'other') {
       other?.nativeElement.focus();

@@ -756,7 +756,10 @@ The operator tried the runs in the browser and changed three things; all are fro
   the DOM while it holds the focus CDK gave back after the dialog; focus then moves to "Ausräumen" (the tag
   is played in now) or, with no button left, to the detail heading (`tabindex="-1"`). The same holds the
   other way round (review feedback 2, m2): a clear-out that leaves nothing of the tag in the set takes
-  "Ausräumen" away, and focus moves to "Einspielen" or the heading (`runButtonFocusTarget`). Only the
+  "Ausräumen" away, and focus moves to "Einspielen" or the heading (`runButtonFocusTarget`). The other
+  button takes focus only while it is usable (2026-10-05, Codex review): a reload that removes the clicked
+  button while the run is still settling leaves the other one disabled, a disabled button ignores
+  `focus()`, so focus goes to the heading instead (`otherUsable` = shown and not disabled). Only the
   button whose click started the flow is followed, and only until that flow ended without a run (m3): a
   dismissed dialog or token prompt, an abort or a blocked step forgets it, so a later live reload after
   another tab's run never moves focus. The play-in's hand-over to the import flow cannot tell a
