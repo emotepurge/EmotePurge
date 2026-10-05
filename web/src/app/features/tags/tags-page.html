@@ -455,9 +455,6 @@
           (focus)="onCellFocus(entry, row.startIndex + i)"
         >
           <app-emote-sprite [url]="entry.imageUrl" [size]="64" [dimmed]="entry.inSet === false" />
-          @if (entry.placedByThisTag) {
-            <ng-container *ngTemplateOutlet="placedMark"></ng-container>
-          }
           @if (selection.isSelected(entry)) {
             <!-- Same marking as the usage atlas: wash and inset ring on one element drawn last,
                  plus the corner square. -->
@@ -482,23 +479,10 @@
           (mouseenter)="inspect(entry)"
         >
           <app-emote-sprite [url]="entry.imageUrl" [size]="64" [dimmed]="entry.inSet === false" />
-          @if (entry.placedByThisTag) {
-            <ng-container *ngTemplateOutlet="placedMark"></ng-container>
-          }
         </div>
       }
     }
   </div>
-</ng-template>
-
-<!-- The placement mark (spec 9.4): a small square at the bottom left, where nothing else marks a
-     cell (the selection's square sits top right) — a mark, not a colour, so a dimmed "not in the
-     set" cell can carry it too. aria-hidden: the word is in the cell's accessible name. -->
-<ng-template #placedMark>
-  <span
-    class="pointer-events-none absolute bottom-0 left-0 h-2 w-2 bg-fg-body"
-    aria-hidden="true"
-  ></span>
 </ng-template>
 
 <!-- Permanently mounted (§4.5): speaks the end states of what the dock shows — a dock that mounts

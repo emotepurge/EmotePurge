@@ -1675,7 +1675,7 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    // The tags page with a played-in tag (#201 T-C, spec 9.4): state line, placement marks, the
+    // The tags page with a played-in tag (#201 T-C, spec 9.4): state line, the
     // list's "eingespielt (n platziert)", the run buttons in the detail head — and, after a
     // clear-out has run to its end against the mocked 7TV, the page-level run dock with the
     // delete section's settled run, tag report line, restore hint and buttons (the fixed dock has

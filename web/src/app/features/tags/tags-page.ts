@@ -128,7 +128,7 @@ export function parseTagParam(raw: string | null): number | null {
  * selects nothing (spec 9.4): no 7TV-writing work starts from a phone, and the one
  * selection-bound action in T-B is not worth a selection mode of its own there.
  *
- * T-C (#201, spec 9.4/9.5) adds the tag's played-in state, the placement marks and the tag runs:
+ * T-C (#201, spec 9.4/9.5) adds the tag's played-in state and the tag runs:
  * "Einspielen"/"Ausräumen" (`TagRunActions`) in the detail head, and — at page level, outside the
  * detail, so a run stays visible whichever tag (or the list) is on screen — the run dock with the
  * import, delete and restore sections, the permanently mounted `DockOutcomeAnnouncer` and the
@@ -775,9 +775,6 @@ export class TagsPage {
     }
     if (entry.inSet === false) {
       parts.push(this.transloco.translate('tags.page.notInSetBadge'));
-    }
-    if (entry.placedByThisTag) {
-      parts.push(this.transloco.translate('tags.page.placedMark'));
     }
     return parts.join(' · ');
   }

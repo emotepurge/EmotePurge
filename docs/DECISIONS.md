@@ -836,6 +836,16 @@ for an active tag — so there was no way to clear it out. The operator decided 
 `docs/Operations.md` · `docs/UI-Designsprache.md` · `docs/Architectur.md` · `.env.example` ·
 `docker-compose.yml` · `docker-compose.prod.yml`
 
+**Operator feedback: the placement mark is gone.** Spec 9.4's small square at the bottom left of an entry
+tile ("placed by this tag") is removed, together with the word it added to the tile's accessible name
+(`tags.page.placedMark`) and its spec case. The operator found that it looks like a checkbox, which
+invites a click that does nothing. The placement data itself stays: `placedByThisTag`/`placedAtUtc` still
+drive the clear-out dialog ("eingespielt am ..."), so nothing behind the surface changed.
+
+**Betrifft (feedback, placement mark):** `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags-page.spec.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/e2e/audit/ui-audit.audit.ts`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

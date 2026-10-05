@@ -1745,7 +1745,6 @@
         "active": "eingespielt seit {{date}}",
         "activeUndated": "eingespielt"
       },
-      "placedMark": "eingespielt",
       "placedAt": "eingespielt am {{date}}"
     },
     "assignDialog": {

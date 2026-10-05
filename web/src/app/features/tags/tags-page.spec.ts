@@ -836,7 +836,7 @@ describe('TagsPage', () => {
       });
     });
 
-    describe('state line, list micro line and placement marks', () => {
+    describe('state line and list micro line', () => {
       it('names the activation date of a played-in tag', async () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold'));
         const date = new Date('2026-10-01T10:00:00Z').toLocaleDateString(
@@ -881,21 +881,6 @@ describe('TagsPage', () => {
 
         expect(row).toContain('eingespielt');
         expect(row).not.toContain('platziert');
-      });
-
-      it("names a placement in the cell's accessible name, not only by the mark", async () => {
-        const { harness } = await openTag(activeTag(1, 'Stronghold'), [
-          entry('e1', {
-            placedByThisTag: true,
-            placedAtUtc: '2026-10-01T10:00:00Z',
-            placementOperationId: 'rev-1',
-          }),
-          entry('e2'),
-        ]);
-
-        const [placed, other] = cells(harness);
-        expect(placed.getAttribute('aria-label')).toContain(de.tags.page.placedMark);
-        expect(other.getAttribute('aria-label')).not.toContain(de.tags.page.placedMark);
       });
     });
 
