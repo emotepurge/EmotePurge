@@ -108,6 +108,47 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task SyncChannel_ArchivedRowWithUnknownEntryAndAnObservation_KeepsTheObservationAsItWas()
+    {
+        var observed = DateTime.UtcNow.AddMinutes(-50);
+        var channel = await SeedChannelAsync("leaveobs_b2_nullentry",
+            ("lokeep1", false, null),
+            ("loarch1", true, null));
+        await using (var seed = fixture.CreateDbContext())
+        {
+            await EmoteSetLeaveObservations.RecordAsync(seed, channel.Id, SetId, ["loarch1"], observed, CancellationToken.None);
+        }
+
+        await SyncAsync(channel, SetId, Live("lokeep1"));
+
+        var latest = await LatestAsync(channel, SetId, "loarch1");
+        Assert.NotNull(latest);
+        Assert.True(Math.Abs((latest.Value - observed).TotalMilliseconds) < 1, "an unknown entry must not trigger a new observation");
+    }
+
+    [Fact]
+    public async Task SyncChannel_ArchivedRowWithAnObservationOlderThanItsEntry_GetsOneNewObservation_NotOnTheNextPass()
+    {
+        var entered = DateTime.UtcNow.AddMinutes(-31);
+        var observed = DateTime.UtcNow.AddMinutes(-60);
+        var channel = await SeedChannelAsync("leaveobs_b2_stale",
+            ("lokeep1", false, null),
+            ("loarch1", true, entered));
+        await using (var seed = fixture.CreateDbContext())
+        {
+            await EmoteSetLeaveObservations.RecordAsync(seed, channel.Id, SetId, ["loarch1"], observed, CancellationToken.None);
+        }
+
+        await SyncAsync(channel, SetId, Live("lokeep1"));
+        var first = await LatestAsync(channel, SetId, "loarch1");
+        Assert.NotNull(first);
+        Assert.True(first.Value > entered, "the new observation must be younger than the entry");
+
+        await SyncAsync(channel, SetId, Live("lokeep1"));
+        Assert.Equal(first, await LatestAsync(channel, SetId, "loarch1"));
+    }
+
+    [Fact]
     public async Task SyncChannel_StampsTheEntryOnCreateAndOnUnarchive_ButNotOnARename()
     {
         var old = new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);

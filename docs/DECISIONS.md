@@ -96,6 +96,13 @@ lives in `EmotePurge.Infrastructure`, so the worker image has to be rebuilt and 
   from after its last entry exists. It therefore gets one observation, not one per resync. The leave
   is always recorded against the set it was seen in: the channel's active set (after a set switch,
   the new one), or the report's set.
+- **Cost of the post-check.** Each REST tick reads, once per channel, the latest observation of the
+  archived non-live rows outside the window (one PK-indexed read). It implies two backfill writes: the
+  first tick after the deploy writes one observation per archived pre-migration row, and every set
+  switch writes one per archived row against the new set. That is accepted: it is bounded by the
+  channel's archived history, idempotent through `GREATEST` (a repeat never moves the value backwards
+  and the entry comparison stops further writes), and its real size is measured during live
+  verification.
 - **Entry stamp.** `LastEnteredSetAtUtc` is set when the sync creates a row, when it un-archives one
   (rename alone does not count) and on a restore report. The vote-session upsert also stamps the rows
   it inserts. Those rows are inserted archived for any ballot set, not because the set holds them now.
