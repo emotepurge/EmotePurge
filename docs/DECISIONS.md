@@ -738,7 +738,13 @@ The operator tried the runs in the browser and changed three things; all are fro
   vorher im Set"); the operator found that live and decided the clear-out below.
 - **Focus survives the disappearing button.** When a play-in leaves nothing missing, "Einspielen" leaves
   the DOM while it holds the focus CDK gave back after the dialog; focus then moves to "Ausräumen" (the tag
-  is played in now) or, with no button left, to the detail heading (`tabindex="-1"`). Without a run button
+  is played in now) or, with no button left, to the detail heading (`tabindex="-1"`). The same holds the
+  other way round (review feedback 2, m2): a clear-out that leaves nothing of the tag in the set takes
+  "Ausräumen" away, and focus moves to "Einspielen" or the heading (`runButtonFocusTarget`). Only the
+  button whose click started the flow is followed, and only until that flow ended without a run (m3): a
+  dismissed dialog or token prompt, an abort or a blocked step forgets it, so a later live reload after
+  another tab's run never moves focus. The play-in's hand-over to the import flow cannot tell a
+  dismissed import dialog from a started run; there only an abort with a notice forgets the click. Without a run button
   on the page (the tag is neither missing an emote nor played in), `TagRunActions` also drops its button row
   and the lock reason, so no text explains a lock on a button that is not there; its error banner stays.
 - **The tags page explains itself.** Under the title: "A tag remembers emotes, even when they are not in

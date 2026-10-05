@@ -17,7 +17,7 @@ import { EmoteTagService } from '../../core/tags/emote-tag.service';
 import {
   TagRunActions,
   TagRunFeedback,
-  playInFocusTarget,
+  runButtonFocusTarget,
   settledTagPlayIn,
   settledTagRemoval,
 } from './tag-run-actions';
@@ -378,14 +378,97 @@ describe('TagRunActions', () => {
     });
   });
 
-  describe('playInFocusTarget', () => {
-    it('leaves focus alone when the user has already moved it', () => {
-      expect(playInFocusTarget({ focusLost: false, removeShown: true })).toBe('none');
+  describe('focus when a clear-out takes "Ausräumen" away', () => {
+    let focusLost: number;
+    let removalClosed: Subject<unknown>;
+
+    beforeEach(() => {
+      // Just enough of the clear-out's services for a flow to reach its dialog and its run.
+      removalClosed = new Subject<unknown>();
+      Object.assign(TestBed.inject(Dialog), { open: vi.fn(() => ({ closed: removalClosed })) });
+      Object.assign(TestBed.inject(EmoteAdminService), {
+        getSetWarning: () => of({ available: false }),
+      });
+      Object.assign(TestBed.inject(SevenTvDeleteService), {
+        beginConfirmedRun: vi.fn(),
+        clearConfirmedRun: vi.fn(),
+        endConfirmedRun: vi.fn(),
+        startDelete: vi.fn(() =>
+          deleteRunSignal.set(
+            deleteRun({ phase: 'running', tag: { tagId: 7, operationId: 'op' } }),
+          ),
+        ),
+      });
+      Object.assign(TestBed.inject(EmoteTagService), { reportRemoval: () => of({}) });
+
+      focusLost = 0;
+      fixture.componentInstance.focusLost.subscribe(() => focusLost++);
+      // Not played in, its one emote in the set: "Ausräumen" only.
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1 }));
+      fixture.detectChanges();
+      button('Ausräumen')!.click();
+      fixture.detectChanges();
     });
 
-    it('prefers "Ausräumen", then the host fallback', () => {
-      expect(playInFocusTarget({ focusLost: true, removeShown: true })).toBe('remove');
-      expect(playInFocusTarget({ focusLost: true, removeShown: false })).toBe('fallback');
+    it('moves to "Einspielen" when the cleared tag now misses its emote', () => {
+      removalClosed.next({ checkedIds: ['a'] });
+      fixture.detectChanges();
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
+      fixture.detectChanges();
+
+      expect(button('Ausräumen')).toBeUndefined();
+      expect(document.activeElement).toBe(button('Einspielen'));
+      expect(focusLost).toBe(0);
+    });
+
+    it('hands over to the host when no button is left to take it', () => {
+      removalClosed.next({ checkedIds: ['a'] });
+      fixture.detectChanges();
+      fixture.componentRef.setInput('tag', summary({ entryCount: 0, inSetCount: 0 }));
+      fixture.detectChanges();
+
+      expect(focusLost).toBe(1);
+    });
+
+    it('leaves focus alone after a dismissed dialog, when a later reload takes the button away', () => {
+      removalClosed.next(undefined);
+      fixture.detectChanges();
+      // Another tab cleared the tag out meanwhile; the live reload lands here.
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
+      fixture.detectChanges();
+
+      expect(button('Ausräumen')).toBeUndefined();
+      expect(document.activeElement).toBe(document.body);
+      expect(focusLost).toBe(0);
+    });
+  });
+
+  it('leaves focus alone after an aborted play-in, when a later reload takes "Einspielen" away', () => {
+    let focusLost = 0;
+    fixture.componentInstance.focusLost.subscribe(() => focusLost++);
+    registration = () => throwError(() => new HttpErrorResponse({ status: 503 }));
+    fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
+    fixture.detectChanges();
+    button('Einspielen')!.click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Besitz gerade nicht prüfbar.');
+
+    // Played in from another tab; nothing is missing any more.
+    fixture.componentRef.setInput('tag', summary({ entryCount: 0, inSetCount: 0 }));
+    fixture.detectChanges();
+
+    expect(document.activeElement).toBe(document.body);
+    expect(focusLost).toBe(0);
+  });
+
+  describe('runButtonFocusTarget', () => {
+    it('leaves focus alone when the user has already moved it', () => {
+      expect(runButtonFocusTarget({ focusLost: false, otherShown: true })).toBe('none');
+    });
+
+    it('prefers the other run button, then the host fallback', () => {
+      expect(runButtonFocusTarget({ focusLost: true, otherShown: true })).toBe('other');
+      expect(runButtonFocusTarget({ focusLost: true, otherShown: false })).toBe('fallback');
     });
   });
 

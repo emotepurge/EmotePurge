@@ -54,17 +54,21 @@ export function settledTagPlayIn(run: ImportRunInfo | null): string | null {
     : null;
 }
 
-/** Where focus goes when "Einspielen" leaves the DOM under the keyboard user (a play-in made
- *  nothing missing any more): "Ausräumen" if it is there, otherwise the host's stable fallback (the
- *  detail heading). `none` when focus is not lost — the user has moved on, leave it alone. */
-export function playInFocusTarget(state: {
+/** One of the two run buttons. */
+export type TagRunButton = 'playIn' | 'remove';
+
+/** Where focus goes when the run button the user clicked leaves the DOM under them ("Einspielen"
+ *  after a play-in left nothing missing, "Ausräumen" after a clear-out left nothing to clear): the
+ *  other run button if it is there, otherwise the host's stable fallback (the detail heading).
+ *  `none` when focus is not lost — the user has moved on, leave it alone. */
+export function runButtonFocusTarget(state: {
   focusLost: boolean;
-  removeShown: boolean;
-}): 'remove' | 'fallback' | 'none' {
+  otherShown: boolean;
+}): 'other' | 'fallback' | 'none' {
   if (!state.focusLost) {
     return 'none';
   }
-  return state.removeShown ? 'remove' : 'fallback';
+  return state.otherShown ? 'other' : 'fallback';
 }
 
 /** The same for a tag clear-out. A tag-less delete run has **no** `tag` field (`undefined`). */
@@ -111,6 +115,7 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
           <div class="flex flex-wrap items-center gap-2">
             @if (playInShown()) {
               <button
+                #playInButton
                 type="button"
                 appButton="neutral"
                 class="disabled:cursor-not-allowed"
@@ -183,8 +188,8 @@ export class TagRunActions {
   /** A click (or a retry) started a flow. */
   readonly started = output<void>();
   readonly feedback = output<TagRunFeedback>();
-  /** "Einspielen" left the DOM under the user and there is no "Ausräumen" to take focus — the host
-   *  moves it to a stable target of its own. */
+  /** The clicked run button left the DOM under the user and the other one is not there to take
+   *  focus — the host moves it to a stable target of its own. */
   readonly focusLost = output<void>();
 
   protected readonly arbiter = inject(SevenTvRunArbiter);
@@ -201,6 +206,7 @@ export class TagRunActions {
   private readonly destroyRef = inject(DestroyRef);
   private readonly injector = inject(Injector);
   private readonly document = inject(DOCUMENT);
+  private readonly playInButton = viewChild<ElementRef<HTMLButtonElement>>('playInButton');
   private readonly removeButton = viewChild<ElementRef<HTMLButtonElement>>('removeButton');
 
   /** This component's flow is between its click and its hand-over (or its report). */
@@ -236,11 +242,15 @@ export class TagRunActions {
       : null;
   });
   protected readonly otherRunReasonId = `tag-run-other-run-${nextReasonId++}`;
+  /** The run button whose click started the current flow — the one CDK gives focus back to once
+   *  the dialog closes, and so the one that may leave the DOM under the user. `null` once that has
+   *  been handled, and after a flow that ended without a run (see the constructor). */
+  private focusOwner: TagRunButton | null = null;
+  /** A report without a run succeeded since the last click (n = 0, "all present"): the flow ended
+   *  in a state change, so the button may still go. */
+  private reportCompletedSinceClick = false;
   /** Which tag of which channel this component acts for — by id, so a reloaded summary of the same
    *  tag is no change. */
-  /** The last click that started a play-in came from this component's own button — the one that
-   *  holds focus again once the dialog closes. */
-  private playInStarted = false;
   private readonly subject = computed(() => `${this.channelName()}\u0000${this.tag().id}`);
 
   private readonly deps: TagRunFlowDeps = {
@@ -263,19 +273,44 @@ export class TagRunActions {
     // run the old tag's flow under the new one's buttons — so the banner goes with the change.
     effect(() => {
       this.subject();
-      untracked(() => this.notice.set(null));
+      untracked(() => {
+        this.notice.set(null);
+        // Another tag's buttons: a click on the previous one says nothing about them.
+        this.focusOwner = null;
+      });
     });
 
-    // After a play-in that left nothing missing, "Einspielen" is removed from the DOM — together
-    // with the focus CDK gave back to it. Move it on instead of letting it drop to the body.
-    let wasShown: boolean | null = null;
+    // After a run that left the clicked button nothing to do — a play-in with nothing missing any
+    // more, a clear-out with nothing left in the set — that button is removed from the DOM,
+    // together with the focus CDK gave back to it. Move it on instead of letting it drop to the body.
+    let shownBefore: Record<TagRunButton, boolean> | null = null;
     effect(() => {
-      const shown = this.playInShown();
-      const gone = wasShown === true && !shown;
-      wasShown = shown;
-      if (gone && this.playInStarted) {
-        this.playInStarted = false;
-        afterNextRender(() => this.moveFocusOn(), { injector: this.injector });
+      const shown: Record<TagRunButton, boolean> = {
+        playIn: this.playInShown(),
+        remove: this.removeShown(),
+      };
+      const before = shownBefore;
+      shownBefore = shown;
+      const owner = this.focusOwner;
+      if (before !== null && owner !== null && before[owner] && !shown[owner]) {
+        this.focusOwner = null;
+        afterNextRender(() => this.moveFocusOn(owner), { injector: this.injector });
+      }
+    });
+
+    // A flow that ended without a run — a dismissed dialog or token prompt, an abort, a blocked
+    // step — changes nothing the button could go for; a later, unrelated change (a live reload
+    // after another tab's run) must not move focus on its behalf. A clear-out's hand-over to its
+    // run, and a report without a run that succeeded, keep the owner. The play-in's hand-over to
+    // the import flow cannot tell a dismissed import dialog from a started run; only its aborts
+    // (a notice) count here.
+    let wasPending = false;
+    effect(() => {
+      const pending = this.pending();
+      const ended = wasPending && !pending;
+      wasPending = pending;
+      if (ended) {
+        untracked(() => this.releaseFocusOwnerIfNoRun());
       }
     });
 
@@ -308,8 +343,9 @@ export class TagRunActions {
     }
     this.started.emit();
     this.noticeSink.clear();
-    this.playInStarted = true;
+    this.claimFocus('playIn');
     startTagPlayInFlow(this.deps, this.request());
+    this.releaseFocusOwnerIfEndedAtOnce();
   }
 
   protected remove(): void {
@@ -318,7 +354,9 @@ export class TagRunActions {
     }
     this.started.emit();
     this.noticeSink.clear();
+    this.claimFocus('remove');
     startTagRemovalFlow(this.deps, this.request());
+    this.releaseFocusOwnerIfEndedAtOnce();
   }
 
   protected retry(notice: TagRunNotice): void {
@@ -330,14 +368,48 @@ export class TagRunActions {
     notice.retry?.();
   }
 
-  private moveFocusOn(): void {
+  private claimFocus(button: TagRunButton): void {
+    this.focusOwner = button;
+    this.reportCompletedSinceClick = false;
+  }
+
+  /** A flow can end before its start call returns (a step that answers at once); the `pending`
+   *  effect never sees that `true`, so the click handler asks itself. */
+  private releaseFocusOwnerIfEndedAtOnce(): void {
+    if (!this.pending()) {
+      this.releaseFocusOwnerIfNoRun();
+    }
+  }
+
+  /** Called once `pending` has ended: forgets the clicked button when the flow stopped short of
+   *  anything that could change the tag (see the constructor). */
+  private releaseFocusOwnerIfNoRun(): void {
+    if (this.focusOwner === null) {
+      return;
+    }
+    if (this.notice() !== null) {
+      this.focusOwner = null;
+      return;
+    }
+    if (this.focusOwner !== 'remove' || this.reportCompletedSinceClick) {
+      return;
+    }
+    const run = this.deleteService.run();
+    const handedOver = run !== null && run.tag?.tagId === this.tag().id && run.phase !== 'closed';
+    if (!handedOver) {
+      this.focusOwner = null;
+    }
+  }
+
+  private moveFocusOn(gone: TagRunButton): void {
     const active = this.document.activeElement;
-    const target = playInFocusTarget({
+    const other = gone === 'playIn' ? this.removeButton() : this.playInButton();
+    const target = runButtonFocusTarget({
       focusLost: active === null || active === this.document.body,
-      removeShown: this.removeButton() !== undefined,
+      otherShown: other !== undefined,
     });
-    if (target === 'remove') {
-      this.removeButton()?.nativeElement.focus();
+    if (target === 'other') {
+      other?.nativeElement.focus();
     } else if (target === 'fallback') {
       this.focusLost.emit();
     }
@@ -359,7 +431,10 @@ export class TagRunActions {
       hostAlive: () => !this.destroyRef.destroyed,
       sink: this.noticeSink,
       onFeedback: (key, params) => this.feedback.emit({ key, params }),
-      onCompleted: () => this.completed.emit(),
+      onCompleted: () => {
+        this.reportCompletedSinceClick = true;
+        this.completed.emit();
+      },
     };
   }
 }

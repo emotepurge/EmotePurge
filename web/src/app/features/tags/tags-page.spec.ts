@@ -772,6 +772,15 @@ describe('TagsPage', () => {
         expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
       });
 
+      it('takes focus onto the detail heading when the run buttons lose it with no button left', async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold'));
+
+        runActions(harness)!.focusLost.emit();
+        await settle(harness);
+
+        expect(document.activeElement?.id).toBe('tag-detail-title');
+      });
+
       it('needs no management right (E9), and passes the live active set', async () => {
         permissions = { ...MANAGER, canManage: false, tagRunsEnabled: true };
         const { harness, page } = await openTag(tag(1, 'Stronghold'));
