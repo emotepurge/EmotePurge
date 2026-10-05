@@ -1238,6 +1238,44 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
     }
 
+    // Operator decision 2026-10-05: with a grid marking the play-in adds only the marked missing
+    // entries. The report then names a subset of what the tag misses — nothing on the server may
+    // assume a play-in covers every missing entry.
+    [Fact]
+    public async Task Report_ASubsetOfTheMissingEntries_PlacesOnlyThose_ActivatesTheTag_AndAuditsTheirCount()
+    {
+        var channel = await SeedChannelAsync("tagrepsubset");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var w = NewSevenTvId();
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        var z = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, w, "W", T0);
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        await SeedEntryAsync(tag.Id, z, "Z", T0);
+
+        var operationId = Guid.NewGuid();
+        await RegisterPlayInAsync("tagrepsubset", tag.Id, operationId);
+
+        var result = await ReportAsync("tagrepsubset", tag.Id, operationId, ActiveSetId, x, z);
+
+        Assert.Equal((TagReportStatus.Ok, false, 2, 0), (result.Status, result.Replayed, result.RecordedCount, result.AlreadyRecordedCount));
+        Assert.Empty(result.NotTaggedIds);
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal(new[] { x, z }.Order(StringComparer.Ordinal),
+            (await verify.EmoteTagPlacements.Where(p => p.TagId == tag.Id).Select(p => p.SevenTvEmoteId).ToListAsync())
+                .Order(StringComparer.Ordinal));
+        var activation = await verify.EmoteTagActivations.AsNoTracking().SingleAsync(a => a.TagId == tag.Id);
+        Assert.Equal((ActiveSetId, operationId), (activation.SevenTvEmoteSetId, activation.OperationId));
+        // The tag keeps all four entries; the two it did not add stay entries without a placement.
+        Assert.Equal(4, await verify.EmoteTagEntries.CountAsync(e => e.TagId == tag.Id));
+        var audit = Assert.Single(await LoadAuditAsync("tagrepsubset"));
+        using var details = JsonDocument.Parse(audit.DetailsJson!);
+        Assert.Equal(2, details.RootElement.GetProperty("emoteCount").GetInt32());
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
     [Fact]
     public async Task Report_IdsWithoutAnEntry_AreNotTaggedIds_InRequestOrder_AndAreNotPlaced()
     {
