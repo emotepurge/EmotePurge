@@ -148,4 +148,13 @@ internal static class ApiErrorCodes
     public const string TagNotFound = "tag_not_found";
     // 409: adding would push the tag past EmoteTagLimits.MaxEntriesPerTag; nothing was written.
     public const string TagEntryLimitReached = "tag_entry_limit_reached";
+    // Tag operations and placement reports (#201 T-C). 400: the operation id (or a snapshot revision)
+    // is not a UUID.
+    public const string TagOperationIdInvalid = "tag_operation_id_invalid";
+    // 404: a report names an operation that was never registered (or whose tag is gone).
+    public const string TagOperationUnknown = "tag_operation_unknown";
+    // 409: the operation id is registered for another tag, kind or set than the request names.
+    public const string TagOperationConflict = "tag_operation_conflict";
+    // 400: the registration's kind is missing or not one of EmoteTagOperationKind.
+    public const string TagOperationKindInvalid = "tag_operation_kind_invalid";
 }

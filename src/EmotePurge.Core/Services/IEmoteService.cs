@@ -95,7 +95,7 @@ public interface IEmoteService
     // reported and where they came from. sevenTvEmoteIds is deduplicated ordinally before counting
     // (a client that reported the same id twice did not import it twice); sourceChannelName is the
     // normalized source channel, or null for a file import or a leaderboard import, neither of
-    // which carries one; sourceKind is "channel", "file", "seventv-channel" or "seventv-leaderboard".
+    // which carries one; sourceKind is "channel", "file", "tag" (a tag play-in, #201 T-C: no name), "seventv-channel" or "seventv-leaderboard".
     // leaderboardSort is the 7TV sort wire code (SevenTvLeaderboardSortWireCode) for a
     // "seventv-leaderboard" import — the only kind that has one, since a network-wide ranking has no
     // source channel to name (leaderboard-import spec E8) — and null for every other kind. Returns

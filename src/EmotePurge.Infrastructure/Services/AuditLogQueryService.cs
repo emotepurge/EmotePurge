@@ -62,6 +62,7 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     private const string ChannelSourceKind = "channel";
     private const string ForeignChannelSourceKind = "seventv-channel";
     private const string FileSourceKind = "file";
+    private const string TagSourceKind = "tag";
     private const string LeaderboardSourceKind = "seventv-leaderboard";
 
     public async Task<PagedResult<AuditLogEntryDto>> ListAsync(int page, int pageSize, AuditLogFilter? filter = null, CancellationToken cancellationToken = default)
@@ -213,7 +214,7 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     }
 
     /// <summary>
-    /// The emotes.syncImported shapes (channel/file/leaderboard origin). Degrades to false — not a
+    /// The emotes.syncImported shapes (channel/file/tag/leaderboard origin). Degrades to false — not a
     /// throw — when <c>sourceKind</c> is missing, unrecognized, or its companion fields don't check
     /// out; the caller then falls through to the plainer kinds below.
     /// </summary>
@@ -360,7 +361,7 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     private static bool TryProjectChannelOrFileDetail(JsonElement root, string? sourceKind, out AuditLogDetail? detail)
     {
         detail = null;
-        if (sourceKind is not (ChannelSourceKind or ForeignChannelSourceKind or FileSourceKind)
+        if (sourceKind is not (ChannelSourceKind or ForeignChannelSourceKind or FileSourceKind or TagSourceKind)
             || !TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var importedCount))
         {
             return false;
@@ -372,6 +373,14 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
         if (sourceKind == FileSourceKind)
         {
             detail = new AuditLogDetail(AuditLogDetail.Kinds.ImportedFromFile, importedCount, null);
+            return true;
+        }
+
+        // A tag play-in is its own origin: it names no channel and, by E30, no tag either, so only the
+        // count is projected.
+        if (sourceKind == TagSourceKind)
+        {
+            detail = new AuditLogDetail(AuditLogDetail.Kinds.ImportedFromTag, importedCount, null);
             return true;
         }
 

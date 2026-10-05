@@ -69,6 +69,10 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     [InlineData("DELETE", "/api/channels/{channelName}/tags/{tagId:long}", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/entries", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/entries/remove", RateLimitPolicyNames.Bookkeeping)]
+    // #201 T-C: the registration and the two reports of a tag run — bookkeeping about a run already begun.
+    [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/operations", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/placements", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/placements/removed", RateLimitPolicyNames.Bookkeeping)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)
     {
         // Resolving from Services boots the host; the endpoints exist only afterwards (same as

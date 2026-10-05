@@ -304,6 +304,70 @@ tag in the set as it exists at apply time, valid and expired alike.
   direction is fail-safe (spec 0a). The visible cost is a tag that reads as still active after a
   clearing until it is cleared again.
 
+#### Api (Task 6)
+
+Three routes on a third `MapGroup` under `/api/channels/{channelName}/tags/{tagId:long}`, chain
+`RequireAuthorization` → `ChannelNameValidationFilter` → `UsageStatsAccessAuthorizationFilter` →
+`Bookkeeping`: `POST /operations` (register), `POST /placements` (play-in report) and
+`POST /placements/removed` (removal report). The filter is the usage-stats one, not the management one:
+running a tag needs no channel-management right (E9) — the 7TV ownership of the set is the gate, and it
+is checked in the handler because it needs the body's set id.
+
+**One ownership ladder, extracted rather than copied.** The `SetNotFound`/`Forbidden`/`Unavailable`
+translation (404 `emote_set_not_found`, bare 403, 503 `foreign_channel_seventv_unavailable`) and the
+owner-hint builder moved out of `SevenTvEndpoints` into the internal `EmoteSetOwnershipRejection`;
+`sync-imported`, `sync-deleted`/`sync-restored` and the three tag routes all call it, so "exactly the
+ladder of `sync-deleted`" holds by construction. The channel filters stay in front: a caller without
+access to the channel never gets a ladder answer that would reveal whether a set exists.
+
+**Handler order, all three routes:** form step → actor (401) → ladder → service → status mapping.
+The form step runs before the actor and before anything is asked of 7TV: operation id is a UUID
+(`tag_operation_id_invalid`), the registration's `kind` is one of `EmoteTagOperationKind`
+(`tag_operation_kind_invalid`), the set id passes `EmoteSetIdValidation` (`invalid_emote_set_id`), and
+every id list — `sevenTvEmoteIds`, the snapshot's ids, `removedIds`, `keptIds` — passes
+`EmoteTagIdList.Check`. A JSON `null` or missing list, a null snapshot element and a malformed or null
+snapshot id are `emote_ids_invalid`; the null is refused in the handler *before* `Check`, because
+`Check(null)` answers `Empty`, which a report accepts. Empty lists stay legal (a run that added or
+removed nothing is a report). A snapshot revision that is not a UUID is `tag_operation_id_invalid`,
+checked after all ids. A missing body is a missing operation id. `RegisterOperationAsync` takes no
+`AuditActor`: a registration is intent, not an event, and writes no audit entry.
+
+**Status mapping.** Registration: `Ok` 201 and `Replayed` 200, both `{ registeredAtUtc }`; `Conflict`
+409 `tag_operation_conflict`. Reports: 200 with the counters; `OperationUnknown` 404
+`tag_operation_unknown`; `OperationConflict` 409 `tag_operation_conflict`; `TagNotFound` /
+`ChannelNotFound` 404. **A removal replay is answered by the handler itself**, `replayed: true` with
+every counter 0 and `deactivated: false`, not by forwarding the service result: on a replay those fields
+carry no outcome (the first application's figures are not reconstructed), so the client must not show or
+act on them and re-reads the tag instead. The channel name reaches the service normalized (rule 9).
+
+**New error codes** (rule 7; the frontend side is Task 7): `tag_operation_id_invalid`,
+`tag_operation_unknown`, `tag_operation_conflict`, `tag_operation_kind_invalid`.
+
+**`"tag"` joins the `sourceKind` vocabulary** of `ValidateSyncImportedVocabulary`: like `"file"` it
+names no channel and no leaderboard sort — otherwise every play-in would end in a 400 *after* the 7TV
+write. The audit projection gets its own detail kind `ImportedFromTag` (count only, never the tag's name
+— E30), not `ImportedFromFile`, which would read "from a file".
+
+**The flag.** `Tags:RunsEnabled` (default `false`) is bound into `EmoteTagOptions` and delivered as
+`tagRunsEnabled` on `GET /api/channels/{c}/permissions` — a global switch riding on the payload every
+channel page already loads, so no route, no filter-matrix row, no second request. The routes behind the
+runs exist whatever the flag says; it only lets the frontend offer the buttons.
+
+**Betrifft (Task 6):** `src/EmotePurge.Api/Endpoints/EmoteSetOwnershipRejection.cs` ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` · `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` ·
+`src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Api/appsettings.json` · `src/EmotePurge.Core/Services/IAuditLogQueryService.cs` ·
+`src/EmotePurge.Core/Services/IEmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteTagOptions.cs` ·
+`src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteTagReportLadderTests.cs` ·
+`tests/EmotePurge.Api.Tests/OwnershipLadderArrangements.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagOptionsTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs` · `docs/Architectur.md`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

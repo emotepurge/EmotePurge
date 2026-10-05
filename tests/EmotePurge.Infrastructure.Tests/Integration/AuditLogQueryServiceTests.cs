@@ -209,6 +209,31 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task ListAsync_ProjectsATagPlayIn_AsItsOwnKind_WithTheCountAndNoName()
+    {
+        // #201 T-C: sourceKind "tag" is neither a channel nor a file. Its own kind, so the label can
+        // say "from a tag" without a name (E30: the tag's name is not in the payload at all).
+        await using var db = fixture.CreateDbContext();
+        var channel = $"{ChannelPrefix}-import-tag";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 7, 31, 17, 30, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.EmotesSyncImported,
+            ChannelName = channel,
+            DetailsJson = """{"emoteCount": 4, "sourceChannelName": null, "sourceKind": "tag"}"""
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(null, channel, null));
+
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(new AuditLogDetail(AuditLogDetail.Kinds.ImportedFromTag, 4, null), dto.Detail);
+    }
+
+    [Fact]
     public async Task ListAsync_ProjectsAnImportFromAForeignChannel_OnBothCountAndSource()
     {
         // The third sourceKind (foreign-import spec E6/F5.3). Without this word in the renderer's

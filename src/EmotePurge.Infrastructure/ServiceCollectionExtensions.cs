@@ -74,6 +74,12 @@ public static class ServiceCollectionExtensions
         channelCapacityOptions.Validate();
         services.AddSingleton(channelCapacityOptions);
 
+        // Only a switch the Api hands to the browser with the channel permissions; no Validate(),
+        // nothing a typo could turn into an outage (a bad boolean already fails the bind).
+        var emoteTagOptions = new EmoteTagOptions();
+        configuration.GetSection(EmoteTagOptions.SectionName).Bind(emoteTagOptions);
+        services.AddSingleton(emoteTagOptions);
+
         // GDPR Art. 21 objection gate for channels (#252, the counterpart of
         // IExcludedChatterFilter in EmotePurge.Worker): read once here so both the Api's join
         // endpoint (ChannelService) and the Worker's identity reconcile (ChannelIdentityService) see

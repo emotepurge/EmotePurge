@@ -2,6 +2,7 @@ using EmotePurge.Api.Auth;
 using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Services;
 
 namespace EmotePurge.Api.Endpoints;
 
@@ -80,6 +81,7 @@ public static class ChannelEndpoints
             HttpContext httpContext,
             IChannelAccessService channelAccessService,
             IChannelService channelService,
+            EmoteTagOptions tagOptions,
             CancellationToken ct) =>
         {
             var principal = httpContext.User.TryBuildTwitchPrincipal();
@@ -100,7 +102,8 @@ public static class ChannelEndpoints
                 canViewUsageStats,
                 channelAccessService.IsGlobalAdmin(principal),
                 IsTracked: channel is not null,
-                IsBotActive: channel?.IsBotActive ?? false));
+                IsBotActive: channel?.IsBotActive ?? false,
+                TagRunsEnabled: tagOptions.RunsEnabled));
         })
         // Ordinary navigation, and the single most requested route in the app: every page that shows
         // anything channel-scoped asks it first. Both access checks can reach Helix or 7TV on a cache
@@ -328,6 +331,12 @@ public static class ChannelEndpoints
 /// silently stopped collecting, and the reactivate button would have nothing to key off.
 /// </para>
 /// <para>
+/// <c>TagRunsEnabled</c> is the operator's <c>Tags:RunsEnabled</c> switch for the tag play-in and
+/// removal runs (#201 T-C, spec 12.1/13.4): it rides on this payload because every channel page
+/// asks for it anyway, so the switch costs no route and no second request. It is a global value,
+/// not a per-channel permission.
+/// </para>
+/// <para>
 /// No <c>IsSevenTvEditor</c> field, despite the review's sketch: nothing consumes it today, and
 /// computing it would defeat the short-circuit above and put a 7TV call in every manager's request.
 /// Add it together with its first consumer.
@@ -338,4 +347,5 @@ internal sealed record ChannelPermissionsDto(
     bool CanViewUsageStats,
     bool IsGlobalAdmin,
     bool IsTracked,
-    bool IsBotActive);
+    bool IsBotActive,
+    bool TagRunsEnabled);

@@ -355,7 +355,7 @@ public static class EmoteEndpoints
             return ApiErrorCodes.EmoteIdsEmpty;
         }
 
-        if (sourceKind is not ("channel" or "file" or "seventv-channel" or "seventv-leaderboard"))
+        if (sourceKind is not ("channel" or "file" or "tag" or "seventv-channel" or "seventv-leaderboard"))
         {
             return ApiErrorCodes.InvalidSourceKind;
         }
@@ -382,7 +382,9 @@ public static class EmoteEndpoints
             return ApiErrorCodes.InvalidSourceKind;
         }
 
-        if (sourceKind == "file" && (!string.IsNullOrWhiteSpace(sourceChannelName) || leaderboardSort is not null))
+        // "tag" (#201 T-C, a play-in of a channel tag): like "file" it names no channel — the tag's
+        // name is deliberately not on the wire at all (E30), the audit row keeps only the count.
+        if (sourceKind is "file" or "tag" && (!string.IsNullOrWhiteSpace(sourceChannelName) || leaderboardSort is not null))
         {
             return ApiErrorCodes.InvalidSourceKind;
         }

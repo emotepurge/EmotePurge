@@ -75,6 +75,9 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
     [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "channel"}""", ApiErrorCodes.InvalidSourceKind)]
     [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": "somechannel", "sourceKind": "file"}""", ApiErrorCodes.InvalidSourceKind)]
     [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_WEEKLY"}""", ApiErrorCodes.InvalidLeaderboardSort)]
+    // #201 T-C: "tag" names no channel and no sort, like "file".
+    [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": "somechannel", "sourceKind": "tag"}""", ApiErrorCodes.InvalidSourceKind)]
+    [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "tag", "leaderboardSort": "TRENDING_DAILY"}""", ApiErrorCodes.InvalidSourceKind)]
     public async Task VocabularyViolation_Gets400_BeforeTheOwnerCheckRuns(string body, string expectedErrorCode)
     {
         var response = await SendAsync(EmoteSetId, NewUserId(), body: body);
@@ -168,6 +171,23 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
         // The report reads its grants the guarded way only; the unguarded lookup the authorization
         // path uses is never asked from here (spec section 32, second review round).
         await _factory.EditorService.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TagSourceKind_WithoutAName_Gets204_AndReachesTheServiceAsATagImport()
+    {
+        // #201 T-C: a tag play-in reports sourceKind "tag" — accepted without a channel name, and
+        // forwarded as is (the vocabulary table is the only place that would have refused it).
+        var userId = NewUserId();
+        _factory.ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId, (EmoteSetId, ActorSevenTvUserId)));
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "tag"}""";
+        var response = await SendAsync(EmoteSetId, userId, body: body);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.Emotes.Received(1).MarkImportedToSetAsync(
+            EmoteSetId, ActorSevenTvUserId, "someuser", Arg.Any<IReadOnlyList<string>>(),
+            null, "tag", null, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

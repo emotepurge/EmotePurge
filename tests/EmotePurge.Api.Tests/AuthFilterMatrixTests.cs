@@ -733,6 +733,9 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("DELETE", "/api/channels/{0}/tags/1")]
     [InlineData("POST", "/api/channels/{0}/tags/1/entries")]
     [InlineData("POST", "/api/channels/{0}/tags/1/entries/remove")]
+    [InlineData("POST", "/api/channels/{0}/tags/1/operations")]
+    [InlineData("POST", "/api/channels/{0}/tags/1/placements")]
+    [InlineData("POST", "/api/channels/{0}/tags/1/placements/removed")]
     public async Task TagRoutes_Answer400InvalidChannelName_BeforeAnyAccessFilterRuns(string method, string pathFormat)
     {
         _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
