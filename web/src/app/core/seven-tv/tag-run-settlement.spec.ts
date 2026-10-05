@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { RunResult } from './seven-tv-run-engine';
+import { RunItemStatus, RunQueueItem, RunResult } from './seven-tv-run-engine';
 import { deriveTagKeptIds } from './tag-run-settlement';
 
 function result(doneKeys: string[]): RunResult {
@@ -23,7 +23,31 @@ describe('deriveTagKeptIds', () => {
   });
 
   it('treats a ticked id with no done row as kept, whatever its other status', () => {
-    expect(deriveTagKeptIds(tag, result([]))).toEqual(['X', 'Y', 'A', 'B', 'C']);
+    const row = (key: string, status: RunItemStatus): RunQueueItem => ({
+      key,
+      sevenTvEmoteId: key,
+      name: key,
+      status,
+      completedSteps: 0,
+      failedStep: null,
+    });
+    const run: RunResult = {
+      doneKeys: [],
+      items: [row('A', 'failed'), row('B', 'cancelled'), row('C', 'unknown')],
+      startedAt: 0,
+      finishedAt: 1,
+    };
+    expect(deriveTagKeptIds(tag, run)).toEqual(['X', 'Y', 'A', 'B', 'C']);
+    // 'D' has no run row at all; 'A' failed, 'B' was cancelled, 'C' is unknown.
+    expect(
+      deriveTagKeptIds(
+        { checkedOwnIds: ['A', 'B', 'C', 'D', 'E'], uncheckedOwnIds: [] },
+        {
+          ...run,
+          doneKeys: ['E'],
+        },
+      ),
+    ).toEqual(['A', 'B', 'C', 'D']);
   });
 
   it('lists unticked first, then ticked in context order, without duplicates', () => {

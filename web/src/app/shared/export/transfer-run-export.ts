@@ -437,7 +437,9 @@ function readImportOrigin(value: unknown): ImportOrigin | null {
       const { tagId, tagName, channelName, alreadyInSetCount } = origin;
       return typeof tagId === 'number' &&
         Number.isSafeInteger(tagId) &&
+        tagId > 0 &&
         typeof tagName === 'string' &&
+        tagName.trim() !== '' &&
         typeof channelName === 'string' &&
         typeof alreadyInSetCount === 'number' &&
         Number.isSafeInteger(alreadyInSetCount) &&

@@ -396,7 +396,8 @@ a removal 7TV did not confirm must not make the server forget an emote that is s
 `web/src/app/core/tags/emote-tag.service.ts` · `web/src/app/core/channels/channel.model.ts` ·
 `web/src/app/core/i18n/api-error.ts` · `web/src/app/core/audit/audit.model.ts` ·
 `web/src/app/core/seven-tv/tag-run-settlement.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
-`web/src/app/shared/audit/audit-row.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+`web/src/app/shared/audit/audit-row.ts` · `web/src/app/shared/tags/tag-assign-dialog.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json`
 
 **The `'tag'` import origin reaches every consumer of the union.** `ImportOrigin` gains
 `{ kind: 'tag'; tagId; tagName; channelName; alreadyInSetCount }`. Its `channelName` is the tag's own

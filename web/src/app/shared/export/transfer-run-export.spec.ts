@@ -1120,6 +1120,11 @@ describe('parseTransferRunForUndo', () => {
     it.each([
       ['a tag id that is not a number', { ...TAG_ORIGIN, tagId: '7' }],
       ['a missing tag name', { ...TAG_ORIGIN, tagName: undefined }],
+      ['an empty tag name', { ...TAG_ORIGIN, tagName: '' }],
+      ['a whitespace-only tag name', { ...TAG_ORIGIN, tagName: '   ' }],
+      ['a tag id of zero', { ...TAG_ORIGIN, tagId: 0 }],
+      ['a negative tag id', { ...TAG_ORIGIN, tagId: -3 }],
+      ['a fractional tag id', { ...TAG_ORIGIN, tagId: 1.5 }],
       ['a channel name that is not a string', { ...TAG_ORIGIN, channelName: 4 }],
       ['a negative already-in-set count', { ...TAG_ORIGIN, alreadyInSetCount: -1 }],
       ['a fractional already-in-set count', { ...TAG_ORIGIN, alreadyInSetCount: 1.5 }],
