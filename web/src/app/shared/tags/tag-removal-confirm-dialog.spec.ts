@@ -38,7 +38,7 @@ const DE = {
       notProposedHeading: 'Nicht vorgeschlagen',
       placedAt: 'eingespielt am {{date}}',
       reason: {
-        alreadyPresent: 'war schon vorher im Set',
+        alreadyPresent: 'nicht von diesem Tag eingespielt',
         heldBy: 'wird noch von {{tag}} gebraucht',
       },
       notInSet: { one: '{{count}} weiterer nicht im Set', other: '{{count}} weitere nicht im Set' },
@@ -194,7 +194,7 @@ describe('TagRemovalConfirmDialog', () => {
     await settle();
     const text = host.textContent!;
     expect(text).toContain('wird noch von Raid, Duo gebraucht');
-    expect(text).toContain('war schon vorher im Set');
+    expect(text).toContain('nicht von diesem Tag eingespielt');
     expect(text).not.toContain('eingespielt am');
     expect(host.querySelector('[title="Raid, Duo"]')).not.toBeNull();
   });
@@ -268,7 +268,7 @@ describe('TagRemovalConfirmDialog', () => {
       const host = notPlayedIn([row('a', { reason: 'tagged', placedAtUtc: null })]);
       await settle();
       expect(box(host, 'a').checked).toBe(true);
-      expect(host.textContent).not.toContain('war schon vorher im Set');
+      expect(host.textContent).not.toContain('nicht von diesem Tag eingespielt');
       expect(host.textContent).not.toContain('eingespielt am');
     });
   });

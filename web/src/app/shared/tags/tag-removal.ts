@@ -19,7 +19,7 @@ import type {
  *   were all in the set already must still be clearable). Its whole point is the person's tagging,
  *   so every emote of it in the set is proposed — except one another active tag still needs
  *   (`heldByActiveTags`, or a valid placement of another tag), which stays unchecked with that
- *   reason. "Was already in the set before" is a statement about a play-in and does not apply.
+ *   reason. "Not played in by this tag" is a statement about a play-in and does not apply.
  * - The snapshot carries **all** of the tag's own placements, visible in the set or not (6.4/3): the
  *   ones no longer in the set are not rows, but they belong to the report so the server can drop
  *   them, and each carries the revision it was read at so the server touches only that placement.

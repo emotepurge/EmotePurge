@@ -1678,7 +1678,7 @@
         "one": "{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.",
         "other": "{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt."
       },
-      "restoreHint": "Wiederhergestellte Emotes sind danach wieder im Set, aber nicht als vom Tag eingespielt vermerkt — wird der Tag später eingespielt, gelten sie beim Ausräumen als „war schon vorher im Set“."
+      "restoreHint": "Wiederhergestellte Emotes sind danach wieder im Set, aber nicht als vom Tag eingespielt vermerkt — wird der Tag später eingespielt, gelten sie beim Ausräumen als „nicht von diesem Tag eingespielt“."
     }
   },
   "sevenTvToken": {
@@ -1837,7 +1837,7 @@
       "notProposedHeading": "Nicht vorgeschlagen",
       "placedAt": "eingespielt am {{date}}",
       "reason": {
-        "alreadyPresent": "war schon vorher im Set",
+        "alreadyPresent": "nicht von diesem Tag eingespielt",
         "heldBy": "wird noch von {{tag}} gebraucht"
       },
       "notInSet": {

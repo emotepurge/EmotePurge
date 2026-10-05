@@ -127,8 +127,8 @@ type ListItem =
 
       @if (!data.proposal.tagActive && items().length > 0) {
         <!-- Security model rule 3: the human is the last safeguard, so a preview whose ticks follow
-             another rule than the familiar one says so. Without a play-in there is no "was already
-             in the set" to leave unticked: everything of the tag is proposed. -->
+             another rule than the familiar one says so. Without a play-in there is no "not played in by
+             this tag" to leave unticked: everything of the tag is proposed. -->
         <p class="text-sm text-fg-secondary">
           {{ 'tags.removalDialog.notPlayedInLead' | transloco }}
         </p>

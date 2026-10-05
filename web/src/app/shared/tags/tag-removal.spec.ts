@@ -191,7 +191,7 @@ describe('proposeTagRemoval for a played-in tag', () => {
 // Operator decision 2026-10-05: a tag that is not played in can be cleared out, and everything of it
 // in the set is proposed except what another active tag still needs.
 describe('proposeTagRemoval for a tag that is not played in', () => {
-  it('proposes every emote in the set, with no "was already in the set" reason', () => {
+  it('proposes every emote in the set, with no "not played in by this tag" reason', () => {
     const p = proposeNotPlayedIn([entry('a'), entry('b')], live({ a: ['x'], b: ['y'] }));
     expect(p.rows.map((r) => [r.sevenTvEmoteId, r.checked, r.reason])).toEqual([
       ['a', true, 'tagged'],
@@ -230,7 +230,7 @@ describe('proposeTagRemoval for a tag that is not played in', () => {
     expect(p.ownInLiveIds).toEqual([]);
   });
 
-  it('a played-in tag keeps "was already in the set" unticked for the same entry', () => {
+  it('a played-in tag keeps "not played in by this tag" unticked for the same entry', () => {
     const [row] = proposePlayedIn([entry('a')], live({ a: ['x'] })).rows;
     expect(row).toMatchObject({ checked: false, reason: 'alreadyPresent' });
     expect(proposePlayedIn([entry('a')], live({ a: ['x'] })).tagActive).toBe(true);

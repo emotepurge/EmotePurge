@@ -669,7 +669,7 @@ test.describe('emote tag runs', () => {
     await expect(placed).toBeChecked();
     await expect(already).not.toBeChecked();
     await expect(dialog.getByText(/eingespielt am/)).toBeVisible();
-    await expect(dialog.getByText('war schon vorher im Set')).toBeVisible();
+    await expect(dialog.getByText('nicht von diesem Tag eingespielt')).toBeVisible();
     await expect(dialog.getByRole('status')).toHaveText('1 Emote wird entfernt, 1 bleibt im Set');
     expect(sevenTv.removes).toEqual([]);
     await dialog.getByRole('button', { name: 'Ausräumen' }).click();
@@ -824,8 +824,8 @@ test.describe('emote tag runs', () => {
     await expect(dialog.locator('input[data-emote-id="7tv-3"]')).toBeChecked();
     await expect(dialog.locator('input[data-emote-id="7tv-1"]')).not.toBeChecked();
     await expect(dialog.getByText(/wird noch von Lieblinge gebraucht/)).toBeVisible();
-    // Nothing of it was played in, so nothing "was already in the set before" either.
-    await expect(dialog.getByText('war schon vorher im Set')).toHaveCount(0);
+    // Nothing of it was played in, so nothing reads "not played in by this tag" either.
+    await expect(dialog.getByText('nicht von diesem Tag eingespielt')).toHaveCount(0);
     await expect(dialog.getByRole('status')).toHaveText(
       '2 Emotes werden entfernt, 1 bleibt im Set',
     );

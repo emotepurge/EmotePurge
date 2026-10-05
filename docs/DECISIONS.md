@@ -515,7 +515,7 @@ calls both, so there is one copy. Spec 7.2/7 words the confirm-time check as "ar
 chain instead, because the engine refuses a start without a token silently (a dock claim over a delete that
 never happened) and `noteRefusedStart` would announce the refusal a second time next to the flow's own
 notice. The dock shows the state line, the failure reason and a retry button, plus — after a tag run only
-— the hint that "Restore" brings emotes back unplaced (13.2: they read as "was already in the set before"
+— the hint that "Restore" brings emotes back unplaced (13.2: they read as "not played in by this tag"
 at the next clear-out — since 2026-10-05 only once the tag is played in again, see "Clearing out a tag that
 is not played in" below); the announcer speaks the end states on every page, never the pending line. Keys:
 the `sevenTvRun.tagReport.*` family, plus `restoreHint`.
@@ -687,12 +687,12 @@ UI-Designsprache §8.7 (9.4).
   on every path since the same day's re-review (N2): for a played-in tag too, an emote another active tag
   needs through an entry alone (no placement), and an own placement another tag placed as well, list that
   tag under "wird noch von X gebraucht" (`heldByActiveTags` merged with `placedByOtherTags`, as for a tag
-  that is not played in) — before, such a row read "war schon vorher im Set" and the re-read treated its
+  that is not played in) — before, such a row read as `alreadyPresent` and the re-read treated its
   holder as known although the dialog had never named it. A re-read that answers malformed fails closed
   like a failed one (the comparison runs in a `map`, so a throw reaches the abort path).
 - **13.2** — "Restore" after a clear-out creates no placement: restored emotes are in the set without being
   recorded as played in by the tag. While the tag is not played in, the next clear-out proposes them like any
-  emote of the tag (since 2026-10-05); once it is played in again they read "was already in the set" and can
+  emote of the tag (since 2026-10-05); once it is played in again they read "not played in by this tag" and can
   be ticked by hand. The restore button says so after a tag run. The
   converse, an **undo of a tag play-in** (usage page, #254), sends no tag report: its adds leave 7TV, the
   undo's own set-centric `sync-deleted` observations expire the placements, and the tag reads
@@ -785,7 +785,7 @@ for an active tag — so there was no way to clear it out. The operator decided 
   `tags.removalDialog.notPlayedInLead`) except one another active
   tag still needs — `heldByActiveTags`, merged with `placedByOtherTags` so a read that broke "inactive ⇒ no
   placement" still withholds the tick — which stays "Nicht vorgeschlagen" with "wird noch von X
-  gebraucht". "War schon vorher im Set" is a statement about a play-in and never appears for such a tag.
+  gebraucht". "Nicht von diesem Tag eingespielt" is a statement about a play-in and never appears for such a tag.
   With nothing ticked the dialog says only "Es wird nichts bei 7TV gelöscht." — the "gilt danach als nicht
   mehr eingespielt" half belongs to an active tag (`tags.removalDialog.nothingToDeleteNotPlayedIn`).
 - **The backend needed no new path.** Registration does not look at the activation; the removal report of
@@ -802,7 +802,7 @@ for an active tag — so there was no way to clear it out. The operator decided 
 - **The audit count changed:** `tag.removed`'s `emoteCount` is now the reported removed ids the tag has an
   entry for, placed by it or not, instead of `deletedCount` (own placements deleted). With the old count
   every clear-out of an inactive tag would have read "0 Emotes" however many left 7TV, and an active
-  tag's hand-ticked "war schon vorher" rows were never counted. Ids without an entry are not counted, the
+  tag's hand-ticked `alreadyPresent` rows were never counted. Ids without an entry are not counted, the
   same filter the play-in report applies; the response's `deletedCount` keeps its meaning.
 - **The restore hint** (`sevenTvRun.tagReport.restoreHint`) no longer says restored emotes read "war schon
   vorher im Set" at the next clear-out — while the tag is not played in they are proposed again; the hint
@@ -841,6 +841,21 @@ tile ("placed by this tag") is removed, together with the word it added to the t
 (`tags.page.placedMark`) and its spec case. The operator found that it looks like a checkbox, which
 invites a click that does nothing. The placement data itself stays: `placedByThisTag`/`placedAtUtc` still
 drive the clear-out dialog ("eingespielt am ..."), so nothing behind the surface changed.
+
+**Operator feedback: the not-proposed reason is worded for what the protection does.** The clear-out
+dialog's reason `alreadyPresent` for a row this tag did not place read "war schon vorher im Set" /
+"was already in the set before". That claims a history the app does not know: the row may have been put
+there by a person, by an older tag run, or by a restore (13.2), and the only thing the logic establishes
+is that this tag did not play it in. The line now reads "nicht von diesem Tag eingespielt" / "not played
+in by this tag" (`tags.removalDialog.reason.alreadyPresent`, the key keeps its name). The protection
+itself is unchanged (only active tags hold); the restore hint and every quote of the old wording in this
+log, UI-Designsprache 7.5 and the code comments follow the new wording.
+
+**Betrifft (feedback, reason wording):** `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/shared/tags/tag-removal.ts` · `web/src/app/shared/tags/tag-removal.spec.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.spec.ts` · `web/e2e/emote-tags.e2e.spec.ts` ·
+`docs/UI-Designsprache.md`
 
 **Betrifft (feedback, placement mark):** `web/src/app/features/tags/tags-page.html` ·
 `web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags-page.spec.ts` ·

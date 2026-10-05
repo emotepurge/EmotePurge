@@ -1678,7 +1678,7 @@
         "one": "{{ count }} emote was removed again in the meantime and not recorded.",
         "other": "{{ count }} emotes were removed again in the meantime and not recorded."
       },
-      "restoreHint": "Restored emotes are back in the set afterwards but not recorded as played in by the tag — if the tag is played in later, a clear-out lists them as “was already in the set before”."
+      "restoreHint": "Restored emotes are back in the set afterwards but not recorded as played in by the tag — if the tag is played in later, a clear-out lists them as “not played in by this tag”."
     }
   },
   "sevenTvToken": {
@@ -1837,7 +1837,7 @@
       "notProposedHeading": "Not proposed",
       "placedAt": "played in on {{date}}",
       "reason": {
-        "alreadyPresent": "was already in the set before",
+        "alreadyPresent": "not played in by this tag",
         "heldBy": "is still needed by {{tag}}"
       },
       "notInSet": {
