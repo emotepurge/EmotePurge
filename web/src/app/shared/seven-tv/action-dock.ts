@@ -86,3 +86,41 @@ export function actionDockHasContent(state: ActionDockState): boolean {
     state.undoNoticePending
   );
 }
+
+/**
+ * The tags page's own `.app-dock` (#201 T-C, plan 3.8, spec 9.5): the same run sections as the
+ * usage page's dock — import, delete, restore — but no marking half, so none of
+ * {@link actionDockHasContent}'s set gate applies. Mounting this page's dock through that function
+ * with `hasActiveSet: false` would hide a tag clear-out (a delete run) entirely, since the delete
+ * clauses sit inside the set gate there (Codex finding 1 on the plan).
+ *
+ * Deliberately absent: `hasActiveSet` and `markedCount` (the page has no marking half),
+ * `deleteConfirmPending` (on the usage page it keeps the marking half open around the delete dialog
+ * and its abort notice — here it would mount an empty bar; the abort notice stands in the page's
+ * own status region instead) and the undo fields (the tags page starts no undo; a running one
+ * explains itself next to the tag buttons, `TagRunActions`).
+ */
+export interface TagRunDockState {
+  /** A delete run (a tag clear-out, or any other) is in flight or settled-but-still-shown. */
+  readonly deleteShown: boolean;
+  /** A restore run — reached through the delete section's restore entry — is in flight or shown. */
+  readonly restoreShown: boolean;
+  /** `SevenTvRestoreService.duplicateNoticePending`: a refused restore's transient notice. */
+  readonly restoreNoticePending: boolean;
+  /** An import run (a tag play-in, or any other) is in flight or settled-but-still-shown. */
+  readonly importShown: boolean;
+  /** `SevenTvImportService.duplicateNoticePending`: the transient notice of an import the fresh
+   *  duplicate/drift check refused or narrowed — a tag play-in's drift case among them (F35). */
+  readonly importNoticePending: boolean;
+}
+
+/** Whether the tags page's dock has anything to show: any one of the five. */
+export function tagRunDockHasContent(state: TagRunDockState): boolean {
+  return (
+    state.deleteShown ||
+    state.restoreShown ||
+    state.restoreNoticePending ||
+    state.importShown ||
+    state.importNoticePending
+  );
+}

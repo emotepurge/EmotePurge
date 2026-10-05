@@ -539,6 +539,36 @@ host does not mount is explained beside the buttons (`tags.errors.otherRunActive
 `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/shared/tags/tag-run-actions.ts` ·
 `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
+**Surfaces (Task 13) — the tags page gets a page-level run dock and follows `channel.synced`.** The page
+mounts its own `.app-dock` (§2.5) with the three run sections — import (a tag play-in), delete (a
+clear-out, `hostSelectedSetId` = the active set) and restore (started from the delete section) — plus a
+permanently mounted `DockOutcomeAnnouncer [withImport]` and its own run status region (the delete
+section's restore notice and the arbiter's refused start, §4.5 region pair). All three sit at **page
+level**, outside the list/detail split: a run started from one tag stays visible while another tag, or
+the list alone on a narrow screen, is shown. The dock mounts through the new pure
+`tagRunDockHasContent` (`shared/seven-tv/action-dock.ts`), not `actionDockHasContent`: the page has no
+marking half, so the latter's active-set clause would hide a clear-out entirely (Codex finding 1 on the
+plan); the type carries no `hasActiveSet` and no `deleteConfirmPending` (the confirm window would mount an
+empty bar here), and it counts the import's transient notice so a tag play-in's drift case is visible.
+Gated `&& !isCoarse()` like every 7TV write surface; its measured height feeds the page padding and
+`DockClearanceService`, released on destroy. `tags.routes.ts` registers `sevenTvRunLeaveGuard`.
+**Live reload (closes Codex C2 from T-B):** the page subscribes to `channel.synced` for its channel through
+`liveReload` (the usage page's mechanism, no new event) and reloads set status, set list, tags and
+entries. A status *reload* counts as settled, so the request keys of tags and entries stay put and the
+resources keep their values while they reload: a reload of the same set neither re-creates
+`TagRunActions` nor aborts a dialog its flow has open, and the active set it hands the flow never turns
+`null` in between. A real set switch changes the keys, and the open flow's confirm-time guard sees the new
+active set and stops. A tag run or a restore that closes reloads tags and entries as well, also while
+`TagRunActions` is unmounted. The detail head shows the state line ("eingespielt seit" / "nicht
+eingespielt"), cells with a valid placement carry a small mark (word in the accessible name), the list's
+micro line names "eingespielt (n platziert)", and deleting a tag with placements adds the placement hint to
+the message while the button keeps its "Tag löschen" label.
+
+**Betrifft (Task 13, tags page):** `web/src/app/features/tags/tags-page.ts` ·
+`web/src/app/features/tags/tags-page.html` · `web/src/app/features/tags/tags.routes.ts` ·
+`web/src/app/shared/seven-tv/action-dock.ts` · `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
+`web/e2e/audit/ui-audit.audit.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

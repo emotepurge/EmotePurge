@@ -1723,7 +1723,9 @@
         "notInSet": {
           "one": "{{count}} not in the set",
           "other": "{{count}} not in the set"
-        }
+        },
+        "active": "played in ({{placed}} placed)",
+        "inactive": "not played in"
       },
       "currentName": "today: {{name}}",
       "notInSetBadge": "not in the set",
@@ -1735,7 +1737,13 @@
       },
       "retry": "Reload",
       "deleted": "Deleted {{tag}}.",
-      "tagGone": "This tag has been deleted in the meantime."
+      "tagGone": "This tag has been deleted in the meantime.",
+      "state": {
+        "active": "played in since {{date}}",
+        "inactive": "not played in"
+      },
+      "placedMark": "played in",
+      "placedAt": "played in on {{date}}"
     },
     "assignDialog": {
       "title": "Assign tag",
@@ -1816,7 +1824,11 @@
     },
     "deleteDialog": {
       "message": "{{tag}} will be deleted; the emotes stay in the set.",
-      "confirm": "Delete tag"
+      "confirm": "Delete tag",
+      "placedHint": {
+        "one": "{{count}} emote of this tag is still played in — clear it out first?",
+        "other": "{{count}} emotes of this tag are still played in — clear them out first?"
+      }
     },
     "removalDialog": {
       "title": "Clear out {{tag}}",

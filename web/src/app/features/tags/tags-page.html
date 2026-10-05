@@ -1,4 +1,9 @@
-<div class="flex flex-col gap-6">
+<!-- The page's bottom padding follows the run dock's measured height (dockHeightPx), so the last row
+     of the grid is never under the fixed bar; zero while there is no dock. -->
+<div
+  class="flex flex-col gap-6"
+  [style.paddingBottom.px]="dockHeightPx() > 0 ? dockHeightPx() : null"
+>
   <!-- Page header (§8.7): only commands that are complete without a selection. "Neuer Tag" is the
        one in T-B; it needs channel management, so it is absent for everybody else. -->
   <header class="flex flex-col gap-1">
@@ -34,6 +39,32 @@
         {{ 'tags.page.noActiveSet' | transloco }}
       }
     </p>
+    <!-- The page's run status region (#201 T-C, plan 3.8, rulings F5/F7): page level, outside the
+         detail, so it survives a change of tag. Two messages that can stand at once — a restore
+         the delete section's entry could not start (`runNotice`, persists until a new start
+         clears it) and the arbiter's transient "nothing started" (`refusedStartNotice`, which
+         clears itself) — in one permanently mounted sr-only region whose text comes and goes,
+         plus their visible aria-hidden twins (§4.5). -->
+    <span role="status" class="sr-only">
+      @if (runNotice(); as notice) {
+        {{ notice.leadKey | transloco }}
+        {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
+      }
+      @if (refusedStartNotice(); as notice) {
+        {{ notice.messageKey | transloco: { kind: notice.kind } }}
+      }
+    </span>
+    @if (runNotice(); as notice) {
+      <p aria-hidden="true" class="text-sm text-fg-secondary">
+        {{ notice.leadKey | transloco }}
+        {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
+      </p>
+    }
+    @if (refusedStartNotice(); as notice) {
+      <p aria-hidden="true" class="text-xs text-fg-muted">
+        {{ notice.messageKey | transloco: { kind: notice.kind } }}
+      </p>
+    }
   </header>
 
   @if (actionErrorKey(); as key) {
@@ -108,6 +139,15 @@
                     plural(tag.inSetCount, 'tags.page.micro.inSet')
                       | transloco: { count: formatCount(tag.inSetCount) }
                   }}</span>
+                  <!-- The played-in state counts against the active set like the number before
+                       it, so it drops out with it when there is no set to count in. -->
+                  <span aria-hidden="true">·</span>
+                  <span>{{
+                    tag.active
+                      ? ('tags.page.micro.active'
+                        | transloco: { placed: formatCount(tag.placedCount) })
+                      : ('tags.page.micro.inactive' | transloco)
+                  }}</span>
                 }
               </span>
             </li>
@@ -131,31 +171,62 @@
                 <h3 id="tag-detail-title" class="min-w-0 truncate text-base font-semibold">
                   {{ tag.name }}
                 </h3>
-                <!-- Header actions, §8.7 order: constructive, then destructive after a gap.
-                     T-C: "Einspielen" (neutral) goes first in the constructive group, "Ausräumen"
-                     (danger) first in the destructive one. -->
-                @if (canManage()) {
-                  <div class="ml-auto flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      appButton="neutral"
-                      [disabled]="deletePending()"
-                      (click)="openRename()"
-                    >
-                      {{ 'tags.actions.rename' | transloco }}
-                    </button>
-                    <button
-                      type="button"
-                      appButton="danger"
-                      class="ml-2"
-                      [disabled]="deletePending()"
-                      (click)="confirmDelete()"
-                    >
-                      {{ 'tags.actions.delete' | transloco }}
-                    </button>
+                <!-- Header actions (spec 9.4, plan 3.8): the tag runs first, then rename and, after a
+                     gap, delete (§8.7). The runs exist where they can run — switched on, a fine
+                     pointer, a known active set — and need no management right (E9); rename and
+                     delete need one. TagRunActions is mounted on gates that a live reload does not
+                     move (rulings F38) and gets the live active set, which its flows' confirm-time
+                     guard compares against. -->
+                @if (tagRunsShown() || canManage()) {
+                  <div class="ml-auto flex flex-wrap items-start gap-2">
+                    @if (tagRunsShown()) {
+                      <app-tag-run-actions
+                        [channelName]="channelName()"
+                        [tag]="tag"
+                        [activeEmoteSetId]="activeEmoteSetId()"
+                        [setName]="activeSetName()"
+                        [enabled]="true"
+                        [unshownRunKinds]="unshownRunKinds"
+                        (started)="onTagRunStarted()"
+                        (completed)="onTagRunCompleted()"
+                        (feedback)="onTagRunFeedback($event)"
+                      />
+                    }
+                    @if (canManage()) {
+                      <button
+                        type="button"
+                        appButton="neutral"
+                        [disabled]="deletePending()"
+                        (click)="openRename()"
+                      >
+                        {{ 'tags.actions.rename' | transloco }}
+                      </button>
+                      <button
+                        type="button"
+                        appButton="danger"
+                        class="ml-2"
+                        [disabled]="deletePending()"
+                        (click)="confirmDelete()"
+                      >
+                        {{ 'tags.actions.delete' | transloco }}
+                      </button>
+                    }
                   </div>
                 }
               </div>
+              <!-- The played-in state against the active set (spec 9.4); without a set to refer to
+                   (`inSetCount: null`) there is no state to name. -->
+              @if (tag.inSetCount !== null) {
+                <p class="text-sm text-fg-secondary">
+                  @if (tag.active && tag.activatedAtUtc) {
+                    {{
+                      'tags.page.state.active' | transloco: { date: formatDate(tag.activatedAtUtc) }
+                    }}
+                  } @else {
+                    {{ 'tags.page.state.inactive' | transloco }}
+                  }
+                </p>
+              }
               <p class="flex flex-wrap gap-x-2 text-xs text-fg-muted">
                 <span>{{
                   plural(tag.entryCount, 'tags.page.micro.entries')
@@ -267,6 +338,12 @@
                       <span>·</span>
                       <span>{{ 'tags.page.notInSetBadge' | transloco }}</span>
                     }
+                    @if (entry.placedAtUtc; as placedAt) {
+                      <span>·</span>
+                      <span>{{
+                        'tags.page.placedAt' | transloco: { date: formatDate(placedAt) }
+                      }}</span>
+                    }
                   }
                 </p>
               }
@@ -317,9 +394,6 @@
                 </button>
               </div>
             }
-
-            <!-- T-C: the run surface (import/delete progress sections, DockOutcomeAnnouncer) goes
-                 here, under the grid. -->
           </section>
         } @else if (selectedTagId() === null) {
           <app-empty-state [title]="'tags.page.emptySelection' | transloco" />
@@ -355,6 +429,9 @@
           (focus)="onCellFocus(entry, row.startIndex + i)"
         >
           <app-emote-sprite [url]="entry.imageUrl" [size]="64" [dimmed]="entry.inSet === false" />
+          @if (entry.placedByThisTag) {
+            <ng-container *ngTemplateOutlet="placedMark"></ng-container>
+          }
           @if (selection.isSelected(entry)) {
             <!-- Same marking as the usage atlas: wash and inset ring on one element drawn last,
                  plus the corner square. -->
@@ -379,8 +456,44 @@
           (mouseenter)="inspect(entry)"
         >
           <app-emote-sprite [url]="entry.imageUrl" [size]="64" [dimmed]="entry.inSet === false" />
+          @if (entry.placedByThisTag) {
+            <ng-container *ngTemplateOutlet="placedMark"></ng-container>
+          }
         </div>
       }
     }
   </div>
 </ng-template>
+
+<!-- The placement mark (spec 9.4): a small square at the bottom left, where nothing else marks a
+     cell (the selection's square sits top right) — a mark, not a colour, so a dimmed "not in the
+     set" cell can carry it too. aria-hidden: the word is in the cell's accessible name. -->
+<ng-template #placedMark>
+  <span
+    class="pointer-events-none absolute bottom-0 left-0 h-2 w-2 bg-fg-body"
+    aria-hidden="true"
+  ></span>
+</ng-template>
+
+<!-- Permanently mounted (§4.5): speaks the end states of what the dock shows — a dock that mounts
+     together with its text announces nothing. `withImport`: a tag play-in is an import run; the
+     delete section's tag lines are spoken on every page (F37). -->
+<app-dock-outcome-announcer [withImport]="true" />
+
+<!-- The run dock (#201 T-C, spec 9.5, plan 3.8): page level, outside the detail and the list, so a
+     run stays visible whatever is chosen. Mounted through tagRunDockHasContent (no marking half,
+     no set gate) and only on a fine pointer, like every 7TV write surface (§2.5). Three sections:
+     a tag play-in is an import run, a clear-out a delete run, and the delete section's "Restore"
+     starts a restore run, shown by its own section. -->
+@if (dockVisible() && !isCoarse()) {
+  <div class="app-dock" #dock>
+    <div class="mx-auto flex max-h-[70vh] max-w-7xl flex-col gap-2 overflow-y-auto px-4 py-3">
+      <app-import-progress-section />
+      <app-delete-progress-section
+        [hostSelectedSetId]="activeEmoteSetId()"
+        (notice)="runNotice.set($event)"
+      />
+      <app-restore-progress-section />
+    </div>
+  </div>
+}

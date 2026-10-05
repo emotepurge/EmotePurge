@@ -7,7 +7,7 @@ import { By } from '@angular/platform-browser';
 import { provideRouter, Router } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { TranslocoTestingModule } from '@jsverse/transloco';
-import { Observable, of, throwError } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import de from '../../../../public/i18n/de.json';
@@ -16,10 +16,24 @@ import { ChannelPermissions } from '../../core/channels/channel.model';
 import { ChannelService } from '../../core/channels/channel.service';
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
+import { DockClearanceService } from '../../core/layout/dock-clearance.service';
+import { LanguageService } from '../../core/i18n/language.service';
+import { toLocale } from '../../core/i18n/locale';
+import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
+import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
+import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import { WideViewportService } from '../../core/layout/wide-viewport.service';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
+import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
+import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { EmoteTagEntry, EmoteTagList, EmoteTagSummary } from '../../core/tags/emote-tag.model';
+import { TagRemovalConfirmDialog } from '../../shared/tags/tag-removal-confirm-dialog';
+import { TagRunActions } from '../../shared/tags/tag-run-actions';
 import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { TagNameDialog } from './tag-name-dialog';
 import { TAG_FEEDBACK_MS, TagsPage } from './tags-page';
@@ -31,6 +45,26 @@ class FakeResizeObserver {
   }
   disconnect(): void {
     /* no-op */
+  }
+}
+
+/** jsdom has no EventSource; the page follows `channel.synced` through one (rulings F3). */
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onopen: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+
+  constructor(readonly url: string) {
+    FakeEventSource.instances.push(this);
+  }
+
+  close(): void {
+    /* no-op */
+  }
+
+  emit(event: { type: string; channel?: string }): void {
+    this.onmessage?.({ data: JSON.stringify(event) } as MessageEvent);
   }
 }
 
@@ -66,6 +100,20 @@ function tag(
   inSetCount: number | null = 1,
 ): EmoteTagSummary {
   return { id, name, entryCount, inSetCount, placedCount: 0, active: false, activatedAtUtc: null };
+}
+
+function activeTag(id: number, name: string, placedCount = 1): EmoteTagSummary {
+  return { ...tag(id, name), placedCount, active: true, activatedAtUtc: '2026-10-01T10:00:00Z' };
+}
+
+function queueItem(id: string): RunQueueItem {
+  return {
+    sevenTvEmoteId: id,
+    name: id,
+    status: 'pending',
+    completedSteps: 0,
+    failedStep: null,
+  } as unknown as RunQueueItem;
 }
 
 function tagList(...tags: EmoteTagSummary[]): EmoteTagList {
@@ -106,6 +154,7 @@ describe('TagsPage', () => {
 
   beforeEach(() => {
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    FakeEventSource.instances = [];
     permissions = { ...MANAGER };
     statusAnswer = () => of(setStatus('set-a'));
     isCoarse = signal(false);
@@ -131,13 +180,49 @@ describe('TagsPage', () => {
           ...ROUTER_FEATURES,
         ),
         { provide: ChannelService, useValue: { getPermissions: () => of(permissions) } },
-        { provide: EmoteAdminService, useValue: { getSetStatus: () => statusAnswer() } },
+        {
+          provide: EmoteAdminService,
+          useValue: {
+            getSetStatus: () => statusAnswer(),
+            getSetWarning: () =>
+              of({
+                available: true,
+                isOwnSet: true,
+                otherTrackedChannelsSharingSet: [],
+                otherModeratedChannelsSharingSet: [],
+              }),
+          },
+        },
         {
           provide: SevenTvEmoteSetService,
           useValue: {
             listChannelEmoteSets: () =>
-              of({ activeEmoteSetId: 'set-a', sets: [{ id: 'set-a', name: 'Herbst' }] }),
+              of({
+                activeEmoteSetId: 'set-a',
+                sets: [
+                  { id: 'set-a', name: 'Herbst' },
+                  { id: 'set-b', name: 'Halloween' },
+                ],
+              }),
+            resolveEditableSet: () =>
+              of({
+                status: 'editable',
+                target: {
+                  emoteSetId: 'set-a',
+                  setName: 'Herbst',
+                  ownerDisplayName: 'A',
+                  twitchLogin: 'a',
+                  trackedChannelName: 'a',
+                  isActiveSet: true,
+                  ownerTwitchChannelId: 'tw-a',
+                },
+              }),
           },
+        },
+        { provide: SevenTvTokenService, useValue: { hasToken: signal(true) } },
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
         },
         { provide: PointerModeService, useValue: { isCoarse } },
         { provide: WideViewportService, useValue: { isWide } },
@@ -280,9 +365,13 @@ describe('TagsPage', () => {
 
       expect(page.activeEmoteSetId()).toBeNull();
       expect(text(harness)).toContain(de.tags.page.noActiveSet);
-      // No "k im Set" in the row's micro line: there is no set to count in.
+      // The row still counts its entries, but nothing that needs a set to count in: neither "im
+      // Set" nor a played-in state.
       const row = harness.routeNativeElement?.querySelector('ul[aria-label="Tags"] li');
-      expect(row?.textContent?.replace(/\s+/g, ' ').trim()).toBe('X 2 Einträge');
+      const rowText = row?.textContent ?? '';
+      expect(rowText).toContain('2 Einträge');
+      expect(rowText).not.toContain('im Set');
+      expect(rowText).not.toContain('eingespielt');
     });
   });
 
@@ -573,5 +662,452 @@ describe('TagsPage', () => {
     expect(page.selectedTagId()).toBeNull();
     expect(view(page).feedback()?.key).toBe('tags.page.tagGone');
     expect(text(harness)).toContain(de.tags.page.empty.title);
+  });
+
+  describe('tag runs, state and placements (#201 T-C)', () => {
+    beforeEach(() => {
+      permissions = { ...MANAGER, tagRunsEnabled: true };
+    });
+
+    async function openTag(
+      summary: EmoteTagSummary,
+      entries: EmoteTagEntry[] = [entry('e1'), entry('e2')],
+    ) {
+      const opened = await open(`/channels/a/tags?tag=${summary.id}`);
+      expectList().flush(tagList(summary, tag(2, 'Halloween')));
+      await settle(opened.harness);
+      expectEntries(summary.id).flush({
+        emoteSetId: 'set-a',
+        isActiveSet: true,
+        activationOperationId: summary.active ? 'act-1' : null,
+        entries,
+      });
+      await settle(opened.harness);
+      return opened;
+    }
+
+    function runActions(harness: RouterTestingHarness): TagRunActions | null {
+      const found = harness.fixture.debugElement.query(By.directive(TagRunActions));
+      return found ? (found.componentInstance as TagRunActions) : null;
+    }
+
+    function dock(harness: RouterTestingHarness): HTMLElement | null {
+      return harness.fixture.nativeElement.querySelector('.app-dock');
+    }
+
+    describe('the run buttons (spec 9.4, 8)', () => {
+      it('offers "Einspielen" in the detail head, without "Ausräumen" for a tag not played in', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+
+        expect(buttonByName(harness, 'Einspielen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ausräumen')).toBeNull();
+      });
+
+      it('offers "Ausräumen" for a played-in tag', async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold'));
+
+        expect(buttonByName(harness, 'Einspielen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
+      });
+
+      it('needs no management right (E9), and passes the live active set', async () => {
+        permissions = { ...MANAGER, canManage: false, tagRunsEnabled: true };
+        const { harness, page } = await openTag(tag(1, 'Stronghold'));
+
+        expect(buttonByName(harness, 'Einspielen')).not.toBeNull();
+        expect(buttonByName(harness, 'Umbenennen')).toBeNull();
+        expect(runActions(harness)!.activeEmoteSetId()).toBe(page.activeEmoteSetId());
+      });
+
+      it('are absent while tag runs are switched off', async () => {
+        permissions = { ...MANAGER, tagRunsEnabled: false };
+        const { harness } = await openTag(activeTag(1, 'Stronghold'));
+
+        expect(buttonByName(harness, 'Einspielen')).toBeNull();
+        expect(buttonByName(harness, 'Umbenennen')).not.toBeNull();
+      });
+
+      it('are absent on a coarse pointer — rename and delete stay', async () => {
+        isCoarse.set(true);
+        const { harness } = await openTag(activeTag(1, 'Stronghold'));
+
+        expect(buttonByName(harness, 'Einspielen')).toBeNull();
+        expect(buttonByName(harness, 'Ausräumen')).toBeNull();
+        expect(buttonByName(harness, 'Löschen')).not.toBeNull();
+      });
+
+      it('are absent on a channel without an active set', async () => {
+        statusAnswer = () => throwError(() => new HttpErrorResponse({ status: 404 }));
+        const { harness } = await open('/channels/a/tags?tag=1');
+        expectList(false).flush({
+          emoteSetId: null,
+          isActiveSet: false,
+          tags: [tag(1, 'Stronghold', 2, null)],
+        });
+        await settle(harness);
+        httpMock
+          .expectOne((req) => req.url === `${BASE}/1/entries`)
+          .flush({
+            emoteSetId: null,
+            isActiveSet: false,
+            activationOperationId: null,
+            entries: [],
+          });
+        await settle(harness);
+
+        expect(buttonByName(harness, 'Einspielen')).toBeNull();
+      });
+
+      it('explains a lock held by an undo — whose dock this page does not show', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+
+        expect(runActions(harness)!.unshownRunKinds()).toEqual(['undo']);
+      });
+    });
+
+    describe('state line, list micro line and placement marks', () => {
+      it('names the activation date of a played-in tag', async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold'));
+        const date = new Date('2026-10-01T10:00:00Z').toLocaleDateString(
+          toLocale(TestBed.inject(LanguageService).lang()),
+          { dateStyle: 'short' },
+        );
+
+        expect(text(harness)).toContain(`eingespielt seit ${date}`);
+      });
+
+      it('says "nicht eingespielt" for a tag that is not played in', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+
+        expect(text(harness)).toContain(de.tags.page.state.inactive);
+        expect(text(harness)).not.toContain('eingespielt seit');
+      });
+
+      it('says in the list how many placements a played-in tag holds', async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold', 3));
+        const rows = Array.from(
+          harness.routeNativeElement!.querySelectorAll('ul[aria-label="Tags"] li'),
+        ).map((row) => row.textContent ?? '');
+
+        expect(rows[0]).toContain('eingespielt (3 platziert)');
+        expect(rows[1]).toContain(de.tags.page.micro.inactive);
+      });
+
+      it("names a placement in the cell's accessible name, not only by the mark", async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold'), [
+          entry('e1', {
+            placedByThisTag: true,
+            placedAtUtc: '2026-10-01T10:00:00Z',
+            placementOperationId: 'rev-1',
+          }),
+          entry('e2'),
+        ]);
+
+        const [placed, other] = cells(harness);
+        expect(placed.getAttribute('aria-label')).toContain(de.tags.page.placedMark);
+        expect(other.getAttribute('aria-label')).not.toContain(de.tags.page.placedMark);
+      });
+    });
+
+    describe('deleting a tag with placements (spec 8)', () => {
+      it('adds the placement hint to the message, the label stays "Tag löschen" (F24)', async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold', 12));
+        dialogResult = false;
+
+        buttonByName(harness, 'Löschen')!.click();
+
+        const data = dialogOpen.mock.calls[0][1].data;
+        expect(data.message).toContain('Stronghold wird gelöscht; die Emotes bleiben im Set.');
+        expect(data.message).toContain(
+          '12 Emotes dieses Tags sind noch eingespielt — vorher ausräumen?',
+        );
+        expect(data.confirmLabel).toBe('Tag löschen');
+      });
+
+      it('says nothing about placements when there are none', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+        dialogResult = false;
+
+        buttonByName(harness, 'Löschen')!.click();
+
+        expect(dialogOpen.mock.calls[0][1].data.message).not.toContain('eingespielt');
+      });
+    });
+
+    describe('the run dock (plan 3.8) — the real tagRunDockHasContent over the services', () => {
+      it('has no dock with nothing to show', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+
+        expect(dock(harness)).toBeNull();
+      });
+
+      it('mounts for a delete run alone, with the delete section — and gives the space back on leaving', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+        const clearance = TestBed.inject(DockClearanceService);
+        const reserve = vi.spyOn(clearance, 'reserve');
+
+        TestBed.inject(SevenTvDeleteService).queue.set([queueItem('e1')]);
+        await settle(harness);
+
+        expect(dock(harness)).not.toBeNull();
+        expect(dock(harness)!.querySelector('app-delete-progress-section')).not.toBeNull();
+        expect(reserve).toHaveBeenCalled();
+
+        await harness.navigateByUrl('/channels/a/usage-stats');
+        expect(clearance.px()).toBe(0);
+        TestBed.inject(SevenTvDeleteService).queue.set([]);
+      });
+
+      it('mounts for a restore run alone, with the restore section', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+
+        TestBed.inject(SevenTvRestoreService).queue.set([queueItem('e1')]);
+        await settle(harness);
+
+        expect(dock(harness)).not.toBeNull();
+        expect(dock(harness)!.querySelector('app-restore-progress-section')).not.toBeNull();
+        TestBed.inject(SevenTvRestoreService).queue.set([]);
+      });
+
+      it('mounts for a pending import notice alone (a refused play-in leaves no run)', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+
+        TestBed.inject(SevenTvImportService).duplicateNoticePending.set(true);
+        await settle(harness);
+
+        expect(dock(harness)).not.toBeNull();
+        expect(dock(harness)!.querySelector('app-import-progress-section')).not.toBeNull();
+        TestBed.inject(SevenTvImportService).duplicateNoticePending.set(false);
+      });
+
+      it('stays at page level: shown with the list alone, and the drilldown keeps its up-link', async () => {
+        isWide.set(false);
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+        TestBed.inject(SevenTvDeleteService).queue.set([queueItem('e1')]);
+        await settle(harness);
+
+        expect(dock(harness)).not.toBeNull();
+        expect(
+          harness.routeNativeElement?.querySelector('a[aria-label="Zurück zu Tags"]'),
+        ).not.toBeNull();
+
+        await harness.navigateByUrl('/channels/a/tags');
+        await settle(harness);
+        expect(harness.routeNativeElement?.querySelector('ul[aria-label="Tags"]')).not.toBeNull();
+        expect(dock(harness)).not.toBeNull();
+        TestBed.inject(SevenTvDeleteService).queue.set([]);
+      });
+
+      it('has no dock on a coarse pointer', async () => {
+        isCoarse.set(true);
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+        TestBed.inject(SevenTvDeleteService).queue.set([queueItem('e1')]);
+        await settle(harness);
+
+        expect(dock(harness)).toBeNull();
+        TestBed.inject(SevenTvDeleteService).queue.set([]);
+      });
+    });
+
+    describe('the run status region (F5, F6)', () => {
+      it("speaks the arbiter's refused start in the page's permanent region", async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+        const arbiter = TestBed.inject(SevenTvRunArbiter);
+        arbiter.register({
+          kind: 'undo',
+          isRunning: signal(true),
+          isSettling: signal(false),
+          destructiveOpen: signal(false),
+        });
+        arbiter.noteRefusedStart('import');
+        await settle(harness);
+
+        const regions = Array.from(
+          harness.routeNativeElement!.querySelectorAll('header [role="status"].sr-only'),
+        ).map((region) => region.textContent ?? '');
+        expect(regions.join(' ')).toContain('Nichts gestartet');
+      });
+
+      it('clears a restore refusal when a tag flow starts, and when a run starts', async () => {
+        const { harness, page } = await openTag(tag(1, 'Stronghold'));
+        const view = page as unknown as {
+          runNotice: WritableSignal<{ leadKey: string; reasonKey: string } | null>;
+        };
+        const notice = { leadKey: 'restore.errors.lead', reasonKey: 'restore.errors.x' };
+
+        view.runNotice.set(notice);
+        runActions(harness)!.started.emit();
+        expect(view.runNotice()).toBeNull();
+
+        view.runNotice.set(notice);
+        const running = signal(false);
+        TestBed.inject(SevenTvRunArbiter).register({
+          kind: 'restore',
+          isRunning: running,
+          isSettling: signal(false),
+          destructiveOpen: signal(false),
+        });
+        await settle(harness);
+        expect(view.runNotice()).not.toBeNull();
+        running.set(true);
+        await settle(harness);
+        expect(view.runNotice()).toBeNull();
+      });
+    });
+
+    describe('reloads (spec 9.6, rulings F3/F6/F35/F38)', () => {
+      const GQL = 'https://7tv.io/v4/gql';
+      const OWN = entry('e1', {
+        placedByThisTag: true,
+        placedAtUtc: '2026-10-01T10:00:00Z',
+        placementOperationId: 'rev-1',
+      });
+
+      function emitSynced(): Promise<void> {
+        FakeEventSource.instances
+          .find((source) => source.url === channelLiveUrl('a'))!
+          .emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+        return new Promise((resolve) => setTimeout(resolve, CHANNEL_RELOAD_DEBOUNCE_MS + 20));
+      }
+
+      function flushLiveRead(): void {
+        for (let round = 0; round < 5; round++) {
+          for (const request of httpMock.match(GQL)) {
+            request.flush({
+              data: {
+                emoteSets: {
+                  emoteSet: {
+                    emotes: {
+                      totalCount: 1,
+                      pageCount: 1,
+                      items: [{ alias: 'alias-e1', emote: { id: 'e1', defaultName: 'E1' } }],
+                    },
+                  },
+                },
+              },
+            });
+          }
+        }
+      }
+
+      /** Opens the clear-out dialog of a played-in tag and leaves it open on `closed`. */
+      async function openRemovalDialog(harness: RouterTestingHarness, closed: Subject<unknown>) {
+        dialogOpen.mockImplementation((component: unknown) =>
+          component === TagRemovalConfirmDialog ? { closed } : { closed: of(dialogResult) },
+        );
+        buttonByName(harness, 'Ausräumen')!.click();
+        await settle(harness);
+        httpMock
+          .expectOne((req) => req.url === `${BASE}/1/entries` && req.method === 'GET')
+          .flush({
+            emoteSetId: 'set-a',
+            isActiveSet: true,
+            activationOperationId: 'act-1',
+            entries: [OWN],
+          });
+        await settle(harness);
+        httpMock
+          .expectOne(`${BASE}/1/operations`)
+          .flush({ registeredAtUtc: '2026-10-05T10:00:00Z' });
+        await settle(harness);
+        flushLiveRead();
+        await settle(harness);
+        expect(
+          dialogOpen.mock.calls.some(([component]) => component === TagRemovalConfirmDialog),
+        ).toBe(true);
+      }
+
+      async function answerReload(harness: RouterTestingHarness, activeSet: string) {
+        await settle(harness);
+        statusAnswer = () => of(setStatus(activeSet));
+      }
+
+      it('a channel.synced of the same set keeps TagRunActions and its open dialog: the clear-out goes ahead', async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold'), [OWN]);
+        const before = runActions(harness);
+        const startDelete = vi
+          .spyOn(TestBed.inject(SevenTvDeleteService), 'startDelete')
+          .mockImplementation(() => undefined);
+        const closed = new Subject<unknown>();
+        await openRemovalDialog(harness, closed);
+
+        await answerReload(harness, 'set-a');
+        await emitSynced();
+        await settle(harness);
+        // Mid-reload: same component, and the set it hands its flow never went away.
+        expect(runActions(harness)).toBe(before);
+        expect(before!.activeEmoteSetId()).toBe('set-a');
+        expectList().flush(tagList(activeTag(1, 'Stronghold'), tag(2, 'Halloween')));
+        expectEntries(1).flush({
+          emoteSetId: 'set-a',
+          isActiveSet: true,
+          activationOperationId: 'act-1',
+          entries: [OWN],
+        });
+        await settle(harness);
+        expect(runActions(harness)).toBe(before);
+
+        closed.next({ checkedIds: ['e1'] });
+        closed.complete();
+        await settle(harness);
+
+        expect(startDelete).toHaveBeenCalledTimes(1);
+        expect(startDelete.mock.calls[0][0]).toBe('set-a');
+      });
+
+      it('a channel.synced that switches the active set stops the open clear-out at its set guard', async () => {
+        const { harness, page } = await openTag(activeTag(1, 'Stronghold'), [OWN]);
+        const startDelete = vi
+          .spyOn(TestBed.inject(SevenTvDeleteService), 'startDelete')
+          .mockImplementation(() => undefined);
+        const closed = new Subject<unknown>();
+        await openRemovalDialog(harness, closed);
+
+        await answerReload(harness, 'set-b');
+        await emitSynced();
+        await settle(harness);
+        expect(page.activeEmoteSetId()).toBe('set-b');
+        // The tags follow the new set.
+        for (const request of httpMock.match((req) => req.url === BASE)) {
+          if (!request.cancelled) {
+            expect(request.request.params.get('emoteSetId')).toBe('set-b');
+            request.flush({ emoteSetId: 'set-b', isActiveSet: true, tags: [tag(1, 'Stronghold')] });
+          }
+        }
+        await settle(harness);
+        httpMock
+          .match((req) => req.url === `${BASE}/1/entries`)
+          .forEach((request) =>
+            request.flush({
+              emoteSetId: 'set-b',
+              isActiveSet: true,
+              activationOperationId: null,
+              entries: [],
+            }),
+          );
+        await settle(harness);
+
+        closed.next({ checkedIds: ['e1'] });
+        closed.complete();
+        await settle(harness);
+
+        expect(startDelete).not.toHaveBeenCalled();
+      });
+
+      it('reads tags and entries again when a restore closes, not for one already closed', async () => {
+        const restore = TestBed.inject(SevenTvRestoreService);
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+
+        restore.run.set({ runId: 'r1', phase: 'running', destructive: false } as never);
+        await settle(harness);
+        httpMock.expectNone((req) => req.url === BASE);
+
+        restore.run.set({ runId: 'r1', phase: 'closed', destructive: false } as never);
+        await settle(harness);
+        expectList().flush(tagList(tag(1, 'Stronghold'), tag(2, 'Halloween')));
+        expectEntries(1).flush({ emoteSetId: 'set-a', isActiveSet: true, entries: [] });
+        restore.run.set(null);
+      });
+    });
   });
 });

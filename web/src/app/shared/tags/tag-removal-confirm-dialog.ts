@@ -1,3 +1,4 @@
+import { ListRange } from '@angular/cdk/collections';
 import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrolling';
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { NgTemplateOutlet } from '@angular/common';
@@ -7,6 +8,7 @@ import {
   Signal,
   afterEveryRender,
   computed,
+  effect,
   inject,
   signal,
   viewChild,
@@ -317,9 +319,48 @@ export class TagRemovalConfirmDialog {
   );
 
   private readonly rowOrder = computed(() => [...this.proposedRows(), ...this.notProposedRows()]);
-  private readonly tabStopId = computed(
-    () => this.activeId() ?? this.rowOrder()[0]?.sevenTvEmoteId ?? null,
-  );
+  /** The item ids in list order (headings included) — the positions the viewport renders by. */
+  private readonly itemIds = computed(() => {
+    const ids: (string | null)[] = [];
+    if (this.proposedRows().length > 0) {
+      ids.push(null, ...this.proposedRows().map((r) => r.sevenTvEmoteId));
+    }
+    if (this.notProposedRows().length > 0) {
+      ids.push(null, ...this.notProposedRows().map((r) => r.sevenTvEmoteId));
+    }
+    return ids;
+  });
+  /** The virtual viewport's rendered item range; `null` for the short, fully rendered list. */
+  private readonly renderedRange = signal<ListRange | null>(null);
+  /**
+   * The roving tab stop. The chosen row when it is in the DOM; once the viewport has scrolled it
+   * out (wheel, scrollbar), the nearest rendered row takes over — otherwise Tab into the list would
+   * find no stop at all until the user scrolled back (Task 11 re-review).
+   */
+  private readonly tabStopId = computed(() => {
+    const preferred = this.activeId() ?? this.rowOrder()[0]?.sevenTvEmoteId ?? null;
+    const range = this.renderedRange();
+    if (preferred === null || range === null) {
+      return preferred;
+    }
+    const ids = this.itemIds();
+    const at = ids.indexOf(preferred);
+    if (at >= range.start && at < range.end) {
+      return preferred;
+    }
+    const target = at < range.start ? range.start : range.end - 1;
+    let best: string | null = null;
+    let bestDistance = Infinity;
+    for (let index = range.start; index < Math.min(range.end, ids.length); index++) {
+      const id = ids[index];
+      const distance = Math.abs(index - target);
+      if (id !== null && distance < bestDistance) {
+        best = id;
+        bestDistance = distance;
+      }
+    }
+    return best ?? preferred;
+  });
 
   protected readonly items = computed<ListItem[]>(() => {
     const tabStop = this.tabStopId();
@@ -381,6 +422,19 @@ export class TagRemovalConfirmDialog {
     // Lands a focus request whose row the viewport had not rendered yet; runs after every render
     // pass until the row is in the DOM, then stops.
     afterEveryRender(() => this.landPendingFocus());
+
+    // Follows the virtual viewport's rendered range for the tab stop's fallback above.
+    effect((onCleanup) => {
+      const viewport = this.viewport();
+      if (!viewport) {
+        this.renderedRange.set(null);
+        return;
+      }
+      const subscription = viewport.renderedRangeStream.subscribe((range) =>
+        this.renderedRange.set(range),
+      );
+      onCleanup(() => subscription.unsubscribe());
+    });
   }
 
   protected readonly trackItem = (_: number, item: ListItem): string => item.id;

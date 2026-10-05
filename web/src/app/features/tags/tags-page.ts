@@ -24,9 +24,20 @@ import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
+import { DockClearanceService } from '../../core/layout/dock-clearance.service';
 import { WideViewportService } from '../../core/layout/wide-viewport.service';
+import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
+import { CHANNEL_RELOAD_DEBOUNCE_MS, liveReload } from '../../core/live/live-reload';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
+import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
+import {
+  SevenTvRunArbiter,
+  SevenTvRunKind,
+  refusedStartMessage,
+} from '../../core/seven-tv/seven-tv-run-arbiter';
 import { EmoteTagEntry, EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { EmoteTagService } from '../../core/tags/emote-tag.service';
 import { EmoteSprite } from '../../shared/emotes/emote-sprite';
@@ -40,6 +51,18 @@ import {
 } from '../../shared/grid/atlas-grid';
 import { chunkIntoRows } from '../../shared/grid/grid-columns';
 import { ListSelection } from '../../shared/selection/list-selection';
+import { tagRunDockHasContent } from '../../shared/seven-tv/action-dock';
+import { DeleteAbortNotice } from '../../shared/seven-tv/delete-flow';
+import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-section';
+import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
+import { ImportProgressSection } from '../../shared/seven-tv/import-progress-section';
+import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
+import {
+  TagRunActions,
+  TagRunFeedback,
+  settledTagPlayIn,
+  settledTagRemoval,
+} from '../../shared/tags/tag-run-actions';
 import { BackLink } from '../../shared/ui/back-link';
 import { Button } from '../../shared/ui/button';
 import { openConfirmDialog } from '../../shared/ui/confirm-dialog';
@@ -58,6 +81,10 @@ export const VIRTUALIZE_ABOVE = 200;
 const SKELETON_CELLS = 36;
 
 const TAG_NOT_FOUND_KEY = 'errors.api.tag_not_found';
+
+/** The run kinds whose dock section this page does not mount: a lock by one of them is explained
+ *  beside the tag buttons (plan 3.8). The undo is started on the usage page only. */
+const UNSHOWN_RUN_KINDS: readonly SevenTvRunKind[] = ['undo'];
 
 type GridRow = AtlasRow<EmoteTagEntry, never>;
 
@@ -99,21 +126,30 @@ export function parseTagParam(raw: string | null): number | null {
  * selects nothing (spec 9.4): no 7TV-writing work starts from a phone, and the one
  * selection-bound action in T-B is not worth a selection mode of its own there.
  *
- * T-C docks onto `selectedTag`, `entriesResource`, `activeEmoteSetId`, `canManage`, `isCoarse`, the
- * header-actions block and the run area below the grid (both marked in the template).
+ * T-C (#201, spec 9.4/9.5) adds the tag's played-in state, the placement marks and the tag runs:
+ * "Einspielen"/"Ausräumen" (`TagRunActions`) in the detail head, and — at page level, outside the
+ * detail, so a run stays visible whichever tag (or the list) is on screen — the run dock with the
+ * import, delete and restore sections, the permanently mounted `DockOutcomeAnnouncer` and the
+ * page's run status region. The page follows `channel.synced` for its channel (the usage page's
+ * mechanism), so a set switch on 7TV reaches the open flows' set guard here too.
  */
 @Component({
   selector: 'app-tags-page',
   imports: [
     BackLink,
     Button,
+    DeleteProgressSection,
+    DockOutcomeAnnouncer,
     EmoteSprite,
     EmptyState,
+    ImportProgressSection,
     NgTemplateOutlet,
     NoticeBanner,
+    RestoreProgressSection,
     RouterLink,
     ScrollingModule,
     SkeletonRows,
+    TagRunActions,
     TranslocoPipe,
   ],
   templateUrl: './tags-page.html',
@@ -130,6 +166,11 @@ export class TagsPage {
   private readonly emoteAdminService = inject(EmoteAdminService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   private readonly tagService = inject(EmoteTagService);
+  private readonly arbiter = inject(SevenTvRunArbiter);
+  private readonly importService = inject(SevenTvImportService);
+  private readonly deleteService = inject(SevenTvDeleteService);
+  private readonly restoreService = inject(SevenTvRestoreService);
+  private readonly dockClearance = inject(DockClearanceService);
   /** Capability, not layout (see `PointerModeService`): no grid selection without a mouse. */
   readonly isCoarse = inject(PointerModeService).isCoarse;
   /** Structure, not styling: list and detail side by side, or a drilldown between them. */
@@ -137,6 +178,12 @@ export class TagsPage {
   /** Only rendered while a tag's entries are on screen, hence not `.required`. */
   private readonly sheetRef = viewChild<ElementRef<HTMLElement>>('sheet');
   private readonly viewport = viewChild(CdkVirtualScrollViewport);
+  /** The rendered `.app-dock`, absent whenever the template's gate does not mount it. */
+  private readonly dockRef = viewChild<ElementRef<HTMLElement>>('dock');
+
+  /** A computed, not a field: `channelName` is a required input (NG0950 in the constructor). */
+  private readonly liveUrl = computed(() => channelLiveUrl(this.channelName()));
+  protected readonly unshownRunKinds = UNSHOWN_RUN_KINDS;
 
   private readonly queryParams = toSignal(this.route.queryParamMap, {
     initialValue: convertToParamMap({}),
@@ -158,15 +205,26 @@ export class TagsPage {
   readonly canManage = computed(() =>
     this.permissionsResource.hasValue() ? this.permissionsResource.value().canManage : false,
   );
+  /** The operator switch for tag runs (`Tags:RunsEnabled`), `false` until the answer is in. */
+  readonly tagRunsEnabled = computed(() =>
+    this.permissionsResource.hasValue() ? this.permissionsResource.value().tagRunsEnabled : false,
+  );
 
   private readonly setStatusResource = rxResource({
     params: () => this.channelName(),
     stream: ({ params }) => this.emoteAdminService.getSetStatus(params),
   });
-  /** Answered either way — a failed status read means "no active set known", not "wait forever". */
-  private readonly setStatusSettled = computed(
-    () => this.setStatusResource.status() !== 'idle' && !this.setStatusResource.isLoading(),
-  );
+  /**
+   * Answered either way — a failed status read means "no active set known", not "wait forever".
+   * A *reload* (`channel.synced`) counts as settled: the answer on hand stays valid until the new
+   * one lands, so the tag list and the entries keep their request (and their value) meanwhile and
+   * the detail — with `TagRunActions` and any dialog its flow has open — is not torn down by a mere
+   * reload (rulings F35/F38). Only a first load (a new channel) is unsettled.
+   */
+  private readonly setStatusSettled = computed(() => {
+    const status = this.setStatusResource.status();
+    return status !== 'idle' && status !== 'loading';
+  });
   /** The set the in-set numbers refer to; `null` when the channel has none (or it is unknown). */
   readonly activeEmoteSetId = computed(() =>
     this.setStatusResource.hasValue()
@@ -185,11 +243,14 @@ export class TagsPage {
    */
   protected readonly activeSetName = computed(() => {
     const id = this.activeEmoteSetId();
-    if (id === null || this.emoteSetListResource.isLoading()) {
+    if (id === null) {
       return null;
     }
-    const list = this.emoteSetListResource.hasValue() ? this.emoteSetListResource.value() : null;
-    return list?.sets.find((set) => set.id === id)?.name ?? id;
+    // A list on hand names the set even while a live reload refreshes it.
+    if (this.emoteSetListResource.hasValue()) {
+      return this.emoteSetListResource.value().sets.find((set) => set.id === id)?.name ?? id;
+    }
+    return this.emoteSetListResource.isLoading() ? null : id;
   });
   /**
    * Said only when it is known: an empty active-set id, or the 404 the endpoint answers for a
@@ -292,6 +353,48 @@ export class TagsPage {
   /** The small dock in the flow under the grid (spec 9.4, §8.7) — only while something is marked. */
   protected readonly dockShown = computed(() => this.selectable() && this.markedCount() > 0);
 
+  /** Where "Einspielen"/"Ausräumen" exist at all (spec 8, 9.4): runs switched on, a fine pointer and
+   *  a known active set. Rename and delete do not depend on it. */
+  protected readonly tagRunsShown = computed(
+    () => this.tagRunsEnabled() && !this.isCoarse() && this.activeEmoteSetId() !== null,
+  );
+
+  /**
+   * The page's run dock (plan 3.8, spec 9.5): the same import, delete and restore sections as the
+   * usage page's dock, fed by the same service signals, but through `tagRunDockHasContent` — this
+   * page has no marking half, so no active-set gate may hide a clear-out. Page level: a run started
+   * here outlives the detail it was started from.
+   */
+  protected readonly dockVisible = computed(() =>
+    tagRunDockHasContent({
+      deleteShown: this.deleteService.isRunning() || this.deleteService.queue().length > 0,
+      restoreShown: this.restoreService.isRunning() || this.restoreService.queue().length > 0,
+      restoreNoticePending: this.restoreService.duplicateNoticePending(),
+      // `app-import-progress-section`'s own gate, `run()` included (it draws nothing without one).
+      importShown:
+        this.importService.run() !== null &&
+        (this.importService.isRunning() || this.importService.queue().length > 0),
+      // Also the drift notice of a tag play-in whose re-check held back replace rows (F35).
+      importNoticePending: this.importService.duplicateNoticePending(),
+    }),
+  );
+  /** The dock's rendered height — the page's own bottom padding and the shell's clearance. */
+  protected readonly dockHeightPx = signal(0);
+
+  /** What stopped the delete section's restore entry (its `notice` output). Persists like the
+   *  panel's abort notice until a new start clears it (F6). */
+  protected readonly runNotice = signal<DeleteAbortNotice | null>(null);
+
+  /** The arbiter's transient "nothing started" notice (F5), as on the usage page. Reads `lang()` so
+   *  a language switch re-translates the blocking kind's noun. */
+  protected readonly refusedStartNotice = computed(() => {
+    this.languageService.lang();
+    const refused = this.arbiter.refusedStart();
+    return refused === null
+      ? null
+      : refusedStartMessage(refused.blockedBy, (key) => this.transloco.translate(key));
+  });
+
   protected readonly removalPending = signal(false);
   protected readonly deletePending = signal(false);
   /** A failed write; persists until the next write or another tag (§4.4). */
@@ -328,6 +431,7 @@ export class TagsPage {
         if (this.previousChannel !== null && this.previousChannel !== channel) {
           this.clearFeedback();
           this.actionErrorKey.set(null);
+          this.runNotice.set(null);
           this.confirmedTagId = null;
         }
         this.previousChannel = channel;
@@ -392,7 +496,76 @@ export class TagsPage {
       }
     });
 
-    inject(DestroyRef).onDestroy(() => this.clearFeedbackTimer());
+    // The dock's real height, mirrored into the page padding and the shell's clearance — measured,
+    // not guessed, like the usage page's (a run with many rows grows the dock up to 70vh).
+    effect((onCleanup) => {
+      const element = this.dockRef()?.nativeElement;
+      if (!element) {
+        this.dockHeightPx.set(0);
+        this.dockClearance.release();
+        return;
+      }
+      const measure = () => {
+        const height = element.offsetHeight;
+        this.dockHeightPx.set(height);
+        this.dockClearance.reserve(height);
+      };
+      measure();
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      onCleanup(() => observer.disconnect());
+    });
+
+    // A run starting makes an old restore refusal stale (F6). A flow start that has no run yet is
+    // `TagRunActions`' `started` output (template).
+    effect(() => {
+      if (this.arbiter.activeRun() !== null) {
+        untracked(() => this.runNotice.set(null));
+      }
+    });
+
+    // A tag run or a restore that closes changes the tags' numbers (spec 9.6, F6): reload. Also
+    // while `TagRunActions` is not mounted (the list alone on a narrow screen). A run that was
+    // already settled when the page opened is not news.
+    let firstSettled = true;
+    let lastSettled = '';
+    effect(() => {
+      const restore = this.restoreService.run();
+      const key = [
+        settledTagPlayIn(this.importService.run()),
+        settledTagRemoval(this.deleteService.run()),
+        restore !== null && restore.phase === 'closed' ? restore.runId : null,
+      ].join('|');
+      const changed = key !== lastSettled;
+      lastSettled = key;
+      if (firstSettled) {
+        firstSettled = false;
+        return;
+      }
+      if (changed && key !== '||') {
+        untracked(() => this.reloadTagState());
+      }
+    });
+
+    // `channel.synced` for this channel (rulings F3, the usage page's mechanism): set status, set
+    // list, tags and entries are read again. The status reload keeps its answer meanwhile (see
+    // `setStatusSettled`), so a reload of the same set changes no request key and tears nothing
+    // down; a real set switch changes the key, the tags and entries follow it, and an open tag flow
+    // sees the new active set at its confirm-time guard.
+    liveReload(this.liveUrl, {
+      accept: [LIVE_EVENT_TYPES.channelSynced],
+      debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
+    }).subscribe(() => {
+      this.setStatusResource.reload();
+      this.emoteSetListResource.reload();
+      this.reloadTagState();
+    });
+
+    inject(DestroyRef).onDestroy(() => {
+      this.clearFeedbackTimer();
+      // Give the clearance back at once — the next page may have no dock to release it.
+      this.dockClearance.release();
+    });
   }
 
   protected openCreate(): void {
@@ -432,8 +605,18 @@ export class TagsPage {
       return;
     }
     const channel = this.channelName();
+    // Spec 8 "Tag löschen mit Platzierungen": allowed, but said first. The label stays "Tag
+    // löschen" (rulings F24); the hint goes into the message.
+    const message = [this.transloco.translate('tags.deleteDialog.message', { tag: tag.name })];
+    if (tag.placedCount > 0) {
+      message.push(
+        this.transloco.translate(pluralKey(tag.placedCount, 'tags.deleteDialog.placedHint'), {
+          count: this.formatCount(tag.placedCount),
+        }),
+      );
+    }
     openConfirmDialog(this.dialog, {
-      message: this.transloco.translate('tags.deleteDialog.message', { tag: tag.name }),
+      message: message.join(' '),
       confirmLabel: this.transloco.translate('tags.deleteDialog.confirm'),
     }).closed.subscribe((confirmed) => {
       if (!confirmed || this.channelName() !== channel) {
@@ -473,6 +656,20 @@ export class TagsPage {
 
   protected clearSelection(): void {
     this.selection.clear();
+  }
+
+  /** A tag flow started: an old restore refusal no longer describes anything (F6). */
+  protected onTagRunStarted(): void {
+    this.runNotice.set(null);
+  }
+
+  /** A tag run settled, or its report did: the numbers and the entries are read again (9.6). */
+  protected onTagRunCompleted(): void {
+    this.reloadTagState();
+  }
+
+  protected onTagRunFeedback(feedback: TagRunFeedback): void {
+    this.showFeedback(feedback.key, feedback.params);
   }
 
   protected retryTags(): void {
@@ -540,7 +737,16 @@ export class TagsPage {
     if (entry.inSet === false) {
       parts.push(this.transloco.translate('tags.page.notInSetBadge'));
     }
+    if (entry.placedByThisTag) {
+      parts.push(this.transloco.translate('tags.page.placedMark'));
+    }
     return parts.join(' · ');
+  }
+
+  protected formatDate(iso: string): string {
+    return new Date(iso).toLocaleDateString(toLocale(this.languageService.lang()), {
+      dateStyle: 'short',
+    });
   }
 
   protected usageStatsLink(): unknown[] {
@@ -586,6 +792,13 @@ export class TagsPage {
     if (key === TAG_NOT_FOUND_KEY) {
       this.tagsResource.reload();
     }
+  }
+
+  /** Tags and the open tag's entries, read again; a resource that is already loading keeps its
+   *  request (`reload()` is a no-op there), so two triggers in one tick cost one request each. */
+  private reloadTagState(): void {
+    this.tagsResource.reload();
+    this.entriesResource.reload();
   }
 
   private selectTag(tagId: number): void {

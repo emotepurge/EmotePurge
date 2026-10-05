@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { ActionDockState, actionDockHasContent } from './action-dock';
+import {
+  ActionDockState,
+  TagRunDockState,
+  actionDockHasContent,
+  tagRunDockHasContent,
+} from './action-dock';
 
 function state(overrides: Partial<ActionDockState> = {}): ActionDockState {
   return {
@@ -93,5 +98,46 @@ describe('actionDockHasContent', () => {
     expect(actionDockHasContent(state({ hasActiveSet: false, undoNoticePending: true }))).toBe(
       true,
     );
+  });
+});
+
+describe('tagRunDockHasContent (tags page, #201 T-C)', () => {
+  const NOTHING: TagRunDockState = {
+    deleteShown: false,
+    restoreShown: false,
+    restoreNoticePending: false,
+    importShown: false,
+    importNoticePending: false,
+  };
+
+  it('is false with nothing shown', () => {
+    expect(tagRunDockHasContent(NOTHING)).toBe(false);
+  });
+
+  // No active-set clause around the delete: a tag clear-out is a delete run, and this page has no
+  // marking half that would need a set (Codex finding 1 on the plan).
+  it('shows a delete run on its own', () => {
+    expect(tagRunDockHasContent({ ...NOTHING, deleteShown: true })).toBe(true);
+  });
+
+  it('shows a restore run on its own', () => {
+    expect(tagRunDockHasContent({ ...NOTHING, restoreShown: true })).toBe(true);
+  });
+
+  it('shows a pending import notice on its own — a refused tag play-in leaves no run', () => {
+    expect(tagRunDockHasContent({ ...NOTHING, importNoticePending: true })).toBe(true);
+  });
+
+  it('shows an import run and a pending restore notice on their own', () => {
+    expect(tagRunDockHasContent({ ...NOTHING, importShown: true })).toBe(true);
+    expect(tagRunDockHasContent({ ...NOTHING, restoreNoticePending: true })).toBe(true);
+  });
+
+  it('has no set gate and no delete-confirm field (compile-time)', () => {
+    // @ts-expect-error -- the tags page has no marking half; an active-set gate would hide a clear-out
+    const withSet: TagRunDockState = { ...NOTHING, hasActiveSet: false };
+    // @ts-expect-error -- the confirm window would mount an empty bar here (plan 3.8)
+    const withConfirm: TagRunDockState = { ...NOTHING, deleteConfirmPending: true };
+    expect([withSet, withConfirm].map(tagRunDockHasContent)).toEqual([false, false]);
   });
 });

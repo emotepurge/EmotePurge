@@ -26,9 +26,12 @@ import {
   mockLegalAvailability,
   mockLegalDocument,
   mockSetWarning,
+  mockSevenTvGql,
+  mockSyncDeletedInSet,
   mockTagEntries,
   mockTags,
   mockTurnstile,
+  sevenTvGqlRequestKind,
   failLive,
   mockLiveQuota,
   mockUsageChannelSeries,
@@ -399,6 +402,96 @@ function tagEntries(count: number) {
     inSet: i % 6 === 5 ? false : true,
     currentName: i % 6 === 5 ? `Renamed${i + 1}` : null,
   }));
+}
+
+/**
+ * The tag routes with T-C's fields (#201 T-C): tag 7 is played in to the active set `set-1` with
+ * 18 valid placements (every in-set entry among the first 20), its entries carry the placement
+ * fields, and the registration/report routes of a clear-out answer — plus a 7TV behind
+ * `7tv.io/v4/gql` that reads the set and accepts every REMOVE, so a clear-out can run to its end
+ * and leave its settled run in the tags page's dock. Registered instead of `mockTags`/
+ * `mockTagEntries` (whose answers predate the T-C fields).
+ */
+async function mockTagRuns(page: Page): Promise<void> {
+  const entries = tagEntries(24).map((entry, i) => {
+    const placed = entry.inSet && i < 20;
+    return {
+      ...entry,
+      imageUrl: `https://cdn.7tv.app/emote/${entry.sevenTvEmoteId}/2x.webp`,
+      placedByThisTag: placed,
+      placedAtUtc: placed ? '2026-10-01T18:00:00Z' : null,
+      placementOperationId: placed ? `rev-${i + 1}` : null,
+      // One entry another active tag still needs: the dialog's "not proposed" block.
+      heldByActiveTags: i === 1 ? [{ id: 9, name: 'Favoriten' }] : [],
+      placedByOtherTags: [],
+    };
+  });
+  const tags = TAG_LIST.map((tag) =>
+    tag.id === 7
+      ? { ...tag, placedCount: 18, active: true, activatedAtUtc: '2026-10-01T18:00:00Z' }
+      : { ...tag, placedCount: 0, active: false, activatedAtUtc: null },
+  );
+  await page.route(
+    (url) => url.pathname === '/api/channels/sensitron/tags',
+    (route) => json(route, 200, { emoteSetId: 'set-1', isActiveSet: true, tags }),
+  );
+  await page.route(
+    (url) => /^\/api\/channels\/sensitron\/tags\/\d+\/entries$/.test(url.pathname),
+    (route) => {
+      const id = Number(new URL(route.request().url()).pathname.split('/')[5]);
+      return json(route, 200, {
+        emoteSetId: 'set-1',
+        isActiveSet: true,
+        activationOperationId: id === 7 ? 'act-7' : null,
+        entries: id === 7 ? entries : [],
+      });
+    },
+  );
+  await page.route(
+    (url) => url.pathname === '/api/channels/sensitron/tags/7/operations',
+    (route) => json(route, 200, { registeredAtUtc: '2026-10-05T10:00:00Z' }),
+  );
+  await page.route(
+    (url) => url.pathname === '/api/channels/sensitron/tags/7/placements/removed',
+    (route) =>
+      json(route, 200, {
+        replayed: false,
+        deletedCount: 17,
+        transferredCount: 1,
+        droppedCount: 0,
+        sweptCount: 0,
+        deactivated: true,
+      }),
+  );
+  await mockEmoteSetTargets(page, [
+    {
+      twitchChannelId: 'tw-sensitron',
+      twitchLogin: 'sensitron',
+      isOwnAccount: true,
+      trackedChannelName: 'sensitron',
+      activeEmoteSetId: 'set-1',
+      sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+    },
+  ]);
+  await mockSyncDeletedInSet(page, 'set-1');
+  const live = entries.filter((entry) => entry.inSet);
+  await mockSevenTvGql(page, (request) => {
+    const kind = sevenTvGqlRequestKind(request);
+    if (kind === 'removeEmote') {
+      return {
+        data: { emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } } },
+      };
+    }
+    const items = live.map((entry) => ({
+      alias: entry.alias,
+      emote: { id: entry.sevenTvEmoteId, defaultName: entry.alias },
+    }));
+    return {
+      data: {
+        emoteSets: { emoteSet: { emotes: { totalCount: items.length, pageCount: 1, items } } },
+      },
+    };
+  });
 }
 
 const SCENARIOS: Scenario[] = [
@@ -1579,6 +1672,75 @@ const SCENARIOS: Scenario[] = [
       await page.getByRole('button', { name: /^Emote3PogU ·/ }).click();
       await page.getByRole('button', { name: /^(Tag zuweisen|Assign tag)/ }).click();
       await page.getByRole('dialog').waitFor();
+    },
+  },
+  {
+    // The tags page with a played-in tag (#201 T-C, spec 9.4): state line, placement marks, the
+    // list's "eingespielt (n platziert)", the run buttons in the detail head — and, after a
+    // clear-out has run to its end against the mocked 7TV, the page-level run dock with the
+    // delete section's settled run, tag report line, restore hint and buttons (rulings F7/F26:
+    // the fixed .app-dock at 360 px under a mouse). Fine pointer only: no runs on a coarse one.
+    slug: 'tags-page-active-with-dock',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { tagRunsEnabled: true });
+      await mockTagRuns(page);
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      await page.getByRole('button', { name: /^(Ausräumen|Clear out)$/ }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByRole('button', { name: /^(Ausräumen|Clear out)$/ }).click();
+      await page.locator('.app-dock').waitFor();
+      await page
+        .locator('.app-dock')
+        .getByRole('button', { name: /(wiederherstellen|restore)/i })
+        .waitFor();
+    },
+  },
+  {
+    // The clear-out preview (#201 T-C, spec 7.2/6) over a played-in tag: the "proposed" block with
+    // placement dates, the "not proposed" block with a held-by reason and a 40-character alias,
+    // the summary and the set line. Opened against the mocked 7TV set read. Includes the 480 px
+    // fine-pointer case (`narrow`) the Task 11 report left unverified.
+    slug: 'tag-removal-dialog',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { tagRunsEnabled: true });
+      await mockTagRuns(page);
+    },
+    afterLoad: async (page) => {
+      await page.getByRole('button', { name: /^(Ausräumen|Clear out)$/ }).click();
+      await page.getByRole('dialog').waitFor();
+    },
+  },
+  {
+    // The filter row with a played-in tag chosen and tag runs on (#201 T-C, spec 9.2, rulings
+    // F11): name · eingespielt · counts, then "Einspielen"/"Ausräumen" in the sentence's slot,
+    // then the way to the tag page — the row has to wrap rather than push past 360 px.
+    slug: 'usage-filter-with-tag-run-actions',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/usage-stats',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { tagRunsEnabled: true });
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockTagRuns(page);
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      await page.getByRole('combobox', { name: /^Tag$/ }).selectOption('7');
+      await page.getByRole('button', { name: /^(Einspielen|Play in)$/ }).waitFor();
     },
   },
 ];

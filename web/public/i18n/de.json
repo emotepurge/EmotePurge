@@ -1723,7 +1723,9 @@
         "notInSet": {
           "one": "{{count}} nicht im Set",
           "other": "{{count}} nicht im Set"
-        }
+        },
+        "active": "eingespielt ({{placed}} platziert)",
+        "inactive": "nicht eingespielt"
       },
       "currentName": "heute: {{name}}",
       "notInSetBadge": "nicht im Set",
@@ -1735,7 +1737,13 @@
       },
       "retry": "Erneut laden",
       "deleted": "{{tag}} gelöscht.",
-      "tagGone": "Dieser Tag wurde inzwischen gelöscht."
+      "tagGone": "Dieser Tag wurde inzwischen gelöscht.",
+      "state": {
+        "active": "eingespielt seit {{date}}",
+        "inactive": "nicht eingespielt"
+      },
+      "placedMark": "eingespielt",
+      "placedAt": "eingespielt am {{date}}"
     },
     "assignDialog": {
       "title": "Tag zuweisen",
@@ -1816,7 +1824,11 @@
     },
     "deleteDialog": {
       "message": "{{tag}} wird gelöscht; die Emotes bleiben im Set.",
-      "confirm": "Tag löschen"
+      "confirm": "Tag löschen",
+      "placedHint": {
+        "one": "{{count}} Emote dieses Tags ist noch eingespielt — vorher ausräumen?",
+        "other": "{{count}} Emotes dieses Tags sind noch eingespielt — vorher ausräumen?"
+      }
     },
     "removalDialog": {
       "title": "{{tag}} ausräumen",

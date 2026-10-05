@@ -3,13 +3,15 @@ import { describe, expect, it } from 'vitest';
 
 import { routes } from '../../app.routes';
 import { usageStatsAccessGuard } from '../../core/channels/usage-stats-access.guard';
+import { sevenTvRunLeaveGuard } from '../../shared/seven-tv/seven-tv-run-leave.guard';
 import { TAGS_ROUTES } from './tags.routes';
 
 /**
  * The access check of the tags page lives on its parent entry in app.routes.ts, not in this module
  * (same split as usage-stats, #264) — so the one thing worth pinning is that the entry still carries
  * the guard and still delegates to exactly this module. Router behaviour of the lazy split itself is
- * covered by usage-stats.routes.spec.ts; T-C adds the run guard here and its tests with it.
+ * covered by usage-stats.routes.spec.ts, the guard's own behaviour by its spec — here only that the
+ * tags page registers it (spec 9.5).
  */
 function child(parent: Route | undefined, path: string): Route | undefined {
   return parent?.children?.find((route) => route.path === path);
@@ -23,5 +25,10 @@ describe('app.routes.ts wiring for tags', () => {
     expect(tagsNode?.canActivate).toEqual([usageStatsAccessGuard]);
     expect(tagsNode?.loadComponent).toBeUndefined();
     expect(await (tagsNode!.loadChildren!() as Promise<Routes>)).toBe(TAGS_ROUTES);
+  });
+
+  it('asks before leaving the tags page while a run is going, with the page-neutral run guard', () => {
+    expect(TAGS_ROUTES).toHaveLength(1);
+    expect(TAGS_ROUTES[0].canDeactivate).toEqual([sevenTvRunLeaveGuard]);
   });
 });

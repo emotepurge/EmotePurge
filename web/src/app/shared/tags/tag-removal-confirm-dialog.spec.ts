@@ -283,6 +283,7 @@ describe('TagRemovalConfirmDialog', () => {
   });
 
   describe('long lists', () => {
+    let lastViewport: CdkVirtualScrollViewport | null = null;
     const many = (n: number) => Array.from({ length: n }, (_, i) => row(`r${i}`));
 
     /** jsdom has no layout: the viewport would measure 0 px and has no ResizeObserver. A fixed
@@ -304,6 +305,7 @@ describe('TagRemovalConfirmDialog', () => {
         },
       );
       let offset = 0;
+      lastViewport = null;
       vi.spyOn(CdkVirtualScrollViewport.prototype, 'measureViewportSize').mockReturnValue(156);
       vi.spyOn(CdkVirtualScrollViewport.prototype, 'measureScrollOffset').mockImplementation(
         () => offset,
@@ -312,6 +314,7 @@ describe('TagRemovalConfirmDialog', () => {
         this: CdkVirtualScrollViewport,
         index: number,
       ) {
+        lastViewport = this;
         offset = index * 52;
         this.checkViewportSize();
       });
@@ -360,6 +363,29 @@ describe('TagRemovalConfirmDialog', () => {
       keydown(host, 'r0', 'End');
       await flush();
       expect(document.activeElement).toBe(box(host, 'r59'));
+      expect(tabStops(host)).toEqual(['r59']);
+    });
+
+    it('hands the tab stop to the nearest rendered row once its own row is scrolled away', async () => {
+      const host = open(many(60));
+      await flush();
+      box(host, 'r0').focus();
+      keydown(host, 'r0', 'End');
+      await flush();
+      expect(tabStops(host)).toEqual(['r59']);
+
+      // Scrolled back to the top by wheel or scrollbar: r59 leaves the DOM, and Tab into the list
+      // must still find exactly one stop — the rendered row closest to where r59 sits.
+      (document.activeElement as HTMLElement | null)?.blur();
+      lastViewport!.scrollToIndex(0);
+      await flush();
+      expect(host.querySelector('input[data-emote-id="r59"]')).toBeNull();
+      const rendered = rowIds(host);
+      expect(tabStops(host)).toEqual([rendered[rendered.length - 1]]);
+
+      // Back down: the chosen row is rendered again and is the stop once more.
+      lastViewport!.scrollToIndex(61);
+      await flush();
       expect(tabStops(host)).toEqual(['r59']);
     });
 
