@@ -353,6 +353,35 @@ describe('TagsPage', () => {
       expect(text(harness)).toContain('Die Zahlen beziehen sich auf das aktive Set Herbst.');
     });
 
+    it('explains the tag, with the run sentence only where the run buttons exist', async () => {
+      const first = await open('/channels/a/tags');
+      expectList().flush(tagList(tag(1, 'Stronghold')));
+      await settle(first.harness);
+      expect(text(first.harness)).toContain(de.tags.page.intro);
+      expect(text(first.harness)).not.toContain(de.tags.page.introRuns);
+    });
+
+    it('adds the run sentence when tag runs are on and a fine pointer can use them', async () => {
+      permissions = { ...MANAGER, tagRunsEnabled: true };
+      const { harness } = await open('/channels/a/tags');
+      expectList().flush(tagList(tag(1, 'Stronghold')));
+      await settle(harness);
+
+      expect(text(harness)).toContain(de.tags.page.intro);
+      expect(text(harness)).toContain(de.tags.page.introRuns);
+    });
+
+    it('drops the run sentence on a coarse pointer, where the buttons are absent', async () => {
+      permissions = { ...MANAGER, tagRunsEnabled: true };
+      isCoarse.set(true);
+      const { harness } = await open('/channels/a/tags');
+      expectList().flush(tagList(tag(1, 'Stronghold')));
+      await settle(harness);
+
+      expect(text(harness)).toContain(de.tags.page.intro);
+      expect(text(harness)).not.toContain(de.tags.page.introRuns);
+    });
+
     it('without an active set: says so, and asks for the list without a set id', async () => {
       statusAnswer = () => throwError(() => new HttpErrorResponse({ status: 404 }));
       const { harness, page } = await open('/channels/a/tags');
@@ -459,6 +488,13 @@ describe('TagsPage', () => {
       const { harness } = await openDetail([]);
 
       expect(text(harness)).toContain(de.tags.page.emptyEntries.title);
+    });
+
+    it('a tag without entries says where to pick them, instead of showing a second empty text', async () => {
+      const { harness } = await openDetail([]);
+
+      expect(text(harness)).toContain(de.tags.page.emptyEntries.description);
+      expect(text(harness).split(de.tags.page.emptyEntries.title)).toHaveLength(2);
     });
   });
 
@@ -714,6 +750,20 @@ describe('TagsPage', () => {
         expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
       });
 
+      it('hides "Einspielen" for a tag whose emotes are all in the set — and an inactive one then has no run button', async () => {
+        const full = { ...tag(1, 'Stronghold', 2, 2) };
+        const { harness } = await openTag(full);
+        expect(buttonByName(harness, 'Einspielen')).toBeNull();
+        expect(buttonByName(harness, 'Ausräumen')).toBeNull();
+      });
+
+      it('keeps only "Ausräumen" for a played-in tag with nothing missing', async () => {
+        const { harness } = await openTag({ ...activeTag(1, 'Stronghold'), inSetCount: 2 });
+
+        expect(buttonByName(harness, 'Einspielen')).toBeNull();
+        expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
+      });
+
       it('needs no management right (E9), and passes the live active set', async () => {
         permissions = { ...MANAGER, canManage: false, tagRunsEnabled: true };
         const { harness, page } = await openTag(tag(1, 'Stronghold'));
@@ -780,10 +830,10 @@ describe('TagsPage', () => {
         expect(text(harness)).toContain(`eingespielt seit ${date}`);
       });
 
-      it('says "nicht eingespielt" for a tag that is not played in', async () => {
+      it('never says "nicht eingespielt" — only a played-in state is named', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold'));
 
-        expect(text(harness)).toContain(de.tags.page.state.inactive);
+        expect(text(harness)).not.toContain('nicht eingespielt');
         expect(text(harness)).not.toContain('eingespielt seit');
       });
 
@@ -794,7 +844,6 @@ describe('TagsPage', () => {
           harness.routeNativeElement!.querySelectorAll('p.text-fg-secondary'),
         ).map((line) => line.textContent?.trim());
         expect(lines).toContain(de.tags.page.state.activeUndated);
-        expect(lines).not.toContain(de.tags.page.state.inactive);
       });
 
       it('says in the list how many placements a played-in tag holds', async () => {
@@ -804,7 +853,17 @@ describe('TagsPage', () => {
         ).map((row) => row.textContent ?? '');
 
         expect(rows[0]).toContain('eingespielt (3 platziert)');
-        expect(rows[1]).toContain(de.tags.page.micro.inactive);
+        expect(rows[1]).not.toContain('eingespielt');
+      });
+
+      it('says just "eingespielt" in the list for a played-in tag without placements', async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold', 0));
+        const row = harness.routeNativeElement!.querySelector(
+          'ul[aria-label="Tags"] li',
+        )!.textContent!;
+
+        expect(row).toContain('eingespielt');
+        expect(row).not.toContain('platziert');
       });
 
       it("names a placement in the cell's accessible name, not only by the mark", async () => {

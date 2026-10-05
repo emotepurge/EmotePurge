@@ -30,6 +30,15 @@
         }
       </div>
     </div>
+    <!-- What a tag is, and what its two buttons do — the second sentence only where the buttons can
+         exist (`tagRunsShown`, the host's own gate for them), so it never promises a control the
+         page does not show. -->
+    <p class="text-sm text-fg-muted">
+      {{ 'tags.page.intro' | transloco }}
+      @if (tagRunsShown()) {
+        {{ 'tags.page.introRuns' | transloco }}
+      }
+    </p>
     <!-- Which set the in-set numbers count against (spec 9.3). min-h holds the line while the set's
          name is still being looked up, so the page below does not move when it arrives. -->
     <p class="min-h-5 text-sm text-fg-muted">
@@ -146,15 +155,18 @@
                     plural(tag.inSetCount, 'tags.page.micro.inSet')
                       | transloco: { count: formatCount(tag.inSetCount) }
                   }}</span>
-                  <!-- The played-in state counts against the active set like the number before
-                       it, so it drops out with it when there is no set to count in. -->
-                  <span aria-hidden="true">·</span>
-                  <span>{{
-                    tag.active
-                      ? ('tags.page.micro.active'
-                        | transloco: { placed: formatCount(tag.placedCount) })
-                      : ('tags.page.micro.inactive' | transloco)
-                  }}</span>
+                  <!-- Only the played-in state is named, never its absence (operator feedback
+                       2026-10-05). It counts against the active set like the number before it, so
+                       it drops out with it when there is no set to count in. -->
+                  @if (tag.active) {
+                    <span aria-hidden="true">·</span>
+                    <span>{{
+                      tag.placedCount > 0
+                        ? ('tags.page.micro.activePlaced'
+                          | transloco: { placed: formatCount(tag.placedCount) })
+                        : ('tags.page.micro.active' | transloco)
+                    }}</span>
+                  }
                 }
               </span>
             </li>
@@ -175,7 +187,11 @@
                     [label]="'channelWorkspace.tabs.tags' | transloco"
                   />
                 }
-                <h3 id="tag-detail-title" class="min-w-0 truncate text-base font-semibold">
+                <h3
+                  id="tag-detail-title"
+                  tabindex="-1"
+                  class="min-w-0 truncate text-base font-semibold"
+                >
                   {{ tag.name }}
                 </h3>
                 <!-- Header actions (spec 9.4, plan 3.8): the tag runs first, then rename and, after a
@@ -198,6 +214,7 @@
                         (started)="onTagRunStarted()"
                         (completed)="onTagRunCompleted()"
                         (feedback)="onTagRunFeedback($event)"
+                        (focusLost)="focusDetailHeading()"
                       />
                     }
                     @if (canManage()) {
@@ -222,21 +239,17 @@
                   </div>
                 }
               </div>
-              <!-- The played-in state against the active set (spec 9.4); without a set to refer to
-                   (`inSetCount: null`) there is no state to name. -->
-              @if (tag.inSetCount !== null) {
+              <!-- The played-in state against the active set (spec 9.4), named only when it holds —
+                   there is no "not played in" line (operator feedback 2026-10-05). Without a set to
+                   refer to (`inSetCount: null`) there is no state to name either. -->
+              @if (tag.inSetCount !== null && tag.active) {
                 <p class="text-sm text-fg-secondary">
-                  @if (tag.active) {
-                    @if (tag.activatedAtUtc) {
-                      {{
-                        'tags.page.state.active'
-                          | transloco: { date: formatDate(tag.activatedAtUtc) }
-                      }}
-                    } @else {
-                      {{ 'tags.page.state.activeUndated' | transloco }}
-                    }
+                  @if (tag.activatedAtUtc) {
+                    {{
+                      'tags.page.state.active' | transloco: { date: formatDate(tag.activatedAtUtc) }
+                    }}
                   } @else {
-                    {{ 'tags.page.state.inactive' | transloco }}
+                    {{ 'tags.page.state.activeUndated' | transloco }}
                   }
                 </p>
               }

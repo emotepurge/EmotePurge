@@ -672,7 +672,7 @@ UI-Designsprache §8.7 (9.4).
   at the next clear-out and can be ticked by hand. The restore button says so after a tag run. The
   converse, an **undo of a tag play-in** (usage page, #254), sends no tag report: its adds leave 7TV, the
   undo's own set-centric `sync-deleted` observations expire the placements, and the tag reads
-  "eingespielt (0 platziert)" until a clear-out with nothing ticked (n = 0) deactivates it — fail-safe,
+  "eingespielt" (no placement count at 0) until a clear-out with nothing ticked (n = 0) deactivates it — fail-safe,
   since an expired placement is never proposed.
 
 #### Rollout (spec 12.5)
@@ -690,7 +690,7 @@ verification: the per-tick post-check read on the largest channel and the first-
 
 #### Operator feedback after the live test (2026-10-05)
 
-The operator tried the runs in the browser and changed how the tag runs are offered; all of it is frontend-only.
+The operator tried the runs in the browser and changed three things; all are frontend-only.
 
 - **Runs start on the tags page only.** The usage page's filter row keeps nothing but the tag dropdown:
   the name, "eingespielt", the "k in the set / m not in the set" counts, "Einspielen"/"Ausräumen"
@@ -705,11 +705,31 @@ The operator tried the runs in the browser and changed how the tag runs are offe
 - **A run notice can now wait for the tags page.** A report without a run (a clear-out with n = 0, an "all
   present" play-in) that fails after the user went to the usage page is no longer shown there; it stays in
   `TagRunNoticeSink` and appears when the tags page is opened again — delayed, not lost.
+- **"Einspielen" exists only while the tag has an emote missing from the set** (`entryCount >
+  inSetCount`, read off the summary the host already holds; with `inSetCount: null` — no set to count in —
+  a tag with entries still offers it). Spec 7.2 "missing, not locked", like "Ausräumen" for an inactive
+  tag. The flow's "all present" path stays for the race between loading the page and the click. The state
+  "nicht eingespielt" is no longer shown anywhere (list, detail head); only "eingespielt" is, and the
+  list's "(n platziert)" only for n > 0.
+- **Accepted consequence:** a tag whose emotes are all in the set cannot be played in any more, so it
+  cannot be activated and does not shield its emotes from another tag's clear-out ("wird noch von X
+  gebraucht"). If an emote goes missing later, "Einspielen" returns and the tag can be played in again.
+- **Focus survives the disappearing button.** When a play-in leaves nothing missing, "Einspielen" leaves
+  the DOM while it holds the focus CDK gave back after the dialog; focus then moves to "Ausräumen" (the tag
+  is played in now) or, with no button left, to the detail heading (`tabindex="-1"`). Without a run button
+  on the page (the tag is neither missing an emote nor played in), `TagRunActions` also drops its button row
+  and the lock reason, so no text explains a lock on a button that is not there; its error banner stays.
+- **The tags page explains itself.** Under the title: "A tag remembers emotes, even when they are not in
+  the set right now." plus, only where the run buttons exist (`tagRunsShown`: runs on, a fine pointer, a
+  known active set — the buttons' own gate), "Playing in puts them into the set, clearing out takes them
+  out again." The set line stays as it was. A tag with no entries replaces its former empty text with
+  "No emotes yet. Select them on the usage page and assign them to this tag." (the existing manager-only
+  button to the usage page stays).
 
 **Betrifft (feedback 1):** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
-`web/src/app/features/usage-stats/usage-stats-page.html` · `web/public/i18n/de.json` ·
-`web/public/i18n/en.json` · `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts` ·
-`docs/UI-Designsprache.md`
+`web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/shared/tags/tag-run-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts` · `docs/UI-Designsprache.md`
 
 **Betrifft (Tasks 14, 15):** `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
 `docs/Operations.md` · `docs/UI-Designsprache.md` · `docs/Architectur.md` · `.env.example` ·

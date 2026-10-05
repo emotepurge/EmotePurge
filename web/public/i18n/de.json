@@ -1700,6 +1700,8 @@
     "page": {
       "title": "Tags",
       "listLabel": "Tags",
+      "intro": "Ein Tag merkt sich Emotes, auch wenn sie gerade nicht im Set sind.",
+      "introRuns": "Einspielen holt sie ins Set, Ausräumen nimmt sie wieder heraus.",
       "setLine": "Die Zahlen beziehen sich auf das aktive Set {{set}}.",
       "noActiveSet": "Dieser Channel hat kein aktives Set; Zahlen „im Set“ gibt es deshalb nicht.",
       "empty": {
@@ -1709,8 +1711,8 @@
       },
       "emptySelection": "Wähle links einen Tag.",
       "emptyEntries": {
-        "title": "Dieser Tag hat noch keine Emotes.",
-        "description": "Markiere im Nutzungsraster Emotes und weise sie mit „Tag zuweisen…“ zu."
+        "title": "Noch keine Emotes.",
+        "description": "Wähle sie auf der Nutzungsseite aus und weise sie diesem Tag zu."
       },
       "micro": {
         "entries": {
@@ -1725,8 +1727,8 @@
           "one": "{{count}} nicht im Set",
           "other": "{{count}} nicht im Set"
         },
-        "active": "eingespielt ({{placed}} platziert)",
-        "inactive": "nicht eingespielt"
+        "active": "eingespielt",
+        "activePlaced": "eingespielt ({{placed}} platziert)"
       },
       "currentName": "heute: {{name}}",
       "notInSetBadge": "nicht im Set",
@@ -1741,8 +1743,7 @@
       "tagGone": "Dieser Tag wurde inzwischen gelöscht.",
       "state": {
         "active": "eingespielt seit {{date}}",
-        "activeUndated": "eingespielt",
-        "inactive": "nicht eingespielt"
+        "activeUndated": "eingespielt"
       },
       "placedMark": "eingespielt",
       "placedAt": "eingespielt am {{date}}"

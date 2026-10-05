@@ -1,8 +1,12 @@
 import { Dialog } from '@angular/cdk/dialog';
+import { DOCUMENT } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import {
   Component,
+  ElementRef,
   DestroyRef,
+  Injector,
+  afterNextRender,
   computed,
   effect,
   inject,
@@ -10,6 +14,7 @@ import {
   output,
   signal,
   untracked,
+  viewChild,
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
@@ -49,6 +54,19 @@ export function settledTagPlayIn(run: ImportRunInfo | null): string | null {
     : null;
 }
 
+/** Where focus goes when "Einspielen" leaves the DOM under the keyboard user (a play-in made
+ *  nothing missing any more): "Ausräumen" if it is there, otherwise the host's stable fallback (the
+ *  detail heading). `none` when focus is not lost — the user has moved on, leave it alone. */
+export function playInFocusTarget(state: {
+  focusLost: boolean;
+  removeShown: boolean;
+}): 'remove' | 'fallback' | 'none' {
+  if (!state.focusLost) {
+    return 'none';
+  }
+  return state.removeShown ? 'remove' : 'fallback';
+}
+
 /** The same for a tag clear-out. A tag-less delete run has **no** `tag` field (`undefined`). */
 export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
   return run !== null && run.tag !== undefined && run.phase === 'closed'
@@ -57,12 +75,14 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
 }
 
 /**
- * "Einspielen" and "Ausräumen" for one tag (#201 T-C, spec 9.2/9.4) — the same component on the
- * usage page's filter row and on the tags page, so both surfaces run identical flows (9.5).
+ * "Einspielen" and "Ausräumen" for one tag (#201 T-C, spec 9.4) — hosted by the tags page, the
+ * only surface that starts tag runs (operator feedback 2026-10-05: the usage page shows what is in
+ * the set, not what is missing).
  *
  * Renders nothing unless the host says so (`enabled`: runs switched on, fine pointer, a known
- * active set). "Ausräumen" exists only for a tag played in to that set (spec 7.2: missing, not
- * locked — there is nothing to explain beyond the state the host shows next to it). Both lock
+ * active set). "Einspielen" exists only while the tag has an emote missing from the set,
+ * "Ausräumen" only for a tag played in to that set (spec 7.2: missing, not locked — there is
+ * nothing to explain beyond the state the host shows next to it). Both lock
  * while any 7TV run holds the start (`startLocked`, without a hint: the run's dock is the hint,
  * UI-Designsprache §4.2) and while this component's own flow is busy.
  *
@@ -84,36 +104,41 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
   selector: 'app-tag-run-actions',
   imports: [Button, NoticeBanner, TranslocoPipe],
   template: `
-    @if (enabled()) {
+    @if (enabled() && (anyButton() || notice())) {
       <div class="flex flex-col gap-2">
-        <div class="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            appButton="neutral"
-            class="disabled:cursor-not-allowed"
-            [disabled]="locked()"
-            [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
-            (click)="playIn()"
-          >
-            {{ 'tags.actions.playIn' | transloco }}
-          </button>
-          @if (tag().active) {
-            <button
-              type="button"
-              appButton="danger"
-              class="disabled:cursor-not-allowed"
-              [disabled]="locked()"
-              [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
-              (click)="remove()"
-            >
-              {{ 'tags.actions.remove' | transloco }}
-            </button>
+        @if (anyButton()) {
+          <div class="flex flex-wrap items-center gap-2">
+            @if (playInShown()) {
+              <button
+                type="button"
+                appButton="neutral"
+                class="disabled:cursor-not-allowed"
+                [disabled]="locked()"
+                [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
+                (click)="playIn()"
+              >
+                {{ 'tags.actions.playIn' | transloco }}
+              </button>
+            }
+            @if (tag().active) {
+              <button
+                #removeButton
+                type="button"
+                appButton="danger"
+                class="disabled:cursor-not-allowed"
+                [disabled]="locked()"
+                [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
+                (click)="remove()"
+              >
+                {{ 'tags.actions.remove' | transloco }}
+              </button>
+            }
+          </div>
+          @if (otherRunKey(); as kindKey) {
+            <p [id]="otherRunReasonId" class="text-xs text-fg-muted">
+              {{ 'tags.errors.otherRunActive' | transloco: { kind: (kindKey | transloco) } }}
+            </p>
           }
-        </div>
-        @if (otherRunKey(); as kindKey) {
-          <p [id]="otherRunReasonId" class="text-xs text-fg-muted">
-            {{ 'tags.errors.otherRunActive' | transloco: { kind: (kindKey | transloco) } }}
-          </p>
         }
         @if (notice(); as current) {
           <app-notice-banner variant="error">
@@ -137,6 +162,8 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
       </div>
     }
   `,
+  // No box of its own: with nothing to show the host's flex gap must not see an empty item.
+  host: { class: 'contents' },
 })
 export class TagRunActions {
   readonly channelName = input.required<string>();
@@ -155,6 +182,9 @@ export class TagRunActions {
   /** A click (or a retry) started a flow. */
   readonly started = output<void>();
   readonly feedback = output<TagRunFeedback>();
+  /** "Einspielen" left the DOM under the user and there is no "Ausräumen" to take focus — the host
+   *  moves it to a stable target of its own. */
+  readonly focusLost = output<void>();
 
   protected readonly arbiter = inject(SevenTvRunArbiter);
   private readonly dialog = inject(Dialog);
@@ -168,10 +198,23 @@ export class TagRunActions {
   private readonly translocoService = inject(TranslocoService);
   private readonly noticeSink = inject(TagRunNoticeSink);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly injector = inject(Injector);
+  private readonly document = inject(DOCUMENT);
+  private readonly removeButton = viewChild<ElementRef<HTMLButtonElement>>('removeButton');
 
   /** This component's flow is between its click and its hand-over (or its report). */
   protected readonly pending = signal(false);
   protected readonly notice = signal<TagRunNotice | null>(null);
+  /** "Einspielen" exists only while the tag has an emote that is not in the set (spec 7.2: missing,
+   *  not locked) — read off the summary the host already holds. Without a count (`inSetCount:
+   *  null`, no set to count in) nothing is known to be present, so a tag with entries offers it. A
+   *  click that outraces a change of the set still lands in the flow's own "all present" path. */
+  protected readonly playInShown = computed(() => {
+    const tag = this.tag();
+    return tag.entryCount > (tag.inSetCount ?? 0);
+  });
+  /** At least one run button stands; the button row and the lock reason exist only then. */
+  protected readonly anyButton = computed(() => this.playInShown() || this.tag().active);
   protected readonly locked = computed(() => this.arbiter.startLocked() || this.pending());
   /** The run-kind noun key of a lock the host has no surface for, `null` otherwise — a lock by a
    *  run whose dock the page shows stays without text (§4.2). */
@@ -184,6 +227,9 @@ export class TagRunActions {
   protected readonly otherRunReasonId = `tag-run-other-run-${nextReasonId++}`;
   /** Which tag of which channel this component acts for — by id, so a reloaded summary of the same
    *  tag is no change. */
+  /** The last click that started a play-in came from this component's own button — the one that
+   *  holds focus again once the dialog closes. */
+  private playInStarted = false;
   private readonly subject = computed(() => `${this.channelName()}\u0000${this.tag().id}`);
 
   private readonly deps: TagRunFlowDeps = {
@@ -207,6 +253,19 @@ export class TagRunActions {
     effect(() => {
       this.subject();
       untracked(() => this.notice.set(null));
+    });
+
+    // After a play-in that left nothing missing, "Einspielen" is removed from the DOM — together
+    // with the focus CDK gave back to it. Move it on instead of letting it drop to the body.
+    let wasShown: boolean | null = null;
+    effect(() => {
+      const shown = this.playInShown();
+      const gone = wasShown === true && !shown;
+      wasShown = shown;
+      if (gone && this.playInStarted) {
+        this.playInStarted = false;
+        afterNextRender(() => this.moveFocusOn(), { injector: this.injector });
+      }
     });
 
     // A run that was already settled when this component mounted is not news; only a change seen
@@ -238,6 +297,7 @@ export class TagRunActions {
     }
     this.started.emit();
     this.noticeSink.clear();
+    this.playInStarted = true;
     startTagPlayInFlow(this.deps, this.request());
   }
 
@@ -257,6 +317,19 @@ export class TagRunActions {
     this.started.emit();
     this.noticeSink.clear();
     notice.retry?.();
+  }
+
+  private moveFocusOn(): void {
+    const active = this.document.activeElement;
+    const target = playInFocusTarget({
+      focusLost: active === null || active === this.document.body,
+      removeShown: this.removeButton() !== undefined,
+    });
+    if (target === 'remove') {
+      this.removeButton()?.nativeElement.focus();
+    } else if (target === 'fallback') {
+      this.focusLost.emit();
+    }
   }
 
   /** Channel, tag and set name frozen at the click; the active set stays live for the flow's own

@@ -476,13 +476,15 @@ test.describe('emote tag runs', () => {
     await expect(clearOut(page)).toBeVisible();
   });
 
-  test('plays in a tag the set already holds: no run, an empty report, and the tag is played in', async ({
+  test('plays in a tag the set already holds by the time of the click: no run, an empty report, and the tag is played in', async ({
     page,
   }) => {
     await page.clock.install();
     await mockChannel(page);
+    // The summary the page loaded still counts the emote as missing; the entries read at the click
+    // finds it present — the race the flow's "all present" path stays for.
     await mockTags(page, CHANNEL, [
-      { id: TAG_ID, name: 'Favoriten', entryCount: 1, inSetCount: 1 },
+      { id: TAG_ID, name: 'Favoriten', entryCount: 1, inSetCount: 0 },
     ]);
     await mockTagEntries(page, CHANNEL, TAG_ID, [{ sevenTvEmoteId: '7tv-1', alias: 'catJAM' }]);
     const operations = await mockTagOperations(page, CHANNEL, TAG_ID);
@@ -516,6 +518,38 @@ test.describe('emote tag runs', () => {
     await expect(clearOut(page)).toBeVisible();
     // "eingespielt" opens the state wherever it stands (list line, detail head), whatever follows.
     await expect(page.getByText(/^eingespielt\b/).first()).toBeVisible();
+  });
+
+  test('offers no "Einspielen" for a tag whose emotes are all in the set — only "Ausräumen", once played in', async ({
+    page,
+  }) => {
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 1, inSetCount: 1 },
+      {
+        id: OTHER_TAG_ID,
+        name: 'Lieblinge',
+        entryCount: 1,
+        inSetCount: 1,
+        placedCount: 1,
+        active: true,
+      },
+    ]);
+    await mockTagEntries(page, CHANNEL, TAG_ID, [{ sevenTvEmoteId: '7tv-1', alias: 'catJAM' }]);
+    await mockTagEntries(page, CHANNEL, OTHER_TAG_ID, [
+      { sevenTvEmoteId: '7tv-1', alias: 'catJAM' },
+    ]);
+
+    await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
+    await expect(page.getByRole('heading', { name: 'Favoriten', level: 3 })).toBeVisible();
+    await expect(playIn(page)).toHaveCount(0);
+    await expect(clearOut(page)).toHaveCount(0);
+    await expect(page.getByText('nicht eingespielt')).toHaveCount(0);
+
+    await page.goto(`/channels/${CHANNEL}/tags?tag=${OTHER_TAG_ID}`);
+    await expect(page.getByRole('heading', { name: 'Lieblinge', level: 3 })).toBeVisible();
+    await expect(clearOut(page)).toBeVisible();
+    await expect(playIn(page)).toHaveCount(0);
   });
 
   test('clears a tag out: only the ticked placement goes, the report names ids and revisions, and the tag is no longer played in', async ({
@@ -595,7 +629,7 @@ test.describe('emote tag runs', () => {
     // The protocol of the run is offered, and the reloaded tag is no longer played in.
     await expect(page.getByRole('button', { name: 'Protokoll herunterladen' })).toBeVisible();
     await expect(clearOut(page)).toHaveCount(0);
-    await expect(page.getByText('nicht eingespielt').first()).toBeVisible();
+    await expect(page.getByText(/eingespielt seit/)).toHaveCount(0);
   });
 
   test('clears out a tag whose only placement another active tag still needs: no REMOVE, an immediate report, the tag is no longer played in', async ({
@@ -657,7 +691,7 @@ test.describe('emote tag runs', () => {
     await expect(
       page.getByText('Favoriten ausgeräumt — nichts zu entfernen.').first(),
     ).toBeVisible();
-    await expect(page.getByText('nicht eingespielt').first()).toBeVisible();
+    await expect(page.getByText(/eingespielt seit/)).toHaveCount(0);
     // Nothing reached 7TV, and nothing was reported as deleted.
     expect(sevenTv.removes).toEqual([]);
     expect(sevenTv.adds).toEqual([]);

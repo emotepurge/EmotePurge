@@ -17,6 +17,7 @@ import { EmoteTagService } from '../../core/tags/emote-tag.service';
 import {
   TagRunActions,
   TagRunFeedback,
+  playInFocusTarget,
   settledTagPlayIn,
   settledTagRemoval,
 } from './tag-run-actions';
@@ -39,7 +40,7 @@ function summary(over: Partial<EmoteTagSummary> = {}): EmoteTagSummary {
     id: 7,
     name: 'Stronghold',
     entryCount: 1,
-    inSetCount: 1,
+    inSetCount: 0,
     placedCount: 0,
     active: false,
     activatedAtUtc: null,
@@ -214,6 +215,48 @@ describe('TagRunActions', () => {
     expect(button('Ausräumen')).toBeDefined();
   });
 
+  describe('"Einspielen" exists only while the tag has an emote missing from the set (spec 7.2)', () => {
+    it('is there while at least one entry is not in the set, played in or not', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 2 }));
+      fixture.detectChanges();
+      expect(button('Einspielen')).toBeDefined();
+
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 2, active: true }));
+      fixture.detectChanges();
+      expect(button('Einspielen')).toBeDefined();
+      expect(button('Ausräumen')).toBeDefined();
+    });
+
+    it('is missing, not locked, when nothing is missing — an active tag keeps only "Ausräumen"', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3 }));
+      fixture.detectChanges();
+      expect(button('Einspielen')).toBeUndefined();
+      expect(button('Ausräumen')).toBeUndefined();
+
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3, active: true }));
+      fixture.detectChanges();
+      expect(button('Einspielen')).toBeUndefined();
+      expect(button('Ausräumen')).toBeDefined();
+    });
+
+    it('is missing for a tag without entries, and there again once one is not in the set', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 0, inSetCount: 0 }));
+      fixture.detectChanges();
+      expect(button('Einspielen')).toBeUndefined();
+
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
+      fixture.detectChanges();
+      expect(button('Einspielen')).toBeDefined();
+    });
+
+    it('is offered for a tag with entries when the counts have no set to refer to', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 2, inSetCount: null }));
+      fixture.detectChanges();
+
+      expect(button('Einspielen')).toBeDefined();
+    });
+  });
+
   it('locks both while any 7TV run holds the start, without a reason of its own', () => {
     fixture.componentRef.setInput('tag', summary({ active: true }));
     startLocked.set(true);
@@ -256,6 +299,15 @@ describe('TagRunActions', () => {
       expect(fixture.nativeElement.textContent).not.toContain('anderen Seite');
     });
 
+    it('states no lock where no button stands — nothing missing, not played in', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 2, inSetCount: 2 }));
+      activeRun.set('undo');
+      fixture.detectChanges();
+
+      expect((fixture.nativeElement as HTMLElement).querySelectorAll('button')).toHaveLength(0);
+      expect(fixture.nativeElement.textContent).not.toContain('anderen Seite');
+    });
+
     it('stays silent for an undo on a host that shows the undo itself', () => {
       fixture.componentRef.setInput('unshownRunKinds', []);
       activeRun.set('undo');
@@ -263,6 +315,46 @@ describe('TagRunActions', () => {
 
       expect(button('Einspielen')!.hasAttribute('aria-describedby')).toBe(false);
       expect(fixture.nativeElement.textContent).not.toContain('anderen Seite');
+    });
+  });
+
+  describe('focus when a play-in takes "Einspielen" away', () => {
+    let focusLost: number;
+
+    beforeEach(() => {
+      focusLost = 0;
+      fixture.componentInstance.focusLost.subscribe(() => focusLost++);
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
+      fixture.detectChanges();
+      button('Einspielen')!.click();
+      fixture.detectChanges();
+    });
+
+    it('moves to "Ausräumen" when the tag is played in now', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1, active: true }));
+      fixture.detectChanges();
+
+      expect(button('Einspielen')).toBeUndefined();
+      expect(document.activeElement).toBe(button('Ausräumen'));
+      expect(focusLost).toBe(0);
+    });
+
+    it('hands over to the host when no button is left to take it', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1 }));
+      fixture.detectChanges();
+
+      expect(focusLost).toBe(1);
+    });
+  });
+
+  describe('playInFocusTarget', () => {
+    it('leaves focus alone when the user has already moved it', () => {
+      expect(playInFocusTarget({ focusLost: false, removeShown: true })).toBe('none');
+    });
+
+    it('prefers "Ausräumen", then the host fallback', () => {
+      expect(playInFocusTarget({ focusLost: true, removeShown: true })).toBe('remove');
+      expect(playInFocusTarget({ focusLost: true, removeShown: false })).toBe('fallback');
     });
   });
 

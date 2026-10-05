@@ -1700,6 +1700,8 @@
     "page": {
       "title": "Tags",
       "listLabel": "Tags",
+      "intro": "A tag remembers emotes, even when they are not in the set right now.",
+      "introRuns": "Playing in puts them into the set, clearing out takes them out again.",
       "setLine": "The numbers refer to the active set {{set}}.",
       "noActiveSet": "This channel has no active set, so there are no “in the set” numbers.",
       "empty": {
@@ -1709,8 +1711,8 @@
       },
       "emptySelection": "Choose a tag on the left.",
       "emptyEntries": {
-        "title": "This tag has no emotes yet.",
-        "description": "Mark emotes on the usage grid and assign them with “Assign tag…”."
+        "title": "No emotes yet.",
+        "description": "Select them on the usage page and assign them to this tag."
       },
       "micro": {
         "entries": {
@@ -1725,8 +1727,8 @@
           "one": "{{count}} not in the set",
           "other": "{{count}} not in the set"
         },
-        "active": "played in ({{placed}} placed)",
-        "inactive": "not played in"
+        "active": "played in",
+        "activePlaced": "played in ({{placed}} placed)"
       },
       "currentName": "today: {{name}}",
       "notInSetBadge": "not in the set",
@@ -1741,8 +1743,7 @@
       "tagGone": "This tag has been deleted in the meantime.",
       "state": {
         "active": "played in since {{date}}",
-        "activeUndated": "played in",
-        "inactive": "not played in"
+        "activeUndated": "played in"
       },
       "placedMark": "played in",
       "placedAt": "played in on {{date}}"

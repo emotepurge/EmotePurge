@@ -1,7 +1,7 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrolling';
 import { HttpErrorResponse } from '@angular/common/http';
-import { NgTemplateOutlet } from '@angular/common';
+import { DOCUMENT, NgTemplateOutlet } from '@angular/common';
 import {
   Component,
   DestroyRef,
@@ -121,7 +121,7 @@ export function parseTagParam(raw: string | null): number | null {
  * The channel's tags (spec 9.3/9.4, #201 T-B): a ruled list and, for the chosen tag, its entries as
  * a sprite grid. From `lg` up list and detail stand side by side; below it the page drills down —
  * `?tag=` set means "detail", with an up-link back to the list (§8.6). The choice lives in the URL,
- * so a link from the usage page's filter row (`../tags?tag=<id>`) lands on it.
+ * so a link (`../tags?tag=<id>`, as the list's rows carry it) lands on it.
  *
  * Reading needs usage-stats access (route guard); every write needs channel management, so the
  * write controls are absent rather than locked for everybody else. On a coarse pointer the grid
@@ -160,6 +160,7 @@ export function parseTagParam(raw: string | null): number | null {
 export class TagsPage {
   readonly channelName = input.required<string>();
 
+  private readonly document = inject(DOCUMENT);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly dialog = inject(Dialog);
@@ -703,6 +704,11 @@ export class TagsPage {
 
   protected onTagRunFeedback(feedback: TagRunFeedback): void {
     this.showFeedback(feedback.key, feedback.params);
+  }
+
+  /** The play-in removed its own button under the keyboard user and nothing took its place. */
+  protected focusDetailHeading(): void {
+    this.document.getElementById('tag-detail-title')?.focus();
   }
 
   protected retryTags(): void {
