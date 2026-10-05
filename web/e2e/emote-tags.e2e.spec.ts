@@ -861,6 +861,63 @@ test.describe('emote tag runs', () => {
     await expect(page.getByText(/eingespielt seit/)).toHaveCount(0);
   });
 
+  // Operator decision 2026-10-05: a marking on the tag's grid is what the clear-out proposes.
+  test('clears out only the emotes marked in the grid: the rest is "nicht markiert", and the marking goes once the run starts', async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await mockChannel(page);
+    // The operator's case: a tag that is not played in, all four of its emotes in the set.
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 4, inSetCount: 4 },
+    ]);
+    await mockTagEntries(page, CHANNEL, TAG_ID, [
+      { sevenTvEmoteId: '7tv-1', alias: 'catJAM' },
+      { sevenTvEmoteId: '7tv-2', alias: 'monkaW' },
+      { sevenTvEmoteId: '7tv-3', alias: 'KEKW' },
+      { sevenTvEmoteId: '7tv-4', alias: 'PogU' },
+    ]);
+    await mockTagOperations(page, CHANNEL, TAG_ID);
+    const removal = await mockTagRemoval(page, CHANNEL, TAG_ID, { deactivated: false });
+    const { sevenTv } = await mockRunBackend(page, [
+      { id: '7tv-1', alias: 'catJAM' },
+      { id: '7tv-2', alias: 'monkaW' },
+      { id: '7tv-3', alias: 'KEKW' },
+      { id: '7tv-4', alias: 'PogU' },
+    ]);
+    await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
+    await expect(page.getByRole('heading', { name: 'Favoriten', level: 3 })).toBeVisible();
+
+    const grid = page.getByRole('group', { name: 'Emotes in Favoriten' });
+    await grid.getByRole('button', { name: 'monkaW' }).click();
+    await grid.getByRole('button', { name: 'PogU' }).click();
+    await expect(page.getByText('2 markiert', { exact: true })).toBeVisible();
+
+    await clearOut(page).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Vorgeschlagen sind deine 2 markierten Emotes.')).toBeVisible();
+    await expect(dialog.getByText(/Der Tag ist nicht eingespielt/)).toHaveCount(0);
+    await expect(dialog.locator('input[data-emote-id="7tv-2"]')).toBeChecked();
+    await expect(dialog.locator('input[data-emote-id="7tv-4"]')).toBeChecked();
+    await expect(dialog.locator('input[data-emote-id="7tv-1"]')).not.toBeChecked();
+    await expect(dialog.locator('input[data-emote-id="7tv-3"]')).not.toBeChecked();
+    await expect(dialog.getByText('nicht markiert')).toHaveCount(2);
+    await expect(dialog.getByRole('status')).toHaveText(
+      '2 Emotes werden entfernt, 2 bleiben im Set',
+    );
+    await dialog.getByRole('button', { name: 'Ausräumen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(3_000);
+    await expect(page.getByText('2 gelöscht · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    await expect.poll(() => removal.requests.length).toBe(1);
+    expect([...sevenTv.removes].sort()).toEqual(['7tv-2', '7tv-4']);
+    expect(sevenTv.adds).toEqual([]);
+    // The marking went with the started run.
+    await expect(page.getByText('2 markiert', { exact: true })).toHaveCount(0);
+    await expect(grid.locator('[aria-pressed="true"]')).toHaveCount(0);
+  });
+
   test('an incompletely read set blocks both the play-in and the clear-out without a write', async ({
     page,
   }) => {
