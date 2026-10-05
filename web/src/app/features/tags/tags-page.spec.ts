@@ -1,4 +1,5 @@
 import { Dialog } from '@angular/cdk/dialog';
+import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, ElementRef, signal, WritableSignal } from '@angular/core';
@@ -517,6 +518,81 @@ describe('TagsPage', () => {
       await settle(harness);
     }
 
+    it('plays the hovered animated cell, and nothing while no cell is hovered or focused', async () => {
+      const { harness } = await openDetail([animated('e1'), animated('e2')]);
+      expect(playing(harness)).toEqual([]);
+
+      await fire(harness, cell(harness, 'alias-e1'), 'mouseenter');
+
+      expect(playing(harness)).toEqual(['alias-e1']);
+    });
+
+    it('mounts no animation for a hovered still', async () => {
+      const { harness } = await openDetail([entry('e1'), animated('e2')]);
+
+      await fire(harness, cell(harness, 'alias-e1'), 'mouseenter');
+
+      expect(playing(harness)).toEqual([]);
+    });
+
+    it('lets the pointer win over focus, and hands playback back to the focused cell when it leaves', async () => {
+      const { harness } = await openDetail([animated('e1'), animated('e2')]);
+      cell(harness, 'alias-e1').focus();
+      await settle(harness);
+      expect(playing(harness)).toEqual(['alias-e1']);
+
+      await fire(harness, cell(harness, 'alias-e2'), 'mouseenter');
+      expect(playing(harness)).toEqual(['alias-e2']);
+
+      await fire(harness, cell(harness, 'alias-e2'), 'mouseleave');
+      expect(playing(harness)).toEqual(['alias-e1']);
+    });
+
+    it('ends a key only by its own cell: another cell leaving or blurring changes nothing', async () => {
+      const { harness } = await openDetail([animated('e1'), animated('e2')]);
+      await fire(harness, cell(harness, 'alias-e1'), 'mouseenter');
+
+      await fire(harness, cell(harness, 'alias-e2'), 'mouseleave');
+      await fire(harness, cell(harness, 'alias-e2'), 'blur');
+
+      expect(playing(harness)).toEqual(['alias-e1']);
+
+      await fire(harness, cell(harness, 'alias-e1'), 'mouseleave');
+      expect(playing(harness)).toEqual([]);
+    });
+
+    it('plays nothing on a coarse pointer', async () => {
+      isCoarse.set(true);
+      const { harness } = await openDetail([animated('e1'), animated('e2')]);
+
+      await fire(harness, cell(harness, 'alias-e1'), 'mouseenter');
+
+      expect(playing(harness)).toEqual([]);
+    });
+
+    it('drops a key whose entry left the grid, so the cell does not play again when it returns', async () => {
+      const { harness } = await openDetail([animated('e1'), animated('e2')]);
+      await fire(harness, cell(harness, 'alias-e1'), 'mouseenter');
+      expect(playing(harness)).toEqual(['alias-e1']);
+
+      // Another tag without e1: its cell goes without a mouseleave.
+      await harness.navigateByUrl('/channels/a/tags?tag=2');
+      await settle(harness);
+      expectEntries(2).flush({ emoteSetId: 'set-a', isActiveSet: true, entries: [animated('e2')] });
+      await settle(harness);
+      await harness.navigateByUrl('/channels/a/tags?tag=1');
+      await settle(harness);
+      expectEntries(1).flush({
+        emoteSetId: 'set-a',
+        isActiveSet: true,
+        entries: [animated('e1'), animated('e2')],
+      });
+      await settle(harness);
+
+      expect(cells(harness).map((each) => each.getAttribute('aria-label'))).toContain('alias-e1');
+      expect(playing(harness)).toEqual([]);
+    });
+
     describe('in the virtualized grid, which scrolls with the window', () => {
       const MANY = Array.from({ length: VIRTUALIZE_ABOVE + 1 }, (_, i) => animated(`v${i}`));
 
@@ -546,6 +622,39 @@ describe('TagsPage', () => {
         await settle(harness);
         await fire(harness, document, 'scroll');
         expect(playing(harness)).toEqual(['alias-v0']);
+      });
+
+      it("drops a focused cell's key once its row leaves the rendered range", async () => {
+        const { harness } = await openVirtualized();
+        const viewport = harness.fixture.debugElement.query(
+          By.directive(CdkVirtualScrollViewport),
+        ).componentInstance as CdkVirtualScrollViewport;
+        cell(harness, 'alias-v0').focus();
+        await settle(harness);
+        expect(playing(harness)).toEqual(['alias-v0']);
+
+        // jsdom has no layout: a scroll is the offset the viewport measures plus a scroll event,
+        // and `checkViewportSize()` runs the range recomputation the CDK does on a frame.
+        let offset = 0;
+        vi.spyOn(viewport, 'measureScrollOffset').mockImplementation(() => offset);
+        const scrollTo = async (to: number) => {
+          offset = to;
+          document.dispatchEvent(new Event('scroll'));
+          viewport.checkViewportSize();
+          for (let attempt = 0; attempt < 5; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            await settle(harness);
+          }
+        };
+        const rendered = () =>
+          cells(harness).some((each) => each.getAttribute('aria-label') === 'alias-v0');
+
+        await scrollTo(100_000);
+        expect(rendered()).toBe(false);
+
+        await scrollTo(0);
+        expect(rendered()).toBe(true);
+        expect(playing(harness)).toEqual([]);
       });
     });
   });
