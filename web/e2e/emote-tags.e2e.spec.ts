@@ -1142,3 +1142,44 @@ test.describe('emote tag runs', () => {
     expect(syncImported).toEqual([]);
   });
 });
+
+// Final review O3 ("keine Layout-Sprünge"): the first click on the grid adds a count to both set
+// buttons in the tag header ("Ins Set holen (0)", "Aus dem Set entfernen (1)"). If that made the
+// header wrap, the grid would move down under the pointer on the very click that marks it. Measured
+// at the two-column widths where the header is tightest, with a short, a middling and a maximal
+// (40 characters) tag name — the first measurement found the middling one wrapping at 1024 px.
+test.describe('emote tag header while marking', () => {
+  for (const width of [1024, 1280]) {
+    for (const name of ['Halo', 'Halloween 2026', 'Highlights aus dem Herbst-Stream 2026 ab']) {
+      test(`keeps the grid where it is across the first marking click at ${width} px, tag "${name}"`, async ({
+        page,
+      }) => {
+        await page.setViewportSize({ width, height: 900 });
+        await mockChannel(page);
+        await mockTags(page, CHANNEL, [{ id: TAG_ID, name, entryCount: 3, inSetCount: 2 }]);
+        await mockTagEntries(page, CHANNEL, TAG_ID, [
+          { sevenTvEmoteId: '7tv-1', alias: 'catJAM' },
+          { sevenTvEmoteId: '7tv-2', alias: 'monkaW' },
+          { sevenTvEmoteId: '7tv-3', alias: 'KEKW', inSet: false },
+        ]);
+        await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
+        await expect(page.getByRole('heading', { name, level: 3 })).toBeVisible();
+        // Both header groups stand: the set actions and the tag actions.
+        await expect(playIn(page)).toBeVisible();
+        await expect(clearOut(page)).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Tag löschen' })).toBeVisible();
+
+        const grid = page.getByRole('group', { name: `Emotes in ${name}` });
+        const gridTop = () =>
+          grid.evaluate((element) => element.getBoundingClientRect().top + window.scrollY);
+        const before = await gridTop();
+
+        await grid.getByRole('button', { name: 'catJAM' }).click();
+        await expect(page.getByRole('button', { name: 'Aus dem Set entfernen (1)' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Ins Set holen (0)' })).toBeVisible();
+
+        expect(await gridTop()).toBe(before);
+      });
+    }
+  }
+});

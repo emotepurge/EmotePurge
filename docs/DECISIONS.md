@@ -1038,6 +1038,26 @@ placements). UI-Designsprache §7.5 no longer speaks of "an emote that was in th
 `web/public/i18n/en.json` · the specs of the first two · `web/e2e/emote-tags.e2e.spec.ts` ·
 `docs/UI-Designsprache.md` (§7.5)
 
+**The tag header's actions take their own line while the run buttons are shown (2026-10-05, final review
+O3).** The set buttons gained counts with the first click on the grid ("Ins Set holen (0)", "Aus dem Set
+entfernen (1)", about +41 px at one digit). The header row placed the heading and both action groups on one
+line where they fit, so a name whose heading fit before the click but not after it wrapped the actions onto
+a second line and pushed the grid down by one button row under the pointer — the "keine Layout-Sprünge"
+rule. Measured at the lg two-column layout: the header row is 672 px wide at 1024 px, the actions 526 px
+before and 567 px after the click, so headings between about 90 and 130 px (roughly 11–16 characters,
+"Halloween 2026") jumped; at 1280 px (928 px row) the band moves to about 345–386 px. A short name ("Halo")
+stayed put, which is why the first measurement with it was green. Reserving the count's width was the
+alternative; it leaves visibly padded labels without a marking and still grows at three digits. Now, whenever
+`tagRunsShown()`, the actions container takes the full row (`basis-full`) and stands under the heading; its
+height no longer depends on the labels' width as long as the action row itself fits (it does from about
+650 px of detail width with two-digit counts). Without the run buttons (runs off, a coarse pointer) the
+labels never change and rename/delete stay beside the heading (`ml-auto`). The e2e case "emote tag header
+while marking" pins the grid's top across the first marking click at 1024 and 1280 px for a short, a
+middling and a 40-character name.
+
+**Betrifft (header actions on their own line):** `web/src/app/features/tags/tags-page.html` ·
+`web/e2e/emote-tags.e2e.spec.ts` · `docs/UI-Designsprache.md` (§8.7)
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

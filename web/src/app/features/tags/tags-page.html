@@ -202,8 +202,19 @@
                      compares against. It also gets the grid's marking: a clear-out started with one
                      proposes the marked emotes, a play-in adds only the marked ones that are missing,
                      and the marking goes once either went ahead. -->
+                <!-- With the run buttons, the actions always take a line of their own under the
+                     heading (final review O3): their labels gain a count with the first click on
+                     the grid, and sharing the heading's line, that growth wrapped the actions onto a
+                     second line at some name lengths and moved the grid under the pointer. On their
+                     own line the header's height no longer depends on the labels' width. Without
+                     the run buttons the labels never change, and rename/delete stay beside it. -->
                 @if (tagRunsShown() || canManage()) {
-                  <div class="ml-auto flex flex-wrap items-start gap-x-6 gap-y-2">
+                  <div
+                    [class]="
+                      'flex flex-wrap items-start gap-x-6 gap-y-2 ' +
+                      (tagRunsShown() ? 'basis-full' : 'ml-auto')
+                    "
+                  >
                     @if (tagRunsShown()) {
                       <app-tag-run-actions
                         [channelName]="channelName()"
