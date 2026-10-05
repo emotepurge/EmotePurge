@@ -300,6 +300,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
             channel.ChannelName, "set-2", ("7tv-new", "NewMember", "https://cdn.7tv.app/emote/new/2x.webp"));
         var emoteSetListService = SubstituteEmoteSetListService("set-2");
         var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
+        var before = DateTime.UtcNow;
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(
@@ -312,6 +313,9 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         Assert.Equal("7tv-new", emote.SevenTvEmoteId);
         Assert.True(emote.IsArchived);
         Assert.Null(emote.ArchivedAt);
+        // T-C (spec E34): stamped as an entry, so a later REST post-check does not read the row as
+        // "unknown, older than the window" right after a play-in whose PUSH was missed.
+        Assert.True(emote.LastEnteredSetAtUtc >= before.AddMilliseconds(-1));
 
         var ballot = Assert.Single(
             await db.VoteSessionEmotes.AsNoTracking().Where(se => se.VoteSessionId == session!.Id).ToListAsync());
@@ -331,6 +335,8 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var existing = await SeedEmoteAsync(db, channel.Id, "StaleName");
         existing.SevenTvEmoteId = "7tv-existing";
         existing.ImageUrl = "https://cdn.7tv.app/emote/stale/2x.webp";
+        var enteredAt = new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
+        existing.LastEnteredSetAtUtc = enteredAt;
         await db.SaveChangesAsync();
         var foreignEmoteSetService = SubstituteForeignEmoteSetService(
             channel.ChannelName, "set-3", ("7tv-existing", "LiveName", "https://cdn.7tv.app/emote/live/2x.webp"));
@@ -347,6 +353,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var stored = await db.Emotes.AsNoTracking().SingleAsync(e => e.Id == existing.Id);
         Assert.Equal("StaleName", stored.Name);
         Assert.False(stored.IsArchived);
+        Assert.Equal(enteredAt, stored.LastEnteredSetAtUtc);
         Assert.Equal("https://cdn.7tv.app/emote/stale/2x.webp", stored.ImageUrl);
 
         var ballot = Assert.Single(

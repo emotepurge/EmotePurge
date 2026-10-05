@@ -262,6 +262,7 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
         var now = DateTime.UtcNow;
         var channels = new List<SyncInSetChannelResultDto>(hits.Count);
         var channelEntryWritten = false;
+        var leaves = new List<(string ChannelId, List<string> SevenTvEmoteIds)>();
         foreach (var hit in hits)
         {
             var found = rows.Where(e => e.ChannelId == hit.Id).ToList();
@@ -271,6 +272,21 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
                 emote.IsArchived = archive;
                 emote.ArchivedAt = archive ? now : null;
                 emote.LastSyncedAt = now;
+                if (!archive)
+                {
+                    // E34: a restore is a fresh entry into the set, like the sync's un-archive. An
+                    // existing leave observation stays: it is history, and the read-time rule compares
+                    // it against registrations, not against this stamp.
+                    emote.LastEnteredSetAtUtc = now;
+                }
+            }
+
+            // Spec 5.5 rule 5 (c): our own set-centric delete report is always a credible leave, for
+            // every found row of the hit channel — an already archived one too, because the report is
+            // what we know, whatever an earlier sync decided. Ids without a row have no channel fact.
+            if (archive && found.Count > 0)
+            {
+                leaves.Add((hit.Id, found.ConvertAll(e => e.SevenTvEmoteId)));
             }
 
             // Step 5, channel entries (spec 5.5): byte-identical with the set-scoped active branch, so
@@ -326,8 +342,20 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
                     : BuildOwnerChannelPaperDetails(dedupedIds, emoteSetId, unresolved, ownerChannelIsActiveHere));
         }
 
-        // Step 6: rows and audit entries in one transaction.
+        // Step 6: rows, leave observations and audit entries in one transaction. Explicit, because the
+        // observation upsert is raw SQL outside SaveChangesAsync's implicit transaction. Observation
+        // rows first, then the emote rows — the same order as the worker's sync, which writes the same
+        // two tables; neither side touches a tag table, so no lock cycle (spec 5.5 rule 6). A channel
+        // purged meanwhile fails the upsert with 23503 and surfaces as a 500, like any database
+        // failure here; the browser retries the report.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        foreach (var (channelId, leftIds) in leaves)
+        {
+            await EmoteSetLeaveObservations.RecordAsync(db, channelId, emoteSetId, leftIds, now, cancellationToken);
+        }
+
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         return new InSetOutcome(dedupedIds.Count, channels, unresolved);
     }

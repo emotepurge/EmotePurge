@@ -19,7 +19,15 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTagPlacements*.cs` ·
 `src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` ·
 `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs`
+`src/EmotePurge.Infrastructure/Persistence/EmoteSetLeaveObservations.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceLeaveObservationTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs`
 
 Tags (T-B) only name emotes. T-C lets a tag be played into a set and cleared out of it again, and
 remembers which emotes a tag put there, so that clearing removes exactly those and nothing a person
@@ -69,6 +77,55 @@ a missing observation means "no leave seen", so the placement stays valid. Unkno
 `SevenTvEmoteIdValidation.MaxLength`. 7TV ids, set ids included, are 26-character ULIDs, so the spec's
 24 would have been a write failure waiting for the first real set; the width follows the earlier
 decision for `EmoteTagEntries.SevenTvEmoteId`.
+
+#### Sync observations (Task 2)
+
+The 7TV sync now writes leave observations and entry stamps. It deletes no placement and takes no
+tag table. This changes the **worker's behaviour** without touching a worker source file: the code
+lives in `EmotePurge.Infrastructure`, so the worker image has to be rebuilt and deployed with the Api.
+
+- **Where a leave is credible.** An EventAPI delta records every id in `PulledIds`. It does so whether
+  the row exists, is archived already or is being archived now, and it does so before the `NoChange`
+  guard, so the outcome stays `NoChange`. Our own set-centric delete report
+  (`EmoteService.MarkInSetAsync`, delete direction) records every found row of every hit channel,
+  archived ones included. The REST full sync records a leave only for a row whose `LastEnteredSetAtUtc`
+  is unknown or older than `TagLeaveCredibilityWindow` (30 min, a constant in `SevenTvSyncService`).
+  7TV's REST cache lags up to 30 min (SevenTV/SevenTV#81), so an earlier "missing" is not believed.
+  A row the REST sync archived inside the window is looked at again by a **post-check**. Once the
+  window is over, an already archived, non-live row gets one observation, but only if no observation
+  from after its last entry exists. It therefore gets one observation, not one per resync. The leave
+  is always recorded against the set it was seen in: the channel's active set (after a set switch,
+  the new one), or the report's set.
+- **Entry stamp.** `LastEnteredSetAtUtc` is set when the sync creates a row, when it un-archives one
+  (rename alone does not count) and on a restore report. The vote-session upsert also stamps the rows
+  it inserts. Those rows are inserted archived for any ballot set, not because the set holds them now.
+  The stamp stops the post-check from writing an observation right after a play-in whose PUSH was
+  missed.
+- **Atomic upsert, not the change tracker.** `EmoteSetLeaveObservations.RecordAsync` is one
+  `INSERT … ON CONFLICT … DO UPDATE SET "LastObservedAtUtc" = GREATEST(…)`. Api and worker write the
+  same rows from separate contexts. A load-then-update upsert could commit an older stamp after a
+  newer one and turn the observation back, and two first inserts would collide on the key. The ids
+  are filtered, deduplicated and sorted first. Filtered means that any id or set id failing the 1–32
+  alphanumeric rule (`SevenTvEmoteIdValidation`) is dropped silently, so a malformed 7TV value can
+  never fail a channel's sync with 22001. Deduplication is needed because a delta can name an id twice.
+  Sorting gives both writers the same lock order.
+- **An explicit transaction per save attempt**, because a raw statement does not join
+  `SaveChangesAsync`'s implicit one, and the observation must commit with the archive. This deviates
+  from the spec's statement in 3.1 that the sync takes no explicit transaction. The transaction adds
+  no lock the writes would not take anyway. Placement:
+  - In the full sync, the transaction opens immediately before `ReconcileAsync`, after
+    `RecordObservedSetAsync`, which commits a set switch in a transaction of its own (EF cannot nest
+    them). The single E10 retry runs with a new transaction.
+  - In the delta path, it opens between the pulled loop and the `NoChange` guard.
+  - In `MarkInSetAsync`, it wraps the save.
+
+  Inside the transaction the order is: observation rows first, then the emote rows and the channel
+  row. A tag report locks the channel row and only *reads* observations, so the sync may wait for a
+  report, but never the other way round.
+- **A vanished channel.** The raw upsert fails on the channel foreign key with a bare
+  `PostgresException` (23503), not a `DbUpdateException`. The full sync treats that like a vanished
+  row and abandons the attempt. The delta path and the Api let it propagate, as they already did for
+  the save's FK failure.
 
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 

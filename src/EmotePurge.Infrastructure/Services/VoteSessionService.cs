@@ -475,9 +475,15 @@ public class VoteSessionService(
         var imageUrls = sevenTvEmoteIds.Select(id => liveMembers[id].ImageUrl).ToArray();
         var now = DateTime.UtcNow;
 
+        // LastEnteredSetAtUtc = now on a new row (T-C, spec E34). Not because the row is in the active
+        // set — it is inserted archived for any ballot set. Without a stamp it would read as "unknown,
+        // older than the credibility window", and if a tag later plays that emote in and the PUSH
+        // dispatch is missed, the next stale REST resync's post-check would write a leave observation
+        // right away and invalidate the fresh placement. The stamp holds that off for one window. An
+        // existing row is left alone (DO NOTHING), its stamp included.
         const string sql = """
-            INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "ArchivedAt", "FirstSeenAt", "LastSyncedAt")
-            SELECT input."Id", input."SevenTvEmoteId", @channelId, input."Name", input."ImageUrl", true, NULL, NULL, @now
+            INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "ArchivedAt", "FirstSeenAt", "LastSyncedAt", "LastEnteredSetAtUtc")
+            SELECT input."Id", input."SevenTvEmoteId", @channelId, input."Name", input."ImageUrl", true, NULL, NULL, @now, @now
             FROM UNNEST(@ids, @sevenTvEmoteIds, @names, @imageUrls) AS input("Id", "SevenTvEmoteId", "Name", "ImageUrl")
             ON CONFLICT ("ChannelId", "SevenTvEmoteId") DO NOTHING;
             """;
