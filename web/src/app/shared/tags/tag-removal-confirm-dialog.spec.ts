@@ -9,9 +9,9 @@ import { EmoteSetWarning } from '../../core/emotes/emote-admin.service';
 import {
   TagRemovalConfirmDialogData,
   TagRemovalConfirmResult,
-  TagRemovalDialogRow,
   openTagRemovalConfirmDialog,
 } from './tag-removal-confirm-dialog';
+import type { TagRemovalRow } from './tag-removal';
 
 const DE = {
   common: { cancel: 'Abbrechen' },
@@ -45,7 +45,7 @@ const DE = {
   },
 };
 
-function row(id: string, over: Partial<TagRemovalDialogRow> = {}): TagRemovalDialogRow {
+function row(id: string, over: Partial<TagRemovalRow> = {}): TagRemovalRow {
   return {
     sevenTvEmoteId: id,
     aliases: [`name-${id}`],
@@ -92,7 +92,7 @@ describe('TagRemovalConfirmDialog', () => {
   });
 
   function open(
-    rows: TagRemovalDialogRow[],
+    rows: TagRemovalRow[],
     over: Partial<TagRemovalConfirmDialogData> = {},
   ): HTMLElement {
     const data: TagRemovalConfirmDialogData = {

@@ -31,25 +31,13 @@ export const TAG_REMOVAL_VIRTUAL_THRESHOLD = 50;
  *  and a row carries two lines (alias, then date or reason). */
 const ITEM_HEIGHT_PX = 52;
 
-/** A proposal row plus the two display fields the dialog needs. Declared here until Task 10's row
- *  carries them itself (then this collapses to `TagRemovalRow`); Task 12 maps rows into it. */
-export type TagRemovalDialogRow = TagRemovalRow & {
-  /** What the row is called: never empty (entry alias / current name, else the set's default name). */
-  displayName: string;
-  /** Sprite still; `null` shows the empty plate. */
-  imageUrl: string | null;
-};
-export type TagRemovalDialogProposal = Omit<TagRemovalProposal, 'rows'> & {
-  rows: TagRemovalDialogRow[];
-};
-
 export interface TagRemovalConfirmDialogData {
   tagName: string;
   /** The set the run deletes from, already named (the same convention as the delete dialog). */
   setName: string;
   /** Gates the "this set is not currently active" sentence. */
   isActiveSet: boolean;
-  proposal: TagRemovalDialogProposal;
+  proposal: TagRemovalProposal;
   /** Live, like the delete dialog's: the check finishes while the dialog may already be open. */
   warning: Signal<EmoteSetWarning | null>;
   warningLoading: Signal<boolean>;
@@ -63,7 +51,7 @@ export interface TagRemovalConfirmResult {
 
 type ListItem =
   | { kind: 'heading'; id: string; labelKey: string }
-  | { kind: 'row'; id: string; row: TagRemovalDialogRow; checked: boolean };
+  | { kind: 'row'; id: string; row: TagRemovalRow; checked: boolean };
 
 /**
  * Preview and confirmation of a tag clear-out in one dialog (spec E19) — the last screen before
@@ -383,7 +371,7 @@ export class TagRemovalConfirmDialog {
     return tags.map((t) => t.name).join(', ');
   }
 
-  private isChecked(row: TagRemovalDialogRow): boolean {
+  private isChecked(row: TagRemovalRow): boolean {
     return row.checked !== this.flipped().has(row.sevenTvEmoteId);
   }
 }

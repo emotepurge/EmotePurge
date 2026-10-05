@@ -2,7 +2,7 @@ import type { ImportRow, ImportSource } from '../../core/seven-tv/import-source'
 import type { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import type { EmoteTagEntry } from '../../core/tags/emote-tag.model';
 
-/**
+/*
  * The pure half of a tag play-in (#201 T-C, spec 7.1/4): which of a tag's entries still have to be
  * added to the set, and which the set already holds.
  *

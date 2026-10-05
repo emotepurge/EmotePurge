@@ -5,7 +5,7 @@ import type {
   TagPlacementSnapshotEntry,
 } from '../../core/tags/emote-tag.model';
 
-/**
+/*
  * The pure half of a tag clear-out (#201 T-C, spec 7.2/5): what the confirmation dialog proposes.
  *
  * - An id counts as in the set when `aliasesById.has(id) || aliaslessIds.has(id)` — also when it
@@ -26,6 +26,14 @@ export type TagRemovalReason = 'placed' | 'heldBy' | 'alreadyPresent';
 export interface TagRemovalRow {
   sevenTvEmoteId: string;
   aliases: string[];
+  /**
+   * What the row is called, never empty. Rule: the entry's current alias in the live set (the
+   * first, if several); else the entry's current name, else the alias it was tagged under; else the
+   * set's default name for the id (`live.defaultNameById`); else the id itself.
+   */
+  displayName: string;
+  /** The entry's image (snapshot from tagging); `null` when it has none — the empty plate. */
+  imageUrl: string | null;
   checked: boolean;
   reason: TagRemovalReason;
   /** The tags that still need the emote; empty unless `reason` is `heldBy`. */
@@ -57,25 +65,38 @@ export function proposeTagRemoval(
   for (const entry of entries) {
     const id = entry.sevenTvEmoteId;
     const inLive = live.aliasesById.has(id) || live.aliaslessIds.has(id);
-    if (entry.placedByThisTag && entry.placementOperationId !== null) {
-      snapshot.push({ sevenTvEmoteId: id, placementOperationId: entry.placementOperationId });
+    // An own placement without a revision counts as not own — in the snapshot, in `ownInLiveIds` and
+    // in the row alike, so the lists agree. The server only reports valid placements, which always
+    // carry a revision, so this is unreachable by contract; it fails safe (proposes less).
+    const isOwn = entry.placedByThisTag && entry.placementOperationId !== null;
+    if (isOwn) {
+      snapshot.push({ sevenTvEmoteId: id, placementOperationId: entry.placementOperationId! });
     }
     if (!inLive) {
       notInSetCount++;
       continue;
     }
-    if (entry.placedByThisTag) {
+    if (isOwn) {
       ownInLiveIds.push(id);
     }
-    rows.push(toRow(entry, live.aliasesById.get(id) ?? []));
+    rows.push(toRow(entry, isOwn, live));
   }
 
   return { rows, notInSetCount, snapshot, ownInLiveIds };
 }
 
-function toRow(entry: EmoteTagEntry, aliases: string[]): TagRemovalRow {
-  const base = { sevenTvEmoteId: entry.sevenTvEmoteId, aliases: [...aliases] };
-  if (entry.placedByThisTag) {
+function toRow(entry: EmoteTagEntry, isOwn: boolean, live: SevenTvSetEntries): TagRemovalRow {
+  const id = entry.sevenTvEmoteId;
+  const aliases = live.aliasesById.get(id) ?? [];
+  const displayName =
+    aliases[0] || entry.currentName || entry.alias || live.defaultNameById.get(id) || id;
+  const base = {
+    sevenTvEmoteId: id,
+    aliases: [...aliases],
+    displayName,
+    imageUrl: entry.imageUrl || null,
+  };
+  if (isOwn) {
     const held = entry.heldByActiveTags.length > 0;
     return {
       ...base,

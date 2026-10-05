@@ -29,10 +29,15 @@ function own(id: string, patch: Partial<EmoteTagEntry> = {}): EmoteTagEntry {
   });
 }
 
-function live(map: Record<string, string[]>, aliasless: string[] = []): SevenTvSetEntries {
+function live(
+  map: Record<string, string[]>,
+  aliasless: string[] = [],
+  defaults: Record<string, string> = {},
+): SevenTvSetEntries {
   return {
     aliasesById: new Map(Object.entries(map)),
     aliaslessIds: new Set(aliasless),
+    defaultNameById: new Map(Object.entries(defaults)),
   } as unknown as SevenTvSetEntries;
 }
 
@@ -116,5 +121,59 @@ describe('proposeTagRemoval', () => {
       live({ a: ['x'], b: ['y'], d: ['z'] }),
     );
     expect(p.ownInLiveIds).toEqual(['a', 'b']);
+  });
+
+  it('boundary: not own, held by an active tag but placed by nobody -> alreadyPresent', () => {
+    const [row] = proposeTagRemoval(
+      [entry('a', { heldByActiveTags: [T2] })],
+      live({ a: ['x'] }),
+    ).rows;
+    expect(row).toMatchObject({ checked: false, reason: 'alreadyPresent', heldBy: [] });
+  });
+
+  it('boundary: own, another tag placed it too but none holds it -> checked, placed', () => {
+    const [row] = proposeTagRemoval(
+      [own('a', { placedByOtherTags: [T2] })],
+      live({ a: ['x'] }),
+    ).rows;
+    expect(row).toMatchObject({ checked: true, reason: 'placed', heldBy: [] });
+  });
+
+  it('E28: inSet true without the live read gives no row, only the count', () => {
+    const p = proposeTagRemoval([entry('a', { inSet: true })], live({}));
+    expect(p.rows).toEqual([]);
+    expect(p.notInSetCount).toBe(1);
+  });
+
+  it('an own placement without a revision counts as not own in snapshot and ownInLiveIds', () => {
+    const p = proposeTagRemoval([own('a', { placementOperationId: null })], live({ a: ['x'] }));
+    expect(p.snapshot).toEqual([]);
+    expect(p.ownInLiveIds).toEqual([]);
+    expect(p.rows[0]).toMatchObject({ checked: false, reason: 'alreadyPresent' });
+  });
+
+  describe('display name and image', () => {
+    it('uses the live alias, and the entry image (empty -> null)', () => {
+      const [a, b] = proposeTagRemoval(
+        [own('a', { imageUrl: 'http://img/a' }), own('b')],
+        live({ a: ['liveName'], b: ['y'] }),
+      ).rows;
+      expect(a).toMatchObject({ displayName: 'liveName', imageUrl: 'http://img/a' });
+      expect(b.imageUrl).toBeNull();
+    });
+
+    it('aliasless: falls back to the entry name, then the set default name', () => {
+      const [a, b] = proposeTagRemoval(
+        [own('a', { currentName: 'now' }), own('b', { alias: '' })],
+        live({}, ['a', 'b'], { b: 'DefaultB' }),
+      ).rows;
+      expect(a.displayName).toBe('now');
+      expect(b.displayName).toBe('DefaultB');
+    });
+
+    it('unknown everywhere: the id itself', () => {
+      const [row] = proposeTagRemoval([own('zz', { alias: '' })], live({}, ['zz'])).rows;
+      expect(row.displayName).toBe('zz');
+    });
   });
 });
