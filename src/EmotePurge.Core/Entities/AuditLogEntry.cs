@@ -38,6 +38,8 @@ public static class AuditActions
     public const string TagCreate = "tag.create";
     public const string TagRename = "tag.rename";
     public const string TagDelete = "tag.delete";
+    public const string TagPlayedIn = "tag.playedIn";
+    public const string TagRemoved = "tag.removed";
 }
 
 /// <summary>

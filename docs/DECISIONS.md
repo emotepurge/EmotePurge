@@ -10,6 +10,66 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-05 — Tags gain placements: play-in and removal runs, keyed against leave observations (#201 T-C)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Entities/Emote.cs` ·
+`src/EmotePurge.Core/Entities/EmoteSetLeaveObservation.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagActivation.cs` · `src/EmotePurge.Core/Entities/EmoteTagOperation.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagPlacement.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTagPlacements*.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs`
+
+Tags (T-B) only name emotes. T-C lets a tag be played into a set and cleared out of it again, and
+remembers which emotes a tag put there, so that clearing removes exactly those and nothing a person
+added by hand. This entry is extended by the later T-C tasks; the part below is the data model.
+
+#### Data model (Task 1)
+
+The purely additive migration `AddEmoteTagPlacements` adds four tables and one nullable column:
+
+- `EmoteTagPlacements(TagId, SevenTvEmoteId, SevenTvEmoteSetId, PlacedAtUtc, OperationId)` — "this
+  tag brought this emote into this set". Primary key `(TagId, SevenTvEmoteId, SevenTvEmoteSetId)`,
+  index `(SevenTvEmoteSetId, SevenTvEmoteId)`. `OperationId` is the placement's revision: the
+  operation that last created or transferred it.
+- `EmoteTagActivations(TagId, SevenTvEmoteSetId, ActivatedAtUtc, OperationId)` — "tag T counts as
+  played in to set S"; the row's existence is the state.
+- `EmoteTagOperations(OperationId, TagId, Kind, SevenTvEmoteSetId, RegisteredAtUtc, AppliedAtUtc)` —
+  a run registered by the browser before it touches 7TV; `Kind` is `playIn` or `removal`
+  (`EmoteTagOperationKind`), `RegisteredAtUtc` is the server's clock. Index `(TagId, SevenTvEmoteSetId)`.
+- `EmoteSetLeaveObservations(ChannelId, SevenTvEmoteId, SevenTvEmoteSetId, LastObservedAtUtc)` —
+  "last time we credibly saw this emote leave this set". Primary key is the whole triple.
+- `Emotes.LastEnteredSetAtUtc` (nullable) — when the row last began as a member of the active set.
+  `null` on existing rows means unknown, which reads as "older than any window".
+- Audit actions `tag.playedIn` and `tag.removed` (`AuditActions.TagPlayedIn`, `TagRemoved`).
+
+**Placements have a composite foreign key to the tag entry, with cascade.** `(TagId, SevenTvEmoteId)`
+references `EmoteTagEntries`, next to the plain cascade from the tag. The rule "no placement without an
+entry, and taking an emote out of a tag takes its placements in every set with it" is therefore held by
+the database, not by the locking discipline of whichever caller writes (a report that read the entry
+under the channel lock could otherwise write an orphan after a parallel removal). The two cascade paths
+from a tag (direct, and via the entry) are legal in Postgres. This reverses the spec's earlier
+"no FK to the entry" stance. **There is deliberately no foreign key to the operation:** it would force a
+delete order the sweep does not need, and operations live exactly as long as their tag anyway.
+
+**Observations are channel-level, not tag-level.** The sync cannot know which tag report is still on
+its way, so it writes an observation for every credible leave whether or not the channel has tags; the
+row has to exist when a late report arrives. It therefore belongs to the channel (cascade, falls with
+both purges) and not to a tag. It is an upsert on a bounded key (emotes times visited sets), so it needs
+no pruning of its own. No FK to `Emote`: the observation outlives the grid row, same stance as the
+entries (rule 8).
+
+**Whether a placement still holds is decided when it is read**, by comparing the observation against
+the registration time of the placement's operation — the sync never deletes a placement. `null` means
+unknown and is never guessed: an unknown `LastEnteredSetAtUtc` makes a REST-observed leave credible,
+a missing observation means "no leave seen", so the placement stays valid. Unknowns therefore err towards offering more to remove, not less; the one known gap is a remove-and-re-add that no observation has recorded (spec 13.1 R1), where a stale placement keeps being offered.
+
+**All id columns of the four tables are `varchar(32)`** — set ids and emote ids alike, matching
+`SevenTvEmoteIdValidation.MaxLength`. 7TV ids, set ids included, are 26-character ULIDs, so the spec's
+24 would have been a write failure waiting for the first real set; the width follows the earlier
+decision for `EmoteTagEntries.SevenTvEmoteId`.
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

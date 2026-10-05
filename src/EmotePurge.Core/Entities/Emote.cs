@@ -26,6 +26,11 @@ public class Emote
     public DateTime? FirstSeenAt { get; set; }
     public DateTime LastSyncedAt { get; set; } = DateTime.UtcNow;
 
+    // When the row last began as a member of the active set — stamped on creation and on every
+    // un-archive, never cleared. Null on rows that predate this column means "unknown", which reads
+    // as "older than any credibility window", so a REST-observed leave of such a row is trusted.
+    public DateTime? LastEnteredSetAtUtc { get; set; }
+
     public Channel Channel { get; set; } = null!;
     public ICollection<UsageStat> UsageStats { get; set; } = new List<UsageStat>();
 }

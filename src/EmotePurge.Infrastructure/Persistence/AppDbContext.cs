@@ -12,6 +12,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ChannelEmoteSetObservation> ChannelEmoteSetObservations => Set<ChannelEmoteSetObservation>();
     public DbSet<EmoteTag> EmoteTags => Set<EmoteTag>();
     public DbSet<EmoteTagEntry> EmoteTagEntries => Set<EmoteTagEntry>();
+    public DbSet<EmoteTagPlacement> EmoteTagPlacements => Set<EmoteTagPlacement>();
+    public DbSet<EmoteTagActivation> EmoteTagActivations => Set<EmoteTagActivation>();
+    public DbSet<EmoteTagOperation> EmoteTagOperations => Set<EmoteTagOperation>();
+    public DbSet<EmoteSetLeaveObservation> EmoteSetLeaveObservations => Set<EmoteSetLeaveObservation>();
     public DbSet<User> Users => Set<User>();
     public DbSet<VoteSession> VoteSessions => Set<VoteSession>();
     public DbSet<VoteSessionEmote> VoteSessionEmotes => Set<VoteSessionEmote>();
@@ -122,6 +126,73 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasOne(e => e.Tag)
                 .WithMany()
                 .HasForeignKey(e => e.TagId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTagPlacement>(entity =>
+        {
+            entity.HasKey(p => new { p.TagId, p.SevenTvEmoteId, p.SevenTvEmoteSetId });
+            // 7TV ids (emote and set) are 26-character ULIDs; 32 matches SevenTvEmoteIdValidation.
+            entity.Property(p => p.SevenTvEmoteId).HasMaxLength(32);
+            entity.Property(p => p.SevenTvEmoteSetId).HasMaxLength(32);
+
+            // "Who holds X in S" and the read-time rule against the leave observations.
+            entity.HasIndex(p => new { p.SevenTvEmoteSetId, p.SevenTvEmoteId });
+
+            entity.HasOne(p => p.Tag)
+                .WithMany()
+                .HasForeignKey(p => p.TagId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // The database upholds "no placement without an entry" (and takes the placements in every
+            // set along when an entry is removed) independent of any caller's locking. Two cascade
+            // paths from the tag (direct, and via the entry) are fine in Postgres. No navigation from
+            // the entry. Deliberately no FK to EmoteTagOperation: it would force a delete order the
+            // sweep does not need.
+            entity.HasOne<EmoteTagEntry>()
+                .WithMany()
+                .HasForeignKey(p => new { p.TagId, p.SevenTvEmoteId })
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTagActivation>(entity =>
+        {
+            entity.HasKey(a => new { a.TagId, a.SevenTvEmoteSetId });
+            entity.Property(a => a.SevenTvEmoteSetId).HasMaxLength(32);
+
+            entity.HasOne(a => a.Tag)
+                .WithMany()
+                .HasForeignKey(a => a.TagId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTagOperation>(entity =>
+        {
+            entity.HasKey(o => o.OperationId);
+            // The id comes from the client; a Guid.Empty must not be silently replaced by a generated one.
+            entity.Property(o => o.OperationId).ValueGeneratedNever();
+            entity.Property(o => o.Kind).HasMaxLength(16);
+            entity.Property(o => o.SevenTvEmoteSetId).HasMaxLength(32);
+
+            entity.HasIndex(o => new { o.TagId, o.SevenTvEmoteSetId });
+
+            entity.HasOne(o => o.Tag)
+                .WithMany()
+                .HasForeignKey(o => o.TagId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteSetLeaveObservation>(entity =>
+        {
+            entity.HasKey(o => new { o.ChannelId, o.SevenTvEmoteId, o.SevenTvEmoteSetId });
+            entity.Property(o => o.SevenTvEmoteId).HasMaxLength(32);
+            entity.Property(o => o.SevenTvEmoteSetId).HasMaxLength(32);
+
+            // A channel-level fact, not a tag table: it must exist before any tag report arrives and
+            // falls with the channel's purge. No inverse collection on Channel, and no FK to Emote.
+            entity.HasOne(o => o.Channel)
+                .WithMany()
+                .HasForeignKey(o => o.ChannelId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
