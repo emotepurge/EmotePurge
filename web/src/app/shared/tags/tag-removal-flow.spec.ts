@@ -155,6 +155,10 @@ interface Harness {
   clearConfirmedRun: ReturnType<typeof vi.fn>;
   endConfirmedRun: ReturnType<typeof vi.fn>;
   noteRefusedStart: ReturnType<typeof vi.fn>;
+  /** `SevenTvDeleteService.startCheckPending` (#280). */
+  startCheckPending: WritableSignal<boolean>;
+  /** `arbiter.startLocked()` as each `startDelete` call saw it. */
+  startLockedAtStart: boolean[];
   run(): void;
   /** Tears the host down, as an `@if` unmounting `TagRunActions` behind an open dialog would. */
   destroy(): void;
@@ -226,7 +230,23 @@ function setup(
   });
   const dialog = { open: dialogOpen } as unknown as Dialog;
 
-  const startDelete = vi.fn(() => calls.push('startDelete'));
+  const claim = signal<SevenTvRunClaim | null>(null);
+  const startCheckPending = signal(false);
+  const noteRefusedStart = vi.fn();
+  // As the real arbiter derives it: a run's claim or a participant's start check.
+  const startLocked = computed(() => claim() !== null || startCheckPending());
+  const arbiter = {
+    activeClaim: claim,
+    activeRun: computed(() => claim()?.kind ?? null),
+    startLocked,
+    noteRefusedStart,
+  } as unknown as SevenTvRunArbiter;
+
+  const startLockedAtStart: boolean[] = [];
+  const startDelete = vi.fn(() => {
+    startLockedAtStart.push(startLocked());
+    calls.push('startDelete');
+  });
   const beginConfirmedRun = vi.fn(() => calls.push('beginClaim'));
   const clearConfirmedRun = vi.fn(() => calls.push('clearClaim'));
   const endConfirmedRun = vi.fn(() => calls.push('endClaim'));
@@ -235,16 +255,8 @@ function setup(
     beginConfirmedRun,
     clearConfirmedRun,
     endConfirmedRun,
+    startCheckPending,
   } as unknown as SevenTvDeleteService;
-
-  const claim = signal<SevenTvRunClaim | null>(null);
-  const noteRefusedStart = vi.fn();
-  const arbiter = {
-    activeClaim: claim,
-    activeRun: computed(() => claim()?.kind ?? null),
-    startLocked: computed(() => claim() !== null),
-    noteRefusedStart,
-  } as unknown as SevenTvRunArbiter;
 
   const hasToken = signal(true);
   const active = signal<string | null>('set-active');
@@ -311,6 +323,8 @@ function setup(
     clearConfirmedRun,
     endConfirmedRun,
     noteRefusedStart,
+    startCheckPending,
+    startLockedAtStart,
     destroy: host.destroy,
     run: () => startTagRemovalFlow(deps, request),
   };
@@ -866,6 +880,103 @@ describe('startTagRemovalFlow', () => {
         } finally {
           vi.useRealTimers();
         }
+      });
+
+      describe('holds the delete start check (#280) while the re-read is out', () => {
+        it('sets it once the confirmation closed and keeps the tag buttons locked meanwhile', () => {
+          const reread = new Subject<EmoteTagEntries>();
+          const harness = setup({ entries: of(INACTIVE), reread: () => reread });
+          harness.run();
+          expect(harness.startCheckPending()).toBe(false);
+
+          confirmationClosed(harness).next({ checkedIds: ['placed'] });
+
+          expect(harness.startCheckPending()).toBe(true);
+          expect(harness.pending()).toBe(true);
+        });
+
+        it('starts the delete while it is still set — it never refuses its own start — and releases it after', () => {
+          const reread = new Subject<EmoteTagEntries>();
+          const harness = setup({ entries: of(INACTIVE), reread: () => reread });
+          harness.run();
+          confirmationClosed(harness).next({ checkedIds: ['placed'] });
+
+          reread.next(INACTIVE);
+          reread.complete();
+
+          expect(harness.startDelete).toHaveBeenCalledOnce();
+          expect(harness.startLockedAtStart).toEqual([true]);
+          expect(harness.notice()).toBeNull();
+          expect(harness.startCheckPending()).toBe(false);
+        });
+
+        it('releases it when the re-read finds the set switched', () => {
+          const harness = setup({
+            entries: of(INACTIVE),
+            reread: () => of({ ...INACTIVE, isActiveSet: false }),
+          });
+          harness.run();
+          confirmationClosed(harness).next({ checkedIds: ['placed'] });
+
+          expect(harness.notice()?.key).toBe('massDelete.setChangedDuringConfirm');
+          expect(harness.startCheckPending()).toBe(false);
+        });
+
+        it('releases it when the re-read finds the state changed', () => {
+          const harness = setup({
+            entries: of(INACTIVE),
+            reread: () => of({ ...INACTIVE, entries: [entry('before')] }),
+          });
+          harness.run();
+          confirmationClosed(harness).next({ checkedIds: ['placed'] });
+
+          expect(harness.notice()?.key).toBe('tags.errors.changedDuringConfirm');
+          expect(harness.startCheckPending()).toBe(false);
+        });
+
+        it('releases it when the re-read fails', () => {
+          const harness = setup({
+            entries: of(INACTIVE),
+            reread: () => throwError(() => new HttpErrorResponse({ status: 500 })),
+          });
+          harness.run();
+          confirmationClosed(harness).next({ checkedIds: ['placed'] });
+
+          expect(harness.notice()?.key).toBe('tags.errors.entriesUnavailable');
+          expect(harness.startCheckPending()).toBe(false);
+        });
+
+        it('releases it when the re-read times out', () => {
+          vi.useFakeTimers();
+          try {
+            const harness = setup({ entries: of(INACTIVE), reread: () => NEVER });
+            harness.run();
+            confirmationClosed(harness).next({ checkedIds: ['placed'] });
+            expect(harness.startCheckPending()).toBe(true);
+
+            vi.advanceTimersByTime(REPORT_TIMEOUT_MS);
+
+            expect(harness.notice()?.key).toBe('tags.errors.entriesUnavailable');
+            expect(harness.startCheckPending()).toBe(false);
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+
+        it('is never set for a confirmation with nothing ticked — that one has no read', () => {
+          const harness = setup();
+          const seen: boolean[] = [];
+          harness.reportRemoval.mockImplementation(() => {
+            seen.push(harness.startCheckPending());
+            return of(removalResult());
+          });
+          harness.run();
+
+          confirmationClosed(harness).next({ checkedIds: [] });
+
+          expect(seen).toEqual([false]);
+          expect(harness.startCheckPending()).toBe(false);
+        });
       });
 
       it('makes no second read when nothing is ticked — nothing goes to 7TV', () => {

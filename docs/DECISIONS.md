@@ -550,7 +550,11 @@ it was first hosted on the usage page too). Choices that are not obvious from th
 - **The browser set guard decides, and a destroyed host authorises nothing.** At confirm time the frozen
   set and the page's live active set must be one set (play-in additionally: the loaded target); an unknown or destroyed host
   counts as a switch and aborts. The token half of the confirm-time check is skipped only for n = 0
-  (nothing goes to 7TV). The pre-dialog chain is not under `startCheckPending`, consistent with T-A.
+  (nothing goes to 7TV). The pre-dialog chain is not under `startCheckPending`, consistent with T-A; the
+  clear-out's confirm-time entry re-read *is* (2026-10-05, Codex review): it is a confirmed delete's last read,
+  so it sets `SevenTvDeleteService.startCheckPending` before the read and releases it in a `finalize`, the
+  shape of `delete-flow.ts` — otherwise the dock's restore entry on the tags page could start a run behind
+  the read and turn the confirmed clear-out into an abort.
 - **A flow reports nothing back to its starter** once it handed over (dismissed dialog, cancelled token
   prompt, arbiter refusal, pre-check block, drift): `pending` ends at the hand-over. A banner raised
   after the host moved on to another tag or channel is dropped.

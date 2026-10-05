@@ -1,5 +1,5 @@
 import { signal } from '@angular/core';
-import { Observable, map, of } from 'rxjs';
+import { Observable, finalize, map, of } from 'rxjs';
 
 import { EmoteSetWarning } from '../../core/emotes/emote-admin.service';
 import { timeoutReportAttempt } from '../../core/seven-tv/seven-tv-delete.service';
@@ -51,6 +51,8 @@ import { openTagRemovalConfirmDialog } from './tag-removal-confirm-dialog';
  * tag, another activation or snapshot of this tag, another set — aborts the whole clear-out with
  * nothing deleted; a failed read, or one that outlasts the reports' 30 s bound, aborts too (fail
  * closed). The person opens it again and sees the new state; no row is unticked behind their back.
+ * Unlike the reads before the dialog, this one is a confirmed delete's last read and holds
+ * `SevenTvDeleteService.startCheckPending` (#280) until it ends.
  *
  * **A grid marking changes the proposal, not the checks.** The marking (`TagRunRequest.markedIds`)
  * is copied at the click and only decides which rows start ticked (`proposeTagRemoval`); the entry
@@ -272,6 +274,12 @@ function confirm(
   // lifetime: a host torn down meanwhile is a set switch to the guards below, so the abort still
   // ends the claim and reaches the page-level sink.
   const restart = (): void => startTagRemovalFlow(deps, request);
+  // #280, as in the delete chain (`delete-flow.ts`): a confirmed delete whose last read is still out
+  // locks every other 7TV start trigger — the dock's restore entry on this very page included — so
+  // nothing can start behind this read and turn the confirmed clear-out into an abort. The guards
+  // after the read reach `confirmTimeRefusal`, which reads `activeClaim`, never `startLocked`: this
+  // flag does not refuse its own start.
+  deps.deleteService.startCheckPending.set(true);
   deps.tagService
     .listEntries(request.channelName, request.tag.id, prepared.frozenSetId)
     .pipe(
@@ -286,6 +294,9 @@ function confirm(
           checkedRows.map((row) => row.sevenTvEmoteId),
         ),
       ),
+      // After the `next` handler on the completing path (so after `startDelete`, whose run then
+      // holds the triggers through the arbiter) and on every other way out — error, timeout.
+      finalize(() => deps.deleteService.startCheckPending.set(false)),
     )
     .subscribe({
       next: (drift) => {
