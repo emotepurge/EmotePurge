@@ -202,8 +202,11 @@ test.describe('emote tags', () => {
       },
     );
     await gotoUsage(page);
+    // Both the toolbar's and the atlas band's button carry this bare-verb label, so counts
+    // below cover the pair. For visibility the toolbar button is the one meant: it is first in
+    // DOM order and has no stable container of its own (no role/label), hence `.first()`.
     const markAll = page.getByRole('button', { name: 'alle markieren' });
-    await expect(markAll).toBeVisible();
+    await expect(markAll.first()).toBeVisible();
 
     // Record every moment the button exists from here on, not just the ones an assertion hits.
     await page.evaluate(() => {
@@ -232,7 +235,7 @@ test.describe('emote tags', () => {
     release();
     await expect(cell(page, 'catJAM')).toBeVisible();
     await expect(cell(page, 'KEKW')).toHaveCount(0);
-    await expect(markAll).toBeVisible();
+    await expect(markAll.first()).toBeVisible();
 
     // "Alle Tags": the whole set at once, no waiting.
     await select.selectOption({ label: 'Alle Tags' });
