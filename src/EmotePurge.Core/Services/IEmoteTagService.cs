@@ -199,12 +199,17 @@ public sealed record TagRemovalReport(
     IReadOnlyList<string> RemovedIds,
     IReadOnlyList<string> KeptIds);
 
-/// <param name="Replayed">The operation had already been applied; nothing was written and every count is 0.</param>
+/// <param name="Replayed">
+/// The operation had already been applied; nothing was written, every count is 0 and
+/// <paramref name="Deactivated"/> is <c>false</c>. On a replay none of these fields describes the
+/// outcome — the first application's counts and whether it deactivated the tag are not reconstructed,
+/// so a caller must not show or act on them (re-read the tag instead).
+/// </param>
 /// <param name="DeletedCount">Snapshot hits among <c>RemovedIds</c>, deleted.</param>
 /// <param name="TransferredCount">
 /// Snapshot hits among <c>KeptIds</c> handed to the oldest other tag that is active in the set and has
-/// an entry for the emote (whether that tag already held the emote or got the row). Only when
-/// <paramref name="Deactivated"/>.
+/// an entry for the emote (whether that tag already held the emote validly, or got the row — a new
+/// one, or its own expired row rewritten). Only when <paramref name="Deactivated"/>.
 /// </param>
 /// <param name="DroppedCount">
 /// Snapshot hits deleted without a transfer: kept ones without such a tag (or already expired), and
@@ -315,7 +320,12 @@ public interface IEmoteTagService
     /// other tag that is active in the set and has an entry for the emote, or dropped; hits neither
     /// removed nor kept are dropped. On deactivation every remaining placement of the tag in the set is
     /// swept the same way, so an inactive tag never holds a placement; an expired placement is only
-    /// ever deleted, never transferred. Audited as <c>tag.removed</c> without the tag's name.
+    /// ever deleted, never transferred. A target whose own row for the emote has expired gets that row
+    /// rewritten as if it were absent. Audited as <c>tag.removed</c> without the tag's name.
+    /// <para>
+    /// On <c>Replayed</c> the result carries no outcome: the counts are 0 and <c>Deactivated</c> is
+    /// <c>false</c> whatever the first application did.
+    /// </para>
     /// </summary>
     Task<TagRemovalReportResult> ReportRemovalAsync(
         string channelName, long tagId, TagRemovalReport report, AuditActor actor, CancellationToken cancellationToken = default);

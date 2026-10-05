@@ -1602,25 +1602,30 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
 
     // The transfer target (spec 5.5 rule 4): the oldest other tag that is active in the set AND has an
     // entry for the emote. D is older and active but has no entry; E is older and has the entry but
-    // is not active; B and C both qualify, B is older.
+    // is not active; B, C and F all qualify. "Oldest" is the tag's age (rule 3: CreatedAtUtc, then Id),
+    // the order heldByActiveTags uses — not the activation: B is the oldest tag, yet C was activated
+    // first and F last, and B was inserted after C, so its Id is the higher one.
     [Fact]
     public async Task Removal_KeptHits_GoToTheOldestActiveTagWithAnEntry_WithTheRemovalAsRevisionAndAnchor_AndTheOldPlacedAt()
     {
         var channel = await SeedChannelAsync("tagrmtransfer");
         var d = await SeedTagAsync(channel.Id, "D", T0.AddDays(-5));
         var e = await SeedTagAsync(channel.Id, "E", T0.AddDays(-4));
-        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-3));
         var c = await SeedTagAsync(channel.Id, "C", T0.AddDays(-2));
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-3));
+        var f = await SeedTagAsync(channel.Id, "F", T0.AddDays(-1.5));
         var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        Assert.True(b.Id > c.Id);
         var x = NewSevenTvId();
-        foreach (var tag in new[] { e, b, c, a })
+        foreach (var tag in new[] { e, b, c, f, a })
         {
             await SeedEntryAsync(tag.Id, x, "X", T0);
         }
 
         await SeedPlayInAsync(d.Id, ActiveSetId, T0.AddDays(-5));
-        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-3));
-        await SeedPlayInAsync(c.Id, ActiveSetId, T0.AddDays(-2));
+        await SeedPlayInAsync(c.Id, ActiveSetId, T0.AddDays(-3));
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-2));
+        await SeedPlayInAsync(f.Id, ActiveSetId, T0.AddHours(-30));
         var placedAtUtc = T0.AddDays(-1);
         var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, placedAtUtc, x);
         var removal = Guid.NewGuid();
@@ -1640,7 +1645,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         var tags = (await service.ListAsync("tagrmtransfer", null)).Tags.ToDictionary(t => t.Id);
         Assert.Equal((false, 0), (tags[a.Id].Active, tags[a.Id].PlacedCount));
         Assert.Equal((true, 1), (tags[b.Id].Active, tags[b.Id].PlacedCount));
-        Assert.Equal(0, tags[c.Id].PlacedCount + tags[d.Id].PlacedCount + tags[e.Id].PlacedCount);
+        Assert.Equal(0, tags[c.Id].PlacedCount + tags[d.Id].PlacedCount + tags[e.Id].PlacedCount + tags[f.Id].PlacedCount);
         await fixture.AssertPlacementInvariantsAsync(channel.Id);
     }
 
@@ -1664,8 +1669,47 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         AssertCounts(result, deleted: 0, transferred: 1, dropped: 0, swept: 0, deactivated: true);
         Assert.Empty(await LoadPlacementsAsync(a.Id));
         var row = Assert.Single(await LoadPlacementsAsync(b.Id));
-        // B's own row is untouched: its revision and anchor are still B's play-in.
-        Assert.Equal((x, bPlayIn, T0.AddDays(-2)), (row.SevenTvEmoteId, row.OperationId, row.RegisteredAtUtc));
+        // B's own row is untouched: its revision, anchor and placement time are still B's play-in.
+        Assert.Equal((x, bPlayIn, T0.AddDays(-2), T0.AddDays(-2)),
+            (row.SevenTvEmoteId, row.OperationId, row.RegisteredAtUtc, row.PlacedAtUtc));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // The target already has a row for X, but it expired (a leave observed after B's play-in, before
+    // A's): it counts as absent. Keeping it would delete X's only valid placement; instead it is
+    // rewritten like a fresh transfer — the removal as revision and anchor, A's placement time — and
+    // holds by the read-time rule. Both ways in: a kept hit and an unhit row the sweep takes.
+    [Theory]
+    [InlineData("tagrmexpiredtgtkept", false)]
+    [InlineData("tagrmexpiredtgtswept", true)]
+    public async Task Removal_ATargetWhoseOwnRowExpired_GetsThatRowRewritten_AndItHolds(string channelName, bool swept)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-7), x);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, T0.AddDays(-6));
+        var placedAtUtc = T0.AddDays(-1);
+        var aPlayIn = await SeedPlayInAsync(a.Id, ActiveSetId, placedAtUtc, x);
+        var before = await ListEntriesAsync(channelName, b.Id);
+        Assert.False(Assert.Single(before.Entries).PlacedByThisTag);
+        var removal = Guid.NewGuid();
+        var registeredAtUtc = await RegisterRemovalAsync(channelName, a.Id, removal);
+
+        var result = await ReportRemovalAsync(channelName, a.Id, swept
+            ? Removal(removal, aPlayIn, Snapshot(), removed: [], kept: [])
+            : Removal(removal, aPlayIn, Snapshot((x, aPlayIn)), removed: [], kept: [x]));
+
+        AssertCounts(result, deleted: 0, transferred: swept ? 0 : 1, dropped: 0, swept: swept ? 1 : 0, deactivated: true);
+        Assert.Empty(await LoadPlacementsAsync(a.Id));
+        var row = Assert.Single(await LoadPlacementsAsync(b.Id));
+        Assert.Equal((x, removal, registeredAtUtc, placedAtUtc),
+            (row.SevenTvEmoteId, row.OperationId, row.RegisteredAtUtc, row.PlacedAtUtc));
+        var entry = Assert.Single((await ListEntriesAsync(channelName, b.Id)).Entries);
+        Assert.Equal((true, (DateTime?)placedAtUtc, (Guid?)removal), (entry.PlacedByThisTag, entry.PlacedAtUtc, entry.PlacementOperationId));
         await fixture.AssertPlacementInvariantsAsync(channel.Id);
     }
 

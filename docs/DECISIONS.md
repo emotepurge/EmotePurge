@@ -256,7 +256,12 @@ tag in the set as it exists at apply time, valid and expired alike.
   the entry the handed-over row would violate the composite FK; without the activation it would violate
   "inactive ⇒ no placement". A target that already holds the emote keeps its own row (revision and
   anchor untouched) and the giving row is simply deleted; that still counts as transferred, because
-  the responsibility passed. No target → dropped. Transfer is delete plus insert (`TagId` is part of the
+  the responsibility passed. A target whose own row for the emote has *expired* is treated as not
+  holding it (operator ruling on the Task 5 review, spec addendum in Task 15): that row is rewritten
+  with the transferred values (removal as revision and anchor, the giver's `PlacedAtUtc`) instead of
+  being kept — keeping it would delete the emote's only valid placement. The rewritten row holds: the
+  giving row holds at its anchor, so no leave is observed after it, nor after the later removal
+  anchor. No target → dropped. Transfer is delete plus insert (`TagId` is part of the
   primary key); the new row keeps `PlacedAtUtc`, takes the removal operation as `OperationId` and that
   operation's `RegisteredAtUtc` as its anchor (F30) — so deleting the giving tag afterwards, which
   cascades its operations away, leaves the transferred placement holding.
@@ -289,7 +294,9 @@ tag in the set as it exists at apply time, valid and expired alike.
   CE 5: a removal whose preview read the newer revision and activation then hits nothing and does not
   deactivate — nothing is deleted, the tag stays active with the emote placed under the old revision;
   the next preview reads that state, the live read no longer shows the emote, and the next clearing
-  drops the row and deactivates (tested). CE 7: if B's older play-in lands between A's and B's
+  drops the row and deactivates (tested) — as long as the run's leave has not been observed yet; once
+  it has, the row is expired, absent from the next snapshot, and that clearing's sweep deletes it
+  instead. Same end state. CE 7: if B's older play-in lands between A's and B's
   reports, B's report (activation read as the newer operation) does not deactivate and does not sweep
   — B stays active and keeps the handed-over row, which is consistent, and A's side is unchanged.
   In every variant the older anchor only expires earlier and the mismatch only withholds a
