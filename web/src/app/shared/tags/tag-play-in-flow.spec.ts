@@ -2,11 +2,14 @@ import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { DestroyRef, WritableSignal, computed, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { Observable, Subject, of, throwError } from 'rxjs';
+import { NEVER, Observable, Subject, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import {
+  REPORT_TIMEOUT_MS,
+  SevenTvDeleteService,
+} from '../../core/seven-tv/seven-tv-delete.service';
 import { EditableSetResolution } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
@@ -752,6 +755,39 @@ describe('startTagPlayInFlow', () => {
         tag: TAG.name,
       });
       expect(harness.onCompleted).toHaveBeenCalledOnce();
+    });
+
+    it('ends a report that never answers in the failure banner, and its retry sends the same report', () => {
+      vi.useFakeTimers();
+      try {
+        let answer: Observable<TagPlacementsResult> = NEVER;
+        const harness = setup({ report: () => answer });
+        harness.run();
+
+        importDialogClosed(harness).next({
+          targetSetId: 'set-active',
+          targetSetName: 'Main',
+          plan: { rows: [] },
+          nothingToAdd: true,
+        });
+        vi.advanceTimersByTime(REPORT_TIMEOUT_MS - 1);
+        expect(harness.pending()).toBe(true);
+        expect(harness.notice()).toBeNull();
+
+        vi.advanceTimersByTime(1);
+        expect(harness.pending()).toBe(false);
+        expect(harness.notice()?.key).toBe('tags.errors.reportFailed');
+
+        answer = of(placementsResult());
+        harness.notice()!.retry!();
+        expect(harness.reportPlacements).toHaveBeenCalledTimes(2);
+        expect(harness.reportPlacements.mock.calls[1]).toEqual(
+          harness.reportPlacements.mock.calls[0],
+        );
+        expect(harness.reportPlacements.mock.calls[1][2]).toMatchObject({ operationId: OP_1 });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('offers a retry with the same operation when that empty report fails', () => {

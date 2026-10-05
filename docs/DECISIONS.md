@@ -683,7 +683,7 @@ whose `LastSyncedAtUtc` is empty or older than the new worker's start) must be e
 cannot sync) is information only. The boot recovery's gate is released even after errors, so only a
 completed sync by the new worker proves that observations exist. Follow-up noted there: the tracked-set
 loader of the tag flows is not yet on the #220 route (foreign-permit cost accepted). Open for live
-verification: the per-tick post-check read on the largest channel and the first-tick backfill.
+verification: the per-tick post-check read on the largest channel and the first-tick backfill. The run-less tag report (an empty play-in, a clear-out with nothing ticked) is bounded by the same 30 s report timeout as the run-backed reports, so a stalled request ends in the `tags.errors.reportFailed` banner with its same-operation-id retry instead of leaving both buttons locked.
 
 **Betrifft (Tasks 14, 15):** `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
 `docs/Operations.md` · `docs/UI-Designsprache.md` · `docs/Architectur.md` · `.env.example` ·

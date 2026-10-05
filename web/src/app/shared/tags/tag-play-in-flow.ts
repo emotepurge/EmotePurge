@@ -4,7 +4,10 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoService } from '@jsverse/transloco';
 import { Observable } from 'rxjs';
 
-import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import {
+  SevenTvDeleteService,
+  timeoutReportAttempt,
+} from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import { EmoteTagEntries, TagOperationKind } from '../../core/tags/emote-tag.model';
@@ -390,6 +393,9 @@ function hostBoundActiveSet(
  * `pending` holds while it is out; a failure leaves a banner whose retry sends the **same** request
  * — the same operation id, so a report that did reach the server is only replayed (E27).
  *
+ * Each attempt is bounded by the run-backed reports' timeout, so a report that never answers ends in
+ * the same failure banner instead of leaving the buttons locked for good.
+ *
  * The report is not bound to the host's lifetime: it is the only thing that marks the tag, so it
  * finishes even when the host is torn down meanwhile. Its outcome then goes to the sink — the
  * failure banner with its retry included, since nothing else could resend it.
@@ -411,24 +417,26 @@ export function sendTagReport(
 ): void {
   clearNotice(request);
   request.pending.set(true);
-  send().subscribe({
-    next: () => {
-      request.pending.set(false);
-      onSuccess();
-      tellCompleted(request);
-    },
-    error: () => {
-      request.pending.set(false);
-      raiseNotice(
-        request,
-        {
-          key: 'tags.errors.reportFailed',
-          retry: () => sendTagReport(request, send, onSuccess),
-        },
-        true,
-      );
-    },
-  });
+  send()
+    .pipe(timeoutReportAttempt())
+    .subscribe({
+      next: () => {
+        request.pending.set(false);
+        onSuccess();
+        tellCompleted(request);
+      },
+      error: () => {
+        request.pending.set(false);
+        raiseNotice(
+          request,
+          {
+            key: 'tags.errors.reportFailed',
+            retry: () => sendTagReport(request, send, onSuccess),
+          },
+          true,
+        );
+      },
+    });
 }
 
 /** The play-in's own, neutral wording for a blocked pre-check — the delete's `massDelete.errors.*`

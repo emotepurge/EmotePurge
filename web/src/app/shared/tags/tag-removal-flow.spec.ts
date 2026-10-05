@@ -2,11 +2,14 @@ import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { DestroyRef, WritableSignal, computed, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { Observable, Subject, of, throwError } from 'rxjs';
+import { NEVER, Observable, Subject, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import {
+  REPORT_TIMEOUT_MS,
+  SevenTvDeleteService,
+} from '../../core/seven-tv/seven-tv-delete.service';
 import { EditableSetResolution } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
@@ -570,6 +573,28 @@ describe('startTagRemovalFlow', () => {
       expect(harness.registerOperation).toHaveBeenCalledOnce();
       expect(harness.onFeedback).toHaveBeenCalledOnce();
       expect(harness.notice()).toBeNull();
+    });
+    it('ends a report that never answers in the failure banner, and its retry sends the same operation', () => {
+      vi.useFakeTimers();
+      try {
+        let answer: Observable<TagRemovalResult> = NEVER;
+        const harness = setup({ report: () => answer });
+        harness.run();
+        confirmationClosed(harness).next({ checkedIds: [] });
+        vi.advanceTimersByTime(REPORT_TIMEOUT_MS - 1);
+        expect(harness.pending()).toBe(true);
+
+        vi.advanceTimersByTime(1);
+        expect(harness.pending()).toBe(false);
+        expect(harness.notice()?.key).toBe('tags.errors.reportFailed');
+
+        answer = of(removalResult());
+        harness.notice()!.retry!();
+        expect(harness.reportRemoval).toHaveBeenCalledTimes(2);
+        expect(harness.reportRemoval.mock.calls[1]).toEqual(harness.reportRemoval.mock.calls[0]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
