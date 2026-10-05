@@ -1,0 +1,336 @@
+import { HttpErrorResponse } from '@angular/common/http';
+import { DestroyRef, Signal, WritableSignal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { TranslocoService } from '@jsverse/transloco';
+import { Observable } from 'rxjs';
+
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
+import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
+import { EmoteTagEntries, TagOperationKind } from '../../core/tags/emote-tag.model';
+import { EmoteTagService } from '../../core/tags/emote-tag.service';
+import {
+  DeleteTargetResolution,
+  MEMBER_READ_TRUNCATED_REASON_KEY,
+  MEMBER_READ_UNAVAILABLE_REASON_KEY,
+  readLiveSetAliases,
+  resolveDeleteTarget,
+} from '../seven-tv/delete-flow';
+import { ImportFlowDeps, startImportFlow } from '../seven-tv/import-flow';
+import { toImportTarget } from '../seven-tv/import-trigger';
+import { buildTagImportSource, partitionTagPlayIn } from './tag-play-in';
+
+/*
+ * The tag play-in (#201 T-C, spec 7.1): from the click to the hand-over to the ordinary import flow,
+ * or — when the set already holds every entry — straight to the empty placement report.
+ *
+ * Both tag flows (this one and `tag-removal-flow.ts`) share the steps before their own part
+ * (`prepareTagRun`): freeze the active set → read the tag's entries for exactly that set → the
+ * shared set pre-check → register the operation → read the set live from 7TV. The order is fixed
+ * for three reasons:
+ *
+ * - **Pre-check (2b) before registration (2a):** the registration carries the set owner's Twitch id,
+ *   and only the pre-check knows it (spec 7.1/2a).
+ * - **Registration before anything else touches 7TV or opens a dialog:** the server stamps the
+ *   operation's time on registration, and a later placement report is judged against that stamp
+ *   (E27, E33). A 403 there is also the first moment the user learns they may not write this set —
+ *   before any dialog, and before the first ADD or REMOVE would have said so.
+ * - **The live read blocks:** a read that failed or came back incomplete knows only half the set,
+ *   and a half-known set must decide nothing (E28): the play-in would ADD what is already there
+ *   (7TV does not dedupe by id), the clear-out would propose from a list that misses entries.
+ *
+ * None of these steps holds `startCheckPending` (F27): like the delete chain in `delete-flow.ts`,
+ * the reads before a dialog are not a confirmed start, so they lock only this component's own
+ * buttons (`pending`), not every 7TV trigger on the page.
+ */
+
+/** Everything the two tag flows need, handed in by `TagRunActions` (same reasoning as
+ *  `ImportFlowDeps`). */
+export interface TagRunFlowDeps extends ImportFlowDeps {
+  deleteService: SevenTvDeleteService;
+  tagService: EmoteTagService;
+  /** For the confirm-time refusal's run-kind noun (`confirmTimeRefusal`). */
+  translocoService: TranslocoService;
+  /** The caller's teardown: a late answer before the dialog or the import is dropped with it. */
+  destroyRef: DestroyRef;
+}
+
+/** Why a tag flow stopped, shown as an error banner under the buttons until the next attempt.
+ *  `leadKey` is an optional first sentence (a confirmed clear-out that did not start says "Nothing
+ *  was deleted."); `retry`, when present, is what the banner's "Try again" button does — a report
+ *  resend with the same operation id, or a fresh start of the flow. */
+export interface TagRunNotice {
+  leadKey?: string;
+  key: string;
+  params?: Record<string, unknown>;
+  retry?: () => void;
+}
+
+/** What one click hands a flow: frozen values, and the caller's signals and callbacks. */
+export interface TagRunRequest {
+  channelName: string;
+  tag: { id: number; name: string };
+  /** The active set's display name, `null` to fall back to its id. */
+  setName: string | null;
+  /** The host page's live view of the channel's active set — frozen on the click, compared later. */
+  activeEmoteSetId: Signal<string | null>;
+  /** `true` from the click until the flow hands over to a run or a dialog it does not own, or ends. */
+  pending: WritableSignal<boolean>;
+  notice: WritableSignal<TagRunNotice | null>;
+  /** A transient message for the host's own status region. */
+  onFeedback(key: string, params: Record<string, unknown>): void;
+  /** A report without a run succeeded — the host reloads the tag. */
+  onCompleted(): void;
+}
+
+/** What the shared steps hand over: the frozen operation, the entries read for it, the set owner
+ *  and the complete live read. */
+export interface PreparedTagRun {
+  operationId: string;
+  frozenSetId: string;
+  ownerTwitchChannelId: string | null;
+  entries: EmoteTagEntries;
+  live: SevenTvSetEntries;
+}
+
+export interface TagRunPreparation {
+  kind: TagOperationKind;
+  /** The banner key for a blocked set pre-check. */
+  targetBlockedKey(resolution: Extract<DeleteTargetResolution, { status: 'blocked' }>): string;
+  /** Starts the whole flow again with a fresh operation — the banner's retry for every block
+   *  before a report. */
+  restart(): void;
+  /** Runs between the registration and the live read; `false` stops the flow quietly. */
+  beforeLiveRead?(): Observable<boolean>;
+}
+
+/**
+ * Starts a tag play-in. Steps after the shared ones (`prepareTagRun`):
+ *
+ * - **Nothing to add** (every entry is in the set under some entry): no run. The play-in report goes
+ *   out at once with an empty id list, because that report is what marks the tag as played in (E26)
+ *   — there is no run whose settlement could send it.
+ * - **Otherwise** the ordinary import flow takes over, on the frozen set (`pinSetId`) and with the
+ *   tag hook: its set guard right before the start, and `onNothingToImport` when the import's own
+ *   checks find nothing left to add, which sends the same empty report for the same operation.
+ *   `pending` ends at that hand-over (F35): the import flow reports nothing back for a dismissed
+ *   dialog, a cancelled token prompt, a refused start or a blocked pre-check.
+ */
+export function startTagPlayInFlow(deps: TagRunFlowDeps, request: TagRunRequest): void {
+  prepareTagRun(
+    deps,
+    request,
+    {
+      kind: 'playIn',
+      targetBlockedKey: (resolution) => playInTargetBlockedKey(resolution.reason),
+      restart: () => startTagPlayInFlow(deps, request),
+    },
+    (prepared) => {
+      const entryCount = prepared.entries.entries.length;
+      const reportNothingToAdd = (): void =>
+        sendTagReport(
+          request,
+          () =>
+            deps.tagService.reportPlacements(request.channelName, request.tag.id, {
+              operationId: prepared.operationId,
+              emoteSetId: prepared.frozenSetId,
+              targetOwnerTwitchId: prepared.ownerTwitchChannelId,
+              sevenTvEmoteIds: [],
+            }),
+          // From the entries this flow read, never from the answer: a replayed report carries no
+          // outcome (F34).
+          () =>
+            request.onFeedback('tags.feedback.allPresent', {
+              count: entryCount,
+              tag: request.tag.name,
+            }),
+        );
+
+      const partition = partitionTagPlayIn(prepared.entries.entries, prepared.live);
+      if (partition.toAdd.length === 0) {
+        reportNothingToAdd();
+        return;
+      }
+      const source = buildTagImportSource(partition, request.tag, request.channelName);
+      const target = toImportTarget(
+        request.channelName,
+        prepared.frozenSetId,
+        prepared.frozenSetId,
+        request.setName,
+        { ownerTwitchChannelId: prepared.ownerTwitchChannelId, pinSetId: true },
+      );
+      request.pending.set(false);
+      startImportFlow(deps, source, target, {
+        context: { tagId: request.tag.id, operationId: prepared.operationId },
+        frozenSetId: prepared.frozenSetId,
+        activeEmoteSetId: request.activeEmoteSetId,
+        onSetChanged: () => request.notice.set({ key: 'tags.errors.setChanged' }),
+        onNothingToImport: reportNothingToAdd,
+      });
+    },
+  );
+}
+
+/**
+ * The steps both tag flows share, in their fixed order (see the file comment): freeze → entries →
+ * pre-check → registration → (`beforeLiveRead`) → live read → `done`. Every block ends `pending`
+ * and leaves a notice; `done` takes `pending` over.
+ */
+export function prepareTagRun(
+  deps: TagRunFlowDeps,
+  request: TagRunRequest,
+  preparation: TagRunPreparation,
+  done: (prepared: PreparedTagRun) => void,
+): void {
+  const frozenSetId = request.activeEmoteSetId();
+  // The host offers the buttons only with a known active set; a click that outraces it losing that
+  // has nothing to target.
+  if (frozenSetId === null) {
+    return;
+  }
+  const operationId = crypto.randomUUID();
+  const { channelName, tag } = request;
+  const block = (notice: TagRunNotice): void => {
+    request.pending.set(false);
+    request.notice.set(notice);
+  };
+  request.notice.set(null);
+  request.pending.set(true);
+
+  const readLive = (ownerTwitchChannelId: string | null, entries: EmoteTagEntries): void => {
+    readLiveSetAliases(deps.httpClient, frozenSetId)
+      .pipe(takeUntilDestroyed(deps.destroyRef))
+      .subscribe((read) => {
+        if (read.status === 'blocked') {
+          block({ key: setReadReasonKey(read.reasonKey), retry: preparation.restart });
+          return;
+        }
+        done({ operationId, frozenSetId, ownerTwitchChannelId, entries, live: read.entries });
+      });
+  };
+
+  const register = (ownerTwitchChannelId: string | null, entries: EmoteTagEntries): void => {
+    deps.tagService
+      .registerOperation(channelName, tag.id, {
+        operationId,
+        kind: preparation.kind,
+        emoteSetId: frozenSetId,
+        targetOwnerTwitchId: ownerTwitchChannelId,
+      })
+      .pipe(takeUntilDestroyed(deps.destroyRef))
+      .subscribe({
+        next: () => {
+          if (preparation.beforeLiveRead === undefined) {
+            readLive(ownerTwitchChannelId, entries);
+            return;
+          }
+          preparation.beforeLiveRead().subscribe((proceed) => {
+            // The step before (a token prompt) is a dialog that outlives the caller; a caller gone
+            // by its answer reads nothing more.
+            if (proceed && !deps.destroyRef.destroyed) {
+              readLive(ownerTwitchChannelId, entries);
+            } else {
+              // The registered operation stays unapplied on the server — harmless (spec 5.4).
+              request.pending.set(false);
+            }
+          });
+        },
+        error: (error: unknown) => block(registrationFailureNotice(error, preparation.restart)),
+      });
+  };
+
+  deps.tagService
+    .listEntries(channelName, tag.id, frozenSetId)
+    .pipe(takeUntilDestroyed(deps.destroyRef))
+    .subscribe({
+      next: (entries) => {
+        // Set freeze (E29): the entries must describe the very set that was frozen, and it must
+        // still be the active one — otherwise nothing is registered.
+        if (entries.emoteSetId !== frozenSetId || !entries.isActiveSet) {
+          block({ key: 'tags.errors.setChanged' });
+          return;
+        }
+        resolveDeleteTarget(deps, frozenSetId, channelName)
+          .pipe(takeUntilDestroyed(deps.destroyRef))
+          .subscribe((resolution) => {
+            if (resolution.status === 'blocked') {
+              block({
+                key: preparation.targetBlockedKey(resolution),
+                // Only "could not be checked right now" is worth another try.
+                ...(resolution.reason === 'unavailable' ? { retry: preparation.restart } : {}),
+              });
+              return;
+            }
+            register(resolution.ownerTwitchChannelId, entries);
+          });
+      },
+      error: () => block({ key: 'tags.errors.entriesUnavailable', retry: preparation.restart }),
+    });
+}
+
+/**
+ * Sends a report that has no run around it (the empty play-in, the clear-out with nothing ticked).
+ * `pending` holds while it is out; a failure leaves a banner whose retry sends the **same** request
+ * — the same operation id, so a report that did reach the server is only replayed (E27).
+ */
+export function sendTagReport(
+  request: Pick<TagRunRequest, 'pending' | 'notice' | 'onCompleted'>,
+  send: () => Observable<unknown>,
+  onSuccess: () => void,
+): void {
+  request.notice.set(null);
+  request.pending.set(true);
+  send().subscribe({
+    next: () => {
+      request.pending.set(false);
+      onSuccess();
+      request.onCompleted();
+    },
+    error: () => {
+      request.pending.set(false);
+      request.notice.set({
+        key: 'tags.errors.reportFailed',
+        retry: () => sendTagReport(request, send, onSuccess),
+      });
+    },
+  });
+}
+
+/** The play-in's own, neutral wording for a blocked pre-check — the delete's `massDelete.errors.*`
+ *  texts speak of deleting. */
+function playInTargetBlockedKey(reason: TargetCheckBlockReason): string {
+  switch (reason) {
+    case 'notEditable':
+      return 'tags.errors.target.notEditable';
+    case 'notSelectable':
+      return 'tags.errors.target.notSelectable';
+    case 'unavailable':
+      return 'tags.errors.target.unavailable';
+  }
+}
+
+/** The live read's block reason (`readLiveSetAliases`) in the tag family. */
+function setReadReasonKey(reasonKey: string): string {
+  switch (reasonKey) {
+    case MEMBER_READ_TRUNCATED_REASON_KEY:
+      return 'tags.errors.setReadIncomplete';
+    case MEMBER_READ_UNAVAILABLE_REASON_KEY:
+      return 'tags.errors.setReadUnavailable';
+    default:
+      // Only the two above exist; an unknown one is still a read that must not decide anything.
+      return 'tags.errors.setReadUnavailable';
+  }
+}
+
+/** 403: the owner check says this user may not write the set — no retry, it would only say so
+ *  again. 503: the owner check could not run — try again. Anything else: the registration failed. */
+function registrationFailureNotice(error: unknown, restart: () => void): TagRunNotice {
+  const status = error instanceof HttpErrorResponse ? error.status : 0;
+  if (status === 403) {
+    return { key: 'tags.errors.noWriteRight' };
+  }
+  if (status === 503) {
+    return { key: 'tags.errors.ownershipUnavailable', retry: restart };
+  }
+  return { key: 'tags.errors.registrationFailed', retry: restart };
+}

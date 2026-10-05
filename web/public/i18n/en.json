@@ -1772,7 +1772,9 @@
       "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer clear them out either.",
       "unassignLockReason": {
         "noneInTag": "None of the marked emotes is in {{tag}}."
-      }
+      },
+      "playIn": "Play in",
+      "remove": "Clear out"
     },
     "filter": {
       "label": "Tag",
@@ -1804,7 +1806,9 @@
       "unassigned": {
         "one": "Removed {{count}} emote from {{tag}}.",
         "other": "Removed {{count}} emotes from {{tag}}."
-      }
+      },
+      "allPresent": "All {{count}} emotes of {{tag}} are already in the set — the tag counts as played in.",
+      "removedNothing": "{{tag}} cleared out — nothing to remove."
     },
     "deleteDialog": {
       "message": "{{tag}} will be deleted; the emotes stay in the set.",
@@ -1826,6 +1830,22 @@
       },
       "nothingToDelete": "Nothing will be deleted on 7TV; the tag then counts as no longer played in.",
       "confirm": "Clear out"
+    },
+    "errors": {
+      "setChanged": "The active set has changed — reload the page.",
+      "entriesUnavailable": "The tag's entries could not be loaded just now.",
+      "setReadIncomplete": "The set's entries could only partly be read from 7TV — nothing was changed.",
+      "setReadUnavailable": "The set's entries could not be read from 7TV — nothing was changed.",
+      "noWriteRight": "You may not edit this set on 7TV.",
+      "ownershipUnavailable": "Whether you may edit this set could not be checked just now.",
+      "registrationFailed": "The run could not be registered with EmotePurge — nothing was changed.",
+      "reportFailed": "EmotePurge could not record the tag's state.",
+      "retry": "Try again",
+      "target": {
+        "notEditable": "The set is not (or no longer) editable, or no longer exists.",
+        "notSelectable": "The set is not a regular emote set.",
+        "unavailable": "The set could not be checked just now."
+      }
     }
   },
   "errors": {

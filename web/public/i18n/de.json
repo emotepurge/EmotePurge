@@ -1772,7 +1772,9 @@
       "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; das Tag räumt sie danach auch nicht mehr aus.",
       "unassignLockReason": {
         "noneInTag": "Keins der markierten Emotes gehört zu {{tag}}."
-      }
+      },
+      "playIn": "Einspielen",
+      "remove": "Ausräumen"
     },
     "filter": {
       "label": "Tag",
@@ -1804,7 +1806,9 @@
       "unassigned": {
         "one": "{{count}} Emote aus {{tag}} entfernt.",
         "other": "{{count}} Emotes aus {{tag}} entfernt."
-      }
+      },
+      "allPresent": "Alle {{count}} Emotes von {{tag}} sind schon im Set — Tag gilt als eingespielt.",
+      "removedNothing": "{{tag}} ausgeräumt — nichts zu entfernen."
     },
     "deleteDialog": {
       "message": "{{tag}} wird gelöscht; die Emotes bleiben im Set.",
@@ -1826,6 +1830,22 @@
       },
       "nothingToDelete": "Es wird nichts bei 7TV gelöscht; das Tag gilt danach als nicht mehr eingespielt.",
       "confirm": "Ausräumen"
+    },
+    "errors": {
+      "setChanged": "Das aktive Set hat gewechselt — Seite neu laden.",
+      "entriesUnavailable": "Die Einträge des Tags konnten gerade nicht geladen werden.",
+      "setReadIncomplete": "Die Einträge des Sets konnten nur teilweise von 7TV gelesen werden — es wurde nichts geändert.",
+      "setReadUnavailable": "Die Einträge des Sets konnten nicht von 7TV gelesen werden — es wurde nichts geändert.",
+      "noWriteRight": "Du darfst dieses Set bei 7TV nicht bearbeiten.",
+      "ownershipUnavailable": "Ob du dieses Set bearbeiten darfst, ließ sich gerade nicht prüfen.",
+      "registrationFailed": "Der Lauf konnte bei EmotePurge nicht angemeldet werden — es wurde nichts geändert.",
+      "reportFailed": "EmotePurge konnte den Stand des Tags nicht vermerken.",
+      "retry": "Erneut versuchen",
+      "target": {
+        "notEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+        "notSelectable": "Das Set ist kein normales Emote-Set.",
+        "unavailable": "Das Set konnte gerade nicht geprüft werden."
+      }
     }
   },
   "errors": {
