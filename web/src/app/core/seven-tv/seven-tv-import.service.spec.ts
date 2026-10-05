@@ -6,6 +6,7 @@ import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ImportOrigin, ImportRow } from './import-source';
+import { TagPlacementsResult } from '../tags/emote-tag.model';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { REPORT_TIMEOUT_MS } from './seven-tv-delete.service';
 import { SevenTvImportService } from './seven-tv-import.service';
@@ -2417,6 +2418,188 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.protocolSaved).toBe(true);
       service.reset();
       expect(service.protocolSaved()).toBe(false);
+    });
+  });
+
+  // #201 T-C, spec E14/7.1/8: a tag play-in's third report, next to sync-imported.
+  describe('tag placement report', () => {
+    const TAG = { tagId: 7, operationId: 'op-1' };
+    const TARGET_TAG = {
+      setId: 'set-b',
+      channelName: 'kanal_b',
+      targetOwnerTwitchId: 'tw-owner',
+      tag: TAG,
+    };
+    const TAG_ORIGIN: ImportOrigin = {
+      kind: 'tag',
+      tagId: 7,
+      tagName: 'Stronghold',
+      channelName: 'kanal_b',
+      alreadyInSetCount: 0,
+    };
+    const PLACEMENTS_B = '/api/channels/kanal_b/tags/7/placements';
+
+    function placementsAnswer(overrides: Partial<TagPlacementsResult> = {}): TagPlacementsResult {
+      return {
+        replayed: false,
+        recordedCount: 2,
+        alreadyRecordedCount: 0,
+        notTaggedIds: [],
+        discardedStaleIds: [],
+        ...overrides,
+      };
+    }
+
+    it('stays idle without a tag, and the run closes without waiting for it', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
+      runTwoRowsToDone();
+
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+
+      expect(service.tagPlacementReport()).toBe('idle');
+      expect(service.run()?.phase).toBe('closed');
+      httpMock.expectNone(PLACEMENTS_B);
+    });
+
+    it('holds the run open while pending and closes it once the report succeeds', () => {
+      service.startImport(TARGET_TAG, TAG_ORIGIN, addPlan(ROWS));
+      expect(service.run()?.tag).toEqual(TAG);
+      runTwoRowsToDone();
+
+      expect(service.tagPlacementReport()).toBe('pending');
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+      expect(service.run()?.phase).toBe('reporting');
+      expect(service.isSettling()).toBe(true);
+
+      httpMock.expectOne(PLACEMENTS_B).flush(placementsAnswer());
+
+      expect(service.tagPlacementReport()).toBe('succeeded');
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.isSettling()).toBe(false);
+    });
+
+    it('sends the registered operation, the run set and owner, and exactly the done adds', () => {
+      service.startImport(TARGET_TAG, TAG_ORIGIN, addPlan(ROWS));
+      httpMock
+        .expectOne(GQL_ENDPOINT)
+        .flush({ errors: [{ message: 'BAD_REQUEST this emote has a conflicting name' }] });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      const report = httpMock.expectOne(PLACEMENTS_B);
+      expect(report.request.method).toBe('POST');
+      expect(report.request.body).toEqual({
+        operationId: 'op-1',
+        emoteSetId: 'set-b',
+        targetOwnerTwitchId: 'tw-owner',
+        sevenTvEmoteIds: ['7tv-2'],
+      });
+      // The audit report goes out beside it, with the same key and the tag vocabulary.
+      const imported = httpMock.expectOne(SYNC_IMPORTED_B);
+      expect(imported.request.body).toMatchObject({
+        sevenTvEmoteIds: ['7tv-2'],
+        sourceKind: 'tag',
+      });
+      report.flush(placementsAnswer());
+      imported.flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('leaves a done rename-in-place out of the reported placements — it added nothing', () => {
+      service.startImport(TARGET_TAG, TAG_ORIGIN, {
+        rows: [addRow(SOURCE_X), adoptRow(SOURCE_Y, 'PogOld')],
+      });
+      answerNext();
+      answerNext();
+
+      const report = httpMock.expectOne(PLACEMENTS_B);
+      expect(report.request.body.sevenTvEmoteIds).toEqual(['src-x']);
+      report.flush(placementsAnswer({ recordedCount: 1 }));
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('still reports, with an empty list, after a cancel before the first row', () => {
+      service.startImport(TARGET_TAG, TAG_ORIGIN, addPlan(ROWS));
+      const first = httpMock.expectOne(GQL_ENDPOINT);
+
+      service.cancel();
+
+      expect(first.cancelled).toBe(true);
+      expect(service.run()?.result?.doneKeys).toEqual([]);
+      const report = httpMock.expectOne(PLACEMENTS_B);
+      expect(report.request.body.sevenTvEmoteIds).toEqual([]);
+      expect(service.run()?.phase).toBe('reporting');
+      report.flush(placementsAnswer({ recordedCount: 0 }));
+      expect(service.run()?.phase).toBe('closed');
+      // Nothing was added: no sync-imported, no resync (afterEach's verify() proves it).
+    });
+
+    it('puts the number of discarded stale ids into its signal', () => {
+      service.startImport(TARGET_TAG, TAG_ORIGIN, addPlan(ROWS));
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+
+      httpMock
+        .expectOne(PLACEMENTS_B)
+        .flush(placementsAnswer({ recordedCount: 1, discardedStaleIds: ['7tv-2'] }));
+
+      expect(service.tagPlacementDiscardedStaleCount()).toBe(1);
+    });
+
+    it('fails a 403 as forbidden without an automatic retry', () => {
+      service.startImport(TARGET_TAG, TAG_ORIGIN, addPlan(ROWS));
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+
+      httpMock.expectOne(PLACEMENTS_B).flush({}, { status: 403, statusText: 'Forbidden' });
+      vi.advanceTimersByTime(60_000);
+
+      httpMock.expectNone(PLACEMENTS_B);
+      expect(service.tagPlacementReport()).toBe('failed');
+      expect(service.tagPlacementReportReason()).toBe('forbidden');
+      expect(service.run()?.phase).toBe('closed');
+    });
+
+    it('retries a failed report with the same body, and reads no counts from a replayed answer', () => {
+      service.startImport(TARGET_TAG, TAG_ORIGIN, addPlan(ROWS));
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+      const first = httpMock.expectOne(PLACEMENTS_B);
+      const firstBody: unknown = first.request.body;
+      first.flush({}, { status: 403, statusText: 'Forbidden' });
+      expect(service.tagPlacementReport()).toBe('failed');
+
+      service.retryTagPlacementReport();
+
+      expect(service.tagPlacementReport()).toBe('pending');
+      const second = httpMock.expectOne(PLACEMENTS_B);
+      expect(second.request.body).toEqual(firstBody);
+      // F34: a replay carries no outcome — its discarded list must not reach the signal.
+      second.flush(
+        placementsAnswer({ replayed: true, recordedCount: 0, discardedStaleIds: ['7tv-1'] }),
+      );
+      expect(service.tagPlacementReport()).toBe('succeeded');
+      expect(service.tagPlacementReportReason()).toBeNull();
+      expect(service.tagPlacementDiscardedStaleCount()).toBe(0);
+    });
+
+    it('offers no retry for a run without a tag', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+
+      service.retryTagPlacementReport();
+
+      httpMock.expectNone(PLACEMENTS_B);
+      expect(service.tagPlacementReport()).toBe('idle');
     });
   });
 

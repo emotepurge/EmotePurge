@@ -90,7 +90,20 @@ const DE_TRANSLATIONS = {
       failed: 'Abgleich konnte nicht angestoßen werden.',
     },
   },
+  sevenTvRun: {
+    tagReport: {
+      pending: 'Wird beim Tag vermerkt …',
+      succeeded: 'Beim Tag vermerkt.',
+      failed: 'EmotePurge konnte beim Tag nicht vermerken, was dieser Lauf bei 7TV geändert hat.',
+      retry: 'Tag-Vermerk erneut melden',
+      discardedStale: {
+        one: '{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.',
+        other: '{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt.',
+      },
+    },
+  },
   syncReportReason: {
+    forbidden: 'Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.',
     setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
     channelMismatchNotTracked:
       'Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.',
@@ -124,6 +137,9 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
     // findings 2/3 tests below override this explicitly.
     targetIsActiveSet: true,
     tag: null,
+    tagPlacementReport: 'idle',
+    tagPlacementReportReason: null,
+    tagPlacementDiscardedStaleCount: 0,
     origin: { kind: 'channel', channelName: 'quellkanal' },
     plan: { rows: [] },
     settlement: 'pending',
@@ -152,6 +168,9 @@ interface FakeImportService {
   syncReport: WritableSignal<SyncReportState>;
   removalReport: WritableSignal<SyncReportState>;
   removalReportReason: WritableSignal<SyncReportReason | null>;
+  tagPlacementReport: WritableSignal<SyncReportState>;
+  tagPlacementReportReason: WritableSignal<SyncReportReason | null>;
+  tagPlacementDiscardedStaleCount: WritableSignal<number>;
   resyncTrigger: WritableSignal<ResyncTriggerState>;
   abortedForPrivileges: WritableSignal<boolean>;
   skippedDuplicates: WritableSignal<number>;
@@ -165,6 +184,7 @@ interface FakeImportService {
   reset: ReturnType<typeof vi.fn>;
   retrySyncReport: ReturnType<typeof vi.fn>;
   retryRemovalReport: ReturnType<typeof vi.fn>;
+  retryTagPlacementReport: ReturnType<typeof vi.fn>;
 }
 
 function createFakeImportService(): FakeImportService {
@@ -179,6 +199,9 @@ function createFakeImportService(): FakeImportService {
     syncReport: signal<SyncReportState>('idle'),
     removalReport: signal<SyncReportState>('idle'),
     removalReportReason: signal<SyncReportReason | null>(null),
+    tagPlacementReport: signal<SyncReportState>('idle'),
+    tagPlacementReportReason: signal<SyncReportReason | null>(null),
+    tagPlacementDiscardedStaleCount: signal(0),
     resyncTrigger: signal<ResyncTriggerState>('idle'),
     abortedForPrivileges: signal(false),
     skippedDuplicates: signal(0),
@@ -192,6 +215,7 @@ function createFakeImportService(): FakeImportService {
     reset: vi.fn(),
     retrySyncReport: vi.fn(),
     retryRemovalReport: vi.fn(),
+    retryTagPlacementReport: vi.fn(),
   };
 }
 
@@ -1060,6 +1084,87 @@ describe('ImportProgressSection', () => {
   // row already carries its final reason (Festlegung 9), but an `unknown` row may still flip once
   // the re-read answers, and so may every count and line read off the rows. The dock holds those
   // back until the run has settled, exactly as for delete and restore.
+  // #201 T-C, spec 7.1/8: a tag play-in's placement report, a third line next to the two reports.
+  describe('tag placement report', () => {
+    const TAG_REPORT_PENDING = 'Wird beim Tag vermerkt …';
+    const TAG_REPORT_SUCCEEDED = 'Beim Tag vermerkt.';
+    const TAG_REPORT_FAILED =
+      'EmotePurge konnte beim Tag nicht vermerken, was dieser Lauf bei 7TV geändert hat.';
+    const TAG_RETRY = 'Tag-Vermerk erneut melden';
+
+    function renderSettled(tagged: boolean): ComponentFixture<ImportProgressSection> {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          phase: 'reporting',
+          tag: tagged ? { tagId: 7, operationId: 'op-1' } : null,
+        }),
+      );
+      return render();
+    }
+
+    function tagRetryButton(fixture: ComponentFixture<ImportProgressSection>) {
+      return Array.from(
+        (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('button'),
+      ).find((button) => button.textContent?.trim() === TAG_RETRY);
+    }
+
+    it('shows no tag line for a run that is not a tag play-in', () => {
+      const fixture = renderSettled(false);
+
+      const text = fixture.nativeElement.textContent as string;
+      expect(text).not.toContain(TAG_REPORT_PENDING);
+      expect(text).not.toContain(TAG_REPORT_SUCCEEDED);
+      expect(tagRetryButton(fixture)).toBeUndefined();
+    });
+
+    it('shows the pending and then the succeeded line on a tag run, for the announcer to speak', () => {
+      importService.tagPlacementReport.set('pending');
+      const fixture = renderSettled(true);
+      expect(fixture.nativeElement.textContent).toContain(TAG_REPORT_PENDING);
+
+      importService.tagPlacementReport.set('succeeded');
+      fixture.detectChanges();
+
+      expect(fixture.nativeElement.textContent).toContain(TAG_REPORT_SUCCEEDED);
+      expect(tagRetryButton(fixture)).toBeUndefined();
+      // Spoken by the page's DockOutcomeAnnouncer, not by the panel's own status region.
+      expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(TAG_REPORT_SUCCEEDED);
+    });
+
+    it('offers a reachable retry with its reason on a failed report, and the button calls the retry', () => {
+      importService.tagPlacementReport.set('failed');
+      importService.tagPlacementReportReason.set('forbidden');
+      const fixture = renderSettled(true);
+
+      const text = fixture.nativeElement.textContent as string;
+      expect(text).toContain(TAG_REPORT_FAILED);
+      expect(text).toContain('Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.');
+      const retry = tagRetryButton(fixture);
+      expect(retry?.closest('[aria-hidden="true"]')).toBeNull();
+      const describedBy = retry?.getAttribute('aria-describedby') ?? '';
+      expect(
+        (fixture.nativeElement as HTMLElement).querySelector(`#${describedBy}`)?.textContent,
+      ).toContain(TAG_REPORT_FAILED);
+
+      retry?.click();
+
+      expect(importService.retryTagPlacementReport).toHaveBeenCalledOnce();
+    });
+
+    it('names the discarded stale ids after a successful report', () => {
+      importService.tagPlacementReport.set('succeeded');
+      importService.tagPlacementDiscardedStaleCount.set(3);
+      const fixture = renderSettled(true);
+
+      expect(fixture.nativeElement.textContent).toContain(
+        '3 Emotes wurden inzwischen wieder entfernt und nicht vermerkt.',
+      );
+    });
+  });
+
   describe('while the run is settling', () => {
     const gapReason = 'Ersetzen abgebrochen — das alte Emote ist schon entfernt.';
 

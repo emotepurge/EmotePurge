@@ -1667,6 +1667,16 @@
       "restore": "the restore",
       "import": "the transfer",
       "undo": "the replace undo"
+    },
+    "tagReport": {
+      "pending": "Recording on the tag …",
+      "succeeded": "Recorded on the tag.",
+      "failed": "EmotePurge could not record on the tag what this run changed on 7TV.",
+      "retry": "Report again",
+      "discardedStale": {
+        "one": "{{ count }} emote was removed again in the meantime and not recorded.",
+        "other": "{{ count }} emotes were removed again in the meantime and not recorded."
+      }
     }
   },
   "sevenTvToken": {

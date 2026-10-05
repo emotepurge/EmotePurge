@@ -1667,6 +1667,16 @@
       "restore": "die Wiederherstellung",
       "import": "die Übertragung",
       "undo": "die Rücknahme der Ersetzungen"
+    },
+    "tagReport": {
+      "pending": "Wird beim Tag vermerkt …",
+      "succeeded": "Beim Tag vermerkt.",
+      "failed": "EmotePurge konnte beim Tag nicht vermerken, was dieser Lauf bei 7TV geändert hat.",
+      "retry": "Erneut melden",
+      "discardedStale": {
+        "one": "{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.",
+        "other": "{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt."
+      }
     }
   },
   "sevenTvToken": {

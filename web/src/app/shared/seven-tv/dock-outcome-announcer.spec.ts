@@ -15,7 +15,11 @@ import {
 } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
-import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
+import {
+  SyncReportReason,
+  SyncReportState,
+  TargetCheckBlockReason,
+} from '../../core/seven-tv/sync-report-outcome';
 import { UndoSkippedRow } from '../../core/seven-tv/undo-plan';
 import {
   DockOutcomeAnnouncer,
@@ -68,6 +72,18 @@ const DE_TRANSLATIONS = {
       backendTriggered: 'Wird abgeglichen.',
     },
   },
+  sevenTvRun: {
+    tagReport: {
+      pending: 'Wird beim Tag vermerkt …',
+      succeeded: 'Beim Tag vermerkt.',
+      failed: 'Nicht beim Tag vermerkt.',
+      discardedStale: {
+        one: '{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.',
+        other: '{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt.',
+      },
+    },
+  },
+  syncReportReason: { unavailable: 'Grund: nicht erreichbar.' },
   import: {
     startChecking: 'Übertragung wird geprüft.',
     duplicateCheckUnavailable: 'Import-Prüfung nicht möglich.',
@@ -123,6 +139,11 @@ interface FakeOutcomeSource {
   /** Only `SevenTvRestoreService` has this (#280) — the confirm-time check's window. Shared shape,
    *  the import fake's copy is never read. */
   startCheckPending: WritableSignal<boolean>;
+  /** Only `SevenTvImportService` has these three (#201 T-C) — a tag play-in's placement report.
+   *  Shared shape, the restore fake's copies are never read. */
+  tagPlacementReport: WritableSignal<SyncReportState>;
+  tagPlacementReportReason: WritableSignal<SyncReportReason | null>;
+  tagPlacementDiscardedStaleCount: WritableSignal<number>;
 }
 
 function createFakeSource(): FakeOutcomeSource {
@@ -136,6 +157,9 @@ function createFakeSource(): FakeOutcomeSource {
     replaceSkippedDrift: signal(0),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     startCheckPending: signal(false),
+    tagPlacementReport: signal<SyncReportState>('idle'),
+    tagPlacementReportReason: signal<SyncReportReason | null>(null),
+    tagPlacementDiscardedStaleCount: signal(0),
   };
 }
 
@@ -403,6 +427,9 @@ describe('DockOutcomeAnnouncer', () => {
       targetSetName: 'wegwerf',
       targetIsActiveSet: false,
       tag: null,
+      tagPlacementReport: 'idle',
+      tagPlacementReportReason: null,
+      tagPlacementDiscardedStaleCount: 0,
       origin: { kind: 'channel', channelName: 'quellkanal' },
       plan: { rows: [] },
       settlement: 'settled',
@@ -630,6 +657,33 @@ describe('DockOutcomeAnnouncer', () => {
         'Abgleich des Zielkanals wird angestoßen…',
       ]);
     });
+  });
+
+  // #201 T-C: a tag play-in's placement report — its end state only, never the pending line.
+  it('speaks the end state of a tag placement report, never its pending line', () => {
+    const regionAtRest = regions()[0];
+
+    importService.tagPlacementReport.set('pending');
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+
+    importService.tagPlacementReport.set('succeeded');
+    importService.tagPlacementDiscardedStaleCount.set(2);
+    fixture.detectChanges();
+
+    expect(regions()).toEqual([regionAtRest]);
+    expect(spoken()).toEqual([
+      'Beim Tag vermerkt.',
+      '2 Emotes wurden inzwischen wieder entfernt und nicht vermerkt.',
+    ]);
+  });
+
+  it('speaks a failed tag placement report together with its reason', () => {
+    importService.tagPlacementReport.set('failed');
+    importService.tagPlacementReportReason.set('unavailable');
+    fixture.detectChanges();
+
+    expect(spoken()).toEqual(['Nicht beim Tag vermerkt. Grund: nicht erreichbar.']);
   });
 
   it('does not speak for an import on a page that shows no import section', () => {

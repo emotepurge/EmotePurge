@@ -449,6 +449,28 @@ names it, and the tag stays unplayed). Both err towards "not played in", in line
 **Betrifft (Task 8, flow):** `web/src/app/shared/seven-tv/import-flow.ts` ·
 `web/src/app/shared/seven-tv/import-confirm-dialog.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts`
 
+**The placement report is a third report on the import run, independent of `reportImported`.**
+`startImport`'s target takes the optional `tag` (`ImportTagContext`), and `ImportRunInfo` carries `tag`,
+`tagPlacementReport`, `tagPlacementReportReason` and `tagPlacementDiscardedStaleCount` (all projected as
+`linkedSignal`s, like the undo's two reports). `settleRun` sets the report `pending` for every tag run —
+with an empty list too, after a cancel before the first row: the report is also what marks the tag as
+played in (E26). `sendFollowUp` sends it next to `sync-imported`, not after it and not instead of it.
+Both name the same `done` adds, but they answer different questions (the audit trail of a copy vs. which
+emotes this tag put into this set), they go to different routes with different permission ladders, and
+either can fail without the other; chaining them would let an audit hiccup cost the tag its placements.
+The lifecycle predicate counts the report, so `closed` waits for it; transport is the same as the other
+reports (per-attempt timeout, automatic retries except 401/403, an end state on every path), and
+`retryTagPlacementReport` sends the same body with the same `operationId`, which the server answers as a
+replay. A replayed answer is a success with no outcome (F34): its `discardedStaleIds` never reach the
+signal. The dock shows the state line (pending, succeeded, failed plus reason and a retry button, and
+"k emotes were removed meanwhile" after a success) aria-hidden; the page's `DockOutcomeAnnouncer` speaks
+the end states, never the pending line. Keys: `sevenTvRun.tagReport.{pending,succeeded,failed,retry}`,
+`sevenTvRun.tagReport.discardedStale.{one,other}`.
+
+**Betrifft (Task 8, report):** `web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·
