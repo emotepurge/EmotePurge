@@ -591,10 +591,11 @@ test.describe('emote tag runs', () => {
     expect(sevenTv.adds).toEqual([]);
     expect(sevenTv.removes).toEqual([]);
     expect(syncImported).toEqual([]);
-    // Played in: the tag's page now offers the clear-out and says so.
+    // Played in: the tag's page now offers the clear-out.
     await expect(clearOut(page)).toBeVisible();
-    // The played-in state opens with "über den Tag ins Set geholt" wherever it stands (detail head), whatever follows.
-    await expect(page.getByText(/^über den Tag ins Set geholt\b/).first()).toBeVisible();
+    // An empty report placed nothing, so the tag has no placements: the detail head's state line
+    // ("über den Tag ins Set geholt am …") and the list's placed count stay hidden alike.
+    await expect(page.getByText(/über den Tag ins Set geholt/)).toHaveCount(0);
   });
 
   test('offers no "Ins Set holen" for a tag whose emotes are all in the set — only "Aus dem Set entfernen", played in or not', async ({
