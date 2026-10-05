@@ -258,6 +258,7 @@ export class TagRunActions {
    *  comparisons. */
   private request(): TagRunRequest {
     const tag = this.tag();
+    const subject = this.subject();
     return {
       channelName: this.channelName(),
       tag: { id: tag.id, name: tag.name },
@@ -265,6 +266,7 @@ export class TagRunActions {
       activeEmoteSetId: this.activeEmoteSetId,
       pending: this.pending,
       notice: this.notice,
+      isCurrent: () => this.subject() === subject,
       onFeedback: (key, params) => this.feedback.emit({ key, params }),
       onCompleted: () => this.completed.emit(),
     };

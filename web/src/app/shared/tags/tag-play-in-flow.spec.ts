@@ -107,6 +107,8 @@ interface Harness {
   calls: string[];
   request: TagRunRequest;
   active: WritableSignal<string | null>;
+  /** Whether the host still shows the request's tag. */
+  current: WritableSignal<boolean>;
   pending: WritableSignal<boolean>;
   notice: WritableSignal<TagRunNotice | null>;
   onFeedback: ReturnType<typeof vi.fn>;
@@ -219,6 +221,7 @@ function setup(
   } as unknown as SevenTvRunArbiter;
 
   const active = signal<string | null>('set-active');
+  const current = signal(true);
   const pending = signal(false);
   const notice = signal<TagRunNotice | null>(null);
   const onFeedback = vi.fn();
@@ -231,6 +234,7 @@ function setup(
     activeEmoteSetId: active,
     pending,
     notice,
+    isCurrent: () => current(),
     onFeedback,
     onCompleted,
   };
@@ -252,6 +256,7 @@ function setup(
     calls,
     request,
     active,
+    current,
     pending,
     notice,
     onFeedback,
@@ -461,6 +466,30 @@ describe('startTagPlayInFlow', () => {
     });
   });
 
+  describe('a failure that arrives after the host moved on to another tag', () => {
+    it.each([
+      ['a failed entry read', { entries: throwError(() => new Error('x')) }],
+      ['a failed live read', { live: () => throwError(() => new Error('x')) }],
+      ['a refused registration', { registration: () => httpError(503) }],
+    ])('raises no banner for %s, and ends pending', (_, options) => {
+      const harness = setup(options);
+      harness.current.set(false);
+      harness.run();
+
+      expect(harness.notice()).toBeNull();
+      expect(harness.pending()).toBe(false);
+    });
+
+    it('raises no banner for a failed report', () => {
+      const harness = setup({ entries: of(entriesFor(['in-1'])), report: () => httpError(500) });
+      harness.current.set(false);
+      harness.run();
+
+      expect(harness.notice()).toBeNull();
+      expect(harness.pending()).toBe(false);
+    });
+  });
+
   describe('nothing to add', () => {
     it('sends the empty play-in report at once and says every emote is already there', () => {
       const harness = setup({ entries: of(entriesFor(['in-1', 'in-2'])) });
@@ -478,6 +507,21 @@ describe('startTagPlayInFlow', () => {
         tag: TAG.name,
       });
       expect(harness.onCompleted).toHaveBeenCalledOnce();
+      expect(harness.pending()).toBe(false);
+    });
+
+    it('sends no report and says "set changed" when the set was switched before it', () => {
+      const live = new Subject<unknown>();
+      const harness = setup({ entries: of(entriesFor(['in-1', 'in-2'])), live: () => live });
+      harness.run();
+      harness.active.set('set-other');
+      live.next(setPage(['in-1', 'in-2']));
+      live.complete();
+
+      expect(harness.reportPlacements).not.toHaveBeenCalled();
+      expect(harness.onFeedback).not.toHaveBeenCalled();
+      expect(harness.onCompleted).not.toHaveBeenCalled();
+      expect(harness.notice()).toEqual({ key: 'tags.errors.setChanged' });
       expect(harness.pending()).toBe(false);
     });
 

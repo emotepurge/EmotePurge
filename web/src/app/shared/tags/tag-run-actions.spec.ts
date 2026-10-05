@@ -3,7 +3,7 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { Observable, firstValueFrom, of, throwError } from 'rxjs';
+import { Observable, Subject, firstValueFrom, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
@@ -344,6 +344,20 @@ describe('TagRunActions', () => {
     fixture.detectChanges();
     expect(alert()).toBeNull();
     expect(listEntries).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops a flow's late failure once the host shows another tag", () => {
+    const late = new Subject<unknown>();
+    registration = () => late;
+    button('Einspielen')!.click();
+    fixture.componentRef.setInput('tag', summary({ id: 8, name: 'Other' }));
+    fixture.detectChanges();
+
+    late.error(new HttpErrorResponse({ status: 503 }));
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('[role="alert"]')).toBeNull();
+    expect(button('Einspielen')!.disabled).toBe(false);
   });
 
   it('reports completion when a tag run it can see closes, and again when its report succeeds on a retry', () => {

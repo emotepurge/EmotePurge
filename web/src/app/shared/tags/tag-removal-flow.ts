@@ -10,6 +10,7 @@ import {
   TagRunFlowDeps,
   TagRunRequest,
   prepareTagRun,
+  raiseNotice,
   sendTagReport,
 } from './tag-play-in-flow';
 import { TagRemovalProposal, proposeTagRemoval } from './tag-removal';
@@ -140,7 +141,7 @@ function confirm(
   checkedIds: readonly string[],
 ): void {
   const abort = (leadKey: string, key: string, params?: Record<string, unknown>): void => {
-    request.notice.set({ leadKey, key, ...(params === undefined ? {} : { params }) });
+    raiseNotice(request, { leadKey, key, ...(params === undefined ? {} : { params }) });
     // An attempt that ended in an abort: the claim keeps its notice window, as in the delete chain.
     deps.deleteService.endConfirmedRun();
     request.pending.set(false);

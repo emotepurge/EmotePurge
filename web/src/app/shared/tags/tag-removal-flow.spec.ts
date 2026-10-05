@@ -124,6 +124,8 @@ const EDITABLE: EditableSetResolution = {
 interface Harness {
   calls: string[];
   active: WritableSignal<string | null>;
+  /** Whether the host still shows the request's tag. */
+  current: WritableSignal<boolean>;
   hasToken: WritableSignal<boolean>;
   claim: WritableSignal<SevenTvRunClaim | null>;
   pending: WritableSignal<boolean>;
@@ -225,6 +227,7 @@ function setup(
 
   const hasToken = signal(true);
   const active = signal<string | null>('set-active');
+  const current = signal(true);
   const pending = signal(false);
   const notice = signal<TagRunNotice | null>(null);
   const onFeedback = vi.fn();
@@ -237,6 +240,7 @@ function setup(
     activeEmoteSetId: active,
     pending,
     notice,
+    isCurrent: () => current(),
     onFeedback,
     onCompleted,
   };
@@ -257,6 +261,7 @@ function setup(
   return {
     calls,
     active,
+    current,
     hasToken,
     claim,
     pending,
@@ -480,6 +485,31 @@ describe('startTagRemovalFlow', () => {
       expect(harness.startDelete).not.toHaveBeenCalled();
       expect(harness.reportRemoval).not.toHaveBeenCalled();
       expect(harness.pending()).toBe(false);
+    });
+  });
+
+  describe('a failure that arrives after the host moved on to another tag', () => {
+    it('raises no banner for a failed entry read, and ends pending', () => {
+      const entries = new Subject<EmoteTagEntries>();
+      const harness = setup({ entries });
+      harness.run();
+      harness.current.set(false);
+      entries.error(new Error('offline'));
+
+      expect(harness.notice()).toBeNull();
+      expect(harness.pending()).toBe(false);
+    });
+
+    it('raises no abort banner for a confirmation behind a switched set', () => {
+      const harness = setup();
+      harness.run();
+      harness.current.set(false);
+      harness.active.set('set-other');
+      confirmationClosed(harness).next({ checkedIds: [] });
+
+      expect(harness.notice()).toBeNull();
+      expect(harness.pending()).toBe(false);
+      expect(harness.startDelete).not.toHaveBeenCalled();
     });
   });
 

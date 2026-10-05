@@ -87,10 +87,25 @@ export interface TagRunRequest {
   /** `true` from the click until the flow hands over to a run or a dialog it does not own, or ends. */
   pending: WritableSignal<boolean>;
   notice: WritableSignal<TagRunNotice | null>;
+  /** Whether the host still shows this request's tag and channel. A banner raised after the host
+   *  moved on to another tag is dropped (`raiseNotice`) — its retry would replay this request under
+   *  the other tag's buttons. Absent: always current. */
+  isCurrent?(): boolean;
   /** A transient message for the host's own status region. */
   onFeedback(key: string, params: Record<string, unknown>): void;
   /** A report without a run succeeded — the host reloads the tag. */
   onCompleted(): void;
+}
+
+/** Shows a flow's failure banner — unless the host has moved on to another tag or channel since
+ *  the click, whose buttons it would then appear under. */
+export function raiseNotice(
+  request: Pick<TagRunRequest, 'notice' | 'isCurrent'>,
+  notice: TagRunNotice,
+): void {
+  if (request.isCurrent?.() ?? true) {
+    request.notice.set(notice);
+  }
 }
 
 /** What the shared steps hand over: the frozen operation, the entries read for it, the set owner
@@ -161,6 +176,13 @@ export function startTagPlayInFlow(deps: TagRunFlowDeps, request: TagRunRequest)
 
       const partition = partitionTagPlayIn(prepared.entries.entries, prepared.live);
       if (partition.toAdd.length === 0) {
+        // No dialog and no import hook here, so no later set guard: the report marks the tag as
+        // played in for the frozen set, which must still be the active one (host-bound read).
+        if (prepared.activeEmoteSetId() !== prepared.frozenSetId) {
+          request.pending.set(false);
+          raiseNotice(request, { key: 'tags.errors.setChanged' });
+          return;
+        }
         reportNothingToAdd();
         return;
       }
@@ -177,7 +199,7 @@ export function startTagPlayInFlow(deps: TagRunFlowDeps, request: TagRunRequest)
         context: { tagId: request.tag.id, operationId: prepared.operationId },
         frozenSetId: prepared.frozenSetId,
         activeEmoteSetId: prepared.activeEmoteSetId,
-        onSetChanged: () => request.notice.set({ key: 'tags.errors.setChanged' }),
+        onSetChanged: () => raiseNotice(request, { key: 'tags.errors.setChanged' }),
         onNothingToImport: reportNothingToAdd,
       });
     },
@@ -206,7 +228,7 @@ export function prepareTagRun(
   const { channelName, tag } = request;
   const block = (notice: TagRunNotice): void => {
     request.pending.set(false);
-    request.notice.set(notice);
+    raiseNotice(request, notice);
   };
   request.notice.set(null);
   request.pending.set(true);
@@ -283,10 +305,11 @@ export function prepareTagRun(
               return;
             }
             // No second look at the page's active set here, unlike the delete chain after its
-            // own pre-check (`startDeleteFlow`, Codex C3): nothing is written before the
-            // confirm-time set guard, and that guard (the clear-out's confirm, the import hook's
-            // start) is the gate. A switch while this check was out costs at most a dialog for a
-            // set that already moved on — its confirmation then aborts with "set changed".
+            // own pre-check (`startDeleteFlow`, Codex C3): nothing is written to 7TV before a
+            // set guard, and the guards are the gate — the clear-out's confirm, the import hook's
+            // start, and for "all present" the check right before its report. A switch while this
+            // check was out costs at most a dialog for a set that already moved on, whose
+            // confirmation then aborts with "set changed".
             register(resolution.ownerTwitchChannelId, entries);
           });
       },
@@ -315,7 +338,7 @@ export function hostBoundActiveSet(
  * — the same operation id, so a report that did reach the server is only replayed (E27).
  */
 export function sendTagReport(
-  request: Pick<TagRunRequest, 'pending' | 'notice' | 'onCompleted'>,
+  request: Pick<TagRunRequest, 'pending' | 'notice' | 'onCompleted' | 'isCurrent'>,
   send: () => Observable<unknown>,
   onSuccess: () => void,
 ): void {
@@ -329,7 +352,7 @@ export function sendTagReport(
     },
     error: () => {
       request.pending.set(false);
-      request.notice.set({
+      raiseNotice(request, {
         key: 'tags.errors.reportFailed',
         retry: () => sendTagReport(request, send, onSuccess),
       });
