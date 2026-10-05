@@ -231,10 +231,19 @@ const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
           (decide)="onDecide($event)"
         />
       } @else {
-        <!-- Branches on the three computeds below, never on origin.kind: with a fourth origin
+        <!-- Branches on the computeds below, never on origin.kind: with a fourth origin
              "not a channel" and "is a file" stopped being the same question, and a template test is
              exactly where that goes unnoticed (spec F6). -->
-        @if (originChannelName(); as channel) {
+        @if (tagOrigin(); as tag) {
+          <p class="text-sm text-fg-secondary">
+            {{ 'import.confirm.originTag' | transloco: { tag: tag.tagName } }}
+            @if (tag.alreadyInSetCount > 0) {
+              <span class="text-fg-muted">
+                · {{ tag.skippedKey | transloco: { count: tag.alreadyInSetCount } }}</span
+              >
+            }
+          </p>
+        } @else if (originChannelName(); as channel) {
           <p class="text-sm text-fg-secondary">
             {{ 'import.confirm.originChannel' | transloco: { channel } }}
           </p>
@@ -670,6 +679,26 @@ export class ImportConfirmDialog {
     importOriginSourceChannelName(this.data.source.origin),
   );
 
+  /**
+   * The tag origin — the only origin that carries a `channelName` which is not a source, which is
+   * why it is asked first in the template and why `originChannelName` answers `null` for it. The
+   * "already in the set" count rides along so the line can say both halves at once.
+   */
+  protected readonly tagOrigin = computed<{
+    tagName: string;
+    alreadyInSetCount: number;
+    skippedKey: string;
+  } | null>(() => {
+    const origin = this.data.source.origin;
+    return origin.kind === 'tag'
+      ? {
+          tagName: origin.tagName,
+          alreadyInSetCount: origin.alreadyInSetCount,
+          skippedKey: pluralKey(origin.alreadyInSetCount, 'import.confirm.originTagSkipped'),
+        }
+      : null;
+  });
+
   /** The file origin itself, or `null` — the one narrowing the file block and `fileDetails` need,
    *  and the reason neither has to ask for a `kind` any more. */
   protected readonly fileOrigin = computed<Extract<ImportOrigin, { kind: 'file' }> | null>(() => {
@@ -679,7 +708,7 @@ export class ImportConfirmDialog {
 
   /**
    * The leaderboard origin's sort, already translated and ready to spread as the transloco params
-   * for `import.confirm.originLeaderboard` — or `null` for the other three origins. A leaderboard
+   * for `import.confirm.originLeaderboard` — or `null` for the other origins. A leaderboard
    * pick has no source channel at all (E2/E8): the sort *is* the origin, and this reads it through
    * the same `audit.details.leaderboardSort.<code>` table the audit view's `renderDetail` uses, so
    * the dialog and a later audit row for the same import say exactly the same thing (E2: "Der

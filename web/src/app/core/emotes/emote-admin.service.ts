@@ -26,7 +26,7 @@ export interface EmoteSetWarning {
 export interface SyncImportedBody {
   sevenTvEmoteIds: string[];
   sourceChannelName: string | null;
-  sourceKind: 'channel' | 'file' | 'seventv-channel' | 'seventv-leaderboard';
+  sourceKind: 'channel' | 'file' | 'seventv-channel' | 'seventv-leaderboard' | 'tag';
   leaderboardSort: LeaderboardSort | null;
   /** The 7TV set the run actually wrote into (spec 6.7, E5, AK 44) — the loaded target's `setId`,
    *  sent on *every* call this client makes, active or not. The server keeps the field optional

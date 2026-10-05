@@ -396,7 +396,7 @@ const KNOWN_RUN_ITEM_STATUSES: ReadonlySet<string> = new Set<RunItemStatus>([
  * only ever constructs a `kind: 'file'` origin from fields it already trusts). `null` for anything
  * that is not an object, has an unrecognized `kind`, or is missing a field its `kind` requires —
  * fail closed rather than pass a shape-mismatched value on to a caller that reads it as if it were
- * one of the four real variants.
+ * one of the five real variants.
  */
 function readImportOrigin(value: unknown): ImportOrigin | null {
   if (typeof value !== 'object' || value === null) {
@@ -433,6 +433,18 @@ function readImportOrigin(value: unknown): ImportOrigin | null {
       return typeof origin['sortBy'] === 'string' && isLeaderboardSort(origin['sortBy'])
         ? { kind: 'seventv-leaderboard', sortBy: origin['sortBy'] }
         : null;
+    case 'tag': {
+      const { tagId, tagName, channelName, alreadyInSetCount } = origin;
+      return typeof tagId === 'number' &&
+        Number.isSafeInteger(tagId) &&
+        typeof tagName === 'string' &&
+        typeof channelName === 'string' &&
+        typeof alreadyInSetCount === 'number' &&
+        Number.isSafeInteger(alreadyInSetCount) &&
+        alreadyInSetCount >= 0
+        ? { kind: 'tag', tagId, tagName, channelName, alreadyInSetCount }
+        : null;
+    }
     default:
       return null;
   }

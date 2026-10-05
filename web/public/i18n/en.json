@@ -1289,6 +1289,11 @@
       "originFile": "From file {{ fileName }}",
       "originFileDetails": "Exported from {{ channel }}, {{ date }}",
       "originLeaderboard": "From 7TV's leaderboard: {{ sort }}",
+      "originTag": "From tag {{ tag }}",
+      "originTagSkipped": {
+        "one": "{{ count }} is already in the set",
+        "other": "{{ count }} are already in the set"
+      },
       "dateUnknown": "date unknown",
       "channelUnknown": "channel unknown",
       "target": "Target: {{ channel }} · set {{ setName }}",
@@ -1500,6 +1505,7 @@
         "channel": "The transfer came from the channel {{ channel }}.",
         "file": "The transfer came from the file {{ fileName }}.",
         "leaderboard": "The transfer came from 7TV's leaderboard: {{ sort }}.",
+        "tag": "The transfer came from the tag {{ tag }}.",
         "unknown": "The file does not say where the transfer came from."
       },
       "setLine": "In the set “{{ setName }}”.",

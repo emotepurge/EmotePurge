@@ -1289,6 +1289,11 @@
       "originFile": "Aus Datei {{ fileName }}",
       "originFileDetails": "Export aus {{ channel }}, {{ date }}",
       "originLeaderboard": "Aus 7TVs Bestenliste: {{ sort }}",
+      "originTag": "Aus Tag {{ tag }}",
+      "originTagSkipped": {
+        "one": "{{ count }} ist schon im Set",
+        "other": "{{ count }} sind schon im Set"
+      },
       "dateUnknown": "Datum unbekannt",
       "channelUnknown": "Kanal unbekannt",
       "target": "Ziel: {{ channel }} · Set {{ setName }}",
@@ -1500,6 +1505,7 @@
         "channel": "Die Übertragung kam aus dem Kanal {{ channel }}.",
         "file": "Die Übertragung kam aus der Datei {{ fileName }}.",
         "leaderboard": "Die Übertragung kam aus 7TVs Bestenliste: {{ sort }}.",
+        "tag": "Die Übertragung kam aus dem Tag {{ tag }}.",
         "unknown": "Woher die Übertragung kam, nennt die Datei nicht."
       },
       "setLine": "Im Set „{{ setName }}“.",

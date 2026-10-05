@@ -72,6 +72,11 @@ const DE_TRANSLATIONS = {
       originFile: 'Aus Datei {{ fileName }}',
       originFileDetails: 'Export aus {{ channel }}, {{ date }}',
       originLeaderboard: 'Aus 7TVs Bestenliste: {{ sort }}',
+      originTag: 'Aus Tag {{ tag }}',
+      originTagSkipped: {
+        one: '{{ count }} ist schon im Set',
+        other: '{{ count }} sind schon im Set',
+      },
       dateUnknown: 'Datum unbekannt',
       channelUnknown: 'Kanal unbekannt',
       target: 'Ziel: {{ channel }} · Set {{ setName }}',
@@ -994,6 +999,47 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.text()).toContain('Aus 7TVs Bestenliste: 7TV Trend heute');
       expect(dialog.text()).not.toContain('Aus Kanal');
       expect(dialog.text()).not.toContain('Aus Datei');
+    });
+
+    describe('tag origin', () => {
+      function tagSource(alreadyInSetCount: number): ImportSource {
+        return {
+          origin: {
+            kind: 'tag',
+            tagId: 7,
+            tagName: 'Stronghold',
+            channelName: 'handofblood',
+            alreadyInSetCount,
+          },
+          rows: [row('new-1', 'Kappa')],
+          duplicatesCollapsed: 0,
+          discardedRows: 0,
+        };
+      }
+
+      it('shows the tag line and not the channel line, although the origin carries a channel', () => {
+        const dialog = render({ source: tagSource(0) });
+
+        expect(dialog.text()).toContain('Aus Tag Stronghold');
+        expect(dialog.text()).not.toContain('Aus Kanal');
+        expect(dialog.text()).not.toContain('Aus Datei');
+        expect(dialog.text()).not.toContain('schon im Set');
+      });
+
+      it('adds how many were already in the set, in the singular', () => {
+        const dialog = render({ source: tagSource(1) });
+
+        expect(dialog.text()).toContain('Aus Tag Stronghold');
+        expect(dialog.text()).toContain('1 ist schon im Set');
+      });
+
+      it('says the plural for three', () => {
+        const dialog = render({ source: tagSource(3) });
+
+        expect(dialog.text()).toContain('Aus Tag Stronghold');
+        expect(dialog.text()).toContain('3 sind schon im Set');
+        expect(dialog.text()).not.toContain('Aus Kanal');
+      });
     });
 
     it('names the other sort for the other leaderboard pick', () => {

@@ -323,6 +323,27 @@ describe('UndoConfirmDialog', () => {
     return TestBed.inject(HttpTestingController);
   }
 
+  describe('where the transfer came from', () => {
+    it('names a tag origin by its tag, not as a channel and not as unknown', () => {
+      const dialog = render({
+        sourceFile: {
+          ...FINISHED_FILE,
+          origin: {
+            kind: 'tag',
+            tagId: 7,
+            tagName: 'Stronghold',
+            channelName: 'sourcechannel',
+            alreadyInSetCount: 0,
+          },
+        },
+      });
+
+      expect(dialog.text()).toContain('Die Übertragung kam aus dem Tag Stronghold.');
+      expect(dialog.text()).not.toContain('Kanal sourcechannel');
+      expect(dialog.text()).not.toContain('nennt die Datei nicht');
+    });
+  });
+
   describe('the read it classifies (K3, AK 7)', () => {
     it('classifies the flow’s read at once, without a request of its own, and widens the pane', () => {
       const dialog = render();

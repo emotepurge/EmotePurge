@@ -398,6 +398,22 @@ a removal 7TV did not confirm must not make the server forget an emote that is s
 `web/src/app/core/seven-tv/tag-run-settlement.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
 `web/src/app/shared/audit/audit-row.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
+**The `'tag'` import origin reaches every consumer of the union.** `ImportOrigin` gains
+`{ kind: 'tag'; tagId; tagName; channelName; alreadyInSetCount }`. Its `channelName` is the tag's own
+channel, not a source: read as one it would show "from channel X" and send a source name the server
+refuses for this kind. So `importOriginSourceChannelName` and `importOriginLeaderboardSort` answer `null`
+for it (both exhaustive), the confirm dialog asks a `tagOrigin` computed first (line "Aus Tag X", plus
+"N sind schon im Set" when `alreadyInSetCount > 0`), the undo dialog has its own label, the two
+`sourceKind` wire unions gain `'tag'`, and `readImportOrigin` in the transfer-run export validates the
+tag fields and fails closed to `null`. `reportImported` needs no change: `sourceKind: run.origin.kind`
+already sends `"tag"`. The tag name travels inside the origin (dialogs, export file) but never reaches
+the audit log (E30).
+
+**Betrifft (Task 7, origin):** `web/src/app/core/seven-tv/import-source.ts` ·
+`web/src/app/core/emotes/emote-admin.service.ts` · `web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` · `web/src/app/shared/seven-tv/undo-confirm-dialog.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

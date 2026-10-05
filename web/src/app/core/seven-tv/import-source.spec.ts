@@ -73,6 +73,18 @@ describe('importOriginSourceChannelName', () => {
     ).toBeNull();
   });
 
+  it('sends no channel for a tag origin, although it carries its own channel name', () => {
+    expect(
+      importOriginSourceChannelName({
+        kind: 'tag',
+        tagId: 7,
+        tagName: 'Stronghold',
+        channelName: 'handofblood',
+        alreadyInSetCount: 3,
+      }),
+    ).toBeNull();
+  });
+
   it('sends no channel for a leaderboard origin — it has no source channel at all', () => {
     expect(
       importOriginSourceChannelName({ kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' }),
@@ -88,6 +100,18 @@ describe('importOriginLeaderboardSort', () => {
     expect(
       importOriginLeaderboardSort({ kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' }),
     ).toBe('TOP_ALL_TIME');
+  });
+
+  it('sends no sort for a tag origin', () => {
+    expect(
+      importOriginLeaderboardSort({
+        kind: 'tag',
+        tagId: 7,
+        tagName: 'Stronghold',
+        channelName: 'handofblood',
+        alreadyInSetCount: 3,
+      }),
+    ).toBeNull();
   });
 
   it('sends no sort for the three origins that are not a leaderboard pick', () => {
