@@ -23,7 +23,7 @@ import { SevenTvTokenService } from './seven-tv-token.service';
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
 // call that had something to report. Same 4000 ms convention as every other transient status in
 // this app (docs/UI-Designsprache.md §4.5 — usage-stats-page's SELECTION_PRUNED_FEEDBACK_MS,
-// channel-workspace-layout's RESYNC_FEEDBACK_MS). Lives here rather than on the page that renders
+// admin-channels-page's resync feedback timer). Lives here rather than on the page that renders
 // it because the *visibility* of the page's own dock depends on this flag (see
 // `dockVisible`/`action-dock.ts`) — a refused, all-duplicates run leaves no run/queue for the dock
 // to mount on otherwise, which is exactly the bug this exists to fix.

@@ -206,12 +206,13 @@ public static class ChannelEndpoints
         // say so — the same reason sync-deleted lives here.
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
-        // Self-service for the most common support case there is: "I added an emote and it is not
-        // showing up". The answer used to be "wait for the next 60-second tick" or "ask the admin".
+        // Called by the web app's import and restore flows (including the undo after a mass delete);
+        // the user-facing "resync now" button is gone, the worker's periodic resync covers the
+        // "I added an emote and it is not showing up" case.
         //
         // Behind UsageStatsAccessAuthorizationFilter, the *wider* check — the opposite choice from
-        // the audit log above, and deliberately so: the person with this problem is usually the
-        // channel's 7TV editor, the one who just added the emote. A resync only reads from 7TV and
+        // the audit log above, and deliberately so: those flows run for the channel's 7TV editors
+        // too, not only for managers. A resync only reads from 7TV and
         // writes nothing anyone else owns; the abuse surface is cost, not authority, and cost is
         // what the cooldown below answers.
         group.MapPost("/{channelName}/resync", async (

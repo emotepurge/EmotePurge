@@ -206,7 +206,7 @@ const SYNC_FAILURE_RECHECK_INTERVAL_MS = 60000;
 const DISTRIBUTION_BUCKETS = 96;
 
 // Long enough to read, short enough that a stale notice never lingers — same value and reasoning as
-// channel-workspace-layout's RESYNC_FEEDBACK_MS and admin-channels-page's own feedback timer.
+// admin-channels-page's own feedback timer.
 const SELECTION_PRUNED_FEEDBACK_MS = 4000;
 
 function sortableLastUsed(lastUsedDate: string | null): number {
@@ -302,6 +302,11 @@ export class UsageStatsPage {
   });
   protected readonly canManage = computed(
     () => this.permissionsResource.value()?.canManage ?? false,
+  );
+  // hasValue(), not value()?. — an errored resource's value() throws. Gates the automatic-sync note:
+  // the worker only re-reads active channels, so the note would be false for a deactivated one.
+  protected readonly botActive = computed(
+    () => this.permissionsResource.hasValue() && this.permissionsResource.value().isBotActive,
   );
 
   // A computed, not a field read in the constructor: channelName is a required input and reading it
@@ -1796,8 +1801,8 @@ export class UsageStatsPage {
   }
 
   // A transient inline status rather than a toast — there is no toast service (see
-  // admin-channels-page's showResyncFeedback and this one, the two
-  // existing instances of this exact pattern). Placed at the emote-count line rather than the dock,
+  // admin-channels-page's showResyncFeedback, the other
+  // existing instance of this exact pattern). Placed at the emote-count line rather than the dock,
   // because the dock unmounts the moment the selection it is bound to reaches zero — precisely the
   // case where every selected emote turned out to be gone (#94).
   private showSelectionPrunedFeedback(count: number): void {

@@ -195,22 +195,42 @@ test.describe('authenticated broadcaster', () => {
   });
 
   // The manual resync button is gone (the worker re-reads every active channel on its own); the
-  // endpoint stays for the import/delete/undo/restore flows and the admin page. The page says so
+  // endpoint stays for the import and restore flows (incl. the undo after a mass delete) and the admin page. The page says so
   // instead, next to the set status — for every audience that sees the usage page, 7TV editors
   // included.
   test('no resync button, a quiet note on the automatic sync instead', async ({ page }) => {
     await mockChannelPermissions(page, 'sensitron', {
       canManage: false,
       canViewUsageStats: true,
+      isBotActive: true,
     });
     await mockActiveEmoteSet(page, 'sensitron');
     await mockUsageTotals(page, 'sensitron', []);
 
     await page.goto('/channels/sensitron/usage-stats');
 
-    await expect(page.getByText('Wird regelmäßig automatisch mit 7TV abgeglichen.')).toBeVisible();
+    await expect(
+      page.getByText('Das Emote-Set wird regelmäßig automatisch mit 7TV abgeglichen.'),
+    ).toBeVisible();
     await expect(page.getByRole('button', { name: /synchronisieren/i })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Channel verlassen' })).toHaveCount(0);
+  });
+
+  // The worker no longer re-reads a deactivated channel, so the note would be false there — and a
+  // 7TV editor gets no deactivation banner that could contradict it.
+  test('no automatic-sync note on a deactivated channel', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron', {
+      canManage: false,
+      canViewUsageStats: true,
+      isBotActive: false,
+    });
+    await mockActiveEmoteSet(page, 'sensitron');
+    await mockUsageTotals(page, 'sensitron', []);
+
+    await page.goto('/channels/sensitron/usage-stats');
+
+    await expect(page.getByText(/Neu hinzugefügte Emotes/)).toHaveCount(0);
+    await expect(page.getByText('Das Emote-Set wird regelmäßig')).toHaveCount(0);
   });
 
   // Would have caught a regression back to an inner scroll container: with one the window never

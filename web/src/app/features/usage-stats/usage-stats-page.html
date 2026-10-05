@@ -387,9 +387,12 @@
       [pendingRemoval]="selection.selectedItems().length"
     />
     <!-- Replaces the manual resync button: the worker re-reads every active channel on its own, and
-         a click read the same (up to 30 min stale) 7TV cache. Inside the same @if as the budget bar
-         so both arrive in one frame — nothing below shifts when only this line shows up late. -->
-    <p class="text-xs text-fg-muted">{{ 'usageStats.autoSyncNote' | transloco }}</p>
+         a click read the same (up to 30 min stale) 7TV cache. Only for an active channel — a
+         deactivated one is no longer re-read, so the note would be false there. Inside the same @if
+         as the budget bar so both arrive in one frame. -->
+    @if (botActive()) {
+      <p class="text-xs text-fg-muted">{{ 'usageStats.autoSyncNote' | transloco }}</p>
+    }
   }
 
   <!-- The ranked usage curve of the whole set, bucketed so it stays a curve rather than a smear at

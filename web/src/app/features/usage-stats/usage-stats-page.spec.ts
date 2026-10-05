@@ -439,6 +439,35 @@ describe('UsageStatsPage — refreshSetStatus channel race (#112 regression)', (
     // resolved rangeResolved — so this is also where importScopeCurrent() turns true.
     expect(component['importScopeCurrent']()).toBe(true);
   });
+
+  // Gates the automatic-sync note: the worker no longer re-reads a deactivated channel.
+  it.each([
+    [true, true],
+    [false, false],
+  ])(
+    'botActive() follows isBotActive (%s) once permissions have loaded',
+    async (isBotActive, expected) => {
+      expect(component['botActive']()).toBe(false);
+
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: false, canViewUsageStats: true, isBotActive });
+      await vi.advanceTimersByTimeAsync(0);
+      fixture.detectChanges();
+
+      expect(component['botActive']()).toBe(expected);
+    },
+  );
+
+  it('botActive() stays false when the permissions request failed', async () => {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush(null, { status: 500, statusText: 'Server Error' });
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    expect(component['botActive']()).toBe(false);
+  });
 });
 
 /**
