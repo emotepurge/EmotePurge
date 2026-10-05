@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
-using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -12,7 +11,8 @@ namespace EmotePurge.Infrastructure.Services;
 /// <summary>
 /// <see cref="IEmoteTagService"/> on Postgres.
 /// <para>
-/// <b>Locking.</b> Every mutation — create, rename, delete, add entries, remove entries — runs in one
+/// <b>Locking.</b> Every mutation — create, rename, delete, add entries, remove entries, register an
+/// operation, apply a report — runs in one
 /// transaction that first takes the channel row with <c>FOR UPDATE</c>
 /// (<see cref="ChannelQueries.LoadChannelForUpdateAsync"/>) and then touches only the tag tables. That
 /// lock is the contract for both limits: under READ COMMITTED a count taken before an insert enforces
@@ -37,6 +37,7 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
 {
     private const string TagTargetType = "emoteTag";
     private const string TagNameIndexName = "IX_EmoteTags_ChannelId_NormalizedName";
+    private const string OperationPrimaryKeyName = "PK_EmoteTagOperations";
 
     private static readonly IReadOnlyDictionary<string, IReadOnlySet<long>> EmptyTagIdsByEmote =
         ReadOnlyDictionary<string, IReadOnlySet<long>>.Empty;
@@ -303,10 +304,10 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         string channelName, long tagId, IReadOnlyList<string>? sevenTvEmoteIds, CancellationToken cancellationToken = default)
     {
         var (inputStatus, ids) = CheckEmoteIds(sevenTvEmoteIds);
-        if (inputStatus is { } rejected)
+        if (inputStatus != EmoteTagIdListStatus.Ok)
         {
             return new EmoteTagAddEntriesResult(
-                rejected == EmoteIdsInputStatus.Empty ? EmoteTagAddEntriesStatus.EmoteIdsEmpty : EmoteTagAddEntriesStatus.EmoteIdsInvalid,
+                inputStatus == EmoteTagIdListStatus.Empty ? EmoteTagAddEntriesStatus.EmoteIdsEmpty : EmoteTagAddEntriesStatus.EmoteIdsInvalid,
                 0, 0, []);
         }
 
@@ -364,10 +365,10 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         string channelName, long tagId, IReadOnlyList<string>? sevenTvEmoteIds, CancellationToken cancellationToken = default)
     {
         var (inputStatus, ids) = CheckEmoteIds(sevenTvEmoteIds);
-        if (inputStatus is { } rejected)
+        if (inputStatus != EmoteTagIdListStatus.Ok)
         {
             return new EmoteTagRemoveEntriesResult(
-                rejected == EmoteIdsInputStatus.Empty ? EmoteTagRemoveEntriesStatus.EmoteIdsEmpty : EmoteTagRemoveEntriesStatus.EmoteIdsInvalid,
+                inputStatus == EmoteTagIdListStatus.Empty ? EmoteTagRemoveEntriesStatus.EmoteIdsEmpty : EmoteTagRemoveEntriesStatus.EmoteIdsInvalid,
                 0);
         }
 
@@ -390,6 +391,182 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         return new EmoteTagRemoveEntriesResult(EmoteTagRemoveEntriesStatus.Ok, removed);
     }
 
+    public async Task<TagOperationRegistrationResult> RegisterOperationAsync(
+        string channelName, long tagId, RegisterTagOperationRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!EmoteTagOperationKind.IsKnown(request.Kind))
+        {
+            // The handler answers an unknown kind with a 400 before it gets here; reaching this is a bug.
+            throw new ArgumentException($"Unknown tag operation kind '{request.Kind}'.", nameof(request));
+        }
+
+        // Why the browser registers before the run touches 7TV (E27): the registration time is the
+        // instant a later play-in report judges leave observations against. With the operation created
+        // only by the report, a late report could not tell "left after the run added it" from "left
+        // before the run began". Under the channel lock like every report, so a registration and a
+        // report of the same operation can never interleave.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var (status, _, tag) = await LoadForMutationAsync(channelName, tagId, cancellationToken);
+        if (status != EmoteTagMutationStatus.Ok)
+        {
+            return new TagOperationRegistrationResult(
+                status == EmoteTagMutationStatus.ChannelNotFound
+                    ? TagOperationRegistrationStatus.ChannelNotFound
+                    : TagOperationRegistrationStatus.TagNotFound,
+                null);
+        }
+
+        var existing = await db.EmoteTagOperations
+            .AsNoTracking()
+            .SingleOrDefaultAsync(o => o.OperationId == request.OperationId, cancellationToken);
+        if (existing is not null)
+        {
+            // Idempotent: a retried registration gets the stored instant back, never a fresh one — a
+            // later stamp would excuse leaves observed in between.
+            return IsSameOperation(existing, tag!.Id, request.Kind, request.EmoteSetId)
+                ? new TagOperationRegistrationResult(TagOperationRegistrationStatus.Replayed, existing.RegisteredAtUtc)
+                : new TagOperationRegistrationResult(TagOperationRegistrationStatus.Conflict, null);
+        }
+
+        // Truncated to what Postgres stores, so the first answer and every replay carry the same value.
+        var registeredAtUtc = TruncateToMicroseconds(DateTime.UtcNow);
+        db.EmoteTagOperations.Add(new EmoteTagOperation
+        {
+            OperationId = request.OperationId,
+            TagId = tag!.Id,
+            Kind = request.Kind,
+            SevenTvEmoteSetId = request.EmoteSetId,
+            RegisteredAtUtc = registeredAtUtc
+        });
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: OperationPrimaryKeyName,
+        })
+        {
+            // The same id registered at the same moment in another channel, whose lock does not order
+            // the two. That registration is for another tag, so this one is a conflict.
+            return new TagOperationRegistrationResult(TagOperationRegistrationStatus.Conflict, null);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return new TagOperationRegistrationResult(TagOperationRegistrationStatus.Ok, registeredAtUtc);
+    }
+
+    public async Task<TagPlacementReportResult> ReportPlacementsAsync(
+        string channelName, long tagId, TagPlacementReport report, AuditActor actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        ArgumentNullException.ThrowIfNull(actor);
+        var ids = DistinctOrdinal(report.SevenTvEmoteIds);
+
+        // Lock order (spec 5.5 rule 6): the channel row first, then only tag tables are written and
+        // leave observations read. The sync writes observations without this lock and no tag table,
+        // so it can wait for a report but never the other way round.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var (status, channel, tag) = await LoadForMutationAsync(channelName, tagId, cancellationToken);
+        if (status != EmoteTagMutationStatus.Ok)
+        {
+            return PlacementReportRejected(
+                status == EmoteTagMutationStatus.ChannelNotFound ? TagReportStatus.ChannelNotFound : TagReportStatus.TagNotFound);
+        }
+
+        var (operationStatus, operation) = await LoadOperationForReportAsync(
+            report.OperationId, tag!.Id, EmoteTagOperationKind.PlayIn, report.EmoteSetId, cancellationToken);
+        if (operationStatus != TagReportStatus.Ok)
+        {
+            return PlacementReportRejected(operationStatus);
+        }
+
+        if (operation!.AppliedAtUtc is not null)
+        {
+            // A retry of a report that already went through (E27): nothing is written, not even an audit row.
+            return new TagPlacementReportResult(TagReportStatus.Ok, true, 0, 0, [], []);
+        }
+
+        // Rule 2 of spec 5.5: only ids the tag has an entry for are placed (the composite FK would
+        // refuse the rest anyway). Read under the lock, so a parallel removal of an entry is either
+        // fully before this read or fully after the commit.
+        var entryIds = (await db.EmoteTagEntries
+                .Where(e => e.TagId == tag.Id && ids.Contains(e.SevenTvEmoteId))
+                .Select(e => e.SevenTvEmoteId)
+                .ToListAsync(cancellationToken))
+            .ToHashSet(StringComparer.Ordinal);
+        var notTaggedIds = ids.Where(id => !entryIds.Contains(id)).ToList();
+        var taggedIds = ids.Where(entryIds.Contains).ToList();
+
+        // Read causally, against the operation's registration — not against "now" and not against
+        // the report's arrival: only a leave observed after the run was registered can be one that
+        // happened after the run added the emote, so only such a leave makes the report's claim
+        // doubtful. An earlier leave (last week's Stronghold emotes leaving) precedes the run and says
+        // nothing about it. A leave that really happened before the registration but was only
+        // observed after it is discarded as well — fail-safe: a placement too few, never one too many.
+        // The verdict is the read-time rule itself (Holds), so a report never keeps what every later
+        // read would drop. Read after the channel lock: under READ COMMITTED this sees every
+        // observation committed before the report got the lock; one committed later is caught by the
+        // reads, which apply the same rule to the placement's anchor (counterexample 9).
+        var observedAt = await EmoteSetLeaveObservations.LoadLatestAsync(
+            db, channel!.Id, report.EmoteSetId, taggedIds, cancellationToken);
+        var discardedStaleIds = taggedIds
+            .Where(id => !Holds(operation.RegisteredAtUtc, observedAt.TryGetValue(id, out var observed) ? observed : null))
+            .ToList();
+        var toPlace = taggedIds.Except(discardedStaleIds, StringComparer.Ordinal).ToList();
+
+        var existing = await db.EmoteTagPlacements
+            .Where(p => p.TagId == tag.Id && p.SevenTvEmoteSetId == report.EmoteSetId && toPlace.Contains(p.SevenTvEmoteId))
+            .ToDictionaryAsync(p => p.SevenTvEmoteId, StringComparer.Ordinal, cancellationToken);
+        var now = DateTime.UtcNow;
+        foreach (var id in toPlace)
+        {
+            if (!existing.TryGetValue(id, out var placement))
+            {
+                placement = new EmoteTagPlacement { TagId = tag.Id, SevenTvEmoteId = id, SevenTvEmoteSetId = report.EmoteSetId };
+                db.EmoteTagPlacements.Add(placement);
+            }
+
+            // Rule 10 of spec 5.5: the upsert always overwrites, an existing row included. Otherwise an
+            // old, expired row would keep its old revision — a late removal report of that revision
+            // would still match it — and its old anchor, so the read-time rule would keep calling it
+            // expired although it was just reported again. The anchor is this operation's registration
+            // (F30); the reads look at nothing else.
+            placement.OperationId = operation.OperationId;
+            placement.PlacedAtUtc = now;
+            placement.RegisteredAtUtc = operation.RegisteredAtUtc;
+        }
+
+        // Always, with an empty list and with everything discarded too (E26): the tag was played in,
+        // and what of it is still there the next live read tells.
+        var activation = await db.EmoteTagActivations
+            .SingleOrDefaultAsync(a => a.TagId == tag.Id && a.SevenTvEmoteSetId == report.EmoteSetId, cancellationToken);
+        if (activation is null)
+        {
+            activation = new EmoteTagActivation { TagId = tag.Id, SevenTvEmoteSetId = report.EmoteSetId };
+            db.EmoteTagActivations.Add(activation);
+        }
+
+        activation.ActivatedAtUtc = now;
+        activation.OperationId = operation.OperationId;
+        operation.AppliedAtUtc = now;
+
+        var recordedCount = toPlace.Count - existing.Count;
+        AddTagAudit(actor, AuditActions.TagPlayedIn, channel.ChannelName, tag.Id, new
+        {
+            tagId = tag.Id,
+            emoteSetId = report.EmoteSetId,
+            operationId = operation.OperationId,
+            emoteCount = toPlace.Count
+        });
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return new TagPlacementReportResult(TagReportStatus.Ok, false, recordedCount, existing.Count, notTaggedIds, discardedStaleIds);
+    }
+
     /// <summary>
     /// Locks the channel row (the caller has opened the transaction) and loads one of <em>its</em>
     /// tags, tracked. A tag of another channel is <c>TagNotFound</c>, never "found but foreign".
@@ -407,6 +584,25 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         return tag is null
             ? (EmoteTagMutationStatus.TagNotFound, channel, null)
             : (EmoteTagMutationStatus.Ok, channel, tag);
+    }
+
+    /// <summary>
+    /// Loads a report's operation, tracked (the caller has taken the channel lock): unknown, or
+    /// registered for another tag, kind or set, rejects the report — in that order, before any
+    /// "already applied" check, so a replay of a foreign operation is still a conflict.
+    /// </summary>
+    private async Task<(TagReportStatus Status, EmoteTagOperation? Operation)> LoadOperationForReportAsync(
+        Guid operationId, long tagId, string kind, string emoteSetId, CancellationToken cancellationToken)
+    {
+        var operation = await db.EmoteTagOperations.SingleOrDefaultAsync(o => o.OperationId == operationId, cancellationToken);
+        if (operation is null)
+        {
+            return (TagReportStatus.OperationUnknown, null);
+        }
+
+        return IsSameOperation(operation, tagId, kind, emoteSetId)
+            ? (TagReportStatus.Ok, operation)
+            : (TagReportStatus.OperationConflict, null);
     }
 
     private Task<bool> IsNameTakenAsync(string channelId, string normalizedName, long? exceptTagId, CancellationToken cancellationToken) =>
@@ -600,6 +796,18 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         return (setId, string.Equals(setId, channel.ActiveEmoteSetId, StringComparison.Ordinal));
     }
 
+    /// <summary>Ordinal on kind and set id, like every comparison of those values.</summary>
+    private static bool IsSameOperation(EmoteTagOperation operation, long tagId, string kind, string emoteSetId) =>
+        operation.TagId == tagId
+        && string.Equals(operation.Kind, kind, StringComparison.Ordinal)
+        && string.Equals(operation.SevenTvEmoteSetId, emoteSetId, StringComparison.Ordinal);
+
+    private static TagPlacementReportResult PlacementReportRejected(TagReportStatus status) =>
+        new(status, false, 0, 0, [], []);
+
+    private static DateTime TruncateToMicroseconds(DateTime value) =>
+        new(value.Ticks - (value.Ticks % TimeSpan.TicksPerMicrosecond), value.Kind);
+
     /// <summary>
     /// The read-time rule for one emote in one set: a placement anchored at
     /// <paramref name="registeredAtUtc"/> (or a play-in registered then) holds when no leave observation
@@ -627,28 +835,17 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
     private static List<EmoteTagRefDto> OtherTagsIn(IReadOnlyList<EmoteTagRefDto> channelTags, long tagId, IReadOnlySet<long>? tagIds) =>
         tagIds is null ? [] : channelTags.Where(t => t.Id != tagId && tagIds.Contains(t.Id)).ToList();
 
-    /// <summary>Dedupes ordinally in request order; empty wins over unfit, and an oversized request counts as unfit.</summary>
-    private static (EmoteIdsInputStatus? Rejected, List<string> Ids) CheckEmoteIds(IReadOnlyList<string>? sevenTvEmoteIds)
+    /// <summary>
+    /// The shared id-list rule (<see cref="EmoteTagIdList.Check"/> — the Api applies the same one to the
+    /// report bodies), plus the ordinal de-duplication in request order for a list that passed.
+    /// </summary>
+    private static (EmoteTagIdListStatus Status, List<string> Ids) CheckEmoteIds(IReadOnlyList<string>? sevenTvEmoteIds)
     {
-        if (sevenTvEmoteIds is null || sevenTvEmoteIds.Count == 0)
-        {
-            return (EmoteIdsInputStatus.Empty, []);
-        }
-
-        if (sevenTvEmoteIds.Count > EmoteTagLimits.MaxIdsPerRequest
-            || !sevenTvEmoteIds.All(SevenTvEmoteIdValidation.IsValid))
-        {
-            return (EmoteIdsInputStatus.Invalid, []);
-        }
-
-        return (null, sevenTvEmoteIds.Distinct(StringComparer.Ordinal).ToList());
+        var status = EmoteTagIdList.Check(sevenTvEmoteIds);
+        return (status, status == EmoteTagIdListStatus.Ok ? DistinctOrdinal(sevenTvEmoteIds!) : []);
     }
 
-    private enum EmoteIdsInputStatus
-    {
-        Empty,
-        Invalid
-    }
+    private static List<string> DistinctOrdinal(IEnumerable<string> ids) => ids.Distinct(StringComparer.Ordinal).ToList();
 
     private sealed record ActivationState(long TagId, DateTime ActivatedAtUtc, Guid OperationId);
 

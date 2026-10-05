@@ -5,6 +5,10 @@ public static class EmoteTagOperationKind
 {
     public const string PlayIn = "playIn";
     public const string Removal = "removal";
+
+    /// <summary>Whether <paramref name="kind"/> is one of the two values, compared ordinally.</summary>
+    public static bool IsKnown(string? kind) =>
+        string.Equals(kind, PlayIn, StringComparison.Ordinal) || string.Equals(kind, Removal, StringComparison.Ordinal);
 }
 
 /// <summary>

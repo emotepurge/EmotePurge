@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Globalization;
 using System.Text.Json;
 using EmotePurge.Core.Entities;
@@ -6,6 +7,7 @@ using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
@@ -991,6 +993,521 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.Equal(addFirst ? 0 : 1, await verify.EmoteTagEntries.CountAsync(e => e.TagId == tag.Id));
     }
 
+    // ---- Registration and play-in report (T-C Task 4) --------------------------------------------
+    //
+    // Spec 6.4 and 5.5 rules 2, 6, 10; E10, E27, E33. Registration stamps the server clock; every
+    // report runs under the channel lock and is applied once per operation. Each counterexample of
+    // spec 5.5 ends with the invariant "inactive ⇒ no placement".
+
+    [Fact]
+    public async Task Register_IsIdempotent_TheRepeatIsReplayedWithTheSameInstant()
+    {
+        var channel = await SeedChannelAsync("tagregreplay");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var operationId = Guid.NewGuid();
+
+        var first = await RegisterAsync("tagregreplay", tag.Id, operationId);
+        var second = await RegisterAsync("tagregreplay", tag.Id, operationId);
+
+        Assert.Equal(TagOperationRegistrationStatus.Ok, first.Status);
+        Assert.Equal(TagOperationRegistrationStatus.Replayed, second.Status);
+        Assert.NotNull(first.RegisteredAtUtc);
+        Assert.Equal(first.RegisteredAtUtc, second.RegisteredAtUtc);
+        await using var verify = fixture.CreateDbContext();
+        var stored = Assert.Single(await verify.EmoteTagOperations.AsNoTracking().Where(o => o.TagId == tag.Id).ToListAsync());
+        Assert.Equal((operationId, EmoteTagOperationKind.PlayIn, ActiveSetId, first.RegisteredAtUtc.Value, (DateTime?)null),
+            (stored.OperationId, stored.Kind, stored.SevenTvEmoteSetId, stored.RegisteredAtUtc, stored.AppliedAtUtc));
+    }
+
+    [Fact]
+    public async Task Register_StampsTheServerClock_BetweenTwoReadingsOfTheTest()
+    {
+        var channel = await SeedChannelAsync("tagregclock");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+
+        var before = DateTime.UtcNow;
+        var result = await RegisterAsync("tagregclock", tag.Id, Guid.NewGuid(), kind: EmoteTagOperationKind.Removal);
+        var after = DateTime.UtcNow;
+
+        Assert.Equal(TagOperationRegistrationStatus.Ok, result.Status);
+        // The stamp is truncated to the microseconds Postgres keeps, so the lower bound is too.
+        Assert.InRange(result.RegisteredAtUtc!.Value, before.AddTicks(-(before.Ticks % TimeSpan.TicksPerMicrosecond)), after);
+        Assert.Equal(DateTimeKind.Utc, result.RegisteredAtUtc.Value.Kind);
+    }
+
+    [Theory]
+    [InlineData("tag")]
+    [InlineData("set")]
+    [InlineData("kind")]
+    public async Task Register_TheSameIdForAnotherTagSetOrKind_IsConflict_AndKeepsTheFirst(string differs)
+    {
+        var name = $"tagregconflict{differs}";
+        var channel = await SeedChannelAsync(name);
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var otherTag = await SeedTagAsync(channel.Id, "Halloween");
+        var operationId = Guid.NewGuid();
+        var first = await RegisterAsync(name, tag.Id, operationId);
+
+        var second = await RegisterAsync(
+            name,
+            differs == "tag" ? otherTag.Id : tag.Id,
+            operationId,
+            differs == "set" ? OtherSetId : ActiveSetId,
+            differs == "kind" ? EmoteTagOperationKind.Removal : EmoteTagOperationKind.PlayIn);
+
+        Assert.Equal(new TagOperationRegistrationResult(TagOperationRegistrationStatus.Conflict, null), second);
+        await using var verify = fixture.CreateDbContext();
+        var stored = await verify.EmoteTagOperations.AsNoTracking().SingleAsync(o => o.OperationId == operationId);
+        Assert.Equal((tag.Id, EmoteTagOperationKind.PlayIn, ActiveSetId, first.RegisteredAtUtc!.Value),
+            (stored.TagId, stored.Kind, stored.SevenTvEmoteSetId, stored.RegisteredAtUtc));
+    }
+
+    [Fact]
+    public async Task Register_AnUnknownChannelOrTag_OrATagOfAnotherChannel_IsRejected_AndAnUnknownKindThrows()
+    {
+        var channel = await SeedChannelAsync("tagregmissing");
+        var neighbour = await SeedChannelAsync("tagregmissing2");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var foreignTag = await SeedTagAsync(neighbour.Id, "Foreign");
+
+        Assert.Equal(TagOperationRegistrationStatus.ChannelNotFound, (await RegisterAsync("tagregnochannel", tag.Id, Guid.NewGuid())).Status);
+        Assert.Equal(TagOperationRegistrationStatus.TagNotFound, (await RegisterAsync("tagregmissing", foreignTag.Id, Guid.NewGuid())).Status);
+        Assert.Equal(TagOperationRegistrationStatus.TagNotFound, (await RegisterAsync("tagregmissing", long.MaxValue, Guid.NewGuid())).Status);
+        await Assert.ThrowsAsync<ArgumentException>(() => RegisterAsync("tagregmissing", tag.Id, Guid.NewGuid(), kind: "PlayIn"));
+
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagOperations.AnyAsync(o => o.TagId == tag.Id || o.TagId == foreignTag.Id));
+    }
+
+    // Two channels do not share a lock, so the same operation id registered in both at once meets at
+    // the primary key: one registration wins, the other is a conflict rather than a 500.
+    [Fact]
+    public async Task Race_TheSameIdRegisteredInTwoChannelsAtOnce_OneOk_OneConflict()
+    {
+        var alpha = await SeedChannelAsync("tagregracea");
+        var bravo = await SeedChannelAsync("tagregraceb");
+        var alphaTag = await SeedTagAsync(alpha.Id, "Stronghold");
+        var bravoTag = await SeedTagAsync(bravo.Id, "Stronghold");
+        var operationId = Guid.NewGuid();
+        var request = new RegisterTagOperationRequest(operationId, EmoteTagOperationKind.PlayIn, ActiveSetId);
+
+        var (first, second) = await RaceAsync(
+            "tagregrace",
+            "EmoteTagOperations",
+            service => service.RegisterOperationAsync("tagregracea", alphaTag.Id, request),
+            service => service.RegisterOperationAsync("tagregraceb", bravoTag.Id, request));
+
+        Assert.Equal(
+            [TagOperationRegistrationStatus.Ok, TagOperationRegistrationStatus.Conflict],
+            new[] { first.Status, second.Status }.Order());
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal(1, await verify.EmoteTagOperations.CountAsync(o => o.OperationId == operationId));
+    }
+
+    [Fact]
+    public async Task Report_AnUnknownChannelOrTag_OrAnUnregisteredOperation_IsRejected_AndWritesNothing()
+    {
+        var channel = await SeedChannelAsync("tagrepmissing");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var operationId = Guid.NewGuid();
+        await RegisterAsync("tagrepmissing", tag.Id, operationId);
+
+        Assert.Equal(TagReportStatus.ChannelNotFound, (await ReportAsync("tagrepnochannel", tag.Id, operationId, ActiveSetId, x)).Status);
+        Assert.Equal(TagReportStatus.TagNotFound, (await ReportAsync("tagrepmissing", long.MaxValue, operationId, ActiveSetId, x)).Status);
+        var unknown = await ReportAsync("tagrepmissing", tag.Id, Guid.NewGuid(), ActiveSetId, x);
+
+        Assert.Equal((TagReportStatus.OperationUnknown, false, 0, 0),
+            (unknown.Status, unknown.Replayed, unknown.RecordedCount, unknown.AlreadyRecordedCount));
+        Assert.Empty(unknown.NotTaggedIds);
+        Assert.Empty(unknown.DiscardedStaleIds);
+        await AssertNoReportWrittenAsync(channel, tag.Id);
+    }
+
+    [Theory]
+    [InlineData("set")]
+    [InlineData("kind")]
+    [InlineData("tag")]
+    public async Task Report_ToAnotherSet_OfARemovalOperation_OrOfAnotherTag_IsOperationConflict_AndWritesNothing(string differs)
+    {
+        var name = $"tagrepconflict{differs}";
+        var channel = await SeedChannelAsync(name);
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var otherTag = await SeedTagAsync(channel.Id, "Halloween");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var operationId = Guid.NewGuid();
+        await RegisterAsync(
+            name,
+            differs == "tag" ? otherTag.Id : tag.Id,
+            operationId,
+            kind: differs == "kind" ? EmoteTagOperationKind.Removal : EmoteTagOperationKind.PlayIn);
+
+        var result = await ReportAsync(name, tag.Id, operationId, differs == "set" ? OtherSetId : ActiveSetId, x);
+
+        Assert.Equal((TagReportStatus.OperationConflict, false, 0, 0),
+            (result.Status, result.Replayed, result.RecordedCount, result.AlreadyRecordedCount));
+        await AssertNoReportWrittenAsync(channel, tag.Id);
+        await using var verify = fixture.CreateDbContext();
+        Assert.Null((await verify.EmoteTagOperations.AsNoTracking().SingleAsync(o => o.OperationId == operationId)).AppliedAtUtc);
+    }
+
+    // The conflict check comes before the replay check: an applied operation reported for another
+    // set is still a conflict — a "replayed: true" would tell the browser its report had landed.
+    [Fact]
+    public async Task Report_OfAnAppliedOperationToAnotherSet_IsStillOperationConflict()
+    {
+        var channel = await SeedChannelAsync("tagrepappliedconflict");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var operationId = Guid.NewGuid();
+        await RegisterPlayInAsync("tagrepappliedconflict", tag.Id, operationId);
+        Assert.Equal(TagReportStatus.Ok, (await ReportAsync("tagrepappliedconflict", tag.Id, operationId, ActiveSetId)).Status);
+
+        var result = await ReportAsync("tagrepappliedconflict", tag.Id, operationId, OtherSetId);
+
+        Assert.Equal((TagReportStatus.OperationConflict, false), (result.Status, result.Replayed));
+    }
+
+    [Fact]
+    public async Task Report_UpsertsNewAndExistingPlacements_OverwritingOperationPlacedAtAndAnchorOfTheExistingOne()
+    {
+        var channel = await SeedChannelAsync("tagrepupsert");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        // Last week's play-in left an expired placement of X behind (a leave after its anchor).
+        var oldOperation = await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, T0.AddDays(-6));
+        var operationId = Guid.NewGuid();
+        var registeredAtUtc = await RegisterPlayInAsync("tagrepupsert", tag.Id, operationId);
+
+        var before = DateTime.UtcNow;
+        var result = await ReportAsync("tagrepupsert", tag.Id, operationId, ActiveSetId, x, y);
+        var after = DateTime.UtcNow;
+
+        Assert.Equal((TagReportStatus.Ok, false, 1, 1), (result.Status, result.Replayed, result.RecordedCount, result.AlreadyRecordedCount));
+        Assert.Empty(result.NotTaggedIds);
+        Assert.Empty(result.DiscardedStaleIds);
+        await using var verify = fixture.CreateDbContext();
+        var placements = await verify.EmoteTagPlacements.AsNoTracking().Where(p => p.TagId == tag.Id).ToListAsync();
+        Assert.Equal(new[] { x, y }.Order(StringComparer.Ordinal), placements.Select(p => p.SevenTvEmoteId).Order(StringComparer.Ordinal));
+        Assert.All(placements, p =>
+        {
+            Assert.Equal((operationId, registeredAtUtc, ActiveSetId), (p.OperationId, p.RegisteredAtUtc, p.SevenTvEmoteSetId));
+            Assert.InRange(p.PlacedAtUtc, before.AddMilliseconds(-1), after);
+        });
+        Assert.DoesNotContain(placements, p => p.OperationId == oldOperation);
+        // Rule 10 pays off at the read: the overwritten anchor is later than the old leave, so X holds again.
+        var entries = await CreateService(verify).ListEntriesAsync("tagrepupsert", tag.Id, null);
+        Assert.All(entries.Entries, e => Assert.Equal((true, (Guid?)operationId), (e.PlacedByThisTag, e.PlacementOperationId)));
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
+    // E6: the report names the set the run wrote to, which need not be the active one; and E26: a
+    // play-in that added nothing still makes the tag active there.
+    [Fact]
+    public async Task Report_WithAnEmptyList_ActivatesTheTag_InANonActiveSetToo_AndMarksTheOperationApplied()
+    {
+        var channel = await SeedChannelAsync("tagrepempty");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var operationId = Guid.NewGuid();
+        await RegisterPlayInAsync("tagrepempty", tag.Id, operationId, OtherSetId);
+
+        var before = DateTime.UtcNow;
+        var result = await ReportAsync("tagrepempty", tag.Id, operationId, OtherSetId);
+        var after = DateTime.UtcNow;
+
+        Assert.Equal((TagReportStatus.Ok, false, 0, 0), (result.Status, result.Replayed, result.RecordedCount, result.AlreadyRecordedCount));
+        await using var verify = fixture.CreateDbContext();
+        var activation = await verify.EmoteTagActivations.AsNoTracking().SingleAsync(a => a.TagId == tag.Id);
+        Assert.Equal((OtherSetId, operationId), (activation.SevenTvEmoteSetId, activation.OperationId));
+        Assert.InRange(activation.ActivatedAtUtc, before.AddMilliseconds(-1), after);
+        var operation = await verify.EmoteTagOperations.AsNoTracking().SingleAsync(o => o.OperationId == operationId);
+        Assert.Equal(activation.ActivatedAtUtc, operation.AppliedAtUtc);
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == tag.Id));
+        var list = await CreateService(verify).ListAsync("tagrepempty", OtherSetId);
+        Assert.Equal((true, (DateTime?)activation.ActivatedAtUtc, 0), (list.Tags[0].Active, list.Tags[0].ActivatedAtUtc, list.Tags[0].PlacedCount));
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
+    [Fact]
+    public async Task Report_IdsWithoutAnEntry_AreNotTaggedIds_InRequestOrder_AndAreNotPlaced()
+    {
+        var channel = await SeedChannelAsync("tagrepnottagged");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var otherTag = await SeedTagAsync(channel.Id, "Halloween");
+        var x = NewSevenTvId();
+        var foreign = NewSevenTvId();
+        var stranger = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        // An entry of another tag of the channel is no entry of this one.
+        await SeedEntryAsync(otherTag.Id, foreign, "Foreign", T0);
+        var operationId = Guid.NewGuid();
+        await RegisterPlayInAsync("tagrepnottagged", tag.Id, operationId);
+
+        var result = await ReportAsync("tagrepnottagged", tag.Id, operationId, ActiveSetId, stranger, x, foreign, stranger);
+
+        Assert.Equal((1, 0), (result.RecordedCount, result.AlreadyRecordedCount));
+        Assert.Equal([stranger, foreign], result.NotTaggedIds);
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal([x], await verify.EmoteTagPlacements.Where(p => p.TagId == tag.Id || p.TagId == otherTag.Id)
+            .Select(p => p.SevenTvEmoteId).ToListAsync());
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
+    // Causal: only a leave observed after the registration discards. The observation is seeded
+    // relative to the stamp the registration returned, so the three cases sit exactly on, before and
+    // after it.
+    [Theory]
+    [InlineData("tagrepcausalafter", 1, true)]
+    [InlineData("tagrepcausalsame", 0, false)]
+    [InlineData("tagrepcausalbefore", -1, false)]
+    public async Task Report_DiscardsAnIdOnlyForALeaveObservedAfterTheRegistration(
+        string channelName, int observedSecondsAfterRegistration, bool discarded)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var operationId = Guid.NewGuid();
+        var registeredAtUtc = await RegisterPlayInAsync(channelName, tag.Id, operationId);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, registeredAtUtc.AddSeconds(observedSecondsAfterRegistration));
+
+        var result = await ReportAsync(channelName, tag.Id, operationId, ActiveSetId, x);
+
+        Assert.Equal(discarded ? new[] { x } : [], result.DiscardedStaleIds);
+        Assert.Equal(discarded ? 0 : 1, result.RecordedCount);
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal(!discarded, await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == tag.Id));
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
+    [Fact]
+    public async Task Report_EverythingDiscarded_StillActivatesTheTag_AndLeavesAnExpiredPlacementAlone()
+    {
+        var channel = await SeedChannelAsync("tagrepalldiscarded");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        // An earlier play-in placed X; the leave below expires it as well.
+        var oldOperation = await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x);
+        var operationId = Guid.NewGuid();
+        var registeredAtUtc = await RegisterPlayInAsync("tagrepalldiscarded", tag.Id, operationId);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, registeredAtUtc.AddSeconds(1));
+        await SeedObservationAsync(channel.Id, y, ActiveSetId, registeredAtUtc.AddSeconds(2));
+
+        var result = await ReportAsync("tagrepalldiscarded", tag.Id, operationId, ActiveSetId, y, x);
+
+        Assert.Equal((TagReportStatus.Ok, 0, 0), (result.Status, result.RecordedCount, result.AlreadyRecordedCount));
+        Assert.Equal([y, x], result.DiscardedStaleIds);
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal(operationId, (await verify.EmoteTagActivations.AsNoTracking().SingleAsync(a => a.TagId == tag.Id)).OperationId);
+        // Discarded means untouched: the old row keeps its old revision and stays expired.
+        Assert.Equal(oldOperation, (await verify.EmoteTagPlacements.AsNoTracking().SingleAsync(p => p.TagId == tag.Id)).OperationId);
+        Assert.Equal(0, Assert.Single((await CreateService(verify).ListAsync("tagrepalldiscarded", null)).Tags).PlacedCount);
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
+    [Fact]
+    public async Task Report_Replayed_WritesNothing_EvenWithAnotherIdList()
+    {
+        var channel = await SeedChannelAsync("tagrepreplay");
+        var tag = await SeedTagAsync(channel.Id, "Stronghold");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        var operationId = Guid.NewGuid();
+        await RegisterPlayInAsync("tagrepreplay", tag.Id, operationId);
+        await ReportAsync("tagrepreplay", tag.Id, operationId, ActiveSetId, x);
+        var before = await TagTablesAsync(channel, tag.Id);
+
+        var replay = await ReportAsync("tagrepreplay", tag.Id, operationId, ActiveSetId, x, y, NewSevenTvId());
+
+        Assert.Equal((TagReportStatus.Ok, true, 0, 0), (replay.Status, replay.Replayed, replay.RecordedCount, replay.AlreadyRecordedCount));
+        Assert.Empty(replay.NotTaggedIds);
+        Assert.Empty(replay.DiscardedStaleIds);
+        Assert.Equal(before, await TagTablesAsync(channel, tag.Id));
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
+    [Fact]
+    public async Task Report_IsAuditedAsPlayedIn_WithIdsAndCount_WithoutTheTagName()
+    {
+        var channel = await SeedChannelAsync("tagrepaudit");
+        var tag = await SeedTagAsync(channel.Id, "SecretStronghold");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x);
+        var operationId = Guid.NewGuid();
+        await RegisterPlayInAsync("tagrepaudit", tag.Id, operationId);
+
+        await ReportAsync("tagrepaudit", tag.Id, operationId, ActiveSetId, x, y, NewSevenTvId());
+
+        var entry = Assert.Single(await LoadAuditAsync("tagrepaudit"));
+        Assert.Equal((AuditActions.TagPlayedIn, "emoteTag", tag.Id.ToString(CultureInfo.InvariantCulture), Actor.TwitchUserId),
+            (entry.Action, entry.TargetType, entry.TargetId, entry.ActorTwitchUserId));
+        using var details = JsonDocument.Parse(entry.DetailsJson!);
+        var root = details.RootElement;
+        Assert.Equal(["emoteCount", "emoteSetId", "operationId", "tagId"],
+            root.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+        Assert.Equal((tag.Id, ActiveSetId, operationId, 2),
+            (root.GetProperty("tagId").GetInt64(), root.GetProperty("emoteSetId").GetString(),
+                root.GetProperty("operationId").GetGuid(), root.GetProperty("emoteCount").GetInt32()));
+        Assert.DoesNotContain("secret", entry.DetailsJson, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Counterexample 4: a repeated play-in report must not lay placements down again — the repeat is
+    // a replay, and the first report's rows keep their placement time and revision.
+    [Fact]
+    public async Task CounterExample4_ARepeatedPlayInReport_IsIgnored()
+    {
+        var channel = await SeedChannelAsync("tagce4");
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        var operationId = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce4", tag.Id, operationId);
+        var first = await ReportAsync("tagce4", tag.Id, operationId, ActiveSetId, x, y);
+        var afterFirst = await TagTablesAsync(channel, tag.Id);
+
+        var repeat = await ReportAsync("tagce4", tag.Id, operationId, ActiveSetId, x, y);
+
+        Assert.Equal((false, 2, true, 0), (first.Replayed, first.RecordedCount, repeat.Replayed, repeat.RecordedCount + repeat.AlreadyRecordedCount));
+        Assert.Equal(afterFirst, await TagTablesAsync(channel, tag.Id));
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
+    // Counterexample 6: play-in P registered at t₀ adds X and Y; its report hangs; X is removed by
+    // hand and the sync observes it at t₁ > t₀; X is added back by hand. The late report discards X
+    // for good, places Y and activates the tag.
+    [Fact]
+    public async Task CounterExample6_ALatePlayInReportAfterAnObservedLeave_DiscardsThatEmote_PlacesTheRest()
+    {
+        var channel = await SeedChannelAsync("tagce6");
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = await SeedEmoteAsync(channel.Id, "X");
+        var y = await SeedEmoteAsync(channel.Id, "Y");
+        await SeedEntryAsync(tag.Id, x.SevenTvEmoteId, "X", T0);
+        await SeedEntryAsync(tag.Id, y.SevenTvEmoteId, "Y", T0);
+        var operationId = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce6", tag.Id, operationId);
+        await SeedObservationAsync(channel.Id, x.SevenTvEmoteId, ActiveSetId, DateTime.UtcNow);
+
+        var result = await ReportAsync("tagce6", tag.Id, operationId, ActiveSetId, x.SevenTvEmoteId, y.SevenTvEmoteId);
+
+        Assert.Equal((1, 0), (result.RecordedCount, result.AlreadyRecordedCount));
+        Assert.Equal([x.SevenTvEmoteId], result.DiscardedStaleIds);
+        await using var verify = fixture.CreateDbContext();
+        var service = CreateService(verify);
+        var entries = (await service.ListEntriesAsync("tagce6", tag.Id, null)).Entries.ToDictionary(e => e.SevenTvEmoteId);
+        // X is back in the set by hand, but without a placement and without a fresh date.
+        Assert.Equal((true, false, (DateTime?)null), (entries[x.SevenTvEmoteId].InSet, entries[x.SevenTvEmoteId].PlacedByThisTag, entries[x.SevenTvEmoteId].PlacedAtUtc));
+        Assert.True(entries[y.SevenTvEmoteId].PlacedByThisTag);
+        Assert.True(Assert.Single((await service.ListAsync("tagce6", null)).Tags).Active);
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
+    // Counterexample 9, report first: the report holds the channel lock and has inserted (A, X, S),
+    // not committed; meanwhile the delta path observes X leaving at t₁ > t₀. With an observation row
+    // already there, the observer's upsert is a plain update and commits before the report does; with
+    // a first observation, the insert's foreign-key check waits for the report's channel lock and
+    // commits after it. Either way the report did not see t₁ and commits the placement — and every
+    // read after both commits applies the rule: the placement does not hold.
+    [Theory]
+    [InlineData("tagce9update", true)]
+    [InlineData("tagce9insert", false)]
+    public async Task CounterExample9_AnObservationCommittingWhileTheReportHoldsTheLock_ExpiresThePlacementAtRead(
+        string channelName, bool observationRowExists)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var operationId = Guid.NewGuid();
+        var registeredAtUtc = await RegisterPlayInAsync(channelName, tag.Id, operationId);
+        if (observationRowExists)
+        {
+            await SeedObservationAsync(channel.Id, x, ActiveSetId, registeredAtUtc.AddDays(-7));
+        }
+
+        var pause = new PauseBeforeCommit();
+        await using var reportDb = fixture.CreateDbContext([pause]);
+        var report = CreateService(reportDb).ReportPlacementsAsync(
+            channelName, tag.Id, new TagPlacementReport(operationId, ActiveSetId, [x]), Actor);
+        await pause.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var observerName = $"{channelName}-observer";
+        await using var observerDb = fixture.CreateTaggedDbContext(observerName);
+        var observer = Task.Run(async () =>
+        {
+            await using var transaction = await observerDb.Database.BeginTransactionAsync();
+            await EmoteSetLeaveObservations.RecordAsync(observerDb, channel.Id, ActiveSetId, [x], DateTime.UtcNow, CancellationToken.None);
+            await transaction.CommitAsync();
+        });
+        if (observationRowExists)
+        {
+            await observer.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        else
+        {
+            await fixture.WaitUntilBlockedOnLockAsync(observerName, observer);
+        }
+
+        pause.Release.SetResult();
+        var result = await report.WaitAsync(TimeSpan.FromSeconds(30));
+        await observer.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal((1, 0), (result.RecordedCount, result.DiscardedStaleIds.Count));
+        await using var verify = fixture.CreateDbContext();
+        var placement = await verify.EmoteTagPlacements.AsNoTracking().SingleAsync(p => p.TagId == tag.Id);
+        Assert.Equal((operationId, registeredAtUtc), (placement.OperationId, placement.RegisteredAtUtc));
+        var observed = await EmoteSetLeaveObservations.LoadLatestAsync(verify, channel.Id, ActiveSetId, [x], CancellationToken.None);
+        Assert.True(observed[x] > registeredAtUtc);
+        var service = CreateService(verify);
+        var entry = Assert.Single((await service.ListEntriesAsync(channelName, tag.Id, null)).Entries);
+        Assert.Equal((false, (Guid?)null), (entry.PlacedByThisTag, entry.PlacementOperationId));
+        Assert.Equal(0, Assert.Single((await service.ListAsync(channelName, null)).Tags).PlacedCount);
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
+    // Counterexample 9, observation first: it commits t₁ > t₀ before the report takes the lock, so
+    // the report sees it and discards X. Both orders end the same — no valid placement of X.
+    [Fact]
+    public async Task CounterExample9_AnObservationCommittedBeforeTheReport_DiscardsTheEmote()
+    {
+        var channel = await SeedChannelAsync("tagce9reverse");
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var operationId = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce9reverse", tag.Id, operationId);
+        await using (var observerDb = fixture.CreateDbContext())
+        {
+            await using var transaction = await observerDb.Database.BeginTransactionAsync();
+            await EmoteSetLeaveObservations.RecordAsync(observerDb, channel.Id, ActiveSetId, [x], DateTime.UtcNow, CancellationToken.None);
+            await transaction.CommitAsync();
+        }
+
+        var result = await ReportAsync("tagce9reverse", tag.Id, operationId, ActiveSetId, x);
+
+        Assert.Equal(0, result.RecordedCount);
+        Assert.Equal([x], result.DiscardedStaleIds);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == tag.Id));
+        Assert.False(Assert.Single((await CreateService(verify).ListEntriesAsync("tagce9reverse", tag.Id, null)).Entries).PlacedByThisTag);
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
     // ---- Helpers ---------------------------------------------------------------------------------
 
     private static EmoteTagService CreateService(AppDbContext db) => new(db);
@@ -1023,6 +1540,61 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         return await CreateService(db).RemoveEntriesAsync(channelName, tagId, ids);
+    }
+
+    private async Task<TagOperationRegistrationResult> RegisterAsync(
+        string channelName, long tagId, Guid operationId, string emoteSetId = ActiveSetId, string kind = EmoteTagOperationKind.PlayIn)
+    {
+        await using var db = fixture.CreateDbContext();
+        return await CreateService(db).RegisterOperationAsync(
+            channelName, tagId, new RegisterTagOperationRequest(operationId, kind, emoteSetId));
+    }
+
+    // A registered play-in, as the browser starts every run; returns the server's stamp.
+    private async Task<DateTime> RegisterPlayInAsync(string channelName, long tagId, Guid operationId, string emoteSetId = ActiveSetId)
+    {
+        var registration = await RegisterAsync(channelName, tagId, operationId, emoteSetId);
+        Assert.Equal(TagOperationRegistrationStatus.Ok, registration.Status);
+        return registration.RegisteredAtUtc!.Value;
+    }
+
+    private async Task<TagPlacementReportResult> ReportAsync(
+        string channelName, long tagId, Guid operationId, string emoteSetId, params string[] sevenTvEmoteIds)
+    {
+        await using var db = fixture.CreateDbContext();
+        return await CreateService(db).ReportPlacementsAsync(
+            channelName, tagId, new TagPlacementReport(operationId, emoteSetId, sevenTvEmoteIds), Actor);
+    }
+
+    // Everything a report can write for one tag, serialized for a before/after comparison.
+    private async Task<string> TagTablesAsync(Channel channel, long tagId)
+    {
+        await using var db = fixture.CreateDbContext();
+        var placements = await db.EmoteTagPlacements.AsNoTracking()
+            .Where(p => p.TagId == tagId)
+            .OrderBy(p => p.SevenTvEmoteSetId).ThenBy(p => p.SevenTvEmoteId)
+            .Select(p => new { p.SevenTvEmoteId, p.SevenTvEmoteSetId, p.OperationId, p.PlacedAtUtc, p.RegisteredAtUtc })
+            .ToListAsync();
+        var activations = await db.EmoteTagActivations.AsNoTracking()
+            .Where(a => a.TagId == tagId)
+            .OrderBy(a => a.SevenTvEmoteSetId)
+            .Select(a => new { a.SevenTvEmoteSetId, a.OperationId, a.ActivatedAtUtc })
+            .ToListAsync();
+        var operations = await db.EmoteTagOperations.AsNoTracking()
+            .Where(o => o.TagId == tagId)
+            .OrderBy(o => o.OperationId)
+            .Select(o => new { o.OperationId, o.RegisteredAtUtc, o.AppliedAtUtc })
+            .ToListAsync();
+        var auditCount = await db.AuditLogEntries.CountAsync(e => e.ChannelName == channel.ChannelName);
+        return JsonSerializer.Serialize(new { placements, activations, operations, auditCount });
+    }
+
+    private async Task AssertNoReportWrittenAsync(Channel channel, long tagId)
+    {
+        await using var db = fixture.CreateDbContext();
+        Assert.False(await db.EmoteTagPlacements.AnyAsync(p => p.TagId == tagId));
+        Assert.False(await db.EmoteTagActivations.AnyAsync(a => a.TagId == tagId));
+        Assert.False(await db.AuditLogEntries.AnyAsync(e => e.ChannelName == channel.ChannelName));
     }
 
     private async Task<(TFirst First, TSecond Second)> RaceAsync<TFirst, TSecond>(
@@ -1242,6 +1814,26 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
 
     // 26 characters from [0-9A-Z], the shape of a real 7TV ULID.
     private static string NewSevenTvId() => Guid.NewGuid().ToString("N")[..26].ToUpperInvariant();
+
+    // Holds its context's first commit until released — the report has taken the channel lock and
+    // sent its writes, and nothing is committed yet.
+    private sealed class PauseBeforeCommit : DbTransactionInterceptor
+    {
+        public TaskCompletionSource Reached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<InterceptionResult> TransactionCommittingAsync(
+            DbTransaction transaction, TransactionEventData eventData, InterceptionResult result, CancellationToken cancellationToken = default)
+        {
+            if (Reached.TrySetResult())
+            {
+                await Release.Task.WaitAsync(cancellationToken);
+            }
+
+            return result;
+        }
+    }
 
     private sealed class TableHold(AppDbContext db) : IAsyncDisposable
     {

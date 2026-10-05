@@ -480,6 +480,60 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         Assert.Equal(observedAt, await LatestAsync(channel, SetId, "lotag1"));
     }
 
+    // Counterexample 8 (T-C Task 4), the Stronghold standard case, end to end with the real sync and
+    // the real report: the rows have been archived since last week's stream; the play-in is
+    // registered; the PUSH un-archives and stamps each row; the next REST resync reads 7TV's stale
+    // cache and archives them again — inside the window, so without an observation. The (late) report
+    // then finds no leave after its registration and places every emote, and the placements hold
+    // through the resync that finally sees them.
+    [Fact]
+    public async Task CounterExample8_StaleRestArchiveRightAfterThePlayIn_DoesNotCostThePlacements()
+    {
+        var lastWeek = DateTime.UtcNow.AddDays(-7);
+        var channel = await SeedChannelAsync("leaveobs_ce8",
+            ("lokeep1", false, null),
+            ("losh1", true, lastWeek),
+            ("losh2", true, lastWeek));
+        var tagId = await SeedTagWithEntriesAsync(channel, "losh1", "losh2");
+        var operationId = Guid.NewGuid();
+        await using (var db = fixture.CreateDbContext())
+        {
+            var registration = await new EmoteTagService(db).RegisterOperationAsync(
+                channel.ChannelName, tagId, new RegisterTagOperationRequest(operationId, EmoteTagOperationKind.PlayIn, SetId));
+            Assert.Equal(TagOperationRegistrationStatus.Ok, registration.Status);
+        }
+
+        Assert.Equal(SevenTvDeltaOutcome.Applied,
+            (await ApplyAsync(channel, Delta(pushed: [Live("losh1"), Live("losh2")]))).Outcome);
+        await SyncAsync(channel, SetId, Live("lokeep1"));
+        await using (var verify = fixture.CreateDbContext())
+        {
+            Assert.True((await LoadEmoteAsync(verify, channel, "losh1")).IsArchived);
+        }
+        Assert.Null(await LatestAsync(channel, SetId, "losh1"));
+        Assert.Null(await LatestAsync(channel, SetId, "losh2"));
+
+        TagPlacementReportResult report;
+        await using (var db = fixture.CreateDbContext())
+        {
+            report = await new EmoteTagService(db).ReportPlacementsAsync(
+                channel.ChannelName, tagId, new TagPlacementReport(operationId, SetId, ["losh1", "losh2"]), Actor);
+        }
+
+        Assert.Equal((TagReportStatus.Ok, 2, 0), (report.Status, report.RecordedCount, report.DiscardedStaleIds.Count));
+        await SyncAsync(channel, SetId, Live("lokeep1"), Live("losh1"), Live("losh2"));
+        await using (var verify = fixture.CreateDbContext())
+        {
+            var tags = new EmoteTagService(verify);
+            var entries = (await tags.ListEntriesAsync(channel.ChannelName, tagId, null)).Entries;
+            Assert.Equal(2, entries.Count);
+            Assert.All(entries, e => Assert.Equal((true, true, (Guid?)operationId), (e.InSet, e.PlacedByThisTag, e.PlacementOperationId)));
+            Assert.Equal(2, Assert.Single((await tags.ListAsync(channel.ChannelName, null)).Tags).PlacedCount);
+        }
+
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
+    }
+
     // Two contexts, (i): two first inserts of the same key. B blocks on A's uncommitted row, then
     // takes the ON CONFLICT branch once A commits — both commits succeed, one row.
     [Fact]
@@ -690,6 +744,25 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         });
         await db.SaveChangesAsync();
         return (tag.Id, operationId);
+    }
+
+    // A tag with entries for the given emotes and nothing else — no operation, placement or activation.
+    private async Task<long> SeedTagWithEntriesAsync(Channel channel, params string[] sevenTvEmoteIds)
+    {
+        await using var db = fixture.CreateDbContext();
+        var tag = new EmoteTag { ChannelId = channel.Id, Name = "Stronghold", NormalizedName = "stronghold", CreatedAtUtc = DateTime.UtcNow };
+        db.EmoteTags.Add(tag);
+        await db.SaveChangesAsync();
+        db.EmoteTagEntries.AddRange(sevenTvEmoteIds.Select(id => new EmoteTagEntry
+        {
+            TagId = tag.Id,
+            SevenTvEmoteId = id,
+            Alias = id,
+            ImageUrl = ImageUrl(id),
+            AddedAtUtc = DateTime.UtcNow,
+        }));
+        await db.SaveChangesAsync();
+        return tag.Id;
     }
 
     private static bool IsObservationUpsert(DbCommand command) =>

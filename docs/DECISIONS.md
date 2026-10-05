@@ -14,7 +14,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Entities/Emote.cs` ·
 `src/EmotePurge.Core/Entities/EmoteSetLeaveObservation.cs` ·
-`src/EmotePurge.Core/Entities/EmoteTagActivation.cs` · `src/EmotePurge.Core/Entities/EmoteTagOperation.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagActivation.cs` · `src/EmotePurge.Core/Entities/EmoteTagIdList.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagOperation.cs` ·
 `src/EmotePurge.Core/Entities/EmoteTagPlacement.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
 `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` ·
 `src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTagPlacements*.cs` ·
@@ -25,12 +26,14 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` ·
 `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
 `src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Fixtures/EmoteTagInvariants.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceLeaveObservationTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagIdListTests.cs` ·
 `tests/EmotePurge.Api.Tests/EmoteTagEndpointsTests.cs`
 
 Tags (T-B) only name emotes. T-C lets a tag be played into a set and cleared out of it again, and
@@ -190,6 +193,46 @@ defaults, so every construction site had to name the new values.
   entry for the emote, whether or not they hold a placement; **`placedByOtherTags`** lists the other
   tags with a valid placement. Both are ordered oldest tag first (`CreatedAtUtc`, then id — spec 5.5
   rule 3), the order the removal flow uses to pick an owner.
+
+#### Registration and play-in report (Task 4)
+
+`IEmoteTagService` gains `RegisterOperationAsync` and `ReportPlacementsAsync` (the handlers follow
+in Task 6). Both run in one transaction that takes the channel row `FOR UPDATE` first, writes only tag
+tables and reads leave observations — the lock order of spec 5.5 rule 6.
+
+- **Registration before the run (E27).** The browser registers each run's operation id with its kind
+  and frozen set id before it writes to 7TV; the server stamps `RegisteredAtUtc` from its own clock,
+  truncated to the microseconds Postgres keeps, so the first answer and every replay carry the same
+  value. The same id for the same tag, kind and set is `Replayed` with the stored instant; for
+  anything else it is `Conflict` — also when the same id is registered at the same moment in another
+  channel, where the primary key, not the lock, decides. No audit entry: a registration is an intent.
+  An unknown kind is the handler's 400 (`EmoteTagOperationKind.IsKnown`); the service throws.
+- **The play-in report** checks, in this order: unknown operation, then operation of another tag,
+  set or kind (`OperationConflict`, so a replay of a foreign operation is never answered as
+  "replayed"), then already applied (`Replayed`, nothing written, no audit row). Ids without an entry
+  of the tag are `notTaggedIds`. An id with a leave observed in that set **after the operation's
+  registration** is discarded for good (`discardedStaleIds`), using the read-time predicate itself
+  (`Holds`) so the report never keeps a placement every later read would drop. Read causally: an
+  earlier leave precedes the run and says nothing about it; a leave that happened before the
+  registration but was only observed after it is discarded too (fail-safe, a placement too few). The
+  rest is upserted, and **the upsert always overwrites** `OperationId`, `PlacedAtUtc` and the
+  placement's `RegisteredAtUtc` (= the play-in operation's), an existing row included (spec 5.5 rule
+  10): an old row would otherwise keep a revision a late removal report could still match, and an
+  anchor the read-time rule would still call expired. The activation is upserted every time, with an
+  empty list and with everything discarded too (E26). Audit `tag.playedIn` with
+  `{ tagId, emoteSetId, operationId, emoteCount }`, without the tag's name (E30).
+- **A report racing an observation (counterexample 9).** The report reads observations after it has
+  the lock, so it sees every observation committed before. One committed while the report holds the
+  lock — an update of an existing observation row commits in parallel; a first observation waits on
+  the channel lock through its foreign-key check and commits right after — is not seen by the
+  report, which commits the placement; every read after both commits applies the rule against the
+  placement's anchor and does not count it. Both orders end with no valid placement, without a lock
+  in the sync.
+- **One id-list rule, moved to Core (`EmoteTagIdList.Check`).** At most
+  `EmoteTagLimits.MaxIdsPerRequest` raw ids, each in the `SevenTvEmoteIdValidation` format; `Empty` is
+  its own verdict because an empty list is malformed for tagging but legal in a report. The service's
+  entry requests use it unchanged, and the report handlers will apply the same rule before the 7TV
+  ownership check rather than a copy.
 
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
