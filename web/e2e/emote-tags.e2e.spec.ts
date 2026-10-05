@@ -182,7 +182,7 @@ test.describe('emote tags', () => {
     page,
   }) => {
     // The sentence explains the missing tag-run buttons, so it needs tag runs switched on (#201
-    // T-C, rulings F11).
+    // T-C, spec 8: it stands in the buttons' slot).
     await mockChannel(page, { tagRunsEnabled: true });
     await mockTags(page, CHANNEL, [{ id: 7, name: 'Favoriten', entryCount: 1, inSetCount: 1 }]);
     await mockTagEntries(page, CHANNEL, 7, [{ sevenTvEmoteId: '7tv-1', alias: 'catJAM' }]);
@@ -431,9 +431,11 @@ test.describe('emote tag runs', () => {
     await expect(dialog.getByText('Aus Tag Favoriten')).toBeVisible();
     await expect(dialog.getByText('1 ist schon im Set')).toBeVisible();
     await expect(dialog.locator('#app-dialog-title')).toContainText('1 Emote');
-    // Nothing is written before the confirmation; the registration already went out.
+    // Nothing is written before the confirmation; the registration and the complete set read
+    // already went out.
     expect(sevenTv.adds).toEqual([]);
     expect(operations.requests).toHaveLength(1);
+    expect(sevenTv.requests).toBeGreaterThan(0);
     await dialog.getByRole('button', { name: 'Kopieren' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
@@ -697,8 +699,15 @@ test.describe('emote tag runs', () => {
     await playIn(page).click();
     await expect(page.getByText(reason)).toBeVisible();
     await expect(page.getByRole('dialog')).toHaveCount(0);
+    // The play-in's own banner, from its own registration and read — before the clear-out runs.
+    expect(operations.requests).toHaveLength(1);
+    expect(sevenTv.requests).toBe(1);
 
     await clearOut(page).click();
+    // A click clears the old banner at once, so the one standing after the clear-out's own
+    // registration and read is the clear-out's.
+    await expect.poll(() => sevenTv.requests).toBe(2);
+    await expect(page.getByText(reason)).toHaveCount(1);
     await expect(page.getByText(reason)).toBeVisible();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
@@ -772,10 +781,9 @@ test.describe('emote tag runs', () => {
     switchActiveSet(OTHER_SET_ID);
     await emitLive(page, { type: 'channel.synced', channel: CHANNEL });
     await page.clock.runFor(2_000);
-    // The page has taken over the new set before the confirmation is clicked; the run's own host
-    // went with the old one (rulings F38), so no banner is left to read — the guard's outcome is
-    // that nothing is written or reported.
-    // (The open dialog hides the page behind it from the accessibility tree.)
+    // The page has taken over the new set before the confirmation is clicked, and the run buttons
+    // were torn down with the old one. (The open dialog hides the page behind it from the
+    // accessibility tree.)
     await expect(
       page.getByRole('button', { name: 'Set: Halloween', includeHidden: true }),
     ).toBeVisible();
@@ -784,6 +792,10 @@ test.describe('emote tag runs', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await page.clock.runFor(3_000);
 
+    // The guard aborted, and says so on the page — not under the buttons that went with the host.
+    await expect(
+      page.getByText('Das aktive Set hat gewechselt — Seite neu laden.').first(),
+    ).toBeVisible();
     expect(sevenTv.adds).toEqual([]);
     expect(sevenTv.removes).toEqual([]);
     expect(syncImported).toEqual([]);

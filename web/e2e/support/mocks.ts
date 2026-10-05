@@ -1571,10 +1571,10 @@ function tagRunPath(channelName: string, tagId: number, suffix: string): string 
 }
 
 /**
- * POST /api/channels/{channelName}/tags/{tagId}/operations (#201 T-C, spec 6.2) — the registration
- * of a play-in or clear-out. Answers `status` (default 201 `{registeredAtUtc}`); any other status
- * answers a bare `{errorCode}`-less body, the way the ladder's refusals do (403 has none). Every
- * body is captured.
+ * POST /api/channels/{channelName}/tags/{tagId}/operations (#201 T-C, spec 6.4) — the registration
+ * of a play-in or clear-out. Answers `status`, by default 201 with `{registeredAtUtc}`. Any other
+ * status answers `{errorCode}` when `errorCode` is given and an empty object otherwise — a 403 from
+ * the owner check carries no code. Every body is captured.
  */
 export async function mockTagOperations(
   page: Page,
