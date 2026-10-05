@@ -414,6 +414,41 @@ the audit log (E30).
 `web/src/app/shared/seven-tv/import-confirm-dialog.ts` · `web/src/app/shared/seven-tv/undo-confirm-dialog.ts` ·
 `web/src/app/shared/export/transfer-run-export.ts`
 
+#### Import flow (Task 8)
+
+**A tag play-in pins its set.** `ImportFlowTarget`'s `'chosen'` shape gains `pinSetId?: true`. With it,
+`toTargetSelection` never takes the `'trackedActive'` fast path, even when the chosen set is the active
+one: that path reads whatever set the server holds as active *now* and drops the id, so a set switch
+between the click and the load would land the run in the new set. `'trackedSet'` reads exactly the
+pinned id and answers with it. `isActiveSet` is still derived from the choice, so a pinned active set
+keeps `targetIsActiveSet` and its run still resyncs the channel. Without the flag the flow is
+byte-identical to before.
+
+**The browser set guard is the effective guard.** `startImportFlow` takes an optional fourth argument,
+`ImportFlowTagHook` (`context`, `frozenSetId`, the page's `activeEmoteSetId` signal, `onSetChanged`,
+`onNothingToImport`). In `startAfterCheck`, after `recheckTransferPlan` and after the second arbiter
+check — the last point before `startImport` — the loaded target id, the page's active set and the frozen
+id must be one set; otherwise `onSetChanged()` and no run. An unknown active set (`null`) counts as a
+switch. The server's own check (a report whose set id differs from the registered one is refused) only
+keeps the bookkeeping straight after the fact; the browser check is the one that stops a write into the
+wrong set. Its limit is spec 7.1/6's: a switch the server has not synced yet is invisible to both.
+
+**Nothing left to send is a hand-over, not a start.** `startImport` refuses an empty plan and drops the
+record, so the placement report — the only thing that marks the tag as played in — would never go out.
+Two paths therefore call `onNothingToImport()` instead and leave the empty report to the tag flow:
+(1) the last duplicate check removed every row (another editor added them while the dialog was open),
+checked after the set guard; (2) the confirm dialog's own target load found every row present.
+For (2) `ImportConfirmDialogData` gains `emptyConfirmAllowed` (only the flow with a hook sets it), and
+`ImportConfirmOutcome` an optional `nothingToAdd: true`: the button stays enabled with its usual label
+when every offered row is already in the set, and the flow skips token prompt, re-check and arbiter
+(nothing goes to 7TV), keeping only the set guard. Two empty plans deliberately do **not** count:
+one emptied by name collisions or other aliases (the dialog stays locked as before), and one emptied by
+held-back replace rows (`replaceSkippedDrift > 0` — it falls through to `startImport`, whose drift notice
+names it, and the tag stays unplayed). Both err towards "not played in", in line with spec 0a.
+
+**Betrifft (Task 8, flow):** `web/src/app/shared/seven-tv/import-flow.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

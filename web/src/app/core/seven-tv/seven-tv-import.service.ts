@@ -41,6 +41,7 @@ import {
   classifySyncInSetResponse,
   isChannelMismatch,
 } from './sync-report-outcome';
+import { ImportTagContext } from './tag-run-settlement';
 import { TransferPlan, TransferRow } from './transfer-plan';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
@@ -201,6 +202,9 @@ export interface ImportRunInfo extends RunRecordBase {
    *  caller omits it, matching every caller that predates this flag (the resync always fired for
    *  them, correctly, since they only ever targeted the active set). */
   targetIsActiveSet: boolean;
+  /** The tag play-in this run executes (#201 T-C, spec 7.1/6) — the registered operation, frozen at
+   *  `startImport` from `target.tag`; `null` for every other import. */
+  tag: ImportTagContext | null;
   origin: ImportOrigin;
   /** The plan this run executes, one queue row per plan row, keyed by the source 7TV id. */
   plan: TransferPlan;
@@ -480,6 +484,10 @@ export class SevenTvImportService {
        *  forget to pass it: pass `null` explicitly when nothing resolved an owner (an add-only run
        *  into a channel-bound target, or an untracked choice with no known owner). */
       targetOwnerTwitchId: string | null;
+      /** Only for a tag play-in (`import-flow.ts`'s `ImportFlowTagHook`): the registered operation.
+       *  `target.setId` is then the set that operation was registered for — the flow's set guard
+       *  made sure of that right before this call. */
+      tag?: ImportTagContext;
     },
     origin: ImportOrigin,
     plan: TransferPlan,
@@ -521,6 +529,7 @@ export class SevenTvImportService {
       targetOwnerTwitchId: target.targetOwnerTwitchId,
       targetSetName: target.setName ?? target.setId,
       targetIsActiveSet: target.isActiveSet ?? true,
+      tag: target.tag ?? null,
       origin,
       plan,
       settlement: 'pending',

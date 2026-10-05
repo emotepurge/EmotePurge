@@ -402,6 +402,7 @@ describe('DockOutcomeAnnouncer', () => {
       targetOwnerTwitchId: null,
       targetSetName: 'wegwerf',
       targetIsActiveSet: false,
+      tag: null,
       origin: { kind: 'channel', channelName: 'quellkanal' },
       plan: { rows: [] },
       settlement: 'settled',

@@ -362,6 +362,8 @@ interface RenderOptions {
    *  dedicated coverage for `data.targetOwnerTwitchId` reaching the planned file's meta sets this
    *  explicitly. */
   targetOwnerTwitchId?: string | null;
+  /** Defaults to `false` — only a tag play-in sets it (#201 T-C). */
+  emptyConfirmAllowed?: boolean;
 }
 
 interface Harness {
@@ -460,6 +462,7 @@ describe('ImportConfirmDialog', () => {
       runBlocked,
       httpClient: TestBed.inject(HttpClient),
       targetOwnerTwitchId: options.targetOwnerTwitchId ?? null,
+      emptyConfirmAllowed: options.emptyConfirmAllowed ?? false,
     };
 
     const fixture = TestBed.createComponent(ImportConfirmDialog);
@@ -643,6 +646,93 @@ describe('ImportConfirmDialog', () => {
 
       const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
       expect(banner).toContain('Das einzige Emote ist bereits im Zielset.');
+    });
+
+    // #201 T-C, spec 7.1/6: a tag play-in whose own target load finds every row already there may
+    // still be confirmed — the confirmation is what marks the tag as played in.
+    describe('a tag play-in (emptyConfirmAllowed)', () => {
+      const allPresentTarget = readyTarget({
+        emotes: [
+          {
+            sevenTvEmoteId: 'existing-1',
+            name: 'PogU',
+            imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+          },
+          {
+            sevenTvEmoteId: 'existing-2',
+            name: 'Kappa',
+            imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+          },
+        ],
+      });
+
+      it('keeps the button active and closes with nothingToAdd when every row is already in the set', () => {
+        const dialog = render({
+          source: channelSource([row('existing-1', 'PogU'), row('existing-2', 'Kappa')]),
+          target: allPresentTarget,
+          emptyConfirmAllowed: true,
+        });
+
+        const execute = dialog.button(EXECUTE);
+        expect(execute.disabled).toBe(false);
+        expect(execute.getAttribute('aria-describedby')).toBeNull();
+        // The banner still says why there is nothing to copy.
+        expect(dialog.element('import-confirm-nothing-to-add')?.textContent).toContain(
+          'Alle 2 Emotes sind bereits im Zielset.',
+        );
+
+        execute.click();
+
+        expect(closed).toEqual([
+          { targetSetId: 'set-1', targetSetName: 'set-1', plan: { rows: [] }, nothingToAdd: true },
+        ]);
+      });
+
+      it('stays locked when name collisions, not presence, emptied the plan', () => {
+        const dialog = render({
+          source: channelSource([row('new-1', 'PogU'), row('new-2', 'Kappa')]),
+          target: allPresentTarget,
+          emptyConfirmAllowed: true,
+        });
+
+        const execute = dialog.button(EXECUTE);
+        expect(execute.disabled).toBe(true);
+        execute.click();
+        expect(closed).toEqual([]);
+      });
+
+      it('stays locked while another run holds the start', () => {
+        const dialog = render({
+          source: channelSource([row('existing-1', 'PogU'), row('existing-2', 'Kappa')]),
+          target: allPresentTarget,
+          emptyConfirmAllowed: true,
+          runBlocked: true,
+        });
+
+        const execute = dialog.button(EXECUTE);
+        expect(execute.disabled).toBe(true);
+        execute.click();
+        expect(closed).toEqual([]);
+      });
+    });
+
+    it('does not close on a click when every row is already in the set and the flag is off', () => {
+      const dialog = render({
+        source: channelSource([row('existing-1', 'PogU')]),
+        target: readyTarget({
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
+        }),
+      });
+
+      dialog.button(EXECUTE).click();
+
+      expect(closed).toEqual([]);
     });
 
     it('releases it once the target is ready and something is left to add', () => {

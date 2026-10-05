@@ -123,6 +123,7 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
     // Active by default so the existing "Ziel: zielkanal" behaviour keeps working unchanged —
     // findings 2/3 tests below override this explicitly.
     targetIsActiveSet: true,
+    tag: null,
     origin: { kind: 'channel', channelName: 'quellkanal' },
     plan: { rows: [] },
     settlement: 'pending',

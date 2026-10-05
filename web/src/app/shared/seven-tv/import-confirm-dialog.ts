@@ -124,6 +124,12 @@ export interface ImportConfirmDialogData {
    *  reach for yet — a restore reading this file back gets the same hint the flow itself would have
    *  used. */
   targetOwnerTwitchId: string | null;
+  /** Whether the user may confirm a plan with nothing to add (#201 T-C, spec 7.1/6) — `true` only
+   *  for a tag play-in, whose confirmation is what marks the tag as played in even when every row is
+   *  already in the set. Only for that case: when name collisions or other aliases empty the plan,
+   *  the button stays locked as before (fail-safe: no activation for rows that are not there).
+   *  `false` keeps the dialog exactly as it always was. */
+  emptyConfirmAllowed: boolean;
 }
 
 /** What the caller starts a run with — the plan as of the moment the user confirmed. */
@@ -138,6 +144,9 @@ export interface ImportConfirmOutcome {
    *  one `add` row each; a plan with a `replace` row only leaves after a clean live read, and then
    *  carries that read's aliases and default names on each replace target. */
   plan: TransferPlan;
+  /** Set only when the user confirmed with nothing to add (`emptyConfirmAllowed`, every row already
+   *  in the set) — `plan` is then empty and the caller starts no run. */
+  nothingToAdd?: true;
 }
 
 /** Translation key of the reason the executor is locked, or `null` when it is not locked (or when
@@ -962,14 +971,20 @@ export class ImportConfirmDialog {
   // instead of inventing a third and fourth wording for "collision-only" and "mixed" (a signal
   // computed on `preview()`, unlike the sibling `*Key` fields below, because the answer depends on
   // the target load that only arrives after the dialog opens).
-  protected readonly nothingToAddKey = computed(() => {
-    const total = this.data.source.rows.length;
+  protected readonly nothingToAddKey = computed(() =>
+    pluralKey(
+      this.data.source.rows.length,
+      this.allAlreadyPresent()
+        ? 'import.confirm.nothingToAdd'
+        : 'import.confirm.nothingToAddBlocked',
+    ),
+  );
+
+  /** Every offered row is already in the target set — the one empty plan a tag play-in may confirm
+   *  (`emptyConfirmAllowed`). */
+  private readonly allAlreadyPresent = computed(() => {
     const preview = this.preview();
-    const allAlreadyPresent = preview !== null && preview.alreadyPresent === total;
-    return pluralKey(
-      total,
-      allAlreadyPresent ? 'import.confirm.nothingToAdd' : 'import.confirm.nothingToAddBlocked',
-    );
+    return preview !== null && preview.alreadyPresent === this.data.source.rows.length;
   });
 
   protected readonly discardedRowsKey = pluralKey(
@@ -1037,6 +1052,13 @@ export class ImportConfirmDialog {
 
   protected readonly nothingToAdd = computed(() => this.plan()?.rows.length === 0);
 
+  /** An empty plan the user may still confirm: a tag play-in whose rows are all in the set already
+   *  (`ImportConfirmDialogData.emptyConfirmAllowed`). The banner still says so; the button stays
+   *  active with its usual label. */
+  private readonly emptyConfirmable = computed(
+    () => this.data.emptyConfirmAllowed && this.nothingToAdd() && this.allAlreadyPresent(),
+  );
+
   // Stays file-only, deliberately: it warns that a *downloaded list* came from the very channel it
   // is about to be copied back into, which a picker cannot produce — the target list excludes the
   // source's own set wherever it appears (`import-target-choices.ts`'s `isSourceSet` disabling), so
@@ -1091,7 +1113,7 @@ export class ImportConfirmDialog {
       case 'no-set':
         return 'import.confirm.noTargetSet';
       default:
-        if (this.nothingToAdd()) {
+        if (this.nothingToAdd() && !this.emptyConfirmable()) {
           return this.nothingToAddKey();
         }
         return this.isVerifying() ? 'import.confirm.verifying' : null;
@@ -1113,7 +1135,7 @@ export class ImportConfirmDialog {
       case 'no-set':
         return 'import-confirm-no-target-set';
       default:
-        if (this.nothingToAdd()) {
+        if (this.nothingToAdd() && !this.emptyConfirmable()) {
           return 'import-confirm-nothing-to-add';
         }
         return this.isVerifying() ? 'import-confirm-verifying' : null;
@@ -1214,7 +1236,18 @@ export class ImportConfirmDialog {
   protected execute(): void {
     const target = this.ready();
     const plan = this.plan();
-    if (target === null || plan === null || plan.rows.length === 0) {
+    if (target === null || plan === null) {
+      return;
+    }
+    if (plan.rows.length === 0) {
+      if (this.emptyConfirmable() && !this.executeDisabled()) {
+        this.dialogRef.close({
+          targetSetId: target.setId,
+          targetSetName: this.targetSetLabel(target),
+          plan,
+          nothingToAdd: true,
+        });
+      }
       return;
     }
     if (this.removeCount() === 0) {
