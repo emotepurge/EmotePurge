@@ -506,7 +506,11 @@ export class SevenTvImportService {
    *  this call at all.
    *
    *  A run that starts is shown at once; the run shown before it goes on to close on its own record
-   *  (#256). */
+   *  (#256).
+   *
+   *  Returns whether the engine actually started the run — `false` when it refused (already running,
+   *  an empty queue, no token) and the record was taken back. A tag play-in lets go of its grid
+   *  marking only on `true` (`import-flow.ts`, `ImportFlowTagHook.onStarted`). */
   startImport(
     target: {
       setId: string;
@@ -528,7 +532,7 @@ export class SevenTvImportService {
     skippedDuplicates = 0,
     duplicateCheckAvailable = true,
     replaceSkippedDrift = 0,
-  ): void {
+  ): boolean {
     const deletes = plan.rows.some((row) => row.action === 'replace');
 
     this.targetCheckBlockReason.set(null);
@@ -602,7 +606,9 @@ export class SevenTvImportService {
       // as set: an all-duplicates import is a legitimate "refused" case whose count (and whether it
       // is even trustworthy) the caller still needs to see.
       this.lifecycle.discardUnstarted(started.runId, previousShown);
+      return false;
     }
+    return true;
   }
 
   /** Stops the run. On a plan that deletes (a `replace` row), a step still in flight ends its row

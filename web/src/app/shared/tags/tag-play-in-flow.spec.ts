@@ -214,7 +214,10 @@ function setup(
   });
   const dialog = { open: dialogOpen } as unknown as Dialog;
 
-  const startImport = vi.fn(() => calls.push('startImport'));
+  const startImport = vi.fn((): boolean => {
+    calls.push('startImport');
+    return true;
+  });
   const importStartCheckPending = signal(false);
   const importService = {
     startImport,
@@ -880,6 +883,17 @@ describe('startTagPlayInFlow', () => {
       expect(harness.onRunCommitted.mock.invocationCallOrder[0]).toBeGreaterThan(
         harness.startImport.mock.invocationCallOrder[0],
       );
+    });
+
+    it('keeps the marking when the engine refuses the start (a token gone during the re-check)', () => {
+      const harness = setup({ markedIds: ['new-1'] });
+      harness.startImport.mockReturnValue(false);
+      harness.run();
+
+      importDialogClosed(harness).next(ADD_NEW_1);
+
+      expect(harness.startImport).toHaveBeenCalledOnce();
+      expect(harness.onRunCommitted).not.toHaveBeenCalled();
     });
 
     it('keeps the marking on a dismissed confirmation', () => {

@@ -101,9 +101,10 @@ export type ImportFlowTarget =
  *   dialog found every row already in the set, or the last duplicate check before the start removed
  *   the rest. The tag flow then sends its empty play-in report itself — `startImport` would refuse an
  *   empty plan and drop the record, and the activation would never be reported.
- * - `onStarted` is called right after the run was handed to `startImport` — the play-in went ahead,
- *   and the tags page lets go of the grid marking it came from. Never for a dismissed dialog, a
- *   cancelled token prompt or a refused or blocked start.
+ * - `onStarted` is called right after `startImport` reported the run as started — the play-in went
+ *   ahead, and the tags page lets go of the grid marking it came from. Never for a dismissed dialog,
+ *   a cancelled token prompt or a refused or blocked start — the engine's own refusal included (an
+ *   empty plan after held-back replace rows, a token gone during the re-check).
  */
 export interface ImportFlowTagHook {
   context: ImportTagContext;
@@ -587,7 +588,7 @@ export function startImportFlow(
           tagHook.onNothingToImport();
           return;
         }
-        deps.importService.startImport(
+        const started = deps.importService.startImport(
           // `outcome.targetSetId` is `target.setId` from the *loaded* state — the set the run
           // actually reads/writes against, whichever of the three loader cases produced it (spec
           // F5/AK 44). It is never re-derived from `target` here, on purpose: the load is the one
@@ -620,7 +621,12 @@ export function startImportFlow(
           duplicateCheckAvailable,
           replaceSkippedDrift,
         );
-        tagHook?.onStarted?.();
+        // Only a run the engine actually started counts as "went ahead": a refused start (a plan
+        // emptied by held-back replace rows, a token cleared during the re-check) leaves the
+        // marking standing for another attempt.
+        if (started) {
+          tagHook?.onStarted?.();
+        }
       });
   };
 

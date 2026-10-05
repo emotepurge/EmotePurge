@@ -931,7 +931,10 @@ already in the set." stands in the marking's own line under the grid — not und
 would push the grid down under the pointer with every click on it — and is the button's
 `aria-describedby` and title. The marking goes once the play-in went ahead: right after `startImport`
 (new optional `ImportFlowTagHook.onStarted`) or when the report for nothing to add goes out; a dismissed
-dialog, a cancelled token prompt or any abort keeps it. The commit callback is the clear-out's, renamed
+dialog, a cancelled token prompt or any abort keeps it. "Went ahead" means the engine started the run:
+`SevenTvImportService.startImport` returns whether it did (its only caller is `import-flow.ts`), and
+`onStarted` fires only on `true` — an engine refusal (a plan emptied by held-back replace rows, a token
+gone during the re-check) keeps the marking (2026-10-05, Codex review). The commit callback is the clear-out's, renamed
 `onRunCommitted` → output `runCommitted` (it now serves both runs). The race paths keep their meaning: an
 "all present" report with a marking says "Alle n markierten Emotes sind schon im Set — der Tag gilt als
 ins Set geholt." (`allMarkedPresent`), and a marking none of whose ids the tag still has an entry for
@@ -944,6 +947,7 @@ placed; a new Testcontainers test pins a report of a subset of the missing entri
 **Betrifft (feedback, marking narrows the play-in):** `web/src/app/shared/tags/tag-play-in.ts` ·
 `web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-removal-flow.ts` ·
 `web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/shared/seven-tv/import-flow.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`startImport` returns whether it started) ·
 `web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags-page.html` ·
 `web/public/i18n/de.json` · `web/public/i18n/en.json` · the specs of the first four and of the tags
 page · `web/e2e/emote-tags.e2e.spec.ts` ·

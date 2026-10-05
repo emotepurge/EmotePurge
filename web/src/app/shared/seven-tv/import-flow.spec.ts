@@ -1356,10 +1356,12 @@ describe('startImportFlow', () => {
       active: WritableSignal<string | null>;
       onSetChanged: ReturnType<typeof vi.fn>;
       onNothingToImport: ReturnType<typeof vi.fn>;
+      onStarted: ReturnType<typeof vi.fn>;
     } {
       const active = signal<string | null>('set-active');
       const onSetChanged = vi.fn();
       const onNothingToImport = vi.fn();
+      const onStarted = vi.fn();
       return {
         hook: {
           context: CONTEXT,
@@ -1367,10 +1369,12 @@ describe('startImportFlow', () => {
           activeEmoteSetId: active,
           onSetChanged,
           onNothingToImport,
+          onStarted,
         },
         active,
         onSetChanged,
         onNothingToImport,
+        onStarted,
       };
     }
 
@@ -1434,7 +1438,8 @@ describe('startImportFlow', () => {
 
     it('starts the run on the frozen set with the tag context on its target when nothing changed', () => {
       const { deps, dialogOpen, startImport } = setupPinned();
-      const { hook, onSetChanged, onNothingToImport } = tagHook();
+      startImport.mockReturnValue(true);
+      const { hook, onSetChanged, onNothingToImport, onStarted } = tagHook();
 
       startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
       confirmAdd(dialogOpen);
@@ -1457,6 +1462,7 @@ describe('startImportFlow', () => {
       );
       expect(onSetChanged).not.toHaveBeenCalled();
       expect(onNothingToImport).not.toHaveBeenCalled();
+      expect(onStarted).toHaveBeenCalledOnce();
     });
 
     it('starts nothing and reports the switch when the active set changes during the confirmation', () => {
@@ -1527,9 +1533,11 @@ describe('startImportFlow', () => {
       expect(onSetChanged).not.toHaveBeenCalled();
     });
 
-    it('still starts the run when held-back replace rows, not presence, emptied the plan', () => {
+    it('still hands the plan to startImport when held-back replace rows, not presence, emptied it — and calls no onStarted when the engine refuses it', () => {
       const { deps, dialogOpen, startImport, httpPost } = setupPinned();
-      const { hook, onNothingToImport } = tagHook();
+      // The real engine refuses an empty queue (`SevenTvRunEngine.start`).
+      startImport.mockReturnValue(false);
+      const { hook, onNothingToImport, onStarted } = tagHook();
       const replaceKappa: TransferRow = {
         action: 'replace',
         source: KAPPA,
@@ -1554,7 +1562,10 @@ describe('startImportFlow', () => {
       expect(onNothingToImport).not.toHaveBeenCalled();
       expect(startImport).toHaveBeenCalledOnce();
       expect(startImport.mock.calls[0][2]).toEqual({ rows: [] });
+      // The drift count reaches the service, whose notice names the held-back rows.
       expect(startImport.mock.calls[0][5]).toBe(1);
+      // Refused: the play-in did not go ahead, so the marking stays.
+      expect(onStarted).not.toHaveBeenCalled();
     });
 
     it('hands a confirmed nothing-to-add straight to onNothingToImport — no token, no re-check, no run', () => {

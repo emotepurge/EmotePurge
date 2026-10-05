@@ -537,6 +537,29 @@ describe('SevenTvImportService', () => {
   // duplicate check (already-present-filter.ts) before ever calling startImport. What this service
   // owns is surfacing that caller-supplied count to the user, including the case a caller could
   // otherwise leave silent: every row was a duplicate, so nothing gets queued at all.
+  describe('whether the run started (#201 T-C: a tag play-in drops its marking only then)', () => {
+    it('answers true when the engine starts the run', () => {
+      expect(service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS))).toBe(true);
+      expect(service.isRunning()).toBe(true);
+
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('answers false when the engine refuses an empty plan', () => {
+      expect(service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]), 0, true, 1)).toBe(false);
+      expect(service.isRunning()).toBe(false);
+    });
+
+    it('answers false when the engine refuses for a missing token', () => {
+      tokenService.clearToken();
+
+      expect(service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS))).toBe(false);
+      expect(service.isRunning()).toBe(false);
+    });
+  });
+
   describe('skippedDuplicates (#149/T5)', () => {
     it('defaults to 0 when the caller omits it', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));

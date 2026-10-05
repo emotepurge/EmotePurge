@@ -1447,7 +1447,7 @@ describe('TagsPage', () => {
         const { harness, page } = await openTag(tag(1, 'Stronghold', 4, 1), ENTRIES);
         const startImport = vi
           .spyOn(TestBed.inject(SevenTvImportService), 'startImport')
-          .mockImplementation(() => undefined);
+          .mockReturnValue(true);
         cells(harness)[0].click();
         cells(harness)[1].click();
         cells(harness)[2].click();
