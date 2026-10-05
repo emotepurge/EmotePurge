@@ -683,7 +683,13 @@ UI-Designsprache §8.7 (9.4).
   shrinks from "as long as the dialog stays open" to that read plus the run. It matters most for a tag
   that is not played in, where every emote of it in the set is ticked, not only its own placements. A
   holder the dialog already showed is no change: a row ticked against "wird noch von X gebraucht" was
-  ticked knowingly.
+  ticked knowingly. That premise holds
+  on every path since the same day's re-review (N2): for a played-in tag too, an emote another active tag
+  needs through an entry alone (no placement), and an own placement another tag placed as well, list that
+  tag under "wird noch von X gebraucht" (`heldByActiveTags` merged with `placedByOtherTags`, as for a tag
+  that is not played in) — before, such a row read "war schon vorher im Set" and the re-read treated its
+  holder as known although the dialog had never named it. A re-read that answers malformed fails closed
+  like a failed one (the comparison runs in a `map`, so a throw reaches the abort path).
 - **13.2** — "Restore" after a clear-out creates no placement: restored emotes are in the set without being
   recorded as played in by the tag. While the tag is not played in, the next clear-out proposes them like any
   emote of the tag (since 2026-10-05); once it is played in again they read "was already in the set" and can

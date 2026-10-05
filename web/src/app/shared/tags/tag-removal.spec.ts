@@ -128,17 +128,25 @@ describe('proposeTagRemoval for a played-in tag', () => {
     expect(p.ownInLiveIds).toEqual(['a', 'b']);
   });
 
-  it('boundary: not own, held by an active tag but placed by nobody -> alreadyPresent', () => {
+  it('not own, needed by an active tag through an entry only -> unchecked, heldBy names it', () => {
     const [row] = proposePlayedIn(
       [entry('a', { heldByActiveTags: [T2] })],
       live({ a: ['x'] }),
     ).rows;
-    expect(row).toMatchObject({ checked: false, reason: 'alreadyPresent', heldBy: [] });
+    expect(row).toMatchObject({ checked: false, reason: 'heldBy', heldBy: [T2] });
   });
 
-  it('boundary: own, another tag placed it too but none holds it -> checked, placed', () => {
+  it('not own, an entry holder and a placement holder -> both listed once', () => {
+    const [row] = proposePlayedIn(
+      [entry('a', { heldByActiveTags: [T2], placedByOtherTags: [T2, T3] })],
+      live({ a: ['x'] }),
+    ).rows;
+    expect(row).toMatchObject({ checked: false, reason: 'heldBy', heldBy: [T2, T3] });
+  });
+
+  it('own, another tag placed it too but none holds it -> unchecked, heldBy names that tag', () => {
     const [row] = proposePlayedIn([own('a', { placedByOtherTags: [T2] })], live({ a: ['x'] })).rows;
-    expect(row).toMatchObject({ checked: true, reason: 'placed', heldBy: [] });
+    expect(row).toMatchObject({ checked: false, reason: 'heldBy', heldBy: [T2] });
   });
 
   it('E28: inSet true without the live read gives no row, only the count', () => {

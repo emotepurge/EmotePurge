@@ -116,12 +116,13 @@ function toRow(
     imageUrl: entry.imageUrl || null,
   };
   if (isOwn) {
-    const held = entry.heldByActiveTags.length > 0;
+    const holders = mergeRefs(entry.heldByActiveTags, entry.placedByOtherTags);
+    const held = holders.length > 0;
     return {
       ...base,
       checked: !held,
       reason: held ? 'heldBy' : 'placed',
-      heldBy: held ? [...entry.heldByActiveTags] : [],
+      heldBy: holders,
       placedAtUtc: entry.placedAtUtc,
     };
   }
@@ -134,14 +135,11 @@ function toRow(
       ? { ...base, checked: false, reason: 'heldBy', heldBy, placedAtUtc: null }
       : { ...base, checked: true, reason: 'tagged', heldBy: [], placedAtUtc: null };
   }
-  if (entry.placedByOtherTags.length > 0) {
-    return {
-      ...base,
-      checked: false,
-      reason: 'heldBy',
-      heldBy: [...entry.placedByOtherTags],
-      placedAtUtc: null,
-    };
+  // Played in: an emote another active tag needs through an entry alone (no placement) is held too,
+  // so the dialog names that tag — the re-read treats every shown holder as known.
+  const holders = mergeRefs(entry.heldByActiveTags, entry.placedByOtherTags);
+  if (holders.length > 0) {
+    return { ...base, checked: false, reason: 'heldBy', heldBy: holders, placedAtUtc: null };
   }
   return { ...base, checked: false, reason: 'alreadyPresent', heldBy: [], placedAtUtc: null };
 }
