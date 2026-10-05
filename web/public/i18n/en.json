@@ -1810,7 +1810,7 @@
         "one": "The only emote of {{tag}} is already in the set — the tag counts as added to the set.",
         "other": "All {{count}} emotes of {{tag}} are already in the set — the tag counts as added to the set."
       },
-      "removedNothing": "{{tag}} removed from the set — nothing to remove."
+      "removedNothing": "Nothing of {{tag}} was in the set to remove."
     },
     "deleteDialog": {
       "message": "{{tag}} will be deleted; the emotes stay in the set.",

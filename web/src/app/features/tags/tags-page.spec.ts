@@ -892,6 +892,17 @@ describe('TagsPage', () => {
         expect(text(harness)).not.toContain('nicht über den Tag');
       });
 
+      it('names no state for a played-in tag without placements', async () => {
+        const { harness } = await openTag(activeTag(1, 'Stronghold', 0));
+
+        expect(text(harness)).not.toContain('über den Tag ins Set geholt am');
+        expect(
+          Array.from(harness.routeNativeElement!.querySelectorAll('p.text-fg-secondary')).map((l) =>
+            l.textContent?.trim(),
+          ),
+        ).not.toContain(de.tags.page.state.activeUndated);
+      });
+
       it('says "über den Tag ins Set geholt" for an active tag whose activation date is missing', async () => {
         const { harness } = await openTag({ ...activeTag(1, 'Stronghold'), activatedAtUtc: null });
 

@@ -243,9 +243,10 @@
                 }
               </div>
               <!-- The played-in state against the active set (spec 9.4), named only when it holds —
-                   there is no "not played in" line (operator feedback 2026-10-05). Without a set to
+                   there is no "not played in" line, and none for an active tag without placements, like the list
+                   micro status (operator feedback 2026-10-05). Without a set to
                    refer to (`inSetCount: null`) there is no state to name either. -->
-              @if (tag.inSetCount !== null && tag.active) {
+              @if (tag.inSetCount !== null && tag.active && tag.placedCount > 0) {
                 <p class="text-sm text-fg-secondary">
                   @if (tag.activatedAtUtc) {
                     {{

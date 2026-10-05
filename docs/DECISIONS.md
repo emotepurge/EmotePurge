@@ -768,7 +768,7 @@ they did not say *where* the action lands. Now every tag action names its target
 "Ins Set holen"/"Add to set" and "Aus dem Set entfernen"/"Remove from set" act on the set, "Aus dem Tag
 entfernen (n)"/"Remove from tag (n)" and "Tag löschen"/"Delete tag" act on the tag; "Umbenennen" is
 unchanged. The tag status reads "n über den Tag ins Set geholt"/"n added to the set via this tag" (nothing
-at all for an active tag without placements). The tag-dock button names the tag only in its accessible
+at all for an active tag without placements); the same holds for the detail status line ("über den Tag ins Set geholt am …"), which is hidden when the tag is active but holds 0 placements. The tag-dock button names the tag only in its accessible
 name and title, after the visible words ("Aus dem Tag entfernen (2) – Name"), so the visible label stays
 contained in the accessible name. With a grid marking the set-removal button carries the number of marked
 entries like the dock does. The detail header is two groups with a visible gap (`gap-x-6`) between them: set
