@@ -52,7 +52,7 @@ public static class EmoteTagEndpoints
             var result = await tagService.ListEntriesAsync(channelName, tagId, emoteSetId, ct);
             return result.Status switch
             {
-                EmoteTagEntriesStatus.Ok => Results.Ok(new EmoteTagEntriesResponse(result.EmoteSetId, result.IsActiveSet, result.Entries)),
+                EmoteTagEntriesStatus.Ok => Results.Ok(new EmoteTagEntriesResponse(result.EmoteSetId, result.IsActiveSet, result.Entries, result.ActivationOperationId)),
                 EmoteTagEntriesStatus.ChannelNotFound => Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound }),
                 EmoteTagEntriesStatus.TagNotFound => Results.NotFound(new { errorCode = ApiErrorCodes.TagNotFound }),
                 _ => throw new UnreachableException($"Unexpected {nameof(EmoteTagEntriesStatus)} value: {result.Status}.")
@@ -181,6 +181,9 @@ public sealed record RenameTagRequest(string? Name);
 
 public sealed record TagEntryIdsRequest(IReadOnlyList<string>? SevenTvEmoteIds);
 
+// The tag and entry DTOs carry the placement and activation fields (#201 T-C) themselves; the list
+// response gains no top-level field of its own (spec 6.2).
 public sealed record EmoteTagListResponse(string? EmoteSetId, bool IsActiveSet, IReadOnlyList<EmoteTagSummaryDto> Tags);
 
-public sealed record EmoteTagEntriesResponse(string? EmoteSetId, bool IsActiveSet, IReadOnlyList<EmoteTagEntryDto> Entries);
+public sealed record EmoteTagEntriesResponse(
+    string? EmoteSetId, bool IsActiveSet, IReadOnlyList<EmoteTagEntryDto> Entries, Guid? ActivationOperationId);

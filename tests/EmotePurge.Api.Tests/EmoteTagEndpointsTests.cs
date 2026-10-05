@@ -39,7 +39,7 @@ public class EmoteTagEndpointsTests : IClassFixture<ApiFactory>
     {
         _factory.EmoteTags.ListAsync(Channel, "01GV88A38G0006FW5TVZVMG507", Arg.Any<CancellationToken>())
             .Returns(new EmoteTagListResult(
-                EmoteTagListStatus.Ok, "01GV88A38G0006FW5TVZVMG507", false, [new EmoteTagSummaryDto(7, "Funny", 3, null)]));
+                EmoteTagListStatus.Ok, "01GV88A38G0006FW5TVZVMG507", false, [new EmoteTagSummaryDto(7, "Funny", 3, null, 0, false, null)]));
 
         var response = await SendAsync("GET", Base + "?emoteSetId=01GV88A38G0006FW5TVZVMG507");
 
@@ -82,8 +82,9 @@ public class EmoteTagEndpointsTests : IClassFixture<ApiFactory>
         _factory.EmoteTags.ListEntriesAsync(Channel, 7, null, Arg.Any<CancellationToken>())
             .Returns(new EmoteTagEntriesResult(
                 EmoteTagEntriesStatus.Ok, "SET1", true,
-                [new EmoteTagEntryDto("EMOTE1", "KEKW", "https://cdn.7tv.app/emote/EMOTE1/4x.webp", true, "KEKW2"),
-                 new EmoteTagEntryDto("EMOTE2", "Pog", "https://cdn.7tv.app/emote/EMOTE2/4x.webp", null, null)]));
+                [new EmoteTagEntryDto("EMOTE1", "KEKW", "https://cdn.7tv.app/emote/EMOTE1/4x.webp", true, "KEKW2", false, null, null, [], []),
+                 new EmoteTagEntryDto("EMOTE2", "Pog", "https://cdn.7tv.app/emote/EMOTE2/4x.webp", null, null, false, null, null, [], [])],
+                null));
 
         var response = await SendAsync("GET", Base + "/7/entries");
 
@@ -97,13 +98,75 @@ public class EmoteTagEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal("EMOTE2", entries[1].GetProperty("sevenTvEmoteId").GetString());
     }
 
+    [Fact]
+    public async Task List_CarriesThePlacementAndActivationFields_InCamelCase()
+    {
+        var activatedAt = new DateTime(2026, 10, 5, 12, 30, 0, DateTimeKind.Utc);
+        _factory.EmoteTags.ListAsync(Channel, null, Arg.Any<CancellationToken>())
+            .Returns(new EmoteTagListResult(
+                EmoteTagListStatus.Ok, "SET1", true,
+                [new EmoteTagSummaryDto(7, "Funny", 3, 2, 1, true, activatedAt),
+                 new EmoteTagSummaryDto(8, "Idle", 0, 0, 0, false, null)]));
+
+        var tags = (await ReadJsonAsync(await SendAsync("GET", Base))).GetProperty("tags");
+
+        Assert.Equal(1, tags[0].GetProperty("placedCount").GetInt32());
+        Assert.True(tags[0].GetProperty("active").GetBoolean());
+        Assert.Equal(activatedAt, tags[0].GetProperty("activatedAtUtc").GetDateTime().ToUniversalTime());
+        Assert.False(tags[1].GetProperty("active").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, tags[1].GetProperty("activatedAtUtc").ValueKind);
+    }
+
+    [Fact]
+    public async Task Entries_CarryTheActivationOperationAndThePlacementFields_InCamelCase()
+    {
+        var activation = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e");
+        var placement = Guid.Parse("7c9e6679-7425-40de-944b-e07fc1f90ae7");
+        var placedAt = new DateTime(2026, 10, 5, 12, 0, 0, DateTimeKind.Utc);
+        _factory.EmoteTags.ListEntriesAsync(Channel, 7, null, Arg.Any<CancellationToken>())
+            .Returns(new EmoteTagEntriesResult(
+                EmoteTagEntriesStatus.Ok, "SET1", true,
+                [new EmoteTagEntryDto("EMOTE1", "KEKW", "https://cdn.7tv.app/emote/EMOTE1/4x.webp", true, "KEKW", true, placedAt, placement,
+                     [new EmoteTagRefDto(9, "Stronghold")], [new EmoteTagRefDto(10, "Spooky"), new EmoteTagRefDto(11, "Late")]),
+                 new EmoteTagEntryDto("EMOTE2", "Pog", "https://cdn.7tv.app/emote/EMOTE2/4x.webp", true, "Pog", false, null, null, [], [])],
+                activation));
+
+        var body = await ReadJsonAsync(await SendAsync("GET", Base + "/7/entries"));
+
+        Assert.Equal(activation, body.GetProperty("activationOperationId").GetGuid());
+        var placed = body.GetProperty("entries")[0];
+        Assert.True(placed.GetProperty("placedByThisTag").GetBoolean());
+        Assert.Equal(placedAt, placed.GetProperty("placedAtUtc").GetDateTime().ToUniversalTime());
+        Assert.Equal(placement, placed.GetProperty("placementOperationId").GetGuid());
+        var holder = Assert.Single(placed.GetProperty("heldByActiveTags").EnumerateArray());
+        Assert.Equal((9, "Stronghold"), (holder.GetProperty("id").GetInt64(), holder.GetProperty("name").GetString()));
+        Assert.Equal([10L, 11L], placed.GetProperty("placedByOtherTags").EnumerateArray().Select(t => t.GetProperty("id").GetInt64()));
+        var unplaced = body.GetProperty("entries")[1];
+        Assert.False(unplaced.GetProperty("placedByThisTag").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, unplaced.GetProperty("placedAtUtc").ValueKind);
+        Assert.Equal(JsonValueKind.Null, unplaced.GetProperty("placementOperationId").ValueKind);
+        Assert.Equal(0, unplaced.GetProperty("heldByActiveTags").GetArrayLength());
+        Assert.Equal(0, unplaced.GetProperty("placedByOtherTags").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Entries_WithoutAnActivation_AnswerActivationOperationIdAsJsonNull()
+    {
+        _factory.EmoteTags.ListEntriesAsync(Channel, 7, null, Arg.Any<CancellationToken>())
+            .Returns(new EmoteTagEntriesResult(EmoteTagEntriesStatus.Ok, null, false, [], null));
+
+        var body = await ReadJsonAsync(await SendAsync("GET", Base + "/7/entries"));
+
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("activationOperationId").ValueKind);
+    }
+
     [Theory]
     [InlineData(EmoteTagEntriesStatus.ChannelNotFound, ApiErrorCodes.ChannelNotFound)]
     [InlineData(EmoteTagEntriesStatus.TagNotFound, ApiErrorCodes.TagNotFound)]
     public async Task Entries_Answer404WithTheCode(EmoteTagEntriesStatus status, string expectedCode)
     {
         _factory.EmoteTags.ListEntriesAsync(Channel, 7, Arg.Any<string?>(), Arg.Any<CancellationToken>())
-            .Returns(new EmoteTagEntriesResult(status, null, false, []));
+            .Returns(new EmoteTagEntriesResult(status, null, false, [], null));
 
         var response = await SendAsync("GET", Base + "/7/entries");
 

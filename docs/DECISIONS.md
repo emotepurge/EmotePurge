@@ -15,19 +15,23 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 **Betrifft:** `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Entities/Emote.cs` ·
 `src/EmotePurge.Core/Entities/EmoteSetLeaveObservation.cs` ·
 `src/EmotePurge.Core/Entities/EmoteTagActivation.cs` · `src/EmotePurge.Core/Entities/EmoteTagOperation.cs` ·
-`src/EmotePurge.Core/Entities/EmoteTagPlacement.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagPlacement.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
+`src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` ·
 `src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTagPlacements*.cs` ·
 `src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` ·
 `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
 `src/EmotePurge.Infrastructure/Persistence/EmoteSetLeaveObservations.cs` ·
 `src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` ·
 `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
 `src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceLeaveObservationTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs`
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteTagEndpointsTests.cs`
 
 Tags (T-B) only name emotes. T-C lets a tag be played into a set and cleared out of it again, and
 remembers which emotes a tag put there, so that clearing removes exactly those and nothing a person
@@ -133,6 +137,41 @@ lives in `EmotePurge.Infrastructure`, so the worker image has to be rebuilt and 
   `PostgresException` (23503), not a `DbUpdateException`. The full sync treats that like a vanished
   row and abandons the attempt. The delta path and the Api let it propagate, as they already did for
   the save's FK failure.
+
+#### Read-time rule (Task 3)
+
+Both tag reads (`GET …/tags`, `GET …/tags/{tagId}/entries`) now carry the placement and activation
+fields of spec 6.2: `placedCount`, `active`, `activatedAtUtc` per tag; `activationOperationId` on the
+entry read; `placedByThisTag`, `placedAtUtc`, `placementOperationId`, `heldByActiveTags` and
+`placedByOtherTags` per entry. The records grow by trailing positional parameters only, with no
+defaults, so every construction site had to name the new values.
+
+- **The rule, evaluated on every read.** A placement holds unless the channel has a leave observation
+  for the same emote **and the same set** whose `LastObservedAtUtc` is later than `RegisteredAtUtc` of
+  the operation in `Placement.OperationId`. An observation at exactly the registration instant does not
+  expire it. Every placement field counts valid placements only; an expired row stays in the table
+  until a play-in overwrites it or a sweep removes it. Activations ignore observations.
+- **A placement whose operation row is missing does not hold.** Nothing should delete an operation
+  before its tag, but the operation is deliberately no FK target, so the read says what happens rather
+  than assuming it cannot. This is the one unknown that errs towards *less*: a placement without a
+  registration time has nothing to compare an observation against, and suggesting it for removal could
+  take an emote a person added.
+- **Three queries over scalar keys, joined in memory (rule 10).** The placements of the channel's tag
+  ids in the set (narrowed to the entry ids on the entry read); the registration time of their
+  operation ids; the latest observation of their emote ids in that set
+  (`EmoteSetLeaveObservations.LoadLatestAsync`, the same read as the sync's post-check). No navigation
+  join, no `GroupBy` over one; `placedCount` is counted in memory. Activations and the holders' entries
+  are two further scalar-key queries. The rule lives in one private method of `EmoteTagService`
+  (`LoadPlacementStatesAsync`), which returns valid and expired rows with a verdict, so the later
+  removal report and its sweep apply the same rule rather than a copy.
+- **Per set, not per active set.** Placement and activation fields are computed for whatever set the
+  read resolves to, a non-active one included; only `inSet`/`inSetCount` stay `null` there, since
+  "in the set" is a channel-wide status. Without a set parameter and without an active set every
+  set-related field is empty.
+- **`heldByActiveTags`** lists the channel's other tags that have an activation in the set *and* an
+  entry for the emote, whether or not they hold a placement; **`placedByOtherTags`** lists the other
+  tags with a valid placement. Both are ordered oldest tag first (`CreatedAtUtc`, then id — spec 5.5
+  rule 3), the order the removal flow uses to pick an owner.
 
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 

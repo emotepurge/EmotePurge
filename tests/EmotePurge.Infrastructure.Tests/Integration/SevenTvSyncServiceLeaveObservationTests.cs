@@ -419,6 +419,35 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         Assert.Equal(observedAt, await LatestAsync(channel, SetId, "lotag1"));
     }
 
+    // The same sequence end to end (T-C Task 3), read the way the tags page reads it: the real sync
+    // drives every step and EmoteTagService applies the read-time rule. The placement survives the
+    // stale REST archive (no observation inside the window — counterexample 8), and drops out of
+    // every placement field once the REMOVE has recorded a leave later than its registration — even
+    // though the PUSH has put the emote back and the placement row itself is still there.
+    [Fact]
+    public async Task CodexFinding2_EndToEnd_APlacementRegisteredBeforeTheRemove_NoLongerCountsAsPlacedByTheTag()
+    {
+        var channel = await SeedChannelAsync("leaveobs_codex2_read", ("lokeep1", false, null));
+        Assert.Equal(SevenTvDeltaOutcome.Applied, (await ApplyAsync(channel, Delta(pushed: [Live("lotag1")]))).Outcome);
+        var (tagId, operationId) = await SeedPlacementAsync(channel, "lotag1", SetId, DateTime.UtcNow);
+
+        var placed = await ReadTagAsync(channel, tagId);
+        Assert.Equal((true, (Guid?)operationId), (placed.Entry.PlacedByThisTag, placed.Entry.PlacementOperationId));
+
+        await SyncAsync(channel, SetId, Live("lokeep1"));
+        var afterStaleRest = await ReadTagAsync(channel, tagId);
+        Assert.Equal((false, true, 1), (afterStaleRest.Entry.InSet, afterStaleRest.Entry.PlacedByThisTag, afterStaleRest.PlacedCount));
+
+        Assert.Equal(SevenTvDeltaOutcome.NoChange, (await ApplyAsync(channel, Delta(pulledIds: ["lotag1"]))).Outcome);
+        Assert.Equal(SevenTvDeltaOutcome.Applied, (await ApplyAsync(channel, Delta(pushed: [Live("lotag1")]))).Outcome);
+
+        var afterReAdd = await ReadTagAsync(channel, tagId);
+        Assert.Equal((true, false, 0), (afterReAdd.Entry.InSet, afterReAdd.Entry.PlacedByThisTag, afterReAdd.PlacedCount));
+        Assert.Equal(((DateTime?)null, (Guid?)null), (afterReAdd.Entry.PlacedAtUtc, afterReAdd.Entry.PlacementOperationId));
+        await using var verify = fixture.CreateDbContext();
+        Assert.True(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == tagId && p.OperationId == operationId));
+    }
+
     // The same sequence with the EventAPI off: no REMOVE ever arrives. Once the window after the
     // entry is over, the next REST resync's post-check records the leave exactly once.
     [Fact]
@@ -566,6 +595,16 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         return await CreateService(db, cache ?? new EmoteMatchCache()).ApplyEmoteSetUpdateAsync(channel.ChannelName, emoteSetId, delta);
+    }
+
+    // The tag read on a fresh context, for the channel's active set, as the tags page asks for it.
+    private async Task<(EmoteTagEntryDto Entry, int PlacedCount)> ReadTagAsync(Channel channel, long tagId)
+    {
+        await using var db = fixture.CreateDbContext();
+        var tags = new EmoteTagService(db);
+        var entries = await tags.ListEntriesAsync(channel.ChannelName, tagId, null);
+        var list = await tags.ListAsync(channel.ChannelName, null);
+        return (Assert.Single(entries.Entries), Assert.Single(list.Tags, t => t.Id == tagId).PlacedCount);
     }
 
     private async Task<DateTime?> LatestAsync(Channel channel, string emoteSetId, string sevenTvEmoteId)

@@ -49,11 +49,18 @@ public enum EmoteTagRemoveEntriesStatus
 
 public sealed record EmoteTagDto(long Id, string Name);
 
+/// <summary>Another tag of the same channel, as the entry read names it.</summary>
+public sealed record EmoteTagRefDto(long Id, string Name);
+
 /// <param name="InSetCount">
 /// Entries whose emote has an unarchived row in the channel; <c>null</c> when the resolved set is not
 /// the channel's active set (see <see cref="IEmoteTagService"/>).
 /// </param>
-public sealed record EmoteTagSummaryDto(long Id, string Name, int EntryCount, int? InSetCount);
+/// <param name="PlacedCount">The tag's valid placements in the resolved set (read-time rule); 0 without a set.</param>
+/// <param name="Active">Whether the tag counts as played in to the resolved set (an activation row exists); <c>false</c> without a set.</param>
+/// <param name="ActivatedAtUtc">When that activation was last set; <c>null</c> when <paramref name="Active"/> is <c>false</c>.</param>
+public sealed record EmoteTagSummaryDto(
+    long Id, string Name, int EntryCount, int? InSetCount, int PlacedCount, bool Active, DateTime? ActivatedAtUtc);
 
 /// <param name="Alias">The emote's name when it was tagged (snapshot).</param>
 /// <param name="ImageUrl">The emote's image when it was tagged (snapshot).</param>
@@ -62,7 +69,25 @@ public sealed record EmoteTagSummaryDto(long Id, string Name, int EntryCount, in
 /// channel's active set.
 /// </param>
 /// <param name="CurrentName">The row's current name when <paramref name="InSet"/> is <c>true</c>, otherwise <c>null</c>.</param>
-public sealed record EmoteTagEntryDto(string SevenTvEmoteId, string Alias, string ImageUrl, bool? InSet, string? CurrentName);
+/// <param name="PlacedByThisTag">Whether this tag holds a valid placement of the emote in the resolved set (read-time rule).</param>
+/// <param name="PlacedAtUtc">That placement's <c>PlacedAtUtc</c>; <c>null</c> without a valid placement.</param>
+/// <param name="PlacementOperationId">That placement's revision (its <c>OperationId</c>); <c>null</c> without a valid placement.</param>
+/// <param name="HeldByActiveTags">
+/// The channel's other tags that are active in the resolved set and have an entry for the emote,
+/// placements or not; oldest tag first (<c>CreatedAtUtc</c>, then id).
+/// </param>
+/// <param name="PlacedByOtherTags">The channel's other tags with a valid placement of the emote in the resolved set; same order.</param>
+public sealed record EmoteTagEntryDto(
+    string SevenTvEmoteId,
+    string Alias,
+    string ImageUrl,
+    bool? InSet,
+    string? CurrentName,
+    bool PlacedByThisTag,
+    DateTime? PlacedAtUtc,
+    Guid? PlacementOperationId,
+    IReadOnlyList<EmoteTagRefDto> HeldByActiveTags,
+    IReadOnlyList<EmoteTagRefDto> PlacedByOtherTags);
 
 /// <param name="EmoteSetId">The set the set-related fields refer to; <c>null</c> when none was asked for and the channel has no active set.</param>
 /// <param name="Tags">The channel's tags in creation order.</param>
@@ -70,8 +95,16 @@ public sealed record EmoteTagListResult(
     EmoteTagListStatus Status, string? EmoteSetId, bool IsActiveSet, IReadOnlyList<EmoteTagSummaryDto> Tags);
 
 /// <param name="Entries">The tag's entries in the order they were added (ties by 7TV id).</param>
+/// <param name="ActivationOperationId">
+/// The operation of the tag's activation in the resolved set, or <c>null</c> when it is not active there
+/// (or there is no set). A removal run hands it back in its report.
+/// </param>
 public sealed record EmoteTagEntriesResult(
-    EmoteTagEntriesStatus Status, string? EmoteSetId, bool IsActiveSet, IReadOnlyList<EmoteTagEntryDto> Entries);
+    EmoteTagEntriesStatus Status,
+    string? EmoteSetId,
+    bool IsActiveSet,
+    IReadOnlyList<EmoteTagEntryDto> Entries,
+    Guid? ActivationOperationId);
 
 /// <param name="Tag">The tag as stored after the mutation; <c>null</c> unless <paramref name="Status"/> is <c>Ok</c>.</param>
 public sealed record EmoteTagMutationResult(EmoteTagMutationStatus Status, EmoteTagDto? Tag);
@@ -103,8 +136,12 @@ public sealed record EmoteTagRemoveEntriesResult(EmoteTagRemoveEntriesStatus Sta
 /// other <c>emoteSetId</c>.
 /// </para>
 /// <para>
-/// Part C of #201 (placements and activations) extends the read results with further fields; it adds
-/// them, it does not change the meaning of the ones here.
+/// <b>Placements and activations</b> (part C of #201) are per set, so both reads compute them for any
+/// resolved set, active or not, and leave them empty without one. Every placement field counts only
+/// <em>valid</em> placements — the read-time rule: a placement holds unless the channel has a leave
+/// observation for the same emote and set that is later than the registration of the operation that
+/// last wrote the placement. A placement whose operation is missing does not hold either. Activations
+/// are never affected by observations.
 /// </para>
 /// </summary>
 public interface IEmoteTagService

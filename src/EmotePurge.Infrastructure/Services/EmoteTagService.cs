@@ -23,6 +23,11 @@ namespace EmotePurge.Infrastructure.Services;
 /// lock.
 /// </para>
 /// <para>
+/// <b>Read-time rule.</b> The sync never deletes a placement; it records leave observations. Whether a
+/// placement still holds is decided here, on every read, against those observations — see
+/// <see cref="LoadPlacementStatesAsync"/>.
+/// </para>
+/// <para>
 /// Input is checked before the database is asked anything, so an unfit request is answered the same
 /// way whether or not the channel or tag exists.
 /// </para>
@@ -70,15 +75,33 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
             })
             .ToDictionaryAsync(c => c.TagId, cancellationToken);
 
+        // Placements and activations are per set, so they are computed for any resolved set — a
+        // non-active one included — and stay empty without one. Placements are counted in memory, over
+        // the valid ones only.
+        Dictionary<long, ActivationState> activations = [];
+        Dictionary<long, int> placedCounts = [];
+        if (setId is not null)
+        {
+            activations = await LoadActivationsAsync(tagIds, setId, cancellationToken);
+            placedCounts = (await LoadPlacementStatesAsync(channel.Id, setId, tagIds, null, cancellationToken))
+                .Where(p => p.Holds)
+                .CountBy(p => p.TagId)
+                .ToDictionary(c => c.Key, c => c.Value);
+        }
+
         var summaries = tags
             .Select(t =>
             {
                 var count = counts.GetValueOrDefault(t.Id);
+                var activation = activations.GetValueOrDefault(t.Id);
                 return new EmoteTagSummaryDto(
                     t.Id,
                     t.Name,
                     count?.EntryCount ?? 0,
-                    isActiveSet ? count?.InSetCount ?? 0 : null);
+                    isActiveSet ? count?.InSetCount ?? 0 : null,
+                    placedCounts.GetValueOrDefault(t.Id),
+                    activation is not null,
+                    activation?.ActivatedAtUtc);
             })
             .ToList();
         return new EmoteTagListResult(EmoteTagListStatus.Ok, setId, isActiveSet, summaries);
@@ -90,15 +113,23 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         var channel = await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
         if (channel is null)
         {
-            return new EmoteTagEntriesResult(EmoteTagEntriesStatus.ChannelNotFound, null, false, []);
+            return new EmoteTagEntriesResult(EmoteTagEntriesStatus.ChannelNotFound, null, false, [], null);
         }
 
         var (setId, isActiveSet) = ResolveSet(channel, emoteSetId);
 
-        var tagExists = await db.EmoteTags.AnyAsync(t => t.Id == tagId && t.ChannelId == channel.Id, cancellationToken);
-        if (!tagExists)
+        // All of the channel's tags, oldest first (spec 5.5 rule 3): the existence check for this one,
+        // and the names and order of the other tags the entries refer to. At most MaxTagsPerChannel.
+        var channelTags = await db.EmoteTags
+            .AsNoTracking()
+            .Where(t => t.ChannelId == channel.Id)
+            .OrderBy(t => t.CreatedAtUtc)
+            .ThenBy(t => t.Id)
+            .Select(t => new EmoteTagRefDto(t.Id, t.Name))
+            .ToListAsync(cancellationToken);
+        if (!channelTags.Any(t => t.Id == tagId))
         {
-            return new EmoteTagEntriesResult(EmoteTagEntriesStatus.TagNotFound, setId, isActiveSet, []);
+            return new EmoteTagEntriesResult(EmoteTagEntriesStatus.TagNotFound, setId, isActiveSet, [], null);
         }
 
         // Ordinal tie-break in memory rather than in SQL: the database orders text by its collation,
@@ -110,30 +141,40 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
             .OrderBy(e => e.AddedAtUtc)
             .ThenBy(e => e.SevenTvEmoteId, StringComparer.Ordinal)
             .ToList();
+        var entryIds = entries.Select(e => e.SevenTvEmoteId).ToList();
 
         Dictionary<string, string> currentNames = [];
         if (isActiveSet && entries.Count > 0)
         {
-            var ids = entries.Select(e => e.SevenTvEmoteId).ToList();
             // One row per (channel, 7TV id) by the unique index, so the dictionary cannot collide.
             currentNames = await db.Emotes
-                .Where(e => e.ChannelId == channel.Id && !e.IsArchived && ids.Contains(e.SevenTvEmoteId))
+                .Where(e => e.ChannelId == channel.Id && !e.IsArchived && entryIds.Contains(e.SevenTvEmoteId))
                 .ToDictionaryAsync(e => e.SevenTvEmoteId, e => e.Name, StringComparer.Ordinal, cancellationToken);
         }
+
+        var placements = setId is null
+            ? EntryPlacements.None
+            : await LoadEntryPlacementsAsync(channel.Id, tagId, setId, channelTags, entryIds, cancellationToken);
 
         var dtos = entries
             .Select(e =>
             {
                 bool? inSet = isActiveSet ? currentNames.ContainsKey(e.SevenTvEmoteId) : null;
+                var own = placements.Own.GetValueOrDefault(e.SevenTvEmoteId);
                 return new EmoteTagEntryDto(
                     e.SevenTvEmoteId,
                     e.Alias,
                     e.ImageUrl,
                     inSet,
-                    inSet == true ? currentNames[e.SevenTvEmoteId] : null);
+                    inSet == true ? currentNames[e.SevenTvEmoteId] : null,
+                    own is not null,
+                    own?.PlacedAtUtc,
+                    own?.OperationId,
+                    OtherTagsIn(channelTags, tagId, placements.HeldByActive.GetValueOrDefault(e.SevenTvEmoteId)),
+                    OtherTagsIn(channelTags, tagId, placements.PlacedByOthers.GetValueOrDefault(e.SevenTvEmoteId)));
             })
             .ToList();
-        return new EmoteTagEntriesResult(EmoteTagEntriesStatus.Ok, setId, isActiveSet, dtos);
+        return new EmoteTagEntriesResult(EmoteTagEntriesStatus.Ok, setId, isActiveSet, dtos, placements.ActivationOperationId);
     }
 
     public async Task<EmoteTagMutationResult> CreateAsync(
@@ -397,6 +438,131 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
             .Select(e => e.SevenTvEmoteId)
             .ToListAsync(cancellationToken);
 
+    /// <summary>The activations of <paramref name="tagIds"/> in one set, keyed by tag id (one per tag by the primary key).</summary>
+    private async Task<Dictionary<long, ActivationState>> LoadActivationsAsync(
+        IReadOnlyCollection<long> tagIds, string emoteSetId, CancellationToken cancellationToken)
+    {
+        var ids = tagIds.ToArray();
+        return await db.EmoteTagActivations
+            .AsNoTracking()
+            .Where(a => ids.Contains(a.TagId) && a.SevenTvEmoteSetId == emoteSetId)
+            .Select(a => new ActivationState(a.TagId, a.ActivatedAtUtc, a.OperationId))
+            .ToDictionaryAsync(a => a.TagId, cancellationToken);
+    }
+
+    /// <summary>
+    /// The placements of <paramref name="tagIds"/> in one set — narrowed to
+    /// <paramref name="sevenTvEmoteIds"/> when given — each judged by the read-time rule (spec 5.5 rule 5,
+    /// E33 rev. 4): it holds unless the channel has a leave observation for the same emote and set that
+    /// is later than the registration of the placement's operation. Valid and expired rows are both
+    /// returned; reads filter on <see cref="PlacementState.Holds"/>.
+    /// <para>
+    /// Three queries over scalar keys, joined in memory (rule 10): the placements (the caller passes
+    /// the channel's tag ids, which is what scopes them to the channel); the registration time of their
+    /// operation ids; the latest observation of their emote ids in that set
+    /// (<see cref="EmoteSetLeaveObservations.LoadLatestAsync"/>, shared with the sync's post-check).
+    /// </para>
+    /// <para>
+    /// The observation is compared per set: one recorded for another set of the channel says nothing
+    /// about this one. A placement whose operation row is missing has no registration time to compare
+    /// against and does <em>not</em> hold — an unknown here errs towards suggesting less for removal.
+    /// No FK stops that row going (the operation is deliberately not an FK target), so the rule says what
+    /// happens rather than assuming it cannot.
+    /// </para>
+    /// </summary>
+    private async Task<List<PlacementState>> LoadPlacementStatesAsync(
+        string channelId,
+        string emoteSetId,
+        IReadOnlyCollection<long> tagIds,
+        IReadOnlyCollection<string>? sevenTvEmoteIds,
+        CancellationToken cancellationToken)
+    {
+        var tagIdArray = tagIds.ToArray();
+        var query = db.EmoteTagPlacements
+            .AsNoTracking()
+            .Where(p => tagIdArray.Contains(p.TagId) && p.SevenTvEmoteSetId == emoteSetId);
+        if (sevenTvEmoteIds is not null)
+        {
+            var emoteIdArray = sevenTvEmoteIds.ToArray();
+            query = query.Where(p => emoteIdArray.Contains(p.SevenTvEmoteId));
+        }
+
+        var placements = await query
+            .Select(p => new { p.TagId, p.SevenTvEmoteId, p.PlacedAtUtc, p.OperationId })
+            .ToListAsync(cancellationToken);
+        if (placements.Count == 0)
+        {
+            return [];
+        }
+
+        var operationIds = placements.Select(p => p.OperationId).Distinct().ToArray();
+        var registeredAt = await db.EmoteTagOperations
+            .AsNoTracking()
+            .Where(o => operationIds.Contains(o.OperationId))
+            .ToDictionaryAsync(o => o.OperationId, o => o.RegisteredAtUtc, cancellationToken);
+        var observedAt = await EmoteSetLeaveObservations.LoadLatestAsync(
+            db, channelId, emoteSetId, placements.Select(p => p.SevenTvEmoteId).ToList(), cancellationToken);
+
+        return placements
+            .Select(p => new PlacementState(
+                p.TagId,
+                p.SevenTvEmoteId,
+                p.PlacedAtUtc,
+                p.OperationId,
+                Holds(
+                    registeredAt.TryGetValue(p.OperationId, out var registered) ? registered : null,
+                    observedAt.TryGetValue(p.SevenTvEmoteId, out var observed) ? observed : null)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// The set-related part of the entry read: this tag's activation and valid placements, and per
+    /// emote the other tags that hold it (active in the set with an entry for it) or have a valid
+    /// placement of it.
+    /// </summary>
+    private async Task<EntryPlacements> LoadEntryPlacementsAsync(
+        string channelId,
+        long tagId,
+        string emoteSetId,
+        IReadOnlyList<EmoteTagRefDto> channelTags,
+        IReadOnlyList<string> entryIds,
+        CancellationToken cancellationToken)
+    {
+        var channelTagIds = channelTags.Select(t => t.Id).ToList();
+        var activations = await LoadActivationsAsync(channelTagIds, emoteSetId, cancellationToken);
+        var activationOperationId = activations.GetValueOrDefault(tagId)?.OperationId;
+        if (entryIds.Count == 0)
+        {
+            return EntryPlacements.None with { ActivationOperationId = activationOperationId };
+        }
+
+        // Holders are independent of placements: an active tag that merely has an entry for the emote
+        // still needs it in the set.
+        Dictionary<string, HashSet<long>> heldByActive = new(StringComparer.Ordinal);
+        var activeOtherTagIds = activations.Keys.Where(id => id != tagId).ToArray();
+        if (activeOtherTagIds.Length > 0)
+        {
+            var ids = entryIds.ToArray();
+            var holderEntries = await db.EmoteTagEntries
+                .AsNoTracking()
+                .Where(e => activeOtherTagIds.Contains(e.TagId) && ids.Contains(e.SevenTvEmoteId))
+                .Select(e => new { e.TagId, e.SevenTvEmoteId })
+                .ToListAsync(cancellationToken);
+            heldByActive = GroupTagIdsByEmote(holderEntries.Select(e => (e.SevenTvEmoteId, e.TagId)));
+        }
+
+        var valid = (await LoadPlacementStatesAsync(channelId, emoteSetId, channelTagIds, entryIds, cancellationToken))
+            .Where(p => p.Holds)
+            .ToList();
+        // One placement per (tag, emote, set) by the primary key, so this tag's dictionary cannot collide.
+        var own = valid
+            .Where(p => p.TagId == tagId)
+            .ToDictionary(p => p.SevenTvEmoteId, StringComparer.Ordinal);
+        var placedByOthers = GroupTagIdsByEmote(valid.Where(p => p.TagId != tagId).Select(p => (p.SevenTvEmoteId, p.TagId)));
+
+        return new EntryPlacements(activationOperationId, own, heldByActive, placedByOthers);
+    }
+
     private void AddTagAudit(AuditActor actor, string action, string channelName, long tagId, object details) =>
         db.AddAuditEntry(
             actor,
@@ -421,6 +587,38 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         return (setId, string.Equals(setId, channel.ActiveEmoteSetId, StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The read-time rule for one placement: it holds when its operation's registration is known and no
+    /// leave observation is later than it. An observation at exactly the registration instant does not
+    /// expire it — only a leave seen after the run was registered can be one the run did not cause.
+    /// </summary>
+    private static bool Holds(DateTime? registeredAtUtc, DateTime? observedAtUtc) =>
+        registeredAtUtc is { } registered && (observedAtUtc is not { } observed || observed <= registered);
+
+    private static Dictionary<string, HashSet<long>> GroupTagIdsByEmote(IEnumerable<(string SevenTvEmoteId, long TagId)> pairs)
+    {
+        var byEmote = new Dictionary<string, HashSet<long>>(StringComparer.Ordinal);
+        foreach (var (sevenTvEmoteId, tagId) in pairs)
+        {
+            if (!byEmote.TryGetValue(sevenTvEmoteId, out var tagIds))
+            {
+                tagIds = [];
+                byEmote[sevenTvEmoteId] = tagIds;
+            }
+
+            tagIds.Add(tagId);
+        }
+
+        return byEmote;
+    }
+
+    /// <summary>
+    /// The other tags among <paramref name="tagIds"/>, in the order of <paramref name="channelTags"/>
+    /// (oldest first, spec 5.5 rule 3).
+    /// </summary>
+    private static List<EmoteTagRefDto> OtherTagsIn(IReadOnlyList<EmoteTagRefDto> channelTags, long tagId, HashSet<long>? tagIds) =>
+        tagIds is null ? [] : channelTags.Where(t => t.Id != tagId && tagIds.Contains(t.Id)).ToList();
+
     /// <summary>Dedupes ordinally in request order; empty wins over unfit, and an oversized request counts as unfit.</summary>
     private static (EmoteIdsInputStatus? Rejected, List<string> Ids) CheckEmoteIds(IReadOnlyList<string>? sevenTvEmoteIds)
     {
@@ -442,5 +640,23 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
     {
         Empty,
         Invalid
+    }
+
+    private sealed record ActivationState(long TagId, DateTime ActivatedAtUtc, Guid OperationId);
+
+    /// <param name="Holds">The read-time rule's verdict; an expired placement still exists until a play-in or sweep replaces it.</param>
+    private sealed record PlacementState(long TagId, string SevenTvEmoteId, DateTime PlacedAtUtc, Guid OperationId, bool Holds);
+
+    private sealed record EntryPlacements(
+        Guid? ActivationOperationId,
+        Dictionary<string, PlacementState> Own,
+        Dictionary<string, HashSet<long>> HeldByActive,
+        Dictionary<string, HashSet<long>> PlacedByOthers)
+    {
+        public static EntryPlacements None { get; } = new(
+            null,
+            new Dictionary<string, PlacementState>(StringComparer.Ordinal),
+            new Dictionary<string, HashSet<long>>(StringComparer.Ordinal),
+            new Dictionary<string, HashSet<long>>(StringComparer.Ordinal));
     }
 }

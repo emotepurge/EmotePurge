@@ -20,6 +20,9 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
 
     private static readonly AuditActor Actor = new("201", "tagmod");
 
+    // Whole seconds, so values that round-trip through Postgres (microseconds) compare exactly.
+    private static readonly DateTime T0 = new(2026, 10, 5, 12, 0, 0, DateTimeKind.Utc);
+
     // ---- Create ----------------------------------------------------------------------------------
 
     [Fact]
@@ -507,9 +510,9 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.True(result.IsActiveSet);
         Assert.Equal(
             [
-                new EmoteTagSummaryDto(older.Id, "Older", 2, 1),
-                new EmoteTagSummaryDto(newer.Id, "Newer", 2, 1),
-                new EmoteTagSummaryDto(empty.Id, "Empty", 0, 0)
+                new EmoteTagSummaryDto(older.Id, "Older", 2, 1, 0, false, null),
+                new EmoteTagSummaryDto(newer.Id, "Newer", 2, 1, 0, false, null),
+                new EmoteTagSummaryDto(empty.Id, "Empty", 0, 0, 0, false, null)
             ],
             result.Tags);
     }
@@ -527,9 +530,9 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         var other = await service.ListAsync("taglistset", OtherSetId);
 
         Assert.Equal((ActiveSetId, true), (active.EmoteSetId, active.IsActiveSet));
-        Assert.Equal(new EmoteTagSummaryDto(tag.Id, "Funny", 1, 1), Assert.Single(active.Tags));
+        Assert.Equal(new EmoteTagSummaryDto(tag.Id, "Funny", 1, 1, 0, false, null), Assert.Single(active.Tags));
         Assert.Equal((OtherSetId, false), (other.EmoteSetId, other.IsActiveSet));
-        Assert.Equal(new EmoteTagSummaryDto(tag.Id, "Funny", 1, null), Assert.Single(other.Tags));
+        Assert.Equal(new EmoteTagSummaryDto(tag.Id, "Funny", 1, null, 0, false, null), Assert.Single(other.Tags));
     }
 
     [Fact]
@@ -544,7 +547,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.Equal(EmoteTagListStatus.Ok, result.Status);
         Assert.Null(result.EmoteSetId);
         Assert.False(result.IsActiveSet);
-        Assert.Equal(new EmoteTagSummaryDto(tag.Id, "Funny", 2, null), Assert.Single(result.Tags));
+        Assert.Equal(new EmoteTagSummaryDto(tag.Id, "Funny", 2, null, 0, false, null), Assert.Single(result.Tags));
     }
 
     [Fact]
@@ -582,7 +585,10 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.Equal(
             new[] { first, tieOrder[0], tieOrder[1] }.Select(e => e.SevenTvEmoteId),
             result.Entries.Select(e => e.SevenTvEmoteId));
-        Assert.Equal(new EmoteTagEntryDto(kekw.SevenTvEmoteId, "KEKW", first.ImageUrl, true, "KEKWait"), result.Entries[0]);
+        var head = result.Entries[0];
+        Assert.Equal(
+            (kekw.SevenTvEmoteId, "KEKW", first.ImageUrl, (bool?)true, (string?)"KEKWait"),
+            (head.SevenTvEmoteId, head.Alias, head.ImageUrl, head.InSet, head.CurrentName));
         Assert.All(result.Entries.Skip(1), e => Assert.Equal((false, (string?)null), (e.InSet, e.CurrentName)));
     }
 
@@ -617,6 +623,217 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.Empty(foreign.Entries);
         Assert.Equal(EmoteTagEntriesStatus.TagNotFound, (await service.ListEntriesAsync("tagentriesmine", long.MaxValue, null)).Status);
         Assert.Equal(EmoteTagEntriesStatus.ChannelNotFound, (await service.ListEntriesAsync("tagentriesnochannel", foreignTag.Id, null)).Status);
+    }
+
+    // ---- Placements, activations and the read-time rule (T-C) ------------------------------------
+    //
+    // Spec 5.5 rule 5 / E33 rev. 4: a placement holds unless the channel has a leave observation for
+    // the same emote and set that is later than the registration of the placement's operation. Fixed
+    // timestamps (whole seconds) so stored and expected values compare exactly.
+
+    [Theory]
+    [InlineData("tagrtrlater", 60, false)]
+    [InlineData("tagrtrsame", 0, true)]
+    [InlineData("tagrtrearlier", -60, true)]
+    public async Task ReadTimeRule_AnObservationLaterThanTheRegistration_HidesThePlacement_AnEarlierOneChangesNothing(
+        string channelName, int observedSecondsAfterRegistration, bool holds)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var mine = await SeedTagAsync(channel.Id, "Mine", T0.AddHours(-2));
+        var other = await SeedTagAsync(channel.Id, "Other", T0.AddHours(-1));
+        var x = NewSevenTvId();
+        var untouched = NewSevenTvId();
+        await SeedEntryAsync(mine.Id, x, "X", T0);
+        await SeedEntryAsync(mine.Id, untouched, "Untouched", T0);
+        await SeedEntryAsync(other.Id, x, "X", T0);
+        var operation = await SeedPlayInAsync(mine.Id, ActiveSetId, T0, x, untouched);
+        await SeedPlayInAsync(other.Id, ActiveSetId, T0, x);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, T0.AddSeconds(observedSecondsAfterRegistration));
+
+        var service = CreateService(fixture.CreateDbContext());
+        var list = await service.ListAsync(channelName, null);
+        var mineEntries = await service.ListEntriesAsync(channelName, mine.Id, null);
+        var otherEntries = await service.ListEntriesAsync(channelName, other.Id, null);
+
+        Assert.Equal([holds ? 2 : 1, holds ? 1 : 0], list.Tags.Select(t => t.PlacedCount));
+        var mineX = mineEntries.Entries.Single(e => e.SevenTvEmoteId == x);
+        Assert.Equal(holds, mineX.PlacedByThisTag);
+        Assert.Equal(holds ? T0 : (DateTime?)null, mineX.PlacedAtUtc);
+        Assert.Equal(holds ? operation : (Guid?)null, mineX.PlacementOperationId);
+        Assert.Equal(holds ? new[] { new EmoteTagRefDto(other.Id, "Other") } : [], mineX.PlacedByOtherTags);
+        Assert.Equal(holds ? new[] { new EmoteTagRefDto(mine.Id, "Mine") } : [],
+            Assert.Single(otherEntries.Entries).PlacedByOtherTags);
+        // The observation names X only: the other emote of the same run is untouched either way.
+        var mineUntouched = mineEntries.Entries.Single(e => e.SevenTvEmoteId == untouched);
+        Assert.Equal((true, (DateTime?)T0, (Guid?)operation),
+            (mineUntouched.PlacedByThisTag, mineUntouched.PlacedAtUtc, mineUntouched.PlacementOperationId));
+        // Observations never touch the activation.
+        Assert.All(list.Tags, t => Assert.True(t.Active));
+    }
+
+    [Fact]
+    public async Task ReadTimeRule_IsPerSet_AnObservationInAnotherSetChangesNothing()
+    {
+        var channel = await SeedChannelAsync("tagrtrperset");
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var operation = await SeedPlayInAsync(tag.Id, ActiveSetId, T0, x);
+        await SeedObservationAsync(channel.Id, x, OtherSetId, T0.AddHours(1));
+
+        var service = CreateService(fixture.CreateDbContext());
+        var entry = Assert.Single((await service.ListEntriesAsync("tagrtrperset", tag.Id, null)).Entries);
+
+        Assert.Equal((true, (Guid?)operation), (entry.PlacedByThisTag, entry.PlacementOperationId));
+        Assert.Equal(1, Assert.Single((await service.ListAsync("tagrtrperset", null)).Tags).PlacedCount);
+    }
+
+    [Fact]
+    public async Task ReadTimeRule_APlacementWhoseOperationIsMissing_DoesNotHold()
+    {
+        var channel = await SeedChannelAsync("tagrtrnoop");
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedPlacementAsync(tag.Id, x, ActiveSetId, Guid.NewGuid(), T0);
+
+        var service = CreateService(fixture.CreateDbContext());
+
+        Assert.False(Assert.Single((await service.ListEntriesAsync("tagrtrnoop", tag.Id, null)).Entries).PlacedByThisTag);
+        Assert.Equal(0, Assert.Single((await service.ListAsync("tagrtrnoop", null)).Tags).PlacedCount);
+    }
+
+    [Fact]
+    public async Task HeldByActiveTags_NeedsAnActivationInTheSetAndAnEntry_NotAPlacement_OldestTagFirst()
+    {
+        var channel = await SeedChannelAsync("tagheld");
+        var mine = await SeedTagAsync(channel.Id, "Mine", T0.AddHours(-5));
+        // Seeded in id order A < E < F < B, created B < E = F < A: the order is by creation, ties by id.
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddHours(-1));
+        var e = await SeedTagAsync(channel.Id, "E", T0.AddHours(-2));
+        var f = await SeedTagAsync(channel.Id, "F", T0.AddHours(-2));
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddHours(-3));
+        var activeWithoutEntry = await SeedTagAsync(channel.Id, "NoEntry", T0.AddHours(-4));
+        var activeElsewhere = await SeedTagAsync(channel.Id, "Elsewhere", T0.AddHours(-4));
+        var x = NewSevenTvId();
+        foreach (var tag in new[] { mine, a, e, f, b, activeElsewhere })
+        {
+            await SeedEntryAsync(tag.Id, x, "X", T0);
+        }
+
+        foreach (var tag in new[] { mine, a, e, f, b, activeWithoutEntry })
+        {
+            await SeedActivationAsync(tag.Id, ActiveSetId, await SeedOperationAsync(tag.Id, ActiveSetId, T0), T0);
+        }
+
+        await SeedActivationAsync(activeElsewhere.Id, OtherSetId, await SeedOperationAsync(activeElsewhere.Id, OtherSetId, T0), T0);
+
+        var entry = Assert.Single((await CreateService(fixture.CreateDbContext()).ListEntriesAsync("tagheld", mine.Id, null)).Entries);
+
+        Assert.Equal([b.Id, e.Id, f.Id, a.Id], entry.HeldByActiveTags.Select(t => t.Id));
+        Assert.Equal(["B", "E", "F", "A"], entry.HeldByActiveTags.Select(t => t.Name));
+        // Nobody placed anything: holding is about activation and entry only.
+        Assert.False(entry.PlacedByThisTag);
+        Assert.Empty(entry.PlacedByOtherTags);
+    }
+
+    [Fact]
+    public async Task PlacedByOtherTags_ListsOnlyValidPlacements_OldestTagFirst()
+    {
+        var channel = await SeedChannelAsync("tagplacedothers");
+        var mine = await SeedTagAsync(channel.Id, "Mine", T0.AddHours(-4));
+        var expired = await SeedTagAsync(channel.Id, "Expired", T0.AddHours(-3));
+        var newer = await SeedTagAsync(channel.Id, "Newer", T0.AddHours(-1));
+        var older = await SeedTagAsync(channel.Id, "Older", T0.AddHours(-2));
+        var x = NewSevenTvId();
+        foreach (var tag in new[] { mine, expired, newer, older })
+        {
+            await SeedEntryAsync(tag.Id, x, "X", T0);
+        }
+
+        // One observation at T0: it expires the run registered before it, not those registered after.
+        await SeedPlayInAsync(expired.Id, ActiveSetId, T0.AddMinutes(-10), x);
+        await SeedPlayInAsync(newer.Id, ActiveSetId, T0.AddMinutes(10), x);
+        await SeedPlayInAsync(older.Id, ActiveSetId, T0.AddMinutes(5), x);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, T0);
+
+        var service = CreateService(fixture.CreateDbContext());
+        var entry = Assert.Single((await service.ListEntriesAsync("tagplacedothers", mine.Id, null)).Entries);
+
+        Assert.Equal([new EmoteTagRefDto(older.Id, "Older"), new EmoteTagRefDto(newer.Id, "Newer")], entry.PlacedByOtherTags);
+        // Every one of them is active, the expired holder included: holding does not look at placements.
+        Assert.Equal([expired.Id, older.Id, newer.Id], entry.HeldByActiveTags.Select(t => t.Id));
+        Assert.Equal([0, 0, 1, 1], (await service.ListAsync("tagplacedothers", null)).Tags.Select(t => t.PlacedCount));
+    }
+
+    [Fact]
+    public async Task Activation_IsReportedPerSet_WithItsOperation_OrNullAndInactive()
+    {
+        var channel = await SeedChannelAsync("tagactivation");
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        await SeedEntriesAsync(tag.Id, 1);
+        var operation = await SeedOperationAsync(tag.Id, ActiveSetId, T0);
+        await SeedActivationAsync(tag.Id, ActiveSetId, operation, T0.AddMinutes(3));
+
+        var service = CreateService(fixture.CreateDbContext());
+        var activeEntries = await service.ListEntriesAsync("tagactivation", tag.Id, null);
+        var otherEntries = await service.ListEntriesAsync("tagactivation", tag.Id, OtherSetId);
+        var activeList = Assert.Single((await service.ListAsync("tagactivation", null)).Tags);
+        var otherList = Assert.Single((await service.ListAsync("tagactivation", OtherSetId)).Tags);
+
+        Assert.Equal(operation, activeEntries.ActivationOperationId);
+        Assert.Null(otherEntries.ActivationOperationId);
+        Assert.Equal((true, (DateTime?)T0.AddMinutes(3)), (activeList.Active, activeList.ActivatedAtUtc));
+        Assert.Equal((false, (DateTime?)null), (otherList.Active, otherList.ActivatedAtUtc));
+    }
+
+    [Fact]
+    public async Task ForeignSet_HasNoInSetStatus_ButItsPlacementsAndActivationAreComputedForThatSet()
+    {
+        var channel = await SeedChannelAsync("tagforeignset");
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        var kekw = await SeedEmoteAsync(channel.Id, "KEKW");
+        await AddAsync("tagforeignset", tag.Id, [kekw.SevenTvEmoteId]);
+        var operation = await SeedPlayInAsync(tag.Id, OtherSetId, T0, kekw.SevenTvEmoteId);
+
+        var service = CreateService(fixture.CreateDbContext());
+        var foreign = await service.ListEntriesAsync("tagforeignset", tag.Id, OtherSetId);
+        var foreignTag = Assert.Single((await service.ListAsync("tagforeignset", OtherSetId)).Tags);
+        var activeEntry = Assert.Single((await service.ListEntriesAsync("tagforeignset", tag.Id, null)).Entries);
+
+        var entry = Assert.Single(foreign.Entries);
+        Assert.Equal(((bool?)null, (string?)null), (entry.InSet, entry.CurrentName));
+        Assert.Equal((true, (DateTime?)T0, (Guid?)operation), (entry.PlacedByThisTag, entry.PlacedAtUtc, entry.PlacementOperationId));
+        Assert.Equal(operation, foreign.ActivationOperationId);
+        Assert.Equal(((int?)null, 1, true), (foreignTag.InSetCount, foreignTag.PlacedCount, foreignTag.Active));
+        // The placement belongs to the other set: the active set's view does not see it.
+        Assert.Equal((true, false), (activeEntry.InSet, activeEntry.PlacedByThisTag));
+    }
+
+    [Fact]
+    public async Task WithoutAnActiveSetAndWithoutASetParameter_EverySetFieldIsEmpty()
+    {
+        var channel = await SeedChannelAsync("tagnosetfields", activeEmoteSetId: string.Empty);
+        var mine = await SeedTagAsync(channel.Id, "Mine", T0.AddHours(-2));
+        var other = await SeedTagAsync(channel.Id, "Other", T0.AddHours(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(mine.Id, x, "X", T0);
+        await SeedEntryAsync(other.Id, x, "X", T0);
+        await SeedPlayInAsync(mine.Id, OtherSetId, T0, x);
+        await SeedPlayInAsync(other.Id, OtherSetId, T0, x);
+
+        var service = CreateService(fixture.CreateDbContext());
+        var list = await service.ListAsync("tagnosetfields", null);
+        var entries = await service.ListEntriesAsync("tagnosetfields", mine.Id, null);
+
+        Assert.Null(list.EmoteSetId);
+        Assert.All(list.Tags, t => Assert.Equal((0, false, (DateTime?)null), (t.PlacedCount, t.Active, t.ActivatedAtUtc)));
+        Assert.Null(entries.EmoteSetId);
+        Assert.Null(entries.ActivationOperationId);
+        var entry = Assert.Single(entries.Entries);
+        Assert.Equal((false, (DateTime?)null, (Guid?)null), (entry.PlacedByThisTag, entry.PlacedAtUtc, entry.PlacementOperationId));
+        Assert.Empty(entry.HeldByActiveTags);
+        Assert.Empty(entry.PlacedByOtherTags);
     }
 
     // ---- Races under the channel row lock --------------------------------------------------------
@@ -890,6 +1107,69 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         db.EmoteTagEntries.Add(entry);
         await db.SaveChangesAsync();
         return entry;
+    }
+
+    private async Task<Guid> SeedOperationAsync(long tagId, string emoteSetId, DateTime registeredAtUtc)
+    {
+        await using var db = fixture.CreateDbContext();
+        var operationId = Guid.NewGuid();
+        db.EmoteTagOperations.Add(new EmoteTagOperation
+        {
+            OperationId = operationId,
+            TagId = tagId,
+            Kind = EmoteTagOperationKind.PlayIn,
+            SevenTvEmoteSetId = emoteSetId,
+            RegisteredAtUtc = registeredAtUtc
+        });
+        await db.SaveChangesAsync();
+        return operationId;
+    }
+
+    private async Task SeedPlacementAsync(long tagId, string sevenTvEmoteId, string emoteSetId, Guid operationId, DateTime placedAtUtc)
+    {
+        await using var db = fixture.CreateDbContext();
+        db.EmoteTagPlacements.Add(new EmoteTagPlacement
+        {
+            TagId = tagId,
+            SevenTvEmoteId = sevenTvEmoteId,
+            SevenTvEmoteSetId = emoteSetId,
+            PlacedAtUtc = placedAtUtc,
+            OperationId = operationId
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private async Task SeedActivationAsync(long tagId, string emoteSetId, Guid operationId, DateTime activatedAtUtc)
+    {
+        await using var db = fixture.CreateDbContext();
+        db.EmoteTagActivations.Add(new EmoteTagActivation
+        {
+            TagId = tagId,
+            SevenTvEmoteSetId = emoteSetId,
+            ActivatedAtUtc = activatedAtUtc,
+            OperationId = operationId
+        });
+        await db.SaveChangesAsync();
+    }
+
+    // What an applied play-in leaves behind: its operation, a placement per emote (the entries must
+    // exist — FK) placed at the registration instant, and the activation.
+    private async Task<Guid> SeedPlayInAsync(long tagId, string emoteSetId, DateTime registeredAtUtc, params string[] sevenTvEmoteIds)
+    {
+        var operationId = await SeedOperationAsync(tagId, emoteSetId, registeredAtUtc);
+        foreach (var sevenTvEmoteId in sevenTvEmoteIds)
+        {
+            await SeedPlacementAsync(tagId, sevenTvEmoteId, emoteSetId, operationId, registeredAtUtc);
+        }
+
+        await SeedActivationAsync(tagId, emoteSetId, operationId, registeredAtUtc);
+        return operationId;
+    }
+
+    private async Task SeedObservationAsync(string channelId, string sevenTvEmoteId, string emoteSetId, DateTime observedAtUtc)
+    {
+        await using var db = fixture.CreateDbContext();
+        await EmoteSetLeaveObservations.RecordAsync(db, channelId, emoteSetId, [sevenTvEmoteId], observedAtUtc, CancellationToken.None);
     }
 
     private async Task<List<AuditLogEntry>> LoadAuditAsync(string channelName)
