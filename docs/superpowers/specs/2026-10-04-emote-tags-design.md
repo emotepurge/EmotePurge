@@ -422,7 +422,7 @@ Muster `PurgeIfInactiveSinceAsync`).
 | Spalte | Typ | Bedeutung |
 |---|---|---|
 | `TagId` | `long` | FK → `EmoteTag.Id`, `OnDelete(Cascade)`. |
-| `SevenTvEmoteId` | `string(24)` | Schlüssel (E22). |
+| `SevenTvEmoteId` | `string(32)` | Schlüssel (E22). 7TV-IDs sind 26-stellige ULIDs, nicht 24 Zeichen; T-B legt die Spalte als `varchar(32)` an (Betreiberentscheidung 2026-10-05). |
 | `Alias` | `string` | Snapshot von `Emote.Name` beim Zuweisen (E23); beim Einspielen der ADD-Alias. |
 | `ImageUrl` | `string` | Snapshot von `Emote.ImageUrl`, damit die Tags-Seite Einträge ohne Rasterzeile zeichnet. |
 | `AddedAtUtc` | `timestamptz` | Reihenfolge auf der Tags-Seite. |
@@ -436,7 +436,7 @@ PK/Unique `(TagId, SevenTvEmoteId)`. Limit 1000 je Tag (E20). Kein FK auf `Emote
 | Spalte | Typ | Bedeutung |
 |---|---|---|
 | `TagId` | `long` | FK → `EmoteTag.Id`, `OnDelete(Cascade)`. |
-| `SevenTvEmoteId` | `string(24)` | Das Emote. |
+| `SevenTvEmoteId` | `string(32)` | Das Emote (26-stellige ULID, daher 32 wie in 5.2). |
 | `SevenTvEmoteSetId` | `string(24)` | Das Set (E6). Formprüfung wie `EmoteSetIdValidation`. |
 | `PlacedAtUtc` | `timestamptz` | Zeitpunkt der Einspiel-Meldung, die das Emote **zuletzt hinzugefügt** hat; in der Vorschau als „eingespielt am" sichtbar (E2 rev. 2). **Bei einer Übertragung bleibt er stehen** — der Mensch fragt „seit wann ist X wegen eines Tags im Set", und das ändert ein Besitzerwechsel nicht; die Gültigkeitsprüfung (E33) läuft nicht über diese Spalte, sondern über die Registrierung der Operation in `OperationId`. **Bei einer Einspiel-Meldung wird er immer überschrieben**, auch wenn die Platzierung schon existierte (5.5 Regel 10). |
 | `OperationId` | `uuid` | **Die Revision der Platzierung:** die Operation, die sie zuletzt anlegte **oder übertrug** (E27 rev. 3). Wird bei jeder Übertragung auf die ausräumende Operation gesetzt. Eine Ausräum-Meldung berührt eine Platzierung nur, wenn deren `OperationId` der in der Vorschau gelesenen entspricht (6.4). |
@@ -482,7 +482,7 @@ Klick ist vernachlässigbar, und eine Frist für „verwaist" brächte eine neue
 | Spalte | Typ | Bedeutung |
 |---|---|---|
 | `ChannelId` | `string` | FK → `Channel.Id`, Cascade. |
-| `SevenTvEmoteId` | `string(24)` | |
+| `SevenTvEmoteId` | `string(32)` | 26-stellige ULID, daher 32 wie in 5.2. |
 | `SevenTvEmoteSetId` | `string(24)` | Das Set, in dem das Verlassen beobachtet wurde (5.5 Regel 5). |
 | `LastObservedAtUtc` | `timestamptz` | Serverzeit der Beobachtung; Upsert überschreibt. |
 
@@ -1029,7 +1029,7 @@ Ausräumen → Emotes wieder im Set ohne Platzierung → „war schon vorher im 
 | **Zwei Mods spielen gleichzeitig ein** | Beide Live-Lesungen sehen X nicht; beide ADDs gehen durch (3.4) → X zweimal im Set, zwei Platzierungen. **Restrisiko R2** (13.1). Ausräumen: ein REMOVE nimmt beide Einträge. |
 | **Kanal ohne aktives Set** | Tags lesbar/pflegbar; Einspielen/Ausräumen fehlen; Dock-Knopf fehlt (§2.5). |
 | **Shown set ≠ aktives Set** im Raster | Tag-Filter funktioniert; „Tag zuweisen" und die Filterzeilen-Knöpfe **fehlen** (E3/E6/E29); stattdessen der Satz „Einspielen und Ausräumen wirken auf das aktive Set". |
-| **Grober Zeiger** | Dock, Zuweisen, Einspielen, Ausräumen fehlen (§2.5). Tags-Seite lesbar; Umbenennen/Löschen/„Aus Tag entfernen" bleiben (Festlegung). |
+| **Grober Zeiger** | Dock, Zuweisen, Einspielen, Ausräumen fehlen (§2.5). Tags-Seite lesbar; Umbenennen und Löschen bleiben (Festlegung). „Aus Tag entfernen" ist nur mit feinem Zeiger (Maus) möglich, wie in 9.4: ohne Rasterauswahl gibt es auf grobem Zeiger nichts zu entfernen (Betreiberentscheidung 2026-10-05). |
 | **Kanal-Purge (Admin, Aufbewahrung, #245)** | FK-Kaskade nimmt die fünf Tag-Tabellen **und** die Kanal-Tabelle `EmoteSetLeaveObservation` mit (3.2); `Emote.LastEnteredSetAtUtc` fällt mit der Emote-Zeile. Keine Codeänderung an `PurgeAsync`; Trockenlauf-Zählung ohne Tags (13.0). **#245 muss in seiner Spec/seinen Tests ausweisen, dass alle sechs Tabellen kaskadieren** (Abschnitt 10). |
 | **Set-Wechsel, den der Server noch nicht bemerkt hat** | Lauf und Meldung gehen ins alte Set, Platzierungen ruhen dort (7.1/6, E6). Komfortverlust, Buchführung korrekt. |
 | **A's Vorschau sieht B inaktiv; B wird dazwischen eingespielt (X schon da, übersprungen); A's Lauf entfernt X** | B ist „eingespielt" ohne X. Der Schaden entsteht bei 7TV, **vor** jeder Meldung — keine Buchführung kann ihn verhindern. **Restrisiko R4** (13.1): B's Tags-Seite zeigt X dimm „nicht im Set"; ein erneutes Einspielen von B holt X zurück. |
@@ -1284,6 +1284,8 @@ mit `setRead`/`addEmote`/`removeEmote`; CDN über die `test.ts`-Fixture; `page.c
 | **T-A** | `DeleteProgressSection` + `delete-flow.ts` aus `MassDeletePanel` extrahieren (9.5); `sevenTvRunLeaveGuard`. **Reiner Refactor, keine Verhaltensänderung**; bestehende Specs/E2E unverändert grün. | Frontend-Suiten, E2E, Browser-Blick auf beide Hostseiten. | Nur Api-Image (Frontend liegt im Api-Image). Keine Migration. |
 | **T-B** | Migration `AddEmoteTags` (5.1, 5.2); `IEmoteTagService` CRUD + Zuweisen; Endpoints Lesen/Pflegen (ohne Platzierungsfelder); Fehlercodes; Tags-Seite lesend/pflegend; Tag-Filter mit Zahlen und „→ Übersicht" (ohne Lauf-Knöpfe); Dock „Tag zuweisen…"/„Aus Tag entfernen"; Reiter; Merge-Guard (5.5/8); Abschnitt 10 inkl. **E31 als Freigabevoraussetzung**. | Infrastructure-/Api-Tests, Vitest, E2E Szenario 1, Codex-Review. | Migration von Hand → **Api- und Worker-Image zusammen** (Merge-Guard und EF-Modell laufen im Worker). |
 | **T-C** | Migration `AddEmoteTagPlacements` (5.3, 5.4 inkl. `EmoteSetLeaveObservation` und `Emote.LastEnteredSetAtUtc`); Platzierungs-/Aktivierungsfelder in 6.2 mit Lese-Zeit-Regel; Registrier- und Melde-Endpoints 6.4 mit Operations-IDs, Revision, Sweep und 7TV-Besitzprüfung; `SourceKind "tag"`; `ImportOrigin 'tag'`; `ImportFlowTarget.pinSetId` und der Set-Vergleich vor dem Start (E29 rev. 3); Beobachtungen und Eintrittsstempel im Sync (5.5/5, E34) an drei Stellen; dritte Meldung am Lauf-Record (E14); Einspiel-/Ausräum-Flows und Vorschau-Dialog; Filterzeilen-Knöpfe; Lauf-Dock der Tags-Seite. | Alles aus 11 für T-C, Codex-Review, Live-Verifikation gegen einen Testkanal (Regel 16: Einspielen, Ausräumen, No-op, Set-Wechsel). | Migration von Hand → **Api- und Worker-Image zusammen** (Beobachtungen und Eintrittsstempel schreibt der Worker) → **erst danach** Tag-Läufe freigeben (Feature-Flag `Tags:RunsEnabled`, Default `false` im ersten Deploy — Festlegung: die Knöpfe Einspielen/Ausräumen rendern nur, wenn das Flag über `GET /api/channels/{channelName}/permissions` oder einen kleinen Config-Endpoint `true` meldet; der Plan wählt den Weg, 13.4/1). |
+
+T-B wird zusammen mit T-C ausgeliefert, nicht allein (Betreiberentscheidung 2026-10-05); T-B trägt deshalb keine eigenständige Formulierung zu Läufen, und seine Texte zu Einspielen/Ausräumen sind zulässig.
 
 Jeder Teil hat seinen eigenen Plan und PR (gegen `main`, nach dem Epic-Merge). Reihenfolge: T-A →
 T-B → T-C; T-A und T-B sind unabhängig voneinander und können parallel geplant werden, T-C braucht
