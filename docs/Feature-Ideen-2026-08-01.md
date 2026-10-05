@@ -276,7 +276,7 @@ Projektion wie im Admin-UI.
 
 ### A8 — Resync-Button für Channel-Manager
 
-**Status: ✅ umgesetzt am 2026-08-02; der Button ist seit 2026-10-05 wieder entfernt** (der 60-s-Resync des Workers deckt den Fall ab, ein Klick liest denselben 7TV-Cache; der Endpoint bleibt für Import/Löschen/Undo/Restore und den Admin-Resync — s. DECISIONS „Channel workspace: the user-facing resync button is removed, the endpoint stays"). `POST /api/channels/{c}/resync` hinter
+**Status: ✅ umgesetzt am 2026-08-02; der Button ist seit 2026-10-05 wieder entfernt** (s. DECISIONS „Channel workspace: the user-facing resync button is removed, the endpoint stays"). `POST /api/channels/{c}/resync` hinter
 `UsageStatsAccessAuthorizationFilter` — also wie hier gefordert **inklusive 7TV-Editoren**, im
 Gegensatz zum Aktivitätsverlauf (A7) direkt daneben. Der geforderte Missbrauchsschutz ist beides
 geworden: die neue Policy `ChannelResync` (5/min) **plus** `IChannelResyncCooldown`, ein
