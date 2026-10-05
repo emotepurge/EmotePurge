@@ -9,13 +9,23 @@ import {
   mockChannelEmoteSetList,
   mockChannelPermissions,
   mockChannelStatus,
+  mockEmoteSetTargets,
+  mockForeignEmoteSetPreview,
   mockMyChannels,
+  mockSetWarning,
+  mockSevenTvGql,
+  mockSyncDeletedInSet,
   mockTagEntries,
   mockTagMutations,
+  mockTagOperations,
+  mockTagPlacements,
+  mockTagRemoval,
   mockTags,
   mockTrackedEmoteSetPreview,
   mockUsageTotals,
   mockWorkerHealth,
+  emitLive,
+  sevenTvGqlRequestKind,
 } from './support/mocks';
 
 import type { Page } from '@playwright/test';
@@ -254,5 +264,560 @@ test.describe('emote tags on a touch device', () => {
     await page.keyboard.press('Escape');
     await expect(page.locator('#app-dialog-title')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Tag zuweisen…' })).toHaveCount(0);
+  });
+});
+
+/**
+ * Tag play-in and clear-out (#201 T-C, spec 11 scenarios 2-8): the run buttons on the usage page's
+ * filter row and the tags page, against mocked `/api/**` and a mocked 7TV GQL that holds the live
+ * set. Every scenario counts the mutations 7TV saw (`addEmote`/`removeEmote`) and asserts the exact
+ * number, 0 where nothing may be written.
+ */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const OWNER_TWITCH_ID = 'tw-sensitron';
+const TAG_ID = 7;
+const OTHER_TAG_ID = 9;
+const PLACED_AT = '2026-10-01T18:00:00Z';
+
+interface LiveEntry {
+  id: string;
+  alias: string;
+}
+
+/** What 7TV saw, and what it still holds. */
+interface MockSevenTvSet {
+  live: LiveEntry[];
+  adds: string[];
+  removes: string[];
+  /** Every request to the GQL endpoint, reads included. */
+  requests: number;
+}
+
+/**
+ * Routes everything a run touches besides the tag routes: the set pre-check's owner lookup, the
+ * shared-set warning, the bookkeeping routes (`sync-imported`, set-centric `sync-deleted`, resync)
+ * and 7TV's GQL, which reads, adds and removes against `live`. `incompleteRead` makes the set read
+ * answer a `totalCount` its items do not add up to (a half-known set).
+ */
+async function mockRunBackend(
+  page: Page,
+  live: LiveEntry[],
+  options: { incompleteRead?: boolean } = {},
+): Promise<{
+  sevenTv: MockSevenTvSet;
+  syncImported: unknown[];
+  syncDeleted: unknown[];
+}> {
+  await mockEmoteSetTargets(page, [
+    {
+      twitchChannelId: OWNER_TWITCH_ID,
+      twitchLogin: CHANNEL,
+      isOwnAccount: true,
+      trackedChannelName: CHANNEL,
+      activeEmoteSetId: ACTIVE_SET_ID,
+      sets: [{ id: ACTIVE_SET_ID, name: 'Hauptset', isActive: true }],
+    },
+  ]);
+  await mockSetWarning(page, CHANNEL);
+  // The import's target load reads the pinned set by id, over the tracked channel's own name.
+  await mockForeignEmoteSetPreview(page, CHANNEL, {
+    channelName: CHANNEL,
+    emoteSetId: ACTIVE_SET_ID,
+    emoteSetName: 'Hauptset',
+    emotes: live.map((entry) => ({ sevenTvEmoteId: entry.id, name: entry.alias })),
+  });
+  const syncImported: unknown[] = [];
+  await page.route(`**/api/channels/${CHANNEL}/emotes/sync-imported`, (route) => {
+    syncImported.push(route.request().postDataJSON());
+    return route.fulfill({ status: 204 });
+  });
+  await page.route(`**/api/channels/${CHANNEL}/resync`, (route) => route.fulfill({ status: 202 }));
+  const syncDeleted = await mockSyncDeletedInSet(page, ACTIVE_SET_ID);
+
+  const sevenTv: MockSevenTvSet = { live: [...live], adds: [], removes: [], requests: 0 };
+  await mockSevenTvGql(page, (request) => {
+    sevenTv.requests += 1;
+    const emoteId = request.variables['emoteId'] as string;
+    switch (sevenTvGqlRequestKind(request)) {
+      case 'addEmote':
+        sevenTv.adds.push(emoteId);
+        sevenTv.live.push({ id: emoteId, alias: emoteId });
+        return { data: { emoteSets: { emoteSet: { addEmote: { id: emoteId } } } } };
+      case 'removeEmote':
+        sevenTv.removes.push(emoteId);
+        sevenTv.live = sevenTv.live.filter((entry) => entry.id !== emoteId);
+        return { data: { emoteSets: { emoteSet: { removeEmote: { id: emoteId } } } } };
+      default: {
+        const items = sevenTv.live.map((entry) => ({
+          alias: entry.alias,
+          emote: { id: entry.id, defaultName: entry.alias },
+        }));
+        return {
+          data: {
+            emoteSets: {
+              emoteSet: {
+                emotes: {
+                  totalCount: items.length + (options.incompleteRead ? 1 : 0),
+                  pageCount: 1,
+                  items,
+                },
+              },
+            },
+          },
+        };
+      }
+    }
+  });
+  return { sevenTv, syncImported, syncDeleted };
+}
+
+/** Re-routes `active-set` (after `mockChannel`'s own) so a test can move the channel to another set. */
+async function mockSwitchableActiveSet(page: Page): Promise<(emoteSetId: string) => void> {
+  let activeEmoteSetId = ACTIVE_SET_ID;
+  await page.route(`**/api/channels/${CHANNEL}/emotes/active-set`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        activeEmoteSetId,
+        capacity: 1000,
+        occupiedSlots: 4,
+        trackedSince: '2026-06-12T09:14:00Z',
+        syncFailureReason: null,
+        lastSyncAttemptAtUtc: null,
+        botsExcludedSince: null,
+        sharedChatSeparatedSince: null,
+        duplicateNames: [],
+      }),
+    }),
+  );
+  return (emoteSetId) => {
+    activeEmoteSetId = emoteSetId;
+  };
+}
+
+/** The usage page with `Favoriten` chosen in the tag filter. */
+async function gotoUsageWithTag(page: Page): Promise<void> {
+  await gotoUsage(page);
+  await page.getByRole('combobox', { name: 'Tag' }).selectOption({ label: 'Favoriten' });
+  await expect(page.getByRole('button', { name: 'Einspielen' })).toBeVisible();
+}
+
+const playIn = (page: Page) => page.getByRole('button', { name: 'Einspielen' });
+const clearOut = (page: Page) => page.getByRole('button', { name: 'Ausräumen' });
+
+test.describe('emote tag runs', () => {
+  test('plays a tag in: one emote is added, and the report and the placement carry the tag', async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 2, inSetCount: 1 },
+    ]);
+    await mockTagEntries(page, CHANNEL, TAG_ID, [
+      { sevenTvEmoteId: '7tv-1', alias: 'catJAM' },
+      { sevenTvEmoteId: '7tv-2', alias: 'monkaW', inSet: false },
+    ]);
+    const operations = await mockTagOperations(page, CHANNEL, TAG_ID);
+    const placements = await mockTagPlacements(page, CHANNEL, TAG_ID);
+    const { sevenTv, syncImported } = await mockRunBackend(page, [
+      { id: '7tv-1', alias: 'catJAM' },
+    ]);
+    await gotoUsageWithTag(page);
+
+    await playIn(page).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Aus Tag Favoriten')).toBeVisible();
+    await expect(dialog.getByText('1 ist schon im Set')).toBeVisible();
+    await expect(dialog.locator('#app-dialog-title')).toContainText('1 Emote');
+    // Nothing is written before the confirmation; the registration already went out.
+    expect(sevenTv.adds).toEqual([]);
+    expect(operations.requests).toHaveLength(1);
+    await dialog.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(3_000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    await expect.poll(() => placements.requests.length).toBe(1);
+
+    // One ADD, for the one emote the set lacked.
+    expect(sevenTv.adds).toEqual(['7tv-2']);
+    expect(sevenTv.removes).toEqual([]);
+    expect(syncImported).toEqual([
+      expect.objectContaining({
+        sevenTvEmoteIds: ['7tv-2'],
+        sourceKind: 'tag',
+        sourceChannelName: null,
+        leaderboardSort: null,
+        targetEmoteSetId: ACTIVE_SET_ID,
+      }),
+    ]);
+    // The placement report names exactly that emote, under the operation that was registered.
+    const registered = operations.requests[0].body as { operationId: string };
+    expect(registered).toEqual({
+      operationId: expect.stringMatching(UUID),
+      kind: 'playIn',
+      emoteSetId: ACTIVE_SET_ID,
+      targetOwnerTwitchId: OWNER_TWITCH_ID,
+    });
+    expect(placements.requests[0].body).toEqual({
+      operationId: registered.operationId,
+      emoteSetId: ACTIVE_SET_ID,
+      targetOwnerTwitchId: OWNER_TWITCH_ID,
+      sevenTvEmoteIds: ['7tv-2'],
+    });
+    // The tag now reads as played in (the mock's tag list followed the report).
+    await expect(clearOut(page)).toBeVisible();
+  });
+
+  test('plays in a tag the set already holds: no run, an empty report, and the tag is played in', async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 1, inSetCount: 1 },
+    ]);
+    await mockTagEntries(page, CHANNEL, TAG_ID, [{ sevenTvEmoteId: '7tv-1', alias: 'catJAM' }]);
+    const operations = await mockTagOperations(page, CHANNEL, TAG_ID);
+    const placements = await mockTagPlacements(page, CHANNEL, TAG_ID);
+    const { sevenTv, syncImported } = await mockRunBackend(page, [
+      { id: '7tv-1', alias: 'catJAM' },
+    ]);
+    await gotoUsageWithTag(page);
+    await expect(clearOut(page)).toHaveCount(0);
+
+    await playIn(page).click();
+
+    await expect.poll(() => placements.requests.length).toBe(1);
+    expect(placements.requests[0].body).toEqual({
+      operationId: (operations.requests[0].body as { operationId: string }).operationId,
+      emoteSetId: ACTIVE_SET_ID,
+      targetOwnerTwitchId: OWNER_TWITCH_ID,
+      sevenTvEmoteIds: [],
+    });
+    await expect(
+      page
+        .getByText('Das einzige Emote von Favoriten ist schon im Set — Tag gilt als eingespielt.')
+        .first(),
+    ).toBeVisible();
+    // No dialog, no run, nothing written.
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(sevenTv.adds).toEqual([]);
+    expect(sevenTv.removes).toEqual([]);
+    expect(syncImported).toEqual([]);
+    // Played in: the filter row now offers the clear-out and says so.
+    await expect(clearOut(page)).toBeVisible();
+    await expect(page.getByText('eingespielt', { exact: true }).first()).toBeVisible();
+  });
+
+  test('clears a tag out: only the ticked placement goes, the report names ids and revisions, and the tag is no longer played in', async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 2, inSetCount: 2, placedCount: 1, active: true },
+    ]);
+    await mockTagEntries(
+      page,
+      CHANNEL,
+      TAG_ID,
+      [
+        {
+          sevenTvEmoteId: '7tv-1',
+          alias: 'catJAM',
+          placedByThisTag: true,
+          placedAtUtc: PLACED_AT,
+          placementOperationId: 'a1b2c3d4-0000-4000-8000-000000000001',
+        },
+        { sevenTvEmoteId: '7tv-2', alias: 'monkaW' },
+      ],
+      { activationOperationId: 'a1b2c3d4-0000-4000-8000-0000000000aa' },
+    );
+    const operations = await mockTagOperations(page, CHANNEL, TAG_ID);
+    const removal = await mockTagRemoval(page, CHANNEL, TAG_ID);
+    const { sevenTv, syncDeleted } = await mockRunBackend(page, [
+      { id: '7tv-1', alias: 'catJAM' },
+      { id: '7tv-2', alias: 'monkaW' },
+    ]);
+    await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
+    await expect(page.getByText(/eingespielt seit/)).toBeVisible();
+
+    await clearOut(page).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('#app-dialog-title')).toHaveText('Favoriten ausräumen');
+    const placed = dialog.locator('input[data-emote-id="7tv-1"]');
+    const already = dialog.locator('input[data-emote-id="7tv-2"]');
+    await expect(placed).toBeChecked();
+    await expect(already).not.toBeChecked();
+    await expect(dialog.getByText(/eingespielt am/)).toBeVisible();
+    await expect(dialog.getByText('war schon vorher im Set')).toBeVisible();
+    await expect(dialog.getByRole('status')).toHaveText('1 Emote wird entfernt, 1 bleibt im Set');
+    expect(sevenTv.removes).toEqual([]);
+    await dialog.getByRole('button', { name: 'Ausräumen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(3_000);
+    await expect(page.getByText('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    await expect.poll(() => removal.requests.length).toBe(1);
+
+    expect(sevenTv.removes).toEqual(['7tv-1']);
+    expect(sevenTv.adds).toEqual([]);
+    expect(syncDeleted).toEqual([
+      {
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: CHANNEL,
+        targetOwnerTwitchId: OWNER_TWITCH_ID,
+      },
+    ]);
+    expect(removal.requests[0].body).toEqual({
+      operationId: (operations.requests[0].body as { operationId: string }).operationId,
+      emoteSetId: ACTIVE_SET_ID,
+      targetOwnerTwitchId: OWNER_TWITCH_ID,
+      activationOperationId: 'a1b2c3d4-0000-4000-8000-0000000000aa',
+      snapshot: [
+        { sevenTvEmoteId: '7tv-1', placementOperationId: 'a1b2c3d4-0000-4000-8000-000000000001' },
+      ],
+      removedIds: ['7tv-1'],
+      keptIds: [],
+    });
+    expect(operations.requests[0].body).toEqual(
+      expect.objectContaining({ kind: 'removal', emoteSetId: ACTIVE_SET_ID }),
+    );
+    // The protocol of the run is offered, and the reloaded tag is no longer played in.
+    await expect(page.getByRole('button', { name: 'Protokoll herunterladen' })).toBeVisible();
+    await expect(clearOut(page)).toHaveCount(0);
+    await expect(page.getByText('nicht eingespielt').first()).toBeVisible();
+  });
+
+  test('clears out a tag whose only placement another active tag still needs: no REMOVE, an immediate report, the tag is no longer played in', async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 1, inSetCount: 1, placedCount: 1, active: true },
+      {
+        id: OTHER_TAG_ID,
+        name: 'Lieblinge',
+        entryCount: 1,
+        inSetCount: 1,
+        placedCount: 1,
+        active: true,
+      },
+    ]);
+    await mockTagEntries(
+      page,
+      CHANNEL,
+      TAG_ID,
+      [
+        {
+          sevenTvEmoteId: '7tv-1',
+          alias: 'catJAM',
+          placedByThisTag: true,
+          placedAtUtc: PLACED_AT,
+          placementOperationId: 'a1b2c3d4-0000-4000-8000-000000000001',
+          heldByActiveTags: [{ id: OTHER_TAG_ID, name: 'Lieblinge' }],
+        },
+      ],
+      { activationOperationId: 'a1b2c3d4-0000-4000-8000-0000000000aa' },
+    );
+    await mockTagOperations(page, CHANNEL, TAG_ID);
+    const removal = await mockTagRemoval(page, CHANNEL, TAG_ID);
+    const { sevenTv, syncDeleted } = await mockRunBackend(page, [{ id: '7tv-1', alias: 'catJAM' }]);
+    await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
+    await expect(page.getByText(/eingespielt seit/)).toBeVisible();
+
+    await clearOut(page).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('input[data-emote-id="7tv-1"]')).not.toBeChecked();
+    await expect(dialog.getByText(/wird noch von Lieblinge gebraucht/)).toBeVisible();
+    await expect(dialog.getByText(/Es wird nichts bei 7TV gelöscht/)).toBeVisible();
+    await dialog.getByRole('button', { name: 'Ausräumen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await expect.poll(() => removal.requests.length).toBe(1);
+    expect(removal.requests[0].body).toEqual(
+      expect.objectContaining({
+        snapshot: [
+          { sevenTvEmoteId: '7tv-1', placementOperationId: 'a1b2c3d4-0000-4000-8000-000000000001' },
+        ],
+        removedIds: [],
+        keptIds: ['7tv-1'],
+      }),
+    );
+    await expect(
+      page.getByText('Favoriten ausgeräumt — nichts zu entfernen.').first(),
+    ).toBeVisible();
+    await expect(page.getByText('nicht eingespielt').first()).toBeVisible();
+    // Nothing reached 7TV, and nothing was reported as deleted.
+    expect(sevenTv.removes).toEqual([]);
+    expect(sevenTv.adds).toEqual([]);
+    expect(syncDeleted).toEqual([]);
+    await expect(clearOut(page)).toHaveCount(0);
+  });
+
+  test('an incompletely read set blocks both the play-in and the clear-out without a write', async ({
+    page,
+  }) => {
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 2, inSetCount: 1, placedCount: 1, active: true },
+    ]);
+    await mockTagEntries(
+      page,
+      CHANNEL,
+      TAG_ID,
+      [
+        {
+          sevenTvEmoteId: '7tv-1',
+          alias: 'catJAM',
+          placedByThisTag: true,
+          placedAtUtc: PLACED_AT,
+          placementOperationId: 'a1b2c3d4-0000-4000-8000-000000000001',
+        },
+        { sevenTvEmoteId: '7tv-2', alias: 'monkaW', inSet: false },
+      ],
+      { activationOperationId: 'a1b2c3d4-0000-4000-8000-0000000000aa' },
+    );
+    const operations = await mockTagOperations(page, CHANNEL, TAG_ID);
+    const placements = await mockTagPlacements(page, CHANNEL, TAG_ID);
+    const removal = await mockTagRemoval(page, CHANNEL, TAG_ID);
+    const { sevenTv, syncImported, syncDeleted } = await mockRunBackend(
+      page,
+      [{ id: '7tv-1', alias: 'catJAM' }],
+      { incompleteRead: true },
+    );
+    await gotoUsageWithTag(page);
+
+    const reason =
+      'Die Einträge des Sets konnten nur teilweise von 7TV gelesen werden — es wurde nichts geändert.';
+    await playIn(page).click();
+    await expect(page.getByText(reason)).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await clearOut(page).click();
+    await expect(page.getByText(reason)).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    // Each click registered its operation and read the set; nothing else went anywhere.
+    expect(operations.requests).toHaveLength(2);
+    expect(sevenTv.requests).toBe(2);
+    expect(sevenTv.adds).toEqual([]);
+    expect(sevenTv.removes).toEqual([]);
+    expect(placements.requests).toEqual([]);
+    expect(removal.requests).toEqual([]);
+    expect(syncImported).toEqual([]);
+    expect(syncDeleted).toEqual([]);
+  });
+
+  test('a refused registration (403) shows a banner and goes no further: no set read, no write, no dialog', async ({
+    page,
+  }) => {
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 2, inSetCount: 1 },
+    ]);
+    await mockTagEntries(page, CHANNEL, TAG_ID, [
+      { sevenTvEmoteId: '7tv-1', alias: 'catJAM' },
+      { sevenTvEmoteId: '7tv-2', alias: 'monkaW', inSet: false },
+    ]);
+    const operations = await mockTagOperations(page, CHANNEL, TAG_ID, { status: 403 });
+    const placements = await mockTagPlacements(page, CHANNEL, TAG_ID);
+    const { sevenTv, syncImported } = await mockRunBackend(page, [
+      { id: '7tv-1', alias: 'catJAM' },
+    ]);
+    await gotoUsageWithTag(page);
+
+    await playIn(page).click();
+
+    await expect(page.getByText('Du darfst dieses Set bei 7TV nicht bearbeiten.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Erneut versuchen' })).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(operations.requests).toHaveLength(1);
+    // Not even the read: 7TV was never asked anything.
+    expect(sevenTv.requests).toBe(0);
+    expect(sevenTv.adds).toEqual([]);
+    expect(sevenTv.removes).toEqual([]);
+    expect(placements.requests).toEqual([]);
+    expect(syncImported).toEqual([]);
+  });
+
+  test('a set switch between the click and the confirmation writes nothing', async ({ page }) => {
+    await page.clock.install();
+    await mockChannel(page);
+    const switchActiveSet = await mockSwitchableActiveSet(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 2, inSetCount: 1 },
+    ]);
+    await mockTagEntries(page, CHANNEL, TAG_ID, [
+      { sevenTvEmoteId: '7tv-1', alias: 'catJAM' },
+      { sevenTvEmoteId: '7tv-2', alias: 'monkaW', inSet: false },
+    ]);
+    await mockTagOperations(page, CHANNEL, TAG_ID);
+    const placements = await mockTagPlacements(page, CHANNEL, TAG_ID);
+    const { sevenTv, syncImported } = await mockRunBackend(page, [
+      { id: '7tv-1', alias: 'catJAM' },
+    ]);
+    await gotoUsageWithTag(page);
+
+    await playIn(page).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Aus Tag Favoriten')).toBeVisible();
+
+    // The channel's active set moves on while the dialog is open: the usage page reads it again on
+    // `channel.synced`.
+    switchActiveSet(OTHER_SET_ID);
+    await emitLive(page, { type: 'channel.synced', channel: CHANNEL });
+    await page.clock.runFor(2_000);
+    // The page has taken over the new set before the confirmation is clicked; the run's own host
+    // went with the old one (rulings F38), so no banner is left to read — the guard's outcome is
+    // that nothing is written or reported.
+    // (The open dialog hides the page behind it from the accessibility tree.)
+    await expect(
+      page.getByRole('button', { name: 'Set: Halloween', includeHidden: true }),
+    ).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.clock.runFor(3_000);
+
+    expect(sevenTv.adds).toEqual([]);
+    expect(sevenTv.removes).toEqual([]);
+    expect(syncImported).toEqual([]);
+    expect(placements.requests).toEqual([]);
+    await expect(page.locator('app-import-progress-section')).toHaveCount(0);
+  });
+
+  test('a set that has already moved on when the click reads the tag says so and registers nothing', async ({
+    page,
+  }) => {
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 2, inSetCount: 1 },
+    ]);
+    const entries = [
+      { sevenTvEmoteId: '7tv-1', alias: 'catJAM' },
+      { sevenTvEmoteId: '7tv-2', alias: 'monkaW', inSet: false },
+    ];
+    await mockTagEntries(page, CHANNEL, TAG_ID, entries);
+    const operations = await mockTagOperations(page, CHANNEL, TAG_ID);
+    const { sevenTv, syncImported } = await mockRunBackend(page, [
+      { id: '7tv-1', alias: 'catJAM' },
+    ]);
+    await gotoUsageWithTag(page);
+
+    // The server moved the channel to another set; the page has not heard of it yet.
+    await mockTagEntries(page, CHANNEL, TAG_ID, entries, { isActiveSet: false });
+    await playIn(page).click();
+
+    await expect(page.getByText('Das aktive Set hat gewechselt — Seite neu laden.')).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(operations.requests).toEqual([]);
+    expect(sevenTv.requests).toBe(0);
+    expect(sevenTv.adds).toEqual([]);
+    expect(syncImported).toEqual([]);
   });
 });

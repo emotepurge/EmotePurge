@@ -652,7 +652,8 @@ export async function mockChannelPermissions(
     isGlobalAdmin: boolean;
     isTracked: boolean;
     isBotActive: boolean;
-    /** #201 T-C: the operator switch for tag runs. Absent by default (reads as off). */
+    /** #201 T-C: the operator switch for tag runs. On by default (the run buttons are what the
+     *  tag specs exercise); pass `false` for the switched-off case. */
     tagRunsEnabled: boolean;
   }> = {},
 ): Promise<void> {
@@ -663,6 +664,7 @@ export async function mockChannelPermissions(
       isGlobalAdmin: false,
       isTracked: true,
       isBotActive: true,
+      tagRunsEnabled: true,
       ...overrides,
     }),
   );
@@ -1320,6 +1322,12 @@ export interface MockTagSummary {
   name: string;
   entryCount?: number;
   inSetCount?: number | null;
+  /** T-C: valid placements in the shown set. Defaults to 0. */
+  placedCount?: number;
+  /** T-C: played in to the shown set. Defaults to `false`. */
+  active?: boolean;
+  /** T-C: defaults to `null` (an inactive tag), or a fixed date for an `active` one. */
+  activatedAtUtc?: string | null;
 }
 
 /** One entry of {@link mockTagEntries}' answer (spec 6.2): `inSet` null = no set to measure against. */
@@ -1329,6 +1337,12 @@ export interface MockTagEntry {
   imageUrl?: string;
   inSet?: boolean | null;
   currentName?: string | null;
+  /** T-C placement fields — default: no valid placement, held/placed by no other tag. */
+  placedByThisTag?: boolean;
+  placedAtUtc?: string | null;
+  placementOperationId?: string | null;
+  heldByActiveTags?: { id: number; name: string }[];
+  placedByOtherTags?: { id: number; name: string }[];
 }
 
 /** One request the {@link mockTagMutations} routes saw. */
@@ -1341,9 +1355,13 @@ export interface RecordedTagRequest {
 
 // The tag routes of one channel share a state, so a write the page makes shows up in the next read
 // (create, rename, delete, add/remove entries) the way it does against the real server.
+const MOCK_ACTIVATED_AT = '2026-10-01T18:00:00Z';
+
 interface TagMockState {
   tags: Required<MockTagSummary>[];
   entries: Map<number, MockTagEntry[]>;
+  /** T-C: the activation operation id each entry read of a tag answers (absent = `null`). */
+  activationOperationIds: Map<number, string | null>;
   isActiveSet: boolean;
   nextId: number;
 }
@@ -1358,7 +1376,13 @@ function tagMockState(page: Page, channelName: string): TagMockState {
   }
   let state = channels.get(channelName);
   if (!state) {
-    state = { tags: [], entries: new Map(), isActiveSet: true, nextId: 1000 };
+    state = {
+      tags: [],
+      entries: new Map(),
+      activationOperationIds: new Map(),
+      isActiveSet: true,
+      nextId: 1000,
+    };
     channels.set(channelName, state);
   }
   return state;
@@ -1381,6 +1405,9 @@ export async function mockTags(
     name: tag.name,
     entryCount: tag.entryCount ?? 0,
     inSetCount: tag.inSetCount === undefined ? 0 : tag.inSetCount,
+    placedCount: tag.placedCount ?? 0,
+    active: tag.active ?? false,
+    activatedAtUtc: tag.activatedAtUtc ?? (tag.active ? MOCK_ACTIVATED_AT : null),
   }));
   const path = `/api/channels/${channelName}/tags`;
   await page.route(
@@ -1408,10 +1435,11 @@ export async function mockTagEntries(
   channelName: string,
   tagId: number,
   entries: MockTagEntry[],
-  options: { isActiveSet?: boolean } = {},
+  options: { isActiveSet?: boolean; activationOperationId?: string | null } = {},
 ): Promise<void> {
   const state = tagMockState(page, channelName);
   state.entries.set(tagId, entries);
+  state.activationOperationIds.set(tagId, options.activationOperationId ?? null);
   const pattern = new RegExp(`^/api/channels/${channelName}/tags/(\\d+)/entries$`);
   await page.route(
     (url) => pattern.test(url.pathname),
@@ -1428,12 +1456,18 @@ export async function mockTagEntries(
       return fulfillJson(route, 200, {
         emoteSetId: url.searchParams.get('emoteSetId'),
         isActiveSet: options.isActiveSet ?? true,
+        activationOperationId: state.activationOperationIds.get(id) ?? null,
         entries: found.map((entry) => ({
           sevenTvEmoteId: entry.sevenTvEmoteId,
           alias: entry.alias,
           imageUrl: entry.imageUrl ?? `https://cdn.7tv.app/emote/${entry.sevenTvEmoteId}/2x.webp`,
           inSet: entry.inSet === undefined ? true : entry.inSet,
           currentName: entry.currentName ?? null,
+          placedByThisTag: entry.placedByThisTag ?? false,
+          placedAtUtc: entry.placedAtUtc ?? null,
+          placementOperationId: entry.placementOperationId ?? null,
+          heldByActiveTags: entry.heldByActiveTags ?? [],
+          placedByOtherTags: entry.placedByOtherTags ?? [],
         })),
       });
     },
@@ -1459,14 +1493,25 @@ export async function mockTagMutations(
       const request = route.request();
       const method = request.method();
       const path = new URL(request.url()).pathname.slice(prefix.length);
-      if (method === 'GET') {
+      // Only the maintenance routes are this mock's; `/operations` and `/placements*` belong to
+      // mockTagOperations/mockTagPlacements/mockTagRemoval (#201 T-C), anything else to the next
+      // route.
+      if (method === 'GET' || !/^(\/\d+(\/entries(\/remove)?)?)?$/.test(path)) {
         return route.fallback();
       }
       const body: { name?: string; sevenTvEmoteIds?: string[] } | null = request.postDataJSON();
       requests.push({ method, path, body });
 
       if (method === 'POST' && path === '') {
-        const tag = { id: state.nextId++, name: body?.name ?? '', entryCount: 0, inSetCount: 0 };
+        const tag = {
+          id: state.nextId++,
+          name: body?.name ?? '',
+          entryCount: 0,
+          inSetCount: 0,
+          placedCount: 0,
+          active: false,
+          activatedAtUtc: null,
+        };
         state.tags.push(tag);
         state.entries.set(tag.id, []);
         return fulfillJson(route, 201, tag);
@@ -1511,6 +1556,129 @@ export async function mockTagMutations(
         return route.fulfill({ status: 204 });
       }
       return route.fallback();
+    },
+  );
+  return { requests };
+}
+
+/** One report or registration the T-C tag-run mocks saw: the parsed JSON body of the POST. */
+export interface RecordedTagRunRequest {
+  body: unknown;
+}
+
+function tagRunPath(channelName: string, tagId: number, suffix: string): string {
+  return `/api/channels/${channelName}/tags/${tagId}/${suffix}`;
+}
+
+/**
+ * POST /api/channels/{channelName}/tags/{tagId}/operations (#201 T-C, spec 6.2) — the registration
+ * of a play-in or clear-out. Answers `status` (default 201 `{registeredAtUtc}`); any other status
+ * answers a bare `{errorCode}`-less body, the way the ladder's refusals do (403 has none). Every
+ * body is captured.
+ */
+export async function mockTagOperations(
+  page: Page,
+  channelName: string,
+  tagId: number,
+  options: { status?: number; errorCode?: string } = {},
+): Promise<{ requests: RecordedTagRunRequest[] }> {
+  const requests: RecordedTagRunRequest[] = [];
+  const status = options.status ?? 201;
+  await page.route(
+    (url) => url.pathname === tagRunPath(channelName, tagId, 'operations'),
+    (route) => {
+      requests.push({ body: route.request().postDataJSON() });
+      return status < 300
+        ? fulfillJson(route, status, { registeredAtUtc: '2026-10-05T10:00:00Z' })
+        : fulfillJson(route, status, options.errorCode ? { errorCode: options.errorCode } : {});
+    },
+  );
+  return { requests };
+}
+
+/**
+ * POST …/tags/{tagId}/placements (spec 6.2) — the play-in report. Captures every body, answers 200
+ * with counts derived from the reported ids unless `answer` overrides them, and — like the real
+ * server — marks the tag as played in for the page's next read ({@link mockTags} state).
+ */
+export async function mockTagPlacements(
+  page: Page,
+  channelName: string,
+  tagId: number,
+  answer: Partial<{
+    replayed: boolean;
+    recordedCount: number;
+    alreadyRecordedCount: number;
+    notTaggedIds: string[];
+    discardedStaleIds: string[];
+  }> = {},
+): Promise<{ requests: RecordedTagRunRequest[] }> {
+  const state = tagMockState(page, channelName);
+  const requests: RecordedTagRunRequest[] = [];
+  await page.route(
+    (url) => url.pathname === tagRunPath(channelName, tagId, 'placements'),
+    (route) => {
+      const body = route.request().postDataJSON() as { sevenTvEmoteIds?: string[] } | null;
+      requests.push({ body });
+      const ids = body?.sevenTvEmoteIds ?? [];
+      const tag = state.tags.find((candidate) => candidate.id === tagId);
+      if (tag) {
+        tag.active = true;
+        tag.activatedAtUtc = MOCK_ACTIVATED_AT;
+        tag.placedCount += ids.length;
+      }
+      return fulfillJson(route, 200, {
+        replayed: answer.replayed ?? false,
+        recordedCount: answer.recordedCount ?? ids.length,
+        alreadyRecordedCount: answer.alreadyRecordedCount ?? 0,
+        notTaggedIds: answer.notTaggedIds ?? [],
+        discardedStaleIds: answer.discardedStaleIds ?? [],
+      });
+    },
+  );
+  return { requests };
+}
+
+/**
+ * POST …/tags/{tagId}/placements/removed (spec 6.2) — the clear-out report. Captures every body,
+ * answers 200 (counts default to the reported `removedIds`) and, unless `deactivated: false`, marks
+ * the tag as no longer played in for the page's next read.
+ */
+export async function mockTagRemoval(
+  page: Page,
+  channelName: string,
+  tagId: number,
+  answer: Partial<{
+    replayed: boolean;
+    deletedCount: number;
+    transferredCount: number;
+    droppedCount: number;
+    sweptCount: number;
+    deactivated: boolean;
+  }> = {},
+): Promise<{ requests: RecordedTagRunRequest[] }> {
+  const state = tagMockState(page, channelName);
+  const requests: RecordedTagRunRequest[] = [];
+  await page.route(
+    (url) => url.pathname === tagRunPath(channelName, tagId, 'placements/removed'),
+    (route) => {
+      const body = route.request().postDataJSON() as { removedIds?: string[] } | null;
+      requests.push({ body });
+      const deactivated = answer.deactivated ?? true;
+      const tag = state.tags.find((candidate) => candidate.id === tagId);
+      if (tag && deactivated) {
+        tag.active = false;
+        tag.activatedAtUtc = null;
+        tag.placedCount = 0;
+      }
+      return fulfillJson(route, 200, {
+        replayed: answer.replayed ?? false,
+        deletedCount: answer.deletedCount ?? body?.removedIds?.length ?? 0,
+        transferredCount: answer.transferredCount ?? 0,
+        droppedCount: answer.droppedCount ?? 0,
+        sweptCount: answer.sweptCount ?? 0,
+        deactivated,
+      });
     },
   );
   return { requests };
