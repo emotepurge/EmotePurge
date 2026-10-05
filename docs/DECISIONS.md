@@ -760,6 +760,22 @@ The operator tried the runs in the browser and changed three things; all are fro
   "No emotes yet. Select them on the usage page and assign them to this tag." (the existing manager-only
   button to the usage page stays).
 
+#### Every tag action names its target (operator decision 2026-10-05, later that day)
+
+Wording only, no contract changes; code identifiers (`playIn`, `remove`, `active`, `placedCount`) stay.
+The words "Einspielen"/"Ausräumen" (and "eingespielt", "ausgeräumt", "platziert") left the UI because
+they did not say *where* the action lands. Now every tag action names its target, the set or the tag:
+"Ins Set holen"/"Add to set" and "Aus dem Set entfernen"/"Remove from set" act on the set, "Aus dem Tag
+entfernen (n)"/"Remove from tag (n)" and "Tag löschen"/"Delete tag" act on the tag; "Umbenennen" is
+unchanged. The tag status reads "n über den Tag ins Set geholt"/"n added to the set via this tag" (nothing
+at all for an active tag without placements). The tag-dock button names the tag only in its accessible
+name and title, after the visible words ("Aus dem Tag entfernen (2) – Name"), so the visible label stays
+contained in the accessible name. With a grid marking the set-removal button carries the number of marked
+entries like the dock does. The detail header is two groups with a visible gap (`gap-x-6`) between them: set
+actions (`TagRunActions`) on the left, tag actions (rename, delete) on the right; each button stays
+conditional, so the header does not shift when one appears. This supersedes the order "Einspielen ·
+Ausräumen · Umbenennen · [gap] · Löschen" quoted in the entries above and in UI-Designsprache §8.7.
+
 #### Clearing out a tag that is not played in (operator decision 2026-10-05)
 
 Found in the live test after feedback 1: a tag of emotes that were all in the set already (the person

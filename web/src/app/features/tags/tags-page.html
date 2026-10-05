@@ -155,16 +155,15 @@
                     plural(tag.inSetCount, 'tags.page.micro.inSet')
                       | transloco: { count: formatCount(tag.inSetCount) }
                   }}</span>
-                  <!-- Only the played-in state is named, never its absence (operator feedback
-                       2026-10-05). It counts against the active set like the number before it, so
-                       it drops out with it when there is no set to count in. -->
-                  @if (tag.active) {
+                  <!-- Only what the tag brought into the set is named, never its absence (operator
+                       feedback 2026-10-05): an active tag with no placements says nothing. It counts
+                       against the active set like the number before it, so it drops out with it when
+                       there is no set to count in. -->
+                  @if (tag.active && tag.placedCount > 0) {
                     <span aria-hidden="true">·</span>
                     <span>{{
-                      tag.placedCount > 0
-                        ? ('tags.page.micro.activePlaced'
-                          | transloco: { placed: formatCount(tag.placedCount) })
-                        : ('tags.page.micro.active' | transloco)
+                      'tags.page.micro.activePlaced'
+                        | transloco: { placed: formatCount(tag.placedCount) }
                     }}</span>
                   }
                 }
@@ -194,8 +193,8 @@
                 >
                   {{ tag.name }}
                 </h3>
-                <!-- Header actions (spec 9.4, plan 3.8): the tag runs first, then rename and, after a
-                     gap, delete (§8.7). The runs exist where they can run — switched on, a fine
+                <!-- Header actions (spec 9.4, plan 3.8): two groups, each naming its target — the set
+                     actions (the tag runs), then after a gap the tag actions (rename, delete; §8.7). The runs exist where they can run — switched on, a fine
                      pointer, a known active set — and need no management right (E9); rename and
                      delete need one. TagRunActions is mounted on gates that a live reload does not
                      move — a reload that tore it down would read as a set switch and abort an open
@@ -203,7 +202,7 @@
                      compares against. It also gets the grid's marking: a clear-out started with one
                      proposes the marked emotes, and the marking goes once that clear-out went ahead. -->
                 @if (tagRunsShown() || canManage()) {
-                  <div class="ml-auto flex flex-wrap items-start gap-2">
+                  <div class="ml-auto flex flex-wrap items-start gap-x-6 gap-y-2">
                     @if (tagRunsShown()) {
                       <app-tag-run-actions
                         [channelName]="channelName()"
@@ -221,23 +220,24 @@
                       />
                     }
                     @if (canManage()) {
-                      <button
-                        type="button"
-                        appButton="neutral"
-                        [disabled]="deletePending()"
-                        (click)="openRename()"
-                      >
-                        {{ 'tags.actions.rename' | transloco }}
-                      </button>
-                      <button
-                        type="button"
-                        appButton="danger"
-                        class="ml-2"
-                        [disabled]="deletePending()"
-                        (click)="confirmDelete()"
-                      >
-                        {{ 'tags.actions.delete' | transloco }}
-                      </button>
+                      <div class="flex flex-wrap items-start gap-2">
+                        <button
+                          type="button"
+                          appButton="neutral"
+                          [disabled]="deletePending()"
+                          (click)="openRename()"
+                        >
+                          {{ 'tags.actions.rename' | transloco }}
+                        </button>
+                        <button
+                          type="button"
+                          appButton="danger"
+                          [disabled]="deletePending()"
+                          (click)="confirmDelete()"
+                        >
+                          {{ 'tags.actions.delete' | transloco }}
+                        </button>
+                      </div>
                     }
                   </div>
                 }
@@ -393,30 +393,21 @@
                   appButton="neutral"
                   [disabled]="removalPending()"
                   [attr.aria-label]="
-                    'tags.actions.unassign'
+                    'tags.actions.unassignNamed'
                       | transloco: { tag: tag.name, count: formatCount(markedCount()) }
                   "
                   [title]="
-                    ('tags.actions.unassign'
+                    ('tags.actions.unassignNamed'
                       | transloco: { tag: tag.name, count: formatCount(markedCount()) }) +
                     ' — ' +
                     ('tags.actions.unassignTitle' | transloco)
                   "
                   (click)="removeMarked()"
                 >
-                  <!-- Only the tag's name gives way (up to 40 characters, wider than a 360px
-                       page): the frame stays whole, the full text stays in the accessible name and
-                       the title (as in the usage dock). -->
-                  <span aria-hidden="true" class="inline-flex min-w-0 items-baseline">
-                    <span class="whitespace-pre">{{
-                      'tags.actions.unassignPrefix' | transloco
-                    }}</span>
-                    <span class="max-w-40 truncate">{{ tag.name }}</span>
-                    <span class="whitespace-pre">{{
-                      'tags.actions.unassignSuffix'
-                        | transloco: { count: formatCount(markedCount()) }
-                    }}</span>
-                  </span>
+                  <!-- The label names its target (the tag) without the tag's own name, which can be
+                       40 characters; the accessible name and the title append it, after the visible
+                       words so the visible label stays contained in the accessible name. -->
+                  {{ 'tags.actions.unassign' | transloco: { count: formatCount(markedCount()) } }}
                 </button>
                 <button type="button" appButton="outline" (click)="clearSelection()">
                   {{ 'tags.actions.clearSelection' | transloco }}

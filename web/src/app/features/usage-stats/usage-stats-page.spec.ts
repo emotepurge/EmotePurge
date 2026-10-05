@@ -6600,7 +6600,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['tagUnassignShown']()).toBe(false);
   });
 
-  it('offers "Aus Tag entfernen" only with a tag filter, counting the marked emotes that are in the tag', async () => {
+  it('offers "Aus dem Tag entfernen" only with a tag filter, counting the marked emotes that are in the tag', async () => {
     await open({ tags: [tag(4, 'Stronghold')] });
     mark('7tv-a', '7tv-b');
     expect(component['tagUnassignShown']()).toBe(false);
@@ -6913,7 +6913,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['tagErrorKey']()).not.toBeNull();
   });
 
-  it('keeps the full tag name in the accessible name and title of the "Aus Tag entfernen" button', async () => {
+  it('keeps the full tag name in the accessible name and title of the "Aus dem Tag entfernen" button', async () => {
     const image = 'https://cdn.7tv.app/emote/x/1x.webp';
     const longName = 'Fuer-die-Halloween-Wochen-Auswahl-2026-xx';
     await open({
@@ -6923,7 +6923,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     });
     TestBed.inject(TranslocoService).setTranslation(
       {
-        'tags.actions.unassign': 'Aus ‚{{tag}}‘ entfernen ({{count}})',
+        'tags.actions.unassignNamed': 'Aus dem Tag entfernen ({{count}}) – {{tag}}',
         'tags.actions.unassignTitle': 'Erklärung',
       },
       'de',
@@ -6935,11 +6935,11 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     const button = fixture.nativeElement.querySelector(
       'button[aria-label^="Aus"]',
     ) as HTMLButtonElement | null;
-    expect(button?.getAttribute('aria-label')).toBe(`Aus ‚${longName}‘ entfernen (1)`);
-    expect(button?.title).toContain(`Aus ‚${longName}‘ entfernen (1)`);
+    expect(button?.getAttribute('aria-label')).toBe(`Aus dem Tag entfernen (1) – ${longName}`);
+    expect(button?.title).toContain(`Aus dem Tag entfernen (1) – ${longName}`);
   });
 
-  it('describes the locked "Aus Tag entfernen" button with its reason when none of the marked emotes is in the tag (§10)', async () => {
+  it('describes the locked "Aus dem Tag entfernen" button with its reason when none of the marked emotes is in the tag (§10)', async () => {
     // Real template: the subject is the button's accessible description. A real-looking imageUrl,
     // since NgOptimizedImage runs for real here (NG02952 on '').
     const image = 'https://cdn.7tv.app/emote/x/1x.webp';
@@ -6957,7 +6957,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
 
     const button = Array.from(
       fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
-    ).find((candidate) => candidate.getAttribute('aria-label') === 'tags.actions.unassign');
+    ).find((candidate) => candidate.getAttribute('aria-label') === 'tags.actions.unassignNamed');
     expect(button).toBeDefined();
     expect(button?.disabled).toBe(true);
     const describedBy = button?.getAttribute('aria-describedby');

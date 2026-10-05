@@ -57,8 +57,8 @@ export function settledTagPlayIn(run: ImportRunInfo | null): string | null {
 /** One of the two run buttons. */
 export type TagRunButton = 'playIn' | 'remove';
 
-/** Where focus goes when the run button the user clicked leaves the DOM under them ("Einspielen"
- *  after a play-in left nothing missing, "Ausräumen" after a clear-out left nothing to clear): the
+/** Where focus goes when the run button the user clicked leaves the DOM under them ("Ins Set holen"
+ *  after a play-in left nothing missing, "Aus dem Set entfernen" after a clear-out left nothing to clear): the
  *  other run button if it is there, otherwise the host's stable fallback (the detail heading).
  *  `none` when focus is not lost — the user has moved on, leave it alone. */
 export function runButtonFocusTarget(state: {
@@ -79,13 +79,13 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
 }
 
 /**
- * "Einspielen" and "Ausräumen" for one tag (#201 T-C, spec 9.4) — hosted by the tags page, the
+ * "Ins Set holen" and "Aus dem Set entfernen" for one tag (#201 T-C, spec 9.4) — hosted by the tags page, the
  * only surface that starts tag runs (operator feedback 2026-10-05: the usage page shows what is in
  * the set, not what is missing).
  *
  * Renders nothing unless the host says so (`enabled`: runs switched on, fine pointer, a known
- * active set). "Einspielen" exists only while the tag has an emote missing from the set,
- * "Ausräumen" while one of its emotes is in the set or it is played in there (`removeShown`; spec
+ * active set). "Ins Set holen" exists only while the tag has an emote missing from the set,
+ * "Aus dem Set entfernen" while one of its emotes is in the set or it is played in there (`removeShown`; spec
  * 7.2: missing, not locked — there is nothing to explain beyond the state the host shows next to
  * it). Both lock
  * while any 7TV run holds the start (`startLocked`, without a hint: the run's dock is the hint,
@@ -136,7 +136,11 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
                 [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
                 (click)="remove()"
               >
-                {{ 'tags.actions.remove' | transloco }}
+                @if (markedCount() > 0) {
+                  {{ 'tags.actions.removeCount' | transloco: { count: markedCount() } }}
+                } @else {
+                  {{ 'tags.actions.remove' | transloco }}
+                }
               </button>
             }
           </div>
@@ -218,7 +222,7 @@ export class TagRunActions {
   /** This component's flow is between its click and its hand-over (or its report). */
   protected readonly pending = signal(false);
   protected readonly notice = signal<TagRunNotice | null>(null);
-  /** "Einspielen" exists only while the tag has an emote that is not in the set (spec 7.2: missing,
+  /** "Ins Set holen" exists only while the tag has an emote that is not in the set (spec 7.2: missing,
    *  not locked) — read off the summary the host already holds. Without a count (`inSetCount:
    *  null`, no set to count in) nothing is known to be present, so a tag with entries offers it. A
    *  click that outraces a change of the set still lands in the flow's own "all present" path. */
@@ -226,7 +230,7 @@ export class TagRunActions {
     const tag = this.tag();
     return tag.entryCount > (tag.inSetCount ?? 0);
   });
-  /** "Ausräumen" exists while there is something to clear out (operator decision 2026-10-05,
+  /** "Aus dem Set entfernen" exists while there is something to clear out (operator decision 2026-10-05,
    *  superseding spec 7.2's "only for a played-in tag"): an emote of the tag in the set — whether
    *  the tag was played in or its emotes were all there already, which leaves it no way to become
    *  active — or the tag being played in at all. The latter keeps a played-in tag with nothing in
@@ -236,6 +240,9 @@ export class TagRunActions {
     const tag = this.tag();
     return tag.active || (tag.inSetCount ?? 0) > 0;
   });
+  /** How many emotes the host's grid has marked. The clear-out button carries the number, as the
+   *  tags page's own dock button does — a marking is the clear-out's proposal (spec 9.4). */
+  protected readonly markedCount = computed(() => this.markedIds().length);
   /** At least one run button stands; the button row and the lock reason exist only then. */
   protected readonly anyButton = computed(() => this.playInShown() || this.removeShown());
   protected readonly locked = computed(() => this.arbiter.startLocked() || this.pending());

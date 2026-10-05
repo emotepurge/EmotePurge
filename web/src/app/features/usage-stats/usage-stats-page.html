@@ -1281,28 +1281,20 @@
                   tagUnassignLockReasonKey() ? tagUnassignLockReasonId : null
                 "
                 [attr.aria-label]="
-                  'tags.actions.unassign' | transloco: { tag: tag.name, count: tagUnassignCount() }
+                  'tags.actions.unassignNamed'
+                    | transloco: { tag: tag.name, count: tagUnassignCount() }
                 "
                 [title]="
-                  ('tags.actions.unassign'
+                  ('tags.actions.unassignNamed'
                     | transloco: { tag: tag.name, count: tagUnassignCount() }) +
                   ' — ' +
                   ('tags.actions.unassignTitle' | transloco)
                 "
                 (click)="removeFromTag()"
               >
-                <!-- Only the tag's name gives way (a tag name is up to 40 characters, wider than a
-                     360px dock): the label's frame stays whole, the full text stays in the accessible
-                     name and the title. -->
-                <span aria-hidden="true" class="inline-flex min-w-0 items-baseline">
-                  <span class="whitespace-pre">{{
-                    'tags.actions.unassignPrefix' | transloco
-                  }}</span>
-                  <span class="max-w-40 truncate">{{ tag.name }}</span>
-                  <span class="whitespace-pre">{{
-                    'tags.actions.unassignSuffix' | transloco: { count: tagUnassignCount() }
-                  }}</span>
-                </span>
+                <!-- The label names its target without the tag's own name (up to 40 characters, wider
+                     than a 360px dock); the accessible name and the title append it. -->
+                {{ 'tags.actions.unassign' | transloco: { count: tagUnassignCount() } }}
               </button>
               @if (tagUnassignLockReasonKey(); as reasonKey) {
                 <span [id]="tagUnassignLockReasonId" class="text-xs text-fg-muted">

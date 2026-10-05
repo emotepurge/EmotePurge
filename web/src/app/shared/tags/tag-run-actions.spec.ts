@@ -26,7 +26,11 @@ import { TagRunNoticeSink } from './tag-run-notice-sink';
 const DE = {
   sevenTvRun: { kind: { undo: 'Rückgängig', import: 'Kopieren' } },
   tags: {
-    actions: { playIn: 'Einspielen', remove: 'Ausräumen' },
+    actions: {
+      playIn: 'Ins Set holen',
+      remove: 'Aus dem Set entfernen',
+      removeCount: 'Aus dem Set entfernen ({{count}})',
+    },
     errors: {
       otherRunActive: 'Ein Lauf ({{kind}}) läuft auf einer anderen Seite.',
       ownershipUnavailable: 'Besitz gerade nicht prüfbar.',
@@ -205,77 +209,99 @@ describe('TagRunActions', () => {
   });
 
   // Operator decision 2026-10-05: something to clear out, not "played in", decides.
-  describe('"Ausräumen" exists while an emote of the tag is in the set, or the tag is played in', () => {
+  describe('"Aus dem Set entfernen" exists while an emote of the tag is in the set, or the tag is played in', () => {
     it('is missing for a tag that is not played in and has nothing in the set', () => {
-      expect(button('Einspielen')).toBeDefined();
-      expect(button('Ausräumen')).toBeUndefined();
+      expect(button('Ins Set holen')).toBeDefined();
+      expect(button('Aus dem Set entfernen')).toBeUndefined();
     });
 
     it('is there for a tag that was never played in once one of its emotes is in the set', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 1 }));
       fixture.detectChanges();
 
-      expect(button('Ausräumen')).toBeDefined();
-      expect(button('Einspielen')).toBeDefined();
+      expect(button('Aus dem Set entfernen')).toBeDefined();
+      expect(button('Ins Set holen')).toBeDefined();
     });
 
     it('is there for a played-in tag, also with nothing of it left in the set', () => {
       fixture.componentRef.setInput('tag', summary({ inSetCount: 1, active: true }));
       fixture.detectChanges();
-      expect(button('Ausräumen')).toBeDefined();
+      expect(button('Aus dem Set entfernen')).toBeDefined();
 
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0, active: true }));
       fixture.detectChanges();
-      expect(button('Ausräumen')).toBeDefined();
+      expect(button('Aus dem Set entfernen')).toBeDefined();
     });
 
     it('is missing when the counts have no set to refer to and the tag is not played in', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 2, inSetCount: null }));
       fixture.detectChanges();
 
-      expect(button('Ausräumen')).toBeUndefined();
+      expect(button('Aus dem Set entfernen')).toBeUndefined();
     });
   });
 
-  describe('"Einspielen" exists only while the tag has an emote missing from the set (spec 7.2)', () => {
+  describe('the set-removal button carries the number of marked emotes', () => {
+    beforeEach(() => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3 }));
+      fixture.detectChanges();
+    });
+
+    it('names no number without a marking', () => {
+      expect(button('Aus dem Set entfernen')).toBeDefined();
+    });
+
+    it('shows how many are marked, and follows the marking', () => {
+      fixture.componentRef.setInput('markedIds', ['a', 'b']);
+      fixture.detectChanges();
+      expect(button('Aus dem Set entfernen (2)')).toBeDefined();
+      expect(button('Aus dem Set entfernen')).toBeUndefined();
+
+      fixture.componentRef.setInput('markedIds', []);
+      fixture.detectChanges();
+      expect(button('Aus dem Set entfernen')).toBeDefined();
+    });
+  });
+
+  describe('"Ins Set holen" exists only while the tag has an emote missing from the set (spec 7.2)', () => {
     it('is there while at least one entry is not in the set, played in or not', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 2 }));
       fixture.detectChanges();
-      expect(button('Einspielen')).toBeDefined();
+      expect(button('Ins Set holen')).toBeDefined();
 
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 2, active: true }));
       fixture.detectChanges();
-      expect(button('Einspielen')).toBeDefined();
-      expect(button('Ausräumen')).toBeDefined();
+      expect(button('Ins Set holen')).toBeDefined();
+      expect(button('Aus dem Set entfernen')).toBeDefined();
     });
 
-    it('is missing, not locked, when nothing is missing — only "Ausräumen" stays, played in or not', () => {
+    it('is missing, not locked, when nothing is missing — only "Aus dem Set entfernen" stays, played in or not', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3 }));
       fixture.detectChanges();
-      expect(button('Einspielen')).toBeUndefined();
-      expect(button('Ausräumen')).toBeDefined();
+      expect(button('Ins Set holen')).toBeUndefined();
+      expect(button('Aus dem Set entfernen')).toBeDefined();
 
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3, active: true }));
       fixture.detectChanges();
-      expect(button('Einspielen')).toBeUndefined();
-      expect(button('Ausräumen')).toBeDefined();
+      expect(button('Ins Set holen')).toBeUndefined();
+      expect(button('Aus dem Set entfernen')).toBeDefined();
     });
 
     it('is missing for a tag without entries, and there again once one is not in the set', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 0, inSetCount: 0 }));
       fixture.detectChanges();
-      expect(button('Einspielen')).toBeUndefined();
+      expect(button('Ins Set holen')).toBeUndefined();
 
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
       fixture.detectChanges();
-      expect(button('Einspielen')).toBeDefined();
+      expect(button('Ins Set holen')).toBeDefined();
     });
 
     it('is offered for a tag with entries when the counts have no set to refer to', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 2, inSetCount: null }));
       fixture.detectChanges();
 
-      expect(button('Einspielen')).toBeDefined();
+      expect(button('Ins Set holen')).toBeDefined();
     });
   });
 
@@ -284,9 +310,9 @@ describe('TagRunActions', () => {
     startLocked.set(true);
     fixture.detectChanges();
 
-    expect(button('Einspielen')!.disabled).toBe(true);
-    expect(button('Ausräumen')!.disabled).toBe(true);
-    expect(button('Einspielen')!.hasAttribute('aria-describedby')).toBe(false);
+    expect(button('Ins Set holen')!.disabled).toBe(true);
+    expect(button('Aus dem Set entfernen')!.disabled).toBe(true);
+    expect(button('Ins Set holen')!.hasAttribute('aria-describedby')).toBe(false);
   });
 
   describe('a lock by a run the host does not show (plan 3.8, tags.errors.otherRunActive)', () => {
@@ -300,7 +326,7 @@ describe('TagRunActions', () => {
       activeRun.set('undo');
       fixture.detectChanges();
 
-      for (const name of ['Einspielen', 'Ausräumen']) {
+      for (const name of ['Ins Set holen', 'Aus dem Set entfernen']) {
         const locked = button(name)!;
         expect(locked.disabled).toBe(true);
         const reason = (fixture.nativeElement as HTMLElement).querySelector(
@@ -316,8 +342,8 @@ describe('TagRunActions', () => {
       activeRun.set('import');
       fixture.detectChanges();
 
-      expect(button('Einspielen')!.disabled).toBe(true);
-      expect(button('Einspielen')!.hasAttribute('aria-describedby')).toBe(false);
+      expect(button('Ins Set holen')!.disabled).toBe(true);
+      expect(button('Ins Set holen')!.hasAttribute('aria-describedby')).toBe(false);
       expect(fixture.nativeElement.textContent).not.toContain('anderen Seite');
     });
 
@@ -335,12 +361,12 @@ describe('TagRunActions', () => {
       activeRun.set('undo');
       fixture.detectChanges();
 
-      expect(button('Einspielen')!.hasAttribute('aria-describedby')).toBe(false);
+      expect(button('Ins Set holen')!.hasAttribute('aria-describedby')).toBe(false);
       expect(fixture.nativeElement.textContent).not.toContain('anderen Seite');
     });
   });
 
-  describe('focus when a play-in takes "Einspielen" away', () => {
+  describe('focus when a play-in takes "Ins Set holen" away', () => {
     let focusLost: number;
 
     beforeEach(() => {
@@ -348,24 +374,24 @@ describe('TagRunActions', () => {
       fixture.componentInstance.focusLost.subscribe(() => focusLost++);
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
       fixture.detectChanges();
-      button('Einspielen')!.click();
+      button('Ins Set holen')!.click();
       fixture.detectChanges();
     });
 
-    it('moves to "Ausräumen" when the tag is played in now', () => {
+    it('moves to "Aus dem Set entfernen" when the tag is played in now', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1, active: true }));
       fixture.detectChanges();
 
-      expect(button('Einspielen')).toBeUndefined();
-      expect(document.activeElement).toBe(button('Ausräumen'));
+      expect(button('Ins Set holen')).toBeUndefined();
+      expect(document.activeElement).toBe(button('Aus dem Set entfernen'));
       expect(focusLost).toBe(0);
     });
 
-    it('moves to "Ausräumen" also when the reloaded tag reads as not played in', () => {
+    it('moves to "Aus dem Set entfernen" also when the reloaded tag reads as not played in', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1 }));
       fixture.detectChanges();
 
-      expect(document.activeElement).toBe(button('Ausräumen'));
+      expect(document.activeElement).toBe(button('Aus dem Set entfernen'));
       expect(focusLost).toBe(0);
     });
 
@@ -378,7 +404,7 @@ describe('TagRunActions', () => {
     });
   });
 
-  describe('focus when a clear-out takes "Ausräumen" away', () => {
+  describe('focus when a clear-out takes "Aus dem Set entfernen" away', () => {
     let focusLost: number;
     let removalClosed: Subject<unknown>;
 
@@ -403,21 +429,21 @@ describe('TagRunActions', () => {
 
       focusLost = 0;
       fixture.componentInstance.focusLost.subscribe(() => focusLost++);
-      // Not played in, its one emote in the set: "Ausräumen" only.
+      // Not played in, its one emote in the set: "Aus dem Set entfernen" only.
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1 }));
       fixture.detectChanges();
-      button('Ausräumen')!.click();
+      button('Aus dem Set entfernen')!.click();
       fixture.detectChanges();
     });
 
-    it('moves to "Einspielen" when the cleared tag now misses its emote', () => {
+    it('moves to "Ins Set holen" when the cleared tag now misses its emote', () => {
       removalClosed.next({ checkedIds: ['a'] });
       fixture.detectChanges();
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
       fixture.detectChanges();
 
-      expect(button('Ausräumen')).toBeUndefined();
-      expect(document.activeElement).toBe(button('Einspielen'));
+      expect(button('Aus dem Set entfernen')).toBeUndefined();
+      expect(document.activeElement).toBe(button('Ins Set holen'));
       expect(focusLost).toBe(0);
     });
 
@@ -437,19 +463,19 @@ describe('TagRunActions', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
       fixture.detectChanges();
 
-      expect(button('Ausräumen')).toBeUndefined();
+      expect(button('Aus dem Set entfernen')).toBeUndefined();
       expect(document.activeElement).toBe(document.body);
       expect(focusLost).toBe(0);
     });
   });
 
-  it('leaves focus alone after an aborted play-in, when a later reload takes "Einspielen" away', () => {
+  it('leaves focus alone after an aborted play-in, when a later reload takes "Ins Set holen" away', () => {
     let focusLost = 0;
     fixture.componentInstance.focusLost.subscribe(() => focusLost++);
     registration = () => throwError(() => new HttpErrorResponse({ status: 503 }));
     fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
     fixture.detectChanges();
-    button('Einspielen')!.click();
+    button('Ins Set holen')!.click();
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('Besitz gerade nicht prüfbar.');
 
@@ -477,7 +503,7 @@ describe('TagRunActions', () => {
     fixture.componentInstance.started.subscribe(() => started++);
     registration = () => throwError(() => new HttpErrorResponse({ status: 503 }));
 
-    button('Einspielen')!.click();
+    button('Ins Set holen')!.click();
     fixture.detectChanges();
     expect(started).toBe(1);
 
@@ -489,7 +515,7 @@ describe('TagRunActions', () => {
     const sink = TestBed.inject(TagRunNoticeSink);
     sink.raise('handofblood', { key: 'tags.errors.setChanged' });
 
-    button('Einspielen')!.click();
+    button('Ins Set holen')!.click();
 
     expect(sink.notice()).toBeNull();
   });
@@ -501,7 +527,7 @@ describe('TagRunActions', () => {
     (TestBed.inject(EmoteTagService) as unknown as { reportPlacements: unknown }).reportPlacements =
       reportPlacements;
 
-    button('Einspielen')!.click();
+    button('Ins Set holen')!.click();
     expect(reportPlacements).toHaveBeenCalledOnce();
     fixture.destroy();
     report.error(new HttpErrorResponse({ status: 500 }));
@@ -525,7 +551,7 @@ describe('TagRunActions', () => {
   });
 
   it("passes the flow's feedback and completion on to the host", () => {
-    button('Einspielen')!.click();
+    button('Ins Set holen')!.click();
     fixture.detectChanges();
 
     expect(feedback).toEqual([
@@ -536,12 +562,12 @@ describe('TagRunActions', () => {
 
   it("shows a flow's block as an alert whose retry runs the flow again", () => {
     registration = () => throwError(() => new HttpErrorResponse({ status: 503 }));
-    button('Einspielen')!.click();
+    button('Ins Set holen')!.click();
     fixture.detectChanges();
 
     const alert = (fixture.nativeElement as HTMLElement).querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('Besitz gerade nicht prüfbar.');
-    expect(button('Einspielen')!.disabled).toBe(false);
+    expect(button('Ins Set holen')!.disabled).toBe(false);
 
     registration = () => of({ registeredAtUtc: '2026-10-05T10:01:00Z' });
     button('Erneut versuchen')!.click();
@@ -557,7 +583,7 @@ describe('TagRunActions', () => {
       (fixture.nativeElement as HTMLElement).querySelector('[role="alert"]');
     const raiseBanner = (): void => {
       registration = () => throwError(() => new HttpErrorResponse({ status: 503 }));
-      button('Einspielen')!.click();
+      button('Ins Set holen')!.click();
       fixture.detectChanges();
       expect(alert()).not.toBeNull();
     };
@@ -582,7 +608,7 @@ describe('TagRunActions', () => {
   it("drops a flow's late failure once the host shows another tag", () => {
     const late = new Subject<unknown>();
     registration = () => late;
-    button('Einspielen')!.click();
+    button('Ins Set holen')!.click();
     fixture.componentRef.setInput('tag', summary({ id: 8, name: 'Other' }));
     fixture.detectChanges();
 
@@ -590,7 +616,7 @@ describe('TagRunActions', () => {
     fixture.detectChanges();
 
     expect((fixture.nativeElement as HTMLElement).querySelector('[role="alert"]')).toBeNull();
-    expect(button('Einspielen')!.disabled).toBe(false);
+    expect(button('Ins Set holen')!.disabled).toBe(false);
   });
 
   it('reports completion when a tag run it can see closes, and again when its report succeeds on a retry', () => {

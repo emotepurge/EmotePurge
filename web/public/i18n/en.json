@@ -604,8 +604,8 @@
       "tagCreate": "Tag created",
       "tagRename": "Tag renamed",
       "tagDelete": "Tag deleted",
-      "tagPlayedIn": "Tag played in",
-      "tagRemoved": "Tag cleared",
+      "tagPlayedIn": "Tag added to set",
+      "tagRemoved": "Tag removed from set",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
       "userDelete": "Account deleted"
@@ -1678,7 +1678,7 @@
         "one": "{{ count }} emote was removed again in the meantime and not recorded.",
         "other": "{{ count }} emotes were removed again in the meantime and not recorded."
       },
-      "restoreHint": "Restored emotes are back in the set afterwards but not recorded as played in by the tag — if the tag is played in later, a clear-out lists them as “not played in by this tag”."
+      "restoreHint": "Restored emotes are back in the set afterwards but not recorded as added to the set via the tag — if the tag is added to the set later, removing it from the set lists them as “not added to the set via this tag”."
     }
   },
   "sevenTvToken": {
@@ -1700,8 +1700,8 @@
     "page": {
       "title": "Tags",
       "listLabel": "Tags",
-      "intro": "A tag remembers emotes, even when they are not in the set right now.",
-      "introRuns": "Playing in puts them into the set, clearing out takes them out again.",
+      "intro": "A tag remembers emotes, even when they are not in the set.",
+      "introRuns": "“Add to set” adds them, “Remove from set” takes them out again – the tag itself stays.",
       "setLine": "The numbers refer to the active set {{set}}.",
       "noActiveSet": "This channel has no active set, so there are no “in the set” numbers.",
       "empty": {
@@ -1727,8 +1727,7 @@
           "one": "{{count}} not in the set",
           "other": "{{count}} not in the set"
         },
-        "active": "played in",
-        "activePlaced": "played in ({{placed}} placed)"
+        "activePlaced": "{{placed}} added to the set via this tag"
       },
       "currentName": "today: {{name}}",
       "notInSetBadge": "not in the set",
@@ -1742,10 +1741,10 @@
       "deleted": "Deleted {{tag}}.",
       "tagGone": "This tag has been deleted in the meantime.",
       "state": {
-        "active": "played in since {{date}}",
-        "activeUndated": "played in"
+        "active": "added to the set via this tag on {{date}}",
+        "activeUndated": "added to the set via this tag"
       },
-      "placedAt": "played in on {{date}}"
+      "placedAt": "added to the set on {{date}}"
     },
     "assignDialog": {
       "title": "Assign tag",
@@ -1773,18 +1772,18 @@
     "actions": {
       "create": "New tag",
       "rename": "Rename",
-      "delete": "Delete",
+      "delete": "Delete tag",
       "clearSelection": "Clear selection",
       "assign": "Assign tag…",
-      "unassignPrefix": "Remove from ‘",
-      "unassignSuffix": "’ ({{count}})",
-      "unassign": "Remove from ‘{{tag}}’ ({{count}})",
-      "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer clear them out either.",
+      "unassign": "Remove from tag ({{count}})",
+      "unassignNamed": "Remove from tag ({{count}}) – {{tag}}",
+      "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer take them out of the set either.",
       "unassignLockReason": {
         "noneInTag": "None of the marked emotes is in {{tag}}."
       },
-      "playIn": "Play in",
-      "remove": "Clear out"
+      "playIn": "Add to set",
+      "remove": "Remove from set",
+      "removeCount": "Remove from set ({{count}})"
     },
     "filter": {
       "label": "Tag",
@@ -1808,21 +1807,21 @@
         "other": "Removed {{count}} emotes from {{tag}}."
       },
       "allPresent": {
-        "one": "The only emote of {{tag}} is already in the set — the tag counts as played in.",
-        "other": "All {{count}} emotes of {{tag}} are already in the set — the tag counts as played in."
+        "one": "The only emote of {{tag}} is already in the set — the tag counts as added to the set.",
+        "other": "All {{count}} emotes of {{tag}} are already in the set — the tag counts as added to the set."
       },
-      "removedNothing": "{{tag}} cleared out — nothing to remove."
+      "removedNothing": "{{tag}} removed from the set — nothing to remove."
     },
     "deleteDialog": {
       "message": "{{tag}} will be deleted; the emotes stay in the set.",
       "confirm": "Delete tag",
       "placedHint": {
-        "one": "{{count}} emote of this tag is still played in — clear it out first?",
-        "other": "{{count}} emotes of this tag are still played in — clear them out first?"
+        "one": "{{count}} emote of this tag was added to the set via it and is still there — remove it from the set first?",
+        "other": "{{count}} emotes of this tag were added to the set via it and are still there — remove them from the set first?"
       }
     },
     "removalDialog": {
-      "title": "Clear out {{tag}}",
+      "title": "Remove {{tag}} from set",
       "summary": {
         "remove": {
           "one": "{{count}} emote will be removed",
@@ -1835,9 +1834,9 @@
       },
       "proposedHeading": "Proposed",
       "notProposedHeading": "Not proposed",
-      "placedAt": "played in on {{date}}",
+      "placedAt": "added to the set on {{date}}",
       "reason": {
-        "alreadyPresent": "not played in by this tag",
+        "alreadyPresent": "not added to the set via this tag",
         "heldBy": "is still needed by {{tag}}",
         "notMarked": "not marked"
       },
@@ -1845,20 +1844,20 @@
         "one": "{{count}} more emote of this tag is not in the set.",
         "other": "{{count}} more emotes of this tag are not in the set."
       },
-      "nothingToDelete": "Nothing will be deleted on 7TV; the tag then counts as no longer played in.",
+      "nothingToDelete": "Nothing will be deleted on 7TV; the tag is then no longer recorded as added to the set.",
       "nothingToDeleteNotPlayedIn": "Nothing will be deleted on 7TV.",
-      "notPlayedInLead": "The tag is not played in — all its emotes in the set are proposed except those another tag needs.",
+      "notPlayedInLead": "The tag added nothing to the set — all its emotes in the set are proposed except those another tag needs.",
       "markedLead": {
         "one": "Your marked emote is proposed.",
         "other": "Your {{count}} marked emotes are proposed."
       },
       "markedLeadNone": "None of your marked emotes is proposed.",
-      "confirm": "Clear out"
+      "confirm": "Remove from set"
     },
     "errors": {
       "setChanged": "The active set has changed — reload the page.",
       "entriesUnavailable": "The tag's entries could not be loaded just now.",
-      "changedDuringConfirm": "The tag has changed in the meantime — please open “Clear out” again.",
+      "changedDuringConfirm": "The tag has changed in the meantime — please open “Remove from set” again.",
       "setReadIncomplete": "The set's entries could only partly be read from 7TV — nothing was changed.",
       "setReadUnavailable": "The set's entries could not be read from 7TV — nothing was changed.",
       "noWriteRight": "You may not edit this set on 7TV.",

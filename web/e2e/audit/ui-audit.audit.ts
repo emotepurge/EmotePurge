@@ -1676,7 +1676,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     // The tags page with a played-in tag (#201 T-C, spec 9.4): state line, the
-    // list's "eingespielt (n platziert)", the run buttons in the detail head — and, after a
+    // list's "n über den Tag ins Set geholt", the run buttons in the detail head — and, after a
     // clear-out has run to its end against the mocked 7TV, the page-level run dock with the
     // delete section's settled run, tag report line, restore hint and buttons (the fixed dock has
     // to pass the right-edge gate at 360 px under a mouse). Fine pointer only: no runs on a coarse
@@ -1693,9 +1693,13 @@ const SCENARIOS: Scenario[] = [
       await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
     },
     afterLoad: async (page) => {
-      await page.getByRole('button', { name: /^(Ausräumen|Clear out)$/ }).click();
+      await page
+        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .click();
       const dialog = page.getByRole('dialog');
-      await dialog.getByRole('button', { name: /^(Ausräumen|Clear out)$/ }).click();
+      await dialog
+        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .click();
       await page.locator('.app-dock').waitFor();
       await page
         .locator('.app-dock')
@@ -1719,7 +1723,9 @@ const SCENARIOS: Scenario[] = [
       await mockTagRuns(page);
     },
     afterLoad: async (page) => {
-      await page.getByRole('button', { name: /^(Ausräumen|Clear out)$/ }).click();
+      await page
+        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .click();
       await page.getByRole('dialog').waitFor();
     },
   },

@@ -604,8 +604,8 @@
       "tagCreate": "Tag angelegt",
       "tagRename": "Tag umbenannt",
       "tagDelete": "Tag gelöscht",
-      "tagPlayedIn": "Tag eingespielt",
-      "tagRemoved": "Tag ausgeräumt",
+      "tagPlayedIn": "Tag ins Set geholt",
+      "tagRemoved": "Tag aus dem Set entfernt",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
@@ -1678,7 +1678,7 @@
         "one": "{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.",
         "other": "{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt."
       },
-      "restoreHint": "Wiederhergestellte Emotes sind danach wieder im Set, aber nicht als vom Tag eingespielt vermerkt — wird der Tag später eingespielt, gelten sie beim Ausräumen als „nicht von diesem Tag eingespielt“."
+      "restoreHint": "Wiederhergestellte Emotes sind danach wieder im Set, aber nicht als über den Tag ins Set geholt vermerkt — wird der Tag später ins Set geholt, gelten sie beim Entfernen aus dem Set als „nicht über diesen Tag ins Set gekommen“."
     }
   },
   "sevenTvToken": {
@@ -1701,7 +1701,7 @@
       "title": "Tags",
       "listLabel": "Tags",
       "intro": "Ein Tag merkt sich Emotes, auch wenn sie gerade nicht im Set sind.",
-      "introRuns": "Einspielen holt sie ins Set, Ausräumen nimmt sie wieder heraus.",
+      "introRuns": "„Ins Set holen“ fügt sie hinzu, „Aus dem Set entfernen“ nimmt sie wieder heraus – der Tag selbst bleibt dabei erhalten.",
       "setLine": "Die Zahlen beziehen sich auf das aktive Set {{set}}.",
       "noActiveSet": "Dieser Channel hat kein aktives Set; Zahlen „im Set“ gibt es deshalb nicht.",
       "empty": {
@@ -1727,8 +1727,7 @@
           "one": "{{count}} nicht im Set",
           "other": "{{count}} nicht im Set"
         },
-        "active": "eingespielt",
-        "activePlaced": "eingespielt ({{placed}} platziert)"
+        "activePlaced": "{{placed}} über den Tag ins Set geholt"
       },
       "currentName": "heute: {{name}}",
       "notInSetBadge": "nicht im Set",
@@ -1742,10 +1741,10 @@
       "deleted": "{{tag}} gelöscht.",
       "tagGone": "Dieser Tag wurde inzwischen gelöscht.",
       "state": {
-        "active": "eingespielt seit {{date}}",
-        "activeUndated": "eingespielt"
+        "active": "über den Tag ins Set geholt am {{date}}",
+        "activeUndated": "über den Tag ins Set geholt"
       },
-      "placedAt": "eingespielt am {{date}}"
+      "placedAt": "am {{date}} ins Set geholt"
     },
     "assignDialog": {
       "title": "Tag zuweisen",
@@ -1773,18 +1772,18 @@
     "actions": {
       "create": "Neuer Tag",
       "rename": "Umbenennen",
-      "delete": "Löschen",
+      "delete": "Tag löschen",
       "clearSelection": "Auswahl aufheben",
       "assign": "Tag zuweisen…",
-      "unassignPrefix": "Aus ‚",
-      "unassignSuffix": "‘ entfernen ({{count}})",
-      "unassign": "Aus ‚{{tag}}‘ entfernen ({{count}})",
-      "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; der Tag räumt sie danach auch nicht mehr aus.",
+      "unassign": "Aus dem Tag entfernen ({{count}})",
+      "unassignNamed": "Aus dem Tag entfernen ({{count}}) – {{tag}}",
+      "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; der Tag nimmt sie danach auch nicht mehr aus dem Set.",
       "unassignLockReason": {
         "noneInTag": "Keins der markierten Emotes gehört zu {{tag}}."
       },
-      "playIn": "Einspielen",
-      "remove": "Ausräumen"
+      "playIn": "Ins Set holen",
+      "remove": "Aus dem Set entfernen",
+      "removeCount": "Aus dem Set entfernen ({{count}})"
     },
     "filter": {
       "label": "Tag",
@@ -1808,21 +1807,21 @@
         "other": "{{count}} Emotes aus {{tag}} entfernt."
       },
       "allPresent": {
-        "one": "Das einzige Emote von {{tag}} ist schon im Set — Tag gilt als eingespielt.",
-        "other": "Alle {{count}} Emotes von {{tag}} sind schon im Set — Tag gilt als eingespielt."
+        "one": "Das einzige Emote von {{tag}} ist schon im Set — der Tag gilt als ins Set geholt.",
+        "other": "Alle {{count}} Emotes von {{tag}} sind schon im Set — der Tag gilt als ins Set geholt."
       },
-      "removedNothing": "{{tag}} ausgeräumt — nichts zu entfernen."
+      "removedNothing": "Bei {{tag}} war nichts aus dem Set zu entfernen."
     },
     "deleteDialog": {
       "message": "{{tag}} wird gelöscht; die Emotes bleiben im Set.",
       "confirm": "Tag löschen",
       "placedHint": {
-        "one": "{{count}} Emote dieses Tags ist noch eingespielt — vorher ausräumen?",
-        "other": "{{count}} Emotes dieses Tags sind noch eingespielt — vorher ausräumen?"
+        "one": "{{count}} Emote dieses Tags wurde über ihn ins Set geholt und ist noch dort — vorher aus dem Set entfernen?",
+        "other": "{{count}} Emotes dieses Tags wurden über ihn ins Set geholt und sind noch dort — vorher aus dem Set entfernen?"
       }
     },
     "removalDialog": {
-      "title": "{{tag}} ausräumen",
+      "title": "{{tag}} aus dem Set entfernen",
       "summary": {
         "remove": {
           "one": "{{count}} Emote wird entfernt",
@@ -1835,9 +1834,9 @@
       },
       "proposedHeading": "Vorgeschlagen",
       "notProposedHeading": "Nicht vorgeschlagen",
-      "placedAt": "eingespielt am {{date}}",
+      "placedAt": "am {{date}} ins Set geholt",
       "reason": {
-        "alreadyPresent": "nicht von diesem Tag eingespielt",
+        "alreadyPresent": "nicht über diesen Tag ins Set gekommen",
         "heldBy": "wird noch von {{tag}} gebraucht",
         "notMarked": "nicht markiert"
       },
@@ -1845,20 +1844,20 @@
         "one": "{{count}} weiteres Emote dieses Tags ist nicht im Set.",
         "other": "{{count}} weitere Emotes dieses Tags sind nicht im Set."
       },
-      "nothingToDelete": "Es wird nichts bei 7TV gelöscht; der Tag gilt danach als nicht mehr eingespielt.",
+      "nothingToDelete": "Es wird nichts bei 7TV gelöscht; der Tag ist danach nicht mehr als ins Set geholt vermerkt.",
       "nothingToDeleteNotPlayedIn": "Es wird nichts bei 7TV gelöscht.",
-      "notPlayedInLead": "Der Tag ist nicht eingespielt — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
+      "notPlayedInLead": "Der Tag hat nichts ins Set geholt — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
       "markedLead": {
         "one": "Vorgeschlagen ist dein markiertes Emote.",
         "other": "Vorgeschlagen sind deine {{count}} markierten Emotes."
       },
       "markedLeadNone": "Keines deiner markierten Emotes ist vorgeschlagen.",
-      "confirm": "Ausräumen"
+      "confirm": "Aus dem Set entfernen"
     },
     "errors": {
       "setChanged": "Das aktive Set hat gewechselt — Seite neu laden.",
       "entriesUnavailable": "Die Einträge des Tags konnten gerade nicht geladen werden.",
-      "changedDuringConfirm": "Der Tag hat sich inzwischen geändert — öffne „Ausräumen“ bitte erneut.",
+      "changedDuringConfirm": "Der Tag hat sich inzwischen geändert — öffne „Aus dem Set entfernen“ bitte erneut.",
       "setReadIncomplete": "Die Einträge des Sets konnten nur teilweise von 7TV gelesen werden — es wurde nichts geändert.",
       "setReadUnavailable": "Die Einträge des Sets konnten nicht von 7TV gelesen werden — es wurde nichts geändert.",
       "noWriteRight": "Du darfst dieses Set bei 7TV nicht bearbeiten.",

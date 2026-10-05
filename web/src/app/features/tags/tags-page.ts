@@ -129,7 +129,7 @@ export function parseTagParam(raw: string | null): number | null {
  * selection-bound action in T-B is not worth a selection mode of its own there.
  *
  * T-C (#201, spec 9.4/9.5) adds the tag's played-in state and the tag runs:
- * "Einspielen"/"Ausräumen" (`TagRunActions`) in the detail head, and — at page level, outside the
+ * "Ins Set holen"/"Aus dem Set entfernen" (`TagRunActions`) in the detail head, and — at page level, outside the
  * detail, so a run stays visible whichever tag (or the list) is on screen — the run dock with the
  * import, delete and restore sections, the permanently mounted `DockOutcomeAnnouncer` and the
  * page's run status region. The page follows `channel.synced` for its channel (the usage page's
@@ -382,7 +382,7 @@ export class TagsPage {
   /** The small dock in the flow under the grid (spec 9.4, §8.7) — only while something is marked. */
   protected readonly dockShown = computed(() => this.selectable() && this.markedCount() > 0);
 
-  /** Where "Einspielen"/"Ausräumen" exist at all (spec 8, 9.4): runs switched on, a fine pointer and
+  /** Where "Ins Set holen"/"Aus dem Set entfernen" exist at all (spec 8, 9.4): runs switched on, a fine pointer and
    *  a known active set. Rename and delete do not depend on it. */
   protected readonly tagRunsShown = computed(
     () => this.tagRunsEnabled() && !this.isCoarse() && this.activeEmoteSetId() !== null,

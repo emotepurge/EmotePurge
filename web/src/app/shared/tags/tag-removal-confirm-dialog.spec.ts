@@ -29,29 +29,29 @@ const DE = {
   },
   tags: {
     removalDialog: {
-      title: '{{tag}} ausräumen',
+      title: '{{tag}} aus dem Set entfernen',
       summary: {
         remove: { one: '{{count}} wird entfernt', other: '{{count}} werden entfernt' },
         keep: { one: '{{count}} bleibt', other: '{{count}} bleiben' },
       },
       proposedHeading: 'Vorgeschlagen',
       notProposedHeading: 'Nicht vorgeschlagen',
-      placedAt: 'eingespielt am {{date}}',
+      placedAt: 'ins Set geholt am {{date}}',
       reason: {
-        alreadyPresent: 'nicht von diesem Tag eingespielt',
+        alreadyPresent: 'nicht über diesen Tag ins Set gekommen',
         heldBy: 'wird noch von {{tag}} gebraucht',
         notMarked: 'nicht markiert',
       },
       notInSet: { one: '{{count}} weiterer nicht im Set', other: '{{count}} weitere nicht im Set' },
-      nothingToDelete: 'Es wird nichts gelöscht; danach nicht mehr eingespielt.',
+      nothingToDelete: 'Es wird nichts gelöscht; danach nicht mehr ins Set geholt.',
       nothingToDeleteNotPlayedIn: 'Es wird nichts gelöscht.',
-      notPlayedInLead: 'Nicht eingespielt — alles vorgeschlagen.',
+      notPlayedInLead: 'Nichts ins Set geholt — alles vorgeschlagen.',
       markedLead: {
         one: 'Dein markiertes vorgeschlagen.',
         other: '{{count}} markierte vorgeschlagen.',
       },
       markedLeadNone: 'Keines der markierten vorgeschlagen.',
-      confirm: 'Ausräumen',
+      confirm: 'Aus dem Set entfernen',
     },
   },
 };
@@ -148,7 +148,7 @@ describe('TagRemovalConfirmDialog', () => {
     const pane = document.querySelector('[role="dialog"]')!;
     expect(pane.contains(host)).toBe(true);
     const labelled = document.getElementById(pane.getAttribute('aria-labelledby')!);
-    expect(labelled?.textContent?.trim()).toBe('Stronghold ausräumen');
+    expect(labelled?.textContent?.trim()).toBe('Stronghold aus dem Set entfernen');
   });
 
   it('lists each emote once, as a checkbox row, and not a second time as a plain name list', async () => {
@@ -217,8 +217,8 @@ describe('TagRemovalConfirmDialog', () => {
     await settle();
     const text = host.textContent!;
     expect(text).toContain('wird noch von Raid, Duo gebraucht');
-    expect(text).toContain('nicht von diesem Tag eingespielt');
-    expect(text).not.toContain('eingespielt am');
+    expect(text).toContain('nicht über diesen Tag ins Set gekommen');
+    expect(text).not.toContain('ins Set geholt am');
     expect(host.querySelector('[title="Raid, Duo"]')).not.toBeNull();
   });
 
@@ -228,23 +228,25 @@ describe('TagRemovalConfirmDialog', () => {
     ]);
     await settle();
     expect(host.textContent).toContain('wird noch von Raid gebraucht');
-    expect(host.textContent).toContain('eingespielt am');
+    expect(host.textContent).toContain('ins Set geholt am');
   });
 
   it('shows the placement date of a ticked row', async () => {
     const host = open([row('a')]);
     await settle();
-    expect(host.textContent).toMatch(/eingespielt am \d{1,2}[./]\d{1,2}[./]\d{2,4}/);
+    expect(host.textContent).toMatch(/ins Set geholt am \d{1,2}[./]\d{1,2}[./]\d{2,4}/);
   });
 
   it('keeps the confirm button active at n = 0 and says nothing is deleted', async () => {
     const host = open([row('held', { checked: false, reason: 'alreadyPresent' })]);
     await settle();
     expect(summary(host)).toBe('0 werden entfernt, 1 bleibt');
-    expect(button(host, 'Ausräumen').disabled).toBe(false);
-    expect(host.textContent).toContain('Es wird nichts gelöscht; danach nicht mehr eingespielt.');
+    expect(button(host, 'Aus dem Set entfernen').disabled).toBe(false);
+    expect(host.textContent).toContain(
+      'Es wird nichts gelöscht; danach nicht mehr ins Set geholt.',
+    );
 
-    button(host, 'Ausräumen').click();
+    button(host, 'Aus dem Set entfernen').click();
     expect(results).toEqual([{ checkedIds: [] }]);
   });
 
@@ -273,11 +275,11 @@ describe('TagRemovalConfirmDialog', () => {
       ]);
       await settle();
       expect(host.textContent).toContain('Es wird nichts gelöscht.');
-      expect(host.textContent).not.toContain('nicht mehr eingespielt');
+      expect(host.textContent).not.toContain('nicht mehr ins Set geholt');
     });
 
     it('says in one sentence why everything is proposed, only for such a tag and only with rows', async () => {
-      const lead = 'Nicht eingespielt — alles vorgeschlagen.';
+      const lead = 'Nichts ins Set geholt — alles vorgeschlagen.';
       let host = notPlayedIn([row('a', { reason: 'tagged', placedAtUtc: null })]);
       await settle();
       expect(host.textContent).toContain(lead);
@@ -298,8 +300,8 @@ describe('TagRemovalConfirmDialog', () => {
       const host = notPlayedIn([row('a', { reason: 'tagged', placedAtUtc: null })]);
       await settle();
       expect(box(host, 'a').checked).toBe(true);
-      expect(host.textContent).not.toContain('nicht von diesem Tag eingespielt');
-      expect(host.textContent).not.toContain('eingespielt am');
+      expect(host.textContent).not.toContain('nicht über diesen Tag ins Set gekommen');
+      expect(host.textContent).not.toContain('ins Set geholt am');
     });
   });
 
@@ -328,7 +330,7 @@ describe('TagRemovalConfirmDialog', () => {
       );
       await settle();
       expect(host.textContent).toContain('2 markierte vorgeschlagen.');
-      expect(host.textContent).not.toContain('Nicht eingespielt — alles vorgeschlagen.');
+      expect(host.textContent).not.toContain('Nichts ins Set geholt — alles vorgeschlagen.');
       ref.close();
 
       // A played-in tag says it as well; the count follows the start state, not later ticks.
@@ -367,7 +369,7 @@ describe('TagRemovalConfirmDialog', () => {
       await settle();
       expect(box(host, 'own').checked).toBe(false);
       expect(host.textContent!.match(/nicht markiert/g)).toHaveLength(2);
-      expect(host.textContent!.match(/eingespielt am/g)).toHaveLength(1);
+      expect(host.textContent!.match(/ins Set geholt am/g)).toHaveLength(1);
     });
   });
 
@@ -378,7 +380,7 @@ describe('TagRemovalConfirmDialog', () => {
     box(host, 'b').click();
     await settle();
 
-    button(host, 'Ausräumen').click();
+    button(host, 'Aus dem Set entfernen').click();
     expect(results).toEqual([{ checkedIds: ['b', 'c'] }]);
   });
 
@@ -414,10 +416,10 @@ describe('TagRemovalConfirmDialog', () => {
     warningLoading.set(true);
     const host = open([row('a')]);
     await settle();
-    expect(button(host, 'Ausräumen').disabled).toBe(true);
+    expect(button(host, 'Aus dem Set entfernen').disabled).toBe(true);
     warningLoading.set(false);
     await settle();
-    expect(button(host, 'Ausräumen').disabled).toBe(false);
+    expect(button(host, 'Aus dem Set entfernen').disabled).toBe(false);
   });
 
   it('keeps exactly one status region, also while the ownership check is unavailable', async () => {

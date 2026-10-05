@@ -286,6 +286,15 @@ describe('TagsPage', () => {
     return (harness.routeNativeElement as HTMLElement).textContent ?? '';
   }
 
+  /** The set-removal button whether or not a marking adds its count ("Aus dem Set entfernen (2)"). */
+  function removeButton(harness: RouterTestingHarness): HTMLButtonElement {
+    return Array.from(
+      (harness.routeNativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) =>
+      /^Aus dem Set entfernen( \(\d+\))?$/.test(button.textContent?.trim() ?? ''),
+    )!;
+  }
+
   function buttonByName(harness: RouterTestingHarness, name: string): HTMLButtonElement | null {
     const buttons = Array.from(
       (harness.routeNativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('button'),
@@ -403,7 +412,7 @@ describe('TagsPage', () => {
       const rowText = row?.textContent ?? '';
       expect(rowText).toContain('2 Einträge');
       expect(rowText).not.toContain('im Set');
-      expect(rowText).not.toContain('eingespielt');
+      expect(rowText).not.toContain('ins Set geholt');
     });
   });
 
@@ -413,7 +422,7 @@ describe('TagsPage', () => {
 
       expect(buttonByName(harness, 'Neuer Tag')).not.toBeNull();
       expect(buttonByName(harness, 'Umbenennen')).not.toBeNull();
-      expect(buttonByName(harness, 'Löschen')).not.toBeNull();
+      expect(buttonByName(harness, 'Tag löschen')).not.toBeNull();
       expect(view(page).selectable()).toBe(true);
       expect(cells(harness).every((cell) => cell.getAttribute('aria-pressed') === 'false')).toBe(
         true,
@@ -427,7 +436,7 @@ describe('TagsPage', () => {
       expect(page.canManage()).toBe(false);
       expect(buttonByName(harness, 'Neuer Tag')).toBeNull();
       expect(buttonByName(harness, 'Umbenennen')).toBeNull();
-      expect(buttonByName(harness, 'Löschen')).toBeNull();
+      expect(buttonByName(harness, 'Tag löschen')).toBeNull();
       expect(cells(harness)).toHaveLength(2);
       expect(cells(harness).some((cell) => cell.hasAttribute('aria-pressed'))).toBe(false);
     });
@@ -442,7 +451,7 @@ describe('TagsPage', () => {
       expect(page.selection.selectedKeys()).toEqual([]);
       expect(view(page).dockShown()).toBe(false);
       expect(buttonByName(harness, 'Umbenennen')).not.toBeNull();
-      expect(buttonByName(harness, 'Löschen')).not.toBeNull();
+      expect(buttonByName(harness, 'Tag löschen')).not.toBeNull();
     });
 
     it('a pointer turning coarse drops the marks', async () => {
@@ -544,7 +553,7 @@ describe('TagsPage', () => {
       const { harness, page } = await openDetail();
       dialogResult = true;
 
-      buttonByName(harness, 'Löschen')!.click();
+      buttonByName(harness, 'Tag löschen')!.click();
       expect(dialogOpen.mock.calls[0][0]).toBe(ConfirmDialog);
       expect(dialogOpen.mock.calls[0][1].data.message).toBe(
         'Stronghold wird gelöscht; die Emotes bleiben im Set.',
@@ -571,7 +580,7 @@ describe('TagsPage', () => {
       const { harness, page } = await openDetail();
       dialogResult = true;
 
-      buttonByName(harness, 'Löschen')!.click();
+      buttonByName(harness, 'Tag löschen')!.click();
       const del = httpMock.expectOne(`${BASE}/1`);
 
       await harness.navigateByUrl('/channels/a/tags?tag=2');
@@ -594,7 +603,7 @@ describe('TagsPage', () => {
       const { harness } = await openDetail();
       dialogResult = false;
 
-      buttonByName(harness, 'Löschen')!.click();
+      buttonByName(harness, 'Tag löschen')!.click();
 
       httpMock.expectNone(`${BASE}/1`);
     });
@@ -642,7 +651,7 @@ describe('TagsPage', () => {
       await settle(harness);
       expect(view(page).dockShown()).toBe(true);
 
-      buttonByName(harness, 'Aus ‚Stronghold‘ entfernen (2)')!.click();
+      buttonByName(harness, 'Aus dem Tag entfernen (2)')!.click();
       const req = httpMock.expectOne(`${BASE}/1/entries/remove`);
       expect(req.request.body).toEqual({ sevenTvEmoteIds: ['e1', 'e3'] });
       req.flush({ removedCount: 2 });
@@ -660,10 +669,10 @@ describe('TagsPage', () => {
       cells(harness)[0].click();
       await settle(harness);
 
-      const button = buttonByName(harness, 'Aus ‚Stronghold‘ entfernen (1)')!;
-      expect(button.getAttribute('aria-label')).toBe('Aus ‚Stronghold‘ entfernen (1)');
-      // The visible text is the part that may truncate; it is hidden from the accessible name.
-      expect(button.querySelector('[aria-hidden="true"]')).not.toBeNull();
+      const button = buttonByName(harness, 'Aus dem Tag entfernen (1)')!;
+      expect(button.getAttribute('aria-label')).toBe('Aus dem Tag entfernen (1) – Stronghold');
+      // The visible label is the start of the accessible name (WCAG 2.5.3).
+      expect(button.getAttribute('aria-label')).toContain(button.textContent!.trim());
     });
 
     it('a failed removal shows its reason and keeps the marks', async () => {
@@ -671,7 +680,7 @@ describe('TagsPage', () => {
       cells(harness)[0].click();
       await settle(harness);
 
-      buttonByName(harness, 'Aus ‚Stronghold‘ entfernen (1)')!.click();
+      buttonByName(harness, 'Aus dem Tag entfernen (1)')!.click();
       httpMock
         .expectOne(`${BASE}/1/entries/remove`)
         .flush({ errorCode: 'emote_ids_invalid' }, { status: 400, statusText: 'Bad Request' });
@@ -765,40 +774,40 @@ describe('TagsPage', () => {
     }
 
     describe('the run buttons (spec 9.4, 8)', () => {
-      it('offers "Einspielen" in the detail head, without "Ausräumen" for a tag not played in with nothing in the set', async () => {
+      it('offers "Ins Set holen" in the detail head, without "Aus dem Set entfernen" for a tag not played in with nothing in the set', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold', 2, 0));
 
-        expect(buttonByName(harness, 'Einspielen')).not.toBeNull();
-        expect(buttonByName(harness, 'Ausräumen')).toBeNull();
+        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
+        expect(buttonByName(harness, 'Aus dem Set entfernen')).toBeNull();
       });
 
       // Operator decision 2026-10-05: something of the tag in the set is enough to clear it out.
-      it('offers "Ausräumen" for a tag not played in once one of its emotes is in the set', async () => {
+      it('offers "Aus dem Set entfernen" for a tag not played in once one of its emotes is in the set', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold', 2, 1));
 
-        expect(buttonByName(harness, 'Einspielen')).not.toBeNull();
-        expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
+        expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
       });
 
-      it('offers "Ausräumen" for a played-in tag', async () => {
+      it('offers "Aus dem Set entfernen" for a played-in tag', async () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold'));
 
-        expect(buttonByName(harness, 'Einspielen')).not.toBeNull();
-        expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
+        expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
       });
 
-      it('hides "Einspielen" for a tag whose emotes are all in the set — an inactive one keeps "Ausräumen"', async () => {
+      it('hides "Ins Set holen" for a tag whose emotes are all in the set — an inactive one keeps "Aus dem Set entfernen"', async () => {
         const full = { ...tag(1, 'Stronghold', 2, 2) };
         const { harness } = await openTag(full);
-        expect(buttonByName(harness, 'Einspielen')).toBeNull();
-        expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
+        expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
       });
 
-      it('keeps only "Ausräumen" for a played-in tag with nothing missing', async () => {
+      it('keeps only "Aus dem Set entfernen" for a played-in tag with nothing missing', async () => {
         const { harness } = await openTag({ ...activeTag(1, 'Stronghold'), inSetCount: 2 });
 
-        expect(buttonByName(harness, 'Einspielen')).toBeNull();
-        expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
+        expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
       });
 
       it('takes focus onto the detail heading when the run buttons lose it with no button left', async () => {
@@ -814,7 +823,7 @@ describe('TagsPage', () => {
         permissions = { ...MANAGER, canManage: false, tagRunsEnabled: true };
         const { harness, page } = await openTag(tag(1, 'Stronghold'));
 
-        expect(buttonByName(harness, 'Einspielen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
         expect(buttonByName(harness, 'Umbenennen')).toBeNull();
         expect(runActions(harness)!.activeEmoteSetId()).toBe(page.activeEmoteSetId());
       });
@@ -823,7 +832,7 @@ describe('TagsPage', () => {
         permissions = { ...MANAGER, tagRunsEnabled: false };
         const { harness } = await openTag(activeTag(1, 'Stronghold'));
 
-        expect(buttonByName(harness, 'Einspielen')).toBeNull();
+        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
         expect(buttonByName(harness, 'Umbenennen')).not.toBeNull();
       });
 
@@ -831,9 +840,9 @@ describe('TagsPage', () => {
         isCoarse.set(true);
         const { harness } = await openTag(activeTag(1, 'Stronghold'));
 
-        expect(buttonByName(harness, 'Einspielen')).toBeNull();
-        expect(buttonByName(harness, 'Ausräumen')).toBeNull();
-        expect(buttonByName(harness, 'Löschen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
+        expect(buttonByName(harness, 'Aus dem Set entfernen')).toBeNull();
+        expect(buttonByName(harness, 'Tag löschen')).not.toBeNull();
       });
 
       it('are absent on a channel without an active set', async () => {
@@ -855,7 +864,7 @@ describe('TagsPage', () => {
           });
         await settle(harness);
 
-        expect(buttonByName(harness, 'Einspielen')).toBeNull();
+        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
       });
 
       it('explains a lock held by an undo — whose dock this page does not show', async () => {
@@ -873,17 +882,17 @@ describe('TagsPage', () => {
           { dateStyle: 'short' },
         );
 
-        expect(text(harness)).toContain(`eingespielt seit ${date}`);
+        expect(text(harness)).toContain(`über den Tag ins Set geholt am ${date}`);
       });
 
-      it('never says "nicht eingespielt" — only a played-in state is named', async () => {
+      it('names no state for a tag that added nothing to the set', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold'));
 
-        expect(text(harness)).not.toContain('nicht eingespielt');
-        expect(text(harness)).not.toContain('eingespielt seit');
+        expect(text(harness)).not.toContain('ins Set geholt am');
+        expect(text(harness)).not.toContain('nicht über den Tag');
       });
 
-      it('says "eingespielt" for an active tag whose activation date is missing', async () => {
+      it('says "über den Tag ins Set geholt" for an active tag whose activation date is missing', async () => {
         const { harness } = await openTag({ ...activeTag(1, 'Stronghold'), activatedAtUtc: null });
 
         const lines = Array.from(
@@ -898,18 +907,17 @@ describe('TagsPage', () => {
           harness.routeNativeElement!.querySelectorAll('ul[aria-label="Tags"] li'),
         ).map((row) => row.textContent ?? '');
 
-        expect(rows[0]).toContain('eingespielt (3 platziert)');
-        expect(rows[1]).not.toContain('eingespielt');
+        expect(rows[0]).toContain('3 über den Tag ins Set geholt');
+        expect(rows[1]).not.toContain('ins Set geholt');
       });
 
-      it('says just "eingespielt" in the list for a played-in tag without placements', async () => {
+      it('says nothing in the list for a played-in tag without placements', async () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold', 0));
         const row = harness.routeNativeElement!.querySelector(
           'ul[aria-label="Tags"] li',
         )!.textContent!;
 
-        expect(row).toContain('eingespielt');
-        expect(row).not.toContain('platziert');
+        expect(row).not.toContain('ins Set geholt');
       });
     });
 
@@ -918,12 +926,12 @@ describe('TagsPage', () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold', 12));
         dialogResult = false;
 
-        buttonByName(harness, 'Löschen')!.click();
+        buttonByName(harness, 'Tag löschen')!.click();
 
         const data = dialogOpen.mock.calls[0][1].data;
         expect(data.message).toContain('Stronghold wird gelöscht; die Emotes bleiben im Set.');
         expect(data.message).toContain(
-          '12 Emotes dieses Tags sind noch eingespielt — vorher ausräumen?',
+          '12 Emotes dieses Tags wurden über ihn ins Set geholt und sind noch dort — vorher aus dem Set entfernen?',
         );
         expect(data.confirmLabel).toBe('Tag löschen');
       });
@@ -932,9 +940,9 @@ describe('TagsPage', () => {
         const { harness } = await openTag(tag(1, 'Stronghold'));
         dialogResult = false;
 
-        buttonByName(harness, 'Löschen')!.click();
+        buttonByName(harness, 'Tag löschen')!.click();
 
-        expect(dialogOpen.mock.calls[0][1].data.message).not.toContain('eingespielt');
+        expect(dialogOpen.mock.calls[0][1].data.message).not.toContain('ins Set geholt');
       });
     });
 
@@ -1078,7 +1086,7 @@ describe('TagsPage', () => {
         dialogOpen.mockImplementation((component: unknown) =>
           component === TagRemovalConfirmDialog ? { closed } : { closed: of(dialogResult) },
         );
-        buttonByName(harness, 'Ausräumen')!.click();
+        removeButton(harness).click();
         await settle(harness);
         httpMock
           .expectOne((req) => req.url === `${BASE}/1/entries` && req.method === 'GET')
@@ -1261,7 +1269,7 @@ describe('TagsPage', () => {
         entries: ENTRIES,
       };
 
-      /** Clicks "Ausräumen" and answers the flow's reads; `meanwhile` runs between the click and the
+      /** Clicks "Aus dem Set entfernen" and answers the flow's reads; `meanwhile` runs between the click and the
        *  dialog, while the flow is still reading. */
       async function clickClearOut(
         harness: RouterTestingHarness,
@@ -1271,7 +1279,7 @@ describe('TagsPage', () => {
         dialogOpen.mockImplementation((component: unknown) =>
           component === TagRemovalConfirmDialog ? { closed } : { closed: of(dialogResult) },
         );
-        buttonByName(harness, 'Ausräumen')!.click();
+        removeButton(harness).click();
         await settle(harness);
         await meanwhile();
         expectEntries(1).flush(TAG_ENTRIES);

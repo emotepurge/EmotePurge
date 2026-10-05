@@ -171,7 +171,7 @@ test.describe('emote tags', () => {
     await expect(page.getByRole('heading', { name: 'Beste', level: 3 })).toBeVisible();
 
     // Delete, with the confirmation naming what survives.
-    await page.getByRole('button', { name: 'Löschen' }).click();
+    await page.getByRole('button', { name: 'Tag löschen' }).click();
     const confirm = page.getByRole('dialog');
     await expect(confirm).toContainText('Beste wird gelöscht; die Emotes bleiben im Set.');
     await confirm.getByRole('button', { name: 'Tag löschen' }).click();
@@ -259,7 +259,7 @@ test.describe('emote tags', () => {
   test('without the active set in view there is no assign button; the usage page never offers tag runs', async ({
     page,
   }) => {
-    // Tag runs are on, and still not here: Einspielen/Ausräumen live on the tags page only
+    // Tag runs are on, and still not here: "Ins Set holen"/"Aus dem Set entfernen" live on the tags page only
     // (operator feedback 2026-10-05).
     await mockChannel(page, { tagRunsEnabled: true });
     await mockTags(page, CHANNEL, [{ id: 7, name: 'Favoriten', entryCount: 1, inSetCount: 1 }]);
@@ -277,8 +277,8 @@ test.describe('emote tags', () => {
     await cell(page, 'catJAM').click();
     await expect(page.getByRole('button', { name: 'Tag zuweisen…' })).toBeVisible();
     await page.getByRole('combobox', { name: 'Tag' }).selectOption({ label: 'Favoriten' });
-    await expect(page.getByRole('button', { name: 'Einspielen' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Ausräumen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Ins Set holen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Aus dem Set entfernen' })).toHaveCount(0);
 
     // Deep-link to the other set (the URL is what carries the view); the tag filter set above is
     // page state, so choose it again there.
@@ -289,7 +289,7 @@ test.describe('emote tags', () => {
     await cell(page, 'catJAM').click();
 
     await expect(page.getByRole('button', { name: 'Tag zuweisen…' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Einspielen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Ins Set holen' })).toHaveCount(0);
   });
 });
 
@@ -328,7 +328,7 @@ test.describe('emote tags on a touch device', () => {
     await expect(grid.getByRole('img')).toHaveCount(2);
     await expect(grid.getByRole('button')).toHaveCount(0);
     await grid.getByRole('img').first().tap();
-    await expect(page.getByRole('button', { name: /entfernen/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /aus dem tag entfernen/i })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Auswahl aufheben' })).toHaveCount(0);
 
     await page.getByRole('link', { name: 'Tags', exact: true }).first().tap();
@@ -474,15 +474,15 @@ async function mockSwitchableActiveSet(page: Page): Promise<(emoteSetId: string)
   };
 }
 
-/** The tags page with `Favoriten` chosen — and "Einspielen" there, so the tag has a missing emote. */
+/** The tags page with `Favoriten` chosen — and "Ins Set holen" there, so the tag has a missing emote. */
 async function gotoTagWithMissing(page: Page): Promise<void> {
   await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
   await expect(page.getByRole('heading', { name: 'Favoriten', level: 3 })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Einspielen' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ins Set holen' })).toBeVisible();
 }
 
-const playIn = (page: Page) => page.getByRole('button', { name: 'Einspielen' });
-const clearOut = (page: Page) => page.getByRole('button', { name: 'Ausräumen' });
+const playIn = (page: Page) => page.getByRole('button', { name: 'Ins Set holen' });
+const clearOut = (page: Page) => page.getByRole('button', { name: 'Aus dem Set entfernen' });
 
 test.describe('emote tag runs', () => {
   test('plays a tag in: one emote is added, and the report and the placement carry the tag', async ({
@@ -581,7 +581,9 @@ test.describe('emote tag runs', () => {
     });
     await expect(
       page
-        .getByText('Das einzige Emote von Favoriten ist schon im Set — Tag gilt als eingespielt.')
+        .getByText(
+          'Das einzige Emote von Favoriten ist schon im Set — der Tag gilt als ins Set geholt.',
+        )
         .first(),
     ).toBeVisible();
     // No dialog, no run, nothing written.
@@ -591,11 +593,11 @@ test.describe('emote tag runs', () => {
     expect(syncImported).toEqual([]);
     // Played in: the tag's page now offers the clear-out and says so.
     await expect(clearOut(page)).toBeVisible();
-    // "eingespielt" opens the state wherever it stands (list line, detail head), whatever follows.
-    await expect(page.getByText(/^eingespielt\b/).first()).toBeVisible();
+    // The played-in state opens with "über den Tag ins Set geholt" wherever it stands (detail head), whatever follows.
+    await expect(page.getByText(/^über den Tag ins Set geholt\b/).first()).toBeVisible();
   });
 
-  test('offers no "Einspielen" for a tag whose emotes are all in the set — only "Ausräumen", played in or not', async ({
+  test('offers no "Ins Set holen" for a tag whose emotes are all in the set — only "Aus dem Set entfernen", played in or not', async ({
     page,
   }) => {
     await mockChannel(page);
@@ -620,7 +622,7 @@ test.describe('emote tag runs', () => {
     await expect(playIn(page)).toHaveCount(0);
     // Never played in, but its emote is in the set: it can be cleared out (operator 2026-10-05).
     await expect(clearOut(page)).toBeVisible();
-    await expect(page.getByText('nicht eingespielt')).toHaveCount(0);
+    await expect(page.getByText('nicht über den Tag ins Set geholt')).toHaveCount(0);
 
     await page.goto(`/channels/${CHANNEL}/tags?tag=${OTHER_TAG_ID}`);
     await expect(page.getByRole('heading', { name: 'Lieblinge', level: 3 })).toBeVisible();
@@ -659,20 +661,20 @@ test.describe('emote tag runs', () => {
       { id: '7tv-2', alias: 'monkaW' },
     ]);
     await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
-    await expect(page.getByText(/eingespielt seit/)).toBeVisible();
+    await expect(page.getByText(/über den Tag ins Set geholt am/)).toBeVisible();
 
     await clearOut(page).click();
     const dialog = page.getByRole('dialog');
-    await expect(dialog.locator('#app-dialog-title')).toHaveText('Favoriten ausräumen');
+    await expect(dialog.locator('#app-dialog-title')).toHaveText('Favoriten aus dem Set entfernen');
     const placed = dialog.locator('input[data-emote-id="7tv-1"]');
     const already = dialog.locator('input[data-emote-id="7tv-2"]');
     await expect(placed).toBeChecked();
     await expect(already).not.toBeChecked();
-    await expect(dialog.getByText(/eingespielt am/)).toBeVisible();
-    await expect(dialog.getByText('nicht von diesem Tag eingespielt')).toBeVisible();
+    await expect(dialog.getByText(/am .* ins Set geholt/)).toBeVisible();
+    await expect(dialog.getByText('nicht über diesen Tag ins Set gekommen')).toBeVisible();
     await expect(dialog.getByRole('status')).toHaveText('1 Emote wird entfernt, 1 bleibt im Set');
     expect(sevenTv.removes).toEqual([]);
-    await dialog.getByRole('button', { name: 'Ausräumen' }).click();
+    await dialog.getByRole('button', { name: 'Aus dem Set entfernen' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await page.clock.runFor(3_000);
@@ -703,9 +705,9 @@ test.describe('emote tag runs', () => {
       expect.objectContaining({ kind: 'removal', emoteSetId: ACTIVE_SET_ID }),
     );
     // The protocol of the run is offered, and the reloaded tag is no longer played in. monkaW is
-    // still in the set, so "Ausräumen" stays — now for a tag that is not played in.
+    // still in the set, so "Aus dem Set entfernen" stays — now for a tag that is not played in.
     await expect(page.getByRole('button', { name: 'Protokoll herunterladen' })).toBeVisible();
-    await expect(page.getByText(/eingespielt seit/)).toHaveCount(0);
+    await expect(page.getByText(/über den Tag ins Set geholt am/)).toHaveCount(0);
     await expect(clearOut(page)).toBeVisible();
   });
 
@@ -745,14 +747,14 @@ test.describe('emote tag runs', () => {
     const removal = await mockTagRemoval(page, CHANNEL, TAG_ID);
     const { sevenTv, syncDeleted } = await mockRunBackend(page, [{ id: '7tv-1', alias: 'catJAM' }]);
     await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
-    await expect(page.getByText(/eingespielt seit/)).toBeVisible();
+    await expect(page.getByText(/über den Tag ins Set geholt am/)).toBeVisible();
 
     await clearOut(page).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.locator('input[data-emote-id="7tv-1"]')).not.toBeChecked();
     await expect(dialog.getByText(/wird noch von Lieblinge gebraucht/)).toBeVisible();
     await expect(dialog.getByText(/Es wird nichts bei 7TV gelöscht/)).toBeVisible();
-    await dialog.getByRole('button', { name: 'Ausräumen' }).click();
+    await dialog.getByRole('button', { name: 'Aus dem Set entfernen' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await expect.poll(() => removal.requests.length).toBe(1);
@@ -766,11 +768,11 @@ test.describe('emote tag runs', () => {
       }),
     );
     await expect(
-      page.getByText('Favoriten ausgeräumt — nichts zu entfernen.').first(),
+      page.getByText('Bei Favoriten war nichts aus dem Set zu entfernen.').first(),
     ).toBeVisible();
-    await expect(page.getByText(/eingespielt seit/)).toHaveCount(0);
+    await expect(page.getByText(/über den Tag ins Set geholt am/)).toHaveCount(0);
     // Nothing reached 7TV, and nothing was reported as deleted. catJAM is still in the set, so
-    // "Ausräumen" stays for the tag that is no longer played in.
+    // "Aus dem Set entfernen" stays for the tag that is no longer played in.
     expect(sevenTv.removes).toEqual([]);
     expect(sevenTv.adds).toEqual([]);
     expect(syncDeleted).toEqual([]);
@@ -819,18 +821,18 @@ test.describe('emote tag runs', () => {
 
     await clearOut(page).click();
     const dialog = page.getByRole('dialog');
-    await expect(dialog.locator('#app-dialog-title')).toHaveText('Favoriten ausräumen');
+    await expect(dialog.locator('#app-dialog-title')).toHaveText('Favoriten aus dem Set entfernen');
     await expect(dialog.locator('input[data-emote-id="7tv-2"]')).toBeChecked();
     await expect(dialog.locator('input[data-emote-id="7tv-3"]')).toBeChecked();
     await expect(dialog.locator('input[data-emote-id="7tv-1"]')).not.toBeChecked();
     await expect(dialog.getByText(/wird noch von Lieblinge gebraucht/)).toBeVisible();
     // Nothing of it was played in, so nothing reads "not played in by this tag" either.
-    await expect(dialog.getByText('nicht von diesem Tag eingespielt')).toHaveCount(0);
+    await expect(dialog.getByText('nicht über diesen Tag ins Set gekommen')).toHaveCount(0);
     await expect(dialog.getByRole('status')).toHaveText(
       '2 Emotes werden entfernt, 1 bleibt im Set',
     );
     expect(sevenTv.removes).toEqual([]);
-    await dialog.getByRole('button', { name: 'Ausräumen' }).click();
+    await dialog.getByRole('button', { name: 'Aus dem Set entfernen' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await page.clock.runFor(3_000);
@@ -856,9 +858,9 @@ test.describe('emote tag runs', () => {
       keptIds: [],
     });
     expect([...body.removedIds].sort()).toEqual(['7tv-2', '7tv-3']);
-    // catJAM is still in the set and the tag still names it: "Ausräumen" stays for that one.
+    // catJAM is still in the set and the tag still names it: "Aus dem Set entfernen" stays for that one.
     await expect(clearOut(page)).toBeVisible();
-    await expect(page.getByText(/eingespielt seit/)).toHaveCount(0);
+    await expect(page.getByText(/über den Tag ins Set geholt am/)).toHaveCount(0);
   });
 
   // Operator decision 2026-10-05: a marking on the tag's grid is what the clear-out proposes.
@@ -896,7 +898,7 @@ test.describe('emote tag runs', () => {
     await clearOut(page).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByText('Vorgeschlagen sind deine 2 markierten Emotes.')).toBeVisible();
-    await expect(dialog.getByText(/Der Tag ist nicht eingespielt/)).toHaveCount(0);
+    await expect(dialog.getByText(/Der Tag hat nichts ins Set geholt/)).toHaveCount(0);
     await expect(dialog.locator('input[data-emote-id="7tv-2"]')).toBeChecked();
     await expect(dialog.locator('input[data-emote-id="7tv-4"]')).toBeChecked();
     await expect(dialog.locator('input[data-emote-id="7tv-1"]')).not.toBeChecked();
@@ -905,7 +907,7 @@ test.describe('emote tag runs', () => {
     await expect(dialog.getByRole('status')).toHaveText(
       '2 Emotes werden entfernt, 2 bleiben im Set',
     );
-    await dialog.getByRole('button', { name: 'Ausräumen' }).click();
+    await dialog.getByRole('button', { name: 'Aus dem Set entfernen' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await page.clock.runFor(3_000);
