@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import type { EmoteTagEntry } from '../../core/tags/emote-tag.model';
-import { buildTagImportSource, partitionTagPlayIn } from './tag-play-in';
+import {
+  buildTagImportSource,
+  markedMissingCount,
+  partitionTagPlayIn,
+  playInCandidates,
+} from './tag-play-in';
 
 function entry(id: string, patch: Partial<EmoteTagEntry> = {}): EmoteTagEntry {
   return {
@@ -82,5 +87,39 @@ describe('buildTagImportSource', () => {
     expect(source.rows).toBe(p.toAdd);
     expect(source.duplicatesCollapsed).toBe(0);
     expect(source.discardedRows).toBe(0);
+  });
+});
+
+describe('playInCandidates', () => {
+  const entries = [entry('a'), entry('b'), entry('c')];
+
+  it('is every entry without a marking', () => {
+    expect(playInCandidates(entries, undefined)).toBe(entries);
+    expect(playInCandidates(entries, [])).toBe(entries);
+  });
+
+  it('is the marked entries in entry order, dropping marked ids the tag has no entry for', () => {
+    expect(playInCandidates(entries, ['c', 'gone', 'a']).map((e) => e.sevenTvEmoteId)).toEqual([
+      'a',
+      'c',
+    ]);
+  });
+});
+
+describe('markedMissingCount', () => {
+  const entries = [
+    entry('in', { inSet: true }),
+    entry('out', { inSet: false }),
+    entry('unknown', { inSet: null }),
+    entry('unmarked', { inSet: false }),
+  ];
+
+  it('counts the marked entries the page does not show in the set, unknown ones included', () => {
+    expect(markedMissingCount(entries, ['in', 'out', 'unknown', 'gone'])).toBe(2);
+  });
+
+  it('is 0 without a marking and for a marking of entries all in the set', () => {
+    expect(markedMissingCount(entries, [])).toBe(0);
+    expect(markedMissingCount(entries, ['in'])).toBe(0);
   });
 });

@@ -36,6 +36,10 @@ import {
   TagRemovalConfirmDialog,
   TagRemovalConfirmDialogData,
 } from '../../shared/tags/tag-removal-confirm-dialog';
+import {
+  ImportConfirmDialog,
+  ImportConfirmDialogData,
+} from '../../shared/seven-tv/import-confirm-dialog';
 import { TagRunActions } from '../../shared/tags/tag-run-actions';
 import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { TagNameDialog } from './tag-name-dialog';
@@ -206,6 +210,18 @@ describe('TagsPage', () => {
                   { id: 'set-a', name: 'Herbst' },
                   { id: 'set-b', name: 'Halloween' },
                 ],
+              }),
+            // The import flow's own target load, for a play-in that reaches its confirmation.
+            loadEmoteSetPreview: () =>
+              of({
+                channelName: 'a',
+                sevenTvUserId: null,
+                emoteSetId: 'set-a',
+                emoteSetName: 'Herbst',
+                capacity: 1000,
+                totalCount: 1,
+                truncated: false,
+                emotes: [],
               }),
             resolveEditableSet: () =>
               of({
@@ -1362,6 +1378,141 @@ describe('TagsPage', () => {
         expect(
           data.proposal.rows.filter((row) => row.checked).map((row) => row.sevenTvEmoteId),
         ).toEqual(['e1']);
+      });
+    });
+
+    // Operator decision 2026-10-05, mirroring the clear-out: a marking narrows the play-in.
+    describe('a play-in with a grid marking', () => {
+      const ENTRIES = [
+        entry('e1'),
+        entry('e2', { inSet: false }),
+        entry('e3', { inSet: false }),
+        entry('e4', { inSet: false }),
+      ];
+      const TAG_ENTRIES = {
+        emoteSetId: 'set-a',
+        isActiveSet: true,
+        activationOperationId: null,
+        entries: ENTRIES,
+      };
+
+      /** Clicks the play-in button by its name and answers the flow's reads; `meanwhile` runs
+       *  between the click and the import confirmation, while the flow is still reading. */
+      async function clickPlayIn(
+        harness: RouterTestingHarness,
+        name: string,
+        closed: Subject<unknown>,
+        meanwhile: () => Promise<void> = async () => undefined,
+      ): Promise<ImportConfirmDialogData> {
+        dialogOpen.mockImplementation((component: unknown) =>
+          component === ImportConfirmDialog ? { closed } : { closed: of(dialogResult) },
+        );
+        buttonByName(harness, name)!.click();
+        await settle(harness);
+        await meanwhile();
+        expectEntries(1).flush(TAG_ENTRIES);
+        await settle(harness);
+        httpMock
+          .expectOne(`${BASE}/1/operations`)
+          .flush({ registeredAtUtc: '2026-10-05T10:00:00Z' });
+        await settle(harness);
+        flushLiveRead(['e1']);
+        await settle(harness);
+        const call = dialogOpen.mock.calls.find(
+          ([component]) => component === ImportConfirmDialog,
+        ) as unknown as [unknown, { data: ImportConfirmDialogData }];
+        return call[1].data;
+      }
+
+      function addRow(id: string) {
+        return {
+          action: 'add',
+          source: { sevenTvEmoteId: id, name: `alias-${id}`, imageUrl: null },
+          alias: `alias-${id}`,
+        };
+      }
+
+      it('carries the number of marked emotes missing from the set', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold', 4, 1), ENTRIES);
+        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
+
+        cells(harness)[0].click();
+        cells(harness)[1].click();
+        await settle(harness);
+
+        expect(buttonByName(harness, 'Ins Set holen (1)')!.disabled).toBe(false);
+      });
+
+      it('adds only the marked missing emotes as marked at the click, and drops the marking once the run started', async () => {
+        const { harness, page } = await openTag(tag(1, 'Stronghold', 4, 1), ENTRIES);
+        const startImport = vi
+          .spyOn(TestBed.inject(SevenTvImportService), 'startImport')
+          .mockImplementation(() => undefined);
+        cells(harness)[0].click();
+        cells(harness)[1].click();
+        cells(harness)[2].click();
+        await settle(harness);
+        const closed = new Subject<unknown>();
+
+        const data = await clickPlayIn(harness, 'Ins Set holen (2)', closed, async () => {
+          // Marked after the click: not part of this play-in.
+          cells(harness)[3].click();
+          await settle(harness);
+        });
+
+        expect(data.source.rows.map((row) => row.sevenTvEmoteId)).toEqual(['e2', 'e3']);
+        expect(page.selection.selectedKeys()).toEqual(['e1', 'e2', 'e3', 'e4']);
+
+        closed.next({
+          targetSetId: 'set-a',
+          targetSetName: 'Herbst',
+          plan: { rows: [addRow('e2'), addRow('e3')] },
+        });
+        await settle(harness);
+        // The last re-check before the start reads the set once more.
+        flushLiveRead(['e1']);
+        await settle(harness);
+
+        expect(startImport).toHaveBeenCalledTimes(1);
+        expect(
+          (
+            startImport.mock.calls[0][2] as { rows: { source: { sevenTvEmoteId: string } }[] }
+          ).rows.map((row) => row.source.sevenTvEmoteId),
+        ).toEqual(['e2', 'e3']);
+        expect(page.selection.selectedKeys()).toEqual([]);
+      });
+
+      it('keeps the marking on a cancel', async () => {
+        const { harness, page } = await openTag(tag(1, 'Stronghold', 4, 1), ENTRIES);
+        cells(harness)[1].click();
+        await settle(harness);
+        const closed = new Subject<unknown>();
+        await clickPlayIn(harness, 'Ins Set holen (1)', closed);
+
+        closed.next(undefined);
+        await settle(harness);
+
+        expect(page.selection.selectedKeys()).toEqual(['e2']);
+      });
+
+      it('locks it, with the reason beside the marking, when none of the marked emotes is missing', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold', 4, 1), ENTRIES);
+        cells(harness)[0].click();
+        await settle(harness);
+
+        const playIn = buttonByName(harness, 'Ins Set holen (0)')!;
+        expect(playIn.disabled).toBe(true);
+        const reason = (harness.routeNativeElement as HTMLElement).querySelector(
+          `#${playIn.getAttribute('aria-describedby')}`,
+        );
+        expect(reason?.textContent?.trim()).toBe(de.tags.actions.playInLockReason.allMarkedInSet);
+
+        cells(harness)[1].click();
+        await settle(harness);
+        expect(buttonByName(harness, 'Ins Set holen (1)')!.disabled).toBe(false);
+        expect(buttonByName(harness, 'Ins Set holen (1)')!.hasAttribute('aria-describedby')).toBe(
+          false,
+        );
       });
     });
   });

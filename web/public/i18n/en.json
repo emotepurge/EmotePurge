@@ -1782,6 +1782,10 @@
         "noneInTag": "None of the marked emotes is in {{tag}}."
       },
       "playIn": "Add to set",
+      "playInCount": "Add to set ({{count}})",
+      "playInLockReason": {
+        "allMarkedInSet": "All marked emotes are already in the set."
+      },
       "remove": "Remove from set",
       "removeCount": "Remove from set ({{count}})"
     },
@@ -1809,6 +1813,10 @@
       "allPresent": {
         "one": "The only emote of {{tag}} is already in the set — the tag counts as added to the set.",
         "other": "All {{count}} emotes of {{tag}} are already in the set — the tag counts as added to the set."
+      },
+      "allMarkedPresent": {
+        "one": "The marked emote is already in the set — the tag counts as added to the set.",
+        "other": "All {{count}} marked emotes are already in the set — the tag counts as added to the set."
       },
       "removedNothing": "Nothing of {{tag}} was in the set to remove."
     },
@@ -1857,6 +1865,7 @@
     "errors": {
       "setChanged": "The active set has changed — reload the page.",
       "entriesUnavailable": "The tag's entries could not be loaded just now.",
+      "markedGone": "None of the marked emotes belongs to the tag any more — nothing was changed.",
       "changedDuringConfirm": "The tag has changed in the meantime — please open “Remove from set” again.",
       "setReadIncomplete": "The set's entries could only partly be read from 7TV — nothing was changed.",
       "setReadUnavailable": "The set's entries could not be read from 7TV — nothing was changed.",

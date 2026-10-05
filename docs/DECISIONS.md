@@ -915,6 +915,36 @@ tag still shown; a cancel or any abort before that keeps it.
 the specs of the first four and of the tags page · `web/e2e/emote-tags.e2e.spec.ts` ·
 `docs/UI-Designsprache.md`
 
+**Operator feedback: a grid marking narrows the play-in too.** With two of a tag's four missing emotes
+marked, "Ins Set holen" copied all four. Now it mirrors the clear-out: with a marking at the click the
+play-in considers only the marked entries (`playInCandidates`), and the live read decides as before
+which of them are missing (E28 — never the page's `inSet`); the import dialog's rows, its title count and
+its "n sind schon im Set" all speak of the marked entries. The button reads "Ins Set holen (n)" / "Add to
+set (n)", n = marked entries the page shows as not in the set (`markedMissingCount`, a label, not a
+decision). Its visibility stays tag-level; a marking with nothing missing leaves it standing but locked
+(`playInMarkingLocked`), the reason "Alle markierten Emotes sind schon im Set." / "All marked emotes are
+already in the set." stands in the marking's own line under the grid — not under the button, where it
+would push the grid down under the pointer with every click on it — and is the button's
+`aria-describedby` and title. The marking goes once the play-in went ahead: right after `startImport`
+(new optional `ImportFlowTagHook.onStarted`) or when the report for nothing to add goes out; a dismissed
+dialog, a cancelled token prompt or any abort keeps it. The commit callback is the clear-out's, renamed
+`onRunCommitted` → output `runCommitted` (it now serves both runs). The race paths keep their meaning: an
+"all present" report with a marking says "Alle n markierten Emotes sind schon im Set — der Tag gilt als
+ins Set geholt." (`allMarkedPresent`), and a marking none of whose ids the tag still has an entry for
+stops before any write with `tags.errors.markedGone` instead of reporting the tag as played in on the
+strength of nothing the person chose (the registered operation stays unapplied, spec 5.4). The tag
+becomes active after a partial play-in exactly as after a full one. Server side nothing changed: the
+placement report already places only the reported ids that are entries and audits `emoteCount` as what it
+placed; a new Testcontainers test pins a report of a subset of the missing entries.
+
+**Betrifft (feedback, marking narrows the play-in):** `web/src/app/shared/tags/tag-play-in.ts` ·
+`web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-removal-flow.ts` ·
+`web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/shared/seven-tv/import-flow.ts` ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags-page.html` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · the specs of the first four and of the tags
+page · `web/e2e/emote-tags.e2e.spec.ts` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` · `docs/UI-Designsprache.md`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

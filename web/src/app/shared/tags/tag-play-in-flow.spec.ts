@@ -117,6 +117,7 @@ interface Harness {
   notice: WritableSignal<TagRunNotice | null>;
   onFeedback: ReturnType<typeof vi.fn>;
   onCompleted: ReturnType<typeof vi.fn>;
+  onRunCommitted: ReturnType<typeof vi.fn>;
   /** The page-level surface the flow falls back to once the host is gone. */
   sink: TagRunNoticeSink;
   sinkEvents: OrphanedTagRunEvent[];
@@ -141,6 +142,8 @@ function setup(
     resolution?: Observable<EditableSetResolution>;
     registration?: () => Observable<unknown>;
     report?: () => Observable<TagPlacementsResult>;
+    /** The host grid's marking at the click. */
+    markedIds?: string[];
   } = {},
 ): Harness {
   const calls: string[] = [];
@@ -233,6 +236,7 @@ function setup(
   const notice = signal<TagRunNotice | null>(null);
   const onFeedback = vi.fn();
   const onCompleted = vi.fn();
+  const onRunCommitted = vi.fn();
   const host = fakeHost();
   const sink = new TagRunNoticeSink();
   const sinkEvents: OrphanedTagRunEvent[] = [];
@@ -249,6 +253,8 @@ function setup(
     sink,
     onFeedback,
     onCompleted,
+    markedIds: options.markedIds,
+    onRunCommitted,
   };
   const deps = {
     dialog,
@@ -273,6 +279,7 @@ function setup(
     notice,
     onFeedback,
     onCompleted,
+    onRunCommitted,
     sink,
     sinkEvents,
     listEntries,
@@ -819,6 +826,127 @@ describe('startTagPlayInFlow', () => {
 
       expect(harness.reportPlacements).not.toHaveBeenCalled();
       expect(harness.notice()).toBeNull();
+      expect(harness.pending()).toBe(false);
+    });
+  });
+
+  // Operator decision 2026-10-05, mirroring the clear-out: a grid marking narrows the play-in.
+  describe('with a grid marking', () => {
+    const ADD_NEW_1: ImportConfirmOutcome = {
+      targetSetId: 'set-active',
+      targetSetName: 'Main',
+      plan: {
+        rows: [
+          {
+            action: 'add',
+            source: { sevenTvEmoteId: 'new-1', name: 'alias-new-1', imageUrl: null },
+            alias: 'alias-new-1',
+          },
+        ],
+      },
+    };
+
+    it('offers only the marked entries the live read finds missing, in entry order', () => {
+      const harness = setup({
+        entries: of(entriesFor(['in-1', 'in-2', 'new-1', 'new-2', 'new-3'])),
+        markedIds: ['new-3', 'in-1', 'new-1'],
+      });
+      harness.run();
+
+      const data = importDialogData(harness);
+      expect(data.source.rows.map((row) => row.sevenTvEmoteId)).toEqual(['new-1', 'new-3']);
+      // "already in the set" speaks of the marked entries too.
+      expect(data.source.origin).toMatchObject({ kind: 'tag', alreadyInSetCount: 1 });
+    });
+
+    it('treats an empty marking as none', () => {
+      const harness = setup({ markedIds: [] });
+      harness.run();
+
+      expect(importDialogData(harness).source.rows.map((row) => row.sevenTvEmoteId)).toEqual([
+        'new-1',
+      ]);
+    });
+
+    it('lets go of the marking right after the run was handed over', () => {
+      const harness = setup({ markedIds: ['new-1'] });
+      harness.run();
+      expect(harness.onRunCommitted).not.toHaveBeenCalled();
+
+      importDialogClosed(harness).next(ADD_NEW_1);
+
+      expect(harness.startImport).toHaveBeenCalledOnce();
+      expect(harness.onRunCommitted).toHaveBeenCalledOnce();
+      expect(harness.onRunCommitted.mock.invocationCallOrder[0]).toBeGreaterThan(
+        harness.startImport.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('keeps the marking on a dismissed confirmation', () => {
+      const harness = setup({ markedIds: ['new-1'] });
+      harness.run();
+
+      importDialogClosed(harness).next(undefined);
+
+      expect(harness.onRunCommitted).not.toHaveBeenCalled();
+    });
+
+    it('keeps the marking when the set guard stops the start', () => {
+      const harness = setup({ markedIds: ['new-1'] });
+      harness.run();
+
+      harness.active.set('set-new');
+      importDialogClosed(harness).next(ADD_NEW_1);
+
+      expect(harness.startImport).not.toHaveBeenCalled();
+      expect(harness.notice()).toEqual({ key: 'tags.errors.setChanged' });
+      expect(harness.onRunCommitted).not.toHaveBeenCalled();
+    });
+
+    it('sends the report for nothing to add when every marked emote is there, and lets go of the marking', () => {
+      const harness = setup({ markedIds: ['in-2', 'in-1'] });
+      harness.run();
+
+      expect(harness.dialogOpen).not.toHaveBeenCalled();
+      expect(harness.reportPlacements).toHaveBeenCalledExactlyOnceWith(CHANNEL, TAG.id, {
+        operationId: OP_1,
+        emoteSetId: 'set-active',
+        targetOwnerTwitchId: 'tw-owner',
+        sevenTvEmoteIds: [],
+      });
+      expect(harness.onFeedback).toHaveBeenCalledExactlyOnceWith(
+        'tags.feedback.allMarkedPresent.other',
+        { count: 2, tag: TAG.name },
+      );
+      expect(harness.onRunCommitted).toHaveBeenCalledOnce();
+    });
+
+    it('counts the marked entries when the import finds nothing left to add', () => {
+      const harness = setup({ markedIds: ['new-1', 'in-1'] });
+      harness.run();
+
+      importDialogClosed(harness).next({
+        targetSetId: 'set-active',
+        targetSetName: 'Main',
+        plan: { rows: [] },
+        nothingToAdd: true,
+      });
+
+      expect(harness.onFeedback).toHaveBeenCalledExactlyOnceWith(
+        'tags.feedback.allMarkedPresent.other',
+        { count: 2, tag: TAG.name },
+      );
+      expect(harness.onRunCommitted).toHaveBeenCalledOnce();
+    });
+
+    it('stops, changing nothing, when none of the marked emotes belongs to the tag any more', () => {
+      const harness = setup({ markedIds: ['gone'] });
+      harness.run();
+
+      expect(harness.notice()).toEqual({ key: 'tags.errors.markedGone' });
+      expect(harness.dialogOpen).not.toHaveBeenCalled();
+      expect(harness.reportPlacements).not.toHaveBeenCalled();
+      expect(harness.onRunCommitted).not.toHaveBeenCalled();
       expect(harness.pending()).toBe(false);
     });
   });

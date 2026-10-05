@@ -200,7 +200,8 @@
                      move — a reload that tore it down would read as a set switch and abort an open
                      dialog — and gets the live active set, which its flows' confirm-time guard
                      compares against. It also gets the grid's marking: a clear-out started with one
-                     proposes the marked emotes, and the marking goes once that clear-out went ahead. -->
+                     proposes the marked emotes, a play-in adds only the marked ones that are missing,
+                     and the marking goes once either went ahead. -->
                 @if (tagRunsShown() || canManage()) {
                   <div class="ml-auto flex flex-wrap items-start gap-x-6 gap-y-2">
                     @if (tagRunsShown()) {
@@ -212,9 +213,11 @@
                         [enabled]="true"
                         [unshownRunKinds]="unshownRunKinds"
                         [markedIds]="selection.selectedKeys()"
+                        [markedMissingCount]="markedMissingCount()"
+                        [markedLockReasonId]="playInMarkingLockReasonId"
                         (started)="onTagRunStarted()"
                         (completed)="onTagRunCompleted()"
-                        (clearOutCommitted)="clearSelection()"
+                        (runCommitted)="clearSelection()"
                         (feedback)="onTagRunFeedback($event)"
                         (focusLost)="focusDetailHeading()"
                       />
@@ -413,6 +416,14 @@
                 <button type="button" appButton="outline" (click)="clearSelection()">
                   {{ 'tags.actions.clearSelection' | transloco }}
                 </button>
+                <!-- Why "Ins Set holen" in the head is locked by this marking (§10). Here, beside the
+                     marking, and not under the button: the line exists only with a marking anyway,
+                     so the reason coming and going moves neither the header nor the grid. -->
+                @if (playInMarkingLockShown()) {
+                  <span [id]="playInMarkingLockReasonId" class="text-xs text-fg-muted">
+                    {{ 'tags.actions.playInLockReason.allMarkedInSet' | transloco }}
+                  </span>
+                }
               </div>
             }
           </section>

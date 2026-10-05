@@ -28,6 +28,8 @@ const DE = {
   tags: {
     actions: {
       playIn: 'Ins Set holen',
+      playInCount: 'Ins Set holen ({{count}})',
+      playInLockReason: { allMarkedInSet: 'Alle markierten Emotes sind schon im Set.' },
       remove: 'Aus dem Set entfernen',
       removeCount: 'Aus dem Set entfernen ({{count}})',
     },
@@ -302,6 +304,102 @@ describe('TagRunActions', () => {
       fixture.detectChanges();
 
       expect(button('Ins Set holen')).toBeDefined();
+    });
+  });
+
+  // Operator decision 2026-10-05: a marking narrows the play-in as it narrows the clear-out.
+  describe('"Ins Set holen" with a grid marking', () => {
+    let runCommitted: number;
+
+    beforeEach(() => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 4, inSetCount: 2 }));
+      fixture.componentRef.setInput('markedLockReasonId', 'host-reason');
+      runCommitted = 0;
+      fixture.componentInstance.runCommitted.subscribe(() => runCommitted++);
+      fixture.detectChanges();
+    });
+
+    it('names no number without a marking', () => {
+      expect(button('Ins Set holen')!.disabled).toBe(false);
+    });
+
+    it('carries the number of marked emotes missing from the set, and follows the marking', () => {
+      fixture.componentRef.setInput('markedIds', ['a', 'b', 'c']);
+      fixture.componentRef.setInput('markedMissingCount', 2);
+      fixture.detectChanges();
+      const playIn = button('Ins Set holen (2)')!;
+      expect(playIn.disabled).toBe(false);
+      expect(playIn.hasAttribute('aria-describedby')).toBe(false);
+      expect(playIn.hasAttribute('title')).toBe(false);
+      // The clear-out still counts every marked emote.
+      expect(button('Aus dem Set entfernen (3)')).toBeDefined();
+
+      fixture.componentRef.setInput('markedIds', []);
+      fixture.componentRef.setInput('markedMissingCount', 0);
+      fixture.detectChanges();
+      expect(button('Ins Set holen')).toBeDefined();
+    });
+
+    it('stays, locked and explained, when none of the marked emotes is missing', () => {
+      fixture.componentRef.setInput('markedIds', ['a']);
+      fixture.componentRef.setInput('markedMissingCount', 0);
+      fixture.detectChanges();
+
+      const playIn = button('Ins Set holen (0)')!;
+      expect(playIn.disabled).toBe(true);
+      expect(playIn.getAttribute('aria-describedby')).toBe('host-reason');
+      expect(playIn.getAttribute('title')).toBe('Alle markierten Emotes sind schon im Set.');
+      // The lock is the marking's, not a run's: the set-removal button stays usable.
+      expect(button('Aus dem Set entfernen (1)')!.disabled).toBe(false);
+    });
+
+    it('links both reasons when a hidden run locks it as well', () => {
+      fixture.componentRef.setInput('markedIds', ['a']);
+      fixture.componentRef.setInput('unshownRunKinds', ['undo']);
+      startLocked.set(true);
+      activeRun.set('undo');
+      fixture.detectChanges();
+
+      const ids = button('Ins Set holen (0)')!.getAttribute('aria-describedby')!.split(' ');
+      expect(ids).toHaveLength(2);
+      expect(ids).toContain('host-reason');
+    });
+
+    it('starts no flow from a click that outraces the marking lock', () => {
+      fixture.componentRef.setInput('markedIds', ['a']);
+      fixture.detectChanges();
+
+      (fixture.componentInstance as unknown as { playIn(): void }).playIn();
+
+      expect(listEntries).not.toHaveBeenCalled();
+    });
+
+    it('hands the marking to the play-in and tells the host once it went ahead', () => {
+      // The page counted "a" as missing; the live read finds it there, so the play-in ends in the
+      // report for nothing to add — which is the play-in going ahead.
+      fixture.componentRef.setInput('markedIds', ['a']);
+      fixture.componentRef.setInput('markedMissingCount', 1);
+      fixture.detectChanges();
+
+      button('Ins Set holen (1)')!.click();
+      fixture.detectChanges();
+
+      expect(feedback).toEqual([
+        { key: 'tags.feedback.allMarkedPresent.one', params: { count: 1, tag: 'Stronghold' } },
+      ]);
+      expect(runCommitted).toBe(1);
+    });
+
+    it('keeps the marking when the play-in stops before it went ahead', () => {
+      registration = () => throwError(() => new HttpErrorResponse({ status: 503 }));
+      fixture.componentRef.setInput('markedIds', ['a']);
+      fixture.componentRef.setInput('markedMissingCount', 1);
+      fixture.detectChanges();
+
+      button('Ins Set holen (1)')!.click();
+      fixture.detectChanges();
+
+      expect(runCommitted).toBe(0);
     });
   });
 

@@ -61,11 +61,14 @@ import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-sec
 import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
 import { ImportProgressSection } from '../../shared/seven-tv/import-progress-section';
 import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
+import { markedMissingCount } from '../../shared/tags/tag-play-in';
 import {
   TagRunActions,
   TagRunFeedback,
+  playInMarkingLocked,
   settledTagPlayIn,
   settledTagRemoval,
+  tagMissesAnEmote,
 } from '../../shared/tags/tag-run-actions';
 import { TagRunOrphanNotice } from '../../shared/tags/tag-run-orphan-notice';
 import { BackLink } from '../../shared/ui/back-link';
@@ -402,6 +405,25 @@ export class TagsPage {
     (entry) => entry.sevenTvEmoteId,
   );
   protected readonly markedCount = computed(() => this.selection.selectedKeys().length);
+  /** How many marked entries this page shows as not in the set — the number "Ins Set holen" carries
+   *  with a marking (operator decision 2026-10-05). */
+  protected readonly markedMissingCount = computed(() =>
+    markedMissingCount(this.entries(), this.selection.selectedKeys()),
+  );
+  /** Whether the marking locks "Ins Set holen" (nothing marked is missing while the tag still misses
+   *  an emote) — then the dock line says why, beside the marking it is about, where its appearing
+   *  moves neither the header nor the grid. The same gates as the button itself. */
+  protected readonly playInMarkingLockShown = computed(() => {
+    const tag = this.selectedTag();
+    return (
+      tag !== null &&
+      this.tagRunsShown() &&
+      tagMissesAnEmote(tag) &&
+      playInMarkingLocked(this.markedCount(), this.markedMissingCount())
+    );
+  });
+  /** The reason's element id, for the button's `aria-describedby`; one detail at a time. */
+  protected readonly playInMarkingLockReasonId = 'tag-play-in-marking-lock-reason';
   /** The small dock in the flow under the grid (spec 9.4, §8.7) — only while something is marked. */
   protected readonly dockShown = computed(() => this.selectable() && this.markedCount() > 0);
 

@@ -101,6 +101,9 @@ export type ImportFlowTarget =
  *   dialog found every row already in the set, or the last duplicate check before the start removed
  *   the rest. The tag flow then sends its empty play-in report itself — `startImport` would refuse an
  *   empty plan and drop the record, and the activation would never be reported.
+ * - `onStarted` is called right after the run was handed to `startImport` — the play-in went ahead,
+ *   and the tags page lets go of the grid marking it came from. Never for a dismissed dialog, a
+ *   cancelled token prompt or a refused or blocked start.
  */
 export interface ImportFlowTagHook {
   context: ImportTagContext;
@@ -108,6 +111,7 @@ export interface ImportFlowTagHook {
   activeEmoteSetId: Signal<string | null>;
   onSetChanged(): void;
   onNothingToImport(): void;
+  onStarted?(): void;
 }
 
 /** `loadImportTarget`'s own input (spec F5) from an `ImportFlowTarget` — the one place this flow
@@ -616,6 +620,7 @@ export function startImportFlow(
           duplicateCheckAvailable,
           replaceSkippedDrift,
         );
+        tagHook?.onStarted?.();
       });
   };
 

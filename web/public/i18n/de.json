@@ -1782,6 +1782,10 @@
         "noneInTag": "Keins der markierten Emotes gehört zu {{tag}}."
       },
       "playIn": "Ins Set holen",
+      "playInCount": "Ins Set holen ({{count}})",
+      "playInLockReason": {
+        "allMarkedInSet": "Alle markierten Emotes sind schon im Set."
+      },
       "remove": "Aus dem Set entfernen",
       "removeCount": "Aus dem Set entfernen ({{count}})"
     },
@@ -1809,6 +1813,10 @@
       "allPresent": {
         "one": "Das einzige Emote von {{tag}} ist schon im Set — der Tag gilt als ins Set geholt.",
         "other": "Alle {{count}} Emotes von {{tag}} sind schon im Set — der Tag gilt als ins Set geholt."
+      },
+      "allMarkedPresent": {
+        "one": "Das markierte Emote ist schon im Set — der Tag gilt als ins Set geholt.",
+        "other": "Alle {{count}} markierten Emotes sind schon im Set — der Tag gilt als ins Set geholt."
       },
       "removedNothing": "Bei {{tag}} war nichts aus dem Set zu entfernen."
     },
@@ -1857,6 +1865,7 @@
     "errors": {
       "setChanged": "Das aktive Set hat gewechselt — Seite neu laden.",
       "entriesUnavailable": "Die Einträge des Tags konnten gerade nicht geladen werden.",
+      "markedGone": "Keines der markierten Emotes gehört noch zum Tag — es wurde nichts geändert.",
       "changedDuringConfirm": "Der Tag hat sich inzwischen geändert — öffne „Aus dem Set entfernen“ bitte erneut.",
       "setReadIncomplete": "Die Einträge des Sets konnten nur teilweise von 7TV gelesen werden — es wurde nichts geändert.",
       "setReadUnavailable": "Die Einträge des Sets konnten nicht von 7TV gelesen werden — es wurde nichts geändert.",

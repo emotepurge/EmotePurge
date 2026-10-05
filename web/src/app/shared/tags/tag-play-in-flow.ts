@@ -22,7 +22,7 @@ import {
 } from '../seven-tv/delete-flow';
 import { ImportFlowDeps, startImportFlow } from '../seven-tv/import-flow';
 import { toImportTarget } from '../seven-tv/import-trigger';
-import { buildTagImportSource, partitionTagPlayIn } from './tag-play-in';
+import { buildTagImportSource, partitionTagPlayIn, playInCandidates } from './tag-play-in';
 import { TagRunNotice, TagRunNoticeSink } from './tag-run-notice-sink';
 
 /*
@@ -99,12 +99,14 @@ export interface TagRunRequest {
   /** A report without a run succeeded — the host reloads the tag. */
   onCompleted(): void;
   /** The host grid's marking (emote ids), copied at the click so nothing done to the grid while the
-   *  flow runs reaches its proposal. Empty or absent: no marking. Only the clear-out reads it. */
+   *  flow runs reaches it. Empty or absent: no marking. The clear-out proposes the marked emotes in
+   *  the set; the play-in considers only the marked entries (`playInCandidates`). */
   markedIds?: readonly string[];
-  /** A confirmed clear-out went ahead — its run was handed over, or (nothing ticked) its report
-   *  without a run went out. The host lets go of the marking the proposal came from. Not called on a
-   *  cancel or on any abort: there the marking still stands for the next attempt. */
-  onClearOutCommitted?(): void;
+  /** A flow went ahead — a confirmed clear-out's run was handed over or its report for nothing
+   *  ticked went out; a play-in's import run was started or its report for nothing to add went out.
+   *  The host lets go of the marking the flow came from. Not called on a cancel or on any abort:
+   *  there the marking still stands for the next attempt. */
+  onRunCommitted?(): void;
 }
 
 type NoticeRouting = Pick<
@@ -197,6 +199,10 @@ export interface TagRunPreparation {
 /**
  * Starts a tag play-in. Steps after the shared ones (`prepareTagRun`):
  *
+ * - **A grid marking** (`request.markedIds`, operator decision 2026-10-05) narrows the play-in to the
+ *   marked entries before anything below: only they are partitioned, added and counted. A marking
+ *   none of whose ids the tag still has an entry for stops the flow (`markedGone`) — the play-in
+ *   would otherwise mark the tag as played in on the strength of nothing the person chose.
  * - **Nothing to add** (every entry is in the set under some entry): no run. The play-in report goes
  *   out at once with an empty id list, because that report is what marks the tag as played in (E26)
  *   — there is no run whose settlement could send it.
@@ -206,6 +212,9 @@ export interface TagRunPreparation {
  *   `pending` ends at that hand-over: the import flow reports nothing back for a dismissed dialog,
  *   a cancelled token prompt, a refused start or a blocked pre-check, so holding it longer would
  *   lock the buttons for good.
+ * - **The marking goes** once the play-in went ahead (`onRunCommitted`): right after the import run
+ *   was started (the hook's `onStarted`), or when the report for nothing to add goes out. A dismissed
+ *   confirmation, a cancelled token prompt or any abort keeps it.
  */
 export function startTagPlayInFlow(deps: TagRunFlowDeps, request: TagRunRequest): void {
   prepareTagRun(
@@ -217,8 +226,18 @@ export function startTagPlayInFlow(deps: TagRunFlowDeps, request: TagRunRequest)
       restart: () => startTagPlayInFlow(deps, request),
     },
     (prepared) => {
-      const entryCount = prepared.entries.entries.length;
-      const reportNothingToAdd = (): void =>
+      const marking = request.markedIds ?? [];
+      const candidates = playInCandidates(prepared.entries.entries, marking);
+      if (marking.length > 0 && candidates.length === 0) {
+        request.pending.set(false);
+        raiseNotice(request, { key: 'tags.errors.markedGone' });
+        return;
+      }
+      const candidateCount = candidates.length;
+      const allPresentKey =
+        marking.length > 0 ? 'tags.feedback.allMarkedPresent' : 'tags.feedback.allPresent';
+      const reportNothingToAdd = (): void => {
+        request.onRunCommitted?.();
         sendTagReport(
           request,
           () =>
@@ -231,13 +250,14 @@ export function startTagPlayInFlow(deps: TagRunFlowDeps, request: TagRunRequest)
           // From the entries this flow read, never from the answer: a replayed report carries no
           // outcome (docs/DECISIONS.md, #201 T-C: a replay is a success that says nothing else).
           () =>
-            tellFeedback(request, pluralKey(entryCount, 'tags.feedback.allPresent'), {
-              count: entryCount,
+            tellFeedback(request, pluralKey(candidateCount, allPresentKey), {
+              count: candidateCount,
               tag: request.tag.name,
             }),
         );
+      };
 
-      const partition = partitionTagPlayIn(prepared.entries.entries, prepared.live);
+      const partition = partitionTagPlayIn(candidates, prepared.live);
       if (partition.toAdd.length === 0) {
         // No dialog and no import hook here, so no later set guard: the report marks the tag as
         // played in for the frozen set, which must still be the active one (host-bound read).
@@ -264,6 +284,7 @@ export function startTagPlayInFlow(deps: TagRunFlowDeps, request: TagRunRequest)
         activeEmoteSetId: prepared.activeEmoteSetId,
         onSetChanged: () => raiseNotice(request, { key: 'tags.errors.setChanged' }),
         onNothingToImport: reportNothingToAdd,
+        onStarted: () => request.onRunCommitted?.(),
       });
     },
   );

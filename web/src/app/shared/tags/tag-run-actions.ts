@@ -71,6 +71,20 @@ export function runButtonFocusTarget(state: {
   return state.otherShown ? 'other' : 'fallback';
 }
 
+/** Whether the tag has an emote missing from the set — where "Ins Set holen" exists at all (spec
+ *  7.2: missing, not locked). Without a count (`inSetCount: null`, no set to count in) nothing is
+ *  known to be present, so a tag with entries counts. */
+export function tagMissesAnEmote(tag: Pick<EmoteTagSummary, 'entryCount' | 'inSetCount'>): boolean {
+  return tag.entryCount > (tag.inSetCount ?? 0);
+}
+
+/** "Ins Set holen" with a grid marking none of whose entries is missing from the set: the button
+ *  stays (the tag still misses an emote, and a button that came and went with each click on the grid
+ *  would move the header) but is locked, and says why (operator decision 2026-10-05). */
+export function playInMarkingLocked(markedCount: number, markedMissingCount: number): boolean {
+  return markedCount > 0 && markedMissingCount === 0;
+}
+
 /** The same for a tag clear-out. A tag-less delete run has **no** `tag` field (`undefined`). */
 export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
   return run !== null && run.tag !== undefined && run.phase === 'closed'
@@ -96,6 +110,12 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
  * the usage page) has no dock to explain it, so the reason stands as text beside the buttons and
  * is their `aria-describedby`.
  *
+ * **A grid marking narrows both runs** (operator decisions 2026-10-05): the clear-out proposes the
+ * marked emotes, the play-in adds only the marked ones that are missing, and each button carries the
+ * number. A marking that misses nothing locks "Ins Set holen" without removing it
+ * (`playInMarkingLocked`); the host shows the reason under `markedLockReasonId`. `runCommitted` tells
+ * the host when either run went ahead, so it drops the marking.
+ *
  * `completed` fires when a tag run this page can see closes, or its tag report succeeds on a
  * retry, and after a report sent without a run — the host reloads the tag's numbers then.
  * `started` fires on every click that starts a flow (and on a retry) — the host clears its own
@@ -119,11 +139,20 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
                 type="button"
                 appButton="neutral"
                 class="disabled:cursor-not-allowed"
-                [disabled]="locked()"
-                [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
+                [disabled]="locked() || markingLocked()"
+                [attr.aria-describedby]="playInDescribedBy()"
+                [attr.title]="
+                  markingLocked()
+                    ? ('tags.actions.playInLockReason.allMarkedInSet' | transloco)
+                    : null
+                "
                 (click)="playIn()"
               >
-                {{ 'tags.actions.playIn' | transloco }}
+                @if (markedCount() > 0) {
+                  {{ 'tags.actions.playInCount' | transloco: { count: markedMissingCount() } }}
+                } @else {
+                  {{ 'tags.actions.playIn' | transloco }}
+                }
               </button>
             }
             @if (removeShown()) {
@@ -188,8 +217,18 @@ export class TagRunActions {
    *  explained in text here, since nothing else on the page would (plan 3.8). */
   readonly unshownRunKinds = input<readonly SevenTvRunKind[]>([]);
   /** The host grid's marking (emote ids). A clear-out started with one proposes exactly the marked
-   *  emotes; it is copied at the click, so the open dialog does not follow the grid. */
+   *  emotes, a play-in adds only the marked ones that are missing; it is copied at the click, so an
+   *  open dialog does not follow the grid. */
   readonly markedIds = input<readonly string[]>([]);
+  /** How many of the marked entries the host shows as not in the set (`markedMissingCount`) — the
+   *  number "Ins Set holen" carries with a marking. A label, not a decision: the flow adds what the
+   *  live read finds missing among the marked entries. */
+  readonly markedMissingCount = input(0);
+  /** The id of the host's visible text saying why "Ins Set holen" is locked by the marking (§10:
+   *  the reason stands as text). The host renders it where a marking change moves nothing — on the
+   *  tags page in the marking's own dock line under the grid — and under the same condition
+   *  (`playInMarkingLocked`); the button points `aria-describedby` at it and repeats it as its title. */
+  readonly markedLockReasonId = input<string | null>(null);
 
   readonly completed = output<void>();
   /** A click (or a retry) started a flow. */
@@ -198,9 +237,9 @@ export class TagRunActions {
   /** The clicked run button left the DOM under the user and the other one is not there to take
    *  focus — the host moves it to a stable target of its own. */
   readonly focusLost = output<void>();
-  /** A confirmed clear-out of the tag this host still shows went ahead (`onClearOutCommitted`) — the
-   *  host drops its marking. */
-  readonly clearOutCommitted = output<void>();
+  /** A play-in or a confirmed clear-out of the tag this host still shows went ahead
+   *  (`onRunCommitted`) — the host drops its marking. */
+  readonly runCommitted = output<void>();
 
   protected readonly arbiter = inject(SevenTvRunArbiter);
   private readonly dialog = inject(Dialog);
@@ -226,10 +265,7 @@ export class TagRunActions {
    *  not locked) — read off the summary the host already holds. Without a count (`inSetCount:
    *  null`, no set to count in) nothing is known to be present, so a tag with entries offers it. A
    *  click that outraces a change of the set still lands in the flow's own "all present" path. */
-  protected readonly playInShown = computed(() => {
-    const tag = this.tag();
-    return tag.entryCount > (tag.inSetCount ?? 0);
-  });
+  protected readonly playInShown = computed(() => tagMissesAnEmote(this.tag()));
   /** "Aus dem Set entfernen" exists while there is something to clear out (operator decision 2026-10-05,
    *  superseding spec 7.2's "only for a played-in tag"): an emote of the tag in the set — whether
    *  the tag was played in or its emotes were all there already, which leaves it no way to become
@@ -243,6 +279,10 @@ export class TagRunActions {
   /** How many emotes the host's grid has marked. The clear-out button carries the number, as the
    *  tags page's own dock button does — a marking is the clear-out's proposal (spec 9.4). */
   protected readonly markedCount = computed(() => this.markedIds().length);
+  /** "Ins Set holen" with a marking that misses nothing — shown, locked, explained. */
+  protected readonly markingLocked = computed(() =>
+    playInMarkingLocked(this.markedCount(), this.markedMissingCount()),
+  );
   /** At least one run button stands; the button row and the lock reason exist only then. */
   protected readonly anyButton = computed(() => this.playInShown() || this.removeShown());
   protected readonly locked = computed(() => this.arbiter.startLocked() || this.pending());
@@ -255,6 +295,14 @@ export class TagRunActions {
       : null;
   });
   protected readonly otherRunReasonId = `tag-run-other-run-${nextReasonId++}`;
+  /** Both reasons "Ins Set holen" can be locked for, as one `aria-describedby`. */
+  protected readonly playInDescribedBy = computed(() => {
+    const markedReason = this.markingLocked() ? this.markedLockReasonId() : null;
+    const ids = [this.otherRunKey() ? this.otherRunReasonId : null, markedReason].filter(
+      (id): id is string => id !== null,
+    );
+    return ids.length > 0 ? ids.join(' ') : null;
+  });
   /** The run button whose click started the current flow — the one CDK gives focus back to once
    *  the dialog closes, and so the one that may leave the DOM under the user. `null` once that has
    *  been handled, and after a flow that ended without a run (see the constructor). */
@@ -351,7 +399,7 @@ export class TagRunActions {
 
   protected playIn(): void {
     // Guards a click that outraces the lock arriving, like every other 7TV start trigger.
-    if (this.locked()) {
+    if (this.locked() || this.markingLocked()) {
       return;
     }
     this.started.emit();
@@ -451,9 +499,9 @@ export class TagRunActions {
       markedIds: [...this.markedIds()],
       // Only for the tag it was clicked on: once the host shows another one, the marking it would
       // clear belongs to that one.
-      onClearOutCommitted: () => {
+      onRunCommitted: () => {
         if (!this.destroyRef.destroyed && this.subject() === subject) {
-          this.clearOutCommitted.emit();
+          this.runCommitted.emit();
         }
       },
     };

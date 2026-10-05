@@ -38,6 +38,41 @@ export function partitionTagPlayIn(
   return { toAdd, alreadyInSetIds };
 }
 
+/**
+ * The entries a play-in considers (operator decision 2026-10-05, mirroring the clear-out): with a
+ * grid marking only the marked ones, in the tag's entry order; without one (empty or absent) all of
+ * them. Which of those still have to be added is the live read's call (`partitionTagPlayIn`), never
+ * the page's `inSet` flag the marking was counted against. A marked id the tag no longer has an entry
+ * for drops out.
+ */
+export function playInCandidates(
+  entries: readonly EmoteTagEntry[],
+  markedIds: readonly string[] | undefined,
+): readonly EmoteTagEntry[] {
+  if (markedIds === undefined || markedIds.length === 0) {
+    return entries;
+  }
+  const marked = new Set(markedIds);
+  return entries.filter((entry) => marked.has(entry.sevenTvEmoteId));
+}
+
+/**
+ * How many of the marked entries the host page shows as not in the set — the number "Ins Set holen"
+ * carries with a marking. Read off the page's own entry list (`inSet`), so it is a label, not a
+ * decision: what is added is the live read's call. An entry with no known state (`inSet: null`) is not
+ * known to be present and counts as missing, as the tag-level gate does with `inSetCount: null`.
+ */
+export function markedMissingCount(
+  entries: readonly EmoteTagEntry[],
+  markedIds: readonly string[],
+): number {
+  if (markedIds.length === 0) {
+    return 0;
+  }
+  const marked = new Set(markedIds);
+  return entries.filter((entry) => marked.has(entry.sevenTvEmoteId) && entry.inSet !== true).length;
+}
+
 /** The import source of a tag play-in: the rows to add, tagged with the `tag` origin. Nothing is
  *  collapsed or discarded here — a tag's entries are unique by id already. */
 export function buildTagImportSource(
