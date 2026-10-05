@@ -447,9 +447,11 @@
           (click)="onCellClick(entry, row.startIndex + i, $event)"
           (mousedown)="$event.shiftKey && $event.preventDefault()"
           (mouseenter)="inspect(entry)"
+          (mouseleave)="onCellLeave(entry)"
           (focus)="onCellFocus(entry, row.startIndex + i)"
+          (blur)="onCellBlur(entry)"
         >
-          <app-emote-sprite [url]="entry.imageUrl" [size]="64" [dimmed]="entry.inSet === false" />
+          <ng-container *ngTemplateOutlet="cellSprite; context: { $implicit: entry }" />
           @if (selection.isSelected(entry)) {
             <!-- Same marking as the usage atlas: wash and inset ring on one element drawn last,
                  plus the corner square. -->
@@ -472,8 +474,9 @@
           "
           [attr.aria-label]="entryLabel(entry)"
           (mouseenter)="inspect(entry)"
+          (mouseleave)="onCellLeave(entry)"
         >
-          <app-emote-sprite [url]="entry.imageUrl" [size]="64" [dimmed]="entry.inSet === false" />
+          <ng-container *ngTemplateOutlet="cellSprite; context: { $implicit: entry }" />
         </div>
       }
     }
@@ -503,3 +506,24 @@
     </div>
   </div>
 }
+
+<!-- The still always draws; the one playing cell lays its animation on top and the still hides once
+     that has painted (the import grid's pattern, §7.3). `dimmed` carries the void plate over. -->
+<ng-template #cellSprite let-entry>
+  <app-emote-sprite
+    [url]="entry.imageUrl"
+    [size]="64"
+    [spriteClass]="stillHidden(entry) ? hiddenSpriteClass : spriteClass"
+    [dimmed]="entry.inSet === false"
+  />
+  @if (playsAnimation(entry)) {
+    <span class="absolute inset-0">
+      <app-emote-sprite-animated
+        [url]="entry.imageUrl"
+        [size]="64"
+        [dimmed]="entry.inSet === false"
+        (animationShown)="revealedKey.set(entry.sevenTvEmoteId)"
+      />
+    </span>
+  }
+</ng-template>

@@ -1,5 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrolling';
+import { ListRange } from '@angular/cdk/collections';
 import { HttpErrorResponse } from '@angular/common/http';
 import { DOCUMENT, NgTemplateOutlet } from '@angular/common';
 import {
@@ -42,6 +43,8 @@ import {
 import { EmoteTagEntry, EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { EmoteTagService } from '../../core/tags/emote-tag.service';
 import { EmoteSprite } from '../../shared/emotes/emote-sprite';
+import { EmoteSpriteAnimated } from '../../shared/emotes/emote-sprite-animated';
+import { isAnimatedEmoteUrl } from '../../shared/emotes/emote-url';
 import {
   ATLAS_CELL_PX,
   ATLAS_ROW_PX,
@@ -81,6 +84,8 @@ export const VIRTUALIZE_ABOVE = 200;
 
 /** Cells of the grid-shaped skeleton: about three rows at desktop width. */
 const SKELETON_CELLS = 36;
+/** The cell sprite's box, identical to `EmoteSprite`'s and `EmoteSpriteAnimated`'s default. */
+const SPRITE_CLASS = 'h-full w-full object-contain p-1';
 
 const TAG_NOT_FOUND_KEY = 'errors.api.tag_not_found';
 
@@ -143,6 +148,7 @@ export function parseTagParam(raw: string | null): number | null {
     DeleteProgressSection,
     DockOutcomeAnnouncer,
     EmoteSprite,
+    EmoteSpriteAnimated,
     EmptyState,
     ImportProgressSection,
     NgTemplateOutlet,
@@ -368,6 +374,23 @@ export class TagsPage {
       : (this.entries().find((entry) => entry.sevenTvEmoteId === id) ?? null);
   });
 
+  protected readonly spriteClass = SPRITE_CLASS;
+  protected readonly hiddenSpriteClass = `${SPRITE_CLASS} invisible`;
+  /** Hovered and focused cell by 7TV id, each ended only by its own events (as `ForeignEmoteGrid`). */
+  private readonly pointerKey = signal<string | null>(null);
+  private readonly focusKey = signal<string | null>(null);
+  /** The one cell that may play, pointer first. None on a coarse pointer: no hover, no dwell. */
+  private readonly playingKey = computed(() =>
+    this.isCoarse() ? null : (this.pointerKey() ?? this.focusKey()),
+  );
+  /** Which playing cell's animation has painted, so its still can hide; reset on every key change. */
+  protected readonly revealedKey = linkedSignal<string | null, string | null>({
+    source: this.playingKey,
+    computation: () => null,
+  });
+  /** The rows the viewport currently renders (only meaningful while `virtualized`). */
+  private readonly renderedRange = signal<ListRange>({ start: 0, end: 0 });
+
   /**
    * Whether the grid selects at all. Its only action in T-B is "Aus Tag entfernen", a management
    * action — offering a selection whose dock could only say "clear" would be a control with nothing
@@ -441,6 +464,33 @@ export class TagsPage {
   private previousChannel: string | null = null;
 
   constructor() {
+    // A cell recycled under a resting pointer fires no mouseleave, so a scroll clears the pointer key
+    // (focus survives: Tab scrolls a partly hidden cell into view and that cell should play).
+    effect((onCleanup) => {
+      const viewport = this.viewport();
+      if (!viewport) {
+        return;
+      }
+      const subscription = viewport.elementScrolled().subscribe(() => this.pointerKey.set(null));
+      this.renderedRange.set(viewport.getRenderedRange());
+      subscription.add(
+        viewport.renderedRangeStream.subscribe((range) => this.renderedRange.set(range)),
+      );
+      onCleanup(() => subscription.unsubscribe());
+    });
+
+    // Virtualisation removes a focused or hovered cell without a blur or mouseleave; the cell would
+    // otherwise play again when it renders with no hover and no focus on it. Another tag or a
+    // reload that drops the entry ends the key as well.
+    for (const key of [this.pointerKey, this.focusKey]) {
+      effect(() => {
+        const value = key();
+        if (value !== null && !this.isCellRendered(value)) {
+          key.set(null);
+        }
+      });
+    }
+
     effect((onCleanup) => {
       const element = this.sheetRef()?.nativeElement;
       if (!element) {
@@ -729,11 +779,37 @@ export class TagsPage {
 
   protected onCellFocus(entry: EmoteTagEntry, index: number): void {
     this.activeIndex.set(index);
+    this.focusKey.set(entry.sevenTvEmoteId);
     this.inspectedId.set(entry.sevenTvEmoteId);
   }
 
   protected inspect(entry: EmoteTagEntry): void {
     this.inspectedId.set(entry.sevenTvEmoteId);
+    this.pointerKey.set(entry.sevenTvEmoteId);
+  }
+
+  /** Only if the pointer key is still this cell's: events from another cell must not end it. */
+  protected onCellLeave(entry: EmoteTagEntry): void {
+    if (this.pointerKey() === entry.sevenTvEmoteId) {
+      this.pointerKey.set(null);
+    }
+  }
+
+  /** Ends focus playback only: a clicked cell keeps its pointer key until the pointer leaves. */
+  protected onCellBlur(entry: EmoteTagEntry): void {
+    if (this.focusKey() === entry.sevenTvEmoteId) {
+      this.focusKey.set(null);
+    }
+  }
+
+  /** Whether this cell mounts the animated sprite: the playing one, and only if it has an
+   *  animation (`_static` in the stored url). A hovered still mounts nothing and requests nothing. */
+  protected playsAnimation(entry: EmoteTagEntry): boolean {
+    return this.playingKey() === entry.sevenTvEmoteId && isAnimatedEmoteUrl(entry.imageUrl);
+  }
+
+  protected stillHidden(entry: EmoteTagEntry): boolean {
+    return this.playsAnimation(entry) && this.revealedKey() === entry.sevenTvEmoteId;
   }
 
   protected onGridKeydown(event: KeyboardEvent): void {
@@ -882,6 +958,20 @@ export class TagsPage {
     }
     this.viewport()?.scrollToIndex(rowIndex);
     requestAnimationFrame(() => find()?.focus());
+  }
+
+  /** Whether the cell for this key is mounted: in the entries, and in the rendered rows if virtualised. */
+  private isCellRendered(key: string): boolean {
+    const index = this.entries().findIndex((entry) => entry.sevenTvEmoteId === key);
+    if (index < 0) {
+      return false;
+    }
+    if (!this.virtualized()) {
+      return true;
+    }
+    const rowIndex = Math.floor(index / this.columns());
+    const { start, end } = this.renderedRange();
+    return rowIndex >= start && rowIndex < end;
   }
 }
 

@@ -10,6 +10,12 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-05 — Tag-Raster: Emotes animieren beim Überfahren, nach dem Muster des Import-Rasters
+
+**Betrifft:** `web/src/app/features/tags/tags-page.{ts,html}`, `docs/UI-Designsprache.md` (§2.5)
+
+Auf Betreiberwunsch spielt die Zelle unter dem Zeiger (oder mit Fokus) im Tag-Raster nach 200 ms Verweilzeit ihre Animation. Das ist **dasselbe** Muster wie im `ForeignEmoteGrid` (§7.3) und dieselbe Komponente (`EmoteSpriteAnimated`, `isAnimatedEmoteUrl`): genau ein Spiel-Schlüssel pro Raster, Zeiger vor Fokus, Standbild bleibt gemountet und verschwindet erst, wenn die Animation gemalt ist. Das Nutzungs-Raster der Usage-Seite animiert seine Zellen **nicht** (nur Sidecar, Drilldown, Stimmzettel); die Prämisse „wie dort" stimmte nur für das Import-Raster. Reduced Motion entscheidet weiterhin `EmoteSpriteAnimated` selbst. Auf einem groben Zeiger spielt nichts (kein Hover, Raster dort ohnehin nicht wählbar). Der Schlüssel endet bei Verlassen/Blur, beim Scrollen (Zeiger), und wenn die Zelle den gerenderten Bereich der virtuellen Liste verlässt oder aus den Einträgen fällt. Einträge ohne `_static` in der gespeicherten URL (stille Emotes) mounten nichts und fragen nichts an, auch Void-Plates nicht anders: sie animieren, sofern ihre gespeicherte URL `_static` trägt, gedimmt wie das Standbild. Die Entfernen-Dialog-Vorschauen (32 px) und der Zuweisen-Dialog bleiben still: nirgends sonst animieren vergleichbare Miniaturen.
+
 ### 2026-10-05 — Tags gain placements: play-in and removal runs, keyed against leave observations (#201 T-C)
 
 **Betrifft:** `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Entities/Emote.cs` ·
