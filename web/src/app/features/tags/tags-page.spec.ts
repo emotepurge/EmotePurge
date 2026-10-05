@@ -1084,24 +1084,33 @@ describe('TagsPage', () => {
         expect(text(harness)).not.toContain('nicht über den Tag');
       });
 
+      /** Whether some element's whole text is exactly `wanted` — a line of its own, whatever
+       *  element carries it. */
+      function hasLine(harness: RouterTestingHarness, wanted: string): boolean {
+        return Array.from(harness.routeNativeElement!.querySelectorAll('*')).some(
+          (element) => element.textContent?.trim() === wanted,
+        );
+      }
+
       it('names no state for a played-in tag without placements', async () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold', 0));
 
         expect(text(harness)).not.toContain('über den Tag ins Set geholt am');
-        expect(
-          Array.from(harness.routeNativeElement!.querySelectorAll('p.text-fg-secondary')).map((l) =>
-            l.textContent?.trim(),
-          ),
-        ).not.toContain(de.tags.page.state.activeUndated);
+      });
+
+      it('names no state either for a played-in tag without placements and without an activation date', async () => {
+        const { harness } = await openTag({
+          ...activeTag(1, 'Stronghold', 0),
+          activatedAtUtc: null,
+        });
+
+        expect(hasLine(harness, de.tags.page.state.activeUndated)).toBe(false);
       });
 
       it('says "über den Tag ins Set geholt" for an active tag whose activation date is missing', async () => {
         const { harness } = await openTag({ ...activeTag(1, 'Stronghold'), activatedAtUtc: null });
 
-        const lines = Array.from(
-          harness.routeNativeElement!.querySelectorAll('p.text-fg-secondary'),
-        ).map((line) => line.textContent?.trim());
-        expect(lines).toContain(de.tags.page.state.activeUndated);
+        expect(hasLine(harness, de.tags.page.state.activeUndated)).toBe(true);
       });
 
       it('says in the list how many placements a played-in tag holds', async () => {
