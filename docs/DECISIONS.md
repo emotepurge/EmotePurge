@@ -146,8 +146,11 @@ the up-link exists), which CSS `lg:` variants cannot decide, so it is decided in
 structure by width before; every earlier width decision was purely visual and stayed in CSS.
 
 On a coarse pointer the tags grid selects nothing, so "Aus Tag entfernen" is fine-pointer-only,
-following spec 9.4 ("auf grobem Zeiger fehlen … die Rasterauswahl"); spec 8's row saying it stays on
-a coarse pointer contradicts that and is an open operator question.
+following spec 9.4 ("auf grobem Zeiger fehlen … die Rasterauswahl"). The operator decided on
+2026-10-05 that removal is mouse-only, and spec 8's row was amended accordingly (no contradiction
+left). Rename and delete of a tag stay available on a coarse pointer. Also decided on 2026-10-05:
+T-B ships together with T-C, never alone, so T-B's strings that already mention Einspielen/Ausräumen
+are fine.
 
 **Usage page: the filter dimension, the assign dialog and the dock (frontend).** The tag is one more
 dimension of `EmoteUsageFilter` (`tagId` plus `tagKeys`, the chosen tag's 7TV ids): a row passes when
