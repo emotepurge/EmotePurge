@@ -320,6 +320,20 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task ApplyEmoteSetUpdate_WithoutPulledIds_AppliesThePushAndWritesNoObservation()
+    {
+        // No pull, nothing to record: the delta takes no explicit transaction and saves as before.
+        var channel = await SeedChannelAsync("leaveobs_a_pushonly", ("lokeep1", false, null));
+
+        var result = await ApplyAsync(channel, Delta(pushed: [Live("lonew1")]));
+
+        Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await LoadEmoteAsync(verify, channel, "lonew1")).IsArchived);
+        Assert.False(await verify.EmoteSetLeaveObservations.AnyAsync(o => o.ChannelId == channel.Id));
+    }
+
+    [Fact]
     public async Task ApplyEmoteSetUpdate_TheSameIdTwiceInPulledIds_WritesOneRowWithoutError()
     {
         var channel = await SeedChannelAsync("leaveobs_a_twice",

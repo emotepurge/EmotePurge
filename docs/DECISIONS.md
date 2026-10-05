@@ -141,7 +141,9 @@ lives in `EmotePurge.Infrastructure`, so the worker image has to be rebuilt and 
   - In the full sync, the transaction opens immediately before `ReconcileAsync`, after
     `RecordObservedSetAsync`, which commits a set switch in a transaction of its own (EF cannot nest
     them). The single E10 retry runs with a new transaction.
-  - In the delta path, it opens between the pulled loop and the `NoChange` guard.
+  - In the delta path, it opens between the pulled loop and the `NoChange` guard — only for a delta that
+    pulled something; a push- or update-only dispatch has nothing to record and keeps
+    `SaveChangesAsync`'s implicit transaction, so it costs no extra round trips.
   - In `MarkInSetAsync`, it wraps the save.
 
   Inside the transaction the order is: observation rows first, then the emote rows and the channel

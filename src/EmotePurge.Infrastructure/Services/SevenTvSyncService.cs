@@ -5,6 +5,7 @@ using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.SevenTv;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -307,23 +308,29 @@ public class SevenTvSyncService(
         // rows the loop above flips would lose exactly the case that matters: a REMOVE for a row a stale
         // REST resync archived minutes earlier without an observation (inside the window). That case
         // stages no change, so this runs before the NoChange guard, and the outcome stays NoChange (no
-        // match-cache refresh, no live event). One explicit transaction per call, so the observation and
-        // the archive commit together: the raw upsert does not join SaveChangesAsync's implicit one.
+        // match-cache refresh, no live event). One explicit transaction per call that pulled anything, so
+        // the observation and the archive commit together: the raw upsert does not join SaveChangesAsync's
+        // implicit one. A dispatch without pulls has nothing to record and keeps the implicit transaction.
         // Observation rows first, then the emote rows — the same order as the set-centric delete report
         // in the Api, and the sync takes no tag table, so no lock cycle (spec 5.5 rule 6). A channel
         // purged meanwhile fails the upsert with 23503 and propagates, like the save's FK failure always has.
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        await EmoteSetLeaveObservations.RecordAsync(
-            db, channel.Id, emoteSetId, delta.PulledIds, DateTime.UtcNow, cancellationToken);
+        await using var transaction = delta.PulledIds.Count > 0
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        if (transaction is not null)
+        {
+            await EmoteSetLeaveObservations.RecordAsync(
+                db, channel.Id, emoteSetId, delta.PulledIds, DateTime.UtcNow, cancellationToken);
+        }
 
         if (!db.ChangeTracker.HasChanges())
         {
-            await transaction.CommitAsync(cancellationToken);
+            await CommitIfOpenAsync(transaction, cancellationToken);
             return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.NoChange, currentName);
         }
 
         await db.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await CommitIfOpenAsync(transaction, cancellationToken);
         await RefreshMatchCacheAsync(channel, cancellationToken);
 
         logger.LogInformation(
@@ -974,6 +981,9 @@ public class SevenTvSyncService(
             SqlState: PostgresErrorCodes.ForeignKeyViolation,
             TableName: "EmoteSetLeaveObservations",
         };
+
+    private static Task CommitIfOpenAsync(IDbContextTransaction? transaction, CancellationToken cancellationToken) =>
+        transaction?.CommitAsync(cancellationToken) ?? Task.CompletedTask;
 
     // Removes the cache entry under the login the row carried when it was loaded — unless another
     // active row carries that login now (login swap, double rename): that row's live entry must
