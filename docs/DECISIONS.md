@@ -38,7 +38,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 Tags (T-B) only name emotes. T-C lets a tag be played into a set and cleared out of it again, and
 remembers which emotes a tag put there, so that clearing removes exactly those and nothing a person
-added by hand. This entry is extended by the later T-C tasks; the part below is the data model.
+added by hand. The sections below follow the plan's tasks; the last ones state the security model, the overruled spec
+sentences, the residual risks and the rollout.
 
 #### Data model (Task 1)
 
@@ -568,6 +569,99 @@ the message while the button keeps its "Tag löschen" label.
 `web/src/app/features/tags/tags-page.html` · `web/src/app/features/tags/tags.routes.ts` ·
 `web/src/app/shared/seven-tv/action-dock.ts` · `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
 `web/e2e/audit/ui-audit.audit.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+#### Flows and dialog (Tasks 10–12)
+
+Pure helpers first: `tag-play-in.ts` partitions a tag's entries against the complete live read (already in
+the set / to add) and builds the `'tag'` import source; `tag-removal.ts` turns the entry read plus the
+live read into the removal proposal. Only placements the server reports as valid reach the rows (no
+fallback to "in the set" — spec 0a rule 1); an own placement with a missing revision is not own, in
+the row and in the snapshot alike. `tag-play-in-flow.ts`/`tag-removal-flow.ts` run the shared steps
+(`prepareTagRun`: operation registration, ownership ladder via the 403/404/503 answers, set freeze, the
+complete live read) and then hand over to `startImportFlow` or the delete flow; `TagRunActions` hosts
+both buttons on the usage page and the tags page. Choices that are not obvious from the code:
+
+- **One dialog, ticks in place.** `TagRemovalConfirmDialog` is preview and confirmation at once (E19). Rows
+  are grouped by the *proposal's* start state — "Vorgeschlagen" above "Nicht vorgeschlagen" — and a tick
+  toggles in place, in both directions. The button is never disabled by the count: n = 0 is a clear-out
+  without a delete run (E26), with its own sentence. Past 50 rows the list is virtual with a roving
+  tabindex. UI-Designsprache §7.5 is the contract.
+- **The browser set guard decides, and a destroyed host authorises nothing.** At confirm time the frozen
+  set, the page's live active set and the loaded target must be one set; an unknown or destroyed host
+  counts as a switch and aborts. The token half of the confirm-time check is skipped only for n = 0
+  (nothing goes to 7TV). The pre-dialog chain is not under `startCheckPending`, consistent with T-A.
+- **A flow reports nothing back to its starter** once it handed over (dismissed dialog, cancelled token
+  prompt, arbiter refusal, pre-check block, drift): `pending` ends at the hand-over. A banner raised
+  after the host moved on to another tag or channel is dropped.
+- **No-tag is `null` on import run info but `undefined` on delete run info.** Consumers test `!== null`
+  for import runs and `!== undefined` for delete runs and never cross them.
+
+**Betrifft (Tasks 10–12):** `web/src/app/shared/tags/tag-play-in.ts` ·
+`web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-removal.ts` ·
+`web/src/app/shared/tags/tag-removal-flow.ts` · `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
+`web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/shared/seven-tv/import-trigger.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`
+
+#### Security model (spec 0a)
+
+Placements are a well-kept **proposal, not a guarantee**: the 7TV writes happen in the browser (zero-knowledge
+token), so the server learns of them only through reports that can be lost, late or — from someone with
+7TV write rights — false. Three rules follow, and every rule above is one of them: (1) any uncertainty
+(missing report, incomplete set read, foreign holder, unclear provenance) tips towards removing too
+*little*, a row stays unticked; (2) the server actively stops proposing what it can no longer prove — a
+placement whose emote it has seen leave expires when read; (3) the last safeguard is the human: a preview
+with a reason and the play-in date per row, confirmed, with the purge protocol (download, "Restore") as the
+way back. A placement is never authority to delete — it is the tick the person confirms or removes.
+
+#### Overruled spec sentences
+
+The plan overrules three sentences of the spec; each is recorded in the spec's addendum:
+
+- **3.1 "the sync takes no explicit transaction"** — it takes one per save attempt (Task 2).
+- **12.4 "one upsert per archived row, nothing else"** — one upsert per `PulledId` (with the set-centric
+  delete report), one observation read per REST tick for the post-check, one transaction per attempt.
+- **5.3 "no foreign key to the entry"** — the composite FK with cascade exists (Task 1).
+
+Also changed, with the reasons in the paragraphs above: all T-C id columns are `varchar(32)` including
+set ids (the spec said 24); a placement carries its own `RegisteredAtUtc` as the validity anchor (5.3/5.5);
+an expired target row is rewritten on transfer (5.5); the tags page reloads on `channel.synced` (9.6); the
+removal confirm chain is the delete flow's (7.2/7); the tags page header order is a named exception in
+UI-Designsprache §8.7 (9.4).
+
+#### Residual risks and the restore gap
+
+- **R1** — a remove-and-re-add between two credible observations stays invisible, so a manually re-added
+  emote may be proposed (the person confirms). Window: seconds
+  with the EventAPI up, otherwise up to the first full sync past REST-cache lag and the 30-minute window;
+  unbounded in non-active sets. **Addendum (spec 13.1):** the post-check compares against the row's *single*
+  `LastEnteredSetAtUtc`, whichever set it entered, so a play-in into a freshly switched set with a missed
+  PUSH and a stale REST cache can lose its placement within one tick — a placement too few, never too many.
+- **R2** — a foreign editor between the live read and the write doubles an emote; the second live read right
+  before the start shrinks the window to seconds.
+- **R3** — someone with 7TV write rights on the set can forge reports and pre-tick rows; they could delete at
+  7TV directly anyway, the ownership check (cached up to 10 minutes) gates the routes, the audit row names the
+  actor, and the human still confirms.
+- **R4** — a preview race between two tags can leave one emote too few in the set (never one too many); a
+  fresh play-in brings it back.
+- **13.2** — "Restore" after a clear-out creates no placement: restored emotes read "was already in the set"
+  at the next clear-out and can be ticked by hand. The restore button says so after a tag run.
+
+#### Rollout (spec 12.5)
+
+Migration by hand → Api and Worker image **together** (the worker's behaviour changes without a source
+change) → the readiness check → `TAGS_RUNS_ENABLED=true` → stack update. The flag is `Tags:RunsEnabled`,
+delivered on `permissions` (13.4/1) and wired in the **api** service of both compose files. The check is an
+executable pair of `psql` lists in docs/Operations.md ("Emote tags: enabling play-in and removal runs")
+instead of the spec's "resync summary in the log", which does not exist: list A (active, syncable channels
+whose `LastSyncedAtUtc` is empty or older than the new worker's start) must be empty; list B (channels that
+cannot sync) is information only. The boot recovery's gate is released even after errors, so only a
+completed sync by the new worker proves that observations exist. Follow-up noted there: the tracked-set
+loader of the tag flows is not yet on the #220 route (foreign-permit cost accepted). Open for live
+verification: the per-tick post-check read on the largest channel and the first-tick backfill.
+
+**Betrifft (Tasks 14, 15):** `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
+`docs/Operations.md` · `docs/UI-Designsprache.md` · `docs/Architectur.md` · `.env.example` ·
+`docker-compose.yml` · `docker-compose.prod.yml`
 
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 

@@ -96,6 +96,9 @@ services:
       # checked by the join endpoint before any row is written. No caller, including a global admin,
       # is exempt; the operator removing an id here is the only way to undo it.
       - Channels__ExcludedChannelIds=${EXCLUDED_CHANNEL_IDS:-}
+      # Emote tags: play-in and removal runs (#201 T-C). Off until the readiness check in
+      # docs/Operations.md ("Emote tags: enabling play-in and removal runs") comes back empty.
+      - Tags__RunsEnabled=${TAGS_RUNS_ENABLED:-false}
     volumes:
       - dataprotection-keys:/keys
       - /opt/emotepurge/legal:/legal:ro
