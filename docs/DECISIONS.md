@@ -41,10 +41,13 @@ added by hand. This entry is extended by the later T-C tasks; the part below is 
 
 The purely additive migration `AddEmoteTagPlacements` adds four tables and one nullable column:
 
-- `EmoteTagPlacements(TagId, SevenTvEmoteId, SevenTvEmoteSetId, PlacedAtUtc, OperationId)` — "this
-  tag brought this emote into this set". Primary key `(TagId, SevenTvEmoteId, SevenTvEmoteSetId)`,
-  index `(SevenTvEmoteSetId, SevenTvEmoteId)`. `OperationId` is the placement's revision: the
-  operation that last created or transferred it.
+- `EmoteTagPlacements(TagId, SevenTvEmoteId, SevenTvEmoteSetId, PlacedAtUtc, OperationId,
+  RegisteredAtUtc)` — "this tag brought this emote into this set". Primary key
+  `(TagId, SevenTvEmoteId, SevenTvEmoteSetId)`, index `(SevenTvEmoteSetId, SevenTvEmoteId)`.
+  `OperationId` is the placement's provenance and revision: the operation that last created or
+  transferred it. `RegisteredAtUtc` is a copy of that operation's registration time — the play-in
+  operation's, or on a transfer the removal operation's of the tag the placement came from — and is
+  the anchor the read-time rule compares against (see Task 3 for why it is not looked up).
 - `EmoteTagActivations(TagId, SevenTvEmoteSetId, ActivatedAtUtc, OperationId)` — "tag T counts as
   played in to set S"; the row's existence is the state.
 - `EmoteTagOperations(OperationId, TagId, Kind, SevenTvEmoteSetId, RegisteredAtUtc, AppliedAtUtc)` —
@@ -63,7 +66,8 @@ the database, not by the locking discipline of whichever caller writes (a report
 under the channel lock could otherwise write an orphan after a parallel removal). The two cascade paths
 from a tag (direct, and via the entry) are legal in Postgres. This reverses the spec's earlier
 "no FK to the entry" stance. **There is deliberately no foreign key to the operation:** it would force a
-delete order the sweep does not need, and operations live exactly as long as their tag anyway.
+delete order the sweep does not need. Operations live exactly as long as their tag, which is why a
+placement does not depend on its operation row for its validity.
 
 **Observations are channel-level, not tag-level.** The sync cannot know which tag report is still on
 its way, so it writes an observation for every credible leave whether or not the channel has tags; the
@@ -73,9 +77,15 @@ no pruning of its own. No FK to `Emote`: the observation outlives the grid row, 
 entries (rule 8).
 
 **Whether a placement still holds is decided when it is read**, by comparing the observation against
-the registration time of the placement's operation — the sync never deletes a placement. `null` means
-unknown and is never guessed: an unknown `LastEnteredSetAtUtc` makes a REST-observed leave credible,
-a missing observation means "no leave seen", so the placement stays valid. Unknowns therefore err towards offering more to remove, not less; the one known gap is a remove-and-re-add that no observation has recorded (spec 13.1 R1), where a stale placement keeps being offered.
+the placement's own `RegisteredAtUtc` — the sync never deletes a placement. `null` means unknown and
+is never guessed, and the two unknowns err in opposite directions:
+
+- A **missing observation** means "no leave seen", so the placement stays valid. This errs towards
+  offering *more* to remove; the known gap is a remove-and-re-add that no observation has recorded
+  (spec 13.1 R1), where a stale placement keeps being offered.
+- An **unknown `LastEnteredSetAtUtc`** makes a REST-observed leave credible, and the sync's post-check
+  then writes an observation, which expires the placements of that emote and set. This errs towards
+  offering *less* to remove, in line with spec 0a rule 1 (unclear provenance → remove too little).
 
 **All id columns of the four tables are `varchar(32)`** — set ids and emote ids alike, matching
 `SevenTvEmoteIdValidation.MaxLength`. 7TV ids, set ids included, are 26-character ULIDs, so the spec's
@@ -147,23 +157,31 @@ entry read; `placedByThisTag`, `placedAtUtc`, `placementOperationId`, `heldByAct
 defaults, so every construction site had to name the new values.
 
 - **The rule, evaluated on every read.** A placement holds unless the channel has a leave observation
-  for the same emote **and the same set** whose `LastObservedAtUtc` is later than `RegisteredAtUtc` of
-  the operation in `Placement.OperationId`. An observation at exactly the registration instant does not
-  expire it. Every placement field counts valid placements only; an expired row stays in the table
-  until a play-in overwrites it or a sweep removes it. Activations ignore observations.
-- **A placement whose operation row is missing does not hold.** Nothing should delete an operation
-  before its tag, but the operation is deliberately no FK target, so the read says what happens rather
-  than assuming it cannot. This is the one unknown that errs towards *less*: a placement without a
-  registration time has nothing to compare an observation against, and suggesting it for removal could
-  take an emote a person added.
-- **Three queries over scalar keys, joined in memory (rule 10).** The placements of the channel's tag
-  ids in the set (narrowed to the entry ids on the entry read); the registration time of their
-  operation ids; the latest observation of their emote ids in that set
-  (`EmoteSetLeaveObservations.LoadLatestAsync`, the same read as the sync's post-check). No navigation
-  join, no `GroupBy` over one; `placedCount` is counted in memory. Activations and the holders' entries
-  are two further scalar-key queries. The rule lives in one private method of `EmoteTagService`
-  (`LoadPlacementStatesAsync`), which returns valid and expired rows with a verdict, so the later
-  removal report and its sweep apply the same rule rather than a copy.
+  for the same emote **and the same set** whose `LastObservedAtUtc` is later than the placement's own
+  `RegisteredAtUtc`. An observation at exactly that instant does not expire it. Both stamps are app-clock
+  UTC and are compared after their round trip through Postgres, so at microsecond precision. Every
+  placement field counts valid placements only; an expired row stays in the table until a play-in
+  overwrites it or a sweep removes it. Activations ignore observations.
+- **The anchor lives on the placement, not behind `OperationId`.** The spec's wording joins the
+  placement to its operation and compares against the operation's `RegisteredAtUtc`. That join breaks
+  in a reachable case: a removal run's transfer rewrites another tag T′'s placement to point at T's
+  removal operation, and operations cascade with their tag. Deleting T afterwards would leave T′'s
+  transferred placements without an operation, so they would silently stop holding, drop out of T′'s
+  preview, and be swept as expired by T′'s next deactivation — the opposite of what the transfer was
+  for. The placement therefore carries `RegisteredAtUtc` itself, written by whichever operation last
+  wrote the row (play-in, or transfer), with the same semantics as the join. `OperationId` stays as
+  provenance and as the revision a removal snapshot matches against; a missing operation row no
+  longer affects validity.
+- **Two queries over scalar keys, joined in memory (rule 10).** The placements of the channel's tag
+  ids in the set (narrowed to the entry ids on the entry read), with their anchor; the latest
+  observation of their emote ids in that channel and set (`EmoteSetLeaveObservations.LoadLatestAsync`,
+  the same read as the sync's post-check). No navigation join, no `GroupBy` over one; `placedCount` is
+  counted in memory. Activations and the holders' entries are two further scalar-key queries. The rule
+  lives in one private method of `EmoteTagService` (`LoadPlacementStatesAsync`) plus the static
+  predicate `Holds`, which the play-in report's stale check reuses. The method returns valid and
+  expired rows with a verdict, so the later removal report and its sweep apply the same rule rather
+  than a copy; the holders (`LoadActiveHoldersAsync`) are likewise one helper the removal report's
+  transfer target reuses.
 - **Per set, not per active set.** Placement and activation fields are computed for whatever set the
   read resolves to, a non-active one included; only `inSet`/`inSetCount` stay `null` there, since
   "in the set" is a channel-wide status. Without a set parameter and without an active set every

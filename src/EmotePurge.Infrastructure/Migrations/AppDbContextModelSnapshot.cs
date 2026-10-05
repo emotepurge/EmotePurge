@@ -384,6 +384,9 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<DateTime>("PlacedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime>("RegisteredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.HasKey("TagId", "SevenTvEmoteId", "SevenTvEmoteSetId");
 
                     b.HasIndex("SevenTvEmoteSetId", "SevenTvEmoteId");

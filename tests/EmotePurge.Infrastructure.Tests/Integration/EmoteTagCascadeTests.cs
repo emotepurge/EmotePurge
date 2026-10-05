@@ -253,7 +253,8 @@ public class EmoteTagCascadeTests(PostgresFixture fixture)
         SevenTvEmoteId = emoteId,
         SevenTvEmoteSetId = setId,
         PlacedAtUtc = DateTime.UtcNow,
-        OperationId = Guid.NewGuid()
+        OperationId = Guid.NewGuid(),
+        RegisteredAtUtc = DateTime.UtcNow
     };
 
     // 26 characters, like a real 7TV ULID.

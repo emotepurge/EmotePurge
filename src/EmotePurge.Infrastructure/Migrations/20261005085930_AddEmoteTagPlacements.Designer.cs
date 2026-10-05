@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EmotePurge.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261005080747_AddEmoteTagPlacements")]
+    [Migration("20261005085930_AddEmoteTagPlacements")]
     partial class AddEmoteTagPlacements
     {
         /// <inheritdoc />
@@ -385,6 +385,9 @@ namespace EmotePurge.Infrastructure.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<DateTime>("PlacedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("RegisteredAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("TagId", "SevenTvEmoteId", "SevenTvEmoteSetId");

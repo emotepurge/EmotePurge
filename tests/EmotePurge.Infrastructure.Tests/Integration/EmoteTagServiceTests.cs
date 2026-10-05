@@ -628,8 +628,9 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     // ---- Placements, activations and the read-time rule (T-C) ------------------------------------
     //
     // Spec 5.5 rule 5 / E33 rev. 4: a placement holds unless the channel has a leave observation for
-    // the same emote and set that is later than the registration of the placement's operation. Fixed
-    // timestamps (whole seconds) so stored and expected values compare exactly.
+    // the same emote and set that is later than the placement's own RegisteredAtUtc (the registration
+    // of the operation that last wrote it — F30). Fixed timestamps (whole seconds) so stored and
+    // expected values compare exactly.
 
     [Theory]
     [InlineData("tagrtrlater", 60, false)]
@@ -689,18 +690,66 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task ReadTimeRule_APlacementWhoseOperationIsMissing_DoesNotHold()
+    public async Task ReadTimeRule_IsPerChannel_AnObservationInAnotherChannelChangesNothing()
+    {
+        var channel = await SeedChannelAsync("tagrtrperchannel");
+        var neighbour = await SeedChannelAsync("tagrtrperchannel2");
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var operation = await SeedPlayInAsync(tag.Id, ActiveSetId, T0, x);
+        // Same emote, same set, later — but recorded for another channel.
+        await SeedObservationAsync(neighbour.Id, x, ActiveSetId, T0.AddHours(1));
+
+        var service = CreateService(fixture.CreateDbContext());
+        var entry = Assert.Single((await service.ListEntriesAsync("tagrtrperchannel", tag.Id, null)).Entries);
+
+        Assert.Equal((true, (Guid?)operation), (entry.PlacedByThisTag, entry.PlacementOperationId));
+        Assert.Equal(1, Assert.Single((await service.ListAsync("tagrtrperchannel", null)).Tags).PlacedCount);
+    }
+
+    // A transfer points another tag's placement at the removing tag's operation, and operations
+    // cascade with their tag — so the operation row can be gone while the placement is still valid.
+    [Fact]
+    public async Task ReadTimeRule_APlacementWhoseOperationIsGone_StillHolds_WithoutALaterObservation()
     {
         var channel = await SeedChannelAsync("tagrtrnoop");
         var tag = await SeedTagAsync(channel.Id, "Mine");
         var x = NewSevenTvId();
         await SeedEntryAsync(tag.Id, x, "X", T0);
-        await SeedPlacementAsync(tag.Id, x, ActiveSetId, Guid.NewGuid(), T0);
+        var missingOperation = Guid.NewGuid();
+        await SeedPlacementAsync(tag.Id, x, ActiveSetId, missingOperation, T0, T0);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, T0.AddMinutes(-1));
 
         var service = CreateService(fixture.CreateDbContext());
+        var entry = Assert.Single((await service.ListEntriesAsync("tagrtrnoop", tag.Id, null)).Entries);
 
-        Assert.False(Assert.Single((await service.ListEntriesAsync("tagrtrnoop", tag.Id, null)).Entries).PlacedByThisTag);
-        Assert.Equal(0, Assert.Single((await service.ListAsync("tagrtrnoop", null)).Tags).PlacedCount);
+        Assert.Equal((true, (DateTime?)T0, (Guid?)missingOperation), (entry.PlacedByThisTag, entry.PlacedAtUtc, entry.PlacementOperationId));
+        Assert.Equal(1, Assert.Single((await service.ListAsync("tagrtrnoop", null)).Tags).PlacedCount);
+    }
+
+    // The anchor is the placement's own column, not its operation's: with the two disagreeing, an
+    // observation between them follows the placement.
+    [Theory]
+    [InlineData("tagrtranchorlater", 60, true)]
+    [InlineData("tagrtranchorearlier", -60, false)]
+    public async Task ReadTimeRule_ComparesAgainstThePlacementsOwnRegistration_NotItsOperations(
+        string channelName, int placementAnchorMinutesFromOperation, bool holds)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var operation = await SeedOperationAsync(tag.Id, ActiveSetId, T0);
+        await SeedPlacementAsync(tag.Id, x, ActiveSetId, operation, T0, T0.AddMinutes(placementAnchorMinutesFromOperation));
+        // Halfway between the operation's registration and the placement's anchor.
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, T0.AddMinutes(placementAnchorMinutesFromOperation / 2.0));
+
+        var service = CreateService(fixture.CreateDbContext());
+        var entry = Assert.Single((await service.ListEntriesAsync(channelName, tag.Id, null)).Entries);
+
+        Assert.Equal(holds, entry.PlacedByThisTag);
+        Assert.Equal(holds ? 1 : 0, Assert.Single((await service.ListAsync(channelName, null)).Tags).PlacedCount);
     }
 
     [Fact]
@@ -1125,7 +1174,8 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         return operationId;
     }
 
-    private async Task SeedPlacementAsync(long tagId, string sevenTvEmoteId, string emoteSetId, Guid operationId, DateTime placedAtUtc)
+    private async Task SeedPlacementAsync(
+        long tagId, string sevenTvEmoteId, string emoteSetId, Guid operationId, DateTime placedAtUtc, DateTime registeredAtUtc)
     {
         await using var db = fixture.CreateDbContext();
         db.EmoteTagPlacements.Add(new EmoteTagPlacement
@@ -1134,7 +1184,8 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
             SevenTvEmoteId = sevenTvEmoteId,
             SevenTvEmoteSetId = emoteSetId,
             PlacedAtUtc = placedAtUtc,
-            OperationId = operationId
+            OperationId = operationId,
+            RegisteredAtUtc = registeredAtUtc
         });
         await db.SaveChangesAsync();
     }
@@ -1159,7 +1210,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         var operationId = await SeedOperationAsync(tagId, emoteSetId, registeredAtUtc);
         foreach (var sevenTvEmoteId in sevenTvEmoteIds)
         {
-            await SeedPlacementAsync(tagId, sevenTvEmoteId, emoteSetId, operationId, registeredAtUtc);
+            await SeedPlacementAsync(tagId, sevenTvEmoteId, emoteSetId, operationId, registeredAtUtc, registeredAtUtc);
         }
 
         await SeedActivationAsync(tagId, emoteSetId, operationId, registeredAtUtc);

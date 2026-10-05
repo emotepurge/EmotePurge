@@ -148,7 +148,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // set along when an entry is removed) independent of any caller's locking. Two cascade
             // paths from the tag (direct, and via the entry) are fine in Postgres. No navigation from
             // the entry. Deliberately no FK to EmoteTagOperation: it would force a delete order the
-            // sweep does not need.
+            // sweep does not need. OperationId is provenance only; validity is anchored on the
+            // placement's own RegisteredAtUtc, because operations cascade with their tag while a
+            // transfer points another tag's placement at the removed tag's operation.
             entity.HasOne<EmoteTagEntry>()
                 .WithMany()
                 .HasForeignKey(p => new { p.TagId, p.SevenTvEmoteId })

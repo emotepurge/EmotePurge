@@ -87,7 +87,8 @@ namespace EmotePurge.Infrastructure.Migrations
                     SevenTvEmoteId = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
                     SevenTvEmoteSetId = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
                     PlacedAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
-                    OperationId = table.Column<Guid>(type: "uuid", nullable: false)
+                    OperationId = table.Column<Guid>(type: "uuid", nullable: false),
+                    RegisteredAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
                 },
                 constraints: table =>
                 {

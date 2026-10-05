@@ -178,14 +178,18 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync("leaveobs_placement",
             ("lokeep1", false, null),
             ("loplaced1", false, null));
-        var (tagId, operationId) = await SeedPlacementAsync(channel, "loplaced1", SetId, DateTime.UtcNow.AddHours(-1));
+        // Whole seconds, so the stored anchor compares exactly after Postgres' microsecond truncation.
+        var registeredAtUtc = DateTime.UtcNow.AddHours(-1);
+        registeredAtUtc = registeredAtUtc.AddTicks(-(registeredAtUtc.Ticks % TimeSpan.TicksPerSecond));
+        var (tagId, operationId) = await SeedPlacementAsync(channel, "loplaced1", SetId, registeredAtUtc);
 
         await SyncAsync(channel, SetId, Live("lokeep1"));
 
         await using var verify = fixture.CreateDbContext();
         Assert.NotNull(await LatestAsync(channel, SetId, "loplaced1"));
         var placement = await verify.EmoteTagPlacements.AsNoTracking().SingleAsync(p => p.TagId == tagId);
-        Assert.Equal(("loplaced1", SetId, operationId), (placement.SevenTvEmoteId, placement.SevenTvEmoteSetId, placement.OperationId));
+        Assert.Equal(("loplaced1", SetId, operationId, registeredAtUtc),
+            (placement.SevenTvEmoteId, placement.SevenTvEmoteSetId, placement.OperationId, placement.RegisteredAtUtc));
     }
 
     [Fact]
@@ -682,6 +686,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
             SevenTvEmoteSetId = emoteSetId,
             PlacedAtUtc = registeredAtUtc,
             OperationId = operationId,
+            RegisteredAtUtc = registeredAtUtc,
         });
         await db.SaveChangesAsync();
         return (tag.Id, operationId);
