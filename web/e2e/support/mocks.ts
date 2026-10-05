@@ -652,6 +652,8 @@ export async function mockChannelPermissions(
     isGlobalAdmin: boolean;
     isTracked: boolean;
     isBotActive: boolean;
+    /** #201 T-C: the operator switch for tag runs. Absent by default (reads as off). */
+    tagRunsEnabled: boolean;
   }> = {},
 ): Promise<void> {
   await page.route(`**/api/channels/${channelName}/permissions`, (route) =>

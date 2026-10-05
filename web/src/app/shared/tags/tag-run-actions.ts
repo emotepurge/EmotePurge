@@ -17,7 +17,11 @@ import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { DeleteRunInfo, SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
-import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
+import {
+  SEVEN_TV_RUN_KIND_LABEL_KEY,
+  SevenTvRunArbiter,
+  SevenTvRunKind,
+} from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { EmoteTagService } from '../../core/tags/emote-tag.service';
@@ -30,6 +34,9 @@ import {
   startTagPlayInFlow,
 } from './tag-play-in-flow';
 import { startTagRemovalFlow } from './tag-removal-flow';
+
+/** Element ids for the lock reason, unique per instance. */
+let nextReasonId = 0;
 
 /** A transient message for the host's own status region (spec 7.1/5, 7.2/7). */
 export interface TagRunFeedback {
@@ -62,8 +69,15 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
  * while any 7TV run holds the start (`startLocked`, without a hint: the run's dock is the hint,
  * UI-Designsprache §4.2) and while this component's own flow is busy.
  *
+ * One exception to that silence (plan 3.8, §10 "every lock explains itself"): a lock held by a run
+ * whose surface the host does not mount (`unshownRunKinds` — on the tags page the undo, started on
+ * the usage page) has no dock to explain it, so the reason stands as text beside the buttons and
+ * is their `aria-describedby`.
+ *
  * `completed` fires when a tag run this page can see closes, or its tag report succeeds on a
  * retry, and after a report sent without a run — the host reloads the tag's numbers then.
+ * `started` fires on every click that starts a flow (and on a retry) — the host clears its own
+ * stale run notices then.
  */
 @Component({
   selector: 'app-tag-run-actions',
@@ -77,6 +91,7 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
             appButton="neutral"
             class="disabled:cursor-not-allowed"
             [disabled]="locked()"
+            [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
             (click)="playIn()"
           >
             {{ 'tags.actions.playIn' | transloco }}
@@ -87,12 +102,18 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
               appButton="danger"
               class="disabled:cursor-not-allowed"
               [disabled]="locked()"
+              [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
               (click)="remove()"
             >
               {{ 'tags.actions.remove' | transloco }}
             </button>
           }
         </div>
+        @if (otherRunKey(); as kindKey) {
+          <p [id]="otherRunReasonId" class="text-xs text-fg-muted">
+            {{ 'tags.errors.otherRunActive' | transloco: { kind: (kindKey | transloco) } }}
+          </p>
+        }
         @if (notice(); as current) {
           <app-notice-banner variant="error">
             @if (current.leadKey) {
@@ -125,8 +146,13 @@ export class TagRunActions {
   readonly setName = input<string | null>(null);
   /** The host's gate: tag runs switched on, a fine pointer, a known active set. */
   readonly enabled = input(false);
+  /** Run kinds whose surface (dock section) this host does not mount — a lock by one of them is
+   *  explained in text here, since nothing else on the page would (plan 3.8). */
+  readonly unshownRunKinds = input<readonly SevenTvRunKind[]>([]);
 
   readonly completed = output<void>();
+  /** A click (or a retry) started a flow. */
+  readonly started = output<void>();
   readonly feedback = output<TagRunFeedback>();
 
   protected readonly arbiter = inject(SevenTvRunArbiter);
@@ -145,6 +171,15 @@ export class TagRunActions {
   protected readonly pending = signal(false);
   protected readonly notice = signal<TagRunNotice | null>(null);
   protected readonly locked = computed(() => this.arbiter.startLocked() || this.pending());
+  /** The run-kind noun key of a lock the host has no surface for, `null` otherwise — a lock by a
+   *  run whose dock the page shows stays without text (§4.2). */
+  protected readonly otherRunKey = computed(() => {
+    const kind = this.arbiter.activeRun();
+    return kind !== null && this.unshownRunKinds().includes(kind)
+      ? SEVEN_TV_RUN_KIND_LABEL_KEY[kind]
+      : null;
+  });
+  protected readonly otherRunReasonId = `tag-run-other-run-${nextReasonId++}`;
   /** Which tag of which channel this component acts for — by id, so a reloaded summary of the same
    *  tag is no change. */
   private readonly subject = computed(() => `${this.channelName()}\u0000${this.tag().id}`);
@@ -199,6 +234,7 @@ export class TagRunActions {
     if (this.locked()) {
       return;
     }
+    this.started.emit();
     startTagPlayInFlow(this.deps, this.request());
   }
 
@@ -206,6 +242,7 @@ export class TagRunActions {
     if (this.locked()) {
       return;
     }
+    this.started.emit();
     startTagRemovalFlow(this.deps, this.request());
   }
 
@@ -213,6 +250,7 @@ export class TagRunActions {
     if (this.locked()) {
       return;
     }
+    this.started.emit();
     notice.retry?.();
   }
 

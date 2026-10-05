@@ -1788,7 +1788,8 @@
         "other": "{{count}} not in the set"
       },
       "overview": "Overview",
-      "activeSetOnly": "Playing in and clearing out act on the active set"
+      "activeSetOnly": "Playing in and clearing out act on the active set",
+      "active": "played in"
     },
     "feedback": {
       "assigned": {
@@ -1857,7 +1858,8 @@
         "notEditable": "The set is not (or no longer) editable, or no longer exists.",
         "notSelectable": "The set is not a regular emote set.",
         "unavailable": "The set could not be checked just now."
-      }
+      },
+      "otherRunActive": "Locked while {{kind}} runs on another page."
     }
   },
   "errors": {

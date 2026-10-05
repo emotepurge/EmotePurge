@@ -10,7 +10,7 @@ import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { DeleteRunInfo, SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
-import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { EmoteTagService } from '../../core/tags/emote-tag.service';
@@ -22,9 +22,11 @@ import {
 } from './tag-run-actions';
 
 const DE = {
+  sevenTvRun: { kind: { undo: 'Rückgängig', import: 'Kopieren' } },
   tags: {
     actions: { playIn: 'Einspielen', remove: 'Ausräumen' },
     errors: {
+      otherRunActive: 'Ein Lauf ({{kind}}) läuft auf einer anderen Seite.',
       ownershipUnavailable: 'Besitz gerade nicht prüfbar.',
       retry: 'Erneut versuchen',
     },
@@ -67,6 +69,7 @@ function deleteRun(over: Record<string, unknown>): DeleteRunInfo {
 describe('TagRunActions', () => {
   let fixture: ComponentFixture<TagRunActions>;
   let startLocked: WritableSignal<boolean>;
+  let activeRun: WritableSignal<SevenTvRunKind | null>;
   let importRunSignal: WritableSignal<ImportRunInfo | null>;
   let deleteRunSignal: WritableSignal<DeleteRunInfo | null>;
   let registration: () => Observable<unknown>;
@@ -76,6 +79,7 @@ describe('TagRunActions', () => {
 
   beforeEach(async () => {
     startLocked = signal(false);
+    activeRun = signal<SevenTvRunKind | null>(null);
     importRunSignal = signal<ImportRunInfo | null>(null);
     deleteRunSignal = signal<DeleteRunInfo | null>(null);
     registration = () => of({ registeredAtUtc: '2026-10-05T10:00:00Z' });
@@ -158,7 +162,7 @@ describe('TagRunActions', () => {
         { provide: SevenTvDeleteService, useValue: { run: deleteRunSignal } },
         {
           provide: SevenTvRunArbiter,
-          useValue: { startLocked, activeClaim: signal(null), activeRun: signal(null) },
+          useValue: { startLocked, activeClaim: signal(null), activeRun },
         },
         {
           provide: EmoteTagService,
@@ -217,6 +221,61 @@ describe('TagRunActions', () => {
     expect(button('Einspielen')!.disabled).toBe(true);
     expect(button('Ausräumen')!.disabled).toBe(true);
     expect(button('Einspielen')!.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  describe('a lock by a run the host does not show (plan 3.8, tags.errors.otherRunActive)', () => {
+    beforeEach(() => {
+      fixture.componentRef.setInput('tag', summary({ active: true }));
+      fixture.componentRef.setInput('unshownRunKinds', ['undo']);
+      startLocked.set(true);
+    });
+
+    it('names an undo run as the reason and links both buttons to it', () => {
+      activeRun.set('undo');
+      fixture.detectChanges();
+
+      for (const name of ['Einspielen', 'Ausräumen']) {
+        const locked = button(name)!;
+        expect(locked.disabled).toBe(true);
+        const reason = (fixture.nativeElement as HTMLElement).querySelector(
+          `#${locked.getAttribute('aria-describedby')}`,
+        );
+        expect(reason?.textContent?.trim()).toBe(
+          'Ein Lauf (Rückgängig) läuft auf einer anderen Seite.',
+        );
+      }
+    });
+
+    it('stays silent for an import run, whose dock the host shows (§4.2)', () => {
+      activeRun.set('import');
+      fixture.detectChanges();
+
+      expect(button('Einspielen')!.disabled).toBe(true);
+      expect(button('Einspielen')!.hasAttribute('aria-describedby')).toBe(false);
+      expect(fixture.nativeElement.textContent).not.toContain('anderen Seite');
+    });
+
+    it('stays silent for an undo on a host that shows the undo itself', () => {
+      fixture.componentRef.setInput('unshownRunKinds', []);
+      activeRun.set('undo');
+      fixture.detectChanges();
+
+      expect(button('Einspielen')!.hasAttribute('aria-describedby')).toBe(false);
+      expect(fixture.nativeElement.textContent).not.toContain('anderen Seite');
+    });
+  });
+
+  it('tells the host when a click starts a flow, and when a retry does', () => {
+    let started = 0;
+    fixture.componentInstance.started.subscribe(() => started++);
+    registration = () => throwError(() => new HttpErrorResponse({ status: 503 }));
+
+    button('Einspielen')!.click();
+    fixture.detectChanges();
+    expect(started).toBe(1);
+
+    button('Erneut versuchen')!.click();
+    expect(started).toBe(2);
   });
 
   it('starts no flow from a click that outraces the lock', () => {

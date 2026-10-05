@@ -517,6 +517,28 @@ the `sevenTvRun.tagReport.*` family, plus `restoreHint`.
 `web/src/app/shared/seven-tv/delete-flow.ts` · `web/src/app/shared/seven-tv/delete-progress-section.ts` ·
 `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
+**Surfaces (Task 13) — the usage page's filter row: the buttons take the sentence's slot.** With a tag
+chosen, the inline group shows "eingespielt" for a tag active in the active set and then either the
+sentence "Einspielen und Ausräumen wirken auf das aktive Set" or `TagRunActions` — never both. The buttons
+render when a tag is chosen, the rows on screen belong to the *active* set (`shownSetId === activeEmoteSetId`),
+`tagRunsEnabled` is on and the pointer is fine; they are **not** gated on `canManage` (E9: whether the user
+may write the set is the registration's 403 to say, before anything is written). The sentence keeps its T-B
+condition (manager, fine pointer, a view of another set) and additionally needs `tagRunsEnabled` — while
+runs are switched off nothing is missing that it would have to explain. `TagRunActions` receives the page's
+**live active set** from the set status, never the shown set: the flows' confirm-time guard compares
+against exactly that input. It is mounted on the gate itself, and every term of the gate is stable across a
+`channel.synced` reload of the same set (the tag list keeps its value while it reloads; the shown and the
+active set only diverge on a real switch), so a reload never re-creates the component and never aborts a
+dialog its flow has open (rulings F38); a real switch does drop it, which the flows treat as a set change.
+Two additions to `TagRunActions` itself: a `started` output (a click or a retry started a flow — the tags
+page clears its stale run notice on it), and `unshownRunKinds`: a lock held by a run kind whose surface the
+host does not mount is explained beside the buttons (`tags.errors.otherRunActive`, linked by
+`aria-describedby`; plan 3.8, §10), every other lock stays silent as §4.2 says.
+
+**Betrifft (Task 13, filter row):** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/shared/tags/tag-run-actions.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

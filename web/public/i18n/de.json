@@ -1788,7 +1788,8 @@
         "other": "{{count}} nicht im Set"
       },
       "overview": "Übersicht",
-      "activeSetOnly": "Einspielen und Ausräumen wirken auf das aktive Set"
+      "activeSetOnly": "Einspielen und Ausräumen wirken auf das aktive Set",
+      "active": "eingespielt"
     },
     "feedback": {
       "assigned": {
@@ -1857,7 +1858,8 @@
         "notEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
         "notSelectable": "Das Set ist kein normales Emote-Set.",
         "unavailable": "Das Set konnte gerade nicht geprüft werden."
-      }
+      },
+      "otherRunActive": "Gesperrt, solange {{kind}} auf einer anderen Seite läuft."
     }
   },
   "errors": {

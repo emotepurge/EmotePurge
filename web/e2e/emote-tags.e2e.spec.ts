@@ -171,7 +171,9 @@ test.describe('emote tags', () => {
   test('without the active set in view there is no assign button, and the filter says why', async ({
     page,
   }) => {
-    await mockChannel(page);
+    // The sentence explains the missing tag-run buttons, so it needs tag runs switched on (#201
+    // T-C, rulings F11).
+    await mockChannel(page, { tagRunsEnabled: true });
     await mockTags(page, CHANNEL, [{ id: 7, name: 'Favoriten', entryCount: 1, inSetCount: 1 }]);
     await mockTagEntries(page, CHANNEL, 7, [{ sevenTvEmoteId: '7tv-1', alias: 'catJAM' }]);
     await mockTrackedEmoteSetPreview(page, CHANNEL, {

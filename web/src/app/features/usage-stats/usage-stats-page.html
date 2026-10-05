@@ -263,14 +263,19 @@
           }
         </select>
       }
-      <!-- The chosen tag in the same row (spec 9.2): name · k in the set · m not in the set, then
-           the way to the tag's own page. The numbers are counted against the active set and drop
-           out together when there is none to count in (`inSetCount: null`). In a view of another
-           set, the sentence that stands where T-C's buttons will go. Middle dots are separators
-           only and stay out of the accessibility tree. -->
+      <!-- The chosen tag in the same row (spec 9.2): name · played in · k in the set · m not in
+           the set, then "Einspielen"/"Ausräumen" (#201 T-C), then the way to the tag's own page.
+           The numbers are counted against the active set and drop out together when there is none
+           to count in (`inSetCount: null`). In a view of another set the sentence stands in the
+           buttons' slot instead (spec 8, rulings F11). Middle dots are separators only and stay out
+           of the accessibility tree. -->
       @if (selectedTag(); as tag) {
-        <span class="flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-fg-muted">
+        <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-muted">
           <span class="max-w-60 truncate font-medium text-fg-body">{{ tag.name }}</span>
+          @if (tag.active) {
+            <span aria-hidden="true">·</span>
+            <span>{{ 'tags.filter.active' | transloco }}</span>
+          }
           @if (selectedTagCounts(); as counts) {
             <span aria-hidden="true">·</span>
             <span>{{ counts.inSetKey | transloco: { count: formatCount(counts.inSet) } }}</span>
@@ -282,6 +287,23 @@
           @if (tagActiveSetOnlyShown()) {
             <span aria-hidden="true">·</span>
             <span>{{ 'tags.filter.activeSetOnly' | transloco }}</span>
+          } @else if (tagRunActionsShown()) {
+            <!-- Mounted on the gate rather than always with [enabled]: everything in it is stable
+                 across a live reload (the tag list keeps its value while it reloads, the active set
+                 and the shown set only move together on a real set switch), so the component — and
+                 a dialog its flow has open — survives a channel.synced reload (rulings F38). The
+                 active set is the live one from the set status, never the shown set: the flows'
+                 confirm-time guard compares against exactly this input. -->
+            <app-tag-run-actions
+              class="text-sm"
+              [channelName]="channelName()"
+              [tag]="tag"
+              [activeEmoteSetId]="activeEmoteSetId()"
+              [setName]="activeEmoteSetName()"
+              [enabled]="true"
+              (completed)="onTagRunCompleted()"
+              (feedback)="onTagRunFeedback($event)"
+            />
           }
           <!-- min-h-6: a 24 px target (§10) for a link set in 12 px text. -->
           <a
