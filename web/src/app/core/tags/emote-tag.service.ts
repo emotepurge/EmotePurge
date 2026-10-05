@@ -7,7 +7,13 @@ import {
   EmoteTag,
   EmoteTagEntries,
   EmoteTagList,
+  RegisterTagOperationBody,
   RemoveTagEntriesResult,
+  TagOperationRegistration,
+  TagPlacementsBody,
+  TagPlacementsResult,
+  TagRemovalBody,
+  TagRemovalResult,
 } from './emote-tag.model';
 
 @Injectable({ providedIn: 'root' })
@@ -62,6 +68,42 @@ export class EmoteTagService {
     return this.http.post<RemoveTagEntriesResult>(
       `${this.base(channelName)}/${tagId}/entries/remove`,
       { sevenTvEmoteIds },
+    );
+  }
+
+  /** Registers a play-in or removal operation before the run starts; its server time anchors the report. */
+  registerOperation(
+    channelName: string,
+    tagId: number,
+    body: RegisterTagOperationBody,
+  ): Observable<TagOperationRegistration> {
+    return this.http.post<TagOperationRegistration>(
+      `${this.base(channelName)}/${tagId}/operations`,
+      body,
+    );
+  }
+
+  /** Reports a finished (or empty) play-in. The set travels in the body, never as a query. */
+  reportPlacements(
+    channelName: string,
+    tagId: number,
+    body: TagPlacementsBody,
+  ): Observable<TagPlacementsResult> {
+    return this.http.post<TagPlacementsResult>(
+      `${this.base(channelName)}/${tagId}/placements`,
+      body,
+    );
+  }
+
+  /** Reports a finished (or empty) removal. */
+  reportRemoval(
+    channelName: string,
+    tagId: number,
+    body: TagRemovalBody,
+  ): Observable<TagRemovalResult> {
+    return this.http.post<TagRemovalResult>(
+      `${this.base(channelName)}/${tagId}/placements/removed`,
+      body,
     );
   }
 

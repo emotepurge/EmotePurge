@@ -604,6 +604,8 @@
       "tagCreate": "Tag angelegt",
       "tagRename": "Tag umbenannt",
       "tagDelete": "Tag gelöscht",
+      "tagPlayedIn": "Tag eingespielt",
+      "tagRemoved": "Tag ausgeräumt",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
@@ -629,6 +631,10 @@
       "importedFromLeaderboard": {
         "one": "{{count}} Emote aus {{title}}",
         "other": "{{count}} Emotes aus {{title}}"
+      },
+      "importedFromTag": {
+        "one": "{{count}} Emote aus einem Tag",
+        "other": "{{count}} Emotes aus einem Tag"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
@@ -1849,7 +1855,11 @@
       "tag_name_taken": "Einen Tag mit diesem Namen gibt es in diesem Channel schon.",
       "tag_limit_reached": "Dieser Channel hat die maximale Zahl an Tags erreicht.",
       "tag_not_found": "Dieser Tag existiert nicht mehr.",
-      "tag_entry_limit_reached": "Dieser Tag hat die maximale Zahl an Emotes erreicht. Es wurde nichts hinzugefügt."
+      "tag_entry_limit_reached": "Dieser Tag hat die maximale Zahl an Emotes erreicht. Es wurde nichts hinzugefügt.",
+      "tag_operation_id_invalid": "Der Lauf konnte nicht gemeldet werden: Die Vorgangskennung ist ungültig.",
+      "tag_operation_unknown": "Dieser Vorgang ist dem Server nicht bekannt. Starte den Lauf bitte neu.",
+      "tag_operation_conflict": "Dieser Vorgang gehört zu einem anderen Tag oder Set. Starte den Lauf bitte neu.",
+      "tag_operation_kind_invalid": "Die Art des Vorgangs ist ungültig."
     }
   }
 }

@@ -6284,11 +6284,31 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     name: string,
     overrides: Partial<EmoteTagSummary> = {},
   ): EmoteTagSummary {
-    return { id, name, entryCount: 5, inSetCount: 3, ...overrides };
+    return {
+      id,
+      name,
+      entryCount: 5,
+      inSetCount: 3,
+      placedCount: 0,
+      active: false,
+      activatedAtUtc: null,
+      ...overrides,
+    };
   }
 
   function entry(sevenTvEmoteId: string): EmoteTagEntry {
-    return { sevenTvEmoteId, alias: sevenTvEmoteId, imageUrl: '', inSet: true, currentName: null };
+    return {
+      sevenTvEmoteId,
+      alias: sevenTvEmoteId,
+      imageUrl: '',
+      inSet: true,
+      currentName: null,
+      placedByThisTag: false,
+      placedAtUtc: null,
+      placementOperationId: null,
+      heldByActiveTags: [],
+      placedByOtherTags: [],
+    };
   }
 
   function configure(coarse: boolean, realTemplate = false): void {

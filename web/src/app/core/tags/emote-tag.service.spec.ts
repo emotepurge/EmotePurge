@@ -80,4 +80,85 @@ describe('EmoteTagService', () => {
     expect(remove.request.body).toEqual({ sevenTvEmoteIds: ['A'] });
     remove.flush({ removedCount: 1 });
   });
+
+  it('registers an operation on /operations with the set in the body, not the query', () => {
+    const body = {
+      operationId: '11111111-1111-4111-8111-111111111111',
+      kind: 'playIn' as const,
+      emoteSetId: 'SET1',
+      targetOwnerTwitchId: null,
+    };
+    let result: unknown;
+    service.registerOperation('somechannel', 7, body).subscribe((r) => (result = r));
+
+    const req = http.expectOne('/api/channels/somechannel/tags/7/operations');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.params.keys()).toEqual([]);
+    expect(req.request.body).toEqual(body);
+    req.flush({ registeredAtUtc: '2026-10-05T10:00:00Z' });
+    expect(result).toEqual({ registeredAtUtc: '2026-10-05T10:00:00Z' });
+  });
+
+  it('reports placements on /placements, set in the body only', () => {
+    const body = {
+      operationId: '11111111-1111-4111-8111-111111111111',
+      emoteSetId: 'SET1',
+      targetOwnerTwitchId: '4711',
+      sevenTvEmoteIds: ['A', 'B'],
+    };
+    service.reportPlacements('somechannel', 7, body).subscribe();
+
+    const req = http.expectOne('/api/channels/somechannel/tags/7/placements');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.params.keys()).toEqual([]);
+    expect(req.request.body).toEqual(body);
+    req.flush({
+      replayed: false,
+      recordedCount: 2,
+      alreadyRecordedCount: 0,
+      notTaggedIds: [],
+      discardedStaleIds: [],
+    });
+  });
+
+  it('reports a removal on /placements/removed with every snapshot entry carrying its revision', () => {
+    const body = {
+      operationId: '22222222-2222-4222-8222-222222222222',
+      emoteSetId: 'SET1',
+      targetOwnerTwitchId: null,
+      activationOperationId: null,
+      snapshot: [
+        { sevenTvEmoteId: 'A', placementOperationId: '33333333-3333-4333-8333-333333333333' },
+      ],
+      removedIds: ['A'],
+      keptIds: [],
+    };
+    service.reportRemoval('somechannel', 7, body).subscribe();
+
+    const req = http.expectOne('/api/channels/somechannel/tags/7/placements/removed');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.params.keys()).toEqual([]);
+    expect(req.request.body).toEqual(body);
+    req.flush({
+      replayed: false,
+      deletedCount: 1,
+      transferredCount: 0,
+      droppedCount: 0,
+      sweptCount: 0,
+      deactivated: true,
+    });
+  });
+
+  it('url-encodes the channel name on the report routes', () => {
+    service
+      .reportPlacements('a b', 1, {
+        operationId: 'x',
+        emoteSetId: 's',
+        targetOwnerTwitchId: null,
+        sevenTvEmoteIds: [],
+      })
+      .subscribe();
+
+    http.expectOne('/api/channels/a%20b/tags/1/placements').flush({});
+  });
 });

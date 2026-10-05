@@ -57,6 +57,7 @@ const PERMISSIONS: ChannelPermissions = {
   isGlobalAdmin: false,
   isTracked: true,
   isBotActive: true,
+  tagRunsEnabled: false,
 };
 
 const DONE_RESULT: RunResult = {

@@ -604,6 +604,8 @@
       "tagCreate": "Tag created",
       "tagRename": "Tag renamed",
       "tagDelete": "Tag deleted",
+      "tagPlayedIn": "Tag played in",
+      "tagRemoved": "Tag cleared",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
       "userDelete": "Account deleted"
@@ -629,6 +631,10 @@
       "importedFromLeaderboard": {
         "one": "{{count}} emote from {{title}}",
         "other": "{{count}} emotes from {{title}}"
+      },
+      "importedFromTag": {
+        "one": "{{count}} emote from a tag",
+        "other": "{{count}} emotes from a tag"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV trending today",
@@ -1849,7 +1855,11 @@
       "tag_name_taken": "This channel already has a tag with that name.",
       "tag_limit_reached": "This channel has reached the maximum number of tags.",
       "tag_not_found": "This tag no longer exists.",
-      "tag_entry_limit_reached": "This tag has reached the maximum number of emotes. Nothing was added."
+      "tag_entry_limit_reached": "This tag has reached the maximum number of emotes. Nothing was added.",
+      "tag_operation_id_invalid": "The run could not be reported: the operation id is invalid.",
+      "tag_operation_unknown": "The server does not know this operation. Please start the run again.",
+      "tag_operation_conflict": "This operation belongs to a different tag or set. Please start the run again.",
+      "tag_operation_kind_invalid": "The operation kind is invalid."
     }
   }
 }

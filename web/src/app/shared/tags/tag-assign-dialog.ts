@@ -232,7 +232,15 @@ export class TagAssignDialog {
           this.settleCreate();
           this.tags.update((list) => [
             ...(list ?? []),
-            { id: tag.id, name: tag.name, entryCount: 0, inSetCount: null },
+            {
+              id: tag.id,
+              name: tag.name,
+              entryCount: 0,
+              inSetCount: null,
+              placedCount: 0,
+              active: false,
+              activatedAtUtc: null,
+            },
           ]);
           this.checked.update((current) => new Set(current).add(tag.id));
           this.nameFieldRef().reset();

@@ -22,6 +22,7 @@ const PERMISSIONS: ChannelPermissions = {
   isGlobalAdmin: false,
   isTracked: true,
   isBotActive: true,
+  tagRunsEnabled: false,
 };
 
 describe('channelManageGuard', () => {

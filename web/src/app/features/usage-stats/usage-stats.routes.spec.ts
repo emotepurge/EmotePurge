@@ -106,6 +106,7 @@ const PERMISSIONS: ChannelPermissions = {
   isGlobalAdmin: false,
   isTracked: true,
   isBotActive: true,
+  tagRunsEnabled: false,
 };
 
 const DE_TRANSLATIONS = {

@@ -45,6 +45,7 @@ const MANAGER: ChannelPermissions = {
   isGlobalAdmin: false,
   isTracked: true,
   isBotActive: true,
+  tagRunsEnabled: false,
 };
 
 function setStatus(activeEmoteSetId: string): EmoteSetStatus {
@@ -64,7 +65,7 @@ function tag(
   entryCount = 2,
   inSetCount: number | null = 1,
 ): EmoteTagSummary {
-  return { id, name, entryCount, inSetCount };
+  return { id, name, entryCount, inSetCount, placedCount: 0, active: false, activatedAtUtc: null };
 }
 
 function tagList(...tags: EmoteTagSummary[]): EmoteTagList {
@@ -78,6 +79,11 @@ function entry(id: string, overrides: Partial<EmoteTagEntry> = {}): EmoteTagEntr
     imageUrl: `https://cdn.7tv.app/emote/${id}`,
     inSet: true,
     currentName: `alias-${id}`,
+    placedByThisTag: false,
+    placedAtUtc: null,
+    placementOperationId: null,
+    heldByActiveTags: [],
+    placedByOtherTags: [],
     ...overrides,
   };
 }

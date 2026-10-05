@@ -17,6 +17,8 @@ export interface ChannelPermissions {
   isGlobalAdmin: boolean;
   isTracked: boolean;
   isBotActive: boolean;
+  /** Server flag `Tags:RunsEnabled`: the tag play-in and removal runs are released (T-C). */
+  tagRunsEnabled: boolean;
 }
 
 /**

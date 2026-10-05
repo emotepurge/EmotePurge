@@ -377,6 +377,27 @@ runs exist whatever the flag says; it only lets the frontend offer the buttons.
 `tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagOptionsTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs` · `docs/Architectur.md`
 
+#### Frontend core (Task 7)
+
+`EmoteTagService` gains `registerOperation`, `reportPlacements` and `reportRemoval` (all `POST`, the set
+id in the body and never in the query), the tag models gain the placement/activation fields, and the four
+new codes sit in `api-error.ts` and both locale files (rule 7). The report response types document F34 in
+code: when `replayed` is `true`, no other field is an outcome, and nothing in `core/` derives counts or
+messages from a replay. `ChannelPermissions.tagRunsEnabled` is required, so every typed literal had to
+say it. The audit side takes the new actions (`tag.playedIn`, `tag.removed`) and the count-only detail
+kind `importedFromTag`.
+
+`core/seven-tv/tag-run-settlement.ts` holds the two run-context types (`ImportTagContext`,
+`DeleteTagContext`) and the pure `deriveTagKeptIds`. It lives in `core/` because the delete service
+imports it and `core/` may not import from `shared/`. A ticked placement without a `done` row stays kept:
+a removal 7TV did not confirm must not make the server forget an emote that is still in the set.
+
+**Betrifft (Task 7, core):** `web/src/app/core/tags/emote-tag.model.ts` ·
+`web/src/app/core/tags/emote-tag.service.ts` · `web/src/app/core/channels/channel.model.ts` ·
+`web/src/app/core/i18n/api-error.ts` · `web/src/app/core/audit/audit.model.ts` ·
+`web/src/app/core/seven-tv/tag-run-settlement.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
+`web/src/app/shared/audit/audit-row.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·
