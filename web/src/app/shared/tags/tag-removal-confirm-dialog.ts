@@ -1,14 +1,15 @@
-import { ScrollingModule } from '@angular/cdk/scrolling';
+import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrolling';
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { NgTemplateOutlet } from '@angular/common';
 import {
   Component,
-  Injector,
+  ElementRef,
   Signal,
-  afterNextRender,
+  afterEveryRender,
   computed,
   inject,
   signal,
+  viewChild,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
@@ -51,17 +52,19 @@ export interface TagRemovalConfirmResult {
 
 type ListItem =
   | { kind: 'heading'; id: string; labelKey: string }
-  | { kind: 'row'; id: string; row: TagRemovalRow; checked: boolean };
+  | { kind: 'row'; id: string; row: TagRemovalRow; checked: boolean; active: boolean };
 
 /**
  * Preview and confirmation of a tag clear-out in one dialog (spec E19) — the last screen before
  * emotes leave 7TV. Built from the delete dialog's pieces: set line, shared-set banner, quiet
  * sentences, `NamePreviewList`.
  *
- * Every row can be ticked either way (the human decides, PRODUCT principle 1). Ticked rows come
- * first, the unticked ones follow under "not proposed" with their reason, so toggling moves a row
- * across the hairline; focus is put back on the toggled checkbox afterwards, otherwise the move
- * would drop a keyboard user to the top of the dialog. The confirm button is never disabled because
+ * Every row can be ticked either way (the human decides, PRODUCT principle 1). The two blocks
+ * ("proposed" / "not proposed") are the system's proposal, fixed when the dialog opens: a toggle
+ * changes the checkbox and the summary, never the row's place, so nothing jumps under the pointer
+ * and a keyboard user keeps their position. Past 50 rows the list is virtualised with a roving
+ * tabindex (arrow keys, Home/End, `scrollToIndex`), because Tab alone never reaches a row outside
+ * the CDK buffer (Designsprache 7.2). The confirm button is never disabled because
  * of n = 0 (E26: a tag with nothing to remove is still cleared out, without a delete run) — only
  * while the shared-set check is still running, as in the delete dialog.
  */
@@ -81,12 +84,11 @@ type ListItem =
     <app-dialog-shell [dialogTitle]="'tags.removalDialog.title' | transloco: { tag: data.tagName }">
       <!-- A status region on purpose, unlike the delete dialog's counts: here the sentence is the
            only thing that answers a tick, and nothing else changes loudly. Present from the start,
-           so it announces changes only, not its own arrival (§4.5). -->
+           so it announces changes only, not its own arrival (§4.5). It is the dialog's ONLY
+           status region: the "ownership check unavailable" notice below is a plain paragraph. -->
       <p role="status" class="text-sm font-medium text-fg">
-        {{
-          'tags.removalDialog.summary'
-            | transloco: { removeCount: removeCount(), keepCount: keepCount() }
-        }}
+        {{ removeKey() | transloco: { count: removeCount() } }},
+        {{ keepKey() | transloco: { count: keepCount() } }}
       </p>
       <p class="text-sm text-fg-secondary">
         {{ 'massDelete.confirmSetLine' | transloco: { setName: data.setName } }}
@@ -121,18 +123,23 @@ type ListItem =
           </span>
         </app-notice-banner>
       } @else if (ownershipCheckUnavailable()) {
-        <app-notice-banner variant="warning">
+        <p class="rounded-md bg-warning-wash px-4 py-3 text-sm text-warning-fg">
           {{ 'massDelete.ownershipCheckUnavailable' | transloco }}
-        </app-notice-banner>
+        </p>
       }
 
       @if (items().length > 0) {
+        <!-- One scroll container for the list (§7): the virtual viewport, or a capped box for short
+             lists, both sized against dvh so the pane does not scroll as well. The wrapper rule
+             pins CDK's shrink-to-fit content wrapper to the viewport width, otherwise a long name
+             could widen every row instead of truncating. -->
         @if (virtual()) {
           <cdk-virtual-scroll-viewport
             [itemSize]="itemHeight"
             [minBufferPx]="itemHeight * 4"
             [maxBufferPx]="itemHeight * 8"
-            class="-mx-6 h-72 border-y border-border"
+            [style.height]="viewportHeight"
+            class="-mx-6 border-y border-border [&_.cdk-virtual-scroll-content-wrapper]:w-full"
           >
             <div
               *cdkVirtualFor="let item of items(); trackBy: trackItem"
@@ -142,7 +149,10 @@ type ListItem =
             </div>
           </cdk-virtual-scroll-viewport>
         } @else {
-          <div class="-mx-6 max-h-72 overflow-y-auto border-y border-border">
+          <div
+            class="-mx-6 overflow-y-auto border-y border-border"
+            [style.max-height]="viewportHeight"
+          >
             @for (item of items(); track item.id) {
               <div [style.height.px]="itemHeight">
                 <ng-container *ngTemplateOutlet="itemTpl; context: { $implicit: item }" />
@@ -162,6 +172,9 @@ type ListItem =
             {{ item.labelKey | transloco }}
           </h3>
         } @else {
+          <!-- Touch target: the whole 52 px row is the <label>, so a tap anywhere on it toggles the
+               16 px checkbox — the equivalent-target exception of §10, not a small target. The
+               checkbox is the roving tab stop; arrow keys move between rows. -->
           <label
             class="flex h-full cursor-pointer items-center gap-3 border-t border-border px-6 text-sm"
           >
@@ -169,8 +182,11 @@ type ListItem =
               type="checkbox"
               class="h-4 w-4 shrink-0 accent-accent-solid"
               [attr.data-emote-id]="item.row.sevenTvEmoteId"
+              [tabindex]="item.active ? 0 : -1"
               [checked]="item.checked"
               (change)="toggle(item.row.sevenTvEmoteId)"
+              (focusin)="activeId.set(item.row.sevenTvEmoteId)"
+              (keydown)="onKeydown($event, item.row.sevenTvEmoteId)"
             />
             <span class="app-sprite-cell flex size-8 shrink-0 items-center justify-center">
               @if (item.row.imageUrl; as url) {
@@ -179,7 +195,7 @@ type ListItem =
             </span>
             <span class="flex min-w-0 flex-col">
               <span class="truncate font-medium text-fg">{{ item.row.displayName }}</span>
-              <span class="truncate text-xs text-fg-muted">
+              <span class="truncate text-xs text-fg-muted" [attr.title]="lineTitle(item.row)">
                 @switch (item.row.reason) {
                   @case ('placed') {
                     @if (item.row.placedAtUtc; as placedAt) {
@@ -193,6 +209,12 @@ type ListItem =
                       'tags.removalDialog.reason.heldBy'
                         | transloco: { tag: tagNames(item.row.heldBy) }
                     }}
+                    @if (item.row.placedAtUtc; as placedAt) {
+                      ·
+                      {{
+                        'tags.removalDialog.placedAt' | transloco: { date: formatDate(placedAt) }
+                      }}
+                    }
                   }
                   @case ('alreadyPresent') {
                     {{ 'tags.removalDialog.reason.alreadyPresent' | transloco }}
@@ -258,56 +280,74 @@ export class TagRemovalConfirmDialog {
   protected readonly data = inject<TagRemovalConfirmDialogData>(DIALOG_DATA);
   protected readonly dialogRef = inject<DialogRef<TagRemovalConfirmResult | undefined>>(DialogRef);
   private readonly languageService = inject(LanguageService);
-  private readonly injector = inject(Injector);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly viewport = viewChild(CdkVirtualScrollViewport);
 
   protected readonly itemHeight = ITEM_HEIGHT_PX;
+  /** Against dvh like the other virtualised dialog tables (§7.2): the pane must not scroll too. */
+  protected readonly viewportHeight = 'min(20rem, max(8rem, calc(100dvh - 24rem)))';
+
+  /** The row holding the roving tab stop; null means the first row. */
+  protected readonly activeId = signal<string | null>(null);
+
+  private pendingFocusId: string | null = null;
 
   /** Ids the user flipped away from the proposal's start state. A set of flips, not of ticks, so
    *  the start state stays the proposal's and a second flip restores it. */
   protected readonly flipped = signal<ReadonlySet<string>>(new Set());
 
+  /** Block membership is the proposal's own start state and never changes; only the ticks do. */
+  private readonly proposedRows = computed(() => this.data.proposal.rows.filter((r) => r.checked));
+  private readonly notProposedRows = computed(() =>
+    this.data.proposal.rows.filter((r) => !r.checked),
+  );
+
   protected readonly checkedRows = computed(() =>
     this.data.proposal.rows.filter((row) => this.isChecked(row)),
   );
-  protected readonly uncheckedRows = computed(() =>
-    this.data.proposal.rows.filter((row) => !this.isChecked(row)),
-  );
   protected readonly removeCount = computed(() => this.checkedRows().length);
-  protected readonly keepCount = computed(() => this.uncheckedRows().length);
+  protected readonly keepCount = computed(
+    () => this.data.proposal.rows.length - this.removeCount(),
+  );
+  protected readonly removeKey = computed(() =>
+    pluralKey(this.removeCount(), 'tags.removalDialog.summary.remove'),
+  );
+  protected readonly keepKey = computed(() =>
+    pluralKey(this.keepCount(), 'tags.removalDialog.summary.keep'),
+  );
+
+  private readonly rowOrder = computed(() => [...this.proposedRows(), ...this.notProposedRows()]);
+  private readonly tabStopId = computed(
+    () => this.activeId() ?? this.rowOrder()[0]?.sevenTvEmoteId ?? null,
+  );
 
   protected readonly items = computed<ListItem[]>(() => {
-    const checked = this.checkedRows();
-    const unchecked = this.uncheckedRows();
+    const tabStop = this.tabStopId();
+    const toItem = (row: TagRemovalRow): ListItem => ({
+      kind: 'row',
+      id: row.sevenTvEmoteId,
+      row,
+      checked: this.isChecked(row),
+      active: row.sevenTvEmoteId === tabStop,
+    });
     const out: ListItem[] = [];
-    if (checked.length > 0) {
+    const proposed = this.proposedRows();
+    const notProposed = this.notProposedRows();
+    if (proposed.length > 0) {
       out.push({
         kind: 'heading',
         id: 'h:proposed',
         labelKey: 'tags.removalDialog.proposedHeading',
       });
-      out.push(
-        ...checked.map((row): ListItem => ({
-          kind: 'row',
-          id: row.sevenTvEmoteId,
-          row,
-          checked: true,
-        })),
-      );
+      out.push(...proposed.map(toItem));
     }
-    if (unchecked.length > 0) {
+    if (notProposed.length > 0) {
       out.push({
         kind: 'heading',
         id: 'h:notProposed',
         labelKey: 'tags.removalDialog.notProposedHeading',
       });
-      out.push(
-        ...unchecked.map((row): ListItem => ({
-          kind: 'row',
-          id: row.sevenTvEmoteId,
-          row,
-          checked: false,
-        })),
-      );
+      out.push(...notProposed.map(toItem));
     }
     return out;
   });
@@ -337,6 +377,12 @@ export class TagRemovalConfirmDialog {
     return w !== null && !w.available;
   });
 
+  constructor() {
+    // Lands a focus request whose row the viewport had not rendered yet; runs after every render
+    // pass until the row is in the DOM, then stops.
+    afterEveryRender(() => this.landPendingFocus());
+  }
+
   protected readonly trackItem = (_: number, item: ListItem): string => item.id;
 
   protected toggle(id: string): void {
@@ -345,16 +391,31 @@ export class TagRemovalConfirmDialog {
       next.add(id);
     }
     this.flipped.set(next);
-    // The row just changed blocks; give a keyboard user their place back.
-    afterNextRender(
-      () => {
-        const box = document.querySelector<HTMLInputElement>(
-          `app-tag-removal-confirm-dialog input[data-emote-id="${CSS.escape(id)}"]`,
-        );
-        box?.focus();
-      },
-      { injector: this.injector },
-    );
+  }
+
+  protected onKeydown(event: KeyboardEvent, id: string): void {
+    const order = this.rowOrder();
+    const index = order.findIndex((r) => r.sevenTvEmoteId === id);
+    const last = order.length - 1;
+    const next =
+      event.key === 'ArrowDown'
+        ? Math.min(index + 1, last)
+        : event.key === 'ArrowUp'
+          ? Math.max(index - 1, 0)
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? last
+              : null;
+    if (next === null || index < 0) {
+      return;
+    }
+    event.preventDefault();
+    this.focusRow(order[next].sevenTvEmoteId);
+  }
+
+  protected lineTitle(row: TagRemovalRow): string | null {
+    return row.reason === 'heldBy' && row.heldBy.length > 0 ? this.tagNames(row.heldBy) : null;
   }
 
   protected confirm(): void {
@@ -369,6 +430,32 @@ export class TagRemovalConfirmDialog {
 
   protected tagNames(tags: readonly { name: string }[]): string {
     return tags.map((t) => t.name).join(', ');
+  }
+
+  /** Makes the row the tab stop and focuses it; one past the CDK buffer is scrolled to first and
+   *  focused once a render pass has put it in the DOM. */
+  private focusRow(id: string): void {
+    this.activeId.set(id);
+    this.pendingFocusId = id;
+    this.landPendingFocus();
+    if (this.pendingFocusId !== null) {
+      const index = this.items().findIndex((i) => i.id === id);
+      this.viewport()?.scrollToIndex(index);
+    }
+  }
+
+  private landPendingFocus(): void {
+    const id = this.pendingFocusId;
+    if (id === null) {
+      return;
+    }
+    const box = this.host.nativeElement.querySelector<HTMLInputElement>(
+      `input[data-emote-id="${CSS.escape(id)}"]`,
+    );
+    if (box) {
+      this.pendingFocusId = null;
+      box.focus();
+    }
   }
 
   private isChecked(row: TagRemovalRow): boolean {

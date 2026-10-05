@@ -1816,8 +1816,17 @@
     },
     "removalDialog": {
       "title": "Clear out {{tag}}",
-      "summary": "{{removeCount}} emotes will be removed, {{keepCount}} stay in the set",
-      "proposedHeading": "Will be removed",
+      "summary": {
+        "remove": {
+          "one": "{{count}} emote will be removed",
+          "other": "{{count}} emotes will be removed"
+        },
+        "keep": {
+          "one": "{{count}} stays in the set",
+          "other": "{{count}} stay in the set"
+        }
+      },
+      "proposedHeading": "Proposed",
       "notProposedHeading": "Not proposed",
       "placedAt": "played in on {{date}}",
       "reason": {
