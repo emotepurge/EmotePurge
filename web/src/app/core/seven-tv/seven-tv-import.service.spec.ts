@@ -2551,6 +2551,26 @@ describe('SevenTvImportService', () => {
       expect(service.tagPlacementDiscardedStaleCount()).toBe(1);
     });
 
+    it('reads a 404 tag_not_found as tagUnknown, never as a missing set', () => {
+      service.startImport(TARGET_TAG, TAG_ORIGIN, addPlan(ROWS));
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+
+      // A 404 is retried like any transient failure; the last answer decides.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        httpMock
+          .expectOne(PLACEMENTS_B)
+          .flush({ errorCode: 'tag_not_found' }, { status: 404, statusText: 'Not Found' });
+        vi.advanceTimersByTime(10_000);
+      }
+      vi.advanceTimersByTime(60_000);
+
+      httpMock.expectNone(PLACEMENTS_B);
+      expect(service.tagPlacementReport()).toBe('failed');
+      expect(service.tagPlacementReportReason()).toBe('tagUnknown');
+    });
+
     it('fails a 403 as forbidden without an automatic retry', () => {
       service.startImport(TARGET_TAG, TAG_ORIGIN, addPlan(ROWS));
       runTwoRowsToDone();

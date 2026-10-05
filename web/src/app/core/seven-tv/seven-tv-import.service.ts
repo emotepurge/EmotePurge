@@ -39,6 +39,7 @@ import {
   SyncReportState,
   TargetCheckBlockReason,
   classifySyncInSetFailure,
+  classifyTagReportFailure,
   classifySyncInSetResponse,
   isChannelMismatch,
 } from './sync-report-outcome';
@@ -1015,7 +1016,7 @@ export class SevenTvImportService {
             ...(discardedStale === null ? {} : { tagPlacementDiscardedStaleCount: discardedStale }),
           }),
         error: (error: HttpErrorResponse) => {
-          const outcome = classifySyncInSetFailure(error.status);
+          const outcome = classifyTagReportFailure(error);
           this.endReport(runId, 'tag-placements', {
             tagPlacementReport: outcome.state,
             tagPlacementReportReason: outcome.reason,

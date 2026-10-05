@@ -1180,6 +1180,7 @@
   "syncReportReason": {
     "forbidden": "Reason: according to 7TV, your account may no longer edit this set.",
     "setNotFound": "Reason: the set no longer exists on 7TV.",
+    "tagUnknown": "Reason: EmotePurge no longer knows this tag or this operation.",
     "unavailable": "Reason: EmotePurge or 7TV could not be reached just now.",
     "channelMismatchNotTracked": "Reason: EmotePurge is not currently tracking the expected channel.",
     "channelMismatchActiveSetDiffers": "Reason: according to EmotePurge, the expected channel does not currently use this set as its active set.",

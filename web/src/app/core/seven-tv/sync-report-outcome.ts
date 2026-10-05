@@ -1,3 +1,5 @@
+import { HttpErrorResponse } from '@angular/common/http';
+
 import {
   SyncDeletedInSetChannelResult,
   SyncDeletedInSetResponse,
@@ -33,6 +35,7 @@ export type SyncReportState = 'idle' | 'pending' | 'succeeded' | 'partial' | 'fa
 export type SyncReportReason =
   | 'forbidden' // 403 — the actor's editor/owner right was revoked between the pre-check and the report (F4).
   | 'setNotFound' // 404 — the set is gone from 7TV's side (#224: this must never read as 'succeeded').
+  | 'tagUnknown' // 404 from a tag report with `tag_not_found`/`channel_not_found`/`tag_operation_unknown` — EmotePurge no longer knows the tag, channel or operation (not a missing 7TV set).
   | 'unavailable' // 429/503, or a network failure, after the automatic retries.
   | 'channelMismatchNotTracked' // an `unresolvedChannel` with reason 'notTracked' — EmotePurge does not currently track the expected channel (missing, inactive or excluded, E18).
   | 'channelMismatchActiveSetDiffers' // an `unresolvedChannel` with reason 'activeSetDiffers' — the expected channel is tracked, but this set is not its active one right now (E18).
@@ -132,4 +135,34 @@ export function classifySyncInSetFailure(httpStatus: number): SyncReportOutcome 
     default:
       return { state: 'failed', reason: 'other' };
   }
+}
+
+/** Error codes of a tag report's 404 that say EmotePurge no longer knows the tag, the channel or
+ *  the registered operation — as opposed to `emote_set_not_found`, the ownership ladder's "the set
+ *  is gone from 7TV's side". */
+const TAG_UNKNOWN_CODES: ReadonlySet<string> = new Set([
+  'tag_not_found',
+  'channel_not_found',
+  'tag_operation_unknown',
+]);
+
+/**
+ * Classifies the failure of a tag report (`placements`, `removals`). Unlike the set-centric
+ * reports, a 404 here has two unrelated meanings that only the body's `errorCode` tells apart: the
+ * set is gone (`emote_set_not_found` → `'setNotFound'`) or EmotePurge no longer knows the tag or
+ * the operation (`'tagUnknown'`). Any other 404 is `'other'`; every other status reads as in
+ * {@link classifySyncInSetFailure}.
+ */
+export function classifyTagReportFailure(error: HttpErrorResponse): SyncReportOutcome {
+  if (error.status !== 404) {
+    return classifySyncInSetFailure(error.status);
+  }
+  const code = (error.error as { errorCode?: string } | null)?.errorCode;
+  if (code === 'emote_set_not_found') {
+    return { state: 'failed', reason: 'setNotFound' };
+  }
+  if (code !== undefined && TAG_UNKNOWN_CODES.has(code)) {
+    return { state: 'failed', reason: 'tagUnknown' };
+  }
+  return { state: 'failed', reason: 'other' };
 }

@@ -1,9 +1,11 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { describe, expect, it } from 'vitest';
 
 import { SyncDeletedInSetResponse, SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
 import {
   classifySyncInSetFailure,
   classifySyncInSetResponse,
+  classifyTagReportFailure,
   isChannelMismatch,
 } from './sync-report-outcome';
 
@@ -138,5 +140,41 @@ describe('classifySyncInSetFailure — AK 15', () => {
 
   it('reads any other status as failed/other', () => {
     expect(classifySyncInSetFailure(500)).toEqual({ state: 'failed', reason: 'other' });
+  });
+});
+
+describe('classifyTagReportFailure', () => {
+  const failure = (status: number, errorCode?: string): HttpErrorResponse =>
+    new HttpErrorResponse({ status, error: errorCode === undefined ? null : { errorCode } });
+
+  it('reads a 404 with emote_set_not_found as the set being gone', () => {
+    expect(classifyTagReportFailure(failure(404, 'emote_set_not_found'))).toEqual({
+      state: 'failed',
+      reason: 'setNotFound',
+    });
+  });
+
+  it.each(['tag_not_found', 'channel_not_found', 'tag_operation_unknown'])(
+    'reads a 404 with %s as tagUnknown, never as a missing set',
+    (code) => {
+      expect(classifyTagReportFailure(failure(404, code))).toEqual({
+        state: 'failed',
+        reason: 'tagUnknown',
+      });
+    },
+  );
+
+  it('reads a 404 without a recognized code as other', () => {
+    expect(classifyTagReportFailure(failure(404))).toEqual({ state: 'failed', reason: 'other' });
+    expect(classifyTagReportFailure(failure(404, 'something_else'))).toEqual({
+      state: 'failed',
+      reason: 'other',
+    });
+  });
+
+  it.each([403, 429, 503, 0, 500])('reads status %i like the set-centric reports', (status) => {
+    expect(classifyTagReportFailure(failure(status, 'tag_not_found'))).toEqual(
+      classifySyncInSetFailure(status),
+    );
   });
 });

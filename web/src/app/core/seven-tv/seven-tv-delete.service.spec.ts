@@ -1932,6 +1932,24 @@ describe('SevenTvDeleteService', () => {
       expect(service.run()?.phase).toBe('closed');
     });
 
+    it('reads a 404 tag_not_found as tagUnknown, never as a missing set', () => {
+      runTwoRows();
+      answerSync();
+
+      // A 404 is retried like any transient failure; the last answer decides.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        httpMock
+          .expectOne(REMOVED)
+          .flush({ errorCode: 'tag_not_found' }, { status: 404, statusText: 'Not Found' });
+        vi.advanceTimersByTime(10_000);
+      }
+      vi.advanceTimersByTime(60_000);
+
+      httpMock.expectNone(REMOVED);
+      expect(service.tagRemovalReport()).toBe('failed');
+      expect(service.tagRemovalReportReason()).toBe('tagUnknown');
+    });
+
     it('fails a 403 as forbidden without an automatic retry', () => {
       runTwoRows();
       answerSync();

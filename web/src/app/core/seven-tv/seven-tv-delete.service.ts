@@ -42,6 +42,7 @@ import {
   SyncReportReason,
   SyncReportState,
   classifySyncInSetFailure,
+  classifyTagReportFailure,
   classifySyncInSetResponse,
   isChannelMismatch,
 } from './sync-report-outcome';
@@ -738,7 +739,7 @@ export class SevenTvDeleteService {
       .subscribe({
         next: () => this.endTagReport(runId, { state: 'succeeded', reason: null }),
         error: (error: HttpErrorResponse) =>
-          this.endTagReport(runId, classifySyncInSetFailure(error.status)),
+          this.endTagReport(runId, classifyTagReportFailure(error)),
       });
   }
 
