@@ -788,7 +788,8 @@ for an active tag — so there was no way to clear it out. The operator decided 
   sweep), marks the operation applied and writes the audit row — the invariant holds untouched. If a
   play-in of the same tag lands between preview and report, the null activation cannot match it: the tag
   stays active with its fresh placements, which only expire once the leave of the removed emotes is
-  observed (fail-safe, spec 0a).
+  observed (fail-safe, spec 0a). Pinned by
+  `Removal_OfATagThatIsNotPlayedIn_WhenAPlayInOfTheSameTagLandsBeforeTheReport_LeavesThatPlayIn`.
 - **The proposal is checked once more at confirm time** (review I1, same day): with every emote of the tag
   in the set ticked, a tag played in behind the open dialog could otherwise lose emotes it now needs. The
   re-read and its abort are described under R4 above; they apply to active and inactive tags alike.

@@ -2124,6 +2124,40 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         await fixture.AssertPlacementInvariantsAsync(channel.Id);
     }
 
+    // The same-tag race on the inactive path: A is not played in when the clear-out reads it, then a
+    // play-in of A lands before the clear-out's report. The report carries no activation and an
+    // empty snapshot, so it cannot match the new activation or touch the placement it brought: A
+    // stays played in with X.
+    [Fact]
+    public async Task Removal_OfATagThatIsNotPlayedIn_WhenAPlayInOfTheSameTagLandsBeforeTheReport_LeavesThatPlayIn()
+    {
+        var channel = await SeedChannelAsync("tagrminactiverace");
+        var a = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(a.Id, y, "Y", T0);
+        var preview = await ListEntriesAsync("tagrminactiverace", a.Id);
+        Assert.Null(preview.ActivationOperationId);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrminactiverace", a.Id, removal);
+        // Another tab plays A in (X) while the clear-out's dialog is open; its run removes Y.
+        var playIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagrminactiverace", a.Id, playIn);
+        Assert.Equal(1, (await ReportAsync("tagrminactiverace", a.Id, playIn, ActiveSetId, x)).RecordedCount);
+
+        var result = await ReportRemovalAsync("tagrminactiverace", a.Id,
+            Removal(removal, preview.ActivationOperationId, SnapshotOf(preview), removed: [y], kept: []));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: 0, swept: 0, deactivated: false);
+        var after = await ListEntriesAsync("tagrminactiverace", a.Id);
+        Assert.Equal((Guid?)playIn, after.ActivationOperationId);
+        Assert.Equal([x], after.Entries.Where(e => e.PlacedByThisTag).Select(e => e.SevenTvEmoteId));
+        var placement = Assert.Single(await LoadPlacementsAsync(a.Id));
+        Assert.Equal((x, playIn), (placement.SevenTvEmoteId, placement.OperationId));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
     // The anchor lives on the placement: the transferred row points at A's removal operation, and
     // operations cascade with their tag. Deleting A afterwards must not make B's placement stop
     // holding — its anchor is its own.
