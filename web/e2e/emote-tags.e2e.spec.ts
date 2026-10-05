@@ -899,7 +899,7 @@ test.describe('emote tag runs', () => {
     await clearOut(page).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByText('Vorgeschlagen sind deine 2 markierten Emotes.')).toBeVisible();
-    await expect(dialog.getByText(/Der Tag hat nichts ins Set geholt/)).toHaveCount(0);
+    await expect(dialog.getByText(/Über diesen Tag ist gerade nichts im Set/)).toHaveCount(0);
     await expect(dialog.locator('input[data-emote-id="7tv-2"]')).toBeChecked();
     await expect(dialog.locator('input[data-emote-id="7tv-4"]')).toBeChecked();
     await expect(dialog.locator('input[data-emote-id="7tv-1"]')).not.toBeChecked();

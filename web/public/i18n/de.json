@@ -1857,10 +1857,14 @@
       },
       "nothingToDelete": "Es wird nichts bei 7TV gelöscht; der Tag ist danach nicht mehr als ins Set geholt vermerkt.",
       "nothingToDeleteNotPlayedIn": "Es wird nichts bei 7TV gelöscht.",
-      "notPlayedInLead": "Der Tag hat nichts ins Set geholt — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
+      "notPlayedInLead": "Über diesen Tag ist gerade nichts im Set — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
       "markedLead": {
         "one": "Vorgeschlagen ist dein markiertes Emote.",
         "other": "Vorgeschlagen sind deine {{count}} markierten Emotes."
+      },
+      "markedLeadPartial": {
+        "one": "Vorgeschlagen ist {{proposed}} von {{marked}} markierten Emotes.",
+        "other": "Vorgeschlagen sind {{proposed}} von {{marked}} markierten Emotes."
       },
       "markedLeadNone": "Keines deiner markierten Emotes ist vorgeschlagen.",
       "confirm": "Aus dem Set entfernen"

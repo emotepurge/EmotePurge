@@ -50,6 +50,10 @@ const DE = {
         one: 'Dein markiertes vorgeschlagen.',
         other: '{{count}} markierte vorgeschlagen.',
       },
+      markedLeadPartial: {
+        one: '{{proposed}} von {{marked}} markierten vorgeschlagen (eins).',
+        other: '{{proposed}} von {{marked}} markierten vorgeschlagen.',
+      },
       markedLeadNone: 'Keines der markierten vorgeschlagen.',
       confirm: 'Aus dem Set entfernen',
     },
@@ -116,6 +120,7 @@ describe('TagRemovalConfirmDialog', () => {
         ownInLiveIds: [],
         tagActive: true,
         fromMarking: false,
+        markedInSetCount: 0,
       },
       warning,
       warningLoading,
@@ -261,6 +266,7 @@ describe('TagRemovalConfirmDialog', () => {
           ownInLiveIds: [],
           tagActive: false,
           fromMarking: false,
+          markedInSetCount: 0,
         },
       });
 
@@ -307,7 +313,12 @@ describe('TagRemovalConfirmDialog', () => {
 
   // Operator decision 2026-10-05: a marking on the tags page grid is the proposal.
   describe('for a proposal from a grid marking', () => {
-    const fromMarking = (rows: TagRemovalRow[], tagActive: boolean) =>
+    /** `markedInSetCount` defaults to every row that is not "not marked" — held marked rows count. */
+    const fromMarking = (
+      rows: TagRemovalRow[],
+      tagActive: boolean,
+      markedInSetCount = rows.filter((r) => r.reason !== 'notMarked').length,
+    ) =>
       open(rows, {
         proposal: {
           rows,
@@ -316,6 +327,7 @@ describe('TagRemovalConfirmDialog', () => {
           ownInLiveIds: [],
           tagActive,
           fromMarking: true,
+          markedInSetCount,
         },
       });
 
@@ -356,6 +368,41 @@ describe('TagRemovalConfirmDialog', () => {
       );
       await settle();
       expect(host.textContent).toContain('Keines der markierten vorgeschlagen.');
+    });
+
+    it('says "n of m" when a marked emote in the set is held and so not proposed', async () => {
+      let host = fromMarking(
+        [
+          row('a', { reason: 'tagged', placedAtUtc: null }),
+          row('b', {
+            checked: false,
+            reason: 'heldBy',
+            placedAtUtc: null,
+            heldBy: [{ id: 2, name: 'Raid' }],
+          }),
+        ],
+        false,
+      );
+      await settle();
+      expect(host.textContent).toContain('1 von 2 markierten vorgeschlagen (eins).');
+      expect(host.textContent).not.toContain('Dein markiertes vorgeschlagen.');
+      ref.close();
+
+      host = fromMarking(
+        [
+          row('a', { reason: 'tagged', placedAtUtc: null }),
+          row('b', { reason: 'tagged', placedAtUtc: null }),
+          row('c', {
+            checked: false,
+            reason: 'heldBy',
+            placedAtUtc: null,
+            heldBy: [{ id: 2, name: 'Raid' }],
+          }),
+        ],
+        false,
+      );
+      await settle();
+      expect(host.textContent).toContain('2 von 3 markierten vorgeschlagen.');
     });
 
     it('gives an unmarked row its reason, with the date of an own placement', async () => {

@@ -256,6 +256,7 @@ describe('proposeTagRemoval with a grid marking', () => {
       ['d', true, 'tagged'],
     ]);
     expect(p.fromMarking).toBe(true);
+    expect(p.markedInSetCount).toBe(2);
   });
 
   it('for a played-in tag, proposes a marked emote it did not place and leaves an unmarked own placement, with its date', () => {
@@ -299,6 +300,8 @@ describe('proposeTagRemoval with a grid marking', () => {
       ['b', false, 'heldBy', [T3]],
       ['c', false, 'heldBy', [T2]],
     ]);
+    // Held marked rows are still marked rows in the set: none of the two is proposed.
+    expect(p.markedInSetCount).toBe(2);
   });
 
   it('a marked emote not in the set is no row, only counted', () => {
@@ -306,11 +309,13 @@ describe('proposeTagRemoval with a grid marking', () => {
     expect(rowsOf(p)).toEqual([['a', false, 'notMarked']]);
     expect(p.notInSetCount).toBe(1);
     expect(p.fromMarking).toBe(true);
+    expect(p.markedInSetCount).toBe(0);
   });
 
   it('an empty marking is no marking', () => {
     const p = proposeTagRemoval([entry('a')], live({ a: ['x'] }), false, []);
     expect(rowsOf(p)).toEqual([['a', true, 'tagged']]);
     expect(p.fromMarking).toBe(false);
+    expect(p.markedInSetCount).toBe(0);
   });
 });

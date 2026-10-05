@@ -756,18 +756,21 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   `NamePreviewList`): the ticked rows are that list, and a second copy only duplicated them. Its confirm button is the §4.2 execution
   (`danger-solid`). Like the delete dialog, the token prompt comes before the confirmation (after the registration, before the live read).
 - **Two blocks, "Vorgeschlagen" above "Nicht vorgeschlagen".** The server's proposal sorts the rows.
-  For a played-in tag, placements it can vouch for come ticked, everything else (an emote that was in
-  the set before, one another active tag still needs) comes unticked, each with its reason and, where
+  For a played-in tag, placements it can vouch for come ticked, everything else (an emote that did not
+  come into the set via this tag, one another active tag still needs) comes unticked, each with its reason and, where
   there is one, the date it was added to the set ("am <date> ins Set geholt"). For a tag that is not played in (never, or cleared out
   before) every emote of it in the set comes ticked, without a second line, except one another active
   tag still needs ("wird noch von X gebraucht"); "nicht über diesen Tag ins Set gekommen" never appears there. Because
-  those ticks follow another rule than the familiar one, one quiet sentence above the list says so: "Der
-  Tag hat nichts ins Set geholt — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer
-  Tag braucht." (only with at least one row). **A marking on the tags page grid overrides both rules:**
+  those ticks follow another rule than the familiar one, one quiet sentence above the list says so: "Über
+  diesen Tag ist gerade nichts im Set — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein
+  anderer Tag braucht." (only with at least one row). It describes the current state, never a history: a
+  tag that once added emotes and was cleared out with nothing ticked did add them. **A marking on the tags page grid overrides both rules:**
   with at least one marked entry at the click, exactly the marked emotes in the set come ticked, every
   unmarked one comes unticked with "nicht markiert", and one another active tag still needs stays
   unticked with "wird noch von X gebraucht", marked or not; the sentence above the list then reads
-  "Vorgeschlagen sind deine n markierten Emotes." instead. The marking is taken at the click (the open
+  "Vorgeschlagen sind deine n markierten Emotes." instead — or, when a marked emote in the set is held
+  and so not proposed, "Vorgeschlagen sind n von m markierten Emotes." (m = the marked emotes in the
+  set), and "Keines deiner markierten Emotes ist vorgeschlagen." when none is. The marking is taken at the click (the open
   dialog does not follow the grid) and is dropped once the confirmed clear-out goes ahead, kept on
   Cancel. **Block membership is the proposal's start state and never changes.** A tick
   toggles *in place*, in either direction, for every row — the human decides — and changes only the

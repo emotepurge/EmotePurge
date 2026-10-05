@@ -72,6 +72,9 @@ export interface TagRemovalProposal {
   tagActive: boolean;
   /** Whether the proposal follows a grid marking — the dialog's sentence above the list says so. */
   fromMarking: boolean;
+  /** How many rows are marked (marked entries in the live set) — 0 without a marking. The dialog's
+   *  sentence compares it with the proposed count: a held marked row is a row, but not proposed. */
+  markedInSetCount: number;
 }
 
 /** `tagActive`: the entry read found an activation of the tag in the set (`activationOperationId
@@ -109,7 +112,17 @@ export function proposeTagRemoval(
     rows.push(toRow(entry, isOwn, tagActive, marked, live));
   }
 
-  return { rows, notInSetCount, snapshot, ownInLiveIds, tagActive, fromMarking: marked !== null };
+  const markedInSetCount =
+    marked === null ? 0 : rows.filter((row) => marked.has(row.sevenTvEmoteId)).length;
+  return {
+    rows,
+    notInSetCount,
+    snapshot,
+    ownInLiveIds,
+    tagActive,
+    fromMarking: marked !== null,
+    markedInSetCount,
+  };
 }
 
 function toRow(

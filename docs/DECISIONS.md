@@ -812,7 +812,8 @@ for an active tag — so there was no way to clear it out. The operator decided 
   it in the set is proposed (new reason `tagged`, no second line under the name, but one quiet sentence
   above the list — review I2, same day, security model rule 3: "Der Tag ist nicht eingespielt —
   vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
-  `tags.removalDialog.notPlayedInLead`) except one another active
+  `tags.removalDialog.notPlayedInLead`; superseded wording, see "the clear-out dialog's lead sentences say
+  only what the proposal knows" below) except one another active
   tag still needs — `heldByActiveTags`, merged with `placedByOtherTags` so a read that broke "inactive ⇒ no
   placement" still withholds the tick — which stays "Nicht vorgeschlagen" with "wird noch von X
   gebraucht". "Nicht von diesem Tag eingespielt" is a statement about a play-in and never appears for such a tag.
@@ -973,6 +974,25 @@ entry is either in the set or not, so at most one of the two reasons stands at a
 `tagHasSomethingToClear`) · `web/src/app/features/tags/tags-page.ts` ·
 `web/src/app/features/tags/tags-page.html` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · the
 specs of the first three · `docs/UI-Designsprache.md` (§8.7)
+
+**The clear-out dialog's lead sentences say only what the proposal knows (2026-10-05, final review M6).**
+Two sentences above the list claimed more than the logic knows. With a marking, "Vorgeschlagen ist dein
+markiertes Emote." read as if one emote was marked when a second marked one was held by another tag and so
+not proposed. The proposal now carries `markedInSetCount` (rows whose id is marked, held ones included),
+and the dialog says "Vorgeschlagen sind {{proposed}} von {{marked}} markierten Emotes." / "{{proposed}} of
+{{marked}} marked emotes are proposed." (`markedLeadPartial`, one/other on the proposed count) whenever the
+proposed count differs from it; the "deine n" forms stay for the equal case and "Keines …" for none. The
+not-played-in sentence "Der Tag hat nichts ins Set geholt — …" was false for a tag that once added emotes
+and was later cleared out with nothing ticked — the same "claims a history it does not know" fault the row
+reason had. It now describes the state: "Über diesen Tag ist gerade nichts im Set — vorgeschlagen sind alle
+seine Emotes im Set außer denen, die ein anderer Tag braucht." / "Nothing is in the set via this tag right
+now — all its emotes in the set are proposed except those another tag needs." (an inactive tag has no
+placements). UI-Designsprache §7.5 no longer speaks of "an emote that was in the set before".
+
+**Betrifft (dialog lead sentences):** `web/src/app/shared/tags/tag-removal.ts` (`markedInSetCount`) ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.ts` · `web/public/i18n/de.json` ·
+`web/public/i18n/en.json` · the specs of the first two · `web/e2e/emote-tags.e2e.spec.ts` ·
+`docs/UI-Designsprache.md` (§7.5)
 
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 

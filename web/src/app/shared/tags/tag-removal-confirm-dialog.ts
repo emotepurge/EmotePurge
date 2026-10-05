@@ -129,7 +129,7 @@ type ListItem =
              that is not played in, where there is no "not played in by this tag" to leave unticked
              and everything of the tag is proposed. -->
         <p class="text-sm text-fg-secondary">
-          {{ lead | transloco: { count: proposedRows().length } }}
+          {{ lead | transloco: leadParams() }}
         </p>
       }
 
@@ -342,9 +342,12 @@ export class TagRemovalConfirmDialog {
   );
 
   /**
-   * The sentence above the list, only with rows to explain: with a grid marking, how many marked
-   * emotes the proposal holds (a held one is not among them, its row says why); without one, a tag
-   * that is not played in proposes everything of it. A played-in tag's own placements need no word.
+   * The sentence above the list, only with rows to explain, and only what the proposal knows: with a
+   * grid marking, how many marked emotes it proposes — "n of m" when a marked row is held by another
+   * tag and so not proposed (its row says why), plain "your n" when every marked row is; without a
+   * marking, a tag that is not played in proposes everything of it. That sentence describes the
+   * current state ("nothing is in the set via this tag right now"), never a history: a tag cleared
+   * out with nothing ticked once did add its emotes. A played-in tag's own placements need no word.
    */
   protected readonly leadKey = computed<string | null>(() => {
     const proposal = this.data.proposal;
@@ -352,13 +355,21 @@ export class TagRemovalConfirmDialog {
       return null;
     }
     if (proposal.fromMarking) {
-      const count = this.proposedRows().length;
-      return count === 0
-        ? 'tags.removalDialog.markedLeadNone'
-        : pluralKey(count, 'tags.removalDialog.markedLead');
+      const proposed = this.proposedRows().length;
+      if (proposed === 0) {
+        return 'tags.removalDialog.markedLeadNone';
+      }
+      return proposed === proposal.markedInSetCount
+        ? pluralKey(proposed, 'tags.removalDialog.markedLead')
+        : pluralKey(proposed, 'tags.removalDialog.markedLeadPartial');
     }
     return proposal.tagActive ? null : 'tags.removalDialog.notPlayedInLead';
   });
+  protected readonly leadParams = computed(() => ({
+    count: this.proposedRows().length,
+    proposed: this.proposedRows().length,
+    marked: this.data.proposal.markedInSetCount,
+  }));
 
   private readonly rowOrder = computed(() => [...this.proposedRows(), ...this.notProposedRows()]);
   /** The item ids in list order (headings included) — the positions the viewport renders by. */
