@@ -204,15 +204,37 @@ describe('TagRunActions', () => {
     expect((fixture.nativeElement as HTMLElement).querySelectorAll('button')).toHaveLength(0);
   });
 
-  it('offers "Ausräumen" only for a tag played in to the active set', () => {
-    expect(button('Einspielen')).toBeDefined();
-    expect(button('Ausräumen')).toBeUndefined();
+  // Operator decision 2026-10-05: something to clear out, not "played in", decides.
+  describe('"Ausräumen" exists while an emote of the tag is in the set, or the tag is played in', () => {
+    it('is missing for a tag that is not played in and has nothing in the set', () => {
+      expect(button('Einspielen')).toBeDefined();
+      expect(button('Ausräumen')).toBeUndefined();
+    });
 
-    fixture.componentRef.setInput('tag', summary({ active: true }));
-    fixture.detectChanges();
+    it('is there for a tag that was never played in once one of its emotes is in the set', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 1 }));
+      fixture.detectChanges();
 
-    expect(button('Einspielen')).toBeDefined();
-    expect(button('Ausräumen')).toBeDefined();
+      expect(button('Ausräumen')).toBeDefined();
+      expect(button('Einspielen')).toBeDefined();
+    });
+
+    it('is there for a played-in tag, also with nothing of it left in the set', () => {
+      fixture.componentRef.setInput('tag', summary({ inSetCount: 1, active: true }));
+      fixture.detectChanges();
+      expect(button('Ausräumen')).toBeDefined();
+
+      fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0, active: true }));
+      fixture.detectChanges();
+      expect(button('Ausräumen')).toBeDefined();
+    });
+
+    it('is missing when the counts have no set to refer to and the tag is not played in', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 2, inSetCount: null }));
+      fixture.detectChanges();
+
+      expect(button('Ausräumen')).toBeUndefined();
+    });
   });
 
   describe('"Einspielen" exists only while the tag has an emote missing from the set (spec 7.2)', () => {
@@ -227,11 +249,11 @@ describe('TagRunActions', () => {
       expect(button('Ausräumen')).toBeDefined();
     });
 
-    it('is missing, not locked, when nothing is missing — an active tag keeps only "Ausräumen"', () => {
+    it('is missing, not locked, when nothing is missing — only "Ausräumen" stays, played in or not', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3 }));
       fixture.detectChanges();
       expect(button('Einspielen')).toBeUndefined();
-      expect(button('Ausräumen')).toBeUndefined();
+      expect(button('Ausräumen')).toBeDefined();
 
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3, active: true }));
       fixture.detectChanges();
@@ -299,8 +321,8 @@ describe('TagRunActions', () => {
       expect(fixture.nativeElement.textContent).not.toContain('anderen Seite');
     });
 
-    it('states no lock where no button stands — nothing missing, not played in', () => {
-      fixture.componentRef.setInput('tag', summary({ entryCount: 2, inSetCount: 2 }));
+    it('states no lock where no button stands — nothing missing, nothing in the set, not played in', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 0, inSetCount: 0 }));
       activeRun.set('undo');
       fixture.detectChanges();
 
@@ -339,8 +361,17 @@ describe('TagRunActions', () => {
       expect(focusLost).toBe(0);
     });
 
-    it('hands over to the host when no button is left to take it', () => {
+    it('moves to "Ausräumen" also when the reloaded tag reads as not played in', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1 }));
+      fixture.detectChanges();
+
+      expect(document.activeElement).toBe(button('Ausräumen'));
+      expect(focusLost).toBe(0);
+    });
+
+    it('hands over to the host when no button is left to take it', () => {
+      // The tag lost its entries meanwhile: nothing missing, nothing in the set, not played in.
+      fixture.componentRef.setInput('tag', summary({ entryCount: 0, inSetCount: 0 }));
       fixture.detectChanges();
 
       expect(focusLost).toBe(1);

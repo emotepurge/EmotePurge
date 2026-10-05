@@ -681,6 +681,17 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
             }
         }
 
+        // The audit counts what the clear-out took out of the set for this tag: every reported removal
+        // the tag has an entry for, placed by it or not (operator decision 2026-10-05). A tag that was
+        // never played in has no placement, so `deletedCount` would audit its clear-out as zero emotes
+        // however many left 7TV. Ids the tag has no entry for are not counted, as the play-in report
+        // places none of them. One row per (tag, emote) by the entry's primary key, so this is distinct.
+        var removedIdArray = removedIds.ToArray();
+        var removedEntryCount = removedIdArray.Length == 0
+            ? 0
+            : await db.EmoteTagEntries.CountAsync(
+                e => e.TagId == tag.Id && removedIdArray.Contains(e.SevenTvEmoteId), cancellationToken);
+
         var now = DateTime.UtcNow;
         operation.AppliedAtUtc = now;
         AddTagAudit(actor, AuditActions.TagRemoved, channel.ChannelName, tag.Id, new
@@ -688,7 +699,7 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
             tagId = tag.Id,
             emoteSetId = report.EmoteSetId,
             operationId = operation.OperationId,
-            emoteCount = deletedCount
+            emoteCount = removedEntryCount
         });
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);

@@ -42,7 +42,8 @@ const DE = {
         heldBy: 'wird noch von {{tag}} gebraucht',
       },
       notInSet: { one: '{{count}} weiterer nicht im Set', other: '{{count}} weitere nicht im Set' },
-      nothingToDelete: 'Es wird nichts bei 7TV gelöscht.',
+      nothingToDelete: 'Es wird nichts gelöscht; danach nicht mehr eingespielt.',
+      nothingToDeleteNotPlayedIn: 'Es wird nichts gelöscht.',
       confirm: 'Ausräumen',
     },
   },
@@ -101,7 +102,7 @@ describe('TagRemovalConfirmDialog', () => {
     const data: TagRemovalConfirmDialogData = {
       tagName: 'Stronghold',
       setName: 'Hauptset',
-      proposal: { rows, notInSetCount: 0, snapshot: [], ownInLiveIds: [] },
+      proposal: { rows, notInSetCount: 0, snapshot: [], ownInLiveIds: [], tagActive: true },
       warning,
       warningLoading,
       ...over,
@@ -217,10 +218,40 @@ describe('TagRemovalConfirmDialog', () => {
     await settle();
     expect(summary(host)).toBe('0 werden entfernt, 1 bleibt');
     expect(button(host, 'Ausräumen').disabled).toBe(false);
-    expect(host.textContent).toContain('Es wird nichts bei 7TV gelöscht.');
+    expect(host.textContent).toContain('Es wird nichts gelöscht; danach nicht mehr eingespielt.');
 
     button(host, 'Ausräumen').click();
     expect(results).toEqual([{ checkedIds: [] }]);
+  });
+
+  // A tag that is not played in has no state the clear-out could end (operator decision 2026-10-05).
+  describe('for a tag that is not played in', () => {
+    const notPlayedIn = (rows: TagRemovalRow[]) =>
+      open(rows, {
+        proposal: { rows, notInSetCount: 0, snapshot: [], ownInLiveIds: [], tagActive: false },
+      });
+
+    it('at n = 0 says nothing is deleted without promising a change of state', async () => {
+      const host = notPlayedIn([
+        row('held', {
+          checked: false,
+          reason: 'heldBy',
+          placedAtUtc: null,
+          heldBy: [{ id: 2, name: 'Raid' }],
+        }),
+      ]);
+      await settle();
+      expect(host.textContent).toContain('Es wird nichts gelöscht.');
+      expect(host.textContent).not.toContain('nicht mehr eingespielt');
+    });
+
+    it('proposes a tagged row without a reason line', async () => {
+      const host = notPlayedIn([row('a', { reason: 'tagged', placedAtUtc: null })]);
+      await settle();
+      expect(box(host, 'a').checked).toBe(true);
+      expect(host.textContent).not.toContain('war schon vorher im Set');
+      expect(host.textContent).not.toContain('eingespielt am');
+    });
   });
 
   it('closes with the ticked ids in proposal order after toggling', async () => {

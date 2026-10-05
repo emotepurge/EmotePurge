@@ -578,7 +578,7 @@ test.describe('emote tag runs', () => {
     await expect(page.getByText(/^eingespielt\b/).first()).toBeVisible();
   });
 
-  test('offers no "Einspielen" for a tag whose emotes are all in the set — only "Ausräumen", once played in', async ({
+  test('offers no "Einspielen" for a tag whose emotes are all in the set — only "Ausräumen", played in or not', async ({
     page,
   }) => {
     await mockChannel(page);
@@ -601,7 +601,8 @@ test.describe('emote tag runs', () => {
     await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
     await expect(page.getByRole('heading', { name: 'Favoriten', level: 3 })).toBeVisible();
     await expect(playIn(page)).toHaveCount(0);
-    await expect(clearOut(page)).toHaveCount(0);
+    // Never played in, but its emote is in the set: it can be cleared out (operator 2026-10-05).
+    await expect(clearOut(page)).toBeVisible();
     await expect(page.getByText('nicht eingespielt')).toHaveCount(0);
 
     await page.goto(`/channels/${CHANNEL}/tags?tag=${OTHER_TAG_ID}`);
@@ -684,10 +685,11 @@ test.describe('emote tag runs', () => {
     expect(operations.requests[0].body).toEqual(
       expect.objectContaining({ kind: 'removal', emoteSetId: ACTIVE_SET_ID }),
     );
-    // The protocol of the run is offered, and the reloaded tag is no longer played in.
+    // The protocol of the run is offered, and the reloaded tag is no longer played in. monkaW is
+    // still in the set, so "Ausräumen" stays — now for a tag that is not played in.
     await expect(page.getByRole('button', { name: 'Protokoll herunterladen' })).toBeVisible();
-    await expect(clearOut(page)).toHaveCount(0);
     await expect(page.getByText(/eingespielt seit/)).toHaveCount(0);
+    await expect(clearOut(page)).toBeVisible();
   });
 
   test('clears out a tag whose only placement another active tag still needs: no REMOVE, an immediate report, the tag is no longer played in', async ({
@@ -750,11 +752,96 @@ test.describe('emote tag runs', () => {
       page.getByText('Favoriten ausgeräumt — nichts zu entfernen.').first(),
     ).toBeVisible();
     await expect(page.getByText(/eingespielt seit/)).toHaveCount(0);
-    // Nothing reached 7TV, and nothing was reported as deleted.
+    // Nothing reached 7TV, and nothing was reported as deleted. catJAM is still in the set, so
+    // "Ausräumen" stays for the tag that is no longer played in.
     expect(sevenTv.removes).toEqual([]);
     expect(sevenTv.adds).toEqual([]);
     expect(syncDeleted).toEqual([]);
-    await expect(clearOut(page)).toHaveCount(0);
+    await expect(clearOut(page)).toBeVisible();
+  });
+
+  test('clears out a tag that was never played in because its emotes were all in the set: the dialog proposes all but what another active tag needs, and the report carries no activation and no placements', async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await mockChannel(page);
+    // The person tagged emotes that were in the set already (say, the Halloween ones, to clear
+    // them out later). catJAM is also needed by the active tag "Lieblinge".
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 3, inSetCount: 3 },
+      {
+        id: OTHER_TAG_ID,
+        name: 'Lieblinge',
+        entryCount: 1,
+        inSetCount: 1,
+        placedCount: 1,
+        active: true,
+      },
+    ]);
+    await mockTagEntries(page, CHANNEL, TAG_ID, [
+      {
+        sevenTvEmoteId: '7tv-1',
+        alias: 'catJAM',
+        heldByActiveTags: [{ id: OTHER_TAG_ID, name: 'Lieblinge' }],
+        placedByOtherTags: [{ id: OTHER_TAG_ID, name: 'Lieblinge' }],
+      },
+      { sevenTvEmoteId: '7tv-2', alias: 'monkaW' },
+      { sevenTvEmoteId: '7tv-3', alias: 'KEKW' },
+    ]);
+    const operations = await mockTagOperations(page, CHANNEL, TAG_ID);
+    // Not played in: there is no activation the report could end.
+    const removal = await mockTagRemoval(page, CHANNEL, TAG_ID, { deactivated: false });
+    const { sevenTv, syncDeleted } = await mockRunBackend(page, [
+      { id: '7tv-1', alias: 'catJAM' },
+      { id: '7tv-2', alias: 'monkaW' },
+      { id: '7tv-3', alias: 'KEKW' },
+    ]);
+    await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
+    await expect(page.getByRole('heading', { name: 'Favoriten', level: 3 })).toBeVisible();
+    await expect(playIn(page)).toHaveCount(0);
+
+    await clearOut(page).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('#app-dialog-title')).toHaveText('Favoriten ausräumen');
+    await expect(dialog.locator('input[data-emote-id="7tv-2"]')).toBeChecked();
+    await expect(dialog.locator('input[data-emote-id="7tv-3"]')).toBeChecked();
+    await expect(dialog.locator('input[data-emote-id="7tv-1"]')).not.toBeChecked();
+    await expect(dialog.getByText(/wird noch von Lieblinge gebraucht/)).toBeVisible();
+    // Nothing of it was played in, so nothing "was already in the set before" either.
+    await expect(dialog.getByText('war schon vorher im Set')).toHaveCount(0);
+    await expect(dialog.getByRole('status')).toHaveText(
+      '2 Emotes werden entfernt, 1 bleibt im Set',
+    );
+    expect(sevenTv.removes).toEqual([]);
+    await dialog.getByRole('button', { name: 'Ausräumen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(3_000);
+    await expect(page.getByText('2 gelöscht · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    await expect.poll(() => removal.requests.length).toBe(1);
+
+    expect([...sevenTv.removes].sort()).toEqual(['7tv-2', '7tv-3']);
+    expect(sevenTv.adds).toEqual([]);
+    expect(syncDeleted).toEqual([
+      expect.objectContaining({
+        sevenTvEmoteIds: expect.arrayContaining(['7tv-2', '7tv-3']),
+        expectedChannelName: CHANNEL,
+      }),
+    ]);
+    const body = removal.requests[0].body as { removedIds: string[] };
+    expect(body).toEqual({
+      operationId: (operations.requests[0].body as { operationId: string }).operationId,
+      emoteSetId: ACTIVE_SET_ID,
+      targetOwnerTwitchId: OWNER_TWITCH_ID,
+      activationOperationId: null,
+      snapshot: [],
+      removedIds: expect.any(Array),
+      keptIds: [],
+    });
+    expect([...body.removedIds].sort()).toEqual(['7tv-2', '7tv-3']);
+    // catJAM is still in the set and the tag still names it: "Ausräumen" stays for that one.
+    await expect(clearOut(page)).toBeVisible();
+    await expect(page.getByText(/eingespielt seit/)).toHaveCount(0);
   });
 
   test('an incompletely read set blocks both the play-in and the clear-out without a write', async ({

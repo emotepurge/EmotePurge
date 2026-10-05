@@ -322,7 +322,13 @@ public interface IEmoteTagService
     /// removed nor kept are dropped. On deactivation every remaining placement of the tag in the set is
     /// swept the same way, so an inactive tag never holds a placement; an expired placement is only
     /// ever deleted, never transferred. A target whose own row for the emote has expired gets that row
-    /// rewritten as if it were absent. Audited as <c>tag.removed</c> without the tag's name.
+    /// rewritten as if it were absent. Audited as <c>tag.removed</c> without the tag's name; its
+    /// <c>emoteCount</c> is the reported removals the tag has an entry for, placed by it or not.
+    /// <para>
+    /// A tag that is not active in the set (never played in, or cleared out before) is a legal subject:
+    /// it has no placement there and no activation, so the report changes neither — it only marks the
+    /// operation applied and writes the audit row.
+    /// </para>
     /// <para>
     /// On <c>Replayed</c> the result carries no outcome: the counts are 0 and <c>Deactivated</c> is
     /// <c>false</c> whatever the first application did.

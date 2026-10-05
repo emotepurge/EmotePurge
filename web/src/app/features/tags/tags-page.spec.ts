@@ -736,11 +736,19 @@ describe('TagsPage', () => {
     }
 
     describe('the run buttons (spec 9.4, 8)', () => {
-      it('offers "Einspielen" in the detail head, without "Ausräumen" for a tag not played in', async () => {
-        const { harness } = await openTag(tag(1, 'Stronghold'));
+      it('offers "Einspielen" in the detail head, without "Ausräumen" for a tag not played in with nothing in the set', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold', 2, 0));
 
         expect(buttonByName(harness, 'Einspielen')).not.toBeNull();
         expect(buttonByName(harness, 'Ausräumen')).toBeNull();
+      });
+
+      // Operator decision 2026-10-05: something of the tag in the set is enough to clear it out.
+      it('offers "Ausräumen" for a tag not played in once one of its emotes is in the set', async () => {
+        const { harness } = await openTag(tag(1, 'Stronghold', 2, 1));
+
+        expect(buttonByName(harness, 'Einspielen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
       });
 
       it('offers "Ausräumen" for a played-in tag', async () => {
@@ -750,11 +758,11 @@ describe('TagsPage', () => {
         expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
       });
 
-      it('hides "Einspielen" for a tag whose emotes are all in the set — and an inactive one then has no run button', async () => {
+      it('hides "Einspielen" for a tag whose emotes are all in the set — an inactive one keeps "Ausräumen"', async () => {
         const full = { ...tag(1, 'Stronghold', 2, 2) };
         const { harness } = await openTag(full);
         expect(buttonByName(harness, 'Einspielen')).toBeNull();
-        expect(buttonByName(harness, 'Ausräumen')).toBeNull();
+        expect(buttonByName(harness, 'Ausräumen')).not.toBeNull();
       });
 
       it('keeps only "Ausräumen" for a played-in tag with nothing missing', async () => {

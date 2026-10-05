@@ -12,8 +12,14 @@ import type {
  *   sits only under aliasless entries (spec 3.4): one REMOVE takes every entry of the id, so the
  *   emote is there to be removed even though the read cannot name it. No fallback to the entry's
  *   `inSet` flag (E28): only the live read decides.
- * - Every uncertainty tips towards "propose less": anything not clearly this tag's own, unheld
- *   placement starts unchecked, and the user can tick it either way.
+ * - Every uncertainty tips towards "propose less": for a tag played in to the set, anything not
+ *   clearly this tag's own, unheld placement starts unchecked, and the user can tick it either way.
+ * - A tag that is **not** played in (never, or cleared out before) has no placement to tell its own
+ *   emotes from ones that were there before (operator decision 2026-10-05: a tag of emotes that
+ *   were all in the set already must still be clearable). Its whole point is the person's tagging,
+ *   so every emote of it in the set is proposed — except one another active tag still needs
+ *   (`heldByActiveTags`, or a valid placement of another tag), which stays unchecked with that
+ *   reason. "Was already in the set before" is a statement about a play-in and does not apply.
  * - The snapshot carries **all** of the tag's own placements, visible in the set or not (6.4/3): the
  *   ones no longer in the set are not rows, but they belong to the report so the server can drop
  *   them, and each carries the revision it was read at so the server touches only that placement.
@@ -21,7 +27,10 @@ import type {
  *   deletes from is built later by `toDeleteQueueEmotes`, which adds the aliasless fallback — this
  *   file has no alias rule of its own.
  */
-export type TagRemovalReason = 'placed' | 'heldBy' | 'alreadyPresent';
+/** `placed`: this tag's own placement. `heldBy`: another active tag still needs it. `alreadyPresent`:
+ *  in the set before this (played-in) tag's play-in. `tagged`: an emote of a tag that is not played
+ *  in — proposed for its tagging alone, with no further line. */
+export type TagRemovalReason = 'placed' | 'heldBy' | 'alreadyPresent' | 'tagged';
 
 export interface TagRemovalRow {
   sevenTvEmoteId: string;
@@ -51,11 +60,16 @@ export interface TagRemovalProposal {
   snapshot: TagPlacementSnapshotEntry[];
   /** Ids of the tag's own placements that are in the set; the flow derives the kept ids from it. */
   ownInLiveIds: string[];
+  /** Whether the entry read found the tag played in to the set — the dialog words n = 0 by it. */
+  tagActive: boolean;
 }
 
+/** `tagActive`: the entry read found an activation of the tag in the set (`activationOperationId
+ *  !== null`) — the same read the snapshot comes from, never the page's older summary. */
 export function proposeTagRemoval(
   entries: readonly EmoteTagEntry[],
   live: SevenTvSetEntries,
+  tagActive: boolean,
 ): TagRemovalProposal {
   const rows: TagRemovalRow[] = [];
   const snapshot: TagPlacementSnapshotEntry[] = [];
@@ -79,13 +93,18 @@ export function proposeTagRemoval(
     if (isOwn) {
       ownInLiveIds.push(id);
     }
-    rows.push(toRow(entry, isOwn, live));
+    rows.push(toRow(entry, isOwn, tagActive, live));
   }
 
-  return { rows, notInSetCount, snapshot, ownInLiveIds };
+  return { rows, notInSetCount, snapshot, ownInLiveIds, tagActive };
 }
 
-function toRow(entry: EmoteTagEntry, isOwn: boolean, live: SevenTvSetEntries): TagRemovalRow {
+function toRow(
+  entry: EmoteTagEntry,
+  isOwn: boolean,
+  tagActive: boolean,
+  live: SevenTvSetEntries,
+): TagRemovalRow {
   const id = entry.sevenTvEmoteId;
   const aliases = live.aliasesById.get(id) ?? [];
   const displayName =
@@ -106,6 +125,15 @@ function toRow(entry: EmoteTagEntry, isOwn: boolean, live: SevenTvSetEntries): T
       placedAtUtc: entry.placedAtUtc,
     };
   }
+  if (!tagActive) {
+    // Every other tag with a valid placement is active (inactive => no placement) and has an entry
+    // (the foreign key), so it is among `heldByActiveTags`; merged anyway, so a read that broke that
+    // rule still withholds the tick (propose less).
+    const heldBy = mergeRefs(entry.heldByActiveTags, entry.placedByOtherTags);
+    return heldBy.length > 0
+      ? { ...base, checked: false, reason: 'heldBy', heldBy, placedAtUtc: null }
+      : { ...base, checked: true, reason: 'tagged', heldBy: [], placedAtUtc: null };
+  }
   if (entry.placedByOtherTags.length > 0) {
     return {
       ...base,
@@ -116,4 +144,10 @@ function toRow(entry: EmoteTagEntry, isOwn: boolean, live: SevenTvSetEntries): T
     };
   }
   return { ...base, checked: false, reason: 'alreadyPresent', heldBy: [], placedAtUtc: null };
+}
+
+/** `first` in its order, then whatever of `second` it lacks (by id). */
+function mergeRefs(first: readonly EmoteTagRef[], second: readonly EmoteTagRef[]): EmoteTagRef[] {
+  const ids = new Set(first.map((ref) => ref.id));
+  return [...first, ...second.filter((ref) => !ids.has(ref.id))];
 }

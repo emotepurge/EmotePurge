@@ -97,7 +97,11 @@ function openConfirmation(
   request: TagRunRequest,
   prepared: PreparedTagRun,
 ): void {
-  const proposal = proposeTagRemoval(prepared.entries.entries, prepared.live);
+  const proposal = proposeTagRemoval(
+    prepared.entries.entries,
+    prepared.live,
+    prepared.entries.activationOperationId !== null,
+  );
   const warning = signal<EmoteSetWarning | null>(null);
   const warningLoading = signal(true);
   deps.emoteAdminService.getSetWarning(request.channelName, prepared.frozenSetId).subscribe({

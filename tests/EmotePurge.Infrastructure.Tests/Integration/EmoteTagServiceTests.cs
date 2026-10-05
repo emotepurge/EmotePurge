@@ -2020,7 +2020,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task Removal_IsAuditedAsRemoved_WithTheDeletedCount_WithoutTheTagName()
+    public async Task Removal_IsAuditedAsRemoved_WithTheRemovedCount_WithoutTheTagName()
     {
         var channel = await SeedChannelAsync("tagrmaudit");
         var tag = await SeedTagAsync(channel.Id, "SecretStronghold");
@@ -2049,6 +2049,78 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
             (root.GetProperty("tagId").GetInt64(), root.GetProperty("emoteSetId").GetString(),
                 root.GetProperty("operationId").GetGuid(), root.GetProperty("emoteCount").GetInt32()));
         Assert.DoesNotContain("secret", entry.DetailsJson, StringComparison.OrdinalIgnoreCase);
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // The audit counts what the clear-out took out of the set for the tag, not the placements it
+    // deleted: Y was in the set before the play-in (no placement) and was ticked by hand, and it left
+    // 7TV all the same. An id the tag has no entry for is not counted.
+    [Fact]
+    public async Task Removal_AuditCountsEveryRemovedEntry_PlacedOrNot_ButNoIdWithoutAnEntry()
+    {
+        var channel = await SeedChannelAsync("tagrmauditentries");
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        var playIn = await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmauditentries", tag.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmauditentries", tag.Id,
+            Removal(removal, playIn, Snapshot((x, playIn)), removed: [x, y, NewSevenTvId()], kept: []));
+
+        AssertCounts(result, deleted: 1, transferred: 0, dropped: 0, swept: 0, deactivated: true);
+        var entry = Assert.Single(await LoadAuditAsync("tagrmauditentries"));
+        using var details = JsonDocument.Parse(entry.DetailsJson!);
+        Assert.Equal(2, details.RootElement.GetProperty("emoteCount").GetInt32());
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Operator decision 2026-10-05: a tag that was never played in (its emotes were in the set already)
+    // can be cleared out. Its preview reads no activation and no own placement, and names the other
+    // active tag that still needs Z; the report then has nothing to deactivate, no snapshot and no
+    // kept id. It is accepted, changes neither this tag's nor the holder's placements or activation,
+    // and audits the emotes that left the set.
+    [Fact]
+    public async Task Removal_OfATagThatIsNotPlayedIn_IsAccepted_ChangesNoPlacementOrActivation_AndAuditsTheRemovedEmotes()
+    {
+        var channel = await SeedChannelAsync("tagrminactive");
+        var holder = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var tag = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        var z = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        await SeedEntryAsync(tag.Id, z, "Z", T0);
+        await SeedEntryAsync(holder.Id, z, "Z", T0);
+        await SeedPlayInAsync(holder.Id, ActiveSetId, T0.AddDays(-3), z);
+        var preview = await ListEntriesAsync("tagrminactive", tag.Id);
+        Assert.Null(preview.ActivationOperationId);
+        Assert.DoesNotContain(preview.Entries, e => e.PlacedByThisTag);
+        Assert.Equal([holder.Id], preview.Entries.Single(e => e.SevenTvEmoteId == z).HeldByActiveTags.Select(t => t.Id));
+        var holderPlayIn = (await LoadPlacementsAsync(holder.Id)).Single().OperationId;
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrminactive", tag.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrminactive", tag.Id,
+            Removal(removal, preview.ActivationOperationId, SnapshotOf(preview), removed: [x, y], kept: []));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: 0, swept: 0, deactivated: false);
+        Assert.Empty(await LoadPlacementsAsync(tag.Id));
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagActivations.AnyAsync(a => a.TagId == tag.Id));
+        Assert.NotNull((await verify.EmoteTagOperations.AsNoTracking().SingleAsync(o => o.OperationId == removal)).AppliedAtUtc);
+        var audit = Assert.Single(await LoadAuditAsync("tagrminactive"));
+        Assert.Equal((AuditActions.TagRemoved, tag.Id.ToString(CultureInfo.InvariantCulture)), (audit.Action, audit.TargetId));
+        using var details = JsonDocument.Parse(audit.DetailsJson!);
+        Assert.Equal(2, details.RootElement.GetProperty("emoteCount").GetInt32());
+        // The holder keeps its placement of Z, under its own revision, and stays played in.
+        var held = Assert.Single(await LoadPlacementsAsync(holder.Id));
+        Assert.Equal((z, holderPlayIn), (held.SevenTvEmoteId, held.OperationId));
+        Assert.True(await verify.EmoteTagActivations.AnyAsync(a => a.TagId == holder.Id));
         await fixture.AssertPlacementInvariantsAsync(channel.Id);
     }
 

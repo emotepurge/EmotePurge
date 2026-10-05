@@ -645,6 +645,54 @@ describe('startTagRemovalFlow', () => {
       expect(harness.pending()).toBe(false);
     });
 
+    // Operator decision 2026-10-05: a tag whose emotes were all in the set already was never played
+    // in, and must still be clearable.
+    it('clears out a tag that is not played in: everything in the set but what another active tag needs is proposed, and the context carries no activation and no placements', () => {
+      const harness = setup({
+        entries: of({
+          ...ENTRIES,
+          activationOperationId: null,
+          entries: [
+            entry('placed'),
+            entry('held', { heldByActiveTags: [{ id: 9, name: 'Halloween' }] }),
+            entry('before'),
+          ],
+        }),
+      });
+      harness.run();
+
+      const proposal = confirmationData(harness).proposal;
+      expect(proposal.tagActive).toBe(false);
+      expect(proposal.rows.map((row) => [row.sevenTvEmoteId, row.checked, row.reason])).toEqual([
+        ['placed', true, 'tagged'],
+        ['held', false, 'heldBy'],
+        ['before', true, 'tagged'],
+      ]);
+      confirmationClosed(harness).next({
+        checkedIds: proposal.rows.filter((row) => row.checked).map((row) => row.sevenTvEmoteId),
+      });
+
+      expect(harness.startDelete).toHaveBeenCalledExactlyOnceWith(
+        'set-active',
+        CHANNEL,
+        [
+          expect.objectContaining({ sevenTvEmoteId: 'placed' }),
+          expect.objectContaining({ sevenTvEmoteId: 'before' }),
+        ],
+        CHANNEL,
+        'tw-owner',
+        {
+          tagId: TAG.id,
+          operationId: OP_1,
+          activationOperationId: null,
+          snapshot: [],
+          checkedOwnIds: [],
+          uncheckedOwnIds: [],
+          channelName: CHANNEL,
+        },
+      );
+    });
+
     it('aborts when the active set moved behind the open dialog', () => {
       const harness = setup();
       harness.run();

@@ -285,7 +285,9 @@ tag in the set as it exists at apply time, valid and expired alike.
 - **Counters:** `deletedCount` (removed hits), `transferredCount` (kept hits handed over),
   `droppedCount` (kept hits without a target or expired, plus hits neither removed nor kept),
   `sweptCount` (everything the sweep took, transferred or not), `deactivated`. Audit `tag.removed`
-  with `{ tagId, emoteSetId, operationId, emoteCount = deletedCount }`, no name (E30). `DeleteAsync`'s
+  with `{ tagId, emoteSetId, operationId, emoteCount }`, no name (E30). `emoteCount` was
+  `deletedCount` until 2026-10-05; it is now the reported removals the tag has an entry for (see
+  "Clearing out a tag that is not played in" below). `DeleteAsync`'s
   audit now also carries `placementCount`; `RemoveEntriesAsync` keeps its `{ removedCount }` wire (the
   FK cascade takes the placements; the wire contract stays as T-B shipped it).
 - **Races with entry removal (Codex finding 3)** are ordered by the channel lock and closed by the
@@ -514,7 +516,8 @@ chain instead, because the engine refuses a start without a token silently (a do
 never happened) and `noteRefusedStart` would announce the refusal a second time next to the flow's own
 notice. The dock shows the state line, the failure reason and a retry button, plus — after a tag run only
 — the hint that "Restore" brings emotes back unplaced (13.2: they read as "was already in the set before"
-at the next clear-out); the announcer speaks the end states on every page, never the pending line. Keys:
+at the next clear-out — since 2026-10-05 only once the tag is played in again, see "Clearing out a tag that
+is not played in" below); the announcer speaks the end states on every page, never the pending line. Keys:
 the `sevenTvRun.tagReport.*` family, plus `restoreHint`.
 
 **Betrifft (Task 9):** `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
@@ -646,6 +649,9 @@ The plan overrules five sentences of the spec; each is recorded in the spec's ad
 - **5.3 "no foreign key to the entry"** — the composite FK with cascade exists (Task 1).
 - **12.5 "resync summary in the log"** — replaced by the executable readiness check in docs/Operations.md (Rollout).
 - **5.5 "a kept hit that expired is transferred"** — an expired kept hit is dropped, not transferred (Task 5).
+- **7.2 "Ausräumen only for a played-in tag"** — it exists while an emote of the tag is in the set or the tag is
+  played in, and a tag that is not played in proposes everything of it in the set (operator decision
+  2026-10-05, below).
 
 Also changed, with the reasons in the paragraphs above: all T-C id columns are `varchar(32)` including
 set ids (the spec said 24); a placement carries its own `RegisteredAtUtc` as the validity anchor (5.3/5.5);
@@ -668,8 +674,10 @@ UI-Designsprache §8.7 (9.4).
   actor, and the human still confirms.
 - **R4** — a preview race between two tags can leave one emote too few in the set (never one too many); a
   fresh play-in brings it back.
-- **13.2** — "Restore" after a clear-out creates no placement: restored emotes read "was already in the set"
-  at the next clear-out and can be ticked by hand. The restore button says so after a tag run. The
+- **13.2** — "Restore" after a clear-out creates no placement: restored emotes are in the set without being
+  recorded as played in by the tag. While the tag is not played in, the next clear-out proposes them like any
+  emote of the tag (since 2026-10-05); once it is played in again they read "was already in the set" and can
+  be ticked by hand. The restore button says so after a tag run. The
   converse, an **undo of a tag play-in** (usage page, #254), sends no tag report: its adds leave 7TV, the
   undo's own set-centric `sync-deleted` observations expire the placements, and the tag reads
   "eingespielt" (no placement count at 0) until a clear-out with nothing ticked (n = 0) deactivates it — fail-safe,
@@ -708,12 +716,16 @@ The operator tried the runs in the browser and changed three things; all are fro
 - **"Einspielen" exists only while the tag has an emote missing from the set** (`entryCount >
   inSetCount`, read off the summary the host already holds; with `inSetCount: null` — no set to count in —
   a tag with entries still offers it). Spec 7.2 "missing, not locked", like "Ausräumen" for an inactive
-  tag. The flow's "all present" path stays for the race between loading the page and the click. The state
+  tag (that half superseded the same day: "Ausräumen" now exists for an inactive tag with an emote in the
+  set, see "Clearing out a tag that is not played in" below). The flow's "all present" path stays for the race between loading the page and the click. The state
   "nicht eingespielt" is no longer shown anywhere (list, detail head); only "eingespielt" is, and the
   list's "(n platziert)" only for n > 0.
 - **Accepted consequence:** a tag whose emotes are all in the set cannot be played in any more, so it
   cannot be activated and does not shield its emotes from another tag's clear-out ("wird noch von X
   gebraucht"). If an emote goes missing later, "Einspielen" returns and the tag can be played in again.
+  As first shipped this also meant such a tag could never be cleared out ("Ausräumen" existed only for
+  an active tag, and even the detour through a play-in proposed nothing — every row read "war schon
+  vorher im Set"); the operator found that live and decided the clear-out below.
 - **Focus survives the disappearing button.** When a play-in leaves nothing missing, "Einspielen" leaves
   the DOM while it holds the focus CDK gave back after the dialog; focus then moves to "Ausräumen" (the tag
   is played in now) or, with no button left, to the detail heading (`tabindex="-1"`). Without a run button
@@ -725,6 +737,60 @@ The operator tried the runs in the browser and changed three things; all are fro
   out again." The set line stays as it was. A tag with no entries replaces its former empty text with
   "No emotes yet. Select them on the usage page and assign them to this tag." (the existing manager-only
   button to the usage page stays).
+
+#### Clearing out a tag that is not played in (operator decision 2026-10-05)
+
+Found in the live test after feedback 1: a tag of emotes that were all in the set already (the person
+tagged the Halloween emotes to clear them out later) can never become active, and "Ausräumen" existed only
+for an active tag — so there was no way to clear it out. The operator decided (binding), superseding spec
+7.2's "Ausräumen only for a played-in tag" and the feedback-1 note above:
+
+- **"Ausräumen" exists while there is something to clear out:** an emote of the tag in the active set
+  (`inSetCount > 0`), whether the tag is active or not, **or** the tag being active at all
+  (`TagRunActions.removeShown`). The second half is ours, not the operator's wording: an active tag with
+  nothing in the set (an undo of its play-in — 13.2 — or its entries taken out of it) still has an
+  activation to end, and the clear-out with nothing ticked is the only thing that ends it. Without a count
+  (`inSetCount: null`, no set to count in) an inactive tag shows no "Ausräumen"; the host's gate needs a
+  known active set anyway. Still missing, not locked (spec 7.2).
+- **What the dialog proposes depends on the entry read's activation**, not on the page's summary: the flow
+  passes `activationOperationId !== null` from the same read the snapshot comes from. For an **active**
+  tag nothing changes (own unheld placement → proposed; already there before, or held → not proposed).
+  For a tag that is **not active** (never played in, or cleared out before) there is no placement to tell
+  its own emotes from ones that were there before, and its point is the person's tagging: every emote of
+  it in the set is proposed (new reason `tagged`, no second line under the name) except one another active
+  tag still needs — `heldByActiveTags`, merged with `placedByOtherTags` so a read that broke "inactive ⇒ no
+  placement" still withholds the tick — which stays "Nicht vorgeschlagen" with "wird noch von X
+  gebraucht". "War schon vorher im Set" is a statement about a play-in and never appears for such a tag.
+  With nothing ticked the dialog says only "Es wird nichts bei 7TV gelöscht." — the "gilt danach als nicht
+  mehr eingespielt" half belongs to an active tag (`tags.removalDialog.nothingToDeleteNotPlayedIn`).
+- **The backend needed no new path.** Registration does not look at the activation; the removal report of
+  an inactive tag carries `activationOperationId: null`, an empty snapshot and no kept ids, so it
+  deactivates nothing, hits nothing and sweeps nothing (by "inactive ⇒ no placement" there is nothing to
+  sweep), marks the operation applied and writes the audit row — the invariant holds untouched. If a
+  play-in of the same tag lands between preview and report, the null activation cannot match it: the tag
+  stays active with its fresh placements, which only expire once the leave of the removed emotes is
+  observed (fail-safe, spec 0a).
+- **The audit count changed:** `tag.removed`'s `emoteCount` is now the reported removed ids the tag has an
+  entry for, placed by it or not, instead of `deletedCount` (own placements deleted). With the old count
+  every clear-out of an inactive tag would have read "0 Emotes" however many left 7TV, and an active
+  tag's hand-ticked "war schon vorher" rows were never counted. Ids without an entry are not counted, the
+  same filter the play-in report applies; the response's `deletedCount` keeps its meaning.
+- **The restore hint** (`sevenTvRun.tagReport.restoreHint`) no longer says restored emotes read "war schon
+  vorher im Set" at the next clear-out — while the tag is not played in they are proposed again; the hint
+  now says they are not recorded as played in, and read that way only if the tag is played in again. The
+  tags-page explainer ("Einspielen holt sie ins Set, Ausräumen nimmt sie wieder heraus.") stays true.
+- The e2e mock of the removal report now takes the removed emotes out of the set for the next read
+  (`inSetCount`, the entry's `inSet`), as the real server does after the run's `sync-deleted`; the
+  scenarios that cleared a tag out while another of its emotes stayed in the set now expect "Ausräumen" to
+  remain.
+
+**Betrifft (clear-out of an inactive tag):** `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` ·
+`web/src/app/shared/tags/tag-removal.ts` · `web/src/app/shared/tags/tag-removal-flow.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.ts` · `web/src/app/shared/tags/tag-run-actions.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/e2e/emote-tags.e2e.spec.ts` ·
+`web/e2e/support/mocks.ts` · `docs/UI-Designsprache.md`
 
 **Betrifft (feedback 1):** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/tags/tags-page.html` ·

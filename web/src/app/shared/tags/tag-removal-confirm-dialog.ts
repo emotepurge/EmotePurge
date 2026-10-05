@@ -216,6 +216,8 @@ type ListItem =
                   @case ('alreadyPresent') {
                     {{ 'tags.removalDialog.reason.alreadyPresent' | transloco }}
                   }
+                  <!-- 'tagged' (a tag that is not played in): proposed for its tagging alone,
+                       nothing to add under the name. -->
                 }
               </span>
             </span>
@@ -231,7 +233,7 @@ type ListItem =
 
       @if (removeCount() === 0) {
         <p class="text-sm text-fg-secondary">
-          {{ 'tags.removalDialog.nothingToDelete' | transloco }}
+          {{ nothingToDeleteKey() | transloco }}
         </p>
       } @else {
         <app-name-preview-list [names]="checkedNames()" [cap]="null" />
@@ -311,6 +313,13 @@ export class TagRemovalConfirmDialog {
   );
   protected readonly keepKey = computed(() =>
     pluralKey(this.keepCount(), 'tags.removalDialog.summary.keep'),
+  );
+  /** n = 0 deactivates a played-in tag; a tag that is not played in has nothing to lose — the
+   *  sentence must not promise a change of state that does not happen. */
+  protected readonly nothingToDeleteKey = computed(() =>
+    this.data.proposal.tagActive
+      ? 'tags.removalDialog.nothingToDelete'
+      : 'tags.removalDialog.nothingToDeleteNotPlayedIn',
   );
 
   private readonly rowOrder = computed(() => [...this.proposedRows(), ...this.notProposedRows()]);

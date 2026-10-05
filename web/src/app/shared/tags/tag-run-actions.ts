@@ -81,8 +81,9 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
  *
  * Renders nothing unless the host says so (`enabled`: runs switched on, fine pointer, a known
  * active set). "Einspielen" exists only while the tag has an emote missing from the set,
- * "Ausräumen" only for a tag played in to that set (spec 7.2: missing, not locked — there is
- * nothing to explain beyond the state the host shows next to it). Both lock
+ * "Ausräumen" while one of its emotes is in the set or it is played in there (`removeShown`; spec
+ * 7.2: missing, not locked — there is nothing to explain beyond the state the host shows next to
+ * it). Both lock
  * while any 7TV run holds the start (`startLocked`, without a hint: the run's dock is the hint,
  * UI-Designsprache §4.2) and while this component's own flow is busy.
  *
@@ -120,7 +121,7 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
                 {{ 'tags.actions.playIn' | transloco }}
               </button>
             }
-            @if (tag().active) {
+            @if (removeShown()) {
               <button
                 #removeButton
                 type="button"
@@ -213,8 +214,18 @@ export class TagRunActions {
     const tag = this.tag();
     return tag.entryCount > (tag.inSetCount ?? 0);
   });
+  /** "Ausräumen" exists while there is something to clear out (operator decision 2026-10-05,
+   *  superseding spec 7.2's "only for a played-in tag"): an emote of the tag in the set — whether
+   *  the tag was played in or its emotes were all there already, which leaves it no way to become
+   *  active — or the tag being played in at all. The latter keeps a played-in tag with nothing in
+   *  the set clearable (an undo of its play-in, entries taken out of it): the clear-out with nothing
+   *  ticked is what deactivates it (13.2). */
+  protected readonly removeShown = computed(() => {
+    const tag = this.tag();
+    return tag.active || (tag.inSetCount ?? 0) > 0;
+  });
   /** At least one run button stands; the button row and the lock reason exist only then. */
-  protected readonly anyButton = computed(() => this.playInShown() || this.tag().active);
+  protected readonly anyButton = computed(() => this.playInShown() || this.removeShown());
   protected readonly locked = computed(() => this.arbiter.startLocked() || this.pending());
   /** The run-kind noun key of a lock the host has no surface for, `null` otherwise — a lock by a
    *  run whose dock the page shows stays without text (§4.2). */

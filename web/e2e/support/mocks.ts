@@ -1642,7 +1642,9 @@ export async function mockTagPlacements(
 /**
  * POST …/tags/{tagId}/placements/removed (spec 6.2) — the clear-out report. Captures every body,
  * answers 200 (counts default to the reported `removedIds`) and, unless `deactivated: false`, marks
- * the tag as no longer played in for the page's next read.
+ * the tag as no longer played in for the page's next read. Like the real server after the run's
+ * `sync-deleted`, the removed emotes leave the set for the next reads: the tag's `inSetCount` drops
+ * by each removed entry still in the set, and that entry reads `inSet: false`.
  */
 export async function mockTagRemoval(
   page: Page,
@@ -1670,6 +1672,15 @@ export async function mockTagRemoval(
         tag.active = false;
         tag.activatedAtUtc = null;
         tag.placedCount = 0;
+      }
+      const removed = new Set(body?.removedIds ?? []);
+      for (const entry of state.entries.get(tagId) ?? []) {
+        if (removed.has(entry.sevenTvEmoteId) && entry.inSet !== false) {
+          entry.inSet = false;
+          if (tag && tag.inSetCount !== null) {
+            tag.inSetCount = Math.max(0, tag.inSetCount - 1);
+          }
+        }
       }
       return fulfillJson(route, 200, {
         replayed: answer.replayed ?? false,
