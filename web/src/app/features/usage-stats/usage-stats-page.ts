@@ -1372,6 +1372,23 @@ export class UsageStatsPage {
         ),
   });
 
+  /**
+   * The chosen tag's keys are on their way: the filter lets every row through until they land
+   * (`EmoteUsageFilter.apply`), so for that window `filteredEmotes()`/`atlasOrder()` still describe
+   * the UNFILTERED list. Everything derived from it (the grid, the mark-all button, the curve) must
+   * wait instead of flashing — a tag without emotes would otherwise offer "alle markieren" over the
+   * whole set for a moment. Not pending when the load failed (the filter then deliberately lets
+   * every row through, and the error banner says so) nor when no tag list can name the tag.
+   */
+  protected readonly tagFilterPending = computed(
+    () =>
+      this.usageFilter.tagId() !== null &&
+      this.usageFilter.tagKeys() === null &&
+      !this.tagFilterEntriesResource.error() &&
+      !this.tagsResource.error() &&
+      (this.selectedTag() !== null || this.tagsResource.isLoading()),
+  );
+
   /** A failed "remove from tag" (7.0a) — the dialog-less one of the two tag writes, so the page has
    *  to say it itself. Cleared by the next attempt, a tag change and a channel switch. */
   private readonly tagRemovalErrorKey = signal<string | null>(null);
@@ -1961,7 +1978,11 @@ export class UsageStatsPage {
    *  query until `loadTotals()`'s response lands (see that method's own comment) — which is exactly
    *  the state this excludes. */
   protected readonly sheetShowsRows = computed(
-    () => !this.viewLoading() && !this.isAwaitingSync() && this.atlasOrder().length > 0,
+    () =>
+      !this.viewLoading() &&
+      !this.tagFilterPending() &&
+      !this.isAwaitingSync() &&
+      this.atlasOrder().length > 0,
   );
 
   /** Whether the toolbar's mark-all control exists at all — a fine pointer (no write path off a

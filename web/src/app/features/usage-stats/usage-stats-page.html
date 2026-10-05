@@ -606,9 +606,11 @@
     <!-- The element the column count is measured against (see atlasColumns). It wraps every result
        state, so it exists from the first frame and the ResizeObserver never has nothing to watch. -->
     <div #sheet>
-      @if (viewLoading()) {
+      @if (viewLoading() || tagFilterPending()) {
         <!-- Atlas-shaped skeleton (NN/g: skeleton for page loads); one status element carries the
-           accessible loading text, the shimmer blocks are decorative. -->
+           accessible loading text, the shimmer blocks are decorative. Also up while a chosen tag's
+           emotes are still loading (`tagFilterPending`): until they land the grid would show the
+           whole set, with a mark-all over it. -->
         <div role="status" [attr.aria-label]="'usageStats.loading' | transloco">
           <div class="flex flex-wrap gap-1" aria-hidden="true">
             @for (cell of skeletonCells; track cell) {

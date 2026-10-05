@@ -6744,6 +6744,55 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(tagListRequests()).toHaveLength(1);
   });
 
+  it("while a chosen tag's emotes are loading, mark-all is not offered and the skeleton stands in for the unfiltered grid", async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    expect(component['showMarkAll']()).toBe(true);
+    expect(component['tagFilterPending']()).toBe(false);
+
+    component['onTagFilterChange']('4');
+    await settle();
+    // Keys in flight: the filter lets everything through, the page must not act on that.
+    expect(component['tagFilterPending']()).toBe(true);
+    expect(component['showMarkAll']()).toBe(false);
+
+    // A tag without emotes: it ends on the empty state, mark-all never came back in between.
+    flushEntries(4, []);
+    await settle();
+    expect(component['tagFilterPending']()).toBe(false);
+    expect(component['atlasOrder']()).toHaveLength(0);
+    expect(component['showMarkAll']()).toBe(false);
+  });
+
+  it('a tag with emotes offers mark-all only once its keys narrowed the grid; "Alle Tags" is never pending', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+
+    component['onTagFilterChange']('4');
+    await settle();
+    expect(component['showMarkAll']()).toBe(false);
+    flushEntries(4, ['7tv-a']);
+    await settle();
+    expect(component['tagFilterPending']()).toBe(false);
+    expect(component['atlasOrder']()).toHaveLength(1);
+    expect(component['showMarkAll']()).toBe(true);
+
+    component['onTagFilterChange']('');
+    expect(component['tagFilterPending']()).toBe(false);
+    expect(component['showMarkAll']()).toBe(true);
+  });
+
+  it('a failed entries load is not "pending": the filter lets every row through and the banner explains', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    component['onTagFilterChange']('4');
+    await settle();
+    httpMock
+      .expectOne((r) => r.url === `${TAGS_URL}/4/entries`)
+      .flush({ errorCode: 'internal' }, { status: 500, statusText: 'Server Error' });
+    await settle();
+
+    expect(component['tagFilterPending']()).toBe(false);
+    expect(component['showMarkAll']()).toBe(true);
+  });
+
   it('drops a chosen tag on a channel switch, before the new channel has answered its tag list', async () => {
     await open({ tags: [tag(4, 'Stronghold')] });
     await chooseTag(4, ['7tv-a']);

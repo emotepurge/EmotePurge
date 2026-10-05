@@ -181,6 +181,64 @@ test.describe('emote tags', () => {
     await expect(page.getByText('Beste gelöscht.').first()).toBeVisible();
   });
 
+  test('a tag without emotes never offers "alle markieren", not even while its emotes are loading', async ({
+    page,
+  }) => {
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: 7, name: 'Leer', entryCount: 0, inSetCount: 0 },
+      { id: 8, name: 'Favoriten', entryCount: 1, inSetCount: 1 },
+    ]);
+    await mockTagEntries(page, CHANNEL, 7, []);
+    await mockTagEntries(page, CHANNEL, 8, [{ sevenTvEmoteId: '7tv-1', alias: 'catJAM' }]);
+    // The entries answer only once the test lets them go — the window the bug lived in.
+    let release: () => void = () => undefined;
+    let gate = new Promise<void>((resolve) => (release = resolve));
+    await page.route(
+      (url) => /\/tags\/\d+\/entries$/.test(url.pathname),
+      async (route) => {
+        await gate;
+        await route.fallback();
+      },
+    );
+    await gotoUsage(page);
+    const markAll = page.getByRole('button', { name: 'alle markieren' });
+    await expect(markAll).toBeVisible();
+
+    // Record every moment the button exists from here on, not just the ones an assertion hits.
+    await page.evaluate(() => {
+      const w = window as unknown as { __markAllSeen: boolean };
+      w.__markAllSeen = false;
+      new MutationObserver(() => {
+        const found = [...document.querySelectorAll('button')].some(
+          (button) => button.textContent?.trim() === 'alle markieren',
+        );
+        if (found) w.__markAllSeen = true;
+      }).observe(document.body, { childList: true, subtree: true, characterData: true });
+    });
+
+    const select = page.getByRole('combobox', { name: 'Tag' });
+    await select.selectOption({ label: 'Leer' });
+    await expect(markAll).toHaveCount(0);
+    release();
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    await expect(markAll).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__markAllSeen)).toBe(false);
+
+    // A tag with an emote: nothing offered while loading, then the one row's own button.
+    gate = new Promise<void>((resolve) => (release = resolve));
+    await select.selectOption({ label: 'Favoriten' });
+    await expect(markAll).toHaveCount(0);
+    release();
+    await expect(cell(page, 'catJAM')).toBeVisible();
+    await expect(cell(page, 'KEKW')).toHaveCount(0);
+    await expect(markAll).toBeVisible();
+
+    // "Alle Tags": the whole set at once, no waiting.
+    await select.selectOption({ label: 'Alle Tags' });
+    await expect(cell(page, 'KEKW')).toBeVisible();
+  });
+
   test('without the active set in view there is no assign button; the usage page never offers tag runs', async ({
     page,
   }) => {
