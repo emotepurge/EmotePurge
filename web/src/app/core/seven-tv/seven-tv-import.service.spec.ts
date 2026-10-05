@@ -2566,6 +2566,20 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.phase).toBe('closed');
     });
 
+    it('ends a placement report for a run without a tag as failed — never left pending', () => {
+      // Both callers check the tag first; this pins the defensive branch should that ever break.
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
+      const runId = service.run()!.runId;
+
+      (service as unknown as { reportTagPlacements(id: string): void }).reportTagPlacements(runId);
+
+      httpMock.expectNone(PLACEMENTS_B);
+      expect(service.tagPlacementReport()).toBe('failed');
+      expect(service.tagPlacementReportReason()).toBe('other');
+      service.cancel();
+      expect(httpMock.expectOne(GQL_ENDPOINT).cancelled).toBe(true);
+    });
+
     it('retries a failed report with the same body, and reads no counts from a replayed answer', () => {
       service.startImport(TARGET_TAG, TAG_ORIGIN, addPlan(ROWS));
       runTwoRowsToDone();
@@ -2581,7 +2595,7 @@ describe('SevenTvImportService', () => {
       expect(service.tagPlacementReport()).toBe('pending');
       const second = httpMock.expectOne(PLACEMENTS_B);
       expect(second.request.body).toEqual(firstBody);
-      // F34: a replay carries no outcome — its discarded list must not reach the signal.
+      // A replay carries no outcome — its discarded list must not reach the signal.
       second.flush(
         placementsAnswer({ replayed: true, recordedCount: 0, discardedStaleIds: ['7tv-1'] }),
       );

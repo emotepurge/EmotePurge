@@ -244,7 +244,7 @@ export interface ImportRunInfo extends RunRecordBase {
   tagPlacementReportReason: SyncReportReason | null;
   /** How many reported ids the server discarded because the emote left the set again meanwhile
    *  (`discardedStaleIds`). Only ever taken from an answer that is not a replay — a replayed answer
-   *  carries no outcome (F34) and leaves this as it was. Projected by
+   *  carries no outcome (docs/DECISIONS.md, #201 T-C) and leaves this as it was. Projected by
    *  `tagPlacementDiscardedStaleCount`. */
   tagPlacementDiscardedStaleCount: number;
   /** Projected by `resyncTrigger`. Not a report (#256, Plan-256 Festlegung 4): never holds the run
@@ -971,9 +971,9 @@ export class SevenTvImportService {
    * `timeoutReportAttempt` per attempt, automatic retries for anything but a 401/403, and an end
    * state on every path.
    *
-   * A replayed answer (`replayed: true`) is a success that says nothing else (F34): the server had
-   * already applied this operation, so its counts are not this call's outcome and the discarded
-   * count stays as it was. The reading happens in `map`, ahead of the retries, so a malformed answer
+   * A replayed answer (`replayed: true`) is a success that says nothing else (docs/DECISIONS.md,
+   * #201 T-C): the server had already applied this operation, so its counts are not this call's
+   * outcome and the discarded count stays as it was. The reading happens in `map`, ahead of the retries, so a malformed answer
    * ends like a transient failure instead of throwing inside `next`.
    */
   private reportTagPlacements(runId: string): void {
@@ -981,12 +981,13 @@ export class SevenTvImportService {
       tagPlacementReport: 'pending',
       tagPlacementReportReason: null,
     });
-    if (run === null || run.tag === null) {
+    if (run === null) {
       return;
     }
-    // A tag play-in always targets its own channel's set, so a missing channel is a caller bug;
-    // ended as a failure rather than left pending, which would hold the run open forever.
-    if (run.targetChannelName === null) {
+    // Both callers guarantee a tag, and a tag play-in always targets its own channel's set, so a
+    // missing tag or channel is a caller bug; ended as a failure rather than left pending, which
+    // would hold the run open forever — as the delete service's tag report does.
+    if (run.tag === null || run.targetChannelName === null) {
       this.endReport(runId, 'tag-placements', {
         tagPlacementReport: 'failed',
         tagPlacementReportReason: 'other',
