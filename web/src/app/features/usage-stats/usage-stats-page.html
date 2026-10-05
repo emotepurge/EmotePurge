@@ -267,7 +267,7 @@
            the set, then "Einspielen"/"Ausräumen" (#201 T-C), then the way to the tag's own page.
            The numbers are counted against the active set and drop out together when there is none
            to count in (`inSetCount: null`). In a view of another set the sentence stands in the
-           buttons' slot instead (spec 8, rulings F11). Middle dots are separators only and stay out
+           buttons' slot instead (spec 8). Middle dots are separators only and stay out
            of the accessibility tree. -->
       @if (selectedTag(); as tag) {
         <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-muted">
@@ -291,8 +291,8 @@
             <!-- Mounted on the gate rather than always with [enabled]: everything in it is stable
                  across a live reload (the tag list keeps its value while it reloads, the active set
                  and the shown set only move together on a real set switch), so the component — and
-                 a dialog its flow has open — survives a channel.synced reload (rulings F38). The
-                 active set is the live one from the set status, never the shown set: the flows'
+                 a dialog its flow has open — survives a channel.synced reload, which must not read
+                 as a set switch. The active set is the live one from the set status, never the shown set: the flows'
                  confirm-time guard compares against exactly this input. -->
             <app-tag-run-actions
               class="text-sm"
@@ -414,6 +414,15 @@
           }
         </span>
       }
+      <!-- What a tag flow still said after its TagRunActions above was torn down — a live set
+           switch unmounts it behind an open dialog (TagRunNoticeSink, #201 T-C): the abort that
+           would otherwise pass in silence, or a report's failure with its retry. Its own region
+           pair, for the same reason as the acknowledgements above. -->
+      <app-tag-run-orphan-notice
+        [channelName]="channelName()"
+        (completed)="onTagRunCompleted()"
+        (feedback)="onTagRunFeedback($event)"
+      />
       <!-- A failed removal from the tag, the tag's entries that could not be loaded (the filter
            then lets every row through), or the tag list that could not be loaded while a tag is
            chosen (select and summary are gone, the grid stays narrowed) — a state, not an

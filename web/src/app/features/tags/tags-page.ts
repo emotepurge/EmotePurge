@@ -64,6 +64,7 @@ import {
   settledTagPlayIn,
   settledTagRemoval,
 } from '../../shared/tags/tag-run-actions';
+import { TagRunOrphanNotice } from '../../shared/tags/tag-run-orphan-notice';
 import { BackLink } from '../../shared/ui/back-link';
 import { Button } from '../../shared/ui/button';
 import { openConfirmDialog } from '../../shared/ui/confirm-dialog';
@@ -151,6 +152,7 @@ export function parseTagParam(raw: string | null): number | null {
     ScrollingModule,
     SkeletonRows,
     TagRunActions,
+    TagRunOrphanNotice,
     TranslocoPipe,
   ],
   templateUrl: './tags-page.html',
@@ -220,7 +222,8 @@ export class TagsPage {
    * A *reload* (`channel.synced`) counts as settled: the answer on hand stays valid until the new
    * one lands, so the tag list and the entries keep their request (and their value) meanwhile and
    * the detail — with `TagRunActions` and any dialog its flow has open — is not torn down by a mere
-   * reload (rulings F35/F38). Only a first load (a new channel) is unsettled.
+   * reload, which would read as a set switch and abort that dialog. Only a first load (a new
+   * channel) is unsettled.
    */
   private readonly setStatusSettled = computed(() => {
     const status = this.setStatusResource.status();
@@ -399,7 +402,8 @@ export class TagsPage {
       importShown:
         this.importService.run() !== null &&
         (this.importService.isRunning() || this.importService.queue().length > 0),
-      // Also the drift notice of a tag play-in whose re-check held back replace rows (F35).
+      // Also the drift notice of a tag play-in whose re-check held back replace rows — on this
+      // page it has no other place to show.
       importNoticePending: this.importService.duplicateNoticePending(),
     }),
   );
@@ -407,10 +411,10 @@ export class TagsPage {
   protected readonly dockHeightPx = signal(0);
 
   /** What stopped the delete section's restore entry (its `notice` output). Persists like the
-   *  panel's abort notice until a new start clears it (F6). */
+   *  panel's abort notice until a new start clears it. */
   protected readonly runNotice = signal<DeleteAbortNotice | null>(null);
 
-  /** The arbiter's transient "nothing started" notice (F5), as on the usage page. Reads `lang()` so
+  /** The arbiter's transient "nothing started" notice, as on the usage page. Reads `lang()` so
    *  a language switch re-translates the blocking kind's noun. */
   protected readonly refusedStartNotice = computed(() => {
     this.languageService.lang();
@@ -541,7 +545,7 @@ export class TagsPage {
       onCleanup(() => observer.disconnect());
     });
 
-    // A run starting makes an old restore refusal stale (F6). A flow start that has no run yet is
+    // A run starting makes an old restore refusal stale. A flow start that has no run yet is
     // `TagRunActions`' `started` output (template).
     effect(() => {
       if (this.arbiter.activeRun() !== null) {
@@ -549,7 +553,7 @@ export class TagsPage {
       }
     });
 
-    // A tag run or a restore that closes changes the tags' numbers (spec 9.6, F6): reload. Also
+    // A tag run or a restore that closes changes the tags' numbers (spec 9.6): reload. Also
     // while `TagRunActions` is not mounted (the list alone on a narrow screen). A run that was
     // already settled when the page opened is not news.
     let firstSettled = true;
@@ -575,9 +579,9 @@ export class TagsPage {
       }
     });
 
-    // `channel.synced` for this channel (rulings F3, the usage page's mechanism): set status, set
-    // list, tags and entries are read again. The status reload keeps its answer meanwhile (see
-    // `setStatusSettled`), so a reload of the same set changes no request key and tears nothing
+    // `channel.synced` for this channel (the usage page's mechanism; docs/DECISIONS.md, #201 T-C,
+    // overriding spec 9.6): set status, set list, tags and entries are read again. The status
+    // reload keeps its answer meanwhile (see `setStatusSettled`), so a reload of the same set changes no request key and tears nothing
     // down; a real set switch changes the key, the tags and entries follow it, and an open tag flow
     // sees the new active set at its confirm-time guard.
     liveReload(this.liveUrl, {
@@ -634,7 +638,8 @@ export class TagsPage {
     }
     const channel = this.channelName();
     // Spec 8 "Tag löschen mit Platzierungen": allowed, but said first. The label stays "Tag
-    // löschen" (rulings F24); the hint goes into the message.
+    // löschen" — the dialog asks about the tag, the placements are a consequence; the hint goes
+    // into the message.
     const message = [this.transloco.translate('tags.deleteDialog.message', { tag: tag.name })];
     if (tag.placedCount > 0) {
       message.push(
@@ -686,7 +691,7 @@ export class TagsPage {
     this.selection.clear();
   }
 
-  /** A tag flow started: an old restore refusal no longer describes anything (F6). */
+  /** A tag flow started: an old restore refusal no longer describes anything. */
   protected onTagRunStarted(): void {
     this.runNotice.set(null);
   }

@@ -154,6 +154,7 @@ import { UndoProgressSection } from '../../shared/seven-tv/undo-progress-section
 import { ListSelection } from '../../shared/selection/list-selection';
 import { openTagAssignDialog, TagAssignDialogResult } from '../../shared/tags/tag-assign-dialog';
 import { TagRunActions, TagRunFeedback } from '../../shared/tags/tag-run-actions';
+import { TagRunOrphanNotice } from '../../shared/tags/tag-run-orphan-notice';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
@@ -354,6 +355,7 @@ function mayHaveChangedTheSet(result: RunResult): boolean {
     ImportTrigger,
     SlotBudgetBar,
     TagRunActions,
+    TagRunOrphanNotice,
     DateRangeMenu,
     EmoteSetMenu,
     SegmentedControl,
@@ -1502,7 +1504,7 @@ export class UsageStatsPage {
   );
 
   /**
-   * "Einspielen"/"Ausräumen" in the inline group (spec 9.2, rulings F11) — in the very slot of the
+   * "Einspielen"/"Ausräumen" in the inline group (spec 9.2) — in the very slot of the
    * sentence above, which they replace: a chosen tag, a view of the *active* set (spec 8: in another
    * set's view the sentence stands instead), runs switched on and a fine pointer. Not gated on
    * `canManage` (E9): whether the user may write the set is the registration's 403 to say, before

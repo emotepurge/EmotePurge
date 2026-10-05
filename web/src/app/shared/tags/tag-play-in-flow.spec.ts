@@ -23,7 +23,8 @@ import {
   ImportConfirmDialogData,
   ImportConfirmOutcome,
 } from '../seven-tv/import-confirm-dialog';
-import { TagRunNotice, TagRunRequest, startTagPlayInFlow } from './tag-play-in-flow';
+import { TagRunRequest, raiseNotice, startTagPlayInFlow } from './tag-play-in-flow';
+import { OrphanedTagRunEvent, TagRunNotice, TagRunNoticeSink } from './tag-run-notice-sink';
 
 /*
  * The play-in flow runs against fakes one level below its building blocks: the real
@@ -113,6 +114,9 @@ interface Harness {
   notice: WritableSignal<TagRunNotice | null>;
   onFeedback: ReturnType<typeof vi.fn>;
   onCompleted: ReturnType<typeof vi.fn>;
+  /** The page-level surface the flow falls back to once the host is gone. */
+  sink: TagRunNoticeSink;
+  sinkEvents: OrphanedTagRunEvent[];
   listEntries: ReturnType<typeof vi.fn>;
   resolveEditableSet: ReturnType<typeof vi.fn>;
   registerOperation: ReturnType<typeof vi.fn>;
@@ -227,6 +231,9 @@ function setup(
   const onFeedback = vi.fn();
   const onCompleted = vi.fn();
   const host = fakeHost();
+  const sink = new TagRunNoticeSink();
+  const sinkEvents: OrphanedTagRunEvent[] = [];
+  sink.events.subscribe((event) => sinkEvents.push(event));
   const request: TagRunRequest = {
     channelName: CHANNEL,
     tag: TAG,
@@ -235,6 +242,8 @@ function setup(
     pending,
     notice,
     isCurrent: () => current(),
+    hostAlive: () => !host.destroyRef.destroyed,
+    sink,
     onFeedback,
     onCompleted,
   };
@@ -261,6 +270,8 @@ function setup(
     notice,
     onFeedback,
     onCompleted,
+    sink,
+    sinkEvents,
     listEntries,
     resolveEditableSet,
     registerOperation,
@@ -533,7 +544,7 @@ describe('startTagPlayInFlow', () => {
       expect(harness.notice()?.key).toBe('tags.errors.reportFailed');
       expect(harness.onFeedback).not.toHaveBeenCalled();
 
-      // A replay says nothing about the outcome (F34); the feedback still comes from the entries.
+      // A replay says nothing about the outcome; the feedback still comes from the entries.
       answer = of(placementsResult({ replayed: true }));
       harness.notice()!.retry!();
 
@@ -547,6 +558,58 @@ describe('startTagPlayInFlow', () => {
         tag: TAG.name,
       });
       expect(harness.notice()).toBeNull();
+    });
+
+    it('puts the failure banner, retry included, into the sink when the host is torn down while the report is out', () => {
+      const report = new Subject<TagPlacementsResult>();
+      let answer: Observable<TagPlacementsResult> = report;
+      const harness = setup({ entries: of(entriesFor(['in-1'])), report: () => answer });
+      harness.run();
+      expect(harness.reportPlacements).toHaveBeenCalledOnce();
+
+      harness.destroy();
+      report.error(new HttpErrorResponse({ status: 500 }));
+
+      expect(harness.notice()).toBeNull();
+      const orphaned = harness.sink.notice();
+      expect(orphaned?.channelName).toBe(CHANNEL);
+      expect(orphaned?.notice.key).toBe('tags.errors.reportFailed');
+
+      // The retry needs nothing from the host: the very same report, and its outcome in the sink.
+      answer = of(placementsResult());
+      orphaned!.notice.retry!();
+
+      expect(harness.reportPlacements).toHaveBeenCalledTimes(2);
+      expect(harness.reportPlacements.mock.calls[1]).toEqual(
+        harness.reportPlacements.mock.calls[0],
+      );
+      expect(harness.sink.notice()).toBeNull();
+      expect(harness.onFeedback).not.toHaveBeenCalled();
+      expect(harness.onCompleted).not.toHaveBeenCalled();
+      expect(harness.sinkEvents).toEqual([
+        {
+          kind: 'feedback',
+          channelName: CHANNEL,
+          key: 'tags.feedback.allPresent.one',
+          params: { count: 1, tag: TAG.name },
+        },
+        { kind: 'completed', channelName: CHANNEL },
+      ]);
+    });
+
+    it('hands a success that lands after the host is gone to the sink, not to the dead outputs', () => {
+      const report = new Subject<TagPlacementsResult>();
+      const harness = setup({ entries: of(entriesFor(['in-1'])), report: () => report });
+      harness.run();
+
+      harness.destroy();
+      report.next(placementsResult());
+      report.complete();
+
+      expect(harness.onFeedback).not.toHaveBeenCalled();
+      expect(harness.onCompleted).not.toHaveBeenCalled();
+      expect(harness.sinkEvents.map((event) => event.kind)).toEqual(['feedback', 'completed']);
+      expect(harness.sink.notice()).toBeNull();
     });
   });
 
@@ -640,7 +703,12 @@ describe('startTagPlayInFlow', () => {
 
       expect(harness.startImport).not.toHaveBeenCalled();
       expect(harness.reportPlacements).not.toHaveBeenCalled();
-      expect(harness.notice()).toEqual({ key: 'tags.errors.setChanged' });
+      // The host's banner went with the host; the page-level sink says it instead.
+      expect(harness.notice()).toBeNull();
+      expect(harness.sink.notice()).toEqual({
+        channelName: CHANNEL,
+        notice: { key: 'tags.errors.setChanged' },
+      });
     });
 
     it('sends no empty report either when the host was torn down before nothing was left to add', () => {
@@ -657,7 +725,8 @@ describe('startTagPlayInFlow', () => {
 
       expect(harness.reportPlacements).not.toHaveBeenCalled();
       expect(harness.startImport).not.toHaveBeenCalled();
-      expect(harness.notice()).toEqual({ key: 'tags.errors.setChanged' });
+      expect(harness.notice()).toBeNull();
+      expect(harness.sink.notice()?.notice).toEqual({ key: 'tags.errors.setChanged' });
     });
 
     it('sends the empty report for the same operation when the import finds nothing left to add', () => {
@@ -716,5 +785,58 @@ describe('startTagPlayInFlow', () => {
       expect(harness.notice()).toBeNull();
       expect(harness.pending()).toBe(false);
     });
+  });
+});
+
+describe('raiseNotice', () => {
+  function routing(alive: boolean, current = true) {
+    const notice = signal<TagRunNotice | null>(null);
+    const sink = new TagRunNoticeSink();
+    return {
+      notice,
+      sink,
+      request: {
+        channelName: CHANNEL,
+        notice,
+        isCurrent: () => current,
+        hostAlive: () => alive,
+        sink,
+      },
+    };
+  }
+
+  it('shows the banner under a live host that still shows the tag', () => {
+    const { notice, sink, request } = routing(true);
+    raiseNotice(request, { key: 'tags.errors.setChanged' });
+
+    expect(notice()).toEqual({ key: 'tags.errors.setChanged' });
+    expect(sink.notice()).toBeNull();
+  });
+
+  it('drops it under a live host that moved on to another tag', () => {
+    const { notice, sink, request } = routing(true, false);
+    raiseNotice(request, { key: 'tags.errors.setChanged' });
+
+    expect(notice()).toBeNull();
+    expect(sink.notice()).toBeNull();
+  });
+
+  it('hands it to the sink once the host is gone, without a retry that would restart the flow', () => {
+    const { notice, sink, request } = routing(false);
+    raiseNotice(request, { key: 'tags.errors.entriesUnavailable', retry: () => undefined });
+
+    expect(notice()).toBeNull();
+    expect(sink.notice()).toEqual({
+      channelName: CHANNEL,
+      notice: { key: 'tags.errors.entriesUnavailable' },
+    });
+  });
+
+  it('keeps a report retry in the sink', () => {
+    const { sink, request } = routing(false);
+    const retry = (): void => undefined;
+    raiseNotice(request, { key: 'tags.errors.reportFailed', retry }, true);
+
+    expect(sink.notice()?.notice.retry).toBe(retry);
   });
 });

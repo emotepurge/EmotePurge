@@ -39,12 +39,14 @@
         {{ 'tags.page.noActiveSet' | transloco }}
       }
     </p>
-    <!-- The page's run status region (#201 T-C, plan 3.8, rulings F5/F7): page level, outside the
-         detail, so it survives a change of tag. Two messages that can stand at once — a restore
-         the delete section's entry could not start (`runNotice`, persists until a new start
-         clears it) and the arbiter's transient "nothing started" (`refusedStartNotice`, which
-         clears itself) — in one permanently mounted sr-only region whose text comes and goes,
-         plus their visible aria-hidden twins (§4.5). -->
+    <!-- The page's run status region (#201 T-C, plan 3.8): page level, outside the detail, so it
+         survives a change of tag. Two messages that can stand at once — a restore the delete
+         section's entry could not start (`runNotice`, persists until a new start clears it) and
+         the arbiter's transient "nothing started" (`refusedStartNotice`, which clears itself, as
+         on the usage page) — in one permanently mounted sr-only region whose text comes and goes,
+         plus their visible aria-hidden twins (§4.5). A third, in a region of its own: what a tag
+         flow still said after its TagRunActions was torn down (a tag list reloaded with a new
+         set), with its retry when it has one (TagRunNoticeSink). -->
     <span role="status" class="sr-only">
       @if (runNotice(); as notice) {
         {{ notice.leadKey | transloco }}
@@ -65,6 +67,11 @@
         {{ notice.messageKey | transloco: { kind: notice.kind } }}
       </p>
     }
+    <app-tag-run-orphan-notice
+      [channelName]="channelName()"
+      (completed)="onTagRunCompleted()"
+      (feedback)="onTagRunFeedback($event)"
+    />
   </header>
 
   @if (actionErrorKey(); as key) {
@@ -175,8 +182,9 @@
                      gap, delete (§8.7). The runs exist where they can run — switched on, a fine
                      pointer, a known active set — and need no management right (E9); rename and
                      delete need one. TagRunActions is mounted on gates that a live reload does not
-                     move (rulings F38) and gets the live active set, which its flows' confirm-time
-                     guard compares against. -->
+                     move — a reload that tore it down would read as a set switch and abort an open
+                     dialog — and gets the live active set, which its flows' confirm-time guard
+                     compares against. -->
                 @if (tagRunsShown() || canManage()) {
                   <div class="ml-auto flex flex-wrap items-start gap-2">
                     @if (tagRunsShown()) {
@@ -482,7 +490,8 @@
 
 <!-- Permanently mounted (§4.5): speaks the end states of what the dock shows — a dock that mounts
      together with its text announces nothing. `withImport`: a tag play-in is an import run; the
-     delete section's tag lines are spoken on every page (F37). -->
+     delete section's tag lines are spoken on every page that can show a tag run, or its
+     aria-hidden report line is never spoken. -->
 <app-dock-outcome-announcer [withImport]="true" />
 
 <!-- The run dock (#201 T-C, spec 9.5, plan 3.8): page level, outside the detail and the list, so a

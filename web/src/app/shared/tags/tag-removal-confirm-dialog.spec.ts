@@ -18,7 +18,6 @@ const DE = {
   common: { cancel: 'Abbrechen' },
   massDelete: {
     confirmSetLine: 'Aus dem Set „{{ setName }}“.',
-    confirmSetNotActive: 'Dieses Set ist gerade nicht aktiv.',
     checkingSharedSets: 'Prüfe geteilte Sets…',
     sharedSetWarningTitle: 'Achtung: geteiltes Set.',
     notOwnSet: 'Das Set gehört nicht diesem Channel.',
@@ -102,7 +101,6 @@ describe('TagRemovalConfirmDialog', () => {
     const data: TagRemovalConfirmDialogData = {
       tagName: 'Stronghold',
       setName: 'Hauptset',
-      isActiveSet: true,
       proposal: { rows, notInSetCount: 0, snapshot: [], ownInLiveIds: [] },
       warning,
       warningLoading,

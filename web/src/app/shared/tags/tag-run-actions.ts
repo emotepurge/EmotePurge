@@ -27,13 +27,9 @@ import { EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { EmoteTagService } from '../../core/tags/emote-tag.service';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
-import {
-  TagRunFlowDeps,
-  TagRunNotice,
-  TagRunRequest,
-  startTagPlayInFlow,
-} from './tag-play-in-flow';
+import { TagRunFlowDeps, TagRunRequest, startTagPlayInFlow } from './tag-play-in-flow';
 import { startTagRemovalFlow } from './tag-removal-flow';
+import { TagRunNotice, TagRunNoticeSink } from './tag-run-notice-sink';
 
 /** Element ids for the lock reason, unique per instance. */
 let nextReasonId = 0;
@@ -45,14 +41,15 @@ export interface TagRunFeedback {
 }
 
 /** A settled tag play-in, identified by its run and the report's end state — `null` for anything
- *  else. A tag-less import run carries `tag: null` (F37). */
+ *  else. A tag-less import run carries `tag: null` — unlike a delete run's, see below; never cross
+ *  the two tests. */
 export function settledTagPlayIn(run: ImportRunInfo | null): string | null {
   return run !== null && run.tag !== null && run.phase === 'closed'
     ? `${run.runId}:${run.tagPlacementReport}`
     : null;
 }
 
-/** The same for a tag clear-out. A tag-less delete run has **no** `tag` field (`undefined`, F37). */
+/** The same for a tag clear-out. A tag-less delete run has **no** `tag` field (`undefined`). */
 export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
   return run !== null && run.tag !== undefined && run.phase === 'closed'
     ? `${run.runId}:${run.tagRemovalReport}`
@@ -78,6 +75,10 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
  * retry, and after a report sent without a run — the host reloads the tag's numbers then.
  * `started` fires on every click that starts a flow (and on a retry) — the host clears its own
  * stale run notices then.
+ *
+ * The flows outlive this component (their dialogs, the import hook, a report in flight). Once it is
+ * torn down, whatever they still say goes to `TagRunNoticeSink`, which the host page renders; a new
+ * start from here clears that page-level notice as it clears this component's own banner.
  */
 @Component({
   selector: 'app-tag-run-actions',
@@ -165,6 +166,7 @@ export class TagRunActions {
   private readonly deleteService = inject(SevenTvDeleteService);
   private readonly tagService = inject(EmoteTagService);
   private readonly translocoService = inject(TranslocoService);
+  private readonly noticeSink = inject(TagRunNoticeSink);
   private readonly destroyRef = inject(DestroyRef);
 
   /** This component's flow is between its click and its hand-over (or its report). */
@@ -235,6 +237,7 @@ export class TagRunActions {
       return;
     }
     this.started.emit();
+    this.noticeSink.clear();
     startTagPlayInFlow(this.deps, this.request());
   }
 
@@ -243,6 +246,7 @@ export class TagRunActions {
       return;
     }
     this.started.emit();
+    this.noticeSink.clear();
     startTagRemovalFlow(this.deps, this.request());
   }
 
@@ -251,6 +255,7 @@ export class TagRunActions {
       return;
     }
     this.started.emit();
+    this.noticeSink.clear();
     notice.retry?.();
   }
 
@@ -267,6 +272,8 @@ export class TagRunActions {
       pending: this.pending,
       notice: this.notice,
       isCurrent: () => this.subject() === subject,
+      hostAlive: () => !this.destroyRef.destroyed,
+      sink: this.noticeSink,
       onFeedback: (key, params) => this.feedback.emit({ key, params }),
       onCompleted: () => this.completed.emit(),
     };

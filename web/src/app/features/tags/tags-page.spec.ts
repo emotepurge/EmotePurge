@@ -1,7 +1,7 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { Component, signal, WritableSignal } from '@angular/core';
+import { Component, ElementRef, signal, WritableSignal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter, Router } from '@angular/router';
@@ -48,7 +48,7 @@ class FakeResizeObserver {
   }
 }
 
-/** jsdom has no EventSource; the page follows `channel.synced` through one (rulings F3). */
+/** jsdom has no EventSource; the page follows `channel.synced` through one. */
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
@@ -691,8 +691,12 @@ describe('TagsPage', () => {
       return found ? (found.componentInstance as TagRunActions) : null;
     }
 
+    /** The dock through the page's own `#dock` view child — not by its look. */
     function dock(harness: RouterTestingHarness): HTMLElement | null {
-      return harness.fixture.nativeElement.querySelector('.app-dock');
+      const view = pageOf(harness) as unknown as {
+        dockRef: () => ElementRef<HTMLElement> | undefined;
+      };
+      return view.dockRef()?.nativeElement ?? null;
     }
 
     describe('the run buttons (spec 9.4, 8)', () => {
@@ -820,7 +824,7 @@ describe('TagsPage', () => {
     });
 
     describe('deleting a tag with placements (spec 8)', () => {
-      it('adds the placement hint to the message, the label stays "Tag löschen" (F24)', async () => {
+      it('adds the placement hint to the message, the label stays "Tag löschen"', async () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold', 12));
         dialogResult = false;
 
@@ -919,7 +923,7 @@ describe('TagsPage', () => {
       });
     });
 
-    describe('the run status region (F5, F6)', () => {
+    describe('the run status region', () => {
       it("speaks the arbiter's refused start in the page's permanent region", async () => {
         const { harness } = await openTag(tag(1, 'Stronghold'));
         const arbiter = TestBed.inject(SevenTvRunArbiter);
@@ -965,7 +969,7 @@ describe('TagsPage', () => {
       });
     });
 
-    describe('reloads (spec 9.6, rulings F3/F6/F35/F38)', () => {
+    describe('reloads (spec 9.6)', () => {
       const GQL = 'https://7tv.io/v4/gql';
       const OWN = entry('e1', {
         placedByThisTag: true,
@@ -1067,6 +1071,7 @@ describe('TagsPage', () => {
 
       it('a channel.synced that switches the active set tears the detail down, so the open clear-out never starts', async () => {
         const { harness, page } = await openTag(activeTag(1, 'Stronghold'), [OWN]);
+        const before = runActions(harness);
         const startDelete = vi
           .spyOn(TestBed.inject(SevenTvDeleteService), 'startDelete')
           .mockImplementation(() => undefined);
@@ -1097,11 +1102,24 @@ describe('TagsPage', () => {
           );
         await settle(harness);
 
+        expect(runActions(harness)).not.toBe(before);
+
         closed.next({ checkedIds: ['e1'] });
         closed.complete();
         await settle(harness);
 
         expect(startDelete).not.toHaveBeenCalled();
+        // The abort is not silent: the header's own region says it, where the torn-down
+        // TagRunActions' banner would have.
+        const spoken = Array.from(
+          harness.routeNativeElement!.querySelectorAll('header [role="status"].sr-only'),
+        )
+          .map((region) => region.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+          .join(' ');
+        expect(spoken).toContain(
+          `${de.massDelete.abortedByLock} ${de.massDelete.setChangedDuringConfirm}`,
+        );
+        expect(buttonByName(harness, 'Schließen')).toBeTruthy();
       });
 
       it('a failed status reload keeps the last known active set and TagRunActions', async () => {

@@ -28,7 +28,7 @@ import { NoticeBanner } from '../ui/notice-banner';
 import { TagRemovalProposal, TagRemovalRow } from './tag-removal';
 
 /** Above this many rows the list is virtualised (spec 7.2/6). */
-export const TAG_REMOVAL_VIRTUAL_THRESHOLD = 50;
+const TAG_REMOVAL_VIRTUAL_THRESHOLD = 50;
 
 /** One uniform height for rows and headings: CDK's fixed-size strategy needs a single item size,
  *  and a row carries two lines (alias, then date or reason). */
@@ -38,8 +38,6 @@ export interface TagRemovalConfirmDialogData {
   tagName: string;
   /** The set the run deletes from, already named (the same convention as the delete dialog). */
   setName: string;
-  /** Gates the "this set is not currently active" sentence. */
-  isActiveSet: boolean;
   proposal: TagRemovalProposal;
   /** Live, like the delete dialog's: the check finishes while the dialog may already be open. */
   warning: Signal<EmoteSetWarning | null>;
@@ -95,9 +93,6 @@ type ListItem =
       <p class="text-sm text-fg-secondary">
         {{ 'massDelete.confirmSetLine' | transloco: { setName: data.setName } }}
       </p>
-      @if (!data.isActiveSet) {
-        <p class="text-sm text-fg-secondary">{{ 'massDelete.confirmSetNotActive' | transloco }}</p>
-      }
 
       @if (hasSharedSetWarning(); as warning) {
         <app-notice-banner variant="error">

@@ -15,13 +15,14 @@ import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service'
 import { EmoteTagEntries, EmoteTagEntry, TagRemovalResult } from '../../core/tags/emote-tag.model';
 import { EmoteTagService } from '../../core/tags/emote-tag.service';
 import { SevenTvTokenPromptDialog } from '../seven-tv/seven-tv-token-prompt-dialog';
-import { TagRunNotice, TagRunRequest } from './tag-play-in-flow';
+import { TagRunRequest } from './tag-play-in-flow';
 import {
   TagRemovalConfirmDialog,
   TagRemovalConfirmDialogData,
   TagRemovalConfirmResult,
 } from './tag-removal-confirm-dialog';
 import { splitOwnPlacements, startTagRemovalFlow } from './tag-removal-flow';
+import { OrphanedTagRunEvent, TagRunNotice, TagRunNoticeSink } from './tag-run-notice-sink';
 
 /*
  * Same approach as the play-in spec: the real `resolveDeleteTarget`, `readLiveSetAliases`,
@@ -132,6 +133,9 @@ interface Harness {
   notice: WritableSignal<TagRunNotice | null>;
   onFeedback: ReturnType<typeof vi.fn>;
   onCompleted: ReturnType<typeof vi.fn>;
+  /** The page-level surface the flow falls back to once the host is gone. */
+  sink: TagRunNoticeSink;
+  sinkEvents: OrphanedTagRunEvent[];
   listEntries: ReturnType<typeof vi.fn>;
   registerOperation: ReturnType<typeof vi.fn>;
   reportRemoval: ReturnType<typeof vi.fn>;
@@ -233,6 +237,9 @@ function setup(
   const onFeedback = vi.fn();
   const onCompleted = vi.fn();
   const host = fakeHost();
+  const sink = new TagRunNoticeSink();
+  const sinkEvents: OrphanedTagRunEvent[] = [];
+  sink.events.subscribe((event) => sinkEvents.push(event));
   const request: TagRunRequest = {
     channelName: CHANNEL,
     tag: TAG,
@@ -241,6 +248,8 @@ function setup(
     pending,
     notice,
     isCurrent: () => current(),
+    hostAlive: () => !host.destroyRef.destroyed,
+    sink,
     onFeedback,
     onCompleted,
   };
@@ -268,6 +277,8 @@ function setup(
     notice,
     onFeedback,
     onCompleted,
+    sink,
+    sinkEvents,
     listEntries,
     registerOperation,
     reportRemoval,
@@ -464,7 +475,6 @@ describe('startTagRemovalFlow', () => {
       expect(harness.getSetWarning).toHaveBeenCalledExactlyOnceWith(CHANNEL, 'set-active');
       expect(data.tagName).toBe(TAG.name);
       expect(data.setName).toBe('Main');
-      expect(data.isActiveSet).toBe(true);
       expect(data.warningLoading()).toBe(false);
       expect(data.proposal.rows.map((row) => [row.sevenTvEmoteId, row.checked])).toEqual([
         ['placed', true],
@@ -551,7 +561,7 @@ describe('startTagRemovalFlow', () => {
       expect(harness.notice()?.key).toBe('tags.errors.reportFailed');
       expect(harness.onFeedback).not.toHaveBeenCalled();
 
-      // A replay carries no outcome (F34) — the feedback does not depend on it.
+      // A replay carries no outcome — the feedback does not depend on it.
       answer = of(removalResult({ replayed: true, deactivated: false }));
       harness.notice()!.retry!();
 
@@ -639,9 +649,14 @@ describe('startTagRemovalFlow', () => {
 
       expect(harness.startDelete).not.toHaveBeenCalled();
       expect(harness.reportRemoval).not.toHaveBeenCalled();
-      expect(harness.notice()).toEqual({
-        leadKey: 'massDelete.abortedByLock',
-        key: 'massDelete.setChangedDuringConfirm',
+      // The abort is said on the page, not under the buttons that went with the host.
+      expect(harness.notice()).toBeNull();
+      expect(harness.sink.notice()).toEqual({
+        channelName: CHANNEL,
+        notice: {
+          leadKey: 'massDelete.abortedByLock',
+          key: 'massDelete.setChangedDuringConfirm',
+        },
       });
       expect(harness.endConfirmedRun).toHaveBeenCalledOnce();
       expect(harness.pending()).toBe(false);
@@ -656,7 +671,41 @@ describe('startTagRemovalFlow', () => {
 
       expect(harness.reportRemoval).not.toHaveBeenCalled();
       expect(harness.startDelete).not.toHaveBeenCalled();
-      expect(harness.notice()?.key).toBe('massDelete.setChangedDuringConfirm');
+      expect(harness.notice()).toBeNull();
+      expect(harness.sink.notice()?.notice.key).toBe('massDelete.setChangedDuringConfirm');
+    });
+
+    it('puts the failure of a report for nothing ticked into the sink, retry included, when the host goes while it is out', () => {
+      const report = new Subject<TagRemovalResult>();
+      let answer: Observable<TagRemovalResult> = report;
+      const harness = setup({ report: () => answer });
+      harness.run();
+      confirmationClosed(harness).next({ checkedIds: [] });
+      expect(harness.reportRemoval).toHaveBeenCalledOnce();
+
+      harness.destroy();
+      report.error(new HttpErrorResponse({ status: 503 }));
+
+      expect(harness.notice()).toBeNull();
+      const orphaned = harness.sink.notice();
+      expect(orphaned?.notice.key).toBe('tags.errors.reportFailed');
+
+      answer = of(removalResult());
+      orphaned!.notice.retry!();
+
+      expect(harness.reportRemoval).toHaveBeenCalledTimes(2);
+      expect(harness.reportRemoval.mock.calls[1]).toEqual(harness.reportRemoval.mock.calls[0]);
+      expect(harness.onFeedback).not.toHaveBeenCalled();
+      expect(harness.onCompleted).not.toHaveBeenCalled();
+      expect(harness.sinkEvents).toEqual([
+        {
+          kind: 'feedback',
+          channelName: CHANNEL,
+          key: 'tags.feedback.removedNothing',
+          params: { tag: TAG.name },
+        },
+        { kind: 'completed', channelName: CHANNEL },
+      ]);
     });
 
     it("refuses a start while another run holds the arbiter, with the delete chain's notice and no noteRefusedStart", () => {

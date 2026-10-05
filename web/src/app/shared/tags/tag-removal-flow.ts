@@ -12,6 +12,7 @@ import {
   prepareTagRun,
   raiseNotice,
   sendTagReport,
+  tellFeedback,
 } from './tag-play-in-flow';
 import { TagRemovalProposal, proposeTagRemoval } from './tag-removal';
 import { openTagRemovalConfirmDialog } from './tag-removal-confirm-dialog';
@@ -26,14 +27,16 @@ import { openTagRemovalConfirmDialog } from './tag-removal-confirm-dialog';
  * prompt spends no 7TV read. Then the proposal (`proposeTagRemoval`), the shared-set warning and
  * the dialog, which is preview and confirmation in one (E19).
  *
- * The confirm-time checks are the delete's own (F4): a set switch behind the open dialog, then
+ * The confirm-time checks are the delete's own (docs/DECISIONS.md, #201 T-C, on the deviation from
+ * the wording of spec 7.2/7): a set switch behind the open dialog, then
  * `confirmTimeRefusal` (a run that started meanwhile, a token a 401 cleared meanwhile) — the very
  * function the usage page's delete chain calls, so a refusal reads the same and, like there, does
  * not go through `noteRefusedStart`: this component's banner is its persistent explanation. The
  * queue comes from `toDeleteQueueEmotes`, with its aliasless fallback. The dock claim follows the
  * delete chain too: taken when the dialog opens, cleared when nothing was confirmed, ended after an
  * attempt. The set check reads `PreparedTagRun.activeEmoteSetId`, which a host torn down behind
- * the dialog has turned `null` — a set switch, so the confirm aborts (see `tag-play-in-flow.ts`).
+ * the dialog has turned `null` — a set switch, so the confirm aborts (see `tag-play-in-flow.ts`),
+ * and its notice goes to the page-level sink, since the host's own banner went with the host.
  * With nothing ticked the token half of the refusal is skipped (`requireToken: false`): that
  * confirm writes nothing to 7TV, only the report.
  *
@@ -58,7 +61,8 @@ import { openTagRemovalConfirmDialog } from './tag-removal-confirm-dialog';
  *   report. The flow sends it itself, with no removed ids and every own placement in the set as
  *   kept; that report is what deactivates the tag (E26: a clear-out always completes).
  * - **n > 0:** `SevenTvDeleteService.startDelete` with the ticked rows and the tag context; the
- *   run's settlement sends the removal report. `pending` ends at that hand-over (F35).
+ *   run's settlement sends the removal report. `pending` ends at that hand-over: a run reports
+ *   nothing back to this flow.
  */
 export function startTagRemovalFlow(deps: TagRunFlowDeps, request: TagRunRequest): void {
   prepareTagRun(
@@ -119,7 +123,6 @@ function openConfirmation(
   openTagRemovalConfirmDialog(deps.dialog, {
     tagName: request.tag.name,
     setName: request.setName ?? prepared.frozenSetId,
-    isActiveSet: true,
     proposal,
     warning: warning.asReadonly(),
     warningLoading: warningLoading.asReadonly(),
@@ -188,8 +191,8 @@ function confirm(
           // No run: every own placement in the set stays (`deriveTagKeptIds` without a result).
           keptIds: deriveTagKeptIds(tagContext, null),
         }),
-      // Never from the answer: a replay carries no outcome (F34).
-      () => request.onFeedback('tags.feedback.removedNothing', { tag: request.tag.name }),
+      // Never from the answer: a replay carries no outcome (docs/DECISIONS.md, #201 T-C).
+      () => tellFeedback(request, 'tags.feedback.removedNothing', { tag: request.tag.name }),
     );
     return;
   }

@@ -20,6 +20,7 @@ import {
   settledTagPlayIn,
   settledTagRemoval,
 } from './tag-run-actions';
+import { TagRunNoticeSink } from './tag-run-notice-sink';
 
 const DE = {
   sevenTvRun: { kind: { undo: 'Rückgängig', import: 'Kopieren' } },
@@ -278,6 +279,32 @@ describe('TagRunActions', () => {
     expect(started).toBe(2);
   });
 
+  it('clears the page-level notice of an earlier flow whose host was torn down when a click starts a new one', () => {
+    const sink = TestBed.inject(TagRunNoticeSink);
+    sink.raise('handofblood', { key: 'tags.errors.setChanged' });
+
+    button('Einspielen')!.click();
+
+    expect(sink.notice()).toBeNull();
+  });
+
+  it('hands what a flow says after this component is gone to the sink, never to its outputs', () => {
+    const sink = TestBed.inject(TagRunNoticeSink);
+    const report = new Subject<unknown>();
+    const reportPlacements = vi.fn(() => report);
+    (TestBed.inject(EmoteTagService) as unknown as { reportPlacements: unknown }).reportPlacements =
+      reportPlacements;
+
+    button('Einspielen')!.click();
+    expect(reportPlacements).toHaveBeenCalledOnce();
+    fixture.destroy();
+    report.error(new HttpErrorResponse({ status: 500 }));
+
+    expect(sink.notice()?.notice.key).toBe('tags.errors.reportFailed');
+    expect(feedback).toEqual([]);
+    expect(completed).toBe(0);
+  });
+
   it('starts no flow from a click that outraces the lock', () => {
     // A click on a disabled button never reaches `(click)`, so the handlers' own guard is called
     // directly — the case it exists for is a click already dispatched when the lock arrives.
@@ -423,7 +450,7 @@ describe('TagRunActions mounted after a tag run settled', () => {
   });
 });
 
-describe('settled tag runs (F37: no tag is null on an import run, absent on a delete run)', () => {
+describe('settled tag runs (no tag is null on an import run, absent on a delete run)', () => {
   it('names a closed tag play-in by run and report state, and nothing else', () => {
     expect(settledTagPlayIn(importRun({ phase: 'closed', tagPlacementReport: 'failed' }))).toBe(
       'import-1:failed',

@@ -543,6 +543,19 @@ both buttons on the usage page and the tags page. Choices that are not obvious f
 - **A flow reports nothing back to its starter** once it handed over (dismissed dialog, cancelled token
   prompt, arbiter refusal, pre-check block, drift): `pending` ends at the hand-over. A banner raised
   after the host moved on to another tag or channel is dropped.
+- **A flow whose host is gone speaks through a page-level sink.** The dialogs, the import hook and a
+  report without a run outlive `TagRunActions`: a live set switch on the usage page, or a tag list
+  reloaded with a new set on the tags page, tears it down behind them. The guard then aborts correctly,
+  but a notice written into the destroyed component is never seen, and a confirmed run that silently
+  does nothing reads as success. So once the host is destroyed (its `DestroyRef`), the flows hand
+  their notices — the import hook's "set changed", the "all present" guard, the clear-out confirm's
+  abort and `confirmTimeRefusal`, a report failure — to the root-provided `TagRunNoticeSink` instead,
+  and their acknowledgement and "completed" become sink events instead of emits on a dead output.
+  Both pages render the sink through `TagRunOrphanNotice` in their run status region (a permanent
+  sr-only region plus a visible twin, §4.5), for their own channel, the way they render the arbiter's
+  `refusedStart`. It stays until closed or until a new tag run starts. Only a report failure keeps its
+  retry there (resending the same operation needs no host); a retry that would restart the flow goes
+  with the host. A live host on another tag still drops a stale banner (`isCurrent`), as before.
 - **No-tag is `null` on import run info but `undefined` on delete run info.** Consumers test `!== null`
   for import runs and `!== undefined` for delete runs and never cross them.
 
@@ -550,7 +563,9 @@ both buttons on the usage page and the tags page. Choices that are not obvious f
 `web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-removal.ts` ·
 `web/src/app/shared/tags/tag-removal-flow.ts` · `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
 `web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/shared/seven-tv/import-trigger.ts` ·
-`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` · `web/src/app/shared/tags/tag-run-notice-sink.ts` ·
+`web/src/app/shared/tags/tag-run-orphan-notice.ts` · `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.html`
 
 #### Surfaces (Task 13)
 

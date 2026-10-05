@@ -6857,7 +6857,7 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
     expect(button?.hasAttribute('aria-describedby')).toBe(false);
   });
 
-  describe('tag runs in the inline group (#201 T-C, spec 9.2, rulings F11)', () => {
+  describe('tag runs in the inline group (#201 T-C, spec 9.2)', () => {
     const IMAGE = 'https://cdn.7tv.app/emote/x/1x.webp';
     const TOTALS = (): EmoteUsageTotalDto[] => [
       { ...emote('a', 'PeepoA'), imageUrl: IMAGE },
@@ -6954,7 +6954,7 @@ describe('UsageStatsPage — tags: filter, inline summary, dock actions, message
       await settle();
     });
 
-    it('keeps the same TagRunActions through a channel.synced reload of the same set, and drops it on a set switch (F38)', async () => {
+    it('keeps the same TagRunActions through a channel.synced reload of the same set, and drops it on a set switch', async () => {
       await open({
         tags: [tag(4, 'Stronghold')],
         totals: TOTALS(),
