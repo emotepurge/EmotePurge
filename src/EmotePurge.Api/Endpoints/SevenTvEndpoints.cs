@@ -19,12 +19,6 @@ namespace EmotePurge.Api.Endpoints;
 /// </summary>
 public static class SevenTvEndpoints
 {
-    /// <summary>
-    /// The cap on each owner-hint value, whether it arrives in a report's body or on the editable
-    /// pre-check's query (owner-hint design 3.4).
-    /// </summary>
-    private const int OwnerHintMaxLength = 64;
-
     /// <summary>The one 7TV <c>EmoteSetKind</c> a caller may pick as a target (spec 8.6).</summary>
     private const string SelectableEmoteSetKind = "NORMAL";
 
@@ -217,7 +211,7 @@ public static class SevenTvEndpoints
             }
 
             var resolution = await ownershipService.ResolveEditableAsync(
-                principal.TwitchUserId, principal.TwitchLogin, emoteSetId, ct, BuildOwnerHint(ownerTwitchId, ownerLogin));
+                principal.TwitchUserId, principal.TwitchLogin, emoteSetId, ct, EmoteSetOwnershipRejection.BuildOwnerHint(ownerTwitchId, ownerLogin));
 
             return Results.Ok(await ToEditableSetPreCheckResponseAsync(emoteSetId, resolution, channelService, ct));
         })
@@ -269,22 +263,12 @@ public static class SevenTvEndpoints
 
             // Step 4: does the actor own emoteSetId, or hold a 7TV editor grant on its owner?
             var ownership = await ownershipService.CheckAsync(
-                actor.TwitchUserId, actor.Login, emoteSetId, ct, BuildOwnerHint(request.TargetOwnerTwitchId));
+                actor.TwitchUserId, actor.Login, emoteSetId, ct, EmoteSetOwnershipRejection.BuildOwnerHint(request.TargetOwnerTwitchId));
 
-            switch (ownership.Status)
+            if (EmoteSetOwnershipRejection.For(ownership.Status) is { } rejection)
             {
-                case SevenTvEmoteSetOwnershipStatus.SetNotFound:
-                    return Results.NotFound(new { errorCode = ApiErrorCodes.EmoteSetNotFound });
-                case SevenTvEmoteSetOwnershipStatus.Forbidden:
-                    // Bare Forbid(), like the four existing IEndpointFilter-based authorization
-                    // filters (spec 6.7) — no error-code body, since "you may not do this" needs no
-                    // further explanation a caller could act on.
-                    return Results.Forbid();
-                case SevenTvEmoteSetOwnershipStatus.Unavailable:
-                    // No audit entry on this branch: nothing was determined, let alone imported.
-                    return Results.Json(
-                        new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
-                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                // No audit entry on any rejection: nothing was determined, let alone imported.
+                return rejection;
             }
 
             // Step 5: the service call is the only place that writes the audit row — ChannelName =
@@ -607,29 +591,6 @@ public static class SevenTvEndpoints
     }
 
     /// <summary>
-    /// Turns an optional owner hint — the reports' <c>targetOwnerTwitchId</c> body field, or the
-    /// editable pre-check's <c>ownerTwitchId</c>/<c>ownerLogin</c> query — into an
-    /// <see cref="EmoteSetOwnerHint"/>, or drops it. Each value on its own is dropped when blank
-    /// (rule 7: never a 400) or longer than <see cref="OwnerHintMaxLength"/>; with both dropped there
-    /// is no hint at all. <see cref="IImportTargetOwnershipService"/> only ever resolves a hint
-    /// against the actor and the actor's editor grants, so an implausible or foreign value makes
-    /// no list request of its own; resolving it may cost the grants lookup (identity + editor_of)
-    /// when the grant cache is cold — the cap only keeps a client from handing this class an
-    /// arbitrarily large string to hold and log.
-    /// </summary>
-    private static EmoteSetOwnerHint? BuildOwnerHint(string? twitchUserId, string? twitchLogin = null)
-    {
-        var usableTwitchUserId = UsableOwnerHintValue(twitchUserId);
-        var usableTwitchLogin = UsableOwnerHintValue(twitchLogin);
-        return usableTwitchUserId is null && usableTwitchLogin is null
-            ? null
-            : new EmoteSetOwnerHint(usableTwitchUserId, usableTwitchLogin);
-    }
-
-    private static string? UsableOwnerHintValue(string? value) =>
-        string.IsNullOrWhiteSpace(value) || value.Length > OwnerHintMaxLength ? null : value;
-
-    /// <summary>
     /// Stages 3-4 of the set-centric <c>sync-deleted</c>/<c>sync-restored</c> ladder (restore-per-set
     /// spec 5.1): the body, then the owner check. A non-null <see cref="SyncInSetLadder.Rejection"/>
     /// is the answer; nothing was reported, audited or resynced on any of those exits. Otherwise the
@@ -661,17 +622,10 @@ public static class SevenTvEndpoints
         // The same owner check and the same three exits as sync-imported: 404 with a code, a bare
         // 403, and 503 when 7TV could not be asked.
         var ownership = await ownershipService.CheckAsync(
-            actor.TwitchUserId, actor.Login, emoteSetId, ct, BuildOwnerHint(request.TargetOwnerTwitchId));
-        switch (ownership.Status)
+            actor.TwitchUserId, actor.Login, emoteSetId, ct, EmoteSetOwnershipRejection.BuildOwnerHint(request.TargetOwnerTwitchId));
+        if (EmoteSetOwnershipRejection.For(ownership.Status) is { } rejection)
         {
-            case SevenTvEmoteSetOwnershipStatus.SetNotFound:
-                return SyncInSetLadder.Reject(Results.NotFound(new { errorCode = ApiErrorCodes.EmoteSetNotFound }));
-            case SevenTvEmoteSetOwnershipStatus.Forbidden:
-                return SyncInSetLadder.Reject(Results.Forbid());
-            case SevenTvEmoteSetOwnershipStatus.Unavailable:
-                return SyncInSetLadder.Reject(Results.Json(
-                    new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
-                    statusCode: StatusCodes.Status503ServiceUnavailable));
+            return SyncInSetLadder.Reject(rejection);
         }
 
         var expectedChannelName = request.ExpectedChannelName is null ? null : ChannelName.Normalize(request.ExpectedChannelName);
@@ -934,7 +888,7 @@ internal static class EditableSetPreCheckStatus
 /// Optional order for the owner check (owner-hint design 3.3): the probable owner's Twitch id, as
 /// the client's own editable pre-check already resolved it. Never a login — every set-centric
 /// report follows a pre-check whose answer already carries the owner's Twitch id. Missing, blank or
-/// implausibly long is no hint at all (see <see cref="SevenTvEndpoints.BuildOwnerHint"/>), never 400.
+/// implausibly long is no hint at all (see <see cref="EmoteSetOwnershipRejection.BuildOwnerHint"/>), never 400.
 /// </param>
 internal sealed record SyncImportedToSetRequest(
     IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null,

@@ -6,6 +6,7 @@ using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using NSubstitute;
+using static EmotePurge.Api.Tests.OwnershipLadderArrangements;
 using Xunit;
 
 namespace EmotePurge.Api.Tests;
@@ -107,7 +108,7 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
     public async Task UnknownSet_Gets404EmoteSetNotFound_WithoutReportOrResync(string route)
     {
         var userId = NewUserId();
-        ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId));
+        _factory.ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId));
         _factory.SevenTvApi.LookUpEmoteSetOwnerAsync(EmoteSetId, Arg.Any<CancellationToken>())
             .Returns(SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.NotFound));
 
@@ -124,7 +125,7 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
     public async Task NeitherOwnerNorEditor_GetsBareForbid_WithoutReportOrResync(string route)
     {
         var userId = NewUserId();
-        ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId, (EmoteSetId, OwnerSevenTvUserId)));
+        _factory.ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId, (EmoteSetId, OwnerSevenTvUserId)));
 
         var response = await SendAsync(route, EmoteSetId, userId);
 
@@ -140,7 +141,7 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
     public async Task SevenTvUnavailable_Gets503_WithoutReportOrResync(string route)
     {
         var userId = NewUserId();
-        ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId));
+        _factory.ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId));
         _factory.SevenTvApi.LookUpEmoteSetOwnerAsync(EmoteSetId, Arg.Any<CancellationToken>())
             .Returns(SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.Unavailable));
 
@@ -194,7 +195,7 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
         // N3 (5.1 stage 4/5): the owner's Twitch id reaches the service on the own-account path too —
         // there it is the actor's, since the actor is the owner. The grant path is pinned above.
         var userId = NewUserId();
-        ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId, (EmoteSetId, ActorSevenTvUserId)));
+        _factory.ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId, (EmoteSetId, ActorSevenTvUserId)));
         ArrangeReport(route, new InSetOutcome(2, [], null));
 
         var response = await SendAsync(route, EmoteSetId, userId);
@@ -444,13 +445,6 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
         await _factory.ResyncCooldown.Received(1).ReleaseAsync("ntpurged", Arg.Any<CancellationToken>());
     }
 
-    private void ArrangeActorWithoutGrants(string userId, EmoteSetListResult actorList)
-    {
-        _factory.EmoteSetList.ListByTwitchIdAsync(userId, Arg.Any<CancellationToken>()).Returns(actorList);
-        _factory.GuardedEditorGrants.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
-            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(new HashSet<string>(), new HashSet<string>())));
-    }
-
     // The ordinary case: the set sits in the list of an account the actor edits, owned by it.
     private void ArrangeConfirmedOwnership(string userId)
     {
@@ -547,12 +541,6 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
 
         return await client.SendAsync(request);
     }
-
-    private static EmoteSetListResult SetList(string accountSevenTvUserId, params (string Id, string OwnerSevenTvUserId)[] sets) =>
-        EmoteSetListResult.Ok(new EmoteSetList(
-            null,
-            [.. sets.Select(set => new EmoteSetSummary(set.Id, "Some Set", 1000, "NORMAL", false, "Some Owner", set.OwnerSevenTvUserId))],
-            accountSevenTvUserId));
 
     private static string NewUserId() => Guid.NewGuid().ToString("N");
 
