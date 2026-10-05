@@ -234,6 +234,69 @@ tables (plus the audit row) and reads leave observations — the lock order of s
   entry requests use it unchanged, and the report handlers will apply the same rule before the 7TV
   ownership check rather than a copy.
 
+#### Removal report (Task 5)
+
+`IEmoteTagService.ReportRemovalAsync` applies what a removal run did (spec 6.4 "Ausräumen"): same
+lock order and same rejection ladder as the play-in report (unknown operation, foreign operation,
+replay), then the steps in the order **4 → 1 → 2 → 3 → 5**, all against P = every placement of the
+tag in the set as it exists at apply time, valid and expired alike.
+
+- **A hit needs id and revision.** A snapshot entry touches a placement only if the row still carries
+  the `OperationId` the preview read. A row a later play-in rewrote (rule 10 gives it that play-in's
+  operation) is not what the person judged and is left alone (counterexample 5). Ids without a hit are
+  no error.
+- **Step 4 is decided first because steps 2 and 5 depend on it.** The activation is removed only if it
+  still carries the `activationOperationId` the preview read; a `null` never matches, nor does a
+  missing activation. Otherwise a newer play-in has re-activated the tag (counterexample 3), and an
+  active tag holds its placements by right: kept hits stay, nothing is swept. Deleting removed hits
+  (step 1) and dropping hits the live read no longer saw (step 3) happen in both cases.
+- **Transfer target = `heldByActiveTags` in its order.** A kept hit (step 2) and every row the sweep
+  reaches (step 5) go to the oldest other tag of the channel that is active in the set **and** has an
+  entry for the emote — the helper the entry read uses (`LoadActiveHoldersAsync`), not a copy. Without
+  the entry the handed-over row would violate the composite FK; without the activation it would violate
+  "inactive ⇒ no placement". A target that already holds the emote keeps its own row (revision and
+  anchor untouched) and the giving row is simply deleted; that still counts as transferred, because
+  the responsibility passed. No target → dropped. Transfer is delete plus insert (`TagId` is part of the
+  primary key); the new row keeps `PlacedAtUtc`, takes the removal operation as `OperationId` and that
+  operation's `RegisteredAtUtc` as its anchor (F30) — so deleting the giving tag afterwards, which
+  cascades its operations away, leaves the transferred placement holding.
+- **An expired placement is never transferred, only deleted** — in the sweep, where the spec says so,
+  and for a kept hit as well, where it does not. The verdict comes from the read-time rule itself
+  (`LoadPlacementStatesAsync`/`Holds`). A kept hit can expire between preview and apply (a leave
+  observed in between); re-anchoring it at the removal's registration would revive a placement of an
+  emote the server has seen leave, as a proposal for the target — spec 0a rule 2 says the server
+  proposes nothing it cannot prove. Such a hit is counted as dropped.
+- **The sweep makes the invariant.** On deactivation every remaining row of P — not hit because it
+  wandered in after the preview, was re-placed, carries another revision or has expired — is
+  transferred or deleted, so afterwards no placement `(T, ·, S)` exists. The test fixture asserts both
+  invariants after every scenario: inactive ⇒ no placement, and (as a left join placement ⟕ entry) no
+  placement without an entry.
+- **Counters:** `deletedCount` (removed hits), `transferredCount` (kept hits handed over),
+  `droppedCount` (kept hits without a target or expired, plus hits neither removed nor kept),
+  `sweptCount` (everything the sweep took, transferred or not), `deactivated`. Audit `tag.removed`
+  with `{ tagId, emoteSetId, operationId, emoteCount = deletedCount }`, no name (E30). `DeleteAsync`'s
+  audit now also carries `placementCount`; `RemoveEntriesAsync` keeps its `{ removedCount }` wire (the
+  FK cascade takes the placements, F14).
+- **Races with entry removal (Codex finding 3)** are ordered by the channel lock and closed by the
+  FK: a play-in report that read the entry before a parallel `RemoveEntriesAsync` commits its
+  placement, and the cascade then takes it with the entry; the other order sees no entry and reports
+  `notTaggedIds`. A removal report's transfer to T′ against a parallel removal of T′'s entry either
+  finds no candidate (dropped) or commits the row and loses it to the cascade. Two overlapping
+  clearings (counterexample 7) serialize on the lock: the first hands X over, the second deactivates
+  and its sweep deletes the handed-over row because no active holder is left.
+- **Counterexamples 5 and 7 under F33** (an older play-in report of the same tag and set landing
+  after a newer one overwrites revision, anchor and the activation's operation with the older values).
+  CE 5: a removal whose preview read the newer revision and activation then hits nothing and does not
+  deactivate — nothing is deleted, the tag stays active with the emote placed under the old revision;
+  the next preview reads that state, the live read no longer shows the emote, and the next clearing
+  drops the row and deactivates (tested). CE 7: if B's older play-in lands between A's and B's
+  reports, B's report (activation read as the newer operation) does not deactivate and does not sweep
+  — B stays active and keeps the handed-over row, which is consistent, and A's side is unchanged.
+  In every variant the older anchor only expires earlier and the mismatch only withholds a
+  deactivation or a hit; nothing is deleted or transferred that the person did not confirm, so the
+  direction is fail-safe (spec 0a). The visible cost is a tag that reads as still active after a
+  clearing until it is cleared again.
+
 ### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
 
 **Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·

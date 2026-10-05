@@ -175,6 +175,55 @@ public sealed record TagPlacementReportResult(
     IReadOnlyList<string> NotTaggedIds,
     IReadOnlyList<string> DiscardedStaleIds);
 
+/// <param name="SevenTvEmoteId">An own placement the removal preview captured.</param>
+/// <param name="PlacementOperationId">
+/// The revision the preview read (the placement's <c>OperationId</c>). The report touches the row only
+/// while it still carries that revision; a row rewritten since is left alone.
+/// </param>
+public sealed record TagPlacementSnapshotEntry(string SevenTvEmoteId, Guid PlacementOperationId);
+
+/// <param name="OperationId">The registered removal operation the report belongs to.</param>
+/// <param name="EmoteSetId">The set the run cleared; must be the registered one.</param>
+/// <param name="ActivationOperationId">
+/// The tag's activation operation as the preview read it; the tag is deactivated only if the
+/// activation still carries it. <c>null</c> (no activation read) never deactivates.
+/// </param>
+/// <param name="Snapshot">The tag's own valid placements as the preview captured them, each with its revision.</param>
+/// <param name="RemovedIds">The ids the delete run actually removed from the set (empty without a run).</param>
+/// <param name="KeptIds">The ids of own placements that stay in the set (unchecked by the person, or not done).</param>
+public sealed record TagRemovalReport(
+    Guid OperationId,
+    string EmoteSetId,
+    Guid? ActivationOperationId,
+    IReadOnlyList<TagPlacementSnapshotEntry> Snapshot,
+    IReadOnlyList<string> RemovedIds,
+    IReadOnlyList<string> KeptIds);
+
+/// <param name="Replayed">The operation had already been applied; nothing was written and every count is 0.</param>
+/// <param name="DeletedCount">Snapshot hits among <c>RemovedIds</c>, deleted.</param>
+/// <param name="TransferredCount">
+/// Snapshot hits among <c>KeptIds</c> handed to the oldest other tag that is active in the set and has
+/// an entry for the emote (whether that tag already held the emote or got the row). Only when
+/// <paramref name="Deactivated"/>.
+/// </param>
+/// <param name="DroppedCount">
+/// Snapshot hits deleted without a transfer: kept ones without such a tag (or already expired), and
+/// hits neither removed nor kept.
+/// </param>
+/// <param name="SweptCount">
+/// Placements the snapshot did not hit — wandered in, re-placed, revised or expired — transferred or
+/// deleted by the deactivation sweep. Only when <paramref name="Deactivated"/>.
+/// </param>
+/// <param name="Deactivated">The activation carried the reported operation and was removed.</param>
+public sealed record TagRemovalReportResult(
+    TagReportStatus Status,
+    bool Replayed,
+    int DeletedCount,
+    int TransferredCount,
+    int DroppedCount,
+    int SweptCount,
+    bool Deactivated);
+
 /// <summary>
 /// Channel-owned emote tags (#201): creating, renaming and deleting tags, and putting emotes into and
 /// out of them by 7TV emote id. Every method takes the channel name raw and normalizes it itself
@@ -257,4 +306,17 @@ public interface IEmoteTagService
     /// </summary>
     Task<TagPlacementReportResult> ReportPlacementsAsync(
         string channelName, long tagId, TagPlacementReport report, AuditActor actor, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Applies what a removal run did to the tag's placements in the set and, if the activation the
+    /// preview read is still the current one, deactivates the tag there. Applied once per operation; a
+    /// repeat is <c>Replayed</c> and writes nothing. A snapshot entry touches a placement only if id
+    /// <em>and</em> revision still match. Removed hits are deleted; kept hits are handed to the oldest
+    /// other tag that is active in the set and has an entry for the emote, or dropped; hits neither
+    /// removed nor kept are dropped. On deactivation every remaining placement of the tag in the set is
+    /// swept the same way, so an inactive tag never holds a placement; an expired placement is only
+    /// ever deleted, never transferred. Audited as <c>tag.removed</c> without the tag's name.
+    /// </summary>
+    Task<TagRemovalReportResult> ReportRemovalAsync(
+        string channelName, long tagId, TagRemovalReport report, AuditActor actor, CancellationToken cancellationToken = default);
 }

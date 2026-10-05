@@ -230,13 +230,16 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     // ---- Delete ----------------------------------------------------------------------------------
 
     [Fact]
-    public async Task Delete_RemovesTheTagAndItsEntries_LeavesASiblingTag_AndAuditsIdAndEntryCount()
+    public async Task Delete_RemovesTheTagItsEntriesAndPlacements_LeavesASiblingTag_AndAuditsIdAndCounts()
     {
         var channel = await SeedChannelAsync("tagdelete");
         var tag = await SeedTagAsync(channel.Id, "Funny");
         var sibling = await SeedTagAsync(channel.Id, "Sad");
         await SeedEntriesAsync(tag.Id, 3);
         await SeedEntriesAsync(sibling.Id, 2);
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedPlayInAsync(tag.Id, ActiveSetId, T0, x);
 
         var status = await DeleteAsync("tagdelete", tag.Id);
 
@@ -244,6 +247,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         await using var verify = fixture.CreateDbContext();
         Assert.False(await verify.EmoteTags.AnyAsync(t => t.Id == tag.Id));
         Assert.False(await verify.EmoteTagEntries.AnyAsync(e => e.TagId == tag.Id));
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == tag.Id));
         Assert.True(await verify.EmoteTags.AnyAsync(t => t.Id == sibling.Id));
         Assert.Equal(2, await verify.EmoteTagEntries.CountAsync(e => e.TagId == sibling.Id));
 
@@ -251,7 +255,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.Equal(AuditActions.TagDelete, audit.Action);
         Assert.Equal("emoteTag", audit.TargetType);
         Assert.Equal(tag.Id.ToString(CultureInfo.InvariantCulture), audit.TargetId);
-        Assert.Equal(Details(("tagId", tag.Id), ("entryCount", 3)), ParseDetails(audit.DetailsJson));
+        Assert.Equal(Details(("tagId", tag.Id), ("entryCount", 4), ("placementCount", 1)), ParseDetails(audit.DetailsJson));
     }
 
     [Fact]
@@ -1510,6 +1514,833 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
     }
 
+    // ---- Removal report: hits, transfer, sweep, deactivation (T-C Task 5) ------------------------
+    //
+    // Spec 6.4 "Ausräumen" in the order 4 → 1 → 2 → 3 → 5 → 6, spec 5.5 rules 3, 4, 6 and 10, E7 rev. 2,
+    // E26 rev. 3, E27. Every scenario ends with both placement invariants: inactive ⇒ no placement,
+    // and no placement without an entry.
+
+    [Fact]
+    public async Task Removal_AnUnknownChannelOrTag_AnUnregisteredOperation_OrAnotherTagSetOrKind_IsRejected_AndWritesNothing()
+    {
+        var channel = await SeedChannelAsync("tagrmreject");
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var otherTag = await SeedTagAsync(channel.Id, "B");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var playIn = await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmreject", tag.Id, removal);
+        var playInRegistered = Guid.NewGuid();
+        await RegisterPlayInAsync("tagrmreject", tag.Id, playInRegistered);
+        var foreignRemoval = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmreject", otherTag.Id, foreignRemoval);
+        var before = await TagTablesAsync(channel, tag.Id);
+        var body = Removal(removal, playIn, Snapshot((x, playIn)), removed: [x], kept: []);
+
+        Assert.Equal(TagReportStatus.ChannelNotFound, (await ReportRemovalAsync("tagrmnochannel", tag.Id, body)).Status);
+        Assert.Equal(TagReportStatus.TagNotFound, (await ReportRemovalAsync("tagrmreject", long.MaxValue, body)).Status);
+        Assert.Equal(TagReportStatus.OperationUnknown, (await ReportRemovalAsync("tagrmreject", tag.Id, body with { OperationId = Guid.NewGuid() })).Status);
+        Assert.Equal(TagReportStatus.OperationConflict, (await ReportRemovalAsync("tagrmreject", tag.Id, body with { OperationId = playInRegistered })).Status);
+        Assert.Equal(TagReportStatus.OperationConflict, (await ReportRemovalAsync("tagrmreject", tag.Id, body with { EmoteSetId = OtherSetId })).Status);
+        var foreign = await ReportRemovalAsync("tagrmreject", tag.Id, body with { OperationId = foreignRemoval });
+
+        Assert.Equal(new TagRemovalReportResult(TagReportStatus.OperationConflict, false, 0, 0, 0, 0, false), foreign);
+        Assert.Equal(before, await TagTablesAsync(channel, tag.Id));
+        Assert.Empty(await LoadAuditAsync("tagrmreject"));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // A hit needs the id and the revision: Y's snapshot entry names another operation, so Y is not
+    // touched although it is in removedIds — and with the activation not matching either, no sweep
+    // takes it.
+    [Fact]
+    public async Task Removal_AHitNeedsIdAndRevision_AnotherRevisionIsNoHit_AndTheRowStays()
+    {
+        var channel = await SeedChannelAsync("tagrmrevision");
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        var playIn = await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x, y);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmrevision", tag.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmrevision", tag.Id,
+            Removal(removal, Guid.NewGuid(), Snapshot((x, playIn), (y, Guid.NewGuid())), removed: [x, y], kept: []));
+
+        AssertCounts(result, deleted: 1, transferred: 0, dropped: 0, swept: 0, deactivated: false);
+        var remaining = Assert.Single(await LoadPlacementsAsync(tag.Id));
+        Assert.Equal((y, playIn), (remaining.SevenTvEmoteId, remaining.OperationId));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    [Theory]
+    [InlineData("tagrmremoveddeact", true)]
+    [InlineData("tagrmremovedactive", false)]
+    public async Task Removal_RemovedHits_AreDeleted_WhetherOrNotTheTagIsDeactivated(string channelName, bool deactivated)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var playIn = await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync(channelName, tag.Id, removal);
+
+        var result = await ReportRemovalAsync(channelName, tag.Id,
+            Removal(removal, deactivated ? playIn : Guid.NewGuid(), Snapshot((x, playIn)), removed: [x], kept: []));
+
+        AssertCounts(result, deleted: 1, transferred: 0, dropped: 0, swept: 0, deactivated);
+        Assert.Empty(await LoadPlacementsAsync(tag.Id));
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal(!deactivated, await verify.EmoteTagActivations.AnyAsync(a => a.TagId == tag.Id));
+        Assert.NotNull((await verify.EmoteTagOperations.AsNoTracking().SingleAsync(o => o.OperationId == removal)).AppliedAtUtc);
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // The transfer target (spec 5.5 rule 4): the oldest other tag that is active in the set AND has an
+    // entry for the emote. D is older and active but has no entry; E is older and has the entry but
+    // is not active; B and C both qualify, B is older.
+    [Fact]
+    public async Task Removal_KeptHits_GoToTheOldestActiveTagWithAnEntry_WithTheRemovalAsRevisionAndAnchor_AndTheOldPlacedAt()
+    {
+        var channel = await SeedChannelAsync("tagrmtransfer");
+        var d = await SeedTagAsync(channel.Id, "D", T0.AddDays(-5));
+        var e = await SeedTagAsync(channel.Id, "E", T0.AddDays(-4));
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-3));
+        var c = await SeedTagAsync(channel.Id, "C", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        foreach (var tag in new[] { e, b, c, a })
+        {
+            await SeedEntryAsync(tag.Id, x, "X", T0);
+        }
+
+        await SeedPlayInAsync(d.Id, ActiveSetId, T0.AddDays(-5));
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-3));
+        await SeedPlayInAsync(c.Id, ActiveSetId, T0.AddDays(-2));
+        var placedAtUtc = T0.AddDays(-1);
+        var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, placedAtUtc, x);
+        var removal = Guid.NewGuid();
+        var registeredAtUtc = await RegisterRemovalAsync("tagrmtransfer", a.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmtransfer", a.Id,
+            Removal(removal, playIn, Snapshot((x, playIn)), removed: [], kept: [x]));
+
+        AssertCounts(result, deleted: 0, transferred: 1, dropped: 0, swept: 0, deactivated: true);
+        await using var verify = fixture.CreateDbContext();
+        var row = Assert.Single(await verify.EmoteTagPlacements.AsNoTracking().Where(p => p.SevenTvEmoteId == x).ToListAsync());
+        Assert.Equal((b.Id, ActiveSetId, removal, registeredAtUtc, placedAtUtc),
+            (row.TagId, row.SevenTvEmoteSetId, row.OperationId, row.RegisteredAtUtc, row.PlacedAtUtc));
+        var service = CreateService(verify);
+        var entry = Assert.Single((await service.ListEntriesAsync("tagrmtransfer", b.Id, null)).Entries);
+        Assert.Equal((true, (DateTime?)placedAtUtc, (Guid?)removal), (entry.PlacedByThisTag, entry.PlacedAtUtc, entry.PlacementOperationId));
+        var tags = (await service.ListAsync("tagrmtransfer", null)).Tags.ToDictionary(t => t.Id);
+        Assert.Equal((false, 0), (tags[a.Id].Active, tags[a.Id].PlacedCount));
+        Assert.Equal((true, 1), (tags[b.Id].Active, tags[b.Id].PlacedCount));
+        Assert.Equal(0, tags[c.Id].PlacedCount + tags[d.Id].PlacedCount + tags[e.Id].PlacedCount);
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    [Fact]
+    public async Task Removal_ATargetThatAlreadyHoldsTheEmote_KeepsItsRow_TheOwnRowGoes_CountedAsTransferred()
+    {
+        var channel = await SeedChannelAsync("tagrmalreadyheld");
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        var bPlayIn = await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-2), x);
+        var aPlayIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-1), x);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmalreadyheld", a.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmalreadyheld", a.Id,
+            Removal(removal, aPlayIn, Snapshot((x, aPlayIn)), removed: [], kept: [x]));
+
+        AssertCounts(result, deleted: 0, transferred: 1, dropped: 0, swept: 0, deactivated: true);
+        Assert.Empty(await LoadPlacementsAsync(a.Id));
+        var row = Assert.Single(await LoadPlacementsAsync(b.Id));
+        // B's own row is untouched: its revision and anchor are still B's play-in.
+        Assert.Equal((x, bPlayIn, T0.AddDays(-2)), (row.SevenTvEmoteId, row.OperationId, row.RegisteredAtUtc));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // No target: an inactive tag with the entry does not count, nor does an active tag without it.
+    [Fact]
+    public async Task Removal_AKeptHitWithoutAnActiveTagWithAnEntry_IsDropped()
+    {
+        var channel = await SeedChannelAsync("tagrmdropped");
+        var inactiveWithEntry = await SeedTagAsync(channel.Id, "E", T0.AddDays(-3));
+        var activeWithoutEntry = await SeedTagAsync(channel.Id, "D", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(inactiveWithEntry.Id, x, "X", T0);
+        await SeedPlayInAsync(activeWithoutEntry.Id, ActiveSetId, T0.AddDays(-2));
+        var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-1), x);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmdropped", a.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmdropped", a.Id,
+            Removal(removal, playIn, Snapshot((x, playIn)), removed: [], kept: [x]));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: 1, swept: 0, deactivated: true);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.SevenTvEmoteId == x));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Kept by the person, but a leave was observed since the placement's anchor: the server has seen
+    // the emote go and hands nothing over (spec 0a) — dropped, although B would qualify as a target.
+    [Fact]
+    public async Task Removal_AKeptHitThatExpiredSinceThePreview_IsDropped_NotTransferred()
+    {
+        var channel = await SeedChannelAsync("tagrmkeptexpired");
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-2));
+        var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-7), x);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, T0.AddDays(-6));
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmkeptexpired", a.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmkeptexpired", a.Id,
+            Removal(removal, playIn, Snapshot((x, playIn)), removed: [], kept: [x]));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: 1, swept: 0, deactivated: true);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.SevenTvEmoteId == x));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    [Theory]
+    [InlineData("tagrmneitherdeact", true)]
+    [InlineData("tagrmneitheractive", false)]
+    public async Task Removal_AHitNeitherRemovedNorKept_IsDropped_WhetherOrNotTheTagIsDeactivated(string channelName, bool deactivated)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        // B would be a transfer target — but a row the preview saw gone is dropped, never handed over.
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-2));
+        var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-1), x);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync(channelName, a.Id, removal);
+
+        var result = await ReportRemovalAsync(channelName, a.Id,
+            Removal(removal, deactivated ? playIn : Guid.NewGuid(), Snapshot((x, playIn)), removed: [], kept: []));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: 1, swept: 0, deactivated);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.SevenTvEmoteId == x));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // The sweep: X is the only snapshot hit (kept → transferred). Y, Z and W were not in the
+    // snapshot. Y is valid and B has an entry → transferred; Z is expired (a leave after its anchor)
+    // → deleted although B has an entry; W is valid but no other tag has an entry → deleted. All
+    // three count as swept, not as transferred or dropped.
+    [Fact]
+    public async Task Removal_TheSweep_TransfersValidUnhitRows_AndOnlyDeletesExpiredOrUnheldOnes()
+    {
+        var channel = await SeedChannelAsync("tagrmsweep");
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        var z = NewSevenTvId();
+        var w = NewSevenTvId();
+        foreach (var id in new[] { x, y, z, w })
+        {
+            await SeedEntryAsync(a.Id, id, id, T0);
+        }
+
+        foreach (var id in new[] { x, y, z })
+        {
+            await SeedEntryAsync(b.Id, id, id, T0);
+        }
+
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-2));
+        var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-7), x, y, z, w);
+        await SeedObservationAsync(channel.Id, z, ActiveSetId, T0.AddDays(-6));
+        var removal = Guid.NewGuid();
+        var registeredAtUtc = await RegisterRemovalAsync("tagrmsweep", a.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmsweep", a.Id,
+            Removal(removal, playIn, Snapshot((x, playIn)), removed: [], kept: [x]));
+
+        AssertCounts(result, deleted: 0, transferred: 1, dropped: 0, swept: 3, deactivated: true);
+        Assert.Empty(await LoadPlacementsAsync(a.Id));
+        var rows = await LoadPlacementsAsync(b.Id);
+        Assert.Equal(new[] { x, y }.Order(StringComparer.Ordinal), rows.Select(r => r.SevenTvEmoteId));
+        Assert.All(rows, r => Assert.Equal((removal, registeredAtUtc, T0.AddDays(-7)), (r.OperationId, r.RegisteredAtUtc, r.PlacedAtUtc)));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // The sweep candidate's only active other tag has no entry for X: a transfer would violate the
+    // composite FK, so the row is deleted — and the report succeeds instead of failing with a 23503.
+    [Fact]
+    public async Task Removal_ASweptRowWhoseOnlyActiveOtherTagHasNoEntry_IsDeleted_NotTransferred()
+    {
+        var channel = await SeedChannelAsync("tagrmsweepnoentry");
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-2));
+        var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-1), x);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmsweepnoentry", a.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmsweepnoentry", a.Id,
+            Removal(removal, playIn, Snapshot(), removed: [], kept: []));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: 0, swept: 1, deactivated: true);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.SevenTvEmoteId == x));
+        Assert.True(await verify.EmoteTagActivations.AnyAsync(a => a.TagId == b.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Not deactivated (a newer play-in holds the activation): kept hits stay with the tag, unhit rows
+    // are not swept, and nothing is transferred to B although it qualifies.
+    [Fact]
+    public async Task Removal_WithoutDeactivation_LeavesKeptHitsAndUnhitRowsAlone()
+    {
+        var channel = await SeedChannelAsync("tagrmstillactive");
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        var z = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(a.Id, z, "Z", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        await SeedEntryAsync(b.Id, z, "Z", T0);
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-2));
+        var firstPlayIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-7), x);
+        var newerPlayIn = await SeedOperationAsync(a.Id, ActiveSetId, T0.AddDays(-1));
+        await SeedPlacementAsync(a.Id, z, ActiveSetId, newerPlayIn, T0.AddDays(-1), T0.AddDays(-1));
+        await using (var db = fixture.CreateDbContext())
+        {
+            await db.EmoteTagActivations.Where(act => act.TagId == a.Id).ExecuteUpdateAsync(s => s.SetProperty(act => act.OperationId, newerPlayIn));
+        }
+
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmstillactive", a.Id, removal);
+        var before = await LoadPlacementsAsync(a.Id);
+
+        var result = await ReportRemovalAsync("tagrmstillactive", a.Id,
+            Removal(removal, firstPlayIn, Snapshot((x, firstPlayIn)), removed: [], kept: [x]));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: 0, swept: 0, deactivated: false);
+        Assert.Equal(before.Select(p => (p.SevenTvEmoteId, p.OperationId)), (await LoadPlacementsAsync(a.Id)).Select(p => (p.SevenTvEmoteId, p.OperationId)));
+        Assert.Empty(await LoadPlacementsAsync(b.Id));
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal(newerPlayIn, (await verify.EmoteTagActivations.AsNoTracking().SingleAsync(act => act.TagId == a.Id)).OperationId);
+        Assert.NotNull((await verify.EmoteTagOperations.AsNoTracking().SingleAsync(o => o.OperationId == removal)).AppliedAtUtc);
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    [Theory]
+    [InlineData("tagrmnullread", true, false)]
+    [InlineData("tagrmnoactivation", false, true)]
+    [InlineData("tagrmneither", false, false)]
+    public async Task Removal_IsNotDeactivated_WithANullActivationOperationId_OrWithoutAnActivation(
+        string channelName, bool activationExists, bool reportNamesOne)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var playIn = await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x);
+        if (!activationExists)
+        {
+            await using var db = fixture.CreateDbContext();
+            // Not a reachable state by the service's own writes; the report must still not deactivate
+            // what is not there, and must not fail.
+            await db.EmoteTagActivations.Where(a => a.TagId == tag.Id).ExecuteDeleteAsync();
+        }
+
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync(channelName, tag.Id, removal);
+
+        var result = await ReportRemovalAsync(channelName, tag.Id,
+            Removal(removal, reportNamesOne ? playIn : null, Snapshot((x, playIn)), removed: [x], kept: []));
+
+        AssertCounts(result, deleted: 1, transferred: 0, dropped: 0, swept: 0, deactivated: false);
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal(activationExists, await verify.EmoteTagActivations.AnyAsync(a => a.TagId == tag.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    [Fact]
+    public async Task Removal_Replayed_WritesNothing_EvenWithAnotherBody()
+    {
+        var channel = await SeedChannelAsync("tagrmreplay");
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        var playIn = await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x, y);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmreplay", tag.Id, removal);
+        var first = await ReportRemovalAsync("tagrmreplay", tag.Id,
+            Removal(removal, Guid.NewGuid(), Snapshot((x, playIn)), removed: [x], kept: []));
+        var before = await TagTablesAsync(channel, tag.Id);
+
+        var replay = await ReportRemovalAsync("tagrmreplay", tag.Id,
+            Removal(removal, playIn, Snapshot((y, playIn)), removed: [y], kept: []));
+
+        AssertCounts(first, deleted: 1, transferred: 0, dropped: 0, swept: 0, deactivated: false);
+        Assert.Equal(new TagRemovalReportResult(TagReportStatus.Ok, true, 0, 0, 0, 0, false), replay);
+        Assert.Equal(before, await TagTablesAsync(channel, tag.Id));
+        Assert.Single(await LoadPlacementsAsync(tag.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    [Fact]
+    public async Task Removal_IsAuditedAsRemoved_WithTheDeletedCount_WithoutTheTagName()
+    {
+        var channel = await SeedChannelAsync("tagrmaudit");
+        var tag = await SeedTagAsync(channel.Id, "SecretStronghold");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        var z = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        await SeedEntryAsync(tag.Id, y, "Y", T0);
+        await SeedEntryAsync(tag.Id, z, "Z", T0);
+        var playIn = await SeedPlayInAsync(tag.Id, ActiveSetId, T0.AddDays(-7), x, y, z);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagrmaudit", tag.Id, removal);
+
+        var result = await ReportRemovalAsync("tagrmaudit", tag.Id,
+            Removal(removal, playIn, Snapshot((x, playIn), (y, playIn), (z, playIn)), removed: [x, y], kept: []));
+
+        AssertCounts(result, deleted: 2, transferred: 0, dropped: 1, swept: 0, deactivated: true);
+        var entry = Assert.Single(await LoadAuditAsync("tagrmaudit"));
+        Assert.Equal((AuditActions.TagRemoved, "emoteTag", tag.Id.ToString(CultureInfo.InvariantCulture), Actor.TwitchUserId),
+            (entry.Action, entry.TargetType, entry.TargetId, entry.ActorTwitchUserId));
+        using var details = JsonDocument.Parse(entry.DetailsJson!);
+        var root = details.RootElement;
+        Assert.Equal(["emoteCount", "emoteSetId", "operationId", "tagId"],
+            root.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+        Assert.Equal((tag.Id, ActiveSetId, removal, 2),
+            (root.GetProperty("tagId").GetInt64(), root.GetProperty("emoteSetId").GetString(),
+                root.GetProperty("operationId").GetGuid(), root.GetProperty("emoteCount").GetInt32()));
+        Assert.DoesNotContain("secret", entry.DetailsJson, StringComparison.OrdinalIgnoreCase);
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // F30: the transferred row points at A's removal operation, and operations cascade with their
+    // tag. Deleting A afterwards must not make B's placement stop holding — its anchor is its own.
+    [Fact]
+    public async Task Removal_ATransferredPlacement_SurvivesTheDeletionOfTheTagItCameFrom()
+    {
+        var channel = await SeedChannelAsync("tagrmgiverdeleted");
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-2));
+        var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-1), x);
+        var removal = Guid.NewGuid();
+        var registeredAtUtc = await RegisterRemovalAsync("tagrmgiverdeleted", a.Id, removal);
+        var transfer = await ReportRemovalAsync("tagrmgiverdeleted", a.Id,
+            Removal(removal, playIn, Snapshot((x, playIn)), removed: [], kept: [x]));
+        AssertCounts(transfer, deleted: 0, transferred: 1, dropped: 0, swept: 0, deactivated: true);
+
+        Assert.Equal(EmoteTagMutationStatus.Ok, await DeleteAsync("tagrmgiverdeleted", a.Id));
+
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagOperations.AnyAsync(o => o.OperationId == removal));
+        var service = CreateService(verify);
+        var entry = Assert.Single((await service.ListEntriesAsync("tagrmgiverdeleted", b.Id, null)).Entries);
+        Assert.Equal((true, (Guid?)removal), (entry.PlacedByThisTag, entry.PlacementOperationId));
+        var summary = Assert.Single((await service.ListAsync("tagrmgiverdeleted", null)).Tags);
+        Assert.Equal((b.Id, true, 1), (summary.Id, summary.Active, summary.PlacedCount));
+        var row = Assert.Single(await LoadPlacementsAsync(b.Id));
+        Assert.Equal(registeredAtUtc, row.RegisteredAtUtc);
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Counterexample 1: B only plays in emotes A already added. A = {X, Y} played in; B = {X} played
+    // in with nothing to add (activation only). Clearing A: Y removed, X kept → wanders to B, A
+    // inactive. Clearing B: X removed, B inactive. Both play-ins and both reports are the real ones.
+    [Fact]
+    public async Task CounterExample1_BLeavesNoTraceOfItsOwn_YetTakesOverXWhenAIsCleared()
+    {
+        var channel = await SeedChannelAsync("tagce1");
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-2));
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(a.Id, y, "Y", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        var aPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce1", a.Id, aPlayIn);
+        Assert.Equal(2, (await ReportAsync("tagce1", a.Id, aPlayIn, ActiveSetId, x, y)).RecordedCount);
+        var bPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce1", b.Id, bPlayIn);
+        Assert.Equal(0, (await ReportAsync("tagce1", b.Id, bPlayIn, ActiveSetId)).RecordedCount);
+
+        var aPreview = await ListEntriesAsync("tagce1", a.Id);
+        Assert.Equal([b.Id], aPreview.Entries.Single(e => e.SevenTvEmoteId == x).HeldByActiveTags.Select(t => t.Id));
+        var aRemoval = Guid.NewGuid();
+        await RegisterRemovalAsync("tagce1", a.Id, aRemoval);
+        var aResult = await ReportRemovalAsync("tagce1", a.Id,
+            Removal(aRemoval, aPreview.ActivationOperationId, SnapshotOf(aPreview), removed: [y], kept: [x]));
+        AssertCounts(aResult, deleted: 1, transferred: 1, dropped: 0, swept: 0, deactivated: true);
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+
+        var bPreview = await ListEntriesAsync("tagce1", b.Id);
+        var bEntry = Assert.Single(bPreview.Entries);
+        Assert.Equal((true, (Guid?)aRemoval, 0), (bEntry.PlacedByThisTag, bEntry.PlacementOperationId, bEntry.HeldByActiveTags.Count));
+        var bRemoval = Guid.NewGuid();
+        await RegisterRemovalAsync("tagce1", b.Id, bRemoval);
+        var bResult = await ReportRemovalAsync("tagce1", b.Id,
+            Removal(bRemoval, bPreview.ActivationOperationId, SnapshotOf(bPreview), removed: [x], kept: []));
+
+        AssertCounts(bResult, deleted: 1, transferred: 0, dropped: 0, swept: 0, deactivated: true);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == a.Id || p.TagId == b.Id));
+        Assert.False(await verify.EmoteTagActivations.AnyAsync(act => act.TagId == a.Id || act.TagId == b.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Counterexample 2: A and B both {X, Y}; A played in, B's play-in was a no-op. Clearing A with
+    // nothing checked is a report without a delete run: both placements wander to B. Clearing B then
+    // removes both.
+    [Fact]
+    public async Task CounterExample2_ClearingAWithNothingChecked_HandsBothPlacementsToB_NoDeadEnd()
+    {
+        var channel = await SeedChannelAsync("tagce2");
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-2));
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        foreach (var tag in new[] { a, b })
+        {
+            await SeedEntryAsync(tag.Id, x, "X", T0);
+            await SeedEntryAsync(tag.Id, y, "Y", T0);
+        }
+
+        var aPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce2", a.Id, aPlayIn);
+        await ReportAsync("tagce2", a.Id, aPlayIn, ActiveSetId, x, y);
+        var bPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce2", b.Id, bPlayIn);
+        await ReportAsync("tagce2", b.Id, bPlayIn, ActiveSetId);
+
+        var aPreview = await ListEntriesAsync("tagce2", a.Id);
+        var aRemoval = Guid.NewGuid();
+        await RegisterRemovalAsync("tagce2", a.Id, aRemoval);
+        var aResult = await ReportRemovalAsync("tagce2", a.Id,
+            Removal(aRemoval, aPreview.ActivationOperationId, SnapshotOf(aPreview), removed: [], kept: [x, y]));
+        AssertCounts(aResult, deleted: 0, transferred: 2, dropped: 0, swept: 0, deactivated: true);
+        Assert.Equal(new[] { x, y }.Order(StringComparer.Ordinal), (await LoadPlacementsAsync(b.Id)).Select(p => p.SevenTvEmoteId));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+
+        var bPreview = await ListEntriesAsync("tagce2", b.Id);
+        Assert.All(bPreview.Entries, e => Assert.Equal((true, 0), (e.PlacedByThisTag, e.HeldByActiveTags.Count)));
+        var bRemoval = Guid.NewGuid();
+        await RegisterRemovalAsync("tagce2", b.Id, bRemoval);
+        var bResult = await ReportRemovalAsync("tagce2", b.Id,
+            Removal(bRemoval, bPreview.ActivationOperationId, SnapshotOf(bPreview), removed: [x, y], kept: []));
+
+        AssertCounts(bResult, deleted: 2, transferred: 0, dropped: 0, swept: 0, deactivated: true);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == a.Id || p.TagId == b.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Counterexample 3: a removal of A (snapshot {X, Y}) hangs in its retry; meanwhile A is played in
+    // again and adds Z. The late report deletes only X and Y, and does not deactivate: the activation
+    // carries the newer operation. Z stays placed, A stays active.
+    [Fact]
+    public async Task CounterExample3_ALateRemovalReport_TouchesOnlyItsSnapshot_AndLeavesTheNewerActivation()
+    {
+        var channel = await SeedChannelAsync("tagce3");
+        var a = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        var z = NewSevenTvId();
+        foreach (var id in new[] { x, y, z })
+        {
+            await SeedEntryAsync(a.Id, id, id, T0);
+        }
+
+        var firstPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce3", a.Id, firstPlayIn);
+        await ReportAsync("tagce3", a.Id, firstPlayIn, ActiveSetId, x, y);
+        var preview = await ListEntriesAsync("tagce3", a.Id);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagce3", a.Id, removal);
+        // The run removed X and Y from 7TV; before its report lands, A is played in again with Z.
+        var secondPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce3", a.Id, secondPlayIn);
+        await ReportAsync("tagce3", a.Id, secondPlayIn, ActiveSetId, z);
+
+        var result = await ReportRemovalAsync("tagce3", a.Id,
+            Removal(removal, preview.ActivationOperationId, SnapshotOf(preview), removed: [x, y], kept: []));
+
+        AssertCounts(result, deleted: 2, transferred: 0, dropped: 0, swept: 0, deactivated: false);
+        var after = await ListEntriesAsync("tagce3", a.Id);
+        Assert.Equal((Guid?)secondPlayIn, after.ActivationOperationId);
+        Assert.Equal([z], after.Entries.Where(e => e.PlacedByThisTag).Select(e => e.SevenTvEmoteId));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Counterexample 5: removal R₁ of A (snapshot X with revision P₁) hangs; meanwhile X leaves (the
+    // sync observes it) and A is played in again with X (revision P₂). The late R₁ names X with P₁ —
+    // no hit — and its activation P₁ — no deactivation. The new placement is untouched and holds.
+    [Fact]
+    public async Task CounterExample5_ALateRemovalReport_DoesNotTouchARePlacedEmoteOfAnotherRevision()
+    {
+        var channel = await SeedChannelAsync("tagce5");
+        var a = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        var firstPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce5", a.Id, firstPlayIn);
+        await ReportAsync("tagce5", a.Id, firstPlayIn, ActiveSetId, x);
+        var preview = await ListEntriesAsync("tagce5", a.Id);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagce5", a.Id, removal);
+        await SeedObservationAsync(channel.Id, x, ActiveSetId, DateTime.UtcNow);
+        var secondPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce5", a.Id, secondPlayIn);
+        Assert.Equal(1, (await ReportAsync("tagce5", a.Id, secondPlayIn, ActiveSetId, x)).AlreadyRecordedCount);
+
+        var result = await ReportRemovalAsync("tagce5", a.Id,
+            Removal(removal, preview.ActivationOperationId, SnapshotOf(preview), removed: [x], kept: []));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: 0, swept: 0, deactivated: false);
+        var after = await ListEntriesAsync("tagce5", a.Id);
+        var entry = Assert.Single(after.Entries);
+        Assert.Equal(((Guid?)secondPlayIn, true, (Guid?)secondPlayIn), (after.ActivationOperationId, entry.PlacedByThisTag, entry.PlacementOperationId));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Counterexample 5 under F33: an OLDER play-in report (P_old, registered first, reported last)
+    // lands after the newer one and overwrites revision, anchor and activation with P_old. A removal
+    // whose preview read P_new then hits nothing and does not deactivate — nothing is deleted, the
+    // tag stays active with X placed. Fail-safe: the next preview reads P_old, the live read no
+    // longer shows X (the run removed it), and a second clearing drops the row and deactivates.
+    [Fact]
+    public async Task CounterExample5_UnderF33_AnOlderPlayInLandingLate_MakesTheRemovalMissAndNotDeactivate_RecoveredByTheNextClearing()
+    {
+        var channel = await SeedChannelAsync("tagce5f33");
+        var a = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        var oldPlayIn = Guid.NewGuid();
+        var oldRegisteredAtUtc = await RegisterPlayInAsync("tagce5f33", a.Id, oldPlayIn);
+        var newPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagce5f33", a.Id, newPlayIn);
+        await ReportAsync("tagce5f33", a.Id, newPlayIn, ActiveSetId, x);
+        var preview = await ListEntriesAsync("tagce5f33", a.Id);
+        Assert.Equal((Guid?)newPlayIn, preview.ActivationOperationId);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync("tagce5f33", a.Id, removal);
+        // The older play-in's report lands late (rule 10: the upsert overwrites).
+        Assert.Equal(1, (await ReportAsync("tagce5f33", a.Id, oldPlayIn, ActiveSetId, x)).AlreadyRecordedCount);
+
+        var result = await ReportRemovalAsync("tagce5f33", a.Id,
+            Removal(removal, preview.ActivationOperationId, SnapshotOf(preview), removed: [x], kept: []));
+
+        AssertCounts(result, deleted: 0, transferred: 0, dropped: 0, swept: 0, deactivated: false);
+        var row = Assert.Single(await LoadPlacementsAsync(a.Id));
+        Assert.Equal((x, oldPlayIn, oldRegisteredAtUtc), (row.SevenTvEmoteId, row.OperationId, row.RegisteredAtUtc));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+
+        // Recovery: the next preview reads what is there; X is no longer in the set, so it is neither
+        // removed nor kept.
+        var secondPreview = await ListEntriesAsync("tagce5f33", a.Id);
+        Assert.Equal((Guid?)oldPlayIn, secondPreview.ActivationOperationId);
+        var secondRemoval = Guid.NewGuid();
+        await RegisterRemovalAsync("tagce5f33", a.Id, secondRemoval);
+        var recovery = await ReportRemovalAsync("tagce5f33", a.Id,
+            Removal(secondRemoval, secondPreview.ActivationOperationId, SnapshotOf(secondPreview), removed: [], kept: []));
+
+        AssertCounts(recovery, deleted: 0, transferred: 0, dropped: 1, swept: 0, deactivated: true);
+        Assert.Empty(await LoadPlacementsAsync(a.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Counterexample 7: A and B active in S, both contain X, only A holds (A, X, S). Both previews
+    // are read at the same time. A reports first: X kept → wanders to (B, X, S) with A's removal as
+    // revision, A inactive. B reports with an empty snapshot and its activation: deactivated, and the
+    // sweep finds (B, X, S) — no active holder is left, so it is deleted. Both inactive, no placement,
+    // X stays entered in both tags. Concurrently, B's report queues on the channel lock behind A's.
+    [Theory]
+    [InlineData("tagce7seq", false)]
+    [InlineData("tagce7race", true)]
+    public async Task CounterExample7_OverlappingRemovals_LeaveNoPlacementWithAnInactiveHolder(string channelName, bool concurrently)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-2));
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        var aPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync(channelName, a.Id, aPlayIn);
+        await ReportAsync(channelName, a.Id, aPlayIn, ActiveSetId, x);
+        var bPlayIn = Guid.NewGuid();
+        await RegisterPlayInAsync(channelName, b.Id, bPlayIn);
+        await ReportAsync(channelName, b.Id, bPlayIn, ActiveSetId);
+
+        var aPreview = await ListEntriesAsync(channelName, a.Id);
+        var bPreview = await ListEntriesAsync(channelName, b.Id);
+        Assert.Equal([b.Id], aPreview.Entries.Single().HeldByActiveTags.Select(t => t.Id));
+        Assert.False(bPreview.Entries.Single().PlacedByThisTag);
+        Assert.Equal([a.Id], bPreview.Entries.Single().PlacedByOtherTags.Select(t => t.Id));
+        var aRemoval = Guid.NewGuid();
+        await RegisterRemovalAsync(channelName, a.Id, aRemoval);
+        var bRemoval = Guid.NewGuid();
+        await RegisterRemovalAsync(channelName, b.Id, bRemoval);
+        var aBody = Removal(aRemoval, aPreview.ActivationOperationId, SnapshotOf(aPreview), removed: [], kept: [x]);
+        var bBody = Removal(bRemoval, bPreview.ActivationOperationId, SnapshotOf(bPreview), removed: [], kept: []);
+
+        TagRemovalReportResult aResult, bResult;
+        if (concurrently)
+        {
+            (aResult, bResult) = await RaceAsync(
+                channelName,
+                "EmoteTagPlacements",
+                service => service.ReportRemovalAsync(channelName, a.Id, aBody, Actor),
+                service => service.ReportRemovalAsync(channelName, b.Id, bBody, Actor));
+        }
+        else
+        {
+            aResult = await ReportRemovalAsync(channelName, a.Id, aBody);
+            bResult = await ReportRemovalAsync(channelName, b.Id, bBody);
+        }
+
+        AssertCounts(aResult, deleted: 0, transferred: 1, dropped: 0, swept: 0, deactivated: true);
+        AssertCounts(bResult, deleted: 0, transferred: 0, dropped: 0, swept: 1, deactivated: true);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == a.Id || p.TagId == b.Id));
+        Assert.False(await verify.EmoteTagActivations.AnyAsync(act => act.TagId == a.Id || act.TagId == b.Id));
+        Assert.Equal(2, await verify.EmoteTagEntries.CountAsync(e => e.SevenTvEmoteId == x));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Race (i): a play-in report holds the channel lock and has read the entry for X; RemoveEntries(X)
+    // starts in parallel and waits. The report places X and commits; the removal goes through and
+    // the FK cascade takes the placement with the entry.
+    [Fact]
+    public async Task Race_APlayInReportThenTheEntryRemoval_LeavesNeitherEntryNorPlacement()
+    {
+        var channel = await SeedChannelAsync("tagracereportremove");
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var playIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagracereportremove", tag.Id, playIn);
+
+        var (report, removal) = await RaceAsync(
+            "tagracereportremove",
+            "EmoteTagPlacements",
+            service => service.ReportPlacementsAsync("tagracereportremove", tag.Id, new TagPlacementReport(playIn, ActiveSetId, [x]), Actor),
+            service => service.RemoveEntriesAsync("tagracereportremove", tag.Id, [x]));
+
+        Assert.Equal((1, 0), (report.RecordedCount, report.NotTaggedIds.Count));
+        Assert.Equal(1, removal.RemovedCount);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagEntries.AnyAsync(e => e.TagId == tag.Id));
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == tag.Id));
+        Assert.True(await verify.EmoteTagActivations.AnyAsync(a => a.TagId == tag.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Race (ii): the removal of the entry goes first; the report, queued on the channel lock, sees no
+    // entry and reports X as not tagged.
+    [Fact]
+    public async Task Race_TheEntryRemovalThenAPlayInReport_ReportsTheEmoteAsNotTagged()
+    {
+        var channel = await SeedChannelAsync("tagraceremovereport");
+        var tag = await SeedTagAsync(channel.Id, "A");
+        var x = NewSevenTvId();
+        await SeedEntryAsync(tag.Id, x, "X", T0);
+        var playIn = Guid.NewGuid();
+        await RegisterPlayInAsync("tagraceremovereport", tag.Id, playIn);
+
+        var (removal, report) = await RaceAsync(
+            "tagraceremovereport",
+            "EmoteTagEntries",
+            service => service.RemoveEntriesAsync("tagraceremovereport", tag.Id, [x]),
+            service => service.ReportPlacementsAsync("tagraceremovereport", tag.Id, new TagPlacementReport(playIn, ActiveSetId, [x]), Actor));
+
+        Assert.Equal(1, removal.RemovedCount);
+        Assert.Equal(0, report.RecordedCount);
+        Assert.Equal([x], report.NotTaggedIds);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == tag.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
+    // Race (iii): a removal report wants to hand (A, X, S) to B while B's entry for X is being taken
+    // out. Serialized by the channel lock: removal first → B is no candidate any more → dropped;
+    // report first → the transfer commits and the removal's cascade takes it away again. Either way
+    // no placement without an entry.
+    [Theory]
+    [InlineData("tagraceiiireport", true)]
+    [InlineData("tagraceiiiremove", false)]
+    public async Task Race_ARemovalReportTransfer_AgainstTheTargetsEntryRemoval_EndsInCommitOrder(string channelName, bool reportFirst)
+    {
+        var channel = await SeedChannelAsync(channelName);
+        var b = await SeedTagAsync(channel.Id, "B", T0.AddDays(-2));
+        var a = await SeedTagAsync(channel.Id, "A", T0.AddDays(-1));
+        var x = NewSevenTvId();
+        await SeedEntryAsync(a.Id, x, "X", T0);
+        await SeedEntryAsync(b.Id, x, "X", T0);
+        await SeedPlayInAsync(b.Id, ActiveSetId, T0.AddDays(-2));
+        var playIn = await SeedPlayInAsync(a.Id, ActiveSetId, T0.AddDays(-1), x);
+        var removal = Guid.NewGuid();
+        await RegisterRemovalAsync(channelName, a.Id, removal);
+        var body = Removal(removal, playIn, Snapshot((x, playIn)), removed: [], kept: [x]);
+
+        TagRemovalReportResult report;
+        EmoteTagRemoveEntriesResult entryRemoval;
+        if (reportFirst)
+        {
+            (report, entryRemoval) = await RaceAsync(
+                channelName,
+                "EmoteTagPlacements",
+                service => service.ReportRemovalAsync(channelName, a.Id, body, Actor),
+                service => service.RemoveEntriesAsync(channelName, b.Id, [x]));
+        }
+        else
+        {
+            (entryRemoval, report) = await RaceAsync(
+                channelName,
+                "EmoteTagEntries",
+                service => service.RemoveEntriesAsync(channelName, b.Id, [x]),
+                service => service.ReportRemovalAsync(channelName, a.Id, body, Actor));
+        }
+
+        Assert.Equal(1, entryRemoval.RemovedCount);
+        AssertCounts(report, deleted: 0, transferred: reportFirst ? 1 : 0, dropped: reportFirst ? 0 : 1, swept: 0, deactivated: true);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagPlacements.AnyAsync(p => p.SevenTvEmoteId == x));
+        Assert.False(await verify.EmoteTagEntries.AnyAsync(e => e.TagId == b.Id));
+        await fixture.AssertPlacementInvariantsAsync(channel.Id);
+    }
+
     // ---- Helpers ---------------------------------------------------------------------------------
 
     private static EmoteTagService CreateService(AppDbContext db) => new(db);
@@ -1567,6 +2398,62 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         return await CreateService(db).ReportPlacementsAsync(
             channelName, tagId, new TagPlacementReport(operationId, emoteSetId, sevenTvEmoteIds), Actor);
     }
+
+    // A registered removal, as the browser starts every clearing; returns the server's stamp.
+    private async Task<DateTime> RegisterRemovalAsync(string channelName, long tagId, Guid operationId, string emoteSetId = ActiveSetId)
+    {
+        var registration = await RegisterAsync(channelName, tagId, operationId, emoteSetId, EmoteTagOperationKind.Removal);
+        Assert.Equal(TagOperationRegistrationStatus.Ok, registration.Status);
+        return registration.RegisteredAtUtc!.Value;
+    }
+
+    private async Task<TagRemovalReportResult> ReportRemovalAsync(string channelName, long tagId, TagRemovalReport report)
+    {
+        await using var db = fixture.CreateDbContext();
+        return await CreateService(db).ReportRemovalAsync(channelName, tagId, report, Actor);
+    }
+
+    // The preview a removal run reads: the entry read of the active set.
+    private async Task<EmoteTagEntriesResult> ListEntriesAsync(string channelName, long tagId)
+    {
+        await using var db = fixture.CreateDbContext();
+        var result = await CreateService(db).ListEntriesAsync(channelName, tagId, null);
+        Assert.Equal(EmoteTagEntriesStatus.Ok, result.Status);
+        return result;
+    }
+
+    private static TagRemovalReport Removal(
+        Guid operationId,
+        Guid? activationOperationId,
+        IReadOnlyList<TagPlacementSnapshotEntry> snapshot,
+        IReadOnlyList<string> removed,
+        IReadOnlyList<string> kept,
+        string emoteSetId = ActiveSetId) =>
+        new(operationId, emoteSetId, activationOperationId, snapshot, removed, kept);
+
+    private static List<TagPlacementSnapshotEntry> Snapshot(params (string SevenTvEmoteId, Guid Revision)[] entries) =>
+        entries.Select(e => new TagPlacementSnapshotEntry(e.SevenTvEmoteId, e.Revision)).ToList();
+
+    // What the browser puts into the snapshot: the preview's own valid placements with their revision.
+    private static List<TagPlacementSnapshotEntry> SnapshotOf(EmoteTagEntriesResult preview) =>
+        preview.Entries
+            .Where(e => e.PlacedByThisTag)
+            .Select(e => new TagPlacementSnapshotEntry(e.SevenTvEmoteId, e.PlacementOperationId!.Value))
+            .ToList();
+
+    private async Task<List<EmoteTagPlacement>> LoadPlacementsAsync(long tagId)
+    {
+        await using var db = fixture.CreateDbContext();
+        return (await db.EmoteTagPlacements.AsNoTracking().Where(p => p.TagId == tagId).ToListAsync())
+            .OrderBy(p => p.SevenTvEmoteId, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static void AssertCounts(
+        TagRemovalReportResult result, int deleted, int transferred, int dropped, int swept, bool deactivated) =>
+        Assert.Equal(
+            new TagRemovalReportResult(TagReportStatus.Ok, false, deleted, transferred, dropped, swept, deactivated),
+            result);
 
     // Everything a report can write for one tag, serialized for a before/after comparison.
     private async Task<string> TagTablesAsync(Channel channel, long tagId)

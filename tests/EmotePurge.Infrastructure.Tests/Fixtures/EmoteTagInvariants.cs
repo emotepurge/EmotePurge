@@ -31,4 +31,33 @@ public static class EmoteTagInvariants
 
         Assert.All(placed, p => Assert.Contains(p, active));
     }
+
+    /// <summary>
+    /// Spec 5.5 rule 2: no placement without an entry — a left join of the channel's placements onto
+    /// the entries by <c>(TagId, SevenTvEmoteId)</c> finds no row without a partner. The composite
+    /// foreign key holds this in the database; the assertion states it where the scenarios are read.
+    /// </summary>
+    public static async Task AssertNoPlacementWithoutEntryAsync(this PostgresFixture fixture, string channelId)
+    {
+        await using var db = fixture.CreateDbContext();
+        var tagIds = await db.EmoteTags.Where(t => t.ChannelId == channelId).Select(t => t.Id).ToListAsync();
+        var orphans = await db.EmoteTagPlacements
+            .Where(p => tagIds.Contains(p.TagId))
+            .LeftJoin(
+                db.EmoteTagEntries,
+                p => new { p.TagId, p.SevenTvEmoteId },
+                e => new { e.TagId, e.SevenTvEmoteId },
+                (p, e) => new { p.TagId, p.SevenTvEmoteId, p.SevenTvEmoteSetId, HasEntry = e != null })
+            .Where(x => !x.HasEntry)
+            .ToListAsync();
+
+        Assert.Empty(orphans);
+    }
+
+    /// <summary>Both placement invariants, for the scenarios that write placements.</summary>
+    public static async Task AssertPlacementInvariantsAsync(this PostgresFixture fixture, string channelId)
+    {
+        await fixture.AssertInactiveTagsHoldNoPlacementAsync(channelId);
+        await fixture.AssertNoPlacementWithoutEntryAsync(channelId);
+    }
 }

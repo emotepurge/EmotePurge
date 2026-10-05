@@ -289,10 +289,11 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
             return status;
         }
 
-        // Counted before the cascade takes the entries; the name stays out of the audit row (E30), so
-        // after the delete the entry says how much went, not what it was called.
+        // Counted before the cascades take the entries and placements; the name stays out of the audit
+        // row (E30), so after the delete the entry says how much went, not what it was called.
         var entryCount = await db.EmoteTagEntries.CountAsync(e => e.TagId == tag!.Id, cancellationToken);
-        AddTagAudit(actor, AuditActions.TagDelete, channel!.ChannelName, tag!.Id, new { tagId = tag.Id, entryCount });
+        var placementCount = await db.EmoteTagPlacements.CountAsync(p => p.TagId == tag!.Id, cancellationToken);
+        AddTagAudit(actor, AuditActions.TagDelete, channel!.ChannelName, tag!.Id, new { tagId = tag.Id, entryCount, placementCount });
         db.EmoteTags.Remove(tag);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -573,6 +574,136 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         return new TagPlacementReportResult(TagReportStatus.Ok, false, recordedCount, existing.Count, notTaggedIds, discardedStaleIds);
     }
 
+    public async Task<TagRemovalReportResult> ReportRemovalAsync(
+        string channelName, long tagId, TagRemovalReport report, AuditActor actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        ArgumentNullException.ThrowIfNull(actor);
+        // The handler refuses a null list with a 400 before it gets here; reaching this is a bug.
+        ArgumentNullException.ThrowIfNull(report.Snapshot);
+        ArgumentNullException.ThrowIfNull(report.RemovedIds);
+        ArgumentNullException.ThrowIfNull(report.KeptIds);
+        var snapshot = report.Snapshot.Select(s => (s.SevenTvEmoteId, s.PlacementOperationId)).ToHashSet();
+        var removedIds = report.RemovedIds.ToHashSet(StringComparer.Ordinal);
+        var keptIds = report.KeptIds.ToHashSet(StringComparer.Ordinal);
+
+        // Same lock order as the play-in report (spec 5.5 rule 6): channel row first, then only tag
+        // tables are written and observations read. Behind the lock every writer of this channel's tag
+        // tables — the other reports, registrations, entry adds and removals, the tag delete — is either
+        // fully before this transaction or fully after it, which is what every step below relies on.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var (status, channel, tag) = await LoadForMutationAsync(channelName, tagId, cancellationToken);
+        if (status != EmoteTagMutationStatus.Ok)
+        {
+            return RemovalReportRejected(
+                status == EmoteTagMutationStatus.ChannelNotFound ? TagReportStatus.ChannelNotFound : TagReportStatus.TagNotFound);
+        }
+
+        var (operationStatus, operation) = await LoadOperationForReportAsync(
+            report.OperationId, tag!.Id, EmoteTagOperationKind.Removal, report.EmoteSetId, cancellationToken);
+        if (operationStatus != TagReportStatus.Ok)
+        {
+            return RemovalReportRejected(operationStatus);
+        }
+
+        if (operation!.AppliedAtUtc is not null)
+        {
+            // A retry of a report that already went through (E27): nothing is written, not even an audit row.
+            return new TagRemovalReportResult(TagReportStatus.Ok, true, 0, 0, 0, 0, false);
+        }
+
+        // P: every placement of the tag in the set as it is now — valid and expired, snapshotted or not.
+        // The verdict per row comes from the read-time rule itself (LoadPlacementStatesAsync), not from
+        // a second reading of it; the rows are loaded tracked because they are deleted or rewritten below.
+        var placements = await db.EmoteTagPlacements
+            .Where(p => p.TagId == tag.Id && p.SevenTvEmoteSetId == report.EmoteSetId)
+            .ToListAsync(cancellationToken);
+        var holds = (await LoadPlacementStatesAsync(channel!.Id, report.EmoteSetId, [tag.Id], null, cancellationToken))
+            .ToDictionary(p => p.SevenTvEmoteId, p => p.Holds, StringComparer.Ordinal);
+
+        // Step 4 first, because steps 2 and 5 depend on it: the tag is deactivated only if its
+        // activation still carries the operation the preview read. A newer play-in has re-activated the
+        // tag otherwise (counterexamples 3 and 5), and then the tag is active and holds its placements
+        // by right — a transfer would take them from an active tag, and a sweep would empty it. With
+        // no activation read (null) nothing can match, so nothing is deactivated.
+        var activation = await db.EmoteTagActivations
+            .SingleOrDefaultAsync(a => a.TagId == tag.Id && a.SevenTvEmoteSetId == report.EmoteSetId, cancellationToken);
+        var deactivated = activation is not null
+            && report.ActivationOperationId is { } readOperationId
+            && activation.OperationId == readOperationId;
+        if (deactivated)
+        {
+            db.EmoteTagActivations.Remove(activation!);
+        }
+
+        // Transfer targets are only needed when the tag gives up its placements (steps 2 and 5).
+        var targets = deactivated
+            ? await LoadTransferTargetsAsync(channel.Id, tag.Id, report.EmoteSetId, placements.Select(p => p.SevenTvEmoteId).ToList(), cancellationToken)
+            : null;
+
+        int deletedCount = 0, transferredCount = 0, droppedCount = 0, sweptCount = 0;
+        foreach (var placement in placements)
+        {
+            // A hit needs the id and the revision (spec 5.3): a row a later play-in rewrote carries that
+            // play-in's operation and is not what the preview judged (counterexample 5).
+            var hit = snapshot.Contains((placement.SevenTvEmoteId, placement.OperationId));
+            if (hit && removedIds.Contains(placement.SevenTvEmoteId))
+            {
+                // Step 1: the run removed it from the set — in both cases of step 4.
+                db.EmoteTagPlacements.Remove(placement);
+                deletedCount++;
+            }
+            else if (hit && keptIds.Contains(placement.SevenTvEmoteId))
+            {
+                // Step 2: the person kept it. Only on deactivation does the row change hands; an
+                // active tag keeps what it placed.
+                if (!deactivated)
+                {
+                    continue;
+                }
+
+                if (TransferOrDelete(placement, holds, targets!, operation))
+                {
+                    transferredCount++;
+                }
+                else
+                {
+                    droppedCount++;
+                }
+            }
+            else if (hit)
+            {
+                // Step 3: neither removed nor kept — the preview's live read no longer saw it in the
+                // set, so the row has nothing left to describe. In both cases of step 4.
+                db.EmoteTagPlacements.Remove(placement);
+                droppedCount++;
+            }
+            else if (deactivated)
+            {
+                // Step 5, the sweep (E26 rev. 3): a row the snapshot did not hit — wandered in after
+                // the preview, re-placed, revised, or expired — is treated like "kept": transferred to
+                // an active holder or deleted. After this loop no placement (T, ·, S) is left, which is
+                // the invariant "inactive ⇒ no placement".
+                TransferOrDelete(placement, holds, targets!, operation);
+                sweptCount++;
+            }
+        }
+
+        var now = DateTime.UtcNow;
+        operation.AppliedAtUtc = now;
+        AddTagAudit(actor, AuditActions.TagRemoved, channel.ChannelName, tag.Id, new
+        {
+            tagId = tag.Id,
+            emoteSetId = report.EmoteSetId,
+            operationId = operation.OperationId,
+            emoteCount = deletedCount
+        });
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return new TagRemovalReportResult(TagReportStatus.Ok, false, deletedCount, transferredCount, droppedCount, sweptCount, deactivated);
+    }
+
     /// <summary>
     /// Locks the channel row (the caller has opened the transaction) and loads one of <em>its</em>
     /// tags, tracked. A tag of another channel is <c>TagNotFound</c>, never "found but foreign".
@@ -778,6 +909,99 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         return GroupTagIdsByEmote(holderEntries.Select(e => (e.SevenTvEmoteId, e.TagId)));
     }
 
+    /// <summary>
+    /// For each of <paramref name="sevenTvEmoteIds"/>, the tag a placement of <paramref name="tagId"/>
+    /// would be handed to on removal (spec 5.5 rule 4): the oldest other tag of the channel that is
+    /// active in the set <em>and</em> has an entry for the emote — the same holders the entry read lists
+    /// as <c>heldByActiveTags</c> (<see cref="LoadActiveHoldersAsync"/>), in the same order. Without the
+    /// entry the handed-over row would violate the composite foreign key; without the activation it
+    /// would violate "inactive ⇒ no placement". Also which of those targets already hold the emote, so
+    /// a transfer onto an existing row only deletes the own one. Read under the channel lock, so a
+    /// parallel removal of the target's entry is ordered after the commit (and cascades the row away).
+    /// </summary>
+    private async Task<TransferTargets> LoadTransferTargetsAsync(
+        string channelId, long tagId, string emoteSetId, IReadOnlyCollection<string> sevenTvEmoteIds, CancellationToken cancellationToken)
+    {
+        if (sevenTvEmoteIds.Count == 0)
+        {
+            return TransferTargets.None;
+        }
+
+        var channelTagIds = await db.EmoteTags
+            .AsNoTracking()
+            .Where(t => t.ChannelId == channelId)
+            .OrderBy(t => t.CreatedAtUtc)
+            .ThenBy(t => t.Id)
+            .Select(t => t.Id)
+            .ToListAsync(cancellationToken);
+        // The own activation may still be in the database here (its removal is not saved yet); the
+        // holder query excludes the own tag explicitly, so that does not matter.
+        var activations = await LoadActivationsAsync(channelTagIds, emoteSetId, cancellationToken);
+        var holders = await LoadActiveHoldersAsync(activations.Keys, tagId, sevenTvEmoteIds, cancellationToken);
+
+        // Every holder is one of the channel's tags (its activation was loaded by their ids), so the
+        // oldest in channel order always exists.
+        var targetByEmote = holders.ToDictionary(
+            h => h.Key,
+            h => channelTagIds.First(h.Value.Contains),
+            StringComparer.Ordinal);
+        if (targetByEmote.Count == 0)
+        {
+            return TransferTargets.None;
+        }
+
+        var targetTagIds = targetByEmote.Values.Distinct().ToArray();
+        var emoteIds = targetByEmote.Keys.ToArray();
+        var alreadyHeld = (await db.EmoteTagPlacements
+                .AsNoTracking()
+                .Where(p => targetTagIds.Contains(p.TagId) && p.SevenTvEmoteSetId == emoteSetId && emoteIds.Contains(p.SevenTvEmoteId))
+                .Select(p => new { p.TagId, p.SevenTvEmoteId })
+                .ToListAsync(cancellationToken))
+            .Select(p => (p.TagId, p.SevenTvEmoteId))
+            .ToHashSet();
+        return new TransferTargets(targetByEmote, alreadyHeld);
+    }
+
+    /// <summary>
+    /// Takes <paramref name="placement"/> away from its tag: deleted in every case, and re-created for
+    /// its transfer target when it still holds and there is one. <c>true</c> when the responsibility
+    /// passed to another tag (a target that already held the emote counts — the row goes either way and
+    /// the emote stays held), <c>false</c> when the placement was dropped.
+    /// <para>
+    /// An expired placement is never transferred (spec 0a): the server has seen the emote leave the set
+    /// after the placement was made, so it has nothing to hand over — a transfer would re-anchor the row
+    /// at the removal's registration and could revive it as a proposal for the target. The transferred
+    /// row keeps <c>PlacedAtUtc</c> ("since when is X in the set because of a tag" does not change hands),
+    /// takes the removal operation as its revision and that operation's registration as its anchor (F30).
+    /// Delete plus insert rather than an update, because <c>TagId</c> is part of the primary key.
+    /// </para>
+    /// </summary>
+    private bool TransferOrDelete(
+        EmoteTagPlacement placement, IReadOnlyDictionary<string, bool> holds, TransferTargets targets, EmoteTagOperation removal)
+    {
+        db.EmoteTagPlacements.Remove(placement);
+        if (!holds.GetValueOrDefault(placement.SevenTvEmoteId)
+            || !targets.TargetByEmote.TryGetValue(placement.SevenTvEmoteId, out var targetTagId))
+        {
+            return false;
+        }
+
+        if (!targets.AlreadyHeld.Contains((targetTagId, placement.SevenTvEmoteId)))
+        {
+            db.EmoteTagPlacements.Add(new EmoteTagPlacement
+            {
+                TagId = targetTagId,
+                SevenTvEmoteId = placement.SevenTvEmoteId,
+                SevenTvEmoteSetId = placement.SevenTvEmoteSetId,
+                PlacedAtUtc = placement.PlacedAtUtc,
+                OperationId = removal.OperationId,
+                RegisteredAtUtc = removal.RegisteredAtUtc
+            });
+        }
+
+        return true;
+    }
+
     private void AddTagAudit(AuditActor actor, string action, string channelName, long tagId, object details) =>
         db.AddAuditEntry(
             actor,
@@ -810,6 +1034,9 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
 
     private static TagPlacementReportResult PlacementReportRejected(TagReportStatus status) =>
         new(status, false, 0, 0, [], []);
+
+    private static TagRemovalReportResult RemovalReportRejected(TagReportStatus status) =>
+        new(status, false, 0, 0, 0, 0, false);
 
     private static DateTime TruncateToMicroseconds(DateTime value) =>
         new(value.Ticks - (value.Ticks % TimeSpan.TicksPerMicrosecond), value.Kind);
@@ -860,6 +1087,15 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
     /// <param name="Holds">The read-time rule's verdict; an expired placement still exists until a play-in or sweep replaces it.</param>
     private sealed record PlacementState(
         long TagId, string SevenTvEmoteId, DateTime PlacedAtUtc, Guid OperationId, DateTime RegisteredAtUtc, bool Holds);
+
+    /// <param name="TargetByEmote">Per emote, the oldest other tag active in the set with an entry for it; absent means no target.</param>
+    /// <param name="AlreadyHeld">The <c>(tag, emote)</c> pairs among the targets that already hold a placement in the set.</param>
+    private sealed record TransferTargets(
+        IReadOnlyDictionary<string, long> TargetByEmote, IReadOnlySet<(long TagId, string SevenTvEmoteId)> AlreadyHeld)
+    {
+        public static TransferTargets None { get; } = new(
+            ReadOnlyDictionary<string, long>.Empty, new HashSet<(long, string)>());
+    }
 
     private sealed record EntryPlacements(
         Guid? ActivationOperationId,
