@@ -145,6 +145,9 @@ export class TagRunActions {
   protected readonly pending = signal(false);
   protected readonly notice = signal<TagRunNotice | null>(null);
   protected readonly locked = computed(() => this.arbiter.startLocked() || this.pending());
+  /** Which tag of which channel this component acts for — by id, so a reloaded summary of the same
+   *  tag is no change. */
+  private readonly subject = computed(() => `${this.channelName()}\u0000${this.tag().id}`);
 
   private readonly deps: TagRunFlowDeps = {
     dialog: this.dialog,
@@ -161,6 +164,14 @@ export class TagRunActions {
   };
 
   constructor() {
+    // A banner, and above all its retry, belongs to the tag it was raised for: the retry replays
+    // that click's frozen request. Once the host shows another tag (or channel), "Try again" would
+    // run the old tag's flow under the new one's buttons — so the banner goes with the change.
+    effect(() => {
+      this.subject();
+      untracked(() => this.notice.set(null));
+    });
+
     // A run that was already settled when this component mounted is not news; only a change seen
     // from here on is.
     let first = true;

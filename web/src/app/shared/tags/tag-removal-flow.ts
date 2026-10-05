@@ -31,7 +31,23 @@ import { openTagRemovalConfirmDialog } from './tag-removal-confirm-dialog';
  * not go through `noteRefusedStart`: this component's banner is its persistent explanation. The
  * queue comes from `toDeleteQueueEmotes`, with its aliasless fallback. The dock claim follows the
  * delete chain too: taken when the dialog opens, cleared when nothing was confirmed, ended after an
- * attempt.
+ * attempt. The set check reads `PreparedTagRun.activeEmoteSetId`, which a host torn down behind
+ * the dialog has turned `null` — a set switch, so the confirm aborts (see `tag-play-in-flow.ts`).
+ * With nothing ticked the token half of the refusal is skipped (`requireToken: false`): that
+ * confirm writes nothing to 7TV, only the report.
+ *
+ * **No second live read at confirm time**, unlike the delete chain's #227 read. The one read before
+ * the dialog supplies both the proposal and the aliases the queue and the protocol record (spec
+ * 7.2/4), and the engine does not re-read before its `REMOVE`s either — so with a dialog left open
+ * for minutes, those aliases can be minutes old. Accepted, for two reasons:
+ *
+ * - The case a second read would be meant to catch — another tag re-adding an emote of this one
+ *   while the dialog was open — puts that emote in **both** reads; a fresh read would wave it
+ *   through just the same. That is risk R4, accepted in spec 13.1.
+ * - The delete chain fails the whole batch when a ticked row is missing from 7TV (#227), because a
+ *   partial run would record a protocol that no longer matches what its dialog showed. Here such a
+ *   row simply ends `failed` in the run and lands in the report's kept ids — no extra deletion, no
+ *   write beyond what was ticked, and the tag's bookkeeping stays true to what 7TV did.
  */
 
 /**
@@ -129,12 +145,18 @@ function confirm(
     deps.deleteService.endConfirmedRun();
     request.pending.set(false);
   };
-  // The set the dialog showed must still be the active one (spec 7.2/7).
-  if (request.activeEmoteSetId() !== prepared.frozenSetId) {
+  const checked = new Set(checkedIds);
+  const checkedRows = proposal.rows.filter((row) => checked.has(row.sevenTvEmoteId));
+
+  // The set the dialog showed must still be the active one (spec 7.2/7) — and its host still there:
+  // a torn-down host reads `null` here (`hostBoundActiveSet`), never its stale last id.
+  if (prepared.activeEmoteSetId() !== prepared.frozenSetId) {
     abort('massDelete.abortedByLock', 'massDelete.setChangedDuringConfirm');
     return;
   }
-  const refusal = confirmTimeRefusal(deps);
+  // With nothing ticked nothing goes to 7TV, so a token a 401 cleared meanwhile does not matter;
+  // a run holding the arbiter still does, as for any confirm.
+  const refusal = confirmTimeRefusal(deps, { requireToken: checkedRows.length > 0 });
   if (refusal !== undefined) {
     abort(refusal.leadKey, refusal.reasonKey, refusal.reasonParams);
     return;
@@ -148,8 +170,6 @@ function confirm(
     ...splitOwnPlacements(proposal, checkedIds),
     channelName: request.channelName,
   };
-  const checked = new Set(checkedIds);
-  const checkedRows = proposal.rows.filter((row) => checked.has(row.sevenTvEmoteId));
 
   if (checkedRows.length === 0) {
     // No run, so nothing for the dock to hold.

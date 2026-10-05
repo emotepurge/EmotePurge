@@ -121,6 +121,8 @@ interface Harness {
   dialogOpen: ReturnType<typeof vi.fn>;
   startImport: ReturnType<typeof vi.fn>;
   run(): void;
+  /** Tears the host down, as an `@if` unmounting `TagRunActions` behind an open dialog would. */
+  destroy(): void;
 }
 
 function setup(
@@ -221,6 +223,7 @@ function setup(
   const notice = signal<TagRunNotice | null>(null);
   const onFeedback = vi.fn();
   const onCompleted = vi.fn();
+  const host = fakeHost();
   const request: TagRunRequest = {
     channelName: CHANNEL,
     tag: TAG,
@@ -242,7 +245,7 @@ function setup(
     deleteService: {} as SevenTvDeleteService,
     tagService,
     translocoService: { translate: (key: string) => key } as unknown as TranslocoService,
-    destroyRef: { onDestroy: () => () => undefined, destroyed: false } as unknown as DestroyRef,
+    destroyRef: host.destroyRef,
   };
 
   return {
@@ -262,6 +265,7 @@ function setup(
     httpPost,
     dialogOpen,
     startImport,
+    destroy: host.destroy,
     run: () => startTagPlayInFlow(deps, request),
   };
 }
@@ -278,6 +282,36 @@ function importDialogClosed(harness: Harness): Subject<ImportConfirmOutcome | un
     ([component]) => component === ImportConfirmDialog,
   );
   return harness.dialogOpen.mock.results[index].value.closed;
+}
+
+/** A `DestroyRef` the test can trigger: its callbacks run, `destroyed` turns true. The host's
+ *  `activeEmoteSetId` input is left alone — a destroyed component's input keeps its last value. */
+function fakeHost(): { destroyRef: DestroyRef; destroy(): void } {
+  const callbacks: (() => void)[] = [];
+  let destroyed = false;
+  const destroyRef = {
+    get destroyed() {
+      return destroyed;
+    },
+    onDestroy: (callback: () => void) => {
+      callbacks.push(callback);
+      return () => {
+        const index = callbacks.indexOf(callback);
+        if (index >= 0) {
+          callbacks.splice(index, 1);
+        }
+      };
+    },
+  } as unknown as DestroyRef;
+  return {
+    destroyRef,
+    destroy: () => {
+      destroyed = true;
+      for (const callback of [...callbacks]) {
+        callback();
+      }
+    },
+  };
 }
 
 function httpError(status: number): Observable<never> {
@@ -439,7 +473,7 @@ describe('startTagPlayInFlow', () => {
         targetOwnerTwitchId: 'tw-owner',
         sevenTvEmoteIds: [],
       });
-      expect(harness.onFeedback).toHaveBeenCalledExactlyOnceWith('tags.feedback.allPresent', {
+      expect(harness.onFeedback).toHaveBeenCalledExactlyOnceWith('tags.feedback.allPresent.other', {
         count: 2,
         tag: TAG.name,
       });
@@ -464,7 +498,7 @@ describe('startTagPlayInFlow', () => {
         harness.reportPlacements.mock.calls[0],
       );
       expect(harness.registerOperation).toHaveBeenCalledOnce();
-      expect(harness.onFeedback).toHaveBeenCalledExactlyOnceWith('tags.feedback.allPresent', {
+      expect(harness.onFeedback).toHaveBeenCalledExactlyOnceWith('tags.feedback.allPresent.one', {
         count: 1,
         tag: TAG.name,
       });
@@ -538,6 +572,50 @@ describe('startTagPlayInFlow', () => {
       expect(harness.startImport).not.toHaveBeenCalled();
     });
 
+    it('starts nothing when the host was torn down behind the open import confirmation', () => {
+      const harness = setup();
+      harness.run();
+
+      // The host's input keeps its last value — the very set the flow froze — so only the host's
+      // teardown can tell the guard that nobody vouches for that set any more.
+      harness.destroy();
+      expect(harness.active()).toBe('set-active');
+      importDialogClosed(harness).next({
+        targetSetId: 'set-active',
+        targetSetName: 'Main',
+        plan: {
+          rows: [
+            {
+              action: 'add',
+              source: { sevenTvEmoteId: 'new-1', name: 'alias-new-1', imageUrl: null },
+              alias: 'alias-new-1',
+            },
+          ],
+        },
+      });
+
+      expect(harness.startImport).not.toHaveBeenCalled();
+      expect(harness.reportPlacements).not.toHaveBeenCalled();
+      expect(harness.notice()).toEqual({ key: 'tags.errors.setChanged' });
+    });
+
+    it('sends no empty report either when the host was torn down before nothing was left to add', () => {
+      const harness = setup();
+      harness.run();
+
+      harness.destroy();
+      importDialogClosed(harness).next({
+        targetSetId: 'set-active',
+        targetSetName: 'Main',
+        plan: { rows: [] },
+        nothingToAdd: true,
+      });
+
+      expect(harness.reportPlacements).not.toHaveBeenCalled();
+      expect(harness.startImport).not.toHaveBeenCalled();
+      expect(harness.notice()).toEqual({ key: 'tags.errors.setChanged' });
+    });
+
     it('sends the empty report for the same operation when the import finds nothing left to add', () => {
       const harness = setup();
       harness.run();
@@ -556,7 +634,7 @@ describe('startTagPlayInFlow', () => {
         targetOwnerTwitchId: 'tw-owner',
         sevenTvEmoteIds: [],
       });
-      expect(harness.onFeedback).toHaveBeenCalledExactlyOnceWith('tags.feedback.allPresent', {
+      expect(harness.onFeedback).toHaveBeenCalledExactlyOnceWith('tags.feedback.allPresent.other', {
         count: 3,
         tag: TAG.name,
       });

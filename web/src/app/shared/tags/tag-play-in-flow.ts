@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { DestroyRef, Signal, WritableSignal } from '@angular/core';
+import { DestroyRef, Signal, WritableSignal, computed, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoService } from '@jsverse/transloco';
 import { Observable } from 'rxjs';
@@ -9,6 +9,7 @@ import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import { EmoteTagEntries, TagOperationKind } from '../../core/tags/emote-tag.model';
 import { EmoteTagService } from '../../core/tags/emote-tag.service';
+import { pluralKey } from '../../core/i18n/plural';
 import {
   DeleteTargetResolution,
   MEMBER_READ_TRUNCATED_REASON_KEY,
@@ -38,6 +39,14 @@ import { buildTagImportSource, partitionTagPlayIn } from './tag-play-in';
  * - **The live read blocks:** a read that failed or came back incomplete knows only half the set,
  *   and a half-known set must decide nothing (E28): the play-in would ADD what is already there
  *   (7TV does not dedupe by id), the clear-out would propose from a list that misses entries.
+ *
+ * The confirm/start set guards (the clear-out's confirm, the import hook's start) never read the
+ * host's raw `activeEmoteSetId` input: both dialogs outlive the host, and a host destroyed behind
+ * them keeps its input at the old id forever — on the usage page exactly when a set switch unmounts
+ * it before the new id arrives. They read `PreparedTagRun.activeEmoteSetId` instead
+ * (`hostBoundActiveSet`), which turns `null` with the host's teardown: an unknown set, so the guard
+ * treats it as a switch and aborts — the tag flows' counterpart of the delete chain's
+ * `destroyRef.destroyed` abort in `delete-flow.ts`. A destroyed host never authorises a 7TV write.
  *
  * None of these steps holds `startCheckPending` (F27): like the delete chain in `delete-flow.ts`,
  * the reads before a dialog are not a confirmed start, so they lock only this component's own
@@ -72,7 +81,8 @@ export interface TagRunRequest {
   tag: { id: number; name: string };
   /** The active set's display name, `null` to fall back to its id. */
   setName: string | null;
-  /** The host page's live view of the channel's active set — frozen on the click, compared later. */
+  /** The host page's live view of the channel's active set — frozen on the click. The later
+   *  comparisons read `PreparedTagRun.activeEmoteSetId`, never this one directly. */
   activeEmoteSetId: Signal<string | null>;
   /** `true` from the click until the flow hands over to a run or a dialog it does not own, or ends. */
   pending: WritableSignal<boolean>;
@@ -88,6 +98,9 @@ export interface TagRunRequest {
 export interface PreparedTagRun {
   operationId: string;
   frozenSetId: string;
+  /** The host's live active set for every later set guard — `null` once the host is torn down
+   *  (`hostBoundActiveSet`), which every guard reads as a set switch. */
+  activeEmoteSetId: Signal<string | null>;
   ownerTwitchChannelId: string | null;
   entries: EmoteTagEntries;
   live: SevenTvSetEntries;
@@ -140,7 +153,7 @@ export function startTagPlayInFlow(deps: TagRunFlowDeps, request: TagRunRequest)
           // From the entries this flow read, never from the answer: a replayed report carries no
           // outcome (F34).
           () =>
-            request.onFeedback('tags.feedback.allPresent', {
+            request.onFeedback(pluralKey(entryCount, 'tags.feedback.allPresent'), {
               count: entryCount,
               tag: request.tag.name,
             }),
@@ -163,7 +176,7 @@ export function startTagPlayInFlow(deps: TagRunFlowDeps, request: TagRunRequest)
       startImportFlow(deps, source, target, {
         context: { tagId: request.tag.id, operationId: prepared.operationId },
         frozenSetId: prepared.frozenSetId,
-        activeEmoteSetId: request.activeEmoteSetId,
+        activeEmoteSetId: prepared.activeEmoteSetId,
         onSetChanged: () => request.notice.set({ key: 'tags.errors.setChanged' }),
         onNothingToImport: reportNothingToAdd,
       });
@@ -189,6 +202,7 @@ export function prepareTagRun(
     return;
   }
   const operationId = crypto.randomUUID();
+  const activeEmoteSetId = hostBoundActiveSet(deps.destroyRef, request.activeEmoteSetId);
   const { channelName, tag } = request;
   const block = (notice: TagRunNotice): void => {
     request.pending.set(false);
@@ -205,7 +219,14 @@ export function prepareTagRun(
           block({ key: setReadReasonKey(read.reasonKey), retry: preparation.restart });
           return;
         }
-        done({ operationId, frozenSetId, ownerTwitchChannelId, entries, live: read.entries });
+        done({
+          operationId,
+          frozenSetId,
+          activeEmoteSetId,
+          ownerTwitchChannelId,
+          entries,
+          live: read.entries,
+        });
       });
   };
 
@@ -261,11 +282,31 @@ export function prepareTagRun(
               });
               return;
             }
+            // No second look at the page's active set here, unlike the delete chain after its
+            // own pre-check (`startDeleteFlow`, Codex C3): nothing is written before the
+            // confirm-time set guard, and that guard (the clear-out's confirm, the import hook's
+            // start) is the gate. A switch while this check was out costs at most a dialog for a
+            // set that already moved on — its confirmation then aborts with "set changed".
             register(resolution.ownerTwitchChannelId, entries);
           });
       },
       error: () => block({ key: 'tags.errors.entriesUnavailable', retry: preparation.restart }),
     });
+}
+
+/**
+ * The host's live active set, bound to the host's lifetime: the host's own value while it lives,
+ * `null` from its teardown on (see the file comment). Built on the click, while the host is alive.
+ */
+export function hostBoundActiveSet(
+  destroyRef: DestroyRef,
+  activeEmoteSetId: Signal<string | null>,
+): Signal<string | null> {
+  const alive = signal(!destroyRef.destroyed);
+  if (alive()) {
+    destroyRef.onDestroy(() => alive.set(false));
+  }
+  return computed(() => (alive() ? activeEmoteSetId() : null));
 }
 
 /**

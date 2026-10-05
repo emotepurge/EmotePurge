@@ -609,15 +609,20 @@ function startDelete(
  * without a word: the engine needs the stored 7TV token, and any 401 from 7TV behind the open
  * confirmation clears it (`SevenTvTokenService.clearToken`); the caller's dock claim would then
  * hold an empty dock over a delete that simply never happened.
+ *
+ * `requireToken: false` skips only the token half, for a confirmation that writes nothing to 7TV:
+ * the tag clear-out with nothing ticked (#201 T-C) sends just its own report, which needs no 7TV
+ * token. The arbiter half applies regardless. Every delete caller leaves it at its default.
  */
 export function confirmTimeRefusal(
   deps: Pick<DeleteFlowDeps, 'arbiter' | 'tokenService' | 'translocoService'>,
+  options: { requireToken?: boolean } = {},
 ): DeleteAbortNotice | undefined {
   const claim = deps.arbiter.activeClaim();
   if (claim !== null) {
     return refusedStartNotice(deps.translocoService, claim, 'massDelete.nothingDeleted');
   }
-  if (!deps.tokenService.hasToken()) {
+  if ((options.requireToken ?? true) && !deps.tokenService.hasToken()) {
     return {
       leadKey: 'massDelete.nothingDeleted',
       reasonKey: 'massDelete.tokenGoneDuringConfirm',

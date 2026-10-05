@@ -1807,7 +1807,10 @@
         "one": "Removed {{count}} emote from {{tag}}.",
         "other": "Removed {{count}} emotes from {{tag}}."
       },
-      "allPresent": "All {{count}} emotes of {{tag}} are already in the set — the tag counts as played in.",
+      "allPresent": {
+        "one": "The only emote of {{tag}} is already in the set — the tag counts as played in.",
+        "other": "All {{count}} emotes of {{tag}} are already in the set — the tag counts as played in."
+      },
       "removedNothing": "{{tag}} cleared out — nothing to remove."
     },
     "deleteDialog": {

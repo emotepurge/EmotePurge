@@ -1807,7 +1807,10 @@
         "one": "{{count}} Emote aus {{tag}} entfernt.",
         "other": "{{count}} Emotes aus {{tag}} entfernt."
       },
-      "allPresent": "Alle {{count}} Emotes von {{tag}} sind schon im Set — Tag gilt als eingespielt.",
+      "allPresent": {
+        "one": "Das einzige Emote von {{tag}} ist schon im Set — Tag gilt als eingespielt.",
+        "other": "Alle {{count}} Emotes von {{tag}} sind schon im Set — Tag gilt als eingespielt."
+      },
       "removedNothing": "{{tag}} ausgeräumt — nichts zu entfernen."
     },
     "deleteDialog": {

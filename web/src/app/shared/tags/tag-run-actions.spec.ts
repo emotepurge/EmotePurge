@@ -217,8 +217,18 @@ describe('TagRunActions', () => {
     expect(button('Einspielen')!.disabled).toBe(true);
     expect(button('Ausräumen')!.disabled).toBe(true);
     expect(button('Einspielen')!.hasAttribute('aria-describedby')).toBe(false);
+  });
 
-    button('Einspielen')!.click();
+  it('starts no flow from a click that outraces the lock', () => {
+    // A click on a disabled button never reaches `(click)`, so the handlers' own guard is called
+    // directly — the case it exists for is a click already dispatched when the lock arrives.
+    fixture.componentRef.setInput('tag', summary({ active: true }));
+    startLocked.set(true);
+    const actions = fixture.componentInstance as unknown as { playIn(): void; remove(): void };
+
+    actions.playIn();
+    actions.remove();
+
     expect(listEntries).not.toHaveBeenCalled();
   });
 
@@ -227,7 +237,7 @@ describe('TagRunActions', () => {
     fixture.detectChanges();
 
     expect(feedback).toEqual([
-      { key: 'tags.feedback.allPresent', params: { count: 1, tag: 'Stronghold' } },
+      { key: 'tags.feedback.allPresent.one', params: { count: 1, tag: 'Stronghold' } },
     ]);
     expect(completed).toBe(1);
   });
@@ -248,6 +258,33 @@ describe('TagRunActions', () => {
     expect(listEntries).toHaveBeenCalledTimes(2);
     expect((fixture.nativeElement as HTMLElement).querySelector('[role="alert"]')).toBeNull();
     expect(completed).toBe(1);
+  });
+
+  it('drops the banner and its retry once the host shows another tag or channel', () => {
+    const alert = (): Element | null =>
+      (fixture.nativeElement as HTMLElement).querySelector('[role="alert"]');
+    const raiseBanner = (): void => {
+      registration = () => throwError(() => new HttpErrorResponse({ status: 503 }));
+      button('Einspielen')!.click();
+      fixture.detectChanges();
+      expect(alert()).not.toBeNull();
+    };
+
+    raiseBanner();
+    // A reloaded summary of the same tag is no change: the banner stays.
+    fixture.componentRef.setInput('tag', summary({ inSetCount: 0 }));
+    fixture.detectChanges();
+    expect(alert()).not.toBeNull();
+
+    fixture.componentRef.setInput('tag', summary({ id: 8, name: 'Other' }));
+    fixture.detectChanges();
+    expect(alert()).toBeNull();
+
+    raiseBanner();
+    fixture.componentRef.setInput('channelName', 'papaplatte');
+    fixture.detectChanges();
+    expect(alert()).toBeNull();
+    expect(listEntries).toHaveBeenCalledTimes(2);
   });
 
   it('reports completion when a tag run it can see closes, and again when its report succeeds on a retry', () => {

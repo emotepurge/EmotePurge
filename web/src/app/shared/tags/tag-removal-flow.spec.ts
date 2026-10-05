@@ -142,6 +142,8 @@ interface Harness {
   endConfirmedRun: ReturnType<typeof vi.fn>;
   noteRefusedStart: ReturnType<typeof vi.fn>;
   run(): void;
+  /** Tears the host down, as an `@if` unmounting `TagRunActions` behind an open dialog would. */
+  destroy(): void;
 }
 
 function setup(
@@ -227,6 +229,7 @@ function setup(
   const notice = signal<TagRunNotice | null>(null);
   const onFeedback = vi.fn();
   const onCompleted = vi.fn();
+  const host = fakeHost();
   const request: TagRunRequest = {
     channelName: CHANNEL,
     tag: TAG,
@@ -248,7 +251,7 @@ function setup(
     deleteService,
     tagService,
     translocoService: { translate: (key: string) => `«${key}»` } as unknown as TranslocoService,
-    destroyRef: { onDestroy: () => () => undefined, destroyed: false } as unknown as DestroyRef,
+    destroyRef: host.destroyRef,
   };
 
   return {
@@ -271,6 +274,7 @@ function setup(
     clearConfirmedRun,
     endConfirmedRun,
     noteRefusedStart,
+    destroy: host.destroy,
     run: () => startTagRemovalFlow(deps, request),
   };
 }
@@ -292,6 +296,36 @@ function confirmationClosed(harness: Harness): Subject<TagRemovalConfirmResult |
 function tokenPromptClosed(harness: Harness): Subject<boolean> {
   return harness.dialogOpen.mock.results[dialogIndex(harness, SevenTvTokenPromptDialog)].value
     .closed;
+}
+
+/** A `DestroyRef` the test can trigger: its callbacks run, `destroyed` turns true. The host's
+ *  `activeEmoteSetId` input is left alone — a destroyed component's input keeps its last value. */
+function fakeHost(): { destroyRef: DestroyRef; destroy(): void } {
+  const callbacks: (() => void)[] = [];
+  let destroyed = false;
+  const destroyRef = {
+    get destroyed() {
+      return destroyed;
+    },
+    onDestroy: (callback: () => void) => {
+      callbacks.push(callback);
+      return () => {
+        const index = callbacks.indexOf(callback);
+        if (index >= 0) {
+          callbacks.splice(index, 1);
+        }
+      };
+    },
+  } as unknown as DestroyRef;
+  return {
+    destroyRef,
+    destroy: () => {
+      destroyed = true;
+      for (const callback of [...callbacks]) {
+        callback();
+      }
+    },
+  };
 }
 
 function httpError(status: number): Observable<never> {
@@ -563,6 +597,38 @@ describe('startTagRemovalFlow', () => {
       expect(harness.pending()).toBe(false);
     });
 
+    it('deletes nothing when the host was torn down behind the open dialog', () => {
+      const harness = setup();
+      harness.run();
+
+      // The host's input keeps its last value — the very set the flow froze — so only the host's
+      // teardown can tell the guard that nobody vouches for that set any more.
+      harness.destroy();
+      expect(harness.active()).toBe('set-active');
+      confirmationClosed(harness).next({ checkedIds: ['placed'] });
+
+      expect(harness.startDelete).not.toHaveBeenCalled();
+      expect(harness.reportRemoval).not.toHaveBeenCalled();
+      expect(harness.notice()).toEqual({
+        leadKey: 'massDelete.abortedByLock',
+        key: 'massDelete.setChangedDuringConfirm',
+      });
+      expect(harness.endConfirmedRun).toHaveBeenCalledOnce();
+      expect(harness.pending()).toBe(false);
+    });
+
+    it('sends no report for nothing ticked either when the host was torn down behind the dialog', () => {
+      const harness = setup();
+      harness.run();
+
+      harness.destroy();
+      confirmationClosed(harness).next({ checkedIds: [] });
+
+      expect(harness.reportRemoval).not.toHaveBeenCalled();
+      expect(harness.startDelete).not.toHaveBeenCalled();
+      expect(harness.notice()?.key).toBe('massDelete.setChangedDuringConfirm');
+    });
+
     it("refuses a start while another run holds the arbiter, with the delete chain's notice and no noteRefusedStart", () => {
       const harness = setup();
       harness.run();
@@ -603,6 +669,38 @@ describe('startTagRemovalFlow', () => {
 
       expect(harness.reportRemoval).not.toHaveBeenCalled();
       expect(harness.notice()?.key).toBe('massDelete.setChangedDuringConfirm');
+    });
+
+    it('refuses a confirmation with nothing ticked while another run holds the arbiter', () => {
+      const harness = setup();
+      harness.run();
+
+      harness.claim.set({ kind: 'import', phase: 'running' });
+      confirmationClosed(harness).next({ checkedIds: [] });
+
+      expect(harness.reportRemoval).not.toHaveBeenCalled();
+      expect(harness.notice()?.key).toBe('sevenTvRun.notStarted.running');
+    });
+
+    it('sends the report for nothing ticked even when the token went away — it writes nothing to 7TV', () => {
+      const harness = setup();
+      harness.run();
+
+      harness.hasToken.set(false);
+      confirmationClosed(harness).next({ checkedIds: [] });
+
+      expect(harness.reportRemoval).toHaveBeenCalledOnce();
+      expect(harness.reportRemoval.mock.calls[0][2]).toMatchObject({
+        operationId: OP_1,
+        removedIds: [],
+        keptIds: ['placed', 'held'],
+      });
+      expect(harness.onFeedback).toHaveBeenCalledExactlyOnceWith('tags.feedback.removedNothing', {
+        tag: TAG.name,
+      });
+      expect(harness.onCompleted).toHaveBeenCalledOnce();
+      expect(harness.notice()).toBeNull();
+      expect(harness.startDelete).not.toHaveBeenCalled();
     });
   });
 });
