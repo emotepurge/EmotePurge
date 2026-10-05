@@ -83,7 +83,10 @@ const DE_TRANSLATIONS = {
       },
     },
   },
-  syncReportReason: { unavailable: 'Grund: nicht erreichbar.' },
+  syncReportReason: {
+    unavailable: 'Grund: nicht erreichbar.',
+    forbidden: 'Grund: keine Berechtigung.',
+  },
   import: {
     startChecking: 'Übertragung wird geprüft.',
     duplicateCheckUnavailable: 'Import-Prüfung nicht möglich.',
@@ -708,7 +711,7 @@ describe('DockOutcomeAnnouncer', () => {
     fixture.detectChanges();
 
     expect(spoken()).toHaveLength(1);
-    expect(spoken()[0]).toContain('Nicht beim Tag vermerkt.');
+    expect(spoken()[0]).toBe('Nicht beim Tag vermerkt. Grund: keine Berechtigung.');
   });
 
   it('does not speak for an import on a page that shows no import section', () => {

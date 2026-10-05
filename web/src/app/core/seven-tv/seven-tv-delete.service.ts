@@ -698,13 +698,18 @@ export class SevenTvDeleteService {
    * retries for anything but a 401/403, an end state on every path.
    *
    * A replayed answer (`replayed: true`) is a success that says nothing else (F34): the server had
-   * already applied this operation, so no counts are read from it. The reading happens in `map`,
-   * ahead of the retries, so a malformed answer ends like a transient failure instead of throwing
-   * inside `next`.
+   * already applied this operation, so no counts are read from it — nothing is read from the answer
+   * at all.
    */
   private reportTagRemoval(runId: string): void {
     const run = this.patchRun(runId, { tagRemovalReport: 'pending', tagRemovalReportReason: null });
-    if (run === null || run.tag === undefined || run.result === null) {
+    if (run === null) {
+      return;
+    }
+    // Both callers guarantee a tag and a result; should that ever break, end the report as a
+    // failure rather than leave it pending, which would hold the run open forever.
+    if (run.tag === undefined || run.result === null) {
+      this.endTagReport(runId, { state: 'failed', reason: 'other' });
       return;
     }
     const tag = run.tag;

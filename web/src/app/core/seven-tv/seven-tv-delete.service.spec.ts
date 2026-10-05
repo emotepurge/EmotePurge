@@ -1964,6 +1964,68 @@ describe('SevenTvDeleteService', () => {
       expect(service.tagRemovalReportReason()).toBeNull();
     });
 
+    it('ends the report as failed, and closes the run, when it is asked for on a run without a tag', () => {
+      runTwoRows('applied', null);
+      answerSync();
+      const runId = service.run()?.runId ?? '';
+
+      (service as unknown as { reportTagRemoval(id: string): void }).reportTagRemoval(runId);
+
+      httpMock.expectNone(REMOVED);
+      expect(service.tagRemovalReport()).toBe('failed');
+      expect(service.tagRemovalReportReason()).toBe('other');
+      expect(service.run()?.phase).toBe('closed');
+    });
+
+    it('brings a detached tag run back when its removal report fails', () => {
+      runTwoRows();
+      service.reset();
+      expect(service.run()).toBeNull();
+      answerSync();
+
+      httpMock.expectOne(REMOVED).flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()).not.toBeNull();
+      expect(service.tagRemovalReport()).toBe('failed');
+      expect(service.tagRemovalReportReason()).toBe('forbidden');
+    });
+
+    it('logs a failed removal report of a detached run once a newer run is shown', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      runTwoRows();
+      const report = httpMock.expectOne(REMOVED);
+      service.reset();
+      answerSync();
+
+      service.startDelete('set-2', 'other-channel', [EMOTES[1]], 'other-channel', null);
+      flushApplied(httpMock.expectOne(GQL_ENDPOINT));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      const run2SyncReq = httpMock.expectOne(SYNC_ENDPOINT_SET_2);
+
+      report.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()?.setId).toBe('set-2');
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[EmotePurge] 7TV delete report of a run no longer shown did not succeed',
+        expect.objectContaining({ report: 'tag-removal', state: 'failed', reason: 'forbidden' }),
+      );
+      run2SyncReq.flush(deletedAnswer());
+    });
+
+    it('sends both reports independently: a failed sync-deleted does not stop the removal report, and the run closes after both', () => {
+      runTwoRows();
+      httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.run()?.phase).toBe('reporting');
+
+      httpMock.expectOne(REMOVED).flush(removalAnswer());
+
+      expect(service.tagRemovalReport()).toBe('succeeded');
+      expect(service.syncReport()).toBe('failed');
+      expect(service.run()?.phase).toBe('closed');
+    });
+
     it('offers no retry for a run without a tag', () => {
       runTwoRows('applied', null);
       answerSync();
