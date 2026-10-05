@@ -1740,6 +1740,7 @@
       "tagGone": "This tag has been deleted in the meantime.",
       "state": {
         "active": "played in since {{date}}",
+        "activeUndated": "played in",
         "inactive": "not played in"
       },
       "placedMark": "played in",

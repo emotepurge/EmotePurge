@@ -9,6 +9,7 @@ import {
   computed,
   effect,
   inject,
+  linkedSignal,
   input,
   signal,
   untracked,
@@ -225,12 +226,36 @@ export class TagsPage {
     const status = this.setStatusResource.status();
     return status !== 'idle' && status !== 'loading';
   });
-  /** The set the in-set numbers refer to; `null` when the channel has none (or it is unknown). */
-  readonly activeEmoteSetId = computed(() =>
-    this.setStatusResource.hasValue()
-      ? this.setStatusResource.value().activeEmoteSetId || null
-      : null,
-  );
+  /**
+   * The set the in-set numbers refer to; `null` when the channel has none (or it is unknown). A
+   * status reload that *fails* keeps the last known id (a failed read says nothing about the set);
+   * only an answer without a set, a 404, or a new channel clears it.
+   */
+  readonly activeEmoteSetId = linkedSignal<
+    { has: boolean; id: string | null; notFound: boolean; loading: boolean },
+    string | null
+  >({
+    source: () => {
+      const resource = this.setStatusResource;
+      const has = resource.hasValue();
+      const error = resource.error();
+      return {
+        has,
+        id: has ? resource.value().activeEmoteSetId || null : null,
+        notFound: error instanceof HttpErrorResponse && error.status === 404,
+        loading: resource.status() === 'loading' || resource.status() === 'idle',
+      };
+    },
+    computation: (source, previous) => {
+      if (source.has) {
+        return source.id;
+      }
+      if (source.loading || source.notFound || previous === undefined) {
+        return null;
+      }
+      return previous.value;
+    },
+  });
 
   /** Only for the set's name in the header line; never asked for without an active set. */
   private readonly emoteSetListResource = rxResource({
@@ -528,7 +553,7 @@ export class TagsPage {
     // while `TagRunActions` is not mounted (the list alone on a narrow screen). A run that was
     // already settled when the page opened is not news.
     let firstSettled = true;
-    let lastSettled = '';
+    let lastSlots: string[] = [];
     effect(() => {
       const restore = this.restoreService.run();
       const key = [
@@ -536,13 +561,16 @@ export class TagsPage {
         settledTagRemoval(this.deleteService.run()),
         restore !== null && restore.phase === 'closed' ? restore.runId : null,
       ].join('|');
-      const changed = key !== lastSettled;
-      lastSettled = key;
+      const slots = key.split('|');
+      // Only a slot that turns into a NEW non-null value is news; one turning null (a new run
+      // replacing it, a dismissal) is not.
+      const opened = slots.some((slot, index) => slot !== '' && slot !== lastSlots[index]);
+      lastSlots = slots;
       if (firstSettled) {
         firstSettled = false;
         return;
       }
-      if (changed && key !== '||') {
+      if (opened) {
         untracked(() => this.reloadTagState());
       }
     });

@@ -1740,6 +1740,7 @@
       "tagGone": "Dieser Tag wurde inzwischen gelöscht.",
       "state": {
         "active": "eingespielt seit {{date}}",
+        "activeUndated": "eingespielt",
         "inactive": "nicht eingespielt"
       },
       "placedMark": "eingespielt",

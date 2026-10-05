@@ -783,6 +783,16 @@ describe('TagsPage', () => {
         expect(text(harness)).not.toContain('eingespielt seit');
       });
 
+      it('says "eingespielt" for an active tag whose activation date is missing', async () => {
+        const { harness } = await openTag({ ...activeTag(1, 'Stronghold'), activatedAtUtc: null });
+
+        const lines = Array.from(
+          harness.routeNativeElement!.querySelectorAll('p.text-fg-secondary'),
+        ).map((line) => line.textContent?.trim());
+        expect(lines).toContain(de.tags.page.state.activeUndated);
+        expect(lines).not.toContain(de.tags.page.state.inactive);
+      });
+
       it('says in the list how many placements a played-in tag holds', async () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold', 3));
         const rows = Array.from(
@@ -1055,7 +1065,7 @@ describe('TagsPage', () => {
         expect(startDelete.mock.calls[0][0]).toBe('set-a');
       });
 
-      it('a channel.synced that switches the active set stops the open clear-out at its set guard', async () => {
+      it('a channel.synced that switches the active set tears the detail down, so the open clear-out never starts', async () => {
         const { harness, page } = await openTag(activeTag(1, 'Stronghold'), [OWN]);
         const startDelete = vi
           .spyOn(TestBed.inject(SevenTvDeleteService), 'startDelete')
@@ -1092,6 +1102,36 @@ describe('TagsPage', () => {
         await settle(harness);
 
         expect(startDelete).not.toHaveBeenCalled();
+      });
+
+      it('a failed status reload keeps the last known active set and TagRunActions', async () => {
+        const { harness, page } = await openTag(activeTag(1, 'Stronghold'), [OWN]);
+        const before = runActions(harness);
+
+        statusAnswer = () => throwError(() => new HttpErrorResponse({ status: 500 }));
+        await emitSynced();
+        await settle(harness);
+
+        expect(page.activeEmoteSetId()).toBe('set-a');
+        expectList().flush(tagList(activeTag(1, 'Stronghold'), tag(2, 'Halloween')));
+        expectEntries(1).flush({
+          emoteSetId: 'set-a',
+          isActiveSet: true,
+          activationOperationId: 'act-1',
+          entries: [OWN],
+        });
+        await settle(harness);
+        expect(page.activeEmoteSetId()).toBe('set-a');
+        expect(runActions(harness)).toBe(before);
+      });
+
+      it('does not read tags again for a restore that was already closed when the page opened', async () => {
+        const restore = TestBed.inject(SevenTvRestoreService);
+        restore.run.set({ runId: 'r0', phase: 'closed', destructive: false } as never);
+        const { harness } = await openTag(tag(1, 'Stronghold'));
+        await settle(harness);
+
+        httpMock.expectNone((req) => req.url === BASE);
       });
 
       it('reads tags and entries again when a restore closes, not for one already closed', async () => {

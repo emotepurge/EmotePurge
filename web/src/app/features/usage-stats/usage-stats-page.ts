@@ -1497,8 +1497,8 @@ export class UsageStatsPage {
 
   /** The operator switch for tag runs (`Tags:RunsEnabled`, #201 T-C) as the permissions answer
    *  carries it; `false` until they are in. */
-  protected readonly tagRunsEnabled = computed(
-    () => this.permissionsResource.value()?.tagRunsEnabled ?? false,
+  protected readonly tagRunsEnabled = computed(() =>
+    this.permissionsResource.hasValue() ? this.permissionsResource.value().tagRunsEnabled : false,
   );
 
   /**

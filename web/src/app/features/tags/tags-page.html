@@ -218,10 +218,15 @@
                    (`inSetCount: null`) there is no state to name. -->
               @if (tag.inSetCount !== null) {
                 <p class="text-sm text-fg-secondary">
-                  @if (tag.active && tag.activatedAtUtc) {
-                    {{
-                      'tags.page.state.active' | transloco: { date: formatDate(tag.activatedAtUtc) }
-                    }}
+                  @if (tag.active) {
+                    @if (tag.activatedAtUtc) {
+                      {{
+                        'tags.page.state.active'
+                          | transloco: { date: formatDate(tag.activatedAtUtc) }
+                      }}
+                    } @else {
+                      {{ 'tags.page.state.activeUndated' | transloco }}
+                    }
                   } @else {
                     {{ 'tags.page.state.inactive' | transloco }}
                   }
