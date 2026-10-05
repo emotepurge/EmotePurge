@@ -30,6 +30,17 @@ function resolveActiveSetId(setId: string, activeSetId: string | null | undefine
   return activeSetId === undefined ? setId : activeSetId;
 }
 
+/** The `'chosen'` member of `ImportFlowTarget` — what {@link toImportTarget} builds. */
+export type ChosenImportFlowTarget = Extract<ImportFlowTarget, { kind: 'chosen' }>;
+
+/** {@link toImportTarget}'s optional extras — both absent for this trigger's own doors. */
+export interface ImportTargetOptions {
+  /** The set owner's Twitch id, when the caller already resolved it. */
+  ownerTwitchChannelId?: string | null;
+  /** Read exactly this set, never the active-set fast path (`ImportFlowTarget.pinSetId`). */
+  pinSetId?: true;
+}
+
 /**
  * The file/foreign-channel/leaderboard doors' target (spec 8.6, T4.5) — a `'chosen'`
  * `ImportFlowTarget` built from what this trigger's own inputs already carry, without ever opening
@@ -47,30 +58,38 @@ function resolveActiveSetId(setId: string, activeSetId: string | null | undefine
  * doc for why. `setName` falls back to the id, the same convention `targetSetLabel`
  * (`import-confirm-dialog.ts`) already uses for every other unnamed set.
  *
- * `ownerTwitchChannelId` is explicitly `null` (owner-hint design 3.6, Codex finding 4) — this
- * fabricated choice never asked a picker, so it never learned the set's owner id the way
- * `import-target-choices.ts`'s `resolveOwnerTwitchChannelId` does. `import-flow.ts` falls back to a
- * *login* hint (`channelName`, this trigger's own tracked channel) whenever a choice's id is `null`,
- * so the owner check still gets an order to follow — just not one carrying a Twitch id.
+ * `ownerTwitchChannelId` is `null` for this trigger's own doors (owner-hint design 3.6, Codex
+ * finding 4) — this fabricated choice never asked a picker, so it never learned the set's owner id
+ * the way `import-target-choices.ts`'s `resolveOwnerTwitchChannelId` does. `import-flow.ts` falls
+ * back to a *login* hint (`channelName`, this trigger's own tracked channel) whenever a choice's id
+ * is `null`, so the owner check still gets an order to follow — just not one carrying a Twitch id.
+ *
+ * Exported for the tag play-in (#201 T-C, spec 7.1/6), which builds its target the same way rather
+ * than a copy of it, with two `options` of its own: `ownerTwitchChannelId`, the owner the tag flow's
+ * own pre-check already resolved (so an add-only run reports with that id, not without one), and
+ * `pinSetId`, which keeps the import flow on exactly this set even when it is the active one.
+ * Without `options` the target is the one this trigger always built.
  */
-function toImportTarget(
+export function toImportTarget(
   channelName: string,
   setId: string,
   activeSetId: string | null | undefined,
   setName: string | null,
-): ImportFlowTarget {
+  options: ImportTargetOptions = {},
+): ChosenImportFlowTarget {
   return {
     kind: 'chosen',
     choice: {
       emoteSetId: setId,
       channelName,
       ownerDisplayName: channelName,
-      ownerTwitchChannelId: null,
+      ownerTwitchChannelId: options.ownerTwitchChannelId ?? null,
       setName: setName ?? setId,
       isTracked: true,
       twitchLogin: channelName,
       activeEmoteSetId: resolveActiveSetId(setId, activeSetId),
     },
+    ...(options.pinSetId === true ? { pinSetId: true as const } : {}),
   };
 }
 

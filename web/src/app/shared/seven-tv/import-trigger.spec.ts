@@ -20,7 +20,7 @@ import { UndoCandidate } from '../../core/seven-tv/undo-candidate';
 import { PurgeRunRow } from '../export/purge-run-export';
 import { FileImportResult } from './file-import-step';
 import { ImportSourceDialogResult } from './import-source-dialog';
-import { ImportTrigger } from './import-trigger';
+import { ImportTrigger, toImportTarget } from './import-trigger';
 import { ResolvedRestoreTarget } from './restore-flow';
 import { UndoConfirmDialogData, UndoConfirmOutcome } from './undo-confirm-dialog';
 import { undoRunTarget } from './undo-flow';
@@ -1296,5 +1296,37 @@ describe('ImportTrigger', () => {
       const dialog = render();
       expect(dialog.triggerDisabled()).toBe(false);
     });
+  });
+});
+
+describe('toImportTarget', () => {
+  it("builds the doors' target without an owner id and without a pin", () => {
+    const target = toImportTarget('somechannel', 'set-1', undefined, null);
+
+    expect(target).toEqual({
+      kind: 'chosen',
+      choice: {
+        emoteSetId: 'set-1',
+        channelName: 'somechannel',
+        ownerDisplayName: 'somechannel',
+        ownerTwitchChannelId: null,
+        setName: 'set-1',
+        isTracked: true,
+        twitchLogin: 'somechannel',
+        activeEmoteSetId: 'set-1',
+      },
+    });
+    expect('pinSetId' in target).toBe(false);
+  });
+
+  it('carries an owner id the caller already resolved, and pins the set on request', () => {
+    const target = toImportTarget('somechannel', 'set-1', 'set-1', 'Main', {
+      ownerTwitchChannelId: 'tw-owner',
+      pinSetId: true,
+    });
+
+    expect(target.choice.ownerTwitchChannelId).toBe('tw-owner');
+    expect(target.choice.setName).toBe('Main');
+    expect(target.pinSetId).toBe(true);
   });
 });
