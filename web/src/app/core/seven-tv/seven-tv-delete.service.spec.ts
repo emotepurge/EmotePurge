@@ -1958,7 +1958,7 @@ describe('SevenTvDeleteService', () => {
       expect(service.tagRemovalReport()).toBe('pending');
       const second = httpMock.expectOne(REMOVED);
       expect(second.request.body).toEqual(firstBody);
-      // F34: a replay carries no outcome — success, nothing else read from it.
+      // A replay carries no outcome — success, nothing else read from it.
       second.flush(removalAnswer({ replayed: true, deactivated: false }));
       expect(service.tagRemovalReport()).toBe('succeeded');
       expect(service.tagRemovalReportReason()).toBeNull();

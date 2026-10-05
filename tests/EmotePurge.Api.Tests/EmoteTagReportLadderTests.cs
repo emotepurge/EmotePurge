@@ -253,7 +253,8 @@ public class EmoteTagReportLadderTests : IClassFixture<ApiFactory>
         await AssertNothingAskedAsync();
     }
 
-    // F2/F32/F34: every id list is checked in the form step, a null or missing list included.
+    // Every id list is checked in the form step, before the actor and the 7TV ladder — a null or
+    // missing list included (docs/DECISIONS.md, #201 T-C).
 
     [Theory]
     [InlineData(Placements, "sevenTvEmoteIds")]
@@ -538,7 +539,7 @@ public class EmoteTagReportLadderTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task RemovalReport_OfAnAppliedOperation_Answers200ReplayedWithNoOutcomeFields()
     {
-        // F34: on a replay the service's counters and Deactivated describe no outcome. The handler
+        // On a replay the service's counters and Deactivated describe no outcome. The handler
         // answers the documented replay body itself instead of forwarding them.
         var userId = NewUserId();
         ArrangeOwner(userId);

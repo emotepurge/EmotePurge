@@ -110,7 +110,8 @@ export interface TagRunDockState {
   /** An import run (a tag play-in, or any other) is in flight or settled-but-still-shown. */
   readonly importShown: boolean;
   /** `SevenTvImportService.duplicateNoticePending`: the transient notice of an import the fresh
-   *  duplicate/drift check refused or narrowed — a tag play-in's drift case among them (F35). */
+   *  duplicate/drift check refused or narrowed — a tag play-in's drift case among them, which leaves
+   *  no run behind and would otherwise not be shown on the tags page at all. */
   readonly importNoticePending: boolean;
 }
 

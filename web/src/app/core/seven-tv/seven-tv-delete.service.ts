@@ -697,9 +697,9 @@ export class SevenTvDeleteService {
    * it. Same transport rules as `sync-deleted`: one `timeoutReportAttempt` per attempt, automatic
    * retries for anything but a 401/403, an end state on every path.
    *
-   * A replayed answer (`replayed: true`) is a success that says nothing else (F34): the server had
-   * already applied this operation, so no counts are read from it — nothing is read from the answer
-   * at all.
+   * A replayed answer (`replayed: true`) is a success that says nothing else (docs/DECISIONS.md,
+   * #201 T-C): the server had already applied this operation, so no counts are read from it —
+   * nothing is read from the answer at all.
    */
   private reportTagRemoval(runId: string): void {
     const run = this.patchRun(runId, { tagRemovalReport: 'pending', tagRemovalReportReason: null });

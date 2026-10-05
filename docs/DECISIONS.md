@@ -260,16 +260,16 @@ tag in the set as it exists at apply time, valid and expired alike.
   "inactive ⇒ no placement". A target that already holds the emote keeps its own row (revision and
   anchor untouched) and the giving row is simply deleted; that still counts as transferred, because
   the responsibility passed. A target whose own row for the emote has *expired* is treated as not
-  holding it (operator ruling on the Task 5 review, spec addendum in Task 15): that row is rewritten
+  holding it (operator decision, recorded in the spec's 13.5 addendum): that row is rewritten
   with the transferred values (removal as revision and anchor, the giver's `PlacedAtUtc`) instead of
   being kept — keeping it would delete the emote's only valid placement. For a kept hit the rewritten
   row holds: the giving row holds at its anchor, so no leave is observed after it, nor after the later
   removal anchor. On the sweep path a row that came in with a later own anchor can come out expired,
-  exactly like a fresh transfer (F30). An expired giving row never touches the target's row, expired
+  exactly like a fresh transfer (the anchor rule above). An expired giving row never touches the target's row, expired
   or not — it is only deleted. No target → dropped. Transfer is delete plus insert (`TagId` is part of
   the primary key), or an in-place update when the target's own row for the emote expired; the new row keeps
   `PlacedAtUtc`, takes the removal operation as `OperationId` and that
-  operation's `RegisteredAtUtc` as its anchor (F30) — so deleting the giving tag afterwards, which
+  operation's `RegisteredAtUtc` as its anchor — so deleting the giving tag afterwards, which
   cascades its operations away, leaves the transferred placement holding.
 - **An expired placement is never transferred, only deleted** — in the sweep, where the spec says so,
   and for a kept hit as well, where it does not. The verdict comes from the read-time rule itself
@@ -287,7 +287,7 @@ tag in the set as it exists at apply time, valid and expired alike.
   `sweptCount` (everything the sweep took, transferred or not), `deactivated`. Audit `tag.removed`
   with `{ tagId, emoteSetId, operationId, emoteCount = deletedCount }`, no name (E30). `DeleteAsync`'s
   audit now also carries `placementCount`; `RemoveEntriesAsync` keeps its `{ removedCount }` wire (the
-  FK cascade takes the placements, F14).
+  FK cascade takes the placements; the wire contract stays as T-B shipped it).
 - **Races with entry removal (Codex finding 3)** are ordered by the channel lock and closed by the
   FK: a play-in report that read the entry before a parallel `RemoveEntriesAsync` commits its
   placement, and the cascade then takes it with the entry; the other order sees no entry and reports
@@ -295,7 +295,7 @@ tag in the set as it exists at apply time, valid and expired alike.
   finds no candidate (dropped) or commits the row and loses it to the cascade. Two overlapping
   clearings (counterexample 7) serialize on the lock: the first hands X over, the second deactivates
   and its sweep deletes the handed-over row because no active holder is left.
-- **Counterexamples 5 and 7 under F33** (an older play-in report of the same tag and set landing
+- **Counterexamples 5 and 7 under spec 5.5 rule 10** (an older play-in report of the same tag and set landing
   after a newer one overwrites revision, anchor and the activation's operation with the older values).
   CE 5: a removal whose preview read the newer revision and activation then hits nothing and does not
   deactivate — nothing is deleted, the tag stays active with the emote placed under the old revision;
@@ -384,7 +384,7 @@ runs exist whatever the flag says; it only lets the frontend offer the buttons.
 
 `EmoteTagService` gains `registerOperation`, `reportPlacements` and `reportRemoval` (all `POST`, the set
 id in the body and never in the query), the tag models gain the placement/activation fields, and the four
-new codes sit in `api-error.ts` and both locale files (rule 7). The report response types document F34 in
+new codes sit in `api-error.ts` and both locale files (rule 7). The report response types document the replay rule in
 code: when `replayed` is `true`, no other field is an outcome, and nothing in `core/` derives counts or
 messages from a replay. `ChannelPermissions.tagRunsEnabled` is required, so every typed literal had to
 say it. The audit side takes the new actions (`tag.playedIn`, `tag.removed`) and the count-only detail
@@ -469,7 +469,7 @@ either can fail without the other; chaining them would let an audit hiccup cost 
 The lifecycle predicate counts the report, so `closed` waits for it; transport is the same as the other
 reports (per-attempt timeout, automatic retries except 401/403, an end state on every path), and
 `retryTagPlacementReport` sends the same body with the same `operationId`, which the server answers as a
-replay. A replayed answer is a success with no outcome (F34): its `discardedStaleIds` never reach the
+replay. A replayed answer is a success with no outcome (the server had already applied it): its `discardedStaleIds` never reach the
 signal. The dock shows the state line (pending, succeeded, failed plus reason and a retry button, and
 "k emotes were removed meanwhile" after a success) aria-hidden; the page's `DockOutcomeAnnouncer` speaks
 the end states, never the pending line. Keys: `sevenTvRun.tagReport.{pending,succeeded,failed,retry}`,
@@ -494,7 +494,8 @@ holds now vs. which emotes this tag put there), use different routes and permiss
 fail without the other. The lifecycle predicate counts it, so `closed` waits for both; transport is the
 other reports' (per-attempt timeout, automatic retries except 401/403, an end state on every path), and
 `retryTagRemovalReport` re-sends the same body with the same `operationId`, which the server answers as a
-replay. A replayed answer is a plain success (F34): no counts are read from it.
+replay. A replayed answer is a plain success (the server had already applied it): no counts are read
+from it.
 
 **`keptIds` is derived from the run result, not taken from the preview.** The body is `removedIds` = the
 run's `doneKeys`, and `keptIds` = `deriveTagKeptIds(tag, result)`: every unticked own placement plus every
@@ -581,7 +582,7 @@ runs are switched off nothing is missing that it would have to explain. `TagRunA
 against exactly that input. It is mounted on the gate itself, and every term of the gate is stable across a
 `channel.synced` reload of the same set (the tag list keeps its value while it reloads; the shown and the
 active set only diverge on a real switch), so a reload never re-creates the component and never aborts a
-dialog its flow has open (rulings F38); a real switch does drop it, which the flows treat as a set change.
+dialog its flow has open; a real switch does drop it, which the flows treat as a set change.
 Two additions to `TagRunActions` itself: a `started` output (a click or a retry started a flow — the tags
 page clears its stale run notice on it), and `unshownRunKinds`: a lock held by a run kind whose surface the
 host does not mount is explained beside the buttons (`tags.errors.otherRunActive`, linked by

@@ -3,7 +3,7 @@ using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Unit;
 
-// The id-list rule the tag service and the Api's report handlers share (#201 T-C, F2).
+// The id-list rule the tag service and the Api's report handlers share (#201 T-C).
 public class EmoteTagIdListTests
 {
     [Fact]

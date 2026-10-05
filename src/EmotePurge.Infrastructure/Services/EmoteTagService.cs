@@ -531,8 +531,8 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
             // Rule 10 of spec 5.5: the upsert always overwrites, an existing row included. Otherwise an
             // old, expired row would keep its old revision — a late removal report of that revision
             // would still match it — and its old anchor, so the read-time rule would keep calling it
-            // expired although it was just reported again. The anchor is this operation's registration
-            // (F30); the reads look at nothing else.
+            // expired although it was just reported again. The anchor is this operation's registration,
+            // carried on the placement (docs/DECISIONS.md, #201 T-C); the reads look at nothing else.
             placement.OperationId = operation.OperationId;
             placement.PlacedAtUtc = now;
             placement.RegisteredAtUtc = operation.RegisteredAtUtc;
@@ -970,7 +970,7 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
     /// after the placement was made, so it has nothing to hand over — a transfer would re-anchor the row
     /// at the removal's registration and could revive it as a proposal for the target. The transferred
     /// row keeps <c>PlacedAtUtc</c> ("since when is X in the set because of a tag" does not change hands),
-    /// takes the removal operation as its revision and that operation's registration as its anchor (F30).
+    /// takes the removal operation as its revision and that operation's registration as its anchor.
     /// Delete plus insert rather than an update, because <c>TagId</c> is part of the primary key.
     /// </para>
     /// <para>
@@ -995,7 +995,7 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
             // observation is later than that anchor — hence none is later than the removal's registration
             // either, which for a snapshot hit comes after the play-in the preview read. (A swept row that
             // wandered in under a later anchor can come out expired, exactly as a fresh transfer would —
-            // F30 binds the anchor, and that direction only withholds a proposal.) Same values as a fresh
+            // the anchor rule binds it, and that direction only withholds a proposal.) Same values as a fresh
             // transfer; the key stays, only the columns change.
             expiredTargetRow.PlacedAtUtc = placement.PlacedAtUtc;
             expiredTargetRow.OperationId = removal.OperationId;

@@ -1678,8 +1678,9 @@ const SCENARIOS: Scenario[] = [
     // The tags page with a played-in tag (#201 T-C, spec 9.4): state line, placement marks, the
     // list's "eingespielt (n platziert)", the run buttons in the detail head — and, after a
     // clear-out has run to its end against the mocked 7TV, the page-level run dock with the
-    // delete section's settled run, tag report line, restore hint and buttons (rulings F7/F26:
-    // the fixed .app-dock at 360 px under a mouse). Fine pointer only: no runs on a coarse one.
+    // delete section's settled run, tag report line, restore hint and buttons (the fixed dock has
+    // to pass the right-edge gate at 360 px under a mouse). Fine pointer only: no runs on a coarse
+    // one.
     slug: 'tags-page-active-with-dock',
     includeMouseAt360: true,
     strictRightEdge: true,
@@ -1723,9 +1724,9 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    // The filter row with a played-in tag chosen and tag runs on (#201 T-C, spec 9.2, rulings
-    // F11): name · eingespielt · counts, then "Einspielen"/"Ausräumen" in the sentence's slot,
-    // then the way to the tag page — the row has to wrap rather than push past 360 px.
+    // The filter row with a played-in tag chosen and tag runs on (#201 T-C, spec 9.2): name ·
+    // eingespielt · counts, then "Einspielen"/"Ausräumen" in the sentence's slot, then the way to
+    // the tag page — the row has to wrap rather than push past 360 px.
     slug: 'usage-filter-with-tag-run-actions',
     includeMouseAt360: true,
     strictRightEdge: true,

@@ -635,7 +635,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     //
     // Spec 5.5 rule 5 / E33 rev. 4: a placement holds unless the channel has a leave observation for
     // the same emote and set that is later than the placement's own RegisteredAtUtc (the registration
-    // of the operation that last wrote it — F30). Fixed timestamps (whole seconds) so stored and
+    // of the operation that last wrote it). Fixed timestamps (whole seconds) so stored and
     // expected values compare exactly.
 
     [Theory]
@@ -2052,8 +2052,9 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         await fixture.AssertPlacementInvariantsAsync(channel.Id);
     }
 
-    // F30: the transferred row points at A's removal operation, and operations cascade with their
-    // tag. Deleting A afterwards must not make B's placement stop holding — its anchor is its own.
+    // The anchor lives on the placement: the transferred row points at A's removal operation, and
+    // operations cascade with their tag. Deleting A afterwards must not make B's placement stop
+    // holding — its anchor is its own.
     [Fact]
     public async Task Removal_ATransferredPlacement_SurvivesTheDeletionOfTheTagItCameFrom()
     {
@@ -2244,9 +2245,9 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         await fixture.AssertPlacementInvariantsAsync(channel.Id);
     }
 
-    // Counterexample 5 under F33: an OLDER play-in report (P_old, registered first, reported last)
-    // lands after the newer one and overwrites revision, anchor and activation with P_old. A removal
-    // whose preview read P_new then hits nothing and does not deactivate — nothing is deleted, the
+    // Counterexample 5 under spec 5.5 rule 10 (a report rewrites the row it hits): an OLDER play-in
+    // report (P_old, registered first, reported last) lands after the newer one and overwrites
+    // revision, anchor and activation with P_old. A removal whose preview read P_new then hits nothing and does not deactivate — nothing is deleted, the
     // tag stays active with X placed. Fail-safe: the next preview reads P_old, the live read no
     // longer shows X (the run removed it), and a second clearing drops the row and deactivates.
     [Fact]
