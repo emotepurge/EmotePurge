@@ -293,9 +293,16 @@ login and joins would pass the login-based management check and read the previou
 `TrackedChannelFilter` closes the first half (no row, no log, for everyone, also for the admin route's
 channel-scoped sibling), and the handler passes the current row's `CreatedAt` as
 `AuditLogFilter.OccurredAfterUtc` (inclusive lower bound; `CreatedAt` survives rename and merge). The
-admin route sets no bound. **Follow-up, not part of #245:** binding audit entries to the Twitch id by a
-new column would make the boundary exact; until then a re-join of the same owner starts with an empty
-channel log by design.
+admin route sets no bound. **Known gap of that bound, documented rather than closed (pre-merge review,
+2026-10-08):** `CreatedAt` belongs to the row, not to the login, and survives rename and merge. When an
+older row is renamed onto a login that was freed by a purge — its channel renamed to that name, and the
+identity reconcile or a join follows the rename — the row keeps its earlier `CreatedAt`, so its
+moderators can read the previous owner's entries under that name from that date on, back to the
+moment the old row was created. It needs a purge, a released login and a rename onto exactly that
+login by an account we already track, so it is rare; it exposes audit entries (who joined, voted,
+resynced), not the purged data. **Follow-up, not part of #245:** binding audit entries to the Twitch id
+by a new column would make the boundary exact and close this gap too; until then a re-join of the same
+owner starts with an empty channel log by design.
 
 **Neighbours and limits.** Builds on the block list of 2026-09-24 (#252: `IExcludedChannelFilter`,
 "no caller is exempt" stays true for that list; the lock is the one a global admin may lift, with
