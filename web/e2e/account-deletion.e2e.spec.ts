@@ -99,7 +99,7 @@ test.describe('account deletion from the account menu', () => {
     await expect(
       dialog.getByText(/Die Daten deines Channels „sensitron“ bleiben erhalten/),
     ).toBeVisible();
-    await expect(dialog.getByText(/zuerst im Workspace deines Kanals/)).toBeVisible();
+    await expect(dialog.getByText(/zuerst im Workspace deines Channels/)).toBeVisible();
   });
 
   test('says nothing about a channel when the account owns none', async ({ page }) => {
@@ -119,7 +119,7 @@ test.describe('account deletion from the account menu', () => {
     const dialog = await openDeleteDialog(page);
 
     await expect(dialog.getByText(/jede Stimme, die du abgegeben hast/)).toBeVisible();
-    await expect(dialog.getByText(/Workspace deines Kanals/)).toHaveCount(0);
+    await expect(dialog.getByText(/Workspace deines Channels/)).toHaveCount(0);
   });
 
   test('a failed deletion keeps the user signed in and says so in the reopened menu', async ({
