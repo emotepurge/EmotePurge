@@ -10,6 +10,27 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — REST reconcile deduplicates live entries on the 7TV emote id, first entry wins (#74)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceDuplicateEmoteIdTests.cs`
+
+7TV can list one emote id twice in a set under two alias names. The unique index
+`(ChannelId, SevenTvEmoteId)` (rule 8) keeps one row, so `ReconcileAsync` upserted that row twice per
+pass: the second entry rewrote the name and stamped `LastSyncedAt`, the channel counted as changed on
+every resync, and `channel.synced` fired once a minute (measured 2026-09-20 on 3 of 4 dev channels).
+`ReconcileAsync` now reduces the live list with `DistinctBy(Id)` before the upsert loop, so the first
+entry in 7TV's order is the stored name. The previous behaviour was "last entry wins", so the first
+resync after deploying renames each affected row once (one `channel.synced`, then quiet).
+
+Deliberately unchanged: the second alias is still not countable. Chat matching resolves names from
+the stored row, so exactly one alias per id can ever be counted; making both countable would change
+the counting rule and the `AlgorithmVersion`. This is not `EmoteNameMatching.Coalesce` (two different
+ids sharing one name, first loaded wins); it is the inverse case, and both agree only in that the
+stored/first one is what is counted. The EventAPI delta path upserts per pushed entry and has no
+loop over a full set, so it needs no dedup. Earlier entries that mention the "#74 duplicate cell"
+(delete/replace paths, set views with `slotCount` 2) describe the live 7TV set, which still carries
+both entries; they stay valid, since the dedup applies to the local row only.
+
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteSetIdValidation.cs` · `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `web/src/app/core/i18n/api-error.ts`

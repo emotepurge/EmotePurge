@@ -885,6 +885,12 @@ public class SevenTvSyncService(
             .Where(e => e.ChannelId == channelId)
             .ToDictionaryAsync(e => e.SevenTvEmoteId, cancellationToken);
 
+        // 7TV can list one emote id twice in a set under two alias names, but the unique index
+        // (ChannelId, SevenTvEmoteId) allows one row, so both entries would hit it and the second
+        // would rewrite the name back every pass: the channel would report a change (and fire
+        // channel.synced) on every resync. The first entry wins, so the stored name is stable and
+        // is also the only name chat matching can count; the other alias is not countable.
+        liveEmotes = liveEmotes.DistinctBy(e => e.Id).ToList();
         var liveIds = liveEmotes.Select(e => e.Id).ToHashSet();
         var changed = false;
         var now = DateTime.UtcNow;
