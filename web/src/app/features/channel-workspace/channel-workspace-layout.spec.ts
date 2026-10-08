@@ -334,7 +334,11 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
         inputLabel: 'I',
         confirm: 'C',
       },
-      errors: { leaveForbidden: 'FORBIDDEN', purgeOwnDataFailed: 'PURGE-FAILED' },
+      errors: {
+        leaveForbidden: 'FORBIDDEN',
+        purgeOwnDataFailed: 'PURGE-FAILED',
+        purgeOwnDataUnconfirmed: 'PURGE-UNCONFIRMED',
+      },
     },
     broadcasterLock: { liftConfirm: 'LOCK {{ date }}', liftConfirmLabel: 'LIFT' },
     errors: {
@@ -475,6 +479,48 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
 
     expect(text(fixture)).toContain('PURGE-FAILED');
     expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 500, 502, 504])(
+    'says the outcome is unclear when the deletion answers with status %i, since it may have committed',
+    (status) => {
+      const fixture = render({ canPurgeAsBroadcaster: true });
+      channelService.purgeOwnData.mockReturnValue(
+        throwError(() => new HttpErrorResponse({ status })),
+      );
+      button(fixture, 'Kanaldaten löschen')!.click();
+      dialogClosed.next(true);
+      fixture.detectChanges();
+
+      expect(text(fixture)).toContain('PURGE-UNCONFIRMED');
+      expect(text(fixture)).not.toContain('PURGE-FAILED');
+      expect(navigateByUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the “nothing changed” sentence for an uncoded 4xx refusal of the deletion', () => {
+    const fixture = render({ canPurgeAsBroadcaster: true });
+    channelService.purgeOwnData.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 403 })),
+    );
+    button(fixture, 'Kanaldaten löschen')!.click();
+    dialogClosed.next(true);
+    fixture.detectChanges();
+
+    expect(text(fixture)).toContain('PURGE-FAILED');
+  });
+
+  it('keeps the “nothing changed” sentence when only the summary failed with an unknown outcome', () => {
+    // The summary is a read: a dropped GET deletes nothing, so it is never "unclear".
+    const fixture = render({ canPurgeAsBroadcaster: true });
+    channelService.getDataSummary.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 0 })),
+    );
+    button(fixture, 'Kanaldaten löschen')!.click();
+    fixture.detectChanges();
+
+    expect(text(fixture)).toContain('PURGE-FAILED');
+    expect(text(fixture)).not.toContain('PURGE-UNCONFIRMED');
   });
 
   it('reactivation: an admin 409 asks first and retries with the flag once confirmed', () => {

@@ -285,7 +285,8 @@
       "leaveForbidden": "Nicht berechtigt, diesen Channel zu verlassen.",
       "leaveFailed": "Channel konnte nicht verlassen werden.",
       "rejoinFailed": "Bot konnte nicht reaktiviert werden.",
-      "purgeOwnDataFailed": "Die Kanaldaten konnten nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen."
+      "purgeOwnDataFailed": "Die Kanaldaten konnten nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen.",
+      "purgeOwnDataUnconfirmed": "Ob die Kanaldaten gelöscht wurden, ist unklar – die Antwort ist nicht angekommen. Lade die Seite neu: Ist der Kanal dann verschwunden, wurde er gelöscht."
     }
   },
   "broadcasterLock": {

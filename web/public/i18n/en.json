@@ -285,7 +285,8 @@
       "leaveForbidden": "Not allowed to leave this channel.",
       "leaveFailed": "Could not leave the channel.",
       "rejoinFailed": "Could not reactivate the bot.",
-      "purgeOwnDataFailed": "The channel data could not be deleted. Nothing has changed, you can try again."
+      "purgeOwnDataFailed": "The channel data could not be deleted. Nothing has changed, you can try again.",
+      "purgeOwnDataUnconfirmed": "It is unclear whether the channel data was deleted — the answer never arrived. Reload the page: if the channel is gone, it was deleted."
     }
   },
   "broadcasterLock": {

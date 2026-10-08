@@ -6,6 +6,7 @@ import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { AuthService } from '../../core/auth/auth.service';
 import { ChannelService } from '../../core/channels/channel.service';
+import { isUnknownOutcome } from '../../core/http/unknown-outcome';
 import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
@@ -275,7 +276,15 @@ export class ChannelWorkspaceLayout {
               this.purgeInProgress.set(false);
               this.router.navigateByUrl('/');
             },
-            error: (error: HttpErrorResponse) => this.failPurge(error),
+            error: (error: HttpErrorResponse) => {
+              // Only the deletion can have committed behind a lost answer; the summary is a read.
+              if (isUnknownOutcome(error.status)) {
+                this.purgeInProgress.set(false);
+                this.errorMessage.set('channelWorkspace.errors.purgeOwnDataUnconfirmed');
+                return;
+              }
+              this.failPurge(error);
+            },
           });
         });
       },
@@ -285,8 +294,9 @@ export class ChannelWorkspaceLayout {
 
   private failPurge(error: HttpErrorResponse): void {
     this.purgeInProgress.set(false);
-    // A coded answer (account_mismatch, channel_identity_unresolved, ...) says exactly what went
-    // wrong; anything else gets the action's own "nothing changed" sentence.
+    // A confirmed refusal, or a failed summary read (nothing was deleted then). A coded answer
+    // (account_mismatch, channel_identity_unresolved, ...) says exactly what went wrong; anything else
+    // gets the action's own "nothing changed" sentence.
     const key = apiErrorTranslationKey(error);
     this.errorMessage.set(
       key.startsWith('errors.api.') ? key : 'channelWorkspace.errors.purgeOwnDataFailed',
