@@ -420,6 +420,19 @@ Punkte 10–15 in Abschnitt 8 des Plans, vom Betreiber am 2026-10-08 entschieden
   Zeilen aus einem Helix-Ausfall beim Join. Die Obergrenze steht im DECISIONS-Eintrag; der bestehende
   Test `SevenTvSyncServiceTests.cs:~1194` wird in Plan T4 angepasst.
 
+- **E15 / Nachtrag R5 (Codex 2026-10-08):** Die „Obergrenze von rund einer Stunde" beschreibt den
+  **Abstand der Wiederholungsversuche** (Backoff-Deckel, Such-Budget-Lockout), keine Garantie, dass die
+  Zeile danach wieder zählt. Bekannte, von #245 unabhängige Grenze: Ein umbenannter Kanal behält eine
+  aktive Altlogin-Zeile mit der Twitch-ID, ein Join im Helix-Ausfall legt ein id-loses Neulogin-Duplikat
+  an, am Duplikat kann ein leeres Tag entstehen (`EmoteTagService.cs:194-219`), die Sync lehnt es ab
+  (`SevenTvSyncService.cs:646-652`) und der Identitätsabgleich verweigert die Zusammenführung wegen des
+  Tags (`ChannelIdentityService.cs:656-683`, `ChannelIdentityServiceTests.cs:355-383`) — die Zeile bleibt
+  kalt, bis jemand eingreift. Entscheidung: nur Dokumentation, kein neues Verhalten.
+- **Nachtrag R5 (Codex 2026-10-08), Deadlock Purge ↔ Sync:** Die Sync sperrt eine vorhandene
+  Beobachtungszeile vor `Channels`, der Purge umgekehrt (40P01). Entschieden: begrenzter Wiederholungs-
+  versuch des gesamten Purge-Vorgangs (max. 3, frischer Kontext), keine Umordnung der Sync-Sperren;
+  Plan T3.
+
 ---
 
 ## 5. Grenzfälle

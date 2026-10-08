@@ -44,6 +44,19 @@
 > gelten damit **unbedingt**; geänderte Stellen sind mit „(R4)" markiert. Das Konzept trägt dazu
 > einen „Nachtrag 2026-10-08" an E1, E2, E6, E8 und E15.
 
+> **R5 (Codex 2026-10-08):** Zwei Befunde des adversarialen Reviews (gpt-6.1-sol) der Revisionen
+> R3/R4, vom Betreiber am 2026-10-08 entschieden; geänderte Stellen sind mit „(R5)" markiert.
+> 1. *Medium, Deadlock Purge ↔ Sync (T3):* Die volle Sync sperrt eine vorhandene
+>    `EmoteSetLeaveObservation`-Zeile vor dem Channel-Update, der Purge sperrt zuerst `Channels` und
+>    kaskadiert dann in dieselbe Zeile — umgekehrte Sperrreihenfolge, Postgres 40P01. **Entscheidung:**
+>    begrenzter Wiederholungsversuch des **ganzen Purge-Vorgangs** bei 40P01 (max. 3 Versuche, frischer
+>    `DbContext`, kurze Jitter-Pause, danach der bestehende Fehlerpfad); die Sperrreihenfolge der
+>    Sync wird **nicht** umgebaut. R3s Aussage „kein Code nötig, `vanished row` deckt das ab" ist
+>    damit **korrigiert** (R3.2 h, T3).
+> 2. *Medium, „~1 h Obergrenze" (E15/D3):* trennt Retry-Abstand von Wiederherstellung. **Entscheidung:**
+>    nur Dokumentation, kein neues Verhalten (D3 bleibt A); der tag-blockierte Duplikatfall ist eine
+>    bestehende, von #245 unabhängige Grenze mit manuellem Eingriff (T4, DECISIONS).
+
 ---
 
 ## R3 — Drift gegen `origin/main` (2026-10-08)
@@ -177,6 +190,10 @@ erfassen müsste. E5-Hinweis unverändert anwendbar (`account-menu.ts:345-365`).
 Purge während einer laufenden Sync endet dort als „vanished row" (`DbUpdateConcurrencyException`/23503
 → `null`), der Re-Read nach dem Save räumt den Cache — der Broadcaster-Purge erbt das, T3 nennt es
 als Grenzfall, kein Code.
+**(R5, korrigiert)** Das gilt nur für den Teil „Zeile verschwindet", **nicht** für die Lock-Reihenfolge:
+Die volle Sync sperrt eine vorhandene Beobachtungszeile (`EmoteSetLeaveObservations.cs:30-36`,
+`SevenTvSyncService.cs:465-468,949`) vor dem Channel-Update, der Purge umgekehrt — Deadlock 40P01,
+den `IsRowVanishedFor`/`IsLeaveObservationOrphan` nicht abfangen. T3 bekommt dafür den Retry (siehe dort).
 
 **i) Zeitschranke E8.** Der bindende #69-Lauf hat am 08.10. stattgefunden und ist **nicht
 bestanden**; der Folgeentscheid (Wiederholung? Störfaktor Archiv) ist offen. E8 band den Deploy von
@@ -487,6 +504,17 @@ kippt bewusst und wird umbenannt, der Kommentar `:631-633` angepasst. **(R4)** D
 bis zu rund einer Stunde ohne Zählung (#165-Backoff `ResolutionBackoffMaxSeconds` plus
 Such-Budget-Lockout, beide Default 3600 s); betroffen sind nur Zeilen aus einem Helix-Ausfall beim
 Join. Die D3 = B-Rückfallvariante ist damit vom Tisch.
+
+**(R5, Codex 2026-10-08) Präzisierung — „~1 h" ist ein Retry-Abstand, keine Wiederherstellungsgarantie.**
+Die Obergrenze (Backoff-Deckel plus Such-Budget-Lockout) begrenzt, wie weit **Wiederholungsversuche**
+auseinanderliegen, nicht, dass die Zeile danach wieder zählt. Bekannte Ausnahme, von #245 unabhängig und
+**bestehend**: Ein umbenannter Kanal behält eine aktive Altlogin-Zeile, die die Twitch-ID hält; ein Join
+im Helix-Ausfall legt ein id-loses Neulogin-Duplikat an; am Duplikat kann ein leeres Tag entstehen
+(`EmoteTagService.cs:194-219`); die Sync lehnt das Duplikat ab (`SevenTvSyncService.cs:646-652`) und der
+Identitätsabgleich verweigert die Zusammenführung wegen des Tags (`ChannelIdentityService.cs:656-683`,
+Test `ChannelIdentityServiceTests.cs:355-383`). Die Zeile bleibt kalt, bis ein Mensch eingreift
+(Tag entfernen bzw. Duplikat löschen/zusammenführen). Kein neues Verhalten in #245; der DECISIONS-
+Eintrag formuliert „Retry-Abstand höchstens rund eine Stunde" und nennt diese Grenze als bekannt.
 
 **P17 (R2, F6) — LEAVE erst nach dem Commit, auch im Reconcile.** `ChannelDeactivation` wird in zwei
 Schritte geteilt: `Stage(db, observationService, channel, actor, reason)` (**(R3)** Beobachtungsintervall
@@ -810,6 +838,33 @@ für die Sync keine Zeilensperre; sein Save scheitert nach dem Purge als „vani
 `ChannelSyncGate` nicht (anderer Prozess) — dieselbe akzeptierte Grenze wie Admin-Purge und Leave.
 Kein Code, ein Satz im DECISIONS-Absatz.
 
+**(R5, Codex 2026-10-08) Deadlock-Retry — korrigiert die R3-Aussage „kein Code nötig".** Die volle Sync
+sperrt eine bereits vorhandene `EmoteSetLeaveObservation`-Zeile (`EmoteSetLeaveObservations.cs:30-36`,
+`SevenTvSyncService.cs:465-468,949`), bevor sie `Channels` aktualisiert; der Purge sperrt `Channels`
+(Schritt 4) und kaskadiert danach in dieselbe Beobachtungszeile. Umgekehrte Reihenfolge, also Postgres
+`40P01`. Wird der Purge zum Opfer, rollen Löschung und Sperrzeile zurück und der Request scheitert. Die
+vorhandene Sync-Wiederherstellung (`SevenTvSyncService.cs:394-400,1077-1094`) kennt nur
+„Zeile verschwunden"/FK-Fehler, keine Deadlocks. **Entscheidung des Betreibers:** nicht die Sync
+umordnen, sondern den Purge wiederholbar machen.
+- *Vertrag:* Schritte 4–6 (Transaktion bis Commit) laufen als **eine** Wiederholungseinheit. Bei
+  `PostgresException` mit SQLSTATE `40P01` (auch als Inner Exception eines `DbUpdateException`) höchstens
+  **3 Versuche** insgesamt, dazwischen eine kurze, gejitterte Pause (Größenordnung zweistellige bis
+  niedrige dreistellige Millisekunden). **Jeder Versuch beginnt mit frischem `DbContext` bzw. leerem
+  Change-Tracker** — getrackte Entitäten, Audit-Einträge und die gestagte Sperre des gescheiterten
+  Versuchs dürfen nicht überleben; Schritte 1–3 (Identität, Helix) laufen nicht erneut. Nach Ausschöpfen
+  der Versuche gilt der **bestehende Fehlerpfad** (Ausnahme bis zum Endpoint, kein neuer Ergebniswert,
+  kein neuer Error-Code). Der LEAVE (Schritt 7) läuft nur nach dem erfolgreichen Versuch. Andere
+  Fehler werden nicht wiederholt. Ein Versuch, der nach dem Rollback die Zeile nicht mehr findet,
+  endet regulär (`NotFound`/Nachprüfung), nicht als Fehler.
+- *Sync als Opfer:* Wird die Sync zum Deadlock-Opfer, wirft ihr `SaveChanges` einen `DbUpdateException`
+  mit `40P01`; `IsRowVanishedFor` (nur Konkurrenz-/23503-Form) und `IsLeaveObservationOrphan` greifen
+  **nicht**, die Ausnahme verlässt `SyncChannelAsync`. Befund im Ist-Stand: der periodische Resync
+  (`SevenTvPeriodicResyncWorker.cs:99-103`) fängt sie je Kanal ab (Warnung, nächster 60-s-Tick versucht
+  es neu), die Schleife stürzt also nicht. **T3-Prüfpunkt:** die übrigen Aufrufer von `SyncChannelAsync`
+  (EventAPI-Worker, Join-Kommando, `WarmChannelAsync`, Boot-Recovery) auf dasselbe Verhalten prüfen —
+  eine Ausnahme darf dort keinen Loop beenden; findet sich ein Aufrufer ohne Fang, wird das im Plan
+  nachgetragen und als eigener Befund an den Orchestrator gemeldet (kein stiller Umbau der Sync).
+
 **Vertrag — Ablauf von `PurgeByBroadcasterAsync` (Reihenfolge bindend):**
 1. Normalisieren; Zeile unter dem Routennamen **ungesperrt** lesen. Keine → `NotFound`.
 2. Trägt sie eine ID: ≠ `actor.TwitchUserId` → `NotBroadcaster` (kein Helix). Sonst „bewiesen".
@@ -865,18 +920,31 @@ Autorisierung im Service (der Filter macht sie).
 11. `GetDataSummaryAsync`: Zahlen stimmen (R4: inkl. `TagCount`, Punkt 10 = ja); ohne Zeile `null`.
 12. Bestehende Purge-Tests (`ChannelRetentionPurgeTests`, Admin-Purge in `ChannelServiceTests`)
     bleiben unverändert grün (Helfer-Refactoring ohne Verhaltensänderung).
+13. **(R5) Deadlock-Retry, deterministisch gegen echtes PostgreSQL** (Testcontainers, `Integration/`):
+    Ein Kanal mit vorhandener `EmoteSetLeaveObservation`. Eine zweite Verbindung/Transaktion hält die
+    Zeilensperre auf der Beobachtungszeile wie die Sync (`SELECT … FOR UPDATE`/Update) und will danach
+    `Channels` aktualisieren; der Purge läuft dazwischen und sperrt `Channels`. Mit Synchronisation
+    über Latches/Advisory-Locks statt Schlafen wird der Deadlock reproduzierbar erzwungen; die Test-
+    Transaktion wird so geführt, dass **der Purge** das Opfer ist (z. B. die Gegenseite zuerst ihre
+    zweite Sperre anfordern lassen, `deadlock_timeout` im Test klein setzen). Erwartung: der erste
+    Purge-Versuch bricht mit 40P01 ab, der Wiederholungsversuch (nach Freigabe der Gegenseite) gelingt —
+    Kanal weg, **Sperrzeile vorhanden**, genau ein Audit-Eintrag je Zeile, LEAVE einmal. Mindestanspruch,
+    falls die Opferwahl nicht deterministisch zu erzwingen ist: ein injizierter 40P01 (Hook um den
+    Versuch) belegt Wiederholung mit frischem Tracker. Dazu: (13b) dauerhaft 40P01 → nach 3 Versuchen
+    der bestehende Fehlerpfad, nichts geschrieben, kein LEAVE; (13c) anderer Fehler → keine Wiederholung.
 
 **Schritte:**
 - [ ] Interface + Core-Typen mit Doku.
 - [ ] Helfer-Refactoring der drei Purge-Pfade, neue Methoden.
-- [ ] Tests 1–12.
+- [ ] Tests 1–12 und (R5) 13/13b/13c; Deadlock-Retry laut Vertrag oben.
 - [ ] DECISIONS: Absätze „purge path" (Live-Auflösung, Zielmenge, Nachweisgrenze als benannte
       Grenze, Sperre vor Commit, LEAVE nach Commit — Abweichung von `PurgeAsync` und warum) im
       T1-Eintrag; `**Betrifft:**` ergänzen.
 - [ ] Gates Backend.
 - [ ] Commit: `feat(infrastructure): let a broadcaster purge their own channel's data`.
 
-**Abnahme:** Tests grün; `grep -n "AddAuditEntry" ChannelService.cs` zeigt für `channel.purge`
+**Abnahme:** Tests grün (R5: inkl. Deadlock-Test 13; Prüfpunkt „Sync als Opfer" abgearbeitet und im
+Bericht benannt); `grep -n "AddAuditEntry" ChannelService.cs` zeigt für `channel.purge`
 genau **eine** Stelle (den Helfer); `dotnet build EmotePurge.slnx` kompiliert alle drei
 Testprojekte (R2, P18).
 
@@ -1092,6 +1160,13 @@ und Kommentar `:631-633` folgen); der DECISIONS-Absatz nennt die neue Obergrenze
 für eine id-lose Zeile, #165-Backoff plus Such-Budget, Defaults 3600 s). (3) Konstruktor-Welle und
 Testumfang wachsen entsprechend (`EmoteService`-Konstruktor bekommt den Sperr-Service bzw. den
 Batch-Lookup; Konstruktionsstellen in den `EmoteServiceTests` nachziehen).
+
+(R5, Codex 2026-10-08) **Wirkung auf T4:** Der DECISIONS-Wortlaut zu D3/E15 sagt „Retry-Abstand ≤ ~1 h",
+nicht „Wiederherstellung in ≤ 1 h", und nennt den tag-blockierten Duplikatfall (siehe Abschnitt 1, D3) als
+bekannte, von #245 unabhängige Grenze mit manuellem Eingriff. **Optional** (nicht abnahmerelevant): ein Test
+in `ChannelIdentityServiceTests`/`SevenTvSyncServiceTests`, der das bestehende Verhalten festschreibt
+(Duplikat mit leerem Tag wird weder gesynct noch zusammengeführt) — nur, wenn er ohne Produktivcode-
+Änderung auskommt.
 
 ### T5 — Api: Filter, Endpoints, Error-Codes, Join-Mapping, Audit-Log-404 (`sonnet`)
 
@@ -1634,3 +1709,13 @@ der leichten Variante umgesetzt, nicht mit der Spalte — die Spalte bleibt Folg
 „unveränderliche Digests" wird als D4-Option B geführt, gewählt ist der Runbook-Weg mit
 Log-Beleg, weil er keinen Deploy-Reflex ändert und denselben Nachweis liefert. Alle vier
 Empfehlungen hat der Betreiber am 2026-10-03 bestätigt (Abschnitt 9).
+
+## 11. Codex-Review R3/R4 (Plan) 2026-10-08
+
+Adversariales Review (gpt-6.1-sol) der Revisionen R3/R4, zwei Befunde der Stufe medium, beide gegen den
+Code geprüft; Einarbeitung als **R5** (Kopf dieses Plans).
+
+| # | Finding (kurz) | Auflösung |
+|---|---|---|
+| 1 (medium) | Purge ↔ volle Sync sperren Beobachtungszeile/`Channels` in umgekehrter Reihenfolge → 40P01; „vanished row" deckt das nicht ab | Betreiber: Wiederholung des ganzen Purge-Vorgangs bei 40P01 (max. 3, frischer Kontext, Jitter-Pause), Sync nicht umgebaut; T3 Vertrag + Test 13; Sync-als-Opfer als Prüfpunkt |
+| 2 (medium) | „~1 h Obergrenze" gilt für Retry-Abstand, nicht für Wiederherstellung; tag-blockiertes Duplikat bleibt kalt | Betreiber: nur Dokumentation; Plan Abschnitt 1 (D3), T4, DECISIONS, Konzept 4.3; optionaler Pin-Test in T4 |
