@@ -25,7 +25,8 @@
       "pending": "Deleting account …",
       "failed": "Your account could not be deleted. Nothing has changed, you can try again.",
       "unconfirmed": "We couldn’t confirm whether your account was deleted – the connection was interrupted. Reload the page: if you’re still signed in, nothing was deleted and you can try again. If you’re signed out, we can’t tell from here – please don’t sign in to check, as that would create a new account; contact us via the contact form and we’ll confirm.",
-      "mismatch": "You’re signed in as a different account in another tab – nothing was deleted. Reload the page to continue with the account that is actually signed in."
+      "mismatch": "You’re signed in as a different account in another tab – nothing was deleted. Reload the page to continue with the account that is actually signed in.",
+      "channelHint": "The data of your channel “{{ login }}” is kept and keeps being counted. If you want it deleted, do that first in your channel’s workspace."
     }
   },
   "shell": {
@@ -249,6 +250,13 @@
   "channelWorkspace": {
     "leaveChannel": "Leave channel",
     "rejoinChannel": "Reactivate bot",
+    "purgeOwnData": "Delete channel data",
+    "purgeOwnDataDialog": {
+      "title": "Delete channel data irreversibly",
+      "message": "All data of the channel #{{ channelName }} will be deleted:\n• Emotes: {{ emotes }}\n• Votings: {{ voteSessions }}\n• Live days: {{ liveDays }}\n• Your mod team’s tags: {{ tags }}\n\nThis cannot be undone. What is deleted is the channel under this name together with everything attached to it. A legacy row from before a rename that can no longer be proven to be yours is removed automatically 180 days after its deactivation. Audit-log entries are kept for 12 months, backups for up to 60 days. Afterwards only you can add the channel back, not your moderators.",
+      "inputLabel": "Enter the channel name to confirm",
+      "confirm": "Delete channel data permanently"
+    },
     "botInactiveNotice": "The bot is currently inactive for this channel and is not collecting new chat data. Everything collected so far is kept.",
     "leaveConfirm": "Really leave channel #{{ channelName }}? The bot leaves the chat and stops collecting new data. Emotes, usage stats, and votes collected so far are kept and will be there again if you rejoin.",
     "tabs": {
@@ -276,8 +284,13 @@
     "errors": {
       "leaveForbidden": "Not allowed to leave this channel.",
       "leaveFailed": "Could not leave the channel.",
-      "rejoinFailed": "Could not reactivate the bot."
+      "rejoinFailed": "Could not reactivate the bot.",
+      "purgeOwnDataFailed": "The channel data could not be deleted. Nothing has changed, you can try again."
     }
+  },
+  "broadcasterLock": {
+    "liftConfirm": "The streamer deleted and locked this channel on {{ date }}. Add it anyway?",
+    "liftConfirmLabel": "Add anyway"
   },
   "admin": {
     "title": "Admin area",

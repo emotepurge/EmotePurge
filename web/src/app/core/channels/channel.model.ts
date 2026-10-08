@@ -19,6 +19,20 @@ export interface ChannelPermissions {
   isBotActive: boolean;
   /** Server flag `Tags:RunsEnabled`: the tag play-in and removal runs are released (T-C). */
   tagRunsEnabled: boolean;
+  /** True only for the channel's own broadcaster (matched by Twitch id) on an existing row. */
+  canPurgeAsBroadcaster: boolean;
+}
+
+/**
+ * What a broadcaster self-purge would remove, from GET /api/channels/{c}/data-summary. Shown in the
+ * confirmation dialog so the number is the actual one, not a guess.
+ */
+export interface ChannelDataSummary {
+  emoteCount: number;
+  voteSessionCount: number;
+  liveDayCount: number;
+  /** Tags the mod team created (#201); the purge removes them with their placements. */
+  tagCount: number;
 }
 
 /**

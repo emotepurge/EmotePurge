@@ -23,6 +23,7 @@ const PERMISSIONS: ChannelPermissions = {
   isTracked: true,
   isBotActive: true,
   tagRunsEnabled: false,
+  canPurgeAsBroadcaster: false,
 };
 
 describe('usageStatsAccessGuard', () => {

@@ -25,7 +25,8 @@
       "pending": "Konto wird gelöscht …",
       "failed": "Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen.",
       "unconfirmed": "Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde – die Verbindung wurde unterbrochen. Lade die Seite neu: Bist du danach weiterhin angemeldet, wurde nichts gelöscht und du kannst es erneut versuchen. Bist du abgemeldet, können wir das von hier aus nicht erkennen – melde dich bitte nicht an, um nachzusehen, denn dabei würde ein neues Konto angelegt; schreib uns über das Kontaktformular, wir bestätigen es dir.",
-      "mismatch": "Du bist in einem anderen Tab mit einem anderen Konto angemeldet – es wurde nichts gelöscht. Lade die Seite neu, um mit dem Konto weiterzumachen, das tatsächlich angemeldet ist."
+      "mismatch": "Du bist in einem anderen Tab mit einem anderen Konto angemeldet – es wurde nichts gelöscht. Lade die Seite neu, um mit dem Konto weiterzumachen, das tatsächlich angemeldet ist.",
+      "channelHint": "Die Daten deines Kanals „{{ login }}“ bleiben erhalten und werden weiter gezählt. Wenn du sie löschen willst, tu das zuerst im Workspace deines Kanals."
     }
   },
   "shell": {
@@ -249,6 +250,13 @@
   "channelWorkspace": {
     "leaveChannel": "Channel verlassen",
     "rejoinChannel": "Bot reaktivieren",
+    "purgeOwnData": "Kanaldaten löschen",
+    "purgeOwnDataDialog": {
+      "title": "Kanaldaten unwiderruflich löschen",
+      "message": "Alle Daten des Kanals #{{ channelName }} werden gelöscht:\n• Emotes: {{ emotes }}\n• Abstimmungen: {{ voteSessions }}\n• Live-Tage: {{ liveDays }}\n• Tags deines Mod-Teams: {{ tags }}\n\nDas lässt sich nicht rückgängig machen. Gelöscht wird der Kanal unter diesem Namen samt allem, was daran hängt. Eine Altzeile von vor einer Umbenennung, die sich nicht mehr als deine nachweisen lässt, wird 180 Tage nach ihrer Deaktivierung automatisch entfernt. Audit-Einträge bleiben 12 Monate erhalten, Backups bis zu 60 Tage. Danach kann nur du selbst den Kanal wieder hinzufügen, deine Moderatoren nicht.",
+      "inputLabel": "Zur Bestätigung den Kanalnamen eingeben",
+      "confirm": "Kanaldaten endgültig löschen"
+    },
     "botInactiveNotice": "Der Bot ist für diesen Channel derzeit inaktiv und erfasst keine neuen Chat-Daten. Bereits erfasste Daten bleiben erhalten.",
     "leaveConfirm": "Channel #{{ channelName }} wirklich verlassen? Der Bot verlässt den Chat und erfasst keine neuen Daten mehr. Bereits erfasste Emotes, Nutzungsstatistiken und Abstimmungen bleiben erhalten und sind nach einem erneuten Beitritt wieder da.",
     "tabs": {
@@ -276,8 +284,13 @@
     "errors": {
       "leaveForbidden": "Nicht berechtigt, diesen Channel zu verlassen.",
       "leaveFailed": "Channel konnte nicht verlassen werden.",
-      "rejoinFailed": "Bot konnte nicht reaktiviert werden."
+      "rejoinFailed": "Bot konnte nicht reaktiviert werden.",
+      "purgeOwnDataFailed": "Die Kanaldaten konnten nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen."
     }
+  },
+  "broadcasterLock": {
+    "liftConfirm": "Der Streamer hat diesen Kanal am {{ date }} gelöscht und gesperrt. Trotzdem hinzufügen?",
+    "liftConfirmLabel": "Trotzdem hinzufügen"
   },
   "admin": {
     "title": "Admin-Bereich",
