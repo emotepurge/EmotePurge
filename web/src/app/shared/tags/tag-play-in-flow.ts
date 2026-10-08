@@ -344,7 +344,7 @@ export function prepareTagRun(
         emoteSetId: frozenSetId,
         targetOwnerTwitchId: ownerTwitchChannelId,
       })
-      .pipe(takeUntilDestroyed(deps.destroyRef))
+      .pipe(timeoutReportAttempt(), takeUntilDestroyed(deps.destroyRef))
       .subscribe({
         next: () => {
           if (preparation.beforeLiveRead === undefined) {
@@ -368,7 +368,9 @@ export function prepareTagRun(
 
   deps.tagService
     .listEntries(channelName, tag.id, frozenSetId)
-    .pipe(takeUntilDestroyed(deps.destroyRef))
+    // Bounded like the reports and live reads: a request that never answers ends in the error
+    // notice below instead of holding `pending` (and both buttons) forever.
+    .pipe(timeoutReportAttempt(), takeUntilDestroyed(deps.destroyRef))
     .subscribe({
       next: (entries) => {
         // Set freeze (E29): the entries must describe the very set that was frozen, and it must

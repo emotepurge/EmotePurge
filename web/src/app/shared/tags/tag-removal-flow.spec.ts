@@ -395,6 +395,31 @@ describe('startTagRemovalFlow', () => {
 
   afterEach(() => vi.restoreAllMocks());
 
+  describe('requests that never answer', () => {
+    it.each([
+      ['entry read', { entries: NEVER }, 'tags.errors.entriesUnavailable'],
+      ['registration', { registration: () => NEVER }, 'tags.errors.registrationFailed'],
+    ] as const)(
+      'releases the lock with a retryable notice when the %s never answers',
+      (_, options, key) => {
+        vi.useFakeTimers();
+        try {
+          const harness = setup(options);
+          harness.run();
+          vi.advanceTimersByTime(REPORT_TIMEOUT_MS - 1);
+          expect(harness.pending()).toBe(true);
+
+          vi.advanceTimersByTime(1);
+          expect(harness.pending()).toBe(false);
+          expect(harness.notice()?.key).toBe(key);
+          expect(harness.notice()?.retry).toBeDefined();
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+  });
+
   describe('the steps before the confirmation', () => {
     it.each([
       ['answers for another set', { ...ENTRIES, emoteSetId: 'set-new' }],
