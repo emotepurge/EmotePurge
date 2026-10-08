@@ -682,6 +682,7 @@
       "liveLegend": "Green: the stream was live"
     },
     "drilldown": {
+      "openOnSevenTv": "Open on 7TV",
       "open": "Show details for {{name}}",
       "openWithCount": "Show details for {{name}} ({{count}}×)",
       "range": "{{from}} to {{to}}",
@@ -938,6 +939,7 @@
   "common": {
     "cancel": "Cancel",
     "close": "Close",
+    "opensInNewTab": "(opens in a new tab)",
     "loading": "Loading …",
     "typedConfirmHint": "Type “{{text}}” exactly to continue.",
     "andMore": {

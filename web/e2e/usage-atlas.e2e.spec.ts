@@ -574,6 +574,12 @@ test.describe('emote atlas', () => {
     const dialog = page.getByRole('dialog');
     await expect(dialog).toContainText('Sadge');
 
+    // The way out to 7TV: a real link to the emote's page (Sadge is the sixth mock row), in a new tab.
+    const sevenTvLink = dialog.getByRole('link', { name: /^Auf 7TV öffnen/ });
+    await expect(sevenTvLink).toHaveAttribute('href', 'https://7tv.app/emotes/7tv-6');
+    await expect(sevenTvLink).toHaveAttribute('target', '_blank');
+    await expect(sevenTvLink).toHaveAccessibleName('Auf 7TV öffnen (öffnet in neuem Tab)');
+
     const points = await dialog.locator('polyline').getAttribute('points');
     const firstX = Number(points!.split(' ')[0].split(',')[0]);
     expect(firstX).toBeGreaterThan(0);

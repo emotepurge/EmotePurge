@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { animatedEmoteUrl, emoteStillUrl, isAnimatedEmoteUrl } from './emote-url';
+import { animatedEmoteUrl, emotePageUrl, emoteStillUrl, isAnimatedEmoteUrl } from './emote-url';
 
 describe('animatedEmoteUrl', () => {
   it('swaps the stored 4x still for the 2x animation', () => {
@@ -67,5 +67,13 @@ describe('emoteStillUrl', () => {
 
     expect(url).toBe('https://cdn.7tv.app/emote/01F6MZGCNG000255K4X1K7NTHR/4x.webp');
     expect(isAnimatedEmoteUrl(url)).toBe(false);
+  });
+});
+
+describe('emotePageUrl', () => {
+  it("builds the emote's page on 7TV from its object id", () => {
+    expect(emotePageUrl('01FFWH9WV80000JT8GHDKHJNZC')).toBe(
+      'https://7tv.app/emotes/01FFWH9WV80000JT8GHDKHJNZC',
+    );
   });
 });

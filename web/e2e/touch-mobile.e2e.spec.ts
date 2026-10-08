@@ -279,6 +279,10 @@ test.describe('touch: reading and voting only', () => {
     await sprite.tap();
 
     await expect(page.locator('#app-dialog-title')).toHaveText('catJAM');
+    // The ballot passes its row's 7TV id on as well, so the sheet links out to the emote's page.
+    await expect(
+      page.getByRole('dialog').getByRole('link', { name: /^Auf 7TV öffnen/ }),
+    ).toHaveAttribute('href', 'https://7tv.app/emotes/7tv-e1');
   });
 
   // The create entry point in the page header survives on a coarse pointer only as a sentence, not

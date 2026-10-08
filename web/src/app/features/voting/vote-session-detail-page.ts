@@ -835,6 +835,7 @@ export class VoteSessionDetailPage {
       from: results.startedAt.slice(0, 10),
       to: (results.endedAt ?? new Date().toISOString()).slice(0, 10),
       emoteId: emote.emoteId,
+      sevenTvEmoteId: emote.sevenTvEmoteId,
       emoteName: emote.emoteName,
       imageUrl: emote.imageUrl,
       emoteSetId: results.emoteSetId ?? ALL_EMOTE_SETS,

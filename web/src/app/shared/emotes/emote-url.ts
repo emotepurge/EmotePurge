@@ -56,3 +56,12 @@ export function isAnimatedEmoteUrl(url: string): boolean {
 export function emoteStillUrl(sevenTvEmoteId: string, animated: boolean): string {
   return `https://cdn.7tv.app/emote/${sevenTvEmoteId}${animated ? STILL_SUFFIX : '/4x.webp'}`;
 }
+
+/**
+ * The emote's own page on 7TV — the one place the frontend knows that url shape. The id is the
+ * 7TV object id (`Emote.SevenTvEmoteId`), never the internal guid, and the server only ever stores
+ * ids matching `^[0-9A-Za-z]{1,32}$`, so it needs no escaping.
+ */
+export function emotePageUrl(sevenTvEmoteId: string): string {
+  return `https://7tv.app/emotes/${sevenTvEmoteId}`;
+}

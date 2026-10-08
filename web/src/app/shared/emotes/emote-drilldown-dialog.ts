@@ -16,6 +16,7 @@ import { DialogShell } from '../ui/dialog-shell';
 import { NoticeBanner } from '../ui/notice-banner';
 import { UsageTrend, daysInSet, usageTrend } from './emote-context';
 import { EmoteSpriteAnimated } from './emote-sprite-animated';
+import { emotePageUrl } from './emote-url';
 import { UsageSparkline } from './usage-sparkline';
 import {
   SparklinePoint,
@@ -36,6 +37,8 @@ export interface EmoteDrilldownData {
   from: string;
   to: string;
   emoteId: string;
+  /** The 7TV object id, for the link to the emote's page on 7TV. */
+  sevenTvEmoteId: string;
   emoteName: string;
   imageUrl: string;
   /**
@@ -247,9 +250,22 @@ export interface EmoteDrilldownData {
         </div>
       }
 
+      <!-- Before the close button in the DOM so the visual and the tab order agree; mr-auto sends it
+           to the row's start. Close keeps the initial focus explicitly (§7: the harmless control). -->
+      <a
+        dialog-actions
+        class="mr-auto inline-flex min-h-11 items-center text-sm text-accent-fg underline underline-offset-4 transition hover:text-fg"
+        target="_blank"
+        rel="noopener noreferrer"
+        [href]="pageUrl"
+      >
+        {{ 'usageStats.drilldown.openOnSevenTv' | transloco }}<span aria-hidden="true"> ↗</span
+        ><span class="sr-only"> {{ 'common.opensInNewTab' | transloco }}</span>
+      </a>
       <button
         dialog-actions
         type="button"
+        cdkFocusInitial
         appButton="neutral"
         buttonSize="lg"
         (click)="dialogRef.close()"
@@ -264,6 +280,8 @@ export class EmoteDrilldownDialog {
   protected readonly dialogRef = inject<DialogRef<void>>(DialogRef);
   private readonly usageStatService = inject(UsageStatService);
   private readonly languageService = inject(LanguageService);
+
+  protected readonly pageUrl = emotePageUrl(this.data.sevenTvEmoteId);
 
   protected readonly series = signal<EmoteUsageSeries | null>(null);
   protected readonly errorKey = signal<string | null>(null);
