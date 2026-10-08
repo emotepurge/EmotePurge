@@ -3,11 +3,13 @@ using System.Globalization;
 using System.Text.Json;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using NSubstitute;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
@@ -2596,9 +2598,224 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         await fixture.AssertPlacementInvariantsAsync(channel.Id);
     }
 
+    // ---- Assigning from a set other than the active one (#338) -----------------------------------
+
+    [Fact]
+    public async Task AddFromANonActiveSet_WritesAliasAndImageFromThatSetsRead()
+    {
+        var channel = await SeedChannelAsync("tagforeignwrite");
+        var tag = await SeedTagAsync(channel.Id, "Game");
+        var source = new ForeignSource(OtherSetId, [Row("EM1", "AliasInOther", "https://cdn.7tv.app/emote/EM1/2x.webp")]);
+
+        var result = await source.AddAsync(fixture.CreateDbContext, "tagforeignwrite", tag.Id, ["EM1"]);
+
+        Assert.Equal((EmoteTagAddEntriesStatus.Ok, 1, 0), (result.Status, result.AddedCount, result.AlreadyTaggedCount));
+        await using var verify = fixture.CreateDbContext();
+        var entry = await verify.EmoteTagEntries.SingleAsync(e => e.TagId == tag.Id);
+        Assert.Equal(("EM1", "AliasInOther", "https://cdn.7tv.app/emote/EM1/2x.webp"), (entry.SevenTvEmoteId, entry.Alias, entry.ImageUrl));
+    }
+
+    [Fact]
+    public async Task AddFromANonActiveSet_AnEmoteNotInThatSet_IsSkipped_EvenIfTheActiveSetHasIt()
+    {
+        var channel = await SeedChannelAsync("tagforeignskip");
+        var tag = await SeedTagAsync(channel.Id, "Game");
+        var inActive = await SeedEmoteAsync(channel.Id, "OnlyInActive");
+        var source = new ForeignSource(OtherSetId, [Row("EM1", "InOther", "https://img/1")]);
+
+        var result = await source.AddAsync(fixture.CreateDbContext, "tagforeignskip", tag.Id, ["EM1", inActive.SevenTvEmoteId]);
+
+        Assert.Equal((EmoteTagAddEntriesStatus.Ok, 1), (result.Status, result.AddedCount));
+        Assert.Equal([inActive.SevenTvEmoteId], result.SkippedNotInSetIds);
+    }
+
+    [Fact]
+    public async Task AddFromANonActiveSet_AnAlreadyTaggedEmote_KeepsItsStoredAlias_AndIsCounted()
+    {
+        var channel = await SeedChannelAsync("tagforeignkeep");
+        var tag = await SeedTagAsync(channel.Id, "Game");
+        await SeedEntryAsync(tag.Id, "EM1", "FirstAlias", T0);
+        var source = new ForeignSource(OtherSetId, [Row("EM1", "SecondAlias", "https://img/1")]);
+
+        var result = await source.AddAsync(fixture.CreateDbContext, "tagforeignkeep", tag.Id, ["EM1"]);
+
+        Assert.Equal((EmoteTagAddEntriesStatus.Ok, 0, 1), (result.Status, result.AddedCount, result.AlreadyTaggedCount));
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal("FirstAlias", (await verify.EmoteTagEntries.SingleAsync(e => e.TagId == tag.Id)).Alias);
+    }
+
+    [Theory]
+    [InlineData(TrackedEmoteSetMembership.NotMember, EmoteTagAddEntriesStatus.EmoteSetNotFound)]
+    [InlineData(TrackedEmoteSetMembership.SevenTvUnavailable, EmoteTagAddEntriesStatus.SevenTvUnavailable)]
+    [InlineData(TrackedEmoteSetMembership.ChannelNotFound, EmoteTagAddEntriesStatus.ChannelNotFound)]
+    public async Task AddFromANonActiveSet_WithoutMembershipProof_WritesNothing_AndNeverReadsTheSet(
+        TrackedEmoteSetMembership membership, EmoteTagAddEntriesStatus expected)
+    {
+        var name = $"tagforeignmember{(int)membership}";
+        var channel = await SeedChannelAsync(name);
+        var tag = await SeedTagAsync(channel.Id, "Game");
+        var source = new ForeignSource(OtherSetId, [Row("EM1", "A", "https://img/1")]) { Membership = membership };
+
+        var result = await source.AddAsync(fixture.CreateDbContext, name, tag.Id, ["EM1"]);
+
+        Assert.Equal(expected, result.Status);
+        Assert.DoesNotContain("read", source.Events);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagEntries.AnyAsync(e => e.TagId == tag.Id));
+    }
+
+    [Theory]
+    [InlineData(ForeignEmoteSetLookupStatus.SevenTvRateLimited, false, EmoteTagAddEntriesStatus.SevenTvUnavailable)]
+    [InlineData(ForeignEmoteSetLookupStatus.Ok, true, EmoteTagAddEntriesStatus.SourceSetIncomplete)]
+    public async Task AddFromANonActiveSet_WithAFailedOrTruncatedRead_WritesNothing(
+        ForeignEmoteSetLookupStatus readStatus, bool truncated, EmoteTagAddEntriesStatus expected)
+    {
+        var name = $"tagforeignread{(int)readStatus}{(truncated ? "t" : "f")}";
+        var channel = await SeedChannelAsync(name);
+        var tag = await SeedTagAsync(channel.Id, "Game");
+        var source = new ForeignSource(OtherSetId, [Row("EM1", "A", "https://img/1")]) { ReadStatus = readStatus, Truncated = truncated };
+
+        var result = await source.AddAsync(fixture.CreateDbContext, name, tag.Id, ["EM1"]);
+
+        Assert.Equal(expected, result.Status);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagEntries.AnyAsync(e => e.TagId == tag.Id));
+    }
+
+    [Fact]
+    public async Task AddFromANonActiveSet_MembershipAndReadHappenBeforeTheTransaction_NeverUnderTheChannelLock()
+    {
+        var channel = await SeedChannelAsync("tagforeignorder");
+        var tag = await SeedTagAsync(channel.Id, "Game");
+        var source = new ForeignSource(OtherSetId, [Row("EM1", "A", "https://img/1")]);
+
+        var result = await source.AddAsync(fixture.CreateDbContext, "tagforeignorder", tag.Id, ["EM1"]);
+
+        Assert.Equal(EmoteTagAddEntriesStatus.Ok, result.Status);
+        // Both calls ran in this order, each with no transaction (hence no channel row lock) open.
+        Assert.Equal(["membership:no-transaction", "read:no-transaction"], source.Events);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(ActiveSetId)]
+    public async Task AddWithAbsentBlankOrActiveSetId_TakesTheEmotesRowPath_WithoutAnySetRead(string? emoteSetId)
+    {
+        var name = $"tagactivepath{(emoteSetId ?? "null").Length}";
+        var channel = await SeedChannelAsync(name);
+        var tag = await SeedTagAsync(channel.Id, "Funny");
+        var kekw = await SeedEmoteAsync(channel.Id, "KEKW");
+        var archived = await SeedEmoteAsync(channel.Id, "Gone", isArchived: true);
+        var source = new ForeignSource(OtherSetId, []);
+
+        var result = await source.AddAsync(fixture.CreateDbContext, name, tag.Id, [kekw.SevenTvEmoteId, archived.SevenTvEmoteId], emoteSetId);
+
+        Assert.Equal((EmoteTagAddEntriesStatus.Ok, 1), (result.Status, result.AddedCount));
+        Assert.Equal([archived.SevenTvEmoteId], result.SkippedNotInSetIds);
+        Assert.Empty(source.Events);
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal("KEKW", (await verify.EmoteTagEntries.SingleAsync(e => e.TagId == tag.Id)).Alias);
+    }
+
+    [Fact]
+    public async Task AddWithAnExplicitActiveSetIdThatSwitchedBeforeTheLock_IsSourceSetChanged_AndWritesNothing()
+    {
+        var channel = await SeedChannelAsync("tagswitchrace");
+        var tag = await SeedTagAsync(channel.Id, "Funny");
+        var kekw = await SeedEmoteAsync(channel.Id, "KEKW");
+        var source = new ForeignSource(OtherSetId, []);
+
+        // The id equals ActiveEmoteSetId at the unlocked read; the set is switched in the seam before the locked one.
+        var result = await source.AddAsync(
+            fixture.CreateDbContext, "tagswitchrace", tag.Id, [kekw.SevenTvEmoteId], ActiveSetId,
+            beforeLock: async () =>
+            {
+                await using var other = fixture.CreateDbContext();
+                await other.Channels.Where(c => c.Id == channel.Id)
+                    .ExecuteUpdateAsync(c => c.SetProperty(x => x.ActiveEmoteSetId, OtherSetId));
+            });
+
+        Assert.Equal(EmoteTagAddEntriesStatus.SourceSetChanged, result.Status);
+        Assert.Empty(source.Events);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagEntries.AnyAsync(e => e.TagId == tag.Id));
+    }
+
+    [Fact]
+    public async Task AddWithAMalformedSetId_IsInvalidEmoteSetId_BeforeAnythingIsRead()
+    {
+        var channel = await SeedChannelAsync("tagbadsetid");
+        var tag = await SeedTagAsync(channel.Id, "Funny");
+        var source = new ForeignSource(OtherSetId, []);
+
+        var result = await source.AddAsync(fixture.CreateDbContext, "tagbadsetid", tag.Id, ["EM1"], "../etc");
+
+        Assert.Equal(EmoteTagAddEntriesStatus.InvalidEmoteSetId, result.Status);
+        Assert.Empty(source.Events);
+    }
+
+    private static ForeignEmoteRow Row(string id, string name, string imageUrl) => new(id, name, name, imageUrl, null, null);
+
+    // The two collaborators of a non-active assignment, recording their calls and whether the service
+    // had a transaction open (which is when it would hold the channel row lock) at that moment.
+    private sealed class ForeignSource(string setId, IReadOnlyList<ForeignEmoteRow> rows)
+    {
+        public List<string> Events { get; } = [];
+        public TrackedEmoteSetMembership Membership { get; init; } = TrackedEmoteSetMembership.Member;
+        public ForeignEmoteSetLookupStatus ReadStatus { get; init; } = ForeignEmoteSetLookupStatus.Ok;
+        public bool Truncated { get; init; }
+
+        public async Task<EmoteTagAddEntriesResult> AddAsync(
+            Func<AppDbContext> createDb, string channelName, long tagId, IReadOnlyList<string> ids, string? emoteSetId = OtherSetId,
+            Func<Task>? beforeLock = null)
+        {
+            await using var db = createDb();
+            string Mark(string call) => $"{call}:{(db.Database.CurrentTransaction is null ? "no-transaction" : "IN-TRANSACTION")}";
+
+            var membership = Substitute.For<ITrackedEmoteSetMembershipService>();
+            membership.CheckAsync(Arg.Any<string>(), setId, Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    Events.Add(Mark("membership"));
+                    return Membership;
+                });
+            var foreign = Substitute.For<IForeignEmoteSetService>();
+            foreign.GetForeignEmoteSetBySetIdAsync(Arg.Any<string>(), setId, false, Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    Events.Add(Mark("read"));
+                    return ReadStatus == ForeignEmoteSetLookupStatus.Ok
+                        ? ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(channelName, null, setId, rows.Count, Truncated, rows))
+                        : ForeignEmoteSetLookupResult.Failed(ReadStatus);
+                });
+
+            var service = new SeamEmoteTagService(db, membership, foreign, beforeLock);
+            return await service.AddEntriesAsync(channelName, tagId, ids, emoteSetId);
+        }
+    }
+
+    // The test seam between the unlocked and the locked channel read: lets a test switch the active set there.
+    private sealed class SeamEmoteTagService(
+        AppDbContext db,
+        ITrackedEmoteSetMembershipService membership,
+        IForeignEmoteSetService foreign,
+        Func<Task>? beforeLock) : EmoteTagService(db, membership, foreign)
+    {
+        internal override async Task AfterPreLockReadAsync(CancellationToken cancellationToken)
+        {
+            if (beforeLock is not null)
+            {
+                await beforeLock();
+            }
+        }
+    }
+
     // ---- Helpers ---------------------------------------------------------------------------------
 
-    private static EmoteTagService CreateService(AppDbContext db) => new(db);
+    private static EmoteTagService CreateService(AppDbContext db) =>
+        new(db, Substitute.For<ITrackedEmoteSetMembershipService>(), Substitute.For<IForeignEmoteSetService>());
 
     private async Task<EmoteTagMutationResult> CreateAsync(string channelName, string? name)
     {

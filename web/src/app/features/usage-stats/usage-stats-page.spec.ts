@@ -6424,6 +6424,8 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     emoteSetId?: string;
     activeEmoteSetId?: string;
     realTemplate?: boolean;
+    /** How the shown set's live member list is answered (default: complete). */
+    liveMembers?: 'truncated' | 'unavailable';
   }): Promise<void> {
     configure(options.coarse ?? false, options.realTemplate ?? false);
     if (options.emoteSetId) {
@@ -6473,23 +6475,25 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     httpMock
       .match((r) => LIVE_LIST_URL.test(r.url))
       .forEach((request) =>
-        request.flush({
-          channelName: 'a',
-          sevenTvUserId: null,
-          emoteSetId: 'set-b',
-          emoteSetName: 'Halloween',
-          capacity: 1000,
-          totalCount: totals.length,
-          truncated: false,
-          emotes: totals.map((row) => ({
-            sevenTvEmoteId: row.sevenTvEmoteId,
-            name: row.emoteName,
-            defaultName: row.emoteName,
-            imageUrl: '',
-            topAllTime: null,
-            trending: null,
-          })),
-        }),
+        options.liveMembers === 'unavailable'
+          ? request.flush(null, { status: 503, statusText: 'Service Unavailable' })
+          : request.flush({
+              channelName: 'a',
+              sevenTvUserId: null,
+              emoteSetId: 'set-b',
+              emoteSetName: 'Halloween',
+              capacity: 1000,
+              totalCount: totals.length,
+              truncated: options.liveMembers === 'truncated',
+              emotes: totals.map((row) => ({
+                sevenTvEmoteId: row.sevenTvEmoteId,
+                name: row.emoteName,
+                defaultName: row.emoteName,
+                imageUrl: '',
+                topAllTime: null,
+                trending: null,
+              })),
+            }),
       );
     await settle();
     flushTags(options.tags);
@@ -6625,16 +6629,55 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['tagAssignShown']()).toBe(false);
   });
 
-  it('in a view of another set: no tag action, the filter still works', async () => {
+  it('in a view of another set with a complete member list: offers the tag actions, the filter works', async () => {
     await open({ tags: [tag(4, 'Stronghold')], emoteSetId: 'set-b' });
     mark('7tv-a');
 
+    expect(component['tagAssignShown']()).toBe(true);
+
+    await chooseTag(4, ['7tv-a', '7tv-b']);
+
+    expect(component['filteredEmotes']().map((row) => row.sevenTvEmoteId)).toEqual([
+      '7tv-a',
+      '7tv-b',
+    ]);
+    expect(component['tagUnassignShown']()).toBe(true);
+  });
+
+  it.each(['truncated', 'unavailable'] as const)(
+    'in a view of another set whose member list is %s: no tag action',
+    async (liveMembers) => {
+      await open({ tags: [tag(4, 'Stronghold')], emoteSetId: 'set-b', liveMembers });
+      mark('7tv-a');
+
+      expect(component['tagAssignShown']()).toBe(false);
+      expect(component['tagUnassignShown']()).toBe(false);
+    },
+  );
+
+  it('in a view of another set that is still loading its member list: no tag action', async () => {
+    await open({ tags: [tag(4, 'Stronghold')] });
+    mark('7tv-a');
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    expect(component['sharedSetViewLockReasonKey']()).not.toBeNull();
+    expect(component['selection'].selectedItems().length).toBeGreaterThan(0);
     expect(component['tagAssignShown']()).toBe(false);
+  });
 
-    await chooseTag(4, ['7tv-b']);
+  it('hands the dialog the shown set id only for a set that is not the active one', async () => {
+    await open({ tags: [tag(4, 'Stronghold')], emoteSetId: 'set-b' });
+    mark('7tv-a');
+    openSpy.mockReturnValue({ closed: of(undefined) });
 
-    expect(component['filteredEmotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-b']);
-    expect(component['tagUnassignShown']()).toBe(false);
+    component['assignTags']();
+
+    expect(openSpy.mock.calls[0][1].data).toEqual({
+      channelName: 'a',
+      sevenTvEmoteIds: ['7tv-a'],
+      emoteSetId: 'set-b',
+    });
   });
 
   it('offers "Aus dem Tag entfernen" only with a tag filter, counting the marked emotes that are in the tag', async () => {
@@ -6662,7 +6705,11 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     component['assignTags']();
 
     const data = openSpy.mock.calls[0][1].data as TagAssignDialogData;
-    expect(data).toEqual({ channelName: 'a', sevenTvEmoteIds: ['7tv-a', '7tv-b'] });
+    expect(data).toEqual({
+      channelName: 'a',
+      sevenTvEmoteIds: ['7tv-a', '7tv-b'],
+      emoteSetId: undefined,
+    });
     expect(component['tagFeedback']()).toEqual([
       { key: 'tags.feedback.assigned.other', params: { count: 2, tag: 'Stronghold' } },
     ]);

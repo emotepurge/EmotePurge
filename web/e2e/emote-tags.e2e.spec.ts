@@ -256,7 +256,7 @@ test.describe('emote tags', () => {
     await expect(cell(page, 'KEKW')).toBeVisible();
   });
 
-  test('without the active set in view there is no assign button; the usage page never offers tag runs', async ({
+  test('the usage page never offers tag runs, in the active set or in another one', async ({
     page,
   }) => {
     // Tag runs are on, and still not here: "Ins Set holen"/"Aus dem Set entfernen" live on the tags page only
@@ -288,8 +288,37 @@ test.describe('emote tags', () => {
     await page.getByRole('combobox', { name: 'Tag' }).selectOption({ label: 'Favoriten' });
     await cell(page, 'catJAM').click();
 
-    await expect(page.getByRole('button', { name: 'Tag zuweisen…' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Ins Set holen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Aus dem Set entfernen' })).toHaveCount(0);
+  });
+
+  test('assigns from a complete view of another set: the request names that set, the feedback is shown', async ({
+    page,
+  }) => {
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [{ id: 7, name: 'Favoriten', entryCount: 0, inSetCount: 0 }]);
+    const writes = await mockTagMutations(page, CHANNEL);
+    await mockTrackedEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: OTHER_SET_ID,
+      emoteSetName: 'Halloween',
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-1', name: 'catJAM' }],
+    });
+    await page.goto(`/channels/${CHANNEL}/usage-stats?emoteSetId=${OTHER_SET_ID}`);
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+
+    await cell(page, 'catJAM').click();
+    await page.getByRole('button', { name: 'Tag zuweisen…' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('checkbox', { name: 'Favoriten' }).check();
+    await dialog.getByRole('button', { name: '1 Emote zuweisen' }).click();
+    await expect(dialog).toHaveCount(0);
+
+    const assign = writes.requests.find((request) => request.path === '/7/entries');
+    expect(assign?.body).toEqual({ sevenTvEmoteIds: ['7tv-1'], emoteSetId: OTHER_SET_ID });
+    await expect(page.getByText('1 Emote zu Favoriten hinzugefügt.').first()).toBeVisible();
   });
 });
 

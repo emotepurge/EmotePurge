@@ -10,6 +10,38 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteSetIdValidation.cs` · `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `web/src/app/core/i18n/api-error.ts`
+
+**Snapshot source.** The 2026-10-04 entry fixed the source of an entry's alias and image as the
+channel's unarchived `Emote` row, which mirrors the active set only. That stays true for the active
+set. For any other set the request names (`emoteSetId` on the add-entries body), the source is a
+server-side read of that set: `ITrackedEmoteSetMembershipService` proves the set is the channel's
+(fail-closed), then `IForeignEmoteSetService.GetForeignEmoteSetBySetIdAsync(refresh: false)` supplies
+alias (the emote's name in that set) and image. The client never supplies either. The cache of at
+most 60 s is accepted on purpose: the usage page read the same set moments earlier. A non-`Ok` read
+is 503 `foreign_channel_seventv_unavailable`, a truncated read 409 `tag_source_set_incomplete` (a
+snapshot of a partial list would misreport emotes as "not in the set"); nothing is written in either
+case. Absent, blank or active-set ids take the unchanged `Emotes` path.
+
+**Lock order.** Membership proof and set read run before `BeginTransactionAsync`, so no 7TV call is
+ever made under the channel row lock (the rule from the 2026-10-04 entry holds). The branch is
+chosen from an unlocked channel read. Consequence and guard: an explicit `emoteSetId` that equalled
+`ActiveEmoteSetId` at that read but no longer does at lock time would be snapshotted from `Emotes`
+rows that now mirror another set, so the locked part rejects it with 409 `tag_source_set_changed`.
+A non-active branch needs no re-check, since its snapshot describes the requested set itself. The
+service has an internal virtual seam (`AfterPreLockReadAsync`) between the two reads, used only by
+the race test. The set-id format check moved from the API's `EmoteSetIdValidation` into Core
+(`SevenTvEmoteSetIdValidation`) so the service can answer `invalid_emote_set_id` itself.
+
+**Semantics.** The first assignment's alias wins across sets: an emote already in the tag keeps its
+stored alias and counts in `alreadyTaggedCount`, whatever set the later request came from. The tags
+page keeps showing such an entry as "not in the set" while another set is active. Rights are
+unchanged (`ChannelManagementAuthorizationFilter`, `Bookkeeping`); assigning stays unaudited.
+
+---
+
 ### 2026-10-08 — A non-active set's view no longer shows rows that left the set; import obeys the shared set-view lock (reverses the display part of E23)
 
 **Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/shared/seven-tv/import-shortcut.ts` · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` · `web/src/app/shared/seven-tv/import-shortcut.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts`

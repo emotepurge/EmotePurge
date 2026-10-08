@@ -512,7 +512,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         var operationId = Guid.NewGuid();
         await using (var db = fixture.CreateDbContext())
         {
-            var registration = await new EmoteTagService(db).RegisterOperationAsync(
+            var registration = await new EmoteTagService(db, Substitute.For<ITrackedEmoteSetMembershipService>(), Substitute.For<IForeignEmoteSetService>()).RegisterOperationAsync(
                 channel.ChannelName, tagId, new RegisterTagOperationRequest(operationId, EmoteTagOperationKind.PlayIn, SetId));
             Assert.Equal(TagOperationRegistrationStatus.Ok, registration.Status);
         }
@@ -530,7 +530,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         TagPlacementReportResult report;
         await using (var db = fixture.CreateDbContext())
         {
-            report = await new EmoteTagService(db).ReportPlacementsAsync(
+            report = await new EmoteTagService(db, Substitute.For<ITrackedEmoteSetMembershipService>(), Substitute.For<IForeignEmoteSetService>()).ReportPlacementsAsync(
                 channel.ChannelName, tagId, new TagPlacementReport(operationId, SetId, ["losh1", "losh2"]), Actor);
         }
 
@@ -538,7 +538,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         await SyncAsync(channel, SetId, Live("lokeep1"), Live("losh1"), Live("losh2"));
         await using (var verify = fixture.CreateDbContext())
         {
-            var tags = new EmoteTagService(verify);
+            var tags = new EmoteTagService(verify, Substitute.For<ITrackedEmoteSetMembershipService>(), Substitute.For<IForeignEmoteSetService>());
             var entries = (await tags.ListEntriesAsync(channel.ChannelName, tagId, null)).Entries;
             Assert.Equal(2, entries.Count);
             Assert.All(entries, e => Assert.Equal((true, true, (Guid?)operationId), (e.InSet, e.PlacedByThisTag, e.PlacementOperationId)));
@@ -799,7 +799,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     private async Task<(EmoteTagEntryDto Entry, int PlacedCount)> ReadTagAsync(Channel channel, long tagId)
     {
         await using var db = fixture.CreateDbContext();
-        var tags = new EmoteTagService(db);
+        var tags = new EmoteTagService(db, Substitute.For<ITrackedEmoteSetMembershipService>(), Substitute.For<IForeignEmoteSetService>());
         var entries = await tags.ListEntriesAsync(channel.ChannelName, tagId, null);
         var list = await tags.ListAsync(channel.ChannelName, null);
         return (Assert.Single(entries.Entries), Assert.Single(list.Tags, t => t.Id == tagId).PlacedCount);

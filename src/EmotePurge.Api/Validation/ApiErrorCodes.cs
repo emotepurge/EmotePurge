@@ -148,6 +148,10 @@ internal static class ApiErrorCodes
     public const string TagNotFound = "tag_not_found";
     // 409: adding would push the tag past EmoteTagLimits.MaxEntriesPerTag; nothing was written.
     public const string TagEntryLimitReached = "tag_entry_limit_reached";
+    // 409: assigning from a non-active set, whose server-side read is truncated; nothing was written.
+    public const string TagSourceSetIncomplete = "tag_source_set_incomplete";
+    // 409: the explicitly named set was active when the request began but not any more at lock time; nothing was written.
+    public const string TagSourceSetChanged = "tag_source_set_changed";
     // Tag operations and placement reports (#201 T-C). 400: the operation id (or a snapshot revision)
     // is not a UUID or is the nil UUID.
     public const string TagOperationIdInvalid = "tag_operation_id_invalid";

@@ -20,6 +20,8 @@ export interface TagAssignDialogData {
   channelName: string;
   /** 7TV emote ids of the selection, as the grid keys them. */
   sevenTvEmoteIds: readonly string[];
+  /** Set the selection was taken from; only given for a set that is not the channel's active one. */
+  emoteSetId?: string;
 }
 
 /**
@@ -286,7 +288,12 @@ export class TagAssignDialog {
       .pipe(
         concatMap((tag) =>
           this.tagService
-            .addEntries(this.data.channelName, tag.id, this.data.sevenTvEmoteIds)
+            .addEntries(
+              this.data.channelName,
+              tag.id,
+              this.data.sevenTvEmoteIds,
+              this.data.emoteSetId,
+            )
             .pipe(map((result) => ({ tag, result }))),
         ),
       )

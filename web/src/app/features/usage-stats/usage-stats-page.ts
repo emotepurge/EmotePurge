@@ -1457,8 +1457,9 @@ export class UsageStatsPage {
   /**
    * Gate for both tag buttons in the dock (spec 7.0 step 1, 9.1, plan 3.2): a fine pointer, a
    * manager (E9), a scope that still describes the channel and set on screen, a view of the
-   * *active* set (E3: tags key by `SevenTvEmoteId` and the server checks membership against the
-   * active set) and something marked. `shownSetId() !== null` because a channel without an active
+   * active set, or of another of the channel's sets whose member list is complete (#338: the
+   * server snapshots a non-active set from its own membership-proven read, so it needs the list
+   * to be ready and untruncated: `sharedSetViewLockReasonKey() === null`) and something marked. `shownSetId() !== null` because a channel without an active
    * set has `null === null` there, and gets no dock button (spec 8). No `startLocked` — nothing here
    * writes to 7TV.
    */
@@ -1469,7 +1470,7 @@ export class UsageStatsPage {
       this.canManage() &&
       this.importScopeCurrent() &&
       shown !== null &&
-      shown === this.activeEmoteSetId() &&
+      (shown === this.activeEmoteSetId() || this.sharedSetViewLockReasonKey() === null) &&
       this.selection.selectedItems().length > 0
     );
   });
@@ -2952,7 +2953,10 @@ export class UsageStatsPage {
     }
     const channelName = this.channelName();
     const sevenTvEmoteIds = this.selection.selectedItems().map((emote) => emote.sevenTvEmoteId);
-    openTagAssignDialog(this.dialog, { channelName, sevenTvEmoteIds }).closed.subscribe(
+    const shown = this.shownSetId();
+    // Only for a non-active set: the active-set body stays exactly as before.
+    const emoteSetId = shown !== null && shown !== this.activeEmoteSetId() ? shown : undefined;
+    openTagAssignDialog(this.dialog, { channelName, sevenTvEmoteIds, emoteSetId }).closed.subscribe(
       (result) => {
         this.tagsResource.reload();
         if (!result || channelName !== this.channelName()) {

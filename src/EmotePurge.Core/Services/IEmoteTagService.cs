@@ -35,7 +35,17 @@ public enum EmoteTagAddEntriesStatus
     TagNotFound,
     EmoteIdsEmpty,
     EmoteIdsInvalid,
-    EntryLimitReached
+    EntryLimitReached,
+    /// <summary>A non-blank set id that fails the set-id format check.</summary>
+    InvalidEmoteSetId,
+    /// <summary>The set is not the channel's active set and not a <c>NORMAL</c> set of its 7TV account.</summary>
+    EmoteSetNotFound,
+    /// <summary>Set membership or the set read could not be answered (7TV rate limit, outage, own budget).</summary>
+    SevenTvUnavailable,
+    /// <summary>The set read is truncated, so the snapshot would be incomplete; nothing was written.</summary>
+    SourceSetIncomplete,
+    /// <summary>The explicitly named set was active when the request began but not at lock time; nothing was written.</summary>
+    SourceSetChanged
 }
 
 public enum EmoteTagRemoveEntriesStatus
@@ -279,14 +289,21 @@ public interface IEmoteTagService
         string channelName, long tagId, AuditActor actor, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Tags emotes of the channel's set. Partial success by design: ids without an unarchived row are
-    /// skipped and reported, ids already tagged are counted, the rest is written with alias and image
-    /// taken from the row (never from the client). The entry limit is checked before anything is
-    /// written: if the tag would exceed it, nothing is written at all. No audit entry.
+    /// Tags emotes of one of the channel's sets. Partial success by design: ids that are not in the
+    /// source set are skipped and reported, ids already tagged are counted (and keep their stored alias),
+    /// the rest is written with alias and image taken from the source (never from the client). The
+    /// entry limit is checked before anything is written: if the tag would exceed it, nothing is written
+    /// at all. No audit entry.
+    /// <para>
+    /// The source is the channel's unarchived <c>Emote</c> rows when <paramref name="emoteSetId"/> is
+    /// absent or the channel's active set, otherwise a server-side read of that set, read (and proven to
+    /// belong to the channel) before the channel lock is taken.
+    /// </para>
     /// </summary>
     /// <param name="sevenTvEmoteIds">Duplicates are ignored; <c>null</c> or empty is <c>EmoteIdsEmpty</c>.</param>
+    /// <param name="emoteSetId">The set the emotes are tagged from; blank counts as absent.</param>
     Task<EmoteTagAddEntriesResult> AddEntriesAsync(
-        string channelName, long tagId, IReadOnlyList<string>? sevenTvEmoteIds, CancellationToken cancellationToken = default);
+        string channelName, long tagId, IReadOnlyList<string>? sevenTvEmoteIds, string? emoteSetId = null, CancellationToken cancellationToken = default);
 
     /// <summary>Takes emotes out of a tag. Ids the tag does not carry are tolerated. No audit entry.</summary>
     /// <param name="sevenTvEmoteIds">Duplicates are ignored; <c>null</c> or empty is <c>EmoteIdsEmpty</c>.</param>
