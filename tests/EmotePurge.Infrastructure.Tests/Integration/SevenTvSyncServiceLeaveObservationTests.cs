@@ -639,10 +639,14 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         Assert.Equal(workerStamp, await LatestAsync(channel, ReportSetId, "logone1"));
     }
 
-    private static SevenTvSyncService CreateService(AppDbContext db, EmoteMatchCache cache, ISevenTvApiClient? apiClient = null) =>
+    // A fresh empty-set tracker per service unless a case hands one in: only the cases that build a
+    // zero streak across several syncs need the same instance (and a clock they can wind).
+    private static SevenTvSyncService CreateService(
+        AppDbContext db, EmoteMatchCache cache, ISevenTvApiClient? apiClient = null, IEmptySetConfirmationTracker? emptySetConfirmations = null) =>
         new(db, apiClient ?? Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(),
             new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
             new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
+            emptySetConfirmations ?? new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
             NullLogger<SevenTvSyncService>.Instance);
 
     private static ISevenTvApiClient RestAnswering(Channel channel, string emoteSetId, params SevenTvEmote[] liveEmotes)

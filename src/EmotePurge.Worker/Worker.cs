@@ -11,6 +11,7 @@ public class Worker(
     IRedisSubscriber redisSubscriber,
     IRedisPublisher redisPublisher,
     IEmoteMatchCache emoteMatchCache,
+    IEmptySetConfirmationTracker emptySetConfirmations,
     BootRecoveryGate bootRecoveryGate,
     ISevenTvEventClient sevenTvEventClient,
     ITwitchLiveStatusReader liveStatusReader,
@@ -73,6 +74,9 @@ public class Worker(
                 logger.LogInformation("Redis command: leaving a channel.");
                 logger.LogDebug("Redis command: leaving {Channel}.", channelName);
                 emoteMatchCache.RemoveChannel(channelName);
+                // A channel off the roster is no longer observed, so its zero-emote streak (issue
+                // #76) must not survive into a later rejoin.
+                emptySetConfirmations.Reset(channelName);
                 sevenTvEventClient.Unsubscribe(channelName);
                 await twitchChatManager.LeaveChannelAsync(channelName);
             }

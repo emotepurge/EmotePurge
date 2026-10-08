@@ -10,6 +10,176 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — A 7TV set that really is empty is accepted: set switch at once, same set after repeated spaced zeros, never against v4 (#76)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationTracker.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationOptions.cs` · `src/EmotePurge.Core/Services/IEmptySetConfirmationTracker.cs` · `src/EmotePurge.Core/SevenTv/SevenTvModels.cs` · `src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs` · `src/EmotePurge.Worker/Worker.cs` · `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` · `src/EmotePurge.Worker/appsettings.json` · `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceEmptySetTests.cs`
+
+The guard against a "0 active emotes" answer from 7TV while we know active emotes (a glitch would
+archive the channel and empty the match cache) skipped every sync for as long as both halves stayed
+true. A set that was deleted and recreated, or emptied for good, therefore kept showing the old
+content forever; the comment's "the next tick recovers on its own" was only right for a transient
+zero. The guard stays, but a zero is now believed in two cases, decided by the operator, unless v4
+contradicts it (below):
+
+1. **Zero together with a new set id** (set switch detected) is accepted immediately — a freshly
+   created set is expected to be empty. The set id is written in the same sync, so the UI shows the
+   new (empty) set; a switch with a non-empty set was never guarded.
+2. **Zero for the same set id** is accepted once `SevenTv:EmptySetConfirmations` (default 3)
+   consecutive, spaced syncs each reported it. `1` switches the confirmation off (the v4 veto still
+   applies).
+
+**v4 veto.** Every v3 channel read already asks v4 for the same set id (the `AddedToSetAt` overlay,
+on every sync and also when v3 lists nothing). That read now also returns how many entries v4 lists
+with a resolved emote, summed over its pages, as `SevenTvEmoteSet.RemoteEntryCount` (null when the v4
+read fails: HTTP error, timeout, malformed JSON, `emoteSet: null`). When paging fails part-way after
+at least one resolved entry, that count is kept as a lower bound, since entries already seen are
+positive evidence and dropping them would let a stale v3 zero through; the dates stay all-or-nothing
+and are dropped as before. When v3 says 0 and v4 lists more
+than 0, the zero is rejected: Warning log, nothing written, the held-back result goes back to the
+caller as for any held-back zero (so the EventAPI subscription is still ensured), and the streak is
+reset. The check runs **before** the set-switch acceptance, so a new set id that v4 contradicts is
+held back too. Why:
+
+- v3's REST answer can lag the set by 10–30 min (SevenTV/SevenTV#81, see the 2026-07-30 WebSocket
+  investigation). How fresh v4 is has **not** been measured systematically; there is one
+  observation, on 2026-09-10 during the duplicate-entry investigation, where a v4 read reflected a
+  v4 mutation immediately (77 → 79 entries). A v3 zero next to a filled v4 set is most likely that
+  v3 lag, not an empty set — exactly the false zero the guard exists for, and the one case in which
+  a set switch would otherwise have archived everything at once.
+- The design does not depend on v4 being fresher, because the veto is conservative: it can only
+  hold a zero back, never accept one. If v4 is fresher, it prevents a wipe on a stale v3 zero. If
+  v4 itself lags and still lists entries for a set that really was emptied, convergence is merely
+  delayed until v4 catches up — a liveness cost, not a safety risk; no emote is archived wrongly
+  either way.
+- v4 listing entries is positive evidence, like a live push, so it resets the streak the same way.
+- It is not a failure: 7TV answered, and the next sync will most likely agree. Recording a failure
+  reason would show the operator a misleading "sync failed" hint in the UI, so none is written and
+  `LastSyncedAtUtc`/`LastSyncAttemptAtUtc` stay untouched.
+
+An unknown (null) or zero v4 count does not veto; the zero then counts as before, and while v4 is
+unknown the held-back log line says "v4 cross-check unavailable". The existing rule that a positive
+v3 `emote_count` with no emotes answers `Unavailable` stays.
+
+**Observation-based streak.** "N zeros in a row" means N consecutive *observations* of the channel.
+Every other outcome resets the streak: a non-empty answer, a v4 contradiction, a live push, an
+accepted zero, and also a failed lookup or an unusable response (`RecordFailedAttemptAsync`, i.e.
+every path that records a failure reason). The streak lives **in memory, in a singleton**
+(`EmptySetConfirmationTracker`): the sync service is scoped, so state there would die each call.
+Nothing is persisted, because a restart only delays acceptance by N ticks, whereas a column would
+need a migration for a state whose loss is harmless. It is keyed by the **normalized channel name**
+(rule 9, the key the match cache uses), not the row id, so the two roster-exit seams can forget it
+right next to `emoteMatchCache.RemoveChannel`: the Worker's Redis LEAVE handler and the periodic
+resync's `PruneStaleChannelsAsync`. A channel that leaves the roster is no longer observed, and a
+later rejoin starts from zero; renames and merges reset implicitly, which is fine. All entry points
+(periodic resync, boot recovery, JOIN/RESYNC handlers, EventAPI follow-ups) go through
+`SyncChannelAsync` and so count identically. To stop a burst of event-driven syncs from confirming
+itself within seconds, a zero only counts when at least `SevenTv:EmptySetConfirmationSpacingSeconds`
+(default 45, just under the 60 s periodic resync; 0 counts every zero) have passed since the last
+*counted* zero; the effective delay for a permanently empty same set is thus about N-1 periodic
+ticks. A held-back zero logs at Warning with the streak ("empty answer 1 of 3 needed") only when it
+counted, at Debug otherwise; acceptance logs at Information.
+
+**No maximum age.** An earlier revision of this change restarted a streak whose last counted zero
+was older than a bound derived from the spacing and the resync interval. It was dropped: such a
+bound has to be tuned against two cadences (spacing and resync interval), the duration of a resync
+tick over all channels, and 7TV outages in between, and every mistuning either lets a permanently
+empty set restart its streak forever or does nothing. Its purpose — zeros hours apart must not add
+up while the set was meanwhile seen non-empty — is covered by the observation-based reset (any
+non-zero observation in between resets) and the v4 veto (a set that is not empty in v4 never
+reaches the count). A long gap without any observation is just that, and the zeros on either side
+of it are still in a row.
+
+Further parts of the same change:
+
+- **A live push resets the streak.** An EventAPI dispatch for the active set that pushes or updates
+  at least one emote proves the set is not empty, so `ApplyEmoteSetUpdateAsync` resets the streak —
+  after the active-set check and the plausibility return, regardless of Applied vs NoChange.
+  Pull-only dispatches, skipped-implausible ones, `SetNotActive` and `ChannelUnknown` leave it alone.
+- **Sentinel set ids.** The sync rejects an all-zero set id with the same predicate the API client
+  uses (`SevenTvIds.IsUsable`) as `ResponseUnusable`, before the switch detection — a placeholder id
+  must neither count as "a new set" (which would accept a zero at once) nor be written to
+  `ActiveEmoteSetId`.
+- **Payload consistency, and the real shape of an empty set.** 7TV *omits* `emotes` and
+  `emote_count` for a genuinely empty set (its compat model, `shared/src/old_types/mod.rs` in the
+  SevenTV/SevenTV repository, uses `skip_serializing_if = "Vec::is_empty"` on `emotes` and
+  `is_default` on `emote_count`), so a missing `emotes` stays an empty list and flows into the
+  guard. What is *not* an empty set: an explicit `emotes: null`, and `emote_count > 0` with no
+  emotes — both answer `Unavailable`. The DTO reads `emote_count` for exactly that cross-check; the
+  embedded object and the `emote-sets/{id}` reload share it.
+
+The EventAPI delta path keeps its own guard (a delta that would remove the last active emote is
+skipped as `ImplausibleSkipped`) unchanged: it already answers with a full resync, which runs the
+logic above, so a really emptied set converges through the same confirmed path and a malformed
+delta alone still cannot wipe a channel. Out of scope and unchanged: matching/counting code.
+
+**Rebuilt on main after the multiple-emote-sets epic (#303).** Written on 2026-10-03 against a main
+without the epic, and merged forward on 2026-10-08 (not reimplemented: the guard still sits between
+the sentinel check and the first write, and every write still goes through the one sync path). The
+switch detection now has to be read *before* the guard, so `emoteSetSwitched` moved up; the rest of
+the epic's write path (`SaveSyncAsync` with the E10 retry and the vanished-row exit, the observation
+log, the post-save re-read) runs unchanged after it. How an accepted or held-back zero meets the
+epic's per-set state, each covered in `SevenTvSyncServiceEmptySetTests`:
+
+- **An accepted zero with a new set id is a set switch like any other.** It goes through
+  `ApplyAndSaveAsync`, so `RecordObservedSetAsync` closes the old set's interval with `SetSwitch` and
+  opens one for the new, empty set; the match cache is rebuilt under the new set id, so chat counts
+  from then on are keyed by it (and there is nothing to count). The emote rows are archived exactly as
+  after a switch to a non-empty set. The old set is **not** booked as "all emotes vanished": its view
+  in `UsageStatQueryService` is the historical one and still lists its emotes, archived, with the
+  usage counted against that set id.
+- **An accepted zero for the same set is not a switch.** The open interval stays open, no
+  `SetSwitch` close is written, the cache keeps the set id and loses only its names.
+- **A held-back zero writes nothing at all** — no observation row, no set id, no sync stamp, no
+  failure reason. In particular, a new set id that v4 contradicts opens no interval for that set;
+  the switch is booked by the first sync that is believed, at that sync's time. This is the same
+  behaviour main had for every zero before, so the observation log never contains a switch that was
+  then taken back.
+- **After an accepted switch the channel knows no active emotes**, so the next zero for the same new
+  set bypasses the guard as a plain no-op (no second switch, no held-back line), and the first emote
+  added later fills the same open interval.
+- **The epic's recoveries are not affected.** An empty set inserts no emote row, so the E10
+  unique-violation retry cannot fire on it; if the row vanishes during an accepted zero's save, the
+  sync is abandoned as before and the already-reset streak is irrelevant because the row is gone. The
+  paths main added that return before asking 7TV for the set (Twitch-id resolution backoff or search
+  budget refusal, rename duplicate, excluded channel) are not observations of the set and leave the
+  streak alone; in practice they never meet it, since a channel with known emotes already has its
+  Twitch id.
+
+### 2026-10-08 — The K7 rollback uses a generated migration script, not `database update <older id>`
+
+**Betrifft:** `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (17, AK 84) ·
+`docs/plans/Plan-200-Emote-Sets.md` (K7)
+
+`dotnet ef database update 20260907080507_AddUsageStatSharedChatUseCount` reverts every applied
+migration with a later ID, not just the epic's. Since 2026-09-24 production also carries
+`20260923194321_AddRetentionTimestamps`, which sorts after `20260920191131_AddUsageStatEmoteSetId`.
+That command would drop `Users.LastSeenAtUtc` and `Channels.DeactivatedAtUtc` (the data behind the
+retention deadlines), and the old image would then see the retention migration as pending and stop at
+`PendingMigrationGuard`. The rollback is therefore a script generated ahead of the window with
+`dotnet ef migrations script 20260920191131_AddUsageStatEmoteSetId
+20260907080507_AddUsageStatSharedChatUseCount`, which reverts only the epic migration and is applied
+with `psql -v ON_ERROR_STOP=1`. It was rehearsed locally on 2026-10-08: the retention columns stayed,
+the epic migration was pending again. Spec 17 and the K7 plan are corrected accordingly. AK 84 is
+evidenced by the sync log line (`7TV-Set {SetId} ... synchronized`) plus a database query, because the
+warm-start log line carries no set ID.
+
+### 2026-10-08 — HandOfBlood's set-switch boundary is 2026-10-08, one day after the measured switch
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.cs` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (4.2, E1)
+
+The placeholder `BoundaryUtc` is replaced by `2026-10-08`. HandOfBlood's switch from set
+`01GV88A38G0006FW5TVZVMG507` to `01J94NYQR0000D15QN0BDGN85E` was detected by the dev worker on
+2026-10-07 at 19:57:33 UTC (7TV itself may have switched up to ~60 s earlier), not on 2026-10-01 as
+planned. The migration sends rows strictly before the boundary to the old set and the boundary day
+to the new one. Because the switch fell late in the UTC day, 2026-10-07 lands entirely on one side
+either way; counted on the dev stack, that day holds 42 uses for the old set and 9 for the new one.
+Naming 2026-10-08 misattributes 9 uses, naming 2026-10-07 would misattribute 42, so the operator
+chose 2026-10-08 on 2026-10-08. This deliberately deviates from the spec wording "the day of the
+switch".
+
+---
+
 ### 2026-10-05 — Tags grid: emotes animate on hover, following the import grid's pattern
 
 **Betrifft:** `web/src/app/features/tags/tags-page.{ts,html}`, `docs/UI-Designsprache.md` (§2.5)
@@ -1345,6 +1515,25 @@ Cost: n-1 extra requests per multi-page read against 7TV's global bucket, none f
 the first differing page or drift. A failing re-read throws like a main-pass failure. Residual limit:
 a remove-and-re-add fully contained between a page's first read and its re-read is undetectable by any
 finite re-read; it needs several edits within about a second and an ordering other than insertion.
+
+---
+
+### 2026-10-05 — Channel workspace: the user-facing resync button is removed, the endpoint stays
+
+**Betrifft:** `web/src/app/features/channel-workspace/channel-workspace-layout.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` (`usageStats.autoSyncNote`) · `web/public/i18n/{de,en}.json` (`channelWorkspace.resync.*` removed) · `web/e2e/channel-workspace.e2e.spec.ts` · `docs/UI-Designsprache.md` · `docs/Feature-Ideen-2026-08-01.md` (A8)
+
+**Supersedes the button half of "Resync als Self-Service" (2026-08-02).** The "Neu synchronisieren" button in the channel workspace header is gone. `POST /api/channels/{channel}/resync`, the `UsageStatsAccessAuthorizationFilter`, the `ChannelResync` rate-limit policy and the per-channel cooldown are untouched: the import and restore flows (the latter including the undo after a mass delete) still call the endpoint programmatically; a delete run ends with `sync-deleted` and does not, and the admin resync in `/admin/channels` stays as the escape hatch. Audit rows (`channel.resync`) keep being written by those paths.
+
+**Why the button no longer earns its place:**
+
+- A join already runs a full 7TV sync, and the usage page says "Emote-Set wird geladen" until it lands. The audit log nevertheless regularly showed `channel.resync` right after `channel.join`: a click in that window does no harm (`ChannelSyncGate` serialises the two syncs) but costs a second 7TV REST fetch and a second `channel.synced` fan-out to every open page, and the person learns nothing new.
+- The worker resyncs every active channel every 60 s (`SevenTv:ResyncIntervalSeconds`, `SevenTvPeriodicResyncWorker`), so a click saved at most a minute.
+- The usual reason a new emote "does not show" is 7TV's REST cache, which can be 10-30 min stale. A click reads the same cache as the periodic resync, so clicking and seeing nothing change was the confusing outcome, not a fix.
+- After a failed sync (`LastSyncFailureReason`) the next periodic tick retries on its own.
+
+**What replaces it:** one quiet caption (`text-xs text-fg-muted`) under the slot-budget bar on the usage page, inside the same `@if (setStatus())` as the bar so both arrive in one frame: "Wird regelmäßig automatisch mit 7TV abgeglichen. Neu hinzugefügte Emotes können bis zu 30 Minuten brauchen, bis 7TV sie hier meldet." (the de/en copy was reworded in the fix round; see `autoSyncNote`). The note is shown only for an active channel (`isBotActive` from the permissions endpoint): the worker no longer re-reads a deactivated channel, so the sentence would be false there, and 7TV editors see no deactivation banner. The wording says "regelmäßig", not "jede Minute", on purpose: the 60 s is a configurable default that operators are expected to stretch once the EventAPI path has proven itself (see the comment in `SevenTvPeriodicResyncWorker`).
+
+**Consequence for the live stream:** the layout no longer subscribes to `channel.synced`; the transient "queued / finished" acknowledgement existed only for the button. The programmatic flows keep their own dock notices (`DockOutcomeAnnouncer`). As a side effect the channel live connection now closes on tabs without a consumer and reopens on return; that is harmless, but it counts against the per-login stream limit only while a consumer is mounted, which is if anything gentler on it.
 
 ---
 
@@ -4648,6 +4837,147 @@ channel in connection with the block — and then fixed what failed.
   request — no row, no subscription, no chat — and whether an objection covers that read is a policy
   question for the operator, not a gap in this gate; answering "yes" would need its own refusal
   status and error code.
+### 2026-09-24 — The chat-log backfill harness honours the same objection gate (#260, supersedes a point of the same day's #252 entry)
+
+**Betrifft:** `src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs` · `docker-compose.yml` ·
+`docker-compose.prod.yml` · `docs/Operations.md`
+
+**Not to be merged before the binding harness run of 2026-10-08 has finished and its reports are
+saved (the run starts at 02:00 German time that day; a merge plus deploy that morning would still
+hit it).**
+
+A GDPR review of the privacy policy found the gap the #252 entry below explicitly accepted: it said
+the harness (#69, a second entry point of the same `EmotePurge.Worker` image that replays archived
+chat logs through its own `ReplayDayCounter` rather than the live `TwitchChatManager` path) was
+"untouched" and out of scope, reasoning that it "already stores no identity of its own". That is
+true for what the harness *writes*, but not for what it *counts on the way there*: before this
+change, a re-run of the harness over a channel's archive window would still count every message from
+an objecting chatter into `HumanCounts`/`BotCounts`/the k-distribution, exactly as if the objection
+did not exist — the archive itself is untouched by an objection (it lives outside this repo's
+control), so only the counting step can honour one.
+
+Fixed the same way the live path already does it: `HarnessRunner` now takes the same
+`IExcludedChatterFilter` (already registered for both entry points via `AddWorkerCore`, no new DI
+wiring needed) and checks it as the very first thing in the per-message counting callback inside
+`ExecuteAsync` — before the `sawUserId`/`sawBadges` bookkeeping that decides whether a day's logs
+even carry a chatter signal, and before the message reaches `ReplayDayCounter.Count` at all. Mirrors
+`TwitchChatManager.OnMessageReceived`'s own ordering (check first, drop before anything else touches
+the message) so neither path can count what the other has been told to forget. Wired the existing
+`TWITCH_EXCLUDED_CHATTER_IDS` env var into the `harness` service in both compose files the same way
+it already reaches `worker` — no new config key.
+
+Tested at the `ReplayDayCounter`/message-callback seam in `HarnessRunnerTests` (container-free, like
+the rest of the harness's decision logic): an excluded chatter's hit does not reach a day line's
+`HumanCounts` while a co-present non-excluded chatter's hit still does, and the default
+(non-excluded) fixture used throughout the rest of the file stands in for the empty-list case,
+confirmed by its own explicit test.
+
+`docs/Operations.md`'s "Excluding a chatter" procedure now says the harness picks up the same list
+without a restart step of its own — it is a one-shot process, so every invocation already reads the
+current `.env`.
+
+**Revised 2026-09-24 (Codex P1 review of this branch):** the gate above changed what the counting
+callback does, but nothing in `HarnessRunIdentity`/`HarnessRunner.AlgorithmVersion` changed with it
+— a run started before this gate existed could be resumed under it silently, its saved day lines
+still holding an excluded chatter's counts from before the gate applied, mixed into the same report
+as fresh, gated days. Fixed two ways: `AlgorithmVersion` bumped to `"harness-3"`, so nothing written
+before this change (or the shared-chat one before it) is ever resumed or recomputed again; and a new
+`HarnessRunIdentity.ExcludedChatterIdsDigest` field covers every *later* change of the exclusion
+list the same way `InputHash` covers the live data snapshot — a SHA-256 over the sorted, normalized
+id list (`ExcludedChatterIdsDigest.Compute`), never the raw ids themselves. Not a secrecy measure —
+the same ids already sit in plaintext in the operator's `.env` on the same host that would read a
+`.jsonl` header — but writing the list itself into a file that outlives the run would be exactly the
+kind of processing the objection asked to stop. An empty list hashes to a fixed value, so a
+no-exclusion run's identity is unaffected by this field's mere existence. `IExcludedChatterFilter`
+gained a matching `ExcludedChatterIds` read-only property (mirroring
+`IBotChatterDetector.KnownBotAccountIds`) so the digest is computed from what the filter actually
+enforces, not a second, independent parse of the same configuration key.
+
+**Revised 2026-09-24 (second Codex review of this branch):** the objection gate above dropped an
+excluded chatter's message before `sawUserId`/`sawBadges` bookkeeping, as documented — but the
+`NoBadgesNoUserIds` fallback a few lines further down still asked `result.MessageCount > 0`, the
+archive's raw count *before* that gate. A day whose every message belongs to an excluded chatter
+therefore still had `result.MessageCount > 0` while `sawUserId`/`sawBadges` stayed `false` — read as
+"these logs carry no badges and no user-ids", the format-failure case that verdict exists for, and
+aborted the run with `ExitUndecidable` although nothing was wrong with the archive; the run had simply
+counted nothing on a day where it was told to count nothing. Fixed by counting separately how many
+messages passed the exclusion gate (`gatedMessageCount` in the per-message callback) and keying the
+fallback's `> 0` check off that instead of `result.MessageCount` — an all-excluded day now falls
+through to `AppendDay` as a legitimate zero-count day, and the fallback still fires correctly the first
+time a later day actually has a gated message to check. Tested in `HarnessRunnerTests`
+(`ADayWhereEveryMessageIsFromAnExcludedChatter_RecordsAZeroCountDayInsteadOfAborting`): day 1's only
+chatter is excluded, days 2 and 3 each carry an ordinary message, and the run succeeds with day 1
+recorded as a valid `Complete`, empty-`HumanCounts` day rather than aborting.
+
+**Revised 2026-09-24 (third Codex review of this branch):** the first revision above bumped
+`AlgorithmVersion` and added `ExcludedChatterIdsDigest` so a *resumed run* refuses to continue a file
+written under a different exclusion list — `ExecuteAsync`/`RunAsync` always rebuild a fresh
+`HarnessRunIdentity` and `HarnessReportFile.ReadHeader` compares it to the file's byte for byte. A
+**report-only recompute** (`RecomputeReportAsync`/`ExecuteRecomputeAsync`, #119) never goes through
+that path: it reads the header with `TryReadHeader` and checked `AlgorithmVersion` by hand, but ran no
+comparison against the exclusion list at all — recomputing a file's day lines under a
+`TWITCH_EXCLUDED_CHATTER_IDS` that has since changed could issue a report that no longer reflects what
+a fresh run (or the live worker) would count today, exactly the drift the digest exists to catch on
+the run side. Closed with a new, distinct exit code, `HarnessRunner.ExitExclusionListChanged` (7) —
+not folded into `ExitPreconditionViolated` (3), because an operator reading the exit code needs to
+tell "this file cannot be recomputed at all" from "this file could be recomputed, but not honestly,
+because the policy under it changed"; only the first is fixed by fixing the file, the second only by
+finishing a fresh run. The check sits right after the existing `AlgorithmVersion` refusal, before any
+database access, and compares `ExcludedChatterIdsDigest.Compute(excludedChatterFilter.ExcludedChatterIds)`
+against the header's stored digest — never the raw ids, same reasoning as the digest itself. Tested in
+`HarnessRunnerTests` (`ReportOnly_WhenTheExclusionListDriftedSinceTheRun_RefusesBeforeAnyDatabaseAccess`):
+a run under the default (empty) exclusion list, recomputed after the configured list gained an id,
+refuses with the new exit code and touches neither the archive client nor the usage-stat query
+service. `docs/Operations.md`'s note on `--report-only` and the exclusion list is extended with this
+case.
+
+**Revised 2026-09-24 (fourth revision, the operator-runbook gap): the third revision above made every
+`"harness-2"` file unrecomputable, including the pre-registered binding reports of 2026-10-08 — the
+runbook's `--report-only` path (needed if a formula changes later) reads their `AlgorithmVersion`
+before ever reaching the digest check, and `"harness-2" != "harness-3"` refused them outright.**
+Checked first, before changing anything: does anything on this branch change what a `--report-only`
+recompute *computes* for a `"harness-2"` file with an empty exclusion list, as opposed to merely what
+it *refuses*? `ReplayFidelityCalculator`, `ReplayDayCounter` and `ReplayModels` are untouched by this
+branch (not in its diff against `origin/main` at all); the objection gate and its `gatedMessageCount`
+fallback (second revision above) live entirely inside `ExecuteAsync`'s per-message callback, which a
+recompute never runs — `ExecuteRecomputeAsync` only reads already-written day lines off disk and
+calls the same unchanged `Compute`. The check was proved empirically, not just by reading the diff: a
+throwaway `git worktree add --detach` of `origin/main` (commit `52a857a7`) ran the pre-harness-3
+`RecomputeReportAsync` over a three-day fixture (one message a day, empty exclusion list) and its
+`.report.json` was captured, then discarded with the worktree; this branch's own recompute of the
+identical fixture, rewritten to a genuine `"harness-2"` shape (no `ExcludedChatterIdsDigest` property
+at all — `LineOptions`'s `WhenWritingNull` drops it, exactly like a real pre-harness-3 file that never
+had the field), produces a field-identical report — `Run`, `Gate`, `Plausibility` and `Diagnostics` are
+byte-identical, and even `Recomputation.OriginalInputHash`/`CurrentInputHash` match, because
+`HarnessInputHash` and the fixture data are unchanged too. Only `Recomputation.SourceFile` legitimately
+differs (an absolute path under each run's own temp directory). Golden-master test:
+`ReportOnly_WithAHarnessTwoFileAndAnEmptyExclusionList_RecomputesIdenticallyToMain`.
+
+Check clean, so implemented (a) rather than falling back to a documentation-only workaround (pinning
+recomputes of `"harness-2"` files to a specific pre-`"harness-3"` image by its digest): a new constant,
+`HarnessRunner.PriorRecomputableAlgorithmVersion = "harness-2"`, is accepted by
+`ExecuteRecomputeAsync`'s `AlgorithmVersion` guard *in addition to* the current `AlgorithmVersion` —
+and nowhere else; `RunAsync`/`ExecuteAsync` still never resumes one, because `FindFrozenWindow` matches
+candidates on `AlgorithmVersion` alone and only ever looks for the current value. For the exclusion
+digest check right after it: a `"harness-2"` identity's `ExcludedChatterIdsDigest` deserializes to
+`null` (the field never existed), so instead of comparing that field the check now uses
+`ExcludedChatterIdsDigest.Compute([])` — the fixed empty-list digest — as the expected value whenever
+the file is `"harness-2"`, on the reasoning the check above already established: a `"harness-2"` run
+never honoured any exclusion list, so its day lines are only a faithful re-evaluation under today's
+*empty* `Twitch:ExcludedChatterIds`; a currently non-empty list still refuses with
+`ExitExclusionListChanged` (7), the same exit code and the same reasoning a drifted `"harness-3"` list
+already gets. Any other foreign version (`"harness-1"` and anything else) is unaffected and still
+refused with `ExitPreconditionViolated` (3). Tested in `HarnessRunnerTests`:
+`ReportOnly_WithAHarnessTwoFileAndAnEmptyExclusionList_RecomputesIdenticallyToMain` (the golden test
+above), `ReportOnly_WithAHarnessTwoFileAndANonEmptyExclusionList_RefusesWithExclusionListChanged`, and
+`AFileWithTheHarnessTwoAlgorithmVersion_IsNotResumed` (mirrors the existing `"harness-1"`-leftover
+resume-refusal test, proving `RunAsync` still never adopts a `"harness-2"` file's window).
+
+This revision also corrects the merge note above: "must stay on harness-2" was read by an operator as
+"never merge this branch", when the actual constraint is narrower — the binding run must finish and
+its reports must be saved first (see the note's own wording, revised the same day).
+
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
@@ -13915,6 +14245,8 @@ Betrieblich relevant für alle Anleitungen mit `<VPS-USER>`-Platzhaltern (Prod-M
 ---
 
 ### 2026-08-02 — Resync als Self-Service: der weitere Filter, ein Per-Channel-Cooldown und eine achtmal strengere Policy
+
+> **Teilweise überholt am 2026-10-05:** Der Button im Channel-Workspace ist wieder entfernt (s. „Channel workspace: the user-facing resync button is removed, the endpoint stays“); Endpoint, Filter, Cooldown und Policy gelten unverändert.
 
 **Betrifft:** `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Program.cs` (Policy `ChannelResync`) · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `src/EmotePurge.Core/Services/IChannelResyncCooldown.cs` (neu) · `src/EmotePurge.Infrastructure/Redis/ChannelResyncCooldown.cs` (neu) · `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` (Kommentar) · `web/src/app/core/i18n/api-error.ts` · beide Locale-Dateien
 

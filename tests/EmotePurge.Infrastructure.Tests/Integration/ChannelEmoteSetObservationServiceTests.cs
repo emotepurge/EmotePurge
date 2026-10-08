@@ -393,6 +393,7 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
             Substitute.For<IExcludedChannelFilter>(),
             new RecordingSevenTvSearchBudget(),
             new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
+            new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
             NullLogger<SevenTvSyncService>.Instance);
     }
 

@@ -257,12 +257,6 @@
       "voting": "Voting",
       "activity": "Activity"
     },
-    "resync": {
-      "label": "Resync now",
-      "title": "Re-read the emote set from 7TV now instead of waiting for the next automatic sync",
-      "queued": "Resync requested …",
-      "completed": "Resync finished."
-    },
     "activity": {
       "title": "Activity log",
       "refresh": "Refresh",
@@ -763,6 +757,7 @@
       "one": "In the selected range the stream was live on one day.",
       "other": "In the selected range the stream was live on {{ live }} days."
     },
+    "autoSyncNote": "The emote set is synced with 7TV automatically at regular intervals. A newly added emote can take up to 30 minutes before 7TV reports it here.",
     "trackedSince": "We have been counting for this channel since {{ date }}.",
     "botsExcludedSince": "Messages from known bots have not been counted since {{ date }}; numbers before that still include them.",
     "sharedChatSeparatedSince": "Usage from other channels' shared chat has not been counted since {{ date }}; numbers before that still include it.",
