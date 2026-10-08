@@ -18,6 +18,7 @@ function data(overrides: Partial<EmoteDrilldownData> = {}): EmoteDrilldownData {
     from: '2026-01-15',
     to: '2026-01-21',
     emoteId: 'emote-1',
+    sevenTvEmoteId: '01FFWH9WV80000JT8GHDKHJNZC',
     emoteName: 'Kappa',
     imageUrl: IMAGE_URL,
     ...overrides,
@@ -177,6 +178,29 @@ describe('EmoteDrilldownDialog', () => {
       );
 
       expect(component['myVoteKey']()).toBe('usageStats.drilldown.myVoteKeep');
+    });
+  });
+
+  describe('7TV page link', () => {
+    function link(): HTMLAnchorElement {
+      return fixture.nativeElement.querySelector('a[target="_blank"]') as HTMLAnchorElement;
+    }
+
+    it('points at the emote page on 7TV and opens in a new tab without leaking the opener', () => {
+      render(data(), of(series()));
+
+      expect(link().getAttribute('href')).toBe('https://7tv.app/emotes/01FFWH9WV80000JT8GHDKHJNZC');
+      expect(link().rel.split(' ')).toEqual(expect.arrayContaining(['noopener', 'noreferrer']));
+    });
+
+    it('names the destination first and says it opens in a new tab, hiding the arrow glyph', () => {
+      render(data(), of(series()));
+
+      // The test transloco has no translations, so the keys stand in for the wording.
+      expect(link().textContent?.trim()).toMatch(
+        /^usageStats\.drilldown\.openOnSevenTv.*common\.opensInNewTab$/s,
+      );
+      expect(link().querySelector('[aria-hidden="true"]')?.textContent).toContain('↗');
     });
   });
 
