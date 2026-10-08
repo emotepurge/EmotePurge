@@ -275,13 +275,14 @@ if (app.Environment.IsDevelopment())
 // exception detail in the body — only a stable errorCode the frontend can translate.
 //
 // Minimal API reports a request it could not bind (unparseable JSON, an enum member that does not
-// exist, a missing body, a wrong content type) in one of two ways, chosen by
+// exist, a missing body) in one of two ways, chosen by
 // RouteHandlerOptions.ThrowOnBadRequest, whose default is "true in Development only": either it
 // throws BadHttpRequestException out of the request delegate, or it logs and answers a body-less
 // 400. Development therefore flattened the throw into a 500 unexpected_error (found in the #245
 // live run: "type":"Keep" on POST .../votes), while every other environment answered a 400 with no
 // errorCode. The option is now on everywhere; the middleware below turns the exception into the
-// 4xx the framework chose plus a language-neutral code.
+// 4xx the framework chose plus a language-neutral code. A wrong content type does not reach this
+// catch: routing rejects the JSON-only endpoint and the /api fallback answers a body-less 404.
 //
 // A middleware rather than a branch inside the handler on purpose: ExceptionHandlerMiddleware logs
 // everything that reaches it as `fail:` with a stack trace, and an unbindable body is client input

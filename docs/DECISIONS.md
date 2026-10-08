@@ -33,6 +33,11 @@ Debug without the exception. Any other exception still goes through the handler:
 before endpoint filters, so a malformed body is a 400 even for a caller a filter would have
 rejected with 401/403 - unchanged from before, only the body differs.
 
+**Not covered: wrong content type.** A request with a content type the JSON-only endpoint does not
+accept never reaches the binder. Routing rejects it and the `/api/{**rest}` fallback answers 404
+without a body (verified live; pre-existing behaviour, deliberately unchanged). It is neither a 415
+nor `invalid_request_body`.
+
 ---
 
 ### 2026-10-08 — A convergence JOIN built on a roster read older than a processed LEAVE is dropped (leave ledger, #245 live run)
