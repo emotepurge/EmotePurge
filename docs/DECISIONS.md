@@ -144,7 +144,7 @@ the date), and nothing is written — the transaction is disposed without a comm
 also an admin lifts as the owner, without the dialog. The flag means nothing without the admin role.
 The lift is staged only after the active-channel cap has let the join through, in the join's own
 transaction, so a join refused by the cap leaves the lock exactly as it was. Until the API task of
-#245 the endpoint answers `LockedByBroadcaster` with 403 `channel_locked_by_broadcaster` for everyone.
+#245's API task the endpoint maps it as described under "API contract" below.
 
 **Helix outage: the owner's join leaves an id-less row, the lock stays, self-healing.** Lifting needs
 the resolved identity. A join while Helix is unreachable (the owner's or a moderator's with a cached
@@ -205,8 +205,42 @@ same, older gap for the env list. No id is written back there; that stays the sy
 and the reconcile's job. The live-status publish (`worker:live-status`, Redis with a TTL, shown in
 `/mine` and the admin list) stays unfiltered: a display value that writes nothing lasting.
 
-The API part of #245 (endpoints, the admin's 409, the audit-log generation boundary) extends this entry
-in its own commit.
+**API contract.**
+
+| Route | Filters | Answers |
+|---|---|---|
+| `DELETE /api/channels/{name}/data?expectedTwitchUserId=` (`Bookkeeping`) | `ChannelBroadcasterAuthorizationFilter` | 204 · 400 `invalid_channel_name` · 401 · 403 (no body: stored id is foreign, or the service's `NotBroadcaster`) · 404 (no row / `NotFound`) · 409 `account_mismatch` (parameter missing or not the session's id, answered before the service) · 409 `channel_identity_unresolved` |
+| `GET /api/channels/{name}/data-summary` (`InteractiveRead`) | same filter | 200 `{ emoteCount, voteSessionCount, liveDayCount, tagCount }` · 400 · 401 · 403 · 404 |
+| `POST /api/channels/{name}/join?liftBroadcasterLock=true` | unchanged | `LockedByBroadcaster`: non-admin 403 `{ errorCode }`; admin without the flag 409 `{ errorCode: channel_locked_by_broadcaster, lockedAtUtc }` (ISO-8601, UTC); the flag reaches the service only as `isGlobalAdmin && liftBroadcasterLock` |
+| `GET /api/channels/{name}/audit-log` | `TrackedChannelFilter` before `ChannelManagementAuthorizationFilter` | new: 404 `channel_not_found` without a row, for every principal |
+| `GET /api/channels/{name}/permissions` | none | `ChannelPermissionsDto` gains `canPurgeAsBroadcaster` after `tagRunsEnabled` |
+
+`ChannelBroadcasterAuthorizationFilter` has no admin override and no moderator branch (E7): 400 → 401 →
+404 without a row → 403 when the row stores an id that is not the caller's (ordinal). A row without a
+stored id passes, and the service proves ownership live. `expectedTwitchUserId` is mandatory like on
+`DELETE /api/auth/me`: a missing value is `account_mismatch`, so a tab signed in as someone else cannot
+erase the wrong channel. The purge's 403 carries no error code on purpose (the caller is not the
+broadcaster, and nothing in the UI can act on a reason). `canPurgeAsBroadcaster` is computed in
+`BroadcasterOwnership`, shared by the filter and the `/permissions` handler; its login branch for
+id-less rows is visibility only. `data-summary` is a separate route because `/permissions` is the most
+requested route in the app and must not carry four `COUNT`s; `tagCount` is in the response (operator
+decision 2026-10-08) because the purge also removes the mod team's tags. New codes, both through the
+Regel-7 chain (`ApiErrorCodes.cs`, `api-error.ts`, both locales): `channel_locked_by_broadcaster`,
+`channel_identity_unresolved`.
+
+**The admin lift is explicit.** A global admin's first join against a locked channel is a pure read: 409
+with the lock date, nothing written. Only the repeated request with `liftBroadcasterLock=true` lifts the
+lock (and audits it, see above). It is never a side effect of the first request.
+
+**The audit log answers 404 without a row, and is bounded by the row's generation (F1).** After a purge
+the row is gone, but the audit entries keep the channel name; a different account that takes over the
+login and joins would pass the login-based management check and read the previous generation's entries.
+`TrackedChannelFilter` closes the first half (no row, no log, for everyone, also for the admin route's
+channel-scoped sibling), and the handler passes the current row's `CreatedAt` as
+`AuditLogFilter.OccurredAfterUtc` (inclusive lower bound; `CreatedAt` survives rename and merge). The
+admin route sets no bound. **Follow-up, not part of #245:** binding audit entries to the Twitch id by a
+new column would make the boundary exact; until then a re-join of the same owner starts with an empty
+channel log by design.
 
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 

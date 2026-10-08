@@ -1927,6 +1927,8 @@
       "channel_not_on_twitch": "This channel doesn't exist on Twitch (anymore). Please check the spelling.",
       "channel_capacity_reached": "No free channel slots right now. Please contact the operator.",
       "channel_excluded": "This channel cannot be added.",
+      "channel_locked_by_broadcaster": "The streamer has removed this channel from EmotePurge. Only they can add it back.",
+      "channel_identity_unresolved": "The channel's identity could not be confirmed right now — please try again later.",
       "account_mismatch": "You’re signed in as a different account in another tab. Nothing was deleted.",
       "foreign_channel_twitch_unavailable": "Twitch is not reachable right now. Please try again shortly.",
       "foreign_channel_no_seventv_account": "This channel has no 7TV account.",

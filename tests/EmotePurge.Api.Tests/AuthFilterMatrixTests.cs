@@ -63,6 +63,8 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/testchannel/join")]
     [InlineData("DELETE", "/api/channels/testchannel")]
     [InlineData("DELETE", "/api/channels/testchannel/purge")]
+    [InlineData("DELETE", "/api/channels/testchannel/data")]
+    [InlineData("GET", "/api/channels/testchannel/data-summary")]
     [InlineData("GET", "/api/channels/testchannel/audit-log")]
     [InlineData("POST", "/api/channels/testchannel/resync")]
     [InlineData("GET", "/api/channels/testchannel/permissions")]
@@ -118,6 +120,8 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/testchannel/audit-log")]
     [InlineData("POST", "/api/channels/testchannel/resync")]
     [InlineData("DELETE", "/api/channels/testchannel/purge")]
+    [InlineData("DELETE", "/api/channels/testchannel/data")]
+    [InlineData("GET", "/api/channels/testchannel/data-summary")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
     [InlineData("GET", "/api/channels/testchannel/tags")]
     [InlineData("POST", "/api/channels/testchannel/tags")]
@@ -465,6 +469,9 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         // the channel's 7TV editors — who are frequently outside the mod team. A caller who passes
         // the wider check but not the management one must be refused, and the wider check must not
         // even be consulted. Without this, the exclusion is a comment rather than a behaviour.
+        // A tracked channel: without a row the TrackedChannelFilter answers 404 before this check.
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(new Channel { ChannelName = Channel });
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(false);
         _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
