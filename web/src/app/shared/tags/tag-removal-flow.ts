@@ -351,10 +351,12 @@ function confirm(
 
 /** The tag's own placements with their revisions, as one comparable string. */
 function ownSnapshotKey(entries: readonly EmoteTagEntry[]): string {
+  // Any fixed order will do, since both sides go through this function. The keys are ASCII ids, so
+  // `localeCompare` (Sonar S2871) orders them without merging two distinct keys.
   return entries
     .filter((entry) => entry.placedByThisTag)
     .map((entry) => `${entry.sevenTvEmoteId}:${entry.placementOperationId ?? ''}`)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .join('\n');
 }
 
