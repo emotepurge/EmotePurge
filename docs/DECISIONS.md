@@ -10,7 +10,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
-### 2026-10-08 — REST reconcile deduplicates live entries on the 7TV emote id, first entry wins (#74)
+### 2026-10-08 — REST reconcile deduplicates live entries on the 7TV emote id, last entry wins (#74)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceDuplicateEmoteIdTests.cs`
 
@@ -18,15 +18,16 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `(ChannelId, SevenTvEmoteId)` (rule 8) keeps one row, so `ReconcileAsync` upserted that row twice per
 pass: the second entry rewrote the name and stamped `LastSyncedAt`, the channel counted as changed on
 every resync, and `channel.synced` fired once a minute (measured 2026-09-20 on 3 of 4 dev channels).
-`ReconcileAsync` now reduces the live list with `DistinctBy(Id)` before the upsert loop, so the first
-entry in 7TV's order is the stored name. The previous behaviour was "last entry wins", so the first
-resync after deploying renames each affected row once (one `channel.synced`, then quiet).
+`ReconcileAsync` now reduces the live list to one entry per id before the upsert loop, and the
+**last** entry wins: that is exactly the name the old per-entry loop left stored (and chat matching
+counted), so the deploy renames no row, stamps nothing and fires no `channel.synced` burst, and no
+usage series silently switches to a different word. First-wins was tried and dropped for that reason.
 
 Deliberately unchanged: the second alias is still not countable. Chat matching resolves names from
 the stored row, so exactly one alias per id can ever be counted; making both countable would change
 the counting rule and the `AlgorithmVersion`. This is not `EmoteNameMatching.Coalesce` (two different
 ids sharing one name, first loaded wins); it is the inverse case, and both agree only in that the
-stored/first one is what is counted. The EventAPI delta path upserts per pushed entry and has no
+stored one is what is counted. The EventAPI delta path upserts per pushed entry and has no
 loop over a full set, so it needs no dedup. Earlier entries that mention the "#74 duplicate cell"
 (delete/replace paths, set views with `slotCount` 2) describe the live 7TV set, which still carries
 both entries; they stay valid, since the dedup applies to the local row only.

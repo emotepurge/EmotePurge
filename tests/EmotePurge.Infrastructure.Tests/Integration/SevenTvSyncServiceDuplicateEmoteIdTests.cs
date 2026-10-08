@@ -34,7 +34,7 @@ public class SevenTvSyncServiceDuplicateEmoteIdTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task SameEmoteIdUnderTwoNames_SettlesOnTheFirstName_AndStopsReportingChanges()
+    public async Task SameEmoteIdUnderTwoNames_SettlesOnTheLastName_AndStopsReportingChanges()
     {
         await using var db = fixture.CreateDbContext();
         var channel = new Channel { ChannelName = "dup_alias", TwitchChannelId = "tw_dup_alias", ActiveEmoteSetId = SetId, IsBotActive = true };
@@ -54,7 +54,27 @@ public class SevenTvSyncServiceDuplicateEmoteIdTests(PostgresFixture fixture)
         var row = await db.Emotes.AsNoTracking().SingleAsync(e => e.ChannelId == channel.Id);
         Assert.True(first!.HasChanges);
         Assert.False(second!.HasChanges);
-        Assert.Equal("inkorrekt", row.Name);
+        Assert.Equal("Nerdge", row.Name);
         Assert.Equal(stamp, row.LastSyncedAt);
+    }
+
+    [Fact]
+    public async Task RowAlreadyHoldingTheLastName_FirstReconcileAfterTheFix_ReportsNoChange()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = new Channel { ChannelName = "dup_alias_deploy", TwitchChannelId = "tw_dup_alias_deploy", ActiveEmoteSetId = SetId, IsBotActive = true };
+        db.Channels.Add(channel);
+        await db.SaveChangesAsync();
+        // The pre-fix state: the old loop left the last alias stored.
+        var stamp = DateTime.UtcNow.AddHours(-1);
+        db.Emotes.Add(new Emote { ChannelId = channel.Id, SevenTvEmoteId = "dup1", Name = "Nerdge", ImageUrl = Url, LastSyncedAt = stamp });
+        await db.SaveChangesAsync();
+
+        var result = await SyncAsync(db, channel, new SevenTvEmote("dup1", "inkorrekt", Url), new SevenTvEmote("dup1", "Nerdge", Url));
+
+        var row = await db.Emotes.AsNoTracking().SingleAsync(e => e.ChannelId == channel.Id);
+        Assert.False(result!.HasChanges);
+        Assert.Equal("Nerdge", row.Name);
+        Assert.Equal(stamp, row.LastSyncedAt, TimeSpan.FromMilliseconds(1));
     }
 }
