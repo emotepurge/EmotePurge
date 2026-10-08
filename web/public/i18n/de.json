@@ -89,7 +89,7 @@
       "purge": {
         "label": "endgültig",
         "title": "Gebündelt aus 7TV entfernen",
-        "body": "Markierte Emotes verlassen dein Set in einem Rutsch. Das passiert direkt bei 7TV und ist dort endgültig — deshalb erst auswählen, dann bestätigen, dann vollziehen. Aus dem Protokoll des Laufs kannst du Emotes neu hinzufügen, sofern es sie bei 7TV noch gibt; Saisonales parkst du besser in einem Tag, statt es zu löschen."
+        "body": "Markierte Emotes verlassen dein Set in einem Rutsch. Das passiert direkt bei 7TV und ist dort endgültig — deshalb erst auswählen, dann bestätigen, dann vollziehen. Aus dem Protokoll des Laufs kannst du Emotes wieder hinzufügen, solange es sie bei 7TV noch gibt. Saisonales parkst du besser in einem Tag."
       }
     },
     "how": {
@@ -101,7 +101,7 @@
       },
       "join": {
         "title": "Channel beitreten",
-        "body": "Der Bot betritt deinen Chat und zählt für dein jeweils aktives 7TV-Set — wechselst du das Set, zählt er für das neue weiter.",
+        "body": "Der Bot betritt deinen Chat und synchronisiert dein gerade aktives 7TV-Set. Wechselst du das Set, zählt er für das neue weiter.",
         "note": "Gezählt wird ab dem Beitritt. Die ersten Tage sind deshalb leer — das ist kein Fehler, sondern der Anfang der Messung."
       },
       "measure": {
@@ -125,7 +125,7 @@
         },
         "token": {
           "term": "7TV-Token",
-          "body": "Das Token, mit dem gelöscht wird, bleibt in deinem Browser und wird nie an unseren Server geschickt."
+          "body": "Das Token, mit dem bei 7TV geschrieben wird, bleibt in deinem Browser und wird nie an unseren Server geschickt."
         },
         "source": {
           "term": "Quelltext",
