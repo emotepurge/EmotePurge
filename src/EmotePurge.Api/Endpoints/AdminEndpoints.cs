@@ -509,6 +509,9 @@ public static class AdminEndpoints
         // is what happened until now: a route was guarded by a limiter that the admin snapshot, built
         // solely from this list, showed no trace of (AK 15).
         RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.ForeignEmoteLookup, options.ForeignEmoteLookup, PerUserPartition),
+        // The tracked-channel set preview's per-user half (#220); like ForeignEmoteLookup above, the
+        // provider-wide budget is not an ASP.NET policy and stays out of this list.
+        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.TrackedEmoteSetPreview, options.TrackedEmoteSetPreview, PerUserPartition),
         // The 7TV leaderboard's per-user half (spec 2026-09-13, E16), same reasoning as
         // ForeignEmoteLookup above: the leaderboard's own window budget across all users is not an
         // ASP.NET policy either and stays out of this list for the same reason.

@@ -1,4 +1,5 @@
 using EmotePurge.Core.Entities;
+using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fixtures;
@@ -16,9 +17,19 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // reads as unused, exactly like a bot-only row. It is the same seed as the test that used to
 // assert the opposite, kept rather than deleted — a deleted test would prove nothing about which
 // side of the cutover this code is on.
+//
+// Every case that predates #200 seeds its channel and its rows without an emote set id, leaving
+// both at the empty string — the state a channel is in before its first successful 7TV sync. They
+// keep passing because "no set asked for" resolves to the channel's active set and the two sides
+// are then equal, not because the filter is absent; the cases that are about the filter name their
+// sets explicitly.
 [Collection("Postgres")]
 public class UsageStatQueryServiceTests(PostgresFixture fixture)
 {
+    private const string ActiveSetId = "01ACTIVESET0000000000000000";
+    private const string PreviousSetId = "01PREVIOUSSET00000000000000";
+    private const string OlderSetId = "01OLDERSET00000000000000000";
+
     [Fact]
     public async Task GetUsageContextAsync_SumsUseCountAcrossDays_WithinRange()
     {
@@ -78,6 +89,18 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
 
         var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 1, 1), new DateOnly(2026, 12, 31));
+
+        Assert.Empty(totals);
+    }
+
+    [Fact]
+    public async Task GetUsageContextAsync_ForAnUnknownChannel_ReturnsEmpty()
+    {
+        await using var db = fixture.CreateDbContext();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetUsageContextAsync(
+            "no-such-channel", new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         Assert.Empty(totals);
     }
@@ -226,9 +249,35 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var mixedEntry = channelSeries.Emotes.Single(e => e.EmoteId == mixed.Id);
         Assert.Equal([[mixedDay.DayNumber - from.DayNumber, 2]], mixedEntry.Days);
 
+        // GetTotalsByEmoteIdsAsync needs a named set or all sets, which this set-less seed cannot
+        // give it — its side of the marker is GetTotalsByEmoteIdsAsync_ASharedOnlyDayInRange_SumsToZero,
+        // on both paths.
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetTotalsByEmoteIdsAsync_ASharedOnlyDayInRange_SumsToZero(bool acrossAllSets)
+    {
+        // SharedOnlyRow_ReadsAsUnused_LikeBotOnly's seed, under a named set, read through both the
+        // set-session path (that set) and the null-session path (every set).
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, $"sharedchat_totals_{(acrossAllSets ? "all" : "set")}", ActiveSetId);
+        var from = new DateOnly(2026, 7, 10);
+        var to = new DateOnly(2026, 7, 20);
+        var sharedThenHuman = await SeedEmoteAsync(db, channel.Id, "SharedThenHuman");
+        var mixed = await SeedEmoteAsync(db, channel.Id, "MixedHumanAndShared");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = sharedThenHuman.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 1), UseCount = 5 },
+            new UsageStat { EmoteId = sharedThenHuman.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 15), UseCount = 0, BotUseCount = 0, SharedChatUseCount = 3 },
+            new UsageStat { EmoteId = mixed.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 12), UseCount = 2, SharedChatUseCount = 3 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetTotalsByEmoteIdsAsync([sharedThenHuman.Id, mixed.Id], from, to, TotalsScope(acrossAllSets));
+
         // No UseCount > 0 filter here, only the date range — so the shared-only day still forms a
         // group, it just sums to nothing.
-        var totals = await service.GetTotalsByEmoteIdsAsync([sharedThenHuman.Id, mixed.Id], from, to);
         Assert.Equal(0, totals[sharedThenHuman.Id]);
         Assert.Equal(2, totals[mixed.Id]);
     }
@@ -278,6 +327,37 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetUsageContextAsync_NonActiveSet_StillExcludesAMemberVoteSessionCreationRowed_WithoutAnyUsageUnderThatSet()
+    {
+        // AK 63 (T6.3, class 2b): before a set-session over this set existed, a live member without
+        // a local Emote row was class 2b in the set view — no row here at all, the client unions it
+        // in as null. Creating a set-session over it (T6.1) upserts an archived, "never active" row
+        // (ArchivedAt = null) with no UsageStat rows of its own. The set view must keep reading that
+        // as null, not as a newfound 0: this row still has no aggregates entry under the set
+        // (aggregates.ContainsKey below), so it stays excluded from a non-active set's response
+        // exactly as it was before the row existed, and the client's union still shows null.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "voteclass2b1", activeEmoteSetId: "active-set-1");
+        var neverActive = new Emote
+        {
+            ChannelId = channel.Id,
+            Name = "GhostMember",
+            SevenTvEmoteId = "7tv-ghost-1",
+            ImageUrl = "https://cdn.7tv.app/emote/ghost/2x.webp",
+            IsArchived = true,
+            ArchivedAt = null,
+        };
+        db.Emotes.Add(neverActive);
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetUsageContextAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), emoteSetId: "halloween-set-1");
+
+        Assert.DoesNotContain(totals, t => t.EmoteId == neverActive.Id);
+    }
+
+    [Fact]
     public async Task GetUsageContextAsync_Throws_WhenFromIsAfterTo()
     {
         // The guard runs before any DB access, so no seed is needed here.
@@ -291,35 +371,44 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         Assert.Equal("from", exception.ParamName);
     }
 
-    [Fact]
-    public async Task GetTotalsByEmoteIdsAsync_ReturnsOnlyTheRequestedIds()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetTotalsByEmoteIdsAsync_ReturnsOnlyTheRequestedIds(bool acrossAllSets)
     {
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "ballottest1");
+        var channel = await SeedChannelAsync(db, $"ballottest1_{(acrossAllSets ? "all" : "set")}", ActiveSetId);
         var onBallot = await SeedEmoteAsync(db, channel.Id, "OnBallot");
         var offBallot = await SeedEmoteAsync(db, channel.Id, "OffBallot");
         db.UsageStats.AddRange(
-            new UsageStat { EmoteId = onBallot.Id, Date = new DateOnly(2026, 7, 2), UseCount = 9 },
-            new UsageStat { EmoteId = offBallot.Id, Date = new DateOnly(2026, 7, 2), UseCount = 99 });
+            new UsageStat { EmoteId = onBallot.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 9 },
+            new UsageStat { EmoteId = offBallot.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 99 });
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
-        var totals = await service.GetTotalsByEmoteIdsAsync([onBallot.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
+        var totals = await service.GetTotalsByEmoteIdsAsync([onBallot.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), TotalsScope(acrossAllSets));
 
         Assert.Equal(9, Assert.Single(totals).Value);
     }
 
-    [Fact]
-    public async Task GetTotalsByEmoteIdsAsync_OmitsEmotesWithoutUsage()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetTotalsByEmoteIdsAsync_OmitsEmotesWithoutUsage(bool acrossAllSets)
     {
-        // No zero-fill here, unlike the context query: the caller already holds the emote rows and
-        // reads a missing key as zero, so filling them in would only make the payload bigger.
+        // No zero-fill here, unlike the context query: the caller already holds the emote rows, so
+        // filling in every id would only make the payload bigger. What a missing key means depends
+        // on the caller now (T6.3, AK 80): a null-session reads it as zero
+        // (VoteSessionQueryService.BuildResultRow's GetValueOrDefault(id, 0)); a set-session reads
+        // it as null — "never counted under this set at all" (TryGetValue, no default). This id has
+        // no UsageStat row under the set at all, so it stays absent from the dictionary either way —
+        // on the set path and on the every-set path alike.
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "ballottest2");
+        var channel = await SeedChannelAsync(db, $"ballottest2_{(acrossAllSets ? "all" : "set")}", ActiveSetId);
         var unused = await SeedEmoteAsync(db, channel.Id, "Unused");
 
         var service = new UsageStatQueryService(db);
-        var totals = await service.GetTotalsByEmoteIdsAsync([unused.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
+        var totals = await service.GetTotalsByEmoteIdsAsync([unused.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), TotalsScope(acrossAllSets));
 
         Assert.Empty(totals);
     }
@@ -330,7 +419,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
 
         var service = new UsageStatQueryService(db);
-        var totals = await service.GetTotalsByEmoteIdsAsync([], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
+        var totals = await service.GetTotalsByEmoteIdsAsync([], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.Set("irrelevant-set"));
 
         Assert.Empty(totals);
     }
@@ -344,7 +433,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var service = new UsageStatQueryService(db);
 
         var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
-            service.GetTotalsByEmoteIdsAsync(["irrelevant-id"], new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
+            service.GetTotalsByEmoteIdsAsync(["irrelevant-id"], new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1), EmoteSetScope.Set("irrelevant-set")));
 
         Assert.Equal("from", exception.ParamName);
     }
@@ -1071,9 +1160,340 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             service.GetRowsAsync(["irrelevant-id"], new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
     }
 
-    private static async Task<Channel> SeedChannelAsync(AppDbContext db, string channelName)
+    [Fact]
+    public async Task GetUsageContextAsync_ForANonActiveSet_CountsOnlyThatSetsRows()
     {
-        var channel = new Channel { ChannelName = channelName, IsBotActive = true };
+        // The core of AK 19: one emote, two sets, two histories. Before #200 these two rows could
+        // not both exist, so "the total" was unambiguous; now the answer depends on which set the
+        // page is showing, and reading both would quietly overstate every number on it.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setfilter_context", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetUsageContextAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), PreviousSetId);
+
+        var row = Assert.Single(totals);
+        Assert.Equal(4, row.TotalUseCount);
+        // Not just the sum: the last-used day has to come from the same set, or the grid would
+        // report "used two days ago" next to a total of zero.
+        Assert.Equal(new DateOnly(2026, 7, 3), row.LastUsedDate);
+    }
+
+    [Fact]
+    public async Task GetUsageContextAsync_WithoutASetId_AnswersForTheActiveSet()
+    {
+        // The other half of AK 19, and the reason every caller that predates #200 still works: no
+        // set named means the set we currently observe, not "all of them".
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setfilter_context_default", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetUsageContextAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
+
+        var row = Assert.Single(totals);
+        Assert.Equal(7, row.TotalUseCount);
+        Assert.Equal(new DateOnly(2026, 7, 5), row.LastUsedDate);
+    }
+
+    [Fact]
+    public async Task GetDailySeriesAsync_ForANonActiveSet_ReturnsOnlyThatSetsDaysAndBounds()
+    {
+        // The drilldown has to agree with the row it was opened from — including its "first used"
+        // and "last used", which are unbounded in time but not across sets.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setfilter_daily", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var series = await service.GetDailySeriesAsync(
+            channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.Set(PreviousSetId));
+
+        Assert.NotNull(series);
+        var day = Assert.Single(series.Days);
+        Assert.Equal(new DateOnly(2026, 7, 3), day.Date);
+        Assert.Equal(4, day.UseCount);
+        Assert.Equal(4, series.TotalUseCount);
+        Assert.Equal(new DateOnly(2026, 7, 3), series.FirstUsedDate);
+        Assert.Equal(new DateOnly(2026, 7, 3), series.LastUsedDate);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_ForANonActiveSet_ReturnsOnlyThatSetsDays()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setfilter_series", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        var from = new DateOnly(2026, 7, 1);
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var series = await service.GetChannelSeriesAsync(channel.ChannelName, from, new DateOnly(2026, 7, 31), PreviousSetId);
+
+        var entry = Assert.Single(series.Emotes);
+        Assert.Equal([[new DateOnly(2026, 7, 3).DayNumber - from.DayNumber, 4]], entry.Days);
+    }
+
+    [Fact]
+    public async Task GetTotalsByEmoteIdsAsync_SumsOnlyTheRequestedSet()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setfilter_totals", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 9 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 2 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetTotalsByEmoteIdsAsync(
+            [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.Set(PreviousSetId));
+
+        Assert.Equal(2, Assert.Single(totals).Value);
+    }
+
+    [Fact]
+    public async Task GetTotalsByEmoteIdsAsync_AllSets_SumsEverySetInTheWindow()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_totals", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 9 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 2 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 6, 3), UseCount = 100 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetTotalsByEmoteIdsAsync(
+            [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
+
+        Assert.Equal(11, Assert.Single(totals).Value);
+    }
+
+    [Fact]
+    public async Task GetTotalsByEmoteIdsAsync_AllSets_KeepsAnEmoteWithRowsOnlyOutsideTheWindowAtZero()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_zero", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 6, 3), UseCount = 5 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetTotalsByEmoteIdsAsync(
+            [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
+
+        Assert.Equal(0, Assert.Single(totals).Value);
+    }
+
+    [Fact]
+    public async Task GetTotalsByEmoteIdsAsync_ActiveSetScope_Throws()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new UsageStatQueryService(db);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetTotalsByEmoteIdsAsync(
+            ["some-id"], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.ActiveSet));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void EmoteSetScope_Set_RejectsAnEmptyId(string? id)
+    {
+        Assert.ThrowsAny<ArgumentException>(() => EmoteSetScope.Set(id!));
+    }
+
+    [Fact]
+    public async Task GetDailySeriesAsync_AllSets_SumsSetsPerDay_AndBoundsAcrossSets()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "allsets_daily", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 6 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var series = await service.GetDailySeriesAsync(
+            channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
+
+        Assert.NotNull(series);
+        Assert.Equal(
+            [(new DateOnly(2026, 7, 3), 10), (new DateOnly(2026, 7, 5), 7)],
+            series.Days.Select(d => (d.Date, d.UseCount)).ToArray());
+        Assert.Equal(17, series.TotalUseCount);
+        Assert.Equal(new DateOnly(2026, 7, 3), series.FirstUsedDate);
+        Assert.Equal(new DateOnly(2026, 7, 5), series.LastUsedDate);
+    }
+
+    [Fact]
+    public async Task GetRowsAsync_SumsTheSetsOfOneDay_IntoASingleRow()
+    {
+        // AK 19's harness half (spec E15, F11): the backfill harness compares our record for a day
+        // against the chat log for that day, and the chat log has no idea a set switch happened
+        // mid-afternoon. Two rows for one day would look to it like a counting error in our data.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "rows_setsum", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        var switchDay = new DateOnly(2026, 7, 3);
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = switchDay, UseCount = 4, BotUseCount = 1, SharedChatUseCount = 2 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = switchDay, UseCount = 3, BotUseCount = 0, SharedChatUseCount = 5 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 4), UseCount = 6 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var rows = await service.GetRowsAsync([emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
+
+        Assert.Equal(2, rows.Count);
+        var split = rows.Single(r => r.Date == switchDay);
+        Assert.Equal(7, split.UseCount);
+        Assert.Equal(1, split.BotUseCount);
+        Assert.Equal(7, split.SharedChatUseCount);
+        // The undivided day is untouched, and the ordering the harness hashes still holds.
+        Assert.Equal(6, rows.Single(r => r.Date == new DateOnly(2026, 7, 4)).UseCount);
+        Assert.Equal([switchDay, new DateOnly(2026, 7, 4)], rows.Select(r => r.Date));
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_NamesEntriesBySevenTvId_AndStillCarriesTheGuid()
+    {
+        // AK 20. A non-active set's sheet is a historical view, so the archived emote belongs on
+        // it; both entries are named by the 7TV id, and both still carry the Emote.Id guid for the
+        // length of the transition (spec 6.5, step 1). The guid can never be missing here, because
+        // an entry exists only where a database row does — a 7TV-only member of the set has no
+        // usage history to report and does not reach this response at all.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "series_seventvid", ActiveSetId);
+        var stillHere = await SeedEmoteAsync(db, channel.Id, "StillHere");
+        var goneFrom7Tv = await SeedEmoteAsync(db, channel.Id, "GoneFrom7Tv", isArchived: true);
+        var from = new DateOnly(2026, 7, 1);
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = stillHere.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 2), UseCount = 3 },
+            new UsageStat { EmoteId = goneFrom7Tv.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 4), UseCount = 5 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var series = await service.GetChannelSeriesAsync(channel.ChannelName, from, new DateOnly(2026, 7, 31), PreviousSetId);
+
+        Assert.Equal(2, series.Emotes.Count);
+        var stillHereEntry = series.Emotes.Single(e => e.SevenTvEmoteId == stillHere.SevenTvEmoteId);
+        Assert.Equal(stillHere.Id, stillHereEntry.EmoteId);
+        Assert.Equal([[1, 3]], stillHereEntry.Days);
+        var goneEntry = series.Emotes.Single(e => e.SevenTvEmoteId == goneFrom7Tv.SevenTvEmoteId);
+        Assert.Equal(goneFrom7Tv.Id, goneEntry.EmoteId);
+        Assert.Equal([[3, 5]], goneEntry.Days);
+        Assert.All(series.Emotes, e => Assert.NotEqual(string.Empty, e.EmoteId));
+    }
+
+    [Fact]
+    public async Task GetUsageContextAsync_NameTwinEmoteSetIds_ListsTheOtherSetsAName_WasCountedUnder()
+    {
+        // E24. Two 7TV emotes of one channel share a name, so chat matching could only ever credit
+        // one of them at a time — which one changed with the set. Without this hint a row reading
+        // zero under the active set looks like a dead emote rather than one whose history is one
+        // dropdown entry away. Sorted ordinal so two sets read the same way every time.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "nametwin_other_set", ActiveSetId);
+        var current = await SeedEmoteAsync(db, channel.Id, "Stare");
+        var predecessor = await SeedEmoteAsync(db, channel.Id, "Stare", isArchived: true);
+        var unrelated = await SeedEmoteAsync(db, channel.Id, "Unrelated");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = predecessor.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 11 },
+            new UsageStat { EmoteId = predecessor.Id, EmoteSetId = OlderSetId, Date = new DateOnly(2026, 6, 3), UseCount = 2 },
+            new UsageStat { EmoteId = unrelated.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetUsageContextAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
+
+        Assert.Equal([OlderSetId, PreviousSetId], totals.Single(t => t.EmoteId == current.Id).NameTwinEmoteSetIds);
+        // A unique name has no twin, however much history it carries under other sets.
+        Assert.Empty(totals.Single(t => t.EmoteId == unrelated.Id).NameTwinEmoteSetIds);
+    }
+
+    [Fact]
+    public async Task GetUsageContextAsync_NameTwinEmoteSetIds_OmitsTheSetBeingLookedAt()
+    {
+        // The twin's counts sit in the same view already; pointing at the set the reader is
+        // looking at would be noise, and worse, it would read as "look elsewhere".
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "nametwin_same_set", ActiveSetId);
+        var current = await SeedEmoteAsync(db, channel.Id, "Stare");
+        var twin = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.Add(
+            new UsageStat { EmoteId = twin.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 11 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetUsageContextAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
+
+        Assert.Empty(totals.Single(t => t.EmoteId == current.Id).NameTwinEmoteSetIds);
+        Assert.Empty(totals.Single(t => t.EmoteId == twin.Id).NameTwinEmoteSetIds);
+    }
+
+    [Fact]
+    public async Task GetUsageContextAsync_ForANonActiveSet_ShowsArchivedRowsWithCounts_AndHidesActiveRowsWithout()
+    {
+        // E16: the base set flips with the question. Under the active set the list is a deletion
+        // grid and zero-fills every current member; under a non-active set it is a record of what
+        // that set was used for, and half of that is typically gone from 7TV by now. Zero-filling
+        // there would bury forty counted emotes under a thousand empty ones.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "nonactive_basis", ActiveSetId);
+        var archivedWithHistory = await SeedEmoteAsync(db, channel.Id, "ArchivedWithHistory", isArchived: true);
+        var currentWithoutHistory = await SeedEmoteAsync(db, channel.Id, "CurrentWithoutHistory");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = archivedWithHistory.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 6 },
+            new UsageStat { EmoteId = currentWithoutHistory.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 8 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var underPrevious = await service.GetUsageContextAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), PreviousSetId);
+
+        var row = Assert.Single(underPrevious);
+        Assert.Equal(archivedWithHistory.Id, row.EmoteId);
+        Assert.Equal(6, row.TotalUseCount);
+        Assert.True(row.IsArchived);
+
+        // The control: the same channel under its active set is the deletion grid it always was —
+        // the archived row is gone and the current one is there, zero-filled or not.
+        var underActive = await service.GetUsageContextAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
+
+        var activeRow = Assert.Single(underActive);
+        Assert.Equal(currentWithoutHistory.Id, activeRow.EmoteId);
+        Assert.False(activeRow.IsArchived);
+    }
+
+    private static async Task<Channel> SeedChannelAsync(AppDbContext db, string channelName, string activeEmoteSetId = "")
+    {
+        var channel = new Channel { ChannelName = channelName, IsBotActive = true, ActiveEmoteSetId = activeEmoteSetId };
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         return channel;
@@ -1107,4 +1527,9 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
         return emote;
     }
+
+    /// <summary>The set-session path (the channel's active set, by name) or the null-session path
+    /// (every set) of <see cref="UsageStatQueryService.GetTotalsByEmoteIdsAsync"/>.</summary>
+    private static EmoteSetScope TotalsScope(bool acrossAllSets) =>
+        acrossAllSets ? EmoteSetScope.AllSets : EmoteSetScope.Set(ActiveSetId);
 }

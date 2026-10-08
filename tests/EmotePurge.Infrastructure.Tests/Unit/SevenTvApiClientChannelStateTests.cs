@@ -188,7 +188,7 @@ public class SevenTvApiClientChannelStateTests
         var handler = CreateHandler(userPayload, ("emote-sets", emoteSetPayload));
         var logger = new RecordingLogger<SevenTvApiClient>();
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
-        var client = new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), logger);
+        var client = new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), logger);
 
         await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
 
@@ -365,7 +365,7 @@ public class SevenTvApiClientChannelStateTests
     private static SevenTvApiClient CreateClient(RoutingStubHandler handler)
     {
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
-        return new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingLogger<SevenTvApiClient>());
+        return new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), new RecordingLogger<SevenTvApiClient>());
     }
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string payload) =>

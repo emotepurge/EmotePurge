@@ -115,14 +115,16 @@ public class SevenTvPeriodicResyncWorker(
     }
 
     // Symmetric counterpart to Worker.cs's Redis LEAVE handler — same four steps, in the same
-    // order, for every channel RosterPrunePolicy decides has fallen out of the active set. Neither
-    // EmoteMatchCache.RemoveChannel, IEmptySetConfirmationTracker.Reset nor
-    // ISevenTvEventClient.Unsubscribe perform I/O, and
+    // order (the IRC leave only for names on the roster), for every channel RosterPrunePolicy decides
+    // has fallen out of the active set. Neither EmoteMatchCache.RemoveChannel,
+    // IEmptySetConfirmationTracker.Reset nor ISevenTvEventClient.Unsubscribe perform I/O, and
     // LeaveChannelAsync already swallows its own exceptions, so no per-channel try/catch is needed
     // here beyond the one already wrapping this whole tick in ResyncOnceAsync.
     private async Task PruneStaleChannelsAsync(IReadOnlyList<string> activeChannels)
     {
-        var result = RosterPrunePolicy.DetermineChannelsToPrune(activeChannels, twitchChatManager.GetRoster(), _staleChannels);
+        var roster = twitchChatManager.GetRoster();
+        var ghostCandidates = emoteMatchCache.GetCachedChannelNames().Concat(sevenTvEventClient.DesiredChannels).ToList();
+        var result = RosterPrunePolicy.DetermineChannelsToPrune(activeChannels, roster, _staleChannels, ghostCandidates);
         _staleChannels = result.StaleChannels;
 
         if (result.ChannelsToPrune.Count > 0)
@@ -132,7 +134,7 @@ public class SevenTvPeriodicResyncWorker(
             // prune is also how a blocked channel whose LEAVE got lost is parted — naming it here
             // would tie the block to it.
             logger.LogInformation(
-                "Convergence net: leaving {Count} channel(s) that have not been active for two consecutive passes but are still on the roster (lost Redis LEAVE, issue #41).",
+                "Convergence net: cleaning up {Count} channel(s) that have not been active for two consecutive passes but are still on the roster or held in memory (lost Redis LEAVE, issue #41; sync/rename ghosts, issue #59).",
                 result.ChannelsToPrune.Count);
         }
 
@@ -142,7 +144,14 @@ public class SevenTvPeriodicResyncWorker(
             emoteMatchCache.RemoveChannel(channelName);
             emptySetConfirmations.Reset(channelName);
             sevenTvEventClient.Unsubscribe(channelName);
-            await twitchChatManager.LeaveChannelAsync(channelName);
+
+            // Only for names the IRC roster actually holds: a pure cache/registry ghost (re-created
+            // by a sync that was in flight across a rename or deactivation, issue #59) has nothing
+            // to leave, and the LEAVE would at best be a no-op against a name the bot never joined.
+            if (roster.Any(e => string.Equals(e.ChannelName, channelName, StringComparison.OrdinalIgnoreCase)))
+            {
+                await twitchChatManager.LeaveChannelAsync(channelName);
+            }
         }
     }
 }

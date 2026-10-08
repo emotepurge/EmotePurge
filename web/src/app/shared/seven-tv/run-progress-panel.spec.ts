@@ -1,12 +1,12 @@
-import { Component } from '@angular/core';
+import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
 import { RunItemStatus, RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import { RunProgressPanel } from './run-progress-panel';
+import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
+import { RunProgressPanel, RunProgressTally } from './run-progress-panel';
 
 // Only the keys this panel itself translates — not the full app translation file. Texts are the
 // real German ones (`massDelete` family, `web/public/i18n/de.json`), so an assertion reads as the
@@ -17,22 +17,62 @@ const DE_TRANSLATIONS = {
   massDelete: {
     progress: '{{ finished }} / {{ total }} verarbeitet',
     progressBarLabel: 'Löschfortschritt',
+    settling: 'Wird abgeschlossen…',
     deleteFailedFallback: 'Löschen fehlgeschlagen',
+    unknownOutcome:
+      'Unklar, ob gelöscht — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.',
     syncFailedTitle: 'Rückmeldung an EmotePurge fehlgeschlagen',
     syncFailed:
       'Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.',
+    syncPartialTitle: 'Rückmeldung an EmotePurge unvollständig',
+    syncPartial:
+      'Die Emotes sind bei 7TV gelöscht und bei EmotePurge vermerkt — aber nicht vollständig.',
     syncRetry: 'Erneut melden',
-    syncRetrySucceeded: 'Rückmeldung erfolgreich nachgeholt.',
+    syncRetrySucceeded: 'Rückmeldung erfolgreich.',
     summary: {
       counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
     },
+  },
+  import: {
+    progress: '{{ finished }} / {{ total }} kopiert',
+    progressBarLabel: 'Übertragungsfortschritt',
+    summary: {
+      counts: '{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+      countsWithRenamed:
+        '{{done}} kopiert · {{renamed}} umbenannt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+    },
+  },
+  undo: {
+    progress: '{{ finished }} / {{ total }} verarbeitet',
+    summary: {
+      counts: '{{done}} zurückgenommen · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+    },
+  },
+  syncReportReason: {
+    forbidden: 'Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.',
+    setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
+    unavailable: 'Grund: EmotePurge oder 7TV war gerade nicht erreichbar.',
+    channelMismatchNotTracked:
+      'Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.',
+    channelMismatchActiveSetDiffers:
+      'Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.',
+    shortfall: 'Grund: Nicht alle Emotes waren in EmotePurge vermerkt.',
+    other: 'Grund: Unerwarteter Fehler.',
   },
 };
 
 /** A queue row typed against the real `RunQueueItem` contract, so a wrong field name here is a
  *  compile error rather than a silently-ignored property. */
 function queueItem(key: string, status: RunItemStatus): RunQueueItem {
-  return { key, sevenTvEmoteId: `7tv-${key}`, name: `Emote-${key}`, status };
+  const ended = status === 'failed' || status === 'unknown';
+  return {
+    key,
+    sevenTvEmoteId: `7tv-${key}`,
+    name: `Emote-${key}`,
+    status,
+    completedSteps: status === 'done' ? 1 : 0,
+    failedStep: ended ? 0 : null,
+  };
 }
 
 /** The accname precedence this codebase relies on for an accessible name: `aria-labelledby`
@@ -69,7 +109,12 @@ function accessibleName(el: Element): string {
       [isRunning]="isRunning"
       [labelPrefix]="labelPrefix"
       [syncReport]="syncReport"
+      [syncReportReason]="syncReportReason"
       [rateLimitPauseSeconds]="rateLimitPauseSeconds"
+      [dismissible]="dismissible"
+      [renamedCount]="renamedCount"
+      [tally]="tally"
+      [settling]="settling"
       (cancelled)="cancelledCount = cancelledCount + 1"
       (dismissed)="dismissedCount = dismissedCount + 1"
       (syncRetryRequested)="syncRetryRequestedCount = syncRetryRequestedCount + 1"
@@ -85,13 +130,40 @@ function accessibleName(el: Element): string {
 class HostComponent {
   items: RunQueueItem[] = [];
   isRunning = false;
-  labelPrefix: 'massDelete' | 'restore' | 'import' = 'massDelete';
+  labelPrefix: 'massDelete' | 'restore' | 'import' | 'undo' = 'massDelete';
   syncReport: SyncReportState = 'idle';
+  syncReportReason: SyncReportReason | null = null;
   rateLimitPauseSeconds: number | null = null;
+  dismissible = true;
+  renamedCount: number | null = null;
+  tally: RunProgressTally | null = null;
+  settling = false;
   projectRunActions = false;
   cancelledCount = 0;
   dismissedCount = 0;
   syncRetryRequestedCount = 0;
+}
+
+/** A host whose bindings are signals, for the one case a test must drive an already-rendered
+ *  panel through a change (#275: `settling` ending) — `HostComponent`'s plain fields are only read
+ *  once, see `render()` below. */
+@Component({
+  selector: 'app-settling-host',
+  imports: [RunProgressPanel],
+  template: `
+    <app-run-progress-panel
+      [items]="items()"
+      [isRunning]="false"
+      [settling]="settling()"
+      [dismissible]="!settling()"
+    >
+      <span run-actions>projected-marker</span>
+    </app-run-progress-panel>
+  `,
+})
+class SettlingHostComponent {
+  readonly items = signal<RunQueueItem[]>([]);
+  readonly settling = signal(false);
 }
 
 interface Harness {
@@ -261,24 +333,235 @@ describe('RunProgressPanel', () => {
     });
   });
 
+  describe('failure list', () => {
+    it('counts an unknown row as finished and lists it with its own unknown-outcome wording', () => {
+      const unknown: RunQueueItem = {
+        ...queueItem('b', 'unknown'),
+        errorMessage: 'Keine Verbindung zu 7TV möglich (Netzwerkfehler).',
+      };
+      const dialog = render({
+        items: [queueItem('a', 'done'), unknown, queueItem('c', 'pending')],
+        isRunning: true,
+      });
+
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('2');
+      const entries = Array.from(
+        dialog.fixture.nativeElement.querySelectorAll('[role="alert"] li'),
+        (entry: Element) => entry.textContent?.trim(),
+      );
+      expect(entries).toEqual([`Emote-b: ${DE_TRANSLATIONS.massDelete.unknownOutcome}`]);
+    });
+  });
+
+  // #275: while a delete or restore run re-reads its `unknown` rows (`settling`), `items` is still
+  // the pre-settle snapshot. The bar and the failed rows stay exactly as they were — a failed row
+  // vanishing and coming back would be announced twice — while what the re-read can still change
+  // (the counts, the host's run-actions, the unknown rows) waits for its answer.
+  // The failure list's live region exists before anything has failed, so the first failure is a
+  // row added to an already-present region, not a region appearing together with its text — most
+  // screen reader/browser pairings announce only the former (docs/UI-Designsprache.md §4.5).
+  describe('failure list live region', () => {
+    it('is mounted and non-atomic with no failures yet, and the first failure lands in that same region', () => {
+      const fixture = TestBed.createComponent(SettlingHostComponent);
+      const root: HTMLElement = fixture.nativeElement;
+      fixture.componentInstance.items.set([queueItem('a', 'done'), queueItem('b', 'pending')]);
+      fixture.detectChanges();
+
+      const regionBefore = root.querySelector('[role="alert"]');
+      expect(regionBefore).not.toBeNull();
+      expect(regionBefore?.getAttribute('aria-atomic')).toBe('false');
+      expect(root.querySelectorAll('[role="alert"] li')).toHaveLength(0);
+
+      fixture.componentInstance.items.set([
+        queueItem('a', 'done'),
+        { ...queueItem('b', 'failed'), errorMessage: 'HTTP 500' },
+      ]);
+      fixture.detectChanges();
+
+      const region = root.querySelector('[role="alert"]');
+      expect(region).toBe(regionBefore);
+      expect(region?.querySelector('li')?.textContent?.trim()).toBe('Emote-b: HTTP 500');
+    });
+  });
+
+  describe('settling (#275)', () => {
+    const failed: RunQueueItem = { ...queueItem('b', 'failed'), errorMessage: 'HTTP 500' };
+
+    function alertRows(root: HTMLElement): string[] {
+      return Array.from(root.querySelectorAll('[role="alert"] li'), (row) =>
+        (row.textContent ?? '').trim(),
+      );
+    }
+
+    it('holds back the summary and the unknown rows, but keeps the failed rows and the progress', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), failed, queueItem('c', 'unknown')],
+        isRunning: false,
+        dismissible: false,
+        settling: true,
+        projectRunActions: true,
+      });
+
+      expect(dialog.text()).toContain(DE_TRANSLATIONS.massDelete.settling);
+      expect(dialog.text()).toContain('3 / 3 verarbeitet');
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('3');
+      expect(alertRows(dialog.fixture.nativeElement)).toEqual(['Emote-b: HTTP 500']);
+      expect(dialog.text()).not.toContain('gelöscht ·');
+      expect(dialog.fixture.nativeElement.querySelector('[run-actions]')).toBeNull();
+    });
+
+    it('shows the summary and only the rows the re-read left unclear once settling ends, in the same alert region', () => {
+      const fixture = TestBed.createComponent(SettlingHostComponent);
+      const root: HTMLElement = fixture.nativeElement;
+      fixture.componentInstance.items.set([
+        queueItem('a', 'done'),
+        failed,
+        queueItem('c', 'unknown'),
+        queueItem('d', 'unknown'),
+      ]);
+      fixture.componentInstance.settling.set(true);
+      fixture.detectChanges();
+
+      const regionBefore = root.querySelector('[role="alert"]');
+      const failedRowBefore = root.querySelector('[role="alert"] li');
+      expect(alertRows(root)).toEqual(['Emote-b: HTTP 500']);
+
+      // The settled result: the re-read cleared `c` up, `d` stayed unclear. Rows it did not touch
+      // keep their object identity (`settleDeleteResult`), `failed` included.
+      fixture.componentInstance.items.set([
+        queueItem('a', 'done'),
+        failed,
+        queueItem('c', 'done'),
+        queueItem('d', 'unknown'),
+      ]);
+      fixture.componentInstance.settling.set(false);
+      fixture.detectChanges();
+
+      expect(root.textContent).toContain('2 gelöscht · 1 fehlgeschlagen · 0 abgebrochen');
+      expect(root.querySelector('[run-actions]')).not.toBeNull();
+      expect(root.textContent).toContain('4 / 4 verarbeitet');
+      expect(alertRows(root)).toEqual([
+        'Emote-b: HTTP 500',
+        `Emote-d: ${DE_TRANSLATIONS.massDelete.unknownOutcome}`,
+      ]);
+      // Neither the region nor the failed row was re-mounted, and the region is non-atomic: only
+      // the rejoining unknown row is an addition a screen reader speaks, the failed one is not
+      // announced a second time.
+      const region = root.querySelector('[role="alert"]');
+      expect(region).toBe(regionBefore);
+      expect(region?.getAttribute('aria-atomic')).toBe('false');
+      expect(root.querySelector('[role="alert"] li')).toBe(failedRowBefore);
+    });
+  });
+
   describe('sync-report hint mapping', () => {
-    it.each(['failed', 'partial'] as const)(
-      "shows the sync-failed notice (title, body, retry) for syncReport '%s'",
-      (syncReport) => {
+    it("shows the sync-failed notice (title, body, retry) for syncReport 'failed'", () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        syncReport: 'failed',
+      });
+
+      expect(dialog.text()).toContain('Rückmeldung an EmotePurge fehlgeschlagen');
+      expect(dialog.text()).toContain(
+        'Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken.',
+      );
+      expect(dialog.button('Erneut melden')).not.toBeNull();
+      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
+    });
+
+    // #255: 'partial' means the report *did* get through, just not completely — it now gets its
+    // own title/body ("vermerkt, aber …") rather than sharing 'failed'\'s "fehlgeschlagen …
+    // konnte es nicht vermerken", which was simply wrong for an outcome that was in fact recorded.
+    it("shows its own sync-partial notice (title, body, retry) for syncReport 'partial'", () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        syncReport: 'partial',
+      });
+
+      expect(dialog.text()).toContain('Rückmeldung an EmotePurge unvollständig');
+      expect(dialog.text()).toContain(
+        'Die Emotes sind bei 7TV gelöscht und bei EmotePurge vermerkt — aber nicht vollständig.',
+      );
+      expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
+      expect(dialog.text()).not.toContain('konnte es nicht vermerken');
+      expect(dialog.button('Erneut melden')).not.toBeNull();
+      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
+    });
+
+    // Spec E23: the reason is its own line inside the report notice, one per reason — and no line
+    // at all without one.
+    it.each([
+      ['failed', 'forbidden'],
+      ['failed', 'setNotFound'],
+      ['failed', 'unavailable'],
+      ['failed', 'other'],
+      ['partial', 'channelMismatchNotTracked'],
+      ['partial', 'channelMismatchActiveSetDiffers'],
+      ['partial', 'shortfall'],
+    ] as const)(
+      "shows the reason line for syncReport '%s' with reason '%s', and none without a reason",
+      (syncReport, syncReportReason) => {
+        const withReason = render({
+          items: [queueItem('a', 'done')],
+          isRunning: false,
+          syncReport,
+          syncReportReason,
+        });
+        expect(withReason.text()).toContain(DE_TRANSLATIONS.syncReportReason[syncReportReason]);
+
+        const withoutReason = render({
+          items: [queueItem('a', 'done')],
+          isRunning: false,
+          syncReport,
+          syncReportReason: null,
+        });
+        expect(withoutReason.text()).toContain(
+          syncReport === 'partial'
+            ? 'Rückmeldung an EmotePurge unvollständig'
+            : 'Rückmeldung an EmotePurge fehlgeschlagen',
+        );
+        expect(withoutReason.text()).not.toContain('Grund:');
+      },
+    );
+
+    // addendum N4, AK 40: either channel-mismatch reason keeps its notice but loses the retry
+    // action — a retry would only repeat the same mismatch; failed (any reason) and shortfall
+    // keep it.
+    it.each(['channelMismatchNotTracked', 'channelMismatchActiveSetDiffers'] as const)(
+      'offers no retry for partial/%s, but keeps the notice and its reason',
+      (syncReportReason) => {
+        const dialog = render({
+          items: [queueItem('a', 'done')],
+          isRunning: false,
+          syncReport: 'partial',
+          syncReportReason,
+        });
+
+        expect(dialog.text()).toContain('Rückmeldung an EmotePurge unvollständig');
+        expect(dialog.text()).toContain(DE_TRANSLATIONS.syncReportReason[syncReportReason]);
+        expect(dialog.button('Erneut melden')).toBeNull();
+      },
+    );
+
+    it.each([
+      ['partial', 'shortfall'],
+      ['failed', 'unavailable'],
+      ['failed', 'forbidden'],
+    ] as const)(
+      "offers the retry for syncReport '%s' with reason '%s'",
+      (syncReport, syncReportReason) => {
         const dialog = render({
           items: [queueItem('a', 'done')],
           isRunning: false,
           syncReport,
+          syncReportReason,
         });
 
-        expect(dialog.text()).toContain('Rückmeldung an EmotePurge fehlgeschlagen');
-        expect(dialog.text()).toContain(
-          'Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken.',
-        );
-        expect(dialog.button('Erneut melden')).not.toBeNull();
-        // 'partial' is documented (run-progress-panel.ts) as sharing this exact hint with 'failed' —
-        // same title, same body, same retry action, not merely "also something is shown".
-        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
+        dialog.button('Erneut melden')?.click();
+
+        expect(dialog.host.syncRetryRequestedCount).toBe(1);
       },
     );
 
@@ -289,7 +572,7 @@ describe('RunProgressPanel', () => {
         syncReport: 'succeeded',
       });
 
-      expect(dialog.text()).toContain('Rückmeldung erfolgreich nachgeholt.');
+      expect(dialog.text()).toContain('Rückmeldung erfolgreich.');
       expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
       expect(dialog.button('Erneut melden')).toBeNull();
     });
@@ -301,7 +584,7 @@ describe('RunProgressPanel', () => {
         syncReport: 'succeeded',
       });
 
-      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
+      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
       expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
     });
 
@@ -314,7 +597,7 @@ describe('RunProgressPanel', () => {
           syncReport,
         });
 
-        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
+        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
         expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
       },
     );
@@ -351,6 +634,90 @@ describe('RunProgressPanel', () => {
 
       expect(dialog.fixture.nativeElement.querySelector('[run-actions]')).not.toBeNull();
       expect(dialog.text()).toContain('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+    });
+  });
+
+  // Spec #255: an import run's adopted renames are a `done` row too, but not a copy — a host
+  // (currently only import) can split them out via `renamedCount` without touching what
+  // massDelete/restore ever showed.
+  describe('summary counts', () => {
+    it('reads "copied" alone when renamedCount is not passed, unaffected by the new field', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'done')],
+        isRunning: false,
+        labelPrefix: 'massDelete',
+      });
+
+      expect(dialog.text()).toContain('2 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+      expect(dialog.text()).not.toContain('umbenannt');
+    });
+
+    it('reads "copied" alone when renamedCount is 0, even for a labelPrefix that has a renamed wording', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'done')],
+        isRunning: false,
+        labelPrefix: 'import',
+        renamedCount: 0,
+      });
+
+      expect(dialog.text()).toContain('2 kopiert · 0 fehlgeschlagen · 0 abgebrochen');
+      expect(dialog.text()).not.toContain('umbenannt');
+    });
+
+    it('splits renamedCount out of "copied" into its own "renamed" count once it is positive', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'done'), queueItem('c', 'done')],
+        isRunning: false,
+        labelPrefix: 'import',
+        renamedCount: 1,
+      });
+
+      expect(dialog.text()).toContain('2 kopiert · 1 umbenannt · 0 fehlgeschlagen · 0 abgebrochen');
+    });
+
+    // #254: the undo counts a row its recheck skipped as finished and names it under its own
+    // reason, never as a cancellation — so it hands the panel its own tally. The bar and the
+    // sentence follow it; `total` still counts the rows.
+    it('reads the bar and the sentence from a host tally instead of counting items by status', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'cancelled'), queueItem('c', 'cancelled')],
+        isRunning: false,
+        labelPrefix: 'undo',
+        tally: { finished: 2, done: 1, failed: 0, cancelled: 1 },
+      });
+
+      expect(dialog.text()).toContain('2 / 3 verarbeitet');
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('2');
+      expect(dialog.text()).toContain('1 zurückgenommen · 0 fehlgeschlagen · 1 abgebrochen');
+    });
+  });
+
+  // Finding 2: a host (import) gates Close on its own settlement signal, not merely on `isRunning`,
+  // so the run stays in the dock — with its protocol and unload cover intact — until that signal
+  // says the pending re-read is done. Delete/restore never pass `dismissible`, so it defaults to
+  // `true` and their panels behave exactly as before.
+  describe('dismissible', () => {
+    it('shows neither Cancel nor Close while not running and not dismissible, and explains why', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        dismissible: false,
+      });
+
+      expect(dialog.button('Abbrechen')).toBeNull();
+      expect(dialog.button('Schließen')).toBeNull();
+      expect(dialog.text()).toContain(DE_TRANSLATIONS.massDelete.settling);
+    });
+
+    it('shows Close once the run is no longer running and dismissible again', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        dismissible: true,
+      });
+
+      expect(dialog.button('Schließen')).not.toBeNull();
+      expect(dialog.text()).not.toContain(DE_TRANSLATIONS.massDelete.settling);
     });
   });
 

@@ -74,6 +74,54 @@ public class SevenTvPeriodicResyncWorkerTests
             provider.Entries, e => e.Level > LogLevel.Debug && e.Message.Contains("prunedchannel", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task Prune_CacheAndRegistryGhostNotOnTheRoster_IsCleanedUpWithoutAnIrcLeave()
+    {
+        var gate = new BootRecoveryGate();
+        gate.MarkCompleted();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>()).Returns(new List<string>());
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        chatManager.GetRoster().Returns([]);
+        var emoteMatchCache = Substitute.For<IEmoteMatchCache>();
+        emoteMatchCache.GetCachedChannelNames().Returns(["ghostlogin"]);
+        var cleaned = new TaskCompletionSource();
+        emoteMatchCache.When(x => x.RemoveChannel("ghostlogin")).Do(_ => cleaned.TrySetResult());
+        var eventClient = Substitute.For<ISevenTvEventClient>();
+        eventClient.DesiredChannels.Returns(["ghostlogin"]);
+
+        var services = new ServiceCollection();
+        services.AddSingleton(channelService);
+        services.AddSingleton(Substitute.For<ISevenTvSyncService>());
+
+        var worker = new SevenTvPeriodicResyncWorker(
+            new Logger<SevenTvPeriodicResyncWorker>(new LoggerFactory()),
+            chatManager,
+            gate,
+            eventClient,
+            emoteMatchCache,
+            Substitute.For<IEmptySetConfirmationTracker>(),
+            Substitute.For<IRedisPublisher>(),
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["SevenTv:ResyncIntervalSeconds"] = "1"
+            }).Build(),
+            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>());
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await cleaned.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        eventClient.Received().Unsubscribe("ghostlogin");
+        await chatManager.DidNotReceive().LeaveChannelAsync(Arg.Any<string>());
+    }
+
     private sealed class CapturingLoggerProvider : ILoggerProvider
     {
         private readonly List<LogEntry> _entries = [];

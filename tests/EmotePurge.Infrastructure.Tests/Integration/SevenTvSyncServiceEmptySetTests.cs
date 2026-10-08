@@ -26,7 +26,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
 
     private async Task<(Channel Channel, EmoteMatchCache Cache, EmptySetConfirmationTracker Tracker)> SeedAsync(AppDbContext db, string name, int confirmations = 3)
     {
-        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = OldSetId };
+        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = OldSetId, IsBotActive = true };
         db.Channels.Add(channel);
         db.Emotes.Add(new Emote
         {
@@ -48,7 +48,8 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(setId, emotes))));
         var service = new SevenTvSyncService(
-            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             tracker, new RecordingLogger<SevenTvSyncService>());
         return service.SyncChannelAsync(channel.ChannelName);
     }
@@ -62,7 +63,8 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(setId, [], RemoteEntryCount: remoteEntryCount))));
         var service = new SevenTvSyncService(
-            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             tracker, logger ?? new RecordingLogger<SevenTvSyncService>());
         return service.SyncChannelAsync(channel.ChannelName);
     }
@@ -82,7 +84,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         Assert.True(result.HasChanges);
         Assert.Equal(NewSetId, result.EmoteSetId);
         Assert.True(await IsArchivedAsync(db, channel));
-        Assert.Empty(cache.GetChannelEmotes(channel.ChannelName));
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
         Assert.Equal(NewSetId, (await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id)).ActiveEmoteSetId);
     }
 
@@ -99,14 +101,14 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         Assert.False(first!.HasChanges);
         Assert.False(second!.HasChanges);
         Assert.False(await IsArchivedAsync(db, channel));
-        Assert.Single(cache.GetChannelEmotes(channel.ChannelName).Keys, "stable");
+        Assert.Single(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Keys, "stable");
 
         _clock.Advance(Tick);
         var third = await SyncAsync(db, channel, cache, tracker, OldSetId);
 
         Assert.True(third!.HasChanges);
         Assert.True(await IsArchivedAsync(db, channel));
-        Assert.Empty(cache.GetChannelEmotes(channel.ChannelName));
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
     }
 
     [Fact]
@@ -176,7 +178,8 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(OldSetId, []))));
         var service = new SevenTvSyncService(
-            db, apiClient, new EmoteMatchCache(), new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), tracker, logger);
+            db, apiClient, new EmoteMatchCache(), new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), tracker, logger);
 
         await service.SyncChannelAsync(channel.ChannelName);
 
@@ -252,7 +255,8 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         failing.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Failed(SevenTvLookupStatus.Unavailable));
         var failingService = new SevenTvSyncService(
-            db, failing, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            db, failing, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             tracker, new RecordingLogger<SevenTvSyncService>());
         _clock.Advance(Tick);
         Assert.Null(await failingService.SyncChannelAsync(channel.ChannelName));
@@ -302,7 +306,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         Assert.Equal(OldSetId, vetoed.EmoteSetId);
         Assert.Equal("7tv-user", vetoed.SevenTvUserId);
         Assert.False(await IsArchivedAsync(db, channel));
-        Assert.Single(cache.GetChannelEmotes(channel.ChannelName).Keys, "stable");
+        Assert.Single(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Keys, "stable");
         var row = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
         Assert.Null(row.LastSyncFailureReason);
         Assert.Equal(OldSetId, row.ActiveEmoteSetId);
@@ -365,9 +369,10 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
                 : Json($$$"""{"emote_set":{"id":"{{{setId}}}","capacity":600},"user":{"id":"7tv-user","connections":[]}}"""));
         var apiClient = new SevenTvApiClient(
             new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
-            new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingLogger<SevenTvApiClient>());
+            new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), new RecordingLogger<SevenTvApiClient>());
         var service = new SevenTvSyncService(
-            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             tracker, new RecordingLogger<SevenTvSyncService>());
 
         var result = await service.SyncChannelAsync(channel.ChannelName);
@@ -408,7 +413,8 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(NewSetId, [], 750))));
         var service = new SevenTvSyncService(
-            db, apiClient, new EmoteMatchCache(), new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), tracker, new RecordingLogger<SevenTvSyncService>());
+            db, apiClient, new EmoteMatchCache(), new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), tracker, new RecordingLogger<SevenTvSyncService>());
 
         await service.SyncChannelAsync(channel.ChannelName);
 
@@ -421,7 +427,8 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         AppDbContext db, Channel channel, EmoteMatchCache cache, IEmptySetConfirmationTracker tracker, SevenTvEmoteSetDelta delta)
     {
         var service = new SevenTvSyncService(
-            db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
+            new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             tracker, new RecordingLogger<SevenTvSyncService>());
         return service.ApplyEmoteSetUpdateAsync(channel.ChannelName, OldSetId, delta);
     }

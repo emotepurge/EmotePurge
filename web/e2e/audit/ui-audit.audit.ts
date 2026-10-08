@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
 import { Page, expect, test } from '@playwright/test';
 
+import { VoteSessionResult } from '../../src/app/core/voting/vote-session.model';
 import {
   AUTH_USER,
   MockChannel,
@@ -21,6 +22,7 @@ import {
   mockChannelStatus,
   mockContactConfig,
   mockEmoteList,
+  mockEmoteSetTargets,
   mockLegalAvailability,
   mockLegalDocument,
   mockSetWarning,
@@ -150,15 +152,18 @@ function usageEmotes(count: number) {
 }
 
 /**
- * Daily curves for the sidecar sparkline, keyed like the real /series response. Only the emotes the
- * sidecar can land on need one — it opens on the busiest, which is `e1`.
+ * Daily curves for the sidecar sparkline, keyed by 7TV id like the real /series response. Only the emotes the
+ * sidecar can land on need one — it opens on the busiest, which is `7tv-1` (`e1`).
  */
 function usageSeries(): Record<string, [number, number][]> {
   return {
-    e1: Array.from({ length: 18 }, (_, i) => [i * 1.5 + 1, 40 + Math.round(90 * Math.sin(i / 2.2))])
+    '7tv-1': Array.from({ length: 18 }, (_, i) => [
+      i * 1.5 + 1,
+      40 + Math.round(90 * Math.sin(i / 2.2)),
+    ])
       .filter(([, count]) => count > 0)
       .map(([day, count]) => [Math.round(day), count] as [number, number]),
-    e2: [
+    '7tv-2': [
       [3, 12],
       [4, 30],
       [11, 4],
@@ -210,13 +215,17 @@ function voteResults(sessionId: number, isActive: boolean, options: VoteResultsO
     voterCount,
     hideResultsUntilEnd: hidden !== undefined,
     // Backend order: ascending net score, delete candidates first (name order when withheld).
-    emotes: usageEmotes(count).map((e, i) => ({
+    emotes: usageEmotes(count).map((e, i): VoteSessionResult => ({
       ...e,
       totalUseCount: withUsage ? e.totalUseCount : null,
       keepVotes: talliesWithheld ? null : 2 + i * 4,
       deleteVotes: talliesWithheld ? null : 40 - i * 3,
       score: talliesWithheld ? null : -38 + i * 7,
       isArchived: withArchived && i < 2,
+      // Same rule as e2e/support/mocks.ts's mockVoteSessionResults (~:1171): eligible defaults
+      // to !isArchived. Left inline here rather than defaulted through `?? !isArchived` because
+      // this fixture builds isArchived itself a line below rather than reading it off an input.
+      eligible: !(withArchived && i < 2),
       myVote: i % 3 === 0 ? 1 : i % 3 === 1 ? 2 : null,
     })),
   };
@@ -803,9 +812,10 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    // The A6/#91 import path in its refusal state: a protocol from another channel renders the
-    // error banner inside the import dialog's file step, under the sort list and the file control
-    // (§1.1's body order) — deterministic (no token prompt, no further dialog).
+    // The A6/#91 import path in its refusal state: a protocol whose set is in none of the caller's
+    // target lists (#253: the file names the target, the target list checks it) renders the error
+    // banner inside the import dialog's file step, under the sort list and the file control (§1.1's
+    // body order) — deterministic (no token prompt, no further dialog).
     slug: 'usage-stats-restore-import-error',
     path: '/channels/sensitron/usage-stats',
     requiresFinePointer: true,
@@ -814,6 +824,9 @@ const SCENARIOS: Scenario[] = [
       await channelWorkspace(page);
       await mockActiveEmoteSet(page, 'sensitron');
       await mockUsageTotals(page, 'sensitron', usageEmotes(8));
+      await mockEmoteSetTargets(page, [
+        { twitchChannelId: 'own-1', twitchLogin: 'sensitron', isOwnAccount: true, sets: [] },
+      ]);
     },
     afterLoad: async (page) => {
       // The file control now lives inside the import dialog (#91, #147), not directly on the page,
@@ -996,6 +1009,19 @@ const SCENARIOS: Scenario[] = [
         ...TYPICAL_CHANNELS,
         { channelName: 'aatrociity', isSevenTvEditor: true, isTracked: true },
       ]);
+      // The picker's own data source since K2 (spec 6.2, same mock the confirm-dialog scenario
+      // below uses) — stale since then, because this scenario predates K2 and was never updated:
+      // without it the picker's target-loading request 404s against the route mock and the dialog
+      // renders its load-failed banner instead of the radio group the screenshot is meant to show.
+      await mockEmoteSetTargets(page, [
+        {
+          twitchChannelId: 'aatrociity-id',
+          twitchLogin: 'aatrociity',
+          trackedChannelName: 'aatrociity',
+          activeEmoteSetId: 'target-set',
+          sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+        },
+      ]);
     },
     afterLoad: async (page) => {
       // Locale-independent handle: the visible label is translated ("Übertragen" / "Transfer")
@@ -1007,6 +1033,9 @@ const SCENARIOS: Scenario[] = [
       // first and silently opens the export dialog instead.
       await page.locator('main header button').nth(1).click();
       await page.locator('#app-dialog-title').waitFor();
+      // The target radio group loads async off the mock above; without waiting for it the
+      // screenshot can still land on the loading skeleton depending on timing.
+      await page.getByRole('radio', { name: /^Main/ }).waitFor();
     },
   },
   {
@@ -1024,6 +1053,20 @@ const SCENARIOS: Scenario[] = [
         ...TYPICAL_CHANNELS,
         { channelName: 'aatrociity', isSevenTvEditor: true, isTracked: true },
       ]);
+      // The picker's own data source since K2 (spec 6.2) — replaces the pre-K2 assumption that
+      // `/api/channels/mine` above was enough to open it on. `target-set` is both this account's
+      // active set and the one `mockActiveEmoteSet`/`mockSetWarning`/`mockEmoteList` below already
+      // answer for, so picking it below stays on the "chosen set is the account's active one" fast
+      // path (spec 8.6 fourth bullet, AK 36) the same way this scenario always has.
+      await mockEmoteSetTargets(page, [
+        {
+          twitchChannelId: 'aatrociity-id',
+          twitchLogin: 'aatrociity',
+          trackedChannelName: 'aatrociity',
+          activeEmoteSetId: 'target-set',
+          sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+        },
+      ]);
       await mockActiveEmoteSet(page, 'aatrociity', 'target-set', {
         capacity: 1000,
         occupiedSlots: 3,
@@ -1039,18 +1082,138 @@ const SCENARIOS: Scenario[] = [
       // why it is scoped to `main`.
       await page.locator('main header button').nth(1).click();
       const picker = page.getByRole('dialog');
-      // Channel logins are not translated, so the radio's own name is locale-independent — unlike
-      // the "Weiter"/"Continue" submit button next to it, matched here by position instead
-      // ([dialog-actions] is the attribute DialogShell's <ng-content select> projects on, so it is
-      // never removed from the DOM; Cancel is always first — dialog-shell.ts's own comment).
-      await picker.getByRole('radio', { name: '#aatrociity' }).check();
+      // Every set is its own radio since addendum 39 (#217) — there is no more merged
+      // "#aatrociity" account-header radio to check. The set's own name ("Main", from the mock
+      // above) is not translated, so a prefix match on it stays locale-independent the same way the
+      // old channel-login match was — unlike its "(aktiv)"/"(active)" suffix, which this regex
+      // deliberately does not pin down.
+      await picker.getByRole('radio', { name: /^Main/ }).check();
       await picker.locator('[dialog-actions]').last().click();
-      // The target load starts async and the dialog opens on its loading skeleton (R8). The dialog
-      // title itself already carries the channel name the moment the dialog opens — before the
-      // target data has loaded — so waiting on the mocked set id instead (only rendered once
-      // `ready()` is true, and, like the channel login, never translated) is what actually proves
-      // the confirm dialog has filled in rather than still showing its skeleton.
-      await page.getByText('target-set').first().waitFor();
+      // The target load starts async and the dialog opens on its loading skeleton (R8). Waiting on
+      // the resolve-collisions trigger (an element id, present only once `ready()` is true AND the
+      // mocked target actually collides, which Emote3PogU/target-99 above always does) is what
+      // actually proves the confirm dialog has filled in rather than still showing its skeleton —
+      // unlike a wait on the raw set id text, the header now shows the set's resolved NAME ("Main")
+      // once a picker choice carries one, so the id itself never appears.
+      await page.locator('#import-confirm-resolve-nameCollision').waitFor();
+    },
+  },
+  {
+    // The confirm dialog's second step (#230): the per-row resolution table for the one name
+    // collision the mock below already produces (Emote3PogU/7tv-3 colliding with a different
+    // target id, same data as usage-stats-import-confirm-dialog above — one step further, not a
+    // new fixture). No coarse-pointer variant exists for this step at all (every 7TV write path is
+    // behind `!isCoarse()`), which is what `requiresFinePointer` below is for.
+    slug: 'usage-stats-import-resolve-step',
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockMyChannelsWithFlags(page, [
+        ...TYPICAL_CHANNELS,
+        { channelName: 'aatrociity', isSevenTvEditor: true, isTracked: true },
+      ]);
+      await mockEmoteSetTargets(page, [
+        {
+          twitchChannelId: 'aatrociity-id',
+          twitchLogin: 'aatrociity',
+          trackedChannelName: 'aatrociity',
+          activeEmoteSetId: 'target-set',
+          sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+        },
+      ]);
+      await mockActiveEmoteSet(page, 'aatrociity', 'target-set', {
+        capacity: 1000,
+        occupiedSlots: 3,
+      });
+      await mockSetWarning(page, 'aatrociity');
+      await mockEmoteList(page, 'aatrociity', [
+        { sevenTvEmoteId: '7tv-1', name: 'Emote1PogU' },
+        { sevenTvEmoteId: 'target-99', name: 'Emote3PogU' },
+      ]);
+    },
+    afterLoad: async (page) => {
+      // Same opening sequence as usage-stats-import-confirm-dialog above (position-based header
+      // click, unnamed-radio-by-prefix, last dialog-actions element). The resolve-collisions
+      // trigger below both proves the confirm dialog has filled in (it only renders once `ready()`
+      // is true, same reasoning as that scenario's own wait) and is the very element this scenario
+      // exists to open — an element id, not a translated label, same reason as everywhere else in
+      // this file that needs to work under both locale projects.
+      await page.locator('main header button').nth(1).click();
+      const picker = page.getByRole('dialog');
+      await picker.getByRole('radio', { name: /^Main/ }).check();
+      await picker.locator('[dialog-actions]').last().click();
+      await page.locator('#import-confirm-resolve-nameCollision').click();
+      await page.locator('[data-resolve-index="0"]').waitFor();
+
+      // AK 22 (plan §0.1, docs/plans/Plan-230-Namenskonflikte.md): since the resolution step has no
+      // coarse-pointer variant, its 360 px requirement means a squeezed DESKTOP window with a
+      // mouse — not the matrix's own 'mobile' viewport, which is coarse and this scenario never
+      // reaches (requiresFinePointer above). Resizing within the already fine-pointer-emulated
+      // viewport reproduces exactly that state. Pinned once — at the 'desktop-narrow' matrix cell,
+      // dark theme only (light only runs at 'desktop') — rather than redundantly at every fine
+      // viewport this afterLoad also runs at.
+      const original = page.viewportSize();
+      if (original?.width === 1024) {
+        await page.setViewportSize({ width: 360, height: original.height });
+        await page.waitForTimeout(50);
+        const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+        expect(
+          scrollWidth,
+          'AK 22: no horizontal scroll inside the dialog pane at 360px',
+        ).toBeLessThanOrEqual(360);
+        // Rows stack source over target below the step's own narrow threshold (760px content
+        // width, comfortably crossed at 360px viewport) — read geometrically (the target block
+        // starts at or below the source block's bottom edge) rather than off a CSS class, which a
+        // redesign could rename without the layout itself changing.
+        const row = page.locator('[data-resolve-index="0"] > div');
+        const sourceBox = await row.locator('> div').nth(0).boundingBox();
+        const targetBox = await row.locator('> div').nth(1).boundingBox();
+        if (sourceBox && targetBox) {
+          expect(
+            targetBox.y,
+            'AK 22: rows stack source over target at 360px',
+          ).toBeGreaterThanOrEqual(sourceBox.y + sourceBox.height - 2);
+        }
+        await page.setViewportSize(original);
+        await page.waitForTimeout(50);
+      }
+
+      // Row-height fix: the side-by-side layout's fixed row height must track its rendered
+      // content — no big empty band below it — and the content must sit vertically centred, not
+      // pinned to the top. Checked once at the 'desktop' matrix cell (1536px, side-by-side layout
+      // there, both themes) rather than at every wide viewport this afterLoad also runs at. This
+      // row is untouched (the default `skip` decision), so its own content is only the 40px sprite
+      // — the row's fixed height still has to leave room for the tallest a row here ever gets, so
+      // some gap is structural to a virtualized list's one-height-fits-all row and not itself a
+      // defect. That budget (`ROW_WIDE_PX`, import-conflict-resolution-step.ts) grew 120 -> 136 in
+      // #268's own P2 fix round and stayed there through #268's own clipping-at-narrow-widths
+      // follow-up, which re-measured the wide layout's own worst case at 110px content — an
+      // untracked target's bracketed "replace" disabled reason, plus a checked rename whose typed
+      // alias collides (aliasHeldByTarget) and its field error, all built around one unbreakable
+      // ~50-char name — comfortably inside 136, so the wide budget itself didn't move again. A
+      // plain skip row's own structural gap is therefore 136 - 40 = 96px; 104 (96 + an 8px margin,
+      // the same margin family that component's own doc comment uses) catches a gross regression
+      // without failing on that now-larger, but still entirely structural, slack.
+      if (original?.width === 1536) {
+        const row = page.locator('[data-resolve-index="0"]');
+        const rowBox = await row.boundingBox();
+        const contentBox = await row.locator('> div').first().boundingBox();
+        if (rowBox && contentBox) {
+          expect(
+            rowBox.height - contentBox.height,
+            'row-height fix: no large empty band below the content in the side-by-side layout',
+          ).toBeLessThan(104);
+          const topGap = contentBox.y - rowBox.y;
+          const bottomGap = rowBox.y + rowBox.height - (contentBox.y + contentBox.height);
+          expect(
+            Math.abs(topGap - bottomGap),
+            'row-height fix: content is vertically centred, not top-aligned',
+          ).toBeLessThan(4);
+        }
+      }
     },
   },
   {

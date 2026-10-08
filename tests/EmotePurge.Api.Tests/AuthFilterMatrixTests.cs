@@ -1,9 +1,11 @@
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.Twitch;
 using NSubstitute;
 using Xunit;
 
@@ -26,6 +28,7 @@ namespace EmotePurge.Api.Tests;
 public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
 {
     private const string Channel = "testchannel";
+    private const string TrackedPreviewSetId = "01GV88A38G0006FW5TVZVMG507";
 
     private readonly ApiFactory _factory;
 
@@ -41,7 +44,12 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         factory.Channels.ClearReceivedCalls();
         factory.ResyncCooldown.ClearReceivedCalls();
         factory.Emotes.ClearReceivedCalls();
+        factory.EmoteSetList.ClearReceivedCalls();
+        factory.TrackedEmoteSetMembership.ClearReceivedCalls();
+        factory.EmoteSetOwnership.ClearReceivedCalls();
         factory.AccountDeletion.ClearReceivedCalls();
+        factory.Users.ClearReceivedCalls();
+        factory.TwitchAuth.ClearReceivedCalls();
 
         // Default to "the slot was free", so the cooldown never masks the status code a test is
         // actually asserting. The one case that cares sets it explicitly.
@@ -60,9 +68,14 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/mine")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
     [InlineData("GET", "/api/channels/testchannel/emotes")]
+    [InlineData("GET", "/api/channels/testchannel/emote-sets")]
+    [InlineData("GET", "/api/channels/testchannel/emote-sets/01GV88A38G0006FW5TVZVMG507/emotes")]
     [InlineData("GET", "/api/channels/testchannel/emotes/set-warning")]
+    [InlineData("GET", "/api/seventv/me/emote-set-targets")]
+    [InlineData("GET", "/api/seventv/me/emote-set-targets/01GV88A38G0006FW5TVZVMG507")]
     [InlineData("POST", "/api/channels/testchannel/emotes/sync-restored")]
     [InlineData("POST", "/api/channels/testchannel/emotes/sync-imported")]
+    [InlineData("POST", "/api/seventv/emote-sets/01GV88A38G0006FW5TVZVMG507/sync-imported")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions/1/results")]
     [InlineData("POST", "/api/channels/testchannel/vote-sessions/1/votes")]
@@ -98,6 +111,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/testchannel/resync")]
     [InlineData("DELETE", "/api/channels/testchannel/purge")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
+    [InlineData("GET", "/api/channels/testchannel/emote-sets/01GV88A38G0006FW5TVZVMG507/emotes")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions/1/results")]
     [InlineData("POST", "/api/channels/testchannel/vote-sessions/1/votes")]
     public async Task EveryFilter_Answers401_WhenTheSessionIsAuthenticatedButItsClaimsAreIncomplete(string method, string path)
@@ -272,6 +286,133 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task DeleteMe_Answers401_WithoutASession_AndDeletesNothing()
+    {
+        var response = await SendAsync("DELETE", "/api/auth/me", userId: null);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers409AccountMismatch_AndDeletesNothing_WhenTheExpectedIdIsNotTheSessions()
+    {
+        var response = await SendAsync("DELETE", "/api/auth/me?expectedTwitchUserId=someone-else", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("account_mismatch", await ReadErrorCodeAsync(response));
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.DidNotReceive().RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers409AccountMismatch_AndDeletesNothing_WhenTheExpectedIdIsMissing()
+    {
+        var response = await SendAsync("DELETE", "/api/auth/me", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("account_mismatch", await ReadErrorCodeAsync(response));
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers204_AndDeletesTheSessionsOwnAccountWithSelfRequestAndNoCutoff()
+    {
+        var userId = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+        _factory.Users.GetTwitchTokensAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(new TwitchStoredTokens("refresh-1", "access-1", DateTime.UtcNow.AddHours(1), "scopes"));
+
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId, login: "selfuser");
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.AccountDeletion.Received(1).DeleteAsync(
+            userId,
+            Arg.Is<AuditActor>(a => a.TwitchUserId == userId && a.Login == "selfuser"),
+            AccountDeletionReason.SelfRequest,
+            null,
+            Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.Received(1).RevokeTokenAsync("access-1", Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.Received(1).RevokeTokenAsync("refresh-1", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_TakesTheIdFromTheSession_NotFromARouteSegmentOrABody()
+    {
+        var sessionUser = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                Arg.Any<string>(), Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+
+        // A victim id smuggled in as a route segment matches no route; in a body it is never bound.
+        var viaRoute = await SendAsync("DELETE", $"/api/auth/me/victim-id?expectedTwitchUserId={sessionUser}", sessionUser);
+        var viaBody = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={sessionUser}", sessionUser, body: "{\"twitchUserId\":\"victim-id\"}");
+
+        Assert.Equal(HttpStatusCode.NotFound, viaRoute.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, viaBody.StatusCode);
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            "victim-id", Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+        await _factory.AccountDeletion.Received(1).DeleteAsync(
+            sessionUser, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_Answers204_ButRevokesNothing_WhenTheAccountWasAlreadyGone()
+    {
+        var userId = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.NotFound));
+
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.TwitchAuth.DidNotReceive().RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteMe_StillAnswers204_WhenTheTokenRevocationFails()
+    {
+        var userId = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+        _factory.Users.GetTwitchTokensAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(new TwitchStoredTokens("refresh-2", "access-2", DateTime.UtcNow.AddHours(1), null));
+        _factory.TwitchAuth.RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(false);
+
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteMe_StillDeletesAndAnswers204_WhenTheStoredTokensCannotBeRead()
+    {
+        // The cipher throws InvalidOperationException for a lost or rotated key. The user must still be
+        // able to erase the account; only the revocation of the unreadable tokens is skipped. The test
+        // session carries no access-token claim, so there is nothing left to revoke at all.
+        var userId = NewUserId();
+        _factory.AccountDeletion.DeleteAsync(
+                userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+        _factory.Users.GetTwitchTokensAsync(userId, Arg.Any<CancellationToken>())
+            .Returns<TwitchStoredTokens?>(_ => throw new InvalidOperationException("key unavailable"));
+
+        var response = await SendAsync("DELETE", $"/api/auth/me?expectedTwitchUserId={userId}", userId);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.AccountDeletion.Received(1).DeleteAsync(
+            userId, Arg.Any<AuditActor>(), AccountDeletionReason.SelfRequest, null, Arg.Any<CancellationToken>());
+        await _factory.TwitchAuth.DidNotReceive().RevokeTokenAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task UsageStatsFilter_UsesTheWiderCheck_NotTheManagementCheck()
     {
         // The whole point of the weaker filter: a 7TV editor who cannot manage the channel still
@@ -440,6 +581,224 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
     }
 
+    // AK 22 (spec 2026-09-20, 6.1): the set-listing route's five documented states — the anonymous
+    // 401 case lives in the matrix Theory above, these are the four that need per-case setup.
+
+    [Fact]
+    public async Task EmoteSets_Answers403_ForACallerWithoutUsageStatsAccess()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task EmoteSets_Answers404_ForAnUnknownChannel()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>()).Returns((Channel?)null);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task EmoteSets_Answers200WithAnEmptyList_WhenTheChannelHasNoTwitchChannelId()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(new Channel { ChannelName = Channel, TwitchChannelId = null, ActiveEmoteSetId = "" });
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Empty(body.GetProperty("sets").EnumerateArray());
+        await _factory.EmoteSetList.DidNotReceive().ListByTwitchIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task EmoteSets_Answers503_OnA7TvFailure()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(new Channel { ChannelName = Channel, TwitchChannelId = "1234", ActiveEmoteSetId = "set-a" });
+        _factory.EmoteSetList.ListByTwitchIdAsync("1234", Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Failed(EmoteSetListStatus.Unavailable));
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ForeignChannelSevenTvUnavailable, await ReadErrorCodeAsync(response));
+    }
+
+    // #220: GET /api/channels/{c}/emote-sets/{id}/emotes — the tracked-channel set preview's filter
+    // order: 400 channel name, 403 without usage-stats access, 400 set id, then the handler.
+
+    [Theory]
+    [InlineData("abc")]
+    [InlineData("bad-name")]
+    public async Task TrackedSetPreview_Answers400InvalidChannelName_BeforeTheAccessFilterRuns(string channelName)
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync("GET", $"/api/channels/{channelName}/emote-sets/{TrackedPreviewSetId}/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task TrackedSetPreview_Answers403_ForACallerWithoutUsageStatsAccess_AndNeverCallsTheMembershipService()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets/{TrackedPreviewSetId}/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await _factory.TrackedEmoteSetMembership.DidNotReceive().CheckAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TrackedSetPreview_Answers403_BeforeAnInvalidSetId_Answers400()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets/..x/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await _factory.TrackedEmoteSetMembership.DidNotReceive().CheckAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TrackedSetPreview_Answers400InvalidEmoteSetId_ForACallerWithAccess_WithoutCallingAnyService()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets/..x/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        await _factory.TrackedEmoteSetMembership.DidNotReceive().CheckAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _factory.ForeignEmoteSet.DidNotReceive().GetForeignEmoteSetBySetIdAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TrackedSetPreview_Answers404Bare_ForAnUntrackedChannel()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.TrackedEmoteSetMembership.CheckAsync(Channel, TrackedPreviewSetId, Arg.Any<CancellationToken>())
+            .Returns(TrackedEmoteSetMembership.ChannelNotFound);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets/{TrackedPreviewSetId}/emotes", NewUserId());
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal(string.Empty, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task EmoteSets_FillsObservationsFromTheObservationService_OnePerSet_AndOmitsAnUnobservedSet()
+    {
+        // Spec 6.1's Ok branch: two sets on the same 7TV answer, only one of which the observation
+        // service has ever seen — the other must come back with [], not throw or borrow the first
+        // set's intervals.
+        const string activeSetId = "set-active";
+        const string otherSetId = "set-other";
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(new Channel { ChannelName = Channel, TwitchChannelId = "1234", ActiveEmoteSetId = activeSetId });
+        _factory.EmoteSetList.ListByTwitchIdAsync("1234", Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(activeSetId,
+            [
+                new EmoteSetSummary(activeSetId, "Active", 900, "NORMAL", false, "sensitron"),
+                new EmoteSetSummary(otherSetId, "Other", 600, "NORMAL", false, "sensitron"),
+            ])));
+        var fromUtc = new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
+        var toUtc = new DateTime(2026, 9, 10, 8, 0, 0, DateTimeKind.Utc);
+        _factory.EmoteSetObservations.ListIntervalsByChannelAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<string, IReadOnlyList<ChannelEmoteSetObservationInterval>>
+            {
+                [activeSetId] =
+                [
+                    new ChannelEmoteSetObservationInterval(fromUtc, toUtc),
+                    new ChannelEmoteSetObservationInterval(toUtc, null),
+                ],
+            });
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var sets = body.GetProperty("sets").EnumerateArray().ToList();
+        Assert.Equal(2, sets.Count);
+
+        var active = sets.Single(set => set.GetProperty("id").GetString() == activeSetId);
+        var activeObservations = active.GetProperty("observations").EnumerateArray().ToList();
+        Assert.Equal(2, activeObservations.Count);
+        Assert.Equal(fromUtc, activeObservations[0].GetProperty("fromUtc").GetDateTime());
+        Assert.Equal(toUtc, activeObservations[0].GetProperty("toUtc").GetDateTime());
+        Assert.Equal(toUtc, activeObservations[1].GetProperty("fromUtc").GetDateTime());
+        Assert.True(activeObservations[1].GetProperty("toUtc").ValueKind == JsonValueKind.Null);
+
+        var other = sets.Single(set => set.GetProperty("id").GetString() == otherSetId);
+        Assert.Empty(other.GetProperty("observations").EnumerateArray());
+    }
+
+    // AK 27 (spec 2026-09-20, E14): a malformed emoteSetId on any of the three /usage-stats/* routes
+    // is a 400 the EmoteSetIdValidationFilter answers before the handler — and therefore before
+    // IUsageStatQueryService is ever asked anything.
+
+    [Theory]
+    [InlineData("/totals")]
+    [InlineData("/daily")]
+    [InlineData("/series")]
+    public async Task UsageStats_Answers400_ForAMalformedEmoteSetId(string subRoute)
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var query = subRoute == "/daily"
+            ? "emoteId=e1&from=2026-01-01&to=2026-01-02&emoteSetId=../x"
+            : "from=2026-01-01&to=2026-01-02&emoteSetId=../x";
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/usage-stats{subRoute}?{query}", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task SetWarning_Answers400_ForAMalformedEmoteSetId()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var response = await SendAsync(
+            "GET", $"/api/channels/{Channel}/emotes/set-warning?emoteSetId={new string('a', 33)}", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        await _factory.EmoteSetOwnership.DidNotReceive().CheckAsync(
+            Arg.Any<string>(), Arg.Any<TwitchPrincipalInfo?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task SyncRestored_Answers403_ForACallerWithoutUsageStatsAccess()
     {
@@ -468,6 +827,91 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.EmoteIdsEmpty, await ReadErrorCodeAsync(response));
     }
 
+    // Restore-per-set spec 5.6/E4: sync-deleted's validation and stage 7 — sync-restored shares the
+    // same ValidateSyncBookkeepingBody helper, so SyncRestored_Answers400_WhenTheBodyCarriesNoEmoteIds
+    // above already covers the one remaining ladder step for the restore route.
+
+    [Fact]
+    public async Task SyncRestored_Returns200_ForTheLegacyGuidForm_AndTriggersTheGuardedResync()
+    {
+        // Mirror of SyncDeleted_Returns200_ForTheLegacyGuidForm_AndTriggersTheGuardedResync below —
+        // the 200 path of the legacy Guid form was otherwise untested for the restore route (AK 23).
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Emotes.MarkRestoredAsync(
+                Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new SyncRestoredResultDto(1, []));
+        _factory.Channels.TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelResyncResult.Triggered);
+
+        var legacyBody = """{"emoteIds": ["11111111-1111-1111-1111-111111111111"]}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-restored", NewUserId(), body: legacyBody);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await _factory.Emotes.Received(1).MarkRestoredAsync(
+            Channel,
+            Arg.Is<IReadOnlyList<string>>(ids => ids.SequenceEqual(new[] { "11111111-1111-1111-1111-111111111111" })),
+            Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        await _factory.ResyncCooldown.Received(1).TryBeginAsync(Channel, Arg.Any<CancellationToken>());
+        await _factory.Channels.Received(1).TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SyncDeleted_Returns200_ForTheLegacyGuidForm_AndTriggersTheGuardedResync()
+    {
+        // Proves the Guid form reaches its own overload and that stage 7 (spec 5.1/5.6) claims the
+        // per-channel cooldown and triggers the resync that actually reconciles the row against 7TV
+        // — this call itself no longer changes anything.
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Emotes.MarkDeletedAsync(
+                Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new SyncDeletedResultDto(1, []));
+        _factory.Channels.TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelResyncResult.Triggered);
+
+        var legacyBody = """{"emoteIds": ["11111111-1111-1111-1111-111111111111"]}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId(), body: legacyBody);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await _factory.Emotes.Received(1).MarkDeletedAsync(
+            Channel,
+            Arg.Is<IReadOnlyList<string>>(ids => ids.SequenceEqual(new[] { "11111111-1111-1111-1111-111111111111" })),
+            Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        await _factory.ResyncCooldown.Received(1).TryBeginAsync(Channel, Arg.Any<CancellationToken>());
+        await _factory.Channels.Received(1).TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SyncDeleted_Answers400_WhenTheBodyCarriesNoEmoteIds()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.EmoteIdsEmpty, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task SyncDeleted_Answers400_ForARetiredSetScopedBody()
+    {
+        // AK 23: the set-scoped shape (emoteSetId/sevenTvEmoteIds) this route used to also accept is
+        // gone — such a body has no emoteIds property of its own and lands on the same empty-body
+        // answer as any other missing EmoteIds.
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"emoteSetId": "01GV88A38G0006FW5TVZVMG507", "sevenTvEmoteIds": ["7tv-x1"]}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.EmoteIdsEmpty, await ReadErrorCodeAsync(response));
+        await _factory.Emotes.DidNotReceive().MarkDeletedAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task SyncImported_Answers403_ForACallerWithoutUsageStatsAccess()
     {
@@ -493,6 +937,62 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ApiErrorCodes.EmoteIdsEmpty, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task SyncImported_Answers400_ForAMalformedTargetEmoteSetId()
+    {
+        // AK 29 (spec 6.7, E5/E14): TargetEmoteSetId is a body field, not a query/route parameter, so
+        // EmoteSetIdValidationFilter never sees it — the check runs inline in the handler instead.
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "file", "targetEmoteSetId": "../x"}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-imported", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        await _factory.Emotes.DidNotReceive().MarkImportedAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    // AK 75 (spec 6.9/9, K6): CreateVoteSessionRequest's set-ballot exclusion rule and its emoteSetId
+    // format check. Both run inside VoteSessionEndpoints/VoteSessionService ahead of any channel or
+    // Postgres access, so — like SyncImported's TargetEmoteSetId case above — these are runnable
+    // without a database behind the test factory.
+
+    [Theory]
+    // emoteSetId set, sevenTvEmoteIds empty.
+    [InlineData("""{"title":"t","allowedVoterRoles":1,"emoteSetId":"set1","sevenTvEmoteIds":[]}""")]
+    // emoteSetId set, and emoteIds set too — the two ballot shapes must never both be present.
+    [InlineData("""{"title":"t","allowedVoterRoles":1,"emoteSetId":"set1","sevenTvEmoteIds":["7tv-a"],"emoteIds":["e1"]}""")]
+    // sevenTvEmoteIds set without emoteSetId.
+    [InlineData("""{"title":"t","allowedVoterRoles":1,"sevenTvEmoteIds":["7tv-a"]}""")]
+    public async Task CreateVoteSession_Answers400_ForTheSetBallotExclusionRule(string body)
+    {
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/vote-sessions", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.VoteSessionSetBallotInvalid, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task CreateVoteSession_Answers400_ForAMalformedEmoteSetId()
+    {
+        // emoteSetId is a body field, not a query/route parameter — same idiom as SyncImported's
+        // TargetEmoteSetId (AK 29) above, checked inline ahead of the service.
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"title":"t","allowedVoterRoles":1,"emoteSetId":"../x","sevenTvEmoteIds":["7tv-a"]}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/vote-sessions", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
     }
 
     [Fact]
@@ -552,7 +1052,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": "handofblood", "sourceKind": "seventv-channel"}""";
@@ -566,6 +1066,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             "seventv-channel",
             null,
             Arg.Any<AuditActor>(),
+            null,
             Arg.Any<CancellationToken>());
     }
 
@@ -585,7 +1086,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -635,7 +1136,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_DAILY"}""";
@@ -649,6 +1150,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             "seventv-leaderboard",
             "TRENDING_DAILY",
             Arg.Any<AuditActor>(),
+            null,
             Arg.Any<CancellationToken>());
     }
 
@@ -661,7 +1163,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TOP_ALL_TIME"}""";
@@ -686,7 +1188,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -741,7 +1243,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

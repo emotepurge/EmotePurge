@@ -6,12 +6,13 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LanguageService } from '../../core/i18n/language.service';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
 import { SevenTvLeaderboardResponse } from '../../core/seven-tv/leaderboard.model';
-import { FileImportStep } from './file-import-step';
+import { EmoteSetListResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
+import { FileImportResult, FileImportStep } from './file-import-step';
 import { ForeignChannelStep } from './foreign-channel-step';
 import { LeaderboardStep } from './leaderboard-step';
 import { ImportSourceDialog, ImportSourceDialogResult } from './import-source-dialog';
@@ -40,6 +41,7 @@ const DE_TRANSLATIONS = {
         label: 'Aus 7TVs Bestenliste',
         hint: 'Die netzwerkweit vorn liegenden Emotes',
       },
+      noTargetSet: 'Kein Set, in das kopiert werden könnte',
     },
     leaderboard: {
       title: 'Aus 7TVs Bestenliste importieren',
@@ -59,9 +61,13 @@ const DE_TRANSLATIONS = {
       invalidChannelName: 'Kein gültiger Twitch-Kanalname.',
       load: 'Set laden',
       reload: 'Neu laden',
+      setsLabel: 'Quell-Set',
+      active: 'aktiv',
+      noActiveSet: 'Kein aktives Set.',
+      kindUnavailable: 'kein Quellset',
       retry: 'Erneut versuchen',
       continue: 'Weiter',
-      empty: 'Das aktive 7TV-Set dieses Kanals hat keine Emotes.',
+      empty: 'Dieses Set hat keine Emotes.',
       truncated: 'Nur ein Teil des Sets konnte geladen werden.',
       selectedCount: '{{ count }} ausgewählt',
       grid: { ariaLabel: 'Emote-Auswahl' },
@@ -88,10 +94,30 @@ class FakeResizeObserver {
   }
 }
 
+const FOREIGN_SETS: EmoteSetListResponse = {
+  activeEmoteSetId: 'set-1',
+  sets: [
+    {
+      id: 'set-1',
+      name: 'Main',
+      capacity: 250,
+      kind: 'NORMAL',
+      isActive: true,
+      isPersonal: false,
+      ownerDisplayName: 'Owner',
+      observations: [],
+    },
+  ],
+};
+
 const FOREIGN_SET: ForeignEmoteSetResponse = {
   channelName: 'handofblood',
-  sevenTvUserId: 'user-1',
+  // Always null since K3 (spec 2026-09-20, E8): the preview loads through the set-ID mode, which
+  // never resolves a 7TV identity.
+  sevenTvUserId: null,
   emoteSetId: 'set-1',
+  emoteSetName: 'Main',
+  capacity: 250,
   totalCount: 1,
   truncated: false,
   emotes: [
@@ -213,12 +239,21 @@ describe('ImportSourceDialog', () => {
     };
   }
 
-  /** Answers "Set laden" with a set — the moment the grid appears. */
+  /** Answers "Set laden" with a set list, then its active set's preview — the moment the grid
+   *  appears (spec 8.7: the preview always loads by set id, never the plain login mode). */
   function loadSet(): void {
     const internals = channelStep();
     internals.channelNameControl.setValue('handofblood');
     internals.submit();
-    httpMock.expectOne('/api/seventv/channels/handofblood/emotes').flush(FOREIGN_SET);
+    httpMock.expectOne('/api/seventv/channels/handofblood/emote-sets').flush(FOREIGN_SETS);
+    fixture.detectChanges();
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-1',
+      )
+      .flush(FOREIGN_SET);
     fixture.detectChanges();
   }
 
@@ -396,9 +431,24 @@ describe('ImportSourceDialog', () => {
 
       const step = fixture.debugElement.query(By.directive(FileImportStep))
         .componentInstance as FileImportStep;
-      step.picked.emit({ kind: 'restore', rows: [] });
+      const restore: FileImportResult = {
+        kind: 'restore',
+        rows: [],
+        target: {
+          emoteSetId: 'set-other',
+          setName: 'Anderes Set',
+          ownerDisplayName: 'Jemand',
+          twitchLogin: 'jemand',
+          trackedChannelName: null,
+          isActiveSet: false,
+          ownerTwitchChannelId: 'tw-jemand',
+          hostChannelName: 'somechannel',
+          hostSelectedSetId: 'set-current',
+        },
+      };
+      step.picked.emit(restore);
 
-      expect(closed).toEqual([{ kind: 'restore', rows: [] }]);
+      expect(closed).toEqual([restore]);
     });
 
     it('keeps "Weiter" locked until the channel step has something to carry forward', () => {
@@ -423,7 +473,7 @@ describe('ImportSourceDialog', () => {
           kind: 'foreign',
           picked: {
             channelName: 'handofblood',
-            sevenTvUserId: 'user-1',
+            sevenTvUserId: null,
             emoteSetId: 'set-1',
             rows: FOREIGN_SET.emotes,
           },
@@ -489,5 +539,96 @@ describe('ImportSourceDialog', () => {
 
       expect(button('Weiter').disabled).toBe(false);
     });
+  });
+});
+
+/**
+ * A channel page without a selected set (spec #253, E22: before its first sync, or after a replace
+ * into the untracked) — `ImportSourceDialogData.setId: null`. Its own TestBed configuration, not a
+ * case inside the describe above: every other test in this file relies on `data.setId` being the
+ * fixed `'set-current'`.
+ */
+describe('ImportSourceDialog — no target set on the page (spec #253, E22)', () => {
+  let fixture: ComponentFixture<ImportSourceDialog>;
+  let host: HTMLElement;
+  let closed: (ImportSourceDialogResult | undefined)[];
+
+  beforeEach(async () => {
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    closed = [];
+
+    await TestBed.configureTestingModule({
+      imports: [
+        ImportSourceDialog,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: DIALOG_DATA, useValue: { channelName: 'somechannel', setId: null } },
+        {
+          provide: DialogRef,
+          useValue: {
+            close: (result?: ImportSourceDialogResult) => closed.push(result),
+            overlayRef: { addPanelClass: vi.fn(), removePanelClass: vi.fn() },
+          },
+        },
+        {
+          provide: LanguageService,
+          useValue: { lang: signal('de') } as unknown as LanguageService,
+        },
+      ],
+    }).compileComponents();
+    await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
+
+    fixture = TestBed.createComponent(ImportSourceDialog);
+    host = fixture.nativeElement;
+    fixture.detectChanges();
+  });
+
+  function sourceOption(label: string): HTMLButtonElement {
+    const found = Array.from(host.querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.trim().startsWith(label),
+    );
+    if (!found) {
+      throw new Error(`no source option labelled "${label}"`);
+    }
+    return found;
+  }
+
+  function heading(): string {
+    return host.querySelector('h2')?.textContent?.trim() ?? '';
+  }
+
+  it('disables the channel and leaderboard doors with a reason, and leaves the file door open', () => {
+    const channel = sourceOption('Aus einem Kanal');
+    const leaderboard = sourceOption('Aus 7TVs Bestenliste');
+    const file = sourceOption('Aus einer Datei');
+
+    expect(channel.disabled).toBe(true);
+    expect(channel.textContent).toContain('Kein Set, in das kopiert werden könnte');
+    expect(leaderboard.disabled).toBe(true);
+    expect(leaderboard.textContent).toContain('Kein Set, in das kopiert werden könnte');
+    expect(file.disabled).toBe(false);
+    expect(file.textContent).not.toContain('Kein Set, in das kopiert werden könnte');
+  });
+
+  it('still opens the file branch — a restore file names and checks its own target regardless', () => {
+    sourceOption('Aus einer Datei').click();
+    fixture.detectChanges();
+
+    expect(heading()).toBe('Datei importieren');
+    expect(host.querySelector('input[type="file"]')).not.toBeNull();
+  });
+
+  it('a click on a disabled door does not navigate — the door stays on the choose step', () => {
+    sourceOption('Aus einem Kanal').click();
+    fixture.detectChanges();
+
+    expect(heading()).toBe('Emotes importieren');
+    expect(host.querySelector('app-foreign-channel-step')).toBeNull();
   });
 });

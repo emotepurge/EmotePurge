@@ -25,16 +25,24 @@ namespace EmotePurge.Core.Services;
 /// </param>
 public readonly record struct EmoteUsageCounts(int Human, int Bot, int SharedChat);
 
+/// <summary>
+/// The buffering/flush pipeline's key: an emote together with the 7TV set the match cache had
+/// active when the chat message that produced the hit was matched (spec 2026-09-20, section 5).
+/// Shared by <c>EmotePurge.Worker</c> (buffering) and <c>EmotePurge.Infrastructure</c> (flush), so
+/// it lives here rather than in either project alone.
+/// </summary>
+public readonly record struct UsageCounterKey(string EmoteId, string EmoteSetId);
+
 public interface IUsageStatFlushService
 {
     /// <summary>
-    /// Upserts a drained snapshot of in-memory emote usage counts (Emote.Id → (human, bot, shared
-    /// chat)) into today's UTC UsageStat rows.
+    /// Upserts a drained snapshot of in-memory emote usage counts (keyed by emote and the observed
+    /// set → (human, bot, shared chat)) into today's UTC UsageStat rows.
     /// </summary>
     /// <returns>
     /// The distinct normalized names of the channels whose emotes were actually written — the input
     /// alone cannot answer that, since counts for meanwhile-deleted emotes are dropped. Empty when
     /// nothing was written. Callers use it to announce the change; it is not an error signal.
     /// </returns>
-    Task<IReadOnlyCollection<string>> FlushAsync(IReadOnlyDictionary<string, EmoteUsageCounts> usageCounts, CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<string>> FlushAsync(IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts> usageCounts, CancellationToken cancellationToken = default);
 }

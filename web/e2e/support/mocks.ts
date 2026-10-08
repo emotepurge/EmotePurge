@@ -1,4 +1,4 @@
-import { Page } from '@playwright/test';
+import { Page, Route } from '@playwright/test';
 
 export const AUTH_USER = {
   twitchUserId: '1',
@@ -695,6 +695,11 @@ export async function mockUsageTotals(
         lastUsedDate: emote.lastUsedDate ?? null,
         previousWindowUseCount: emote.previousWindowUseCount ?? 0,
         firstSeenAt: emote.firstSeenAt ?? null,
+        // The two fields `/totals` gained with spec #200 (6.5, K1) — part of the contract the page
+        // reads, so the mock sends them like the endpoint does: the active set never returns an
+        // archived row, and a name twin is the exception.
+        isArchived: false,
+        nameTwinEmoteSetIds: [],
       })),
     ),
   );
@@ -727,7 +732,8 @@ export async function mockUsageDaily(
  * GET /api/channels/{channelName}/usage-stats/series — the whole set's daily curves in one
  * response, which is what feeds the atlas sidecar's sparkline.
  *
- * `days` is keyed by emote id and holds `[dayOffset, useCount]` pairs counted from the range's
+ * `days` is keyed by the emote's **7TV id** — the key the page matches a curve to its cell by since
+ * spec #200 (7.2) — and holds `[dayOffset, useCount]` pairs counted from the range's
  * `from` — the encoding the real endpoint uses, deliberately not prettied up here, because a mock
  * that speaks a friendlier dialect than the server is a mock that cannot catch a decoding bug.
  * Emotes absent from the map get no entry at all, which is how the server says "no usage".
@@ -744,7 +750,14 @@ export async function mockUsageChannelSeries(
       from: url.searchParams.get('from') ?? '2026-07-01',
       to: url.searchParams.get('to') ?? '2026-07-28',
       liveDays,
-      emotes: Object.entries(days).map(([emoteId, entries]) => ({ emoteId, days: entries })),
+      // Both fields, because the endpoint sends both (spec 6.5 step 1: `sevenTvEmoteId` added,
+      // `emoteId` kept until follow-up issue 5). The mock mirrors the contract, not the reader: the
+      // page no longer reads `emoteId`, so its value here only has to be a string.
+      emotes: Object.entries(days).map(([sevenTvEmoteId, entries]) => ({
+        sevenTvEmoteId,
+        emoteId: `emote-of-${sevenTvEmoteId}`,
+        days: entries,
+      })),
     });
   });
 }
@@ -772,7 +785,9 @@ export async function mockEmoteList(
 /**
  * GET /api/channels/{channelName}/emotes/set-warning — the shared/foreign-set ownership check both
  * the mass-delete panel and the import confirm dialog read. Defaults to a clean, own, unshared set;
- * pass overrides for the shared-set-warning or check-unavailable cases.
+ * pass overrides for the shared-set-warning or check-unavailable cases. The trailing `*` covers the
+ * optional `?emoteSetId=` query a non-active target's check adds (spec 6.8) — without it a glob
+ * with no wildcard at the end only matches the bare, parameterless URL.
  */
 export async function mockSetWarning(
   page: Page,
@@ -784,7 +799,7 @@ export async function mockSetWarning(
     otherModeratedChannelsSharingSet?: string[];
   } = {},
 ): Promise<void> {
-  await page.route(`**/api/channels/${channelName}/emotes/set-warning`, (route) =>
+  await page.route(`**/api/channels/${channelName}/emotes/set-warning*`, (route) =>
     fulfillJson(route, 200, {
       available: overrides.available ?? true,
       isOwnSet: overrides.isOwnSet ?? true,
@@ -800,6 +815,391 @@ export async function mockSyncImported(page: Page, channelName: string): Promise
   await page.route(`**/api/channels/${channelName}/emotes/sync-imported`, (route) =>
     route.fulfill({ status: 204 }),
   );
+}
+
+/** POST /api/seventv/emote-sets/{emoteSetId}/sync-imported (spec 6.7) — the set-centric report
+ *  for a run into an *untracked* account's set (T2.6). Same "204, nothing else to say" contract as
+ *  {@link mockSyncImported}'s channel-scoped sibling; the two never share a channel name because
+ *  this route carries none. */
+export async function mockSyncImportedToSet(page: Page, emoteSetId: string): Promise<void> {
+  await page.route(`**/api/seventv/emote-sets/${emoteSetId}/sync-imported`, (route) =>
+    route.fulfill({ status: 204 }),
+  );
+}
+
+/** The body of both set-centric bookkeeping routes (spec 5.1), as the client sends it. */
+export interface MockSyncInSetBody {
+  sevenTvEmoteIds: string[];
+  expectedChannelName: string | null;
+}
+
+/** How {@link mockSyncDeletedInSet}/{@link mockSyncRestoredInSet} answer (spec 5.3). The default
+ *  is a paper-only 200 — `channels: []`, no `unresolvedChannel`, nothing resynced — which the
+ *  client reads as a plain success. `channels[].count` is `archivedCount`/`restoredCount`; left
+ *  out, it is the full reported count. `status` other than 200 answers with that status and no
+ *  body instead. */
+export interface MockSyncInSetAnswer {
+  status?: number;
+  channels?: { channelName: string; count?: number; notFoundIds?: string[] }[];
+  unresolvedChannel?: { channelName: string; reason: 'notTracked' | 'activeSetDiffers' } | null;
+  resyncTriggered?: string[];
+}
+
+async function mockSyncInSet(
+  page: Page,
+  emoteSetId: string,
+  direction: 'deleted' | 'restored',
+  answer: MockSyncInSetAnswer,
+): Promise<MockSyncInSetBody[]> {
+  const bodies: MockSyncInSetBody[] = [];
+  await page.route(`**/api/seventv/emote-sets/${emoteSetId}/sync-${direction}`, (route) => {
+    const body = route.request().postDataJSON() as MockSyncInSetBody;
+    bodies.push(body);
+    if (answer.status !== undefined && answer.status !== 200) {
+      return route.fulfill({ status: answer.status });
+    }
+    const reportedCount = new Set(body.sevenTvEmoteIds).size;
+    const countField = direction === 'deleted' ? 'archivedCount' : 'restoredCount';
+    return fulfillJson(route, 200, {
+      reportedCount,
+      channels: (answer.channels ?? []).map((channel) => ({
+        channelName: channel.channelName,
+        [countField]: channel.count ?? reportedCount,
+        notFoundIds: channel.notFoundIds ?? [],
+      })),
+      unresolvedChannel: answer.unresolvedChannel ?? null,
+      resyncTriggered: answer.resyncTriggered ?? [],
+    });
+  });
+  return bodies;
+}
+
+/** POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted (spec 5.1, 5.3) — the set-centric
+ *  deletion report of a delete run and of a replace run's removals. Resolves to the list the
+ *  request bodies land in as they arrive, for a test to assert `{ sevenTvEmoteIds,
+ *  expectedChannelName }` against (AK 8). */
+export async function mockSyncDeletedInSet(
+  page: Page,
+  emoteSetId: string,
+  answer: MockSyncInSetAnswer = {},
+): Promise<MockSyncInSetBody[]> {
+  return mockSyncInSet(page, emoteSetId, 'deleted', answer);
+}
+
+/** POST /api/seventv/emote-sets/{emoteSetId}/sync-restored (spec 5.1, 5.3) — the restore's
+ *  counterpart of {@link mockSyncDeletedInSet}, same answer options, same captured bodies (AK 7). */
+export async function mockSyncRestoredInSet(
+  page: Page,
+  emoteSetId: string,
+  answer: MockSyncInSetAnswer = {},
+): Promise<MockSyncInSetBody[]> {
+  return mockSyncInSet(page, emoteSetId, 'restored', answer);
+}
+
+export interface MockEmoteSetTargetSet {
+  id: string;
+  name: string;
+  capacity?: number | null;
+  /** 7TV's `EmoteSetKind`, verbatim (E7) — `'NORMAL'` unless a test exercises the
+   *  `PERSONAL`/`GLOBAL`/`SPECIAL` "not a target set" labelling. */
+  kind?: string;
+  isActive?: boolean;
+  isPersonal?: boolean;
+  ownerDisplayName?: string | null;
+  /** `owner.id` (spec 5.8/E19) — only meaningful together with a
+   *  {@link MockEmoteSetTargetAccount.sevenTvUserId} for a test that exercises `editable`'s own
+   *  computation; every other test only needs {@link editable} itself. */
+  ownerSevenTvUserId?: string | null;
+  /** Spec 5.8/E19, F9 — defaults to `true`: every caller of this mock that predates `editable`
+   *  (#253) expects every mocked set to be a valid target, the way the picker and the shared
+   *  pre-check (`resolveEditableSet`) already behaved before this field existed. A test for
+   *  `targetNotEditable`/`targetCheckUnavailable` sets it (or `sevenTvUnavailable`/
+   *  `setsUnavailable`) explicitly. */
+  editable?: boolean;
+}
+
+export interface MockEmoteSetTargetAccount {
+  twitchChannelId: string;
+  twitchLogin: string;
+  isOwnAccount?: boolean;
+  /** `null` (the default) is what puts this account in the picker's *untracked* group (spec 8.6) —
+   *  set it to put the account (and therefore its sets) under the *tracked* one instead. */
+  trackedChannelName?: string | null;
+  activeEmoteSetId?: string | null;
+  /** `userByConnection.id` (spec 5.8/E19) — `null` (the default) reads as "this account's own 7TV
+   *  id is unknown to the mock", harmless for every test that only cares about `editable` itself
+   *  rather than its computation. */
+  sevenTvUserId?: string | null;
+  sets?: MockEmoteSetTargetSet[];
+  setsUnavailable?: boolean;
+}
+
+/**
+ * GET /api/seventv/me/emote-set-targets (spec 6.2) — the target picker's own offer list (K2):
+ * the caller's own 7TV account, plus every account they hold a 7TV editor grant on. Replaces the
+ * picker's former `GET /api/channels/mine` data source (AK 34) — a test that only needs the
+ * account-menu/overview channel list still wants {@link mockMyChannels}, not this.
+ */
+export async function mockEmoteSetTargets(
+  page: Page,
+  accounts: MockEmoteSetTargetAccount[],
+  options: { sevenTvUnavailable?: boolean } = {},
+): Promise<void> {
+  await page.route('**/api/seventv/me/emote-set-targets', (route) =>
+    fulfillJson(route, 200, {
+      accounts: accounts.map((account) => ({
+        twitchChannelId: account.twitchChannelId,
+        twitchLogin: account.twitchLogin,
+        isOwnAccount: account.isOwnAccount ?? false,
+        trackedChannelName: account.trackedChannelName ?? null,
+        activeEmoteSetId: account.activeEmoteSetId ?? null,
+        sevenTvUserId: account.sevenTvUserId ?? null,
+        sets: (account.sets ?? []).map((set) => ({
+          id: set.id,
+          name: set.name,
+          capacity: set.capacity ?? 1000,
+          kind: set.kind ?? 'NORMAL',
+          isActive: set.isActive ?? false,
+          isPersonal: set.isPersonal ?? false,
+          ownerDisplayName: set.ownerDisplayName ?? null,
+          ownerSevenTvUserId: set.ownerSevenTvUserId ?? null,
+          editable: set.editable ?? true,
+        })),
+        setsUnavailable: account.setsUnavailable ?? false,
+      })),
+      sevenTvUnavailable: options.sevenTvUnavailable ?? false,
+    }),
+  );
+
+  // GET /api/seventv/me/emote-set-targets/{emoteSetId} (owner-hint design 3.4) — `resolveEditableSet`'s
+  // cold path (plan decision 19), answered from the very same fixture so every existing caller of this
+  // mock stays correct without touching its own spec: a fresh page (or one past the 60 s client
+  // copy) reaches this route instead of the list one above. The classification mirrors
+  // `classifyEditableSet` exactly (kind !== NORMAL wins over editable; not found or editable:false
+  // is notEditable unless the list was incomplete, then unavailable), so the two routes can never
+  // disagree about the same fixture. The trailing `/*` requires a path segment after
+  // `emote-set-targets/` (a single `*` never crosses a `/`), so this route and the plain list route
+  // above never both match the same request.
+  await page.route('**/api/seventv/me/emote-set-targets/*', (route) => {
+    const emoteSetId = decodeURIComponent(
+      new URL(route.request().url()).pathname.split('/').pop() ?? '',
+    );
+    const listIncomplete =
+      (options.sevenTvUnavailable ?? false) ||
+      accounts.some((account) => account.setsUnavailable ?? false);
+
+    let found: { account: MockEmoteSetTargetAccount; set: MockEmoteSetTargetSet } | null = null;
+    for (const account of accounts) {
+      const set = (account.sets ?? []).find((candidate) => candidate.id === emoteSetId);
+      if (set !== undefined) {
+        found = { account, set };
+        break;
+      }
+    }
+
+    if (found === null) {
+      return fulfillJson(route, 200, {
+        status: listIncomplete ? 'unavailable' : 'notEditable',
+        target: null,
+      });
+    }
+    const { account: listingAccount, set } = found;
+    if ((set.kind ?? 'NORMAL') !== 'NORMAL') {
+      return fulfillJson(route, 200, { status: 'notSelectable', target: null });
+    }
+    if (!(set.editable ?? true)) {
+      return fulfillJson(route, 200, {
+        status: listIncomplete ? 'unavailable' : 'notEditable',
+        target: null,
+      });
+    }
+
+    // The **owner** account, never merely the listing one (Codex finding 2, plan decision 10): the
+    // account whose own `sevenTvUserId` equals the set's `ownerSevenTvUserId`. A set with an owner
+    // id that no account of the fixture carries answers `notEditable`, like the server. A set
+    // WITHOUT an owner id (`null`, the default) keeps the listing account — a documented legacy
+    // shim for the ~20 older callers that never expressed ownership; the real server would answer
+    // `notEditable` there, so a test that asserts on the owner's Twitch id sets both fields.
+    const ownerAccount =
+      set.ownerSevenTvUserId == null
+        ? listingAccount
+        : accounts.find(
+            (account) =>
+              account.sevenTvUserId != null && account.sevenTvUserId === set.ownerSevenTvUserId,
+          );
+    if (ownerAccount === undefined) {
+      return fulfillJson(route, 200, { status: 'notEditable', target: null });
+    }
+
+    return fulfillJson(route, 200, {
+      status: 'editable',
+      target: {
+        emoteSetId: set.id,
+        setName: set.name,
+        ownerDisplayName: set.ownerDisplayName ?? null,
+        twitchLogin: ownerAccount.twitchLogin,
+        twitchChannelId: ownerAccount.twitchChannelId,
+        trackedChannelName: ownerAccount.trackedChannelName ?? null,
+        isActiveSet: set.isActive ?? false,
+      },
+    });
+  });
+}
+
+export interface MockForeignEmoteSetPreview {
+  channelName: string;
+  sevenTvUserId?: string | null;
+  emoteSetId: string;
+  emoteSetName?: string | null;
+  capacity?: number | null;
+  totalCount?: number;
+  truncated?: boolean;
+  emotes?: { sevenTvEmoteId: string; name: string }[];
+}
+
+/**
+ * GET /api/seventv/channels/{channelName}/emotes?emoteSetId=… (spec 6.4, set-ID read mode) — the
+ * import target loader's live read for a *specifically chosen* set, tracked-but-not-active or
+ * untracked (`import-target-loader.ts`'s `'trackedSet'`/`'untrackedSet'` cases, spec F5). Answers
+ * every request for `channelName` regardless of the `emoteSetId` query value — a test that needs to
+ * tell two set ids apart registers this twice with two different `channelName`s (the untracked
+ * loader path keys the URL on the account's own Twitch login, never its display name, spec 6.2/E7),
+ * or checks `route.request().url()` itself.
+ */
+export async function mockForeignEmoteSetPreview(
+  page: Page,
+  channelName: string,
+  response: MockForeignEmoteSetPreview,
+): Promise<void> {
+  await page.route(`**/api/seventv/channels/${channelName}/emotes*`, (route) =>
+    fulfillEmoteSetPreview(route, response),
+  );
+}
+
+/**
+ * GET /api/channels/{channelName}/emote-sets/{emoteSetId}/emotes (#220) — the tracked-channel set
+ * preview: the usage-stats page's non-active set view (K4, deep link or dropdown switch) and the
+ * vote-detail page's live-membership read of the session's set. Same body shape as
+ * {@link mockForeignEmoteSetPreview}, other route: a page that reads a set through *both* (the
+ * import dialog's target loader stays on the foreign route) registers both. The glob names the
+ * `/emotes` suffix, so the dropdown's `…/emote-sets` list request is never caught by it. Answers
+ * every set id for `channelName` — a test that must tell two sets apart checks
+ * `route.request().url()` itself.
+ */
+export async function mockTrackedEmoteSetPreview(
+  page: Page,
+  channelName: string,
+  response: MockForeignEmoteSetPreview,
+): Promise<void> {
+  await page.route(`**/api/channels/${channelName}/emote-sets/*/emotes*`, (route) =>
+    fulfillEmoteSetPreview(route, response),
+  );
+}
+
+function fulfillEmoteSetPreview(route: Route, response: MockForeignEmoteSetPreview) {
+  if (route.request().method() !== 'GET') {
+    return route.fallback();
+  }
+  const emotes = response.emotes ?? [];
+  return fulfillJson(route, 200, {
+    channelName: response.channelName,
+    sevenTvUserId: response.sevenTvUserId ?? null,
+    emoteSetId: response.emoteSetId,
+    emoteSetName: response.emoteSetName ?? null,
+    capacity: response.capacity ?? 1000,
+    totalCount: response.totalCount ?? emotes.length,
+    truncated: response.truncated ?? false,
+    emotes: emotes.map((emote) => ({
+      sevenTvEmoteId: emote.sevenTvEmoteId,
+      name: emote.name,
+      defaultName: emote.name,
+      imageUrl: `https://cdn.7tv.app/emote/${emote.sevenTvEmoteId}/2x.webp`,
+      topAllTime: null,
+      trending: null,
+    })),
+  });
+}
+
+/**
+ * GET /api/seventv/channels/{channelName}/emote-sets (spec 6.3, K3) — the source-set picker's list
+ * route `ForeignChannelStep` calls first, before it ever asks for a preview. Reuses
+ * {@link MockEmoteSetTargetSet}'s shape (same fields 6.3's `EmoteSetSummary` carries, minus
+ * `observations`, which this route always answers `[]` and no test here needs to see).
+ */
+export async function mockForeignChannelEmoteSets(
+  page: Page,
+  channelName: string,
+  response: { activeEmoteSetId: string; sets: MockEmoteSetTargetSet[] },
+): Promise<void> {
+  await page.route(`**/api/seventv/channels/${channelName}/emote-sets`, (route) =>
+    fulfillJson(route, 200, {
+      activeEmoteSetId: response.activeEmoteSetId,
+      sets: response.sets.map((set) => ({
+        id: set.id,
+        name: set.name,
+        capacity: set.capacity ?? 1000,
+        kind: set.kind ?? 'NORMAL',
+        isActive: set.id === response.activeEmoteSetId,
+        isPersonal: set.isPersonal ?? false,
+        ownerDisplayName: set.ownerDisplayName ?? null,
+        observations: [],
+      })),
+    }),
+  );
+}
+
+export interface MockChannelEmoteSet extends MockEmoteSetTargetSet {
+  /** Observed-active intervals (spec 6.1, from `ChannelEmoteSetObservations`, ascending). Omitted,
+   *  the mock answers what the real route answers for a tracked channel (spec 4.3): the **active**
+   *  set carries one open interval — opened by the first successful sync or seeded by the
+   *  migration, here from {@link DEFAULT_TRACKED_SINCE} like `mockActiveEmoteSet`'s own default —
+   *  and every other set `[]` ("never observed"). Pass it to exercise the caption matrix (spec 8.4)
+   *  or the `'set-observed'` preset (8.5). */
+  observations?: { fromUtc: string; toUtc: string | null }[];
+}
+
+/** `mockActiveEmoteSet`'s default `trackedSince` — the active set's default open observation
+ *  interval starts at the same moment, as it does for a channel tracked since then. */
+const DEFAULT_TRACKED_SINCE = '2026-06-12T09:14:00Z';
+
+/**
+ * GET /api/channels/{channelName}/emote-sets (spec 6.1, K4) — the usage page's own set-dropdown
+ * list (`emote-set-menu.ts`, `usage-stats-page.ts`'s `emoteSetListResource`). Distinct from
+ * {@link mockForeignChannelEmoteSets}'s `/api/seventv/channels/{c}/emote-sets` sibling above (K3's
+ * source-set picker): same wire shape, but `isActive` here is `Channel.ActiveEmoteSetId` — our own
+ * observed state (E21) — never 7TV's `style.activeEmoteSetId`.
+ *
+ * A numeric `response` answers with that HTTP status and the usual `foreign_channel_seventv_
+ * unavailable` body instead of a set list — the 6.1-unreadable case the dropdown locks itself for
+ * (spec 8.1, AK 62 second half).
+ */
+export async function mockChannelEmoteSetList(
+  page: Page,
+  channelName: string,
+  response: { activeEmoteSetId: string; sets: MockChannelEmoteSet[] } | number,
+): Promise<void> {
+  await page.route(`**/api/channels/${channelName}/emote-sets`, (route) => {
+    if (typeof response === 'number') {
+      return fulfillJson(route, response, { errorCode: 'foreign_channel_seventv_unavailable' });
+    }
+    return fulfillJson(route, 200, {
+      activeEmoteSetId: response.activeEmoteSetId,
+      sets: response.sets.map((set) => ({
+        id: set.id,
+        name: set.name,
+        capacity: set.capacity ?? 1000,
+        kind: set.kind ?? 'NORMAL',
+        isActive: set.id === response.activeEmoteSetId,
+        isPersonal: set.isPersonal ?? false,
+        ownerDisplayName: set.ownerDisplayName ?? null,
+        observations:
+          set.observations ??
+          (set.id === response.activeEmoteSetId
+            ? [{ fromUtc: DEFAULT_TRACKED_SINCE, toUtc: null }]
+            : []),
+      })),
+    });
+  });
 }
 
 export interface MockLeaderboardEmote {
@@ -888,7 +1288,7 @@ export async function mockActiveEmoteSet(
       activeEmoteSetId,
       capacity: status.capacity ?? 1000,
       occupiedSlots: status.occupiedSlots ?? 3,
-      trackedSince: status.trackedSince ?? '2026-06-12T09:14:00Z',
+      trackedSince: status.trackedSince ?? DEFAULT_TRACKED_SINCE,
       syncFailureReason: status.syncFailureReason ?? null,
       lastSyncAttemptAtUtc: status.lastSyncAttemptAtUtc ?? null,
       botsExcludedSince: status.botsExcludedSince ?? null,
@@ -907,6 +1307,9 @@ export interface MockVoteSession {
   endedAt?: string | null;
   emoteCount?: number | null;
   hideResultsUntilEnd?: boolean;
+  // The 7TV set a set-session's ballot is scoped to (spec 6.9, K6); null/omitted = a null-session,
+  // the behaviour every existing caller of these mocks already gets.
+  emoteSetId?: string | null;
 }
 
 /**
@@ -936,6 +1339,7 @@ export async function mockVoteSessionList(
           endedAt: session.endedAt ?? null,
           emoteCount: session.emoteCount ?? null,
           hideResultsUntilEnd: session.hideResultsUntilEnd ?? false,
+          emoteSetId: session.emoteSetId ?? null,
         })),
         page: 1,
         pageSize: 20,
@@ -956,6 +1360,11 @@ export interface MockVoteSessionEmote {
   deleteVotes?: number | null;
   score?: number | null;
   isArchived?: boolean;
+  // Whether a vote may still be cast on this row (spec section 9, T6.3) — gates the vote buttons
+  // and the "left the set" badge, replacing isArchived for that job. Omitted = !isArchived, the
+  // same rule the server applies to a null-session row, so every existing caller of this mock
+  // (all of them null-session ballots) keeps behaving exactly as before this field existed.
+  eligible?: boolean;
   myVote?: 1 | 2 | null;
 }
 
@@ -976,6 +1385,7 @@ export async function mockVoteSessionResults(
       endedAt: session.endedAt ?? null,
       voterCount: 3,
       hideResultsUntilEnd: session.hideResultsUntilEnd ?? false,
+      emoteSetId: session.emoteSetId ?? null,
       emotes: emotes.map((emote) => ({
         emoteId: emote.emoteId,
         emoteName: emote.emoteName,
@@ -989,6 +1399,7 @@ export async function mockVoteSessionResults(
         deleteVotes: emote.deleteVotes === undefined ? 1 : emote.deleteVotes,
         score: emote.score === undefined ? 1 : emote.score,
         isArchived: emote.isArchived ?? false,
+        eligible: emote.eligible ?? !(emote.isArchived ?? false),
         myVote: emote.myVote ?? null,
       })),
     }),
@@ -1134,11 +1545,44 @@ export interface SevenTvGqlErrorFixture {
 }
 
 /**
+ * What kind of `https://7tv.io/v4/gql` request one call is, told apart by the mutation/query name
+ * inside its `query` text (the same string every caller of `mockSevenTvGql` already receives as
+ * `request.query` — matching on the operation's own field name, not on request order, since a read
+ * and a mutation share this one endpoint and a caller cannot otherwise tell an `addEmote` from the
+ * live set read `loadSevenTvSetEntries` issues before/after a run that touches a `replace` row
+ * (#230: the confirm dialog's own pre-removal read, the pre-send duplicate/drift recheck, and the
+ * post-run settle read for a lost answer all go through the identical endpoint). `'unknown'` is
+ * reached only if 7TV's GQL surface grows a fifth request shape this helper does not know yet.
+ */
+export type SevenTvGqlRequestKind =
+  'addEmote' | 'removeEmote' | 'updateEmoteAlias' | 'setRead' | 'unknown';
+
+/** See {@link SevenTvGqlRequestKind}. */
+export function sevenTvGqlRequestKind(request: SevenTvGqlRequest): SevenTvGqlRequestKind {
+  const query = request.query;
+  if (query.includes('removeEmote(')) {
+    return 'removeEmote';
+  }
+  if (query.includes('updateEmoteAlias(')) {
+    return 'updateEmoteAlias';
+  }
+  if (query.includes('addEmote(')) {
+    return 'addEmote';
+  }
+  if (query.includes('emotes(page:')) {
+    return 'setRead';
+  }
+  return 'unknown';
+}
+
+/**
  * Routes `https://7tv.io/v4/gql` — the run engine's one write endpoint (ADD/REMOVE mutations for
  * import, delete and restore alike). The handler sees each call's parsed body plus a zero-based
  * call index (the run engine issues one request per queued row, in order), and returns the GQL
  * response body to answer with; always a 200 with either `data` or `errors` — 7TV's own contract,
- * which is what `SevenTvRunEngine` reads its outcome from rather than the HTTP status.
+ * which is what `SevenTvRunEngine` reads its outcome from rather than the HTTP status. A mutation
+ * counts as applied only when `data` carries its result (`emoteSets.emoteSet.removeEmote`,
+ * `.addEmote` or `.updateEmoteAlias`, #285) — a bare `{ data: {} }` leaves the row unclear.
  *
  * Sets `ep_7tv_write_token` in `sessionStorage` via `addInitScript` (R14) so the write flow never
  * hits the token prompt — call before `page.goto`, same as `installLiveStub`.

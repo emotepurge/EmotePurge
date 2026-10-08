@@ -25,6 +25,10 @@ export interface VoteSessionSummary {
   // Secret ballot: while the session runs, only managers see the tallies. Describes the session,
   // not the viewer's rights — reported to everyone so the list can badge it.
   hideResultsUntilEnd: boolean;
+  // The 7TV set a set-session's ballot is scoped to; null for a null-session (dynamic or
+  // fixed-by-guid ballot). Deliberately no accompanying name — the page already holds the
+  // channel's set list for the dropdown and looks the name up there (spec 6.9).
+  emoteSetId: string | null;
 }
 
 // Body of POST /api/channels/{name}/vote-sessions. An object rather than positional arguments:
@@ -36,10 +40,17 @@ export interface CreateVoteSessionRequest {
   // Omitted = count chat usage from now.
   startedAt?: string;
   // Omitted = the session covers all non-archived channel emotes dynamically; a non-empty list
-  // becomes the session's fixed ballot (local emote ids from the results/usage models).
+  // becomes the session's fixed ballot (local emote ids from the results/usage models). Always
+  // omitted for a set-session (E4) — emoteSetId/sevenTvEmoteIds carry its ballot instead.
   emoteIds?: string[];
   // Omitted/false = tallies visible to voters throughout, the behaviour every session had before.
   hideResultsUntilEnd?: boolean;
+  // Set-session pair (spec 6.9): a ballot by 7TV identity instead of local Emote guid, for a set
+  // that is not necessarily the channel's active one. emoteSetId set requires a non-empty
+  // sevenTvEmoteIds and an omitted emoteIds — the exclusion rule is the server's
+  // (vote_session_set_ballot_invalid), not enforced here.
+  emoteSetId?: string;
+  sevenTvEmoteIds?: string[];
 }
 
 export interface VoteSessionResult {
@@ -47,7 +58,8 @@ export interface VoteSessionResult {
   emoteName: string;
   sevenTvEmoteId: string;
   imageUrl: string;
-  // Manager-only context: null = withheld (or no longer computed for archived ballot members).
+  // Manager-only context: null = withheld, or no longer computed for an archived null-session
+  // ballot member, or (set-session) never observed under the session's own set at all.
   // Data presence doubles as the permission signal — no separate canSeeUsage lookup needed.
   totalUseCount: number | null;
   // null together = withheld: a running secret-ballot session shows no tallies to non-managers.
@@ -57,8 +69,15 @@ export interface VoteSessionResult {
   deleteVotes: number | null;
   // Net keep − delete; chat usage is deliberately not part of the score anymore.
   score: number | null;
-  // A subset-session member that left the 7TV set mid-session: still listed, voting closed.
+  // A null-session subset member that left the 7TV set mid-session: still listed, voting closed.
+  // Always false-ish in effect for a set-session member — see `eligible` below, which is what
+  // actually gates votes and the badge now, not this field.
   isArchived: boolean;
+  // Whether a vote may still be cast on this row (spec section 9): true for every set-session
+  // member (its fixed ballot never closes, even once the member has left 7TV); !isArchived for a
+  // null-session member, same rule isArchived alone used to carry. Gates the vote buttons and the
+  // "left the set" badge instead of isArchived — a set-session shows no such badge at all.
+  eligible: boolean;
   myVote: VoteType | null;
 }
 
@@ -77,6 +96,8 @@ export interface VoteSessionResults {
   // The session's setting, reported even once it no longer withholds anything (ended session).
   hideResultsUntilEnd: boolean;
   emotes: VoteSessionResult[];
+  // See VoteSessionSummary.emoteSetId.
+  emoteSetId: string | null;
 }
 
 export interface CastVoteResult {

@@ -125,6 +125,42 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.ToTable("Channels");
                 });
 
+            modelBuilder.Entity("EmotePurge.Core.Entities.ChannelEmoteSetObservation", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ClosedBy")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ObservedFromUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ObservedToUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SevenTvEmoteSetId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChannelId")
+                        .IsUnique()
+                        .HasFilter("\"ObservedToUtc\" IS NULL");
+
+                    b.HasIndex("ChannelId", "ObservedFromUtc");
+
+                    b.ToTable("ChannelEmoteSetObservations");
+                });
+
             modelBuilder.Entity("EmotePurge.Core.Entities.ChannelLiveDay", b =>
                 {
                     b.Property<long>("Id")
@@ -212,6 +248,10 @@ namespace EmotePurge.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("EmoteSetId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<int>("SharedChatUseCount")
                         .HasColumnType("integer");
 
@@ -220,10 +260,10 @@ namespace EmotePurge.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmoteId", "Date")
+                    b.HasIndex("EmoteId", "EmoteSetId", "Date")
                         .IsUnique();
 
-                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("EmoteId", "Date"), new[] { "UseCount" });
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("EmoteId", "EmoteSetId", "Date"), new[] { "UseCount" });
 
                     b.ToTable("UsageStats");
                 });
@@ -322,6 +362,9 @@ namespace EmotePurge.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("EmoteSetId")
+                        .HasColumnType("text");
+
                     b.Property<DateTime?>("EndedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -353,11 +396,28 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<string>("EmoteId")
                         .HasColumnType("text");
 
+                    b.Property<string>("ImageUrlAtCreation")
+                        .HasColumnType("text");
+
+                    b.Property<string>("NameAtCreation")
+                        .HasColumnType("text");
+
                     b.HasKey("VoteSessionId", "EmoteId");
 
                     b.HasIndex("EmoteId");
 
                     b.ToTable("VoteSessionEmotes");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.ChannelEmoteSetObservation", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.ChannelLiveDay", b =>

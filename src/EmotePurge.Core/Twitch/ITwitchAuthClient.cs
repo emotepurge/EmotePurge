@@ -15,4 +15,9 @@ public interface ITwitchAuthClient
     // Deliberately separate from the user flows above: it must never touch the user scopes in
     // TwitchOAuthDefaults.RequestedScopes. Null = failure (already logged).
     Task<TwitchTokenResult?> GetAppAccessTokenAsync(CancellationToken cancellationToken = default);
+
+    // POST id.twitch.tv/oauth2/revoke: asks Twitch to invalidate one access or refresh token of this
+    // app. Best-effort by contract — true: Twitch revoked it, false: it did not or could not be
+    // reached (already logged, never thrown). Callers must not let the outcome block anything.
+    Task<bool> RevokeTokenAsync(string token, CancellationToken cancellationToken = default);
 }

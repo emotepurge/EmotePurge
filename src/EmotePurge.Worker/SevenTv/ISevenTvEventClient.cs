@@ -22,6 +22,9 @@ public interface ISevenTvEventClient
 
     void Unsubscribe(string channelName);
 
+    /// <summary>Snapshot of the channels the registry currently desires subscriptions for.</summary>
+    IReadOnlyList<string> DesiredChannels { get; }
+
     /// <summary>
     /// The per-connection subscription limit 7TV stated in its last Hello, or null until the first
     /// one arrives. Kept across disconnects on purpose: the admin bar needs a denominator, and the

@@ -58,7 +58,7 @@ public sealed class RateLimitTelemetryMiddleware(RequestDelegate next, IRateLimi
             var decision = RateLimitRejection.TryDescribeDecision(context, ResolveRouteTemplate(context));
             if (decision is not null)
             {
-                telemetry.RecordPolicyDecision(decision);
+                telemetry.ReportPolicyDecision(decision);
             }
         }
         catch

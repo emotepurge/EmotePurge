@@ -28,8 +28,18 @@ public sealed record HarnessRunIdentity(
     string AlgorithmVersion,
     string InputHash);
 
-/// <summary>Line 1 of the protocol.</summary>
-public sealed record HarnessReportHeader(HarnessRunIdentity Identity, DateTime LoadedAtUtc);
+/// <summary>
+/// Line 1 of the protocol.
+/// <para>
+/// <paramref name="Diagnostic"/> records how the data of this file was collected: <c>true</c> for a
+/// '--diagnostic' run, <c>false</c> for a binding one, <c>null</c> for a file written before the
+/// field existed (the mode is then unknown). It sits next to the identity, not in it, on purpose:
+/// the identity decides the file name and what may be continued, and the mode must not change either
+/// — a changed mode on the same data is a refusal (see <c>HarnessRunner</c>), not a new file. A
+/// <c>null</c> is not written, so a header without the field stays byte-identical to the old format.
+/// </para>
+/// </summary>
+public sealed record HarnessReportHeader(HarnessRunIdentity Identity, DateTime LoadedAtUtc, bool? Diagnostic = null);
 
 /// <summary>
 /// Something that happened to the run but produced no day: a 429, a body timeout, an exhausted byte

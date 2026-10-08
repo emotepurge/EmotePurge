@@ -25,18 +25,23 @@ namespace EmotePurge.Core.Services;
 /// <c>EmotePurge.Core</c>, which is BCL-only by rule.
 /// </para>
 /// </remarks>
+/// <remarks>
+/// Named <c>Report…</c> rather than <c>Record…</c> on purpose: the awaitable twins on the interface are
+/// called <c>Record…Async</c>, and a synchronous call that shares the stem makes analyzers (S6966) ask
+/// for an <c>await</c> that would defeat the whole point of this class.
+/// </remarks>
 public static class RateLimitTelemetryExtensions
 {
     /// <inheritdoc cref="IRateLimitTelemetry.RecordPolicyDecisionAsync"/>
-    public static void RecordPolicyDecision(this IRateLimitTelemetry telemetry, RateLimitPolicyDecision decision)
+    public static void ReportPolicyDecision(this IRateLimitTelemetry telemetry, RateLimitPolicyDecision decision)
         => Forget(() => telemetry.RecordPolicyDecisionAsync(decision, CancellationToken.None));
 
     /// <inheritdoc cref="IRateLimitTelemetry.RecordProviderResponseAsync"/>
-    public static void RecordProviderResponse(this IRateLimitTelemetry telemetry, ProviderResponseObservation observation)
+    public static void ReportProviderResponse(this IRateLimitTelemetry telemetry, ProviderResponseObservation observation)
         => Forget(() => telemetry.RecordProviderResponseAsync(observation, CancellationToken.None));
 
     /// <inheritdoc cref="IRateLimitTelemetry.RecordCacheLookupAsync"/>
-    public static void RecordCacheLookup(this IRateLimitTelemetry telemetry, string cacheName, bool hit)
+    public static void ReportCacheLookup(this IRateLimitTelemetry telemetry, string cacheName, bool hit)
         => Forget(() => telemetry.RecordCacheLookupAsync(cacheName, hit, CancellationToken.None));
 
     /// <summary>

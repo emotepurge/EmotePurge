@@ -63,7 +63,10 @@ public sealed class HarnessRunner(
     /// </summary>
     public const string AlgorithmVersion = "harness-2";
 
-    /// <summary>The window covered completely; both final reports were written.</summary>
+    /// <summary>
+    /// The window covered completely; both final reports were written — by this invocation, or by
+    /// an earlier one of the identical run, which a rerun then leaves untouched (#87).
+    /// </summary>
     public const int ExitSuccess = 0;
 
     /// <summary>
@@ -74,7 +77,12 @@ public sealed class HarnessRunner(
     /// </summary>
     public const int ExitInvalidArguments = 2;
 
-    /// <summary>A precondition was violated; the question could not be asked at all.</summary>
+    /// <summary>
+    /// A precondition was violated; the question could not be asked at all. Also the refusal for a
+    /// rerun of an existing file (closed or unfinished) in the other run mode, for a binding run
+    /// reaching a file with no recorded mode (#314), or of a closed run with damaged day lines (#87):
+    /// nothing is written and nothing is fetched.
+    /// </summary>
     public const int ExitPreconditionViolated = 3;
 
     /// <summary>Aborted with a resume point: 429, body timeout, byte ceiling, transport, cancellation.</summary>
@@ -258,7 +266,7 @@ public sealed class HarnessRunner(
         var trackedSince = TrackingCoverage.TrackedSince(channel.TrackingResumedAt, channel.CreatedAt);
         var firstFullyTrackedDay = DateOnly.FromDateTime(trackedSince).AddDays(1);
 
-        var frozen = FindFrozenWindow(channel.Id, channel.ChannelName, days, freshTo);
+        var frozen = FindFrozenWindow(channel.Id, channel.ChannelName, days, freshTo, diagnostic);
         var to = frozen?.To ?? freshTo;
         var from = frozen?.From ?? Later(firstFullyTrackedDay, to.AddDays(-(days - 1)));
 
@@ -295,12 +303,13 @@ public sealed class HarnessRunner(
 
         var file = new HarnessReportFile(Path.Combine(options.OutputDirectory, HarnessReportFile.BuildFileName(identity)));
         HarnessReportContent existing;
+        HarnessReportHeader header;
         bool resumed;
         if (file.Exists)
         {
             try
             {
-                file.ReadHeader(identity);
+                header = file.ReadHeader(identity);
                 existing = file.ReadDays();
             }
             catch (HarnessReportFileException ex)
@@ -313,11 +322,39 @@ public sealed class HarnessRunner(
                 return ExitPreconditionViolated;
             }
 
+            // The file's recorded mode against this run's, before anything is written or fetched. A closed
+            // file with an unrecorded mode is left to DecideClosedRun, which can read the mode from its
+            // report; for every other file the header is all there is.
+            if (!(file.IsClosed && header.Diagnostic is null) && !ModeAllowsContinuing(header.Diagnostic, diagnostic))
+            {
+                logger.LogError(
+                    "Harness run file '{File}' was collected {Recorded}, this invocation is {Current}; a run is binding only if it ran binding from the start, so the file is neither resumed nor rewritten. Nothing was written and nothing was fetched. {Hint}",
+                    file.Path,
+                    header.Diagnostic is null ? "without a recorded mode (written before the mode was recorded)" : header.Diagnostic.Value ? "as a diagnostic run" : "as a binding run",
+                    diagnostic ? "as a diagnostic run" : "as a binding run",
+                    header.Diagnostic is null
+                        ? "A binding run needs a fresh start: move the file aside, per the runbook."
+                        : header.Diagnostic.Value
+                            ? "A binding run needs a fresh start on a new window: move the file aside, per the runbook."
+                            : file.IsClosed
+                                ? "Use '--report-only' to recompute a binding run; a diagnostic invocation never continues it."
+                                : "Resume it without '--diagnostic'; a diagnostic invocation never continues a binding run.");
+                return ExitPreconditionViolated;
+            }
+
+            // Decided only now, after the header and every day line have been read (#87): a closed
+            // run whose evidence is damaged is refused above or inside DecideClosedRun, never waved
+            // through on the strength of a report that happens to sit beside it.
+            if (file.IsClosed && DecideClosedRun(file, identity, existing, diagnostic, header.Diagnostic, channel.ChannelName) is { } closedExitCode)
+            {
+                return closedExitCode;
+            }
+
             resumed = true;
         }
         else
         {
-            file.WriteHeader(new HarnessReportHeader(identity, loadedAtUtc));
+            file.WriteHeader(new HarnessReportHeader(identity, loadedAtUtc, diagnostic));
             existing = new HarnessReportContent([], []);
             resumed = false;
         }
@@ -404,12 +441,12 @@ public sealed class HarnessRunner(
             }
             catch (OperationCanceledException)
             {
-                // docker stop / Ctrl-C. Everything up to the previous day is on disk already, so
-                // this is an ordinary resume point rather than a loss.
-                // This day's bytes are booked as 0 even though a cancellation mid-body did pull real
-                // ones. Not a judgement that they are free: the archive client lets a caller
-                // cancellation propagate bare (ChatLogArchiveClient class doc), so the count dies with
-                // the stream and this caller cannot learn it. Followed up in #82.
+                // docker stop / Ctrl-C before the body: while waiting for the request slot or for the
+                // response headers. Everything up to the previous day is on disk already, so this is
+                // an ordinary resume point rather than a loss, and 0 bytes is the right booking — no
+                // body was read. A cancellation *during* the body does not land here: the client
+                // returns ChatLogDayStatus.Cancelled with the bytes received so far (#82), and the
+                // `default:` branch below books them like every other aborted transfer.
                 AppendAbort(file, day, "Cancelled", null, "Lauf abgebrochen.");
                 LogResumePoint(dayLines, "abgebrochen", day);
                 return ExitAbortedWithResumePoint;
@@ -570,30 +607,21 @@ public sealed class HarnessRunner(
         // ReplayFidelityCalculator.Compute, which has no duplicate-day contract of its own and would
         // silently sum both copies into every total. Restricted to the window: a stray day line
         // outside [WindowFrom, WindowTo] is not this check's concern (it is never read by Compute).
-        var duplicateDays = allDays
-            .Where(d => d.Day >= identity.WindowFrom && d.Day <= identity.WindowTo)
-            .GroupBy(d => d.Day)
-            .Where(g => g.Count() > 1)
-            .Select(g => g.Key)
-            .ToList();
-        if (duplicateDays.Count > 0)
+        var coverage = CheckWindowCoverage(allDays, identity.WindowFrom, identity.WindowTo);
+        if (coverage.DuplicateDays.Count > 0)
         {
             logger.LogError(
                 "Report-only file '{File}' has more than one day line for {Days}; a duplicated day would be double-counted, so it cannot be recomputed.",
-                sourceFile.Path, string.Join(", ", duplicateDays.Select(Iso)));
+                sourceFile.Path, string.Join(", ", coverage.DuplicateDays.Select(Iso)));
             return ExitPreconditionViolated;
         }
 
-        var daysPresent = new HashSet<DateOnly>(allDays.Select(d => d.Day));
-        for (var day = identity.WindowFrom; day <= identity.WindowTo; day = day.AddDays(1))
+        if (coverage.FirstMissingDay is { } missingDay)
         {
-            if (!daysPresent.Contains(day))
-            {
-                logger.LogError(
-                    "Report-only file '{File}' is missing the day line for {Day}; the window {From}..{To} is not fully covered, so it cannot be recomputed.",
-                    sourceFile.Path, Iso(day), Iso(identity.WindowFrom), Iso(identity.WindowTo));
-                return ExitPreconditionViolated;
-            }
+            logger.LogError(
+                "Report-only file '{File}' is missing the day line for {Day}; the window {From}..{To} is not fully covered, so it cannot be recomputed.",
+                sourceFile.Path, Iso(missingDay), Iso(identity.WindowFrom), Iso(identity.WindowTo));
+            return ExitPreconditionViolated;
         }
 
         // Same refusal an ordinary run gives for the same fact (ExecuteAsync, just below the day
@@ -651,9 +679,20 @@ public sealed class HarnessRunner(
         // recompute defaults to true (no gate verdict) rather than false (a binding one) — a missing,
         // unparsable or otherwise unreadable .report.json must never silently upgrade a diagnostic
         // run into a binding verdict just because nothing was left to say it was one.
-        var diagnostic = originalReport?.Run.Diagnostic ?? true;
-        var diagnosticSource = originalReport is not null ? "inherited" : "defaulted";
-        if (originalReport is null)
+        // The header records how the data was collected and is the truth about it (#314); the original
+        // report is only the fallback for a file written before the header carried the mode.
+        var modeDisagreement = false;
+        if (header.Diagnostic is { } headerMode && originalReport is not null && originalReport.Run.Diagnostic != headerMode)
+        {
+            logger.LogWarning(
+                "'{File}' recorded its run mode as {HeaderMode} but its report says {ReportMode}; the recompute uses the header.",
+                sourceFile.Path, headerMode ? "diagnostic" : "binding", originalReport.Run.Diagnostic ? "diagnostic" : "binding");
+            modeDisagreement = true;
+        }
+
+        var diagnostic = header.Diagnostic ?? originalReport?.Run.Diagnostic ?? true;
+        var diagnosticSource = header.Diagnostic is not null || originalReport is not null ? "inherited" : "defaulted";
+        if (header.Diagnostic is null && originalReport is null)
         {
             logger.LogInformation(
                 "'{File}' has no readable '{JsonPath}' to inherit the diagnostic flag from; the recompute defaults it to true (no gate verdict), per the D4 fail-closed rule.",
@@ -678,6 +717,11 @@ public sealed class HarnessRunner(
             logger.LogWarning(
                 "Recompute of '{File}' sees a different bot-split cutover than the original run (original '{Original}', current '{Current}').",
                 sourceFile.Path, Iso(identity.BotSplitCutover), Iso(currentBotSplitCutover));
+        }
+
+        if (modeDisagreement)
+        {
+            warnings.Add("run-mode-disagreement");
         }
 
         var recomputation = new HarnessRecomputation(
@@ -716,6 +760,111 @@ public sealed class HarnessRunner(
     }
 
     /// <summary>
+    /// What a rerun does with a closed run (#87) — one whose header matched this invocation's
+    /// identity and whose day lines all read cleanly. Returns the exit code to end with, or
+    /// <c>null</c> to continue down the ordinary resume path, which for a closed run fetches nothing
+    /// and rewrites both reports from the day lines.
+    /// <para>
+    /// The identical run, already finished, is not rewritten: the day lines are the same, but the
+    /// window-wide distinct-chatter count only ever existed in memory during the first pass, so a
+    /// rewrite would report it as unavailable. A finished report is evidence and stays as it is; a
+    /// recompute under today's code is what <c>--report-only</c> is for (#119).
+    /// </para>
+    /// <para>
+    /// The outcomes, in the order they are decided:
+    /// damaged evidence (a day of the window without a line, or a day with two) refuses with
+    /// <see cref="ExitPreconditionViolated"/>; a report that does not describe this run (see
+    /// <see cref="DescribeReportDefect"/>) is repaired from the day lines with a warning; a finished
+    /// report of the same run mode ends with <see cref="ExitSuccess"/>, untouched; a finished report
+    /// of the other run mode refuses with <see cref="ExitPreconditionViolated"/>, in both directions.
+    /// The run mode is not part of the identity (D4), which is why it is compared here at all. A
+    /// binding run is binding because it was registered as one before any number was seen (#69,
+    /// operator decision 2026-10-03), so a closed diagnostic run is never upgraded after the fact,
+    /// and a closed binding run is never overwritten by a diagnostic invocation either. Refusing
+    /// writes nothing and fetches nothing.
+    /// </para>
+    /// </summary>
+    private int? DecideClosedRun(
+        HarnessReportFile file, HarnessRunIdentity identity, HarnessReportContent content, bool diagnostic, bool? recordedDiagnostic, string channelName)
+    {
+        // Ordinary runs cannot close with a gap or a duplicate — the day loop writes each day of the
+        // window exactly once before the report — so either one means the evidence was altered after
+        // the fact. Refused rather than refetched: the archive is never asked again for a closed run.
+        var coverage = CheckWindowCoverage(content.Days, identity.WindowFrom, identity.WindowTo);
+        if (coverage.DuplicateDays.Count > 0 || coverage.FirstMissingDay is not null)
+        {
+            logger.LogError(
+                "Harness run file '{File}' is closed but its day lines do not cover the window {From}..{To} exactly once (missing: {Missing}; duplicated: {Duplicated}); the evidence is damaged, nothing was written and nothing was fetched.",
+                file.Path, Iso(identity.WindowFrom), Iso(identity.WindowTo), Iso(coverage.FirstMissingDay),
+                coverage.DuplicateDays.Count == 0 ? "none" : string.Join(", ", coverage.DuplicateDays.Select(Iso)));
+            return ExitPreconditionViolated;
+        }
+
+        // Only the JSON report is checked. The Markdown is deliberately not validated: it is a
+        // rendering for humans with no parseable contract, so checking it would mean parsing our own
+        // prose; IsClosed asks for its presence and nothing more.
+        ReplayFinalReport? closedReport;
+        string? defect;
+        try
+        {
+            closedReport = file.TryReadExistingReport();
+            defect = DescribeReportDefect(closedReport, identity);
+        }
+        catch (InvalidOperationException)
+        {
+            // Valid JSON whose root is not an object (`null`, `[]`, `42`): TryReadExistingReport looks
+            // up "run" on it without checking the root's kind and throws. Caught here, on the
+            // closed-run path only, rather than tightened there — the report-only recompute (#119)
+            // depends on that method's current behaviour. It is just another unreadable report.
+            closedReport = null;
+            defect = "the JSON root is not an object";
+        }
+
+        if (closedReport is null || defect is not null)
+        {
+            // The repair rewrites both reports in one mode, and that must be the file's own. With a
+            // recorded mode the caller has already refused any other; without one (legacy) only a
+            // diagnostic invocation may repair, since a binding rewrite would invent a verdict for
+            // data whose mode nobody recorded.
+            if (recordedDiagnostic is null && !diagnostic)
+            {
+                logger.LogError(
+                    "Harness run for channel '{Channel}' is closed, but '{ReportJson}' does not describe this run and the file recorded no run mode; a binding invocation will not rewrite it. Nothing was written and nothing was fetched. Repair it with a '--diagnostic' invocation or recompute it with '--report-only {File}'.",
+                    channelName, file.ReportJsonPath, Path.GetFileName(file.Path));
+                return ExitPreconditionViolated;
+            }
+
+            logger.LogWarning(
+                "Harness run for channel '{Channel}' is closed, but '{ReportJson}' does not describe this run ({Defect}); both reports are rewritten from the day lines without fetching anything.",
+                channelName, file.ReportJsonPath, defect);
+            return null;
+        }
+
+        if (closedReport.Run.Diagnostic == diagnostic)
+        {
+            logger.LogInformation(
+                "Harness run for channel '{Channel}' is already complete; its reports '{ReportJson}' and '{ReportMarkdown}' are left untouched and nothing was fetched. Use '--report-only' to recompute them.",
+                channelName, file.ReportJsonPath, file.ReportMarkdownPath);
+            return ExitSuccess;
+        }
+
+        if (closedReport.Run.Diagnostic)
+        {
+            logger.LogError(
+                "Harness run for channel '{Channel}' was closed as a diagnostic run; its reports '{ReportJson}' and '{ReportMarkdown}' stay as they are and nothing was fetched. A diagnostic run stays diagnostic: a run is binding only if it ran binding from the start, so a binding run needs a fresh start on a new window, per the runbook.",
+                channelName, file.ReportJsonPath, file.ReportMarkdownPath);
+        }
+        else
+        {
+            logger.LogError(
+                "Harness run for channel '{Channel}' was closed as a binding run; its reports '{ReportJson}' and '{ReportMarkdown}' stay as they are and nothing was fetched. A '--diagnostic' invocation never rewrites a binding run; use '--report-only {File}' to recompute it under today's code.",
+                channelName, file.ReportJsonPath, file.ReportMarkdownPath, Path.GetFileName(file.Path));
+        }
+
+        return ExitPreconditionViolated;
+    }
+
+    /// <summary>
     /// The frozen window this invocation should continue, or <c>null</c> if there is nothing to
     /// continue and a fresh window is to be derived.
     /// <para>
@@ -735,7 +884,7 @@ public sealed class HarnessRunner(
     /// </para>
     /// </summary>
     private (DateOnly From, DateOnly To)? FindFrozenWindow(
-        string channelId, string channelName, int days, DateOnly freshTo)
+        string channelId, string channelName, int days, DateOnly freshTo, bool diagnostic)
     {
         if (!Directory.Exists(options.OutputDirectory))
         {
@@ -765,6 +914,28 @@ public sealed class HarnessRunner(
             }
 
             var age = freshTo.DayNumber - header.Identity.WindowTo.DayNumber;
+
+            // A file collected in the other run mode is not this run's to inherit (#69: a run is
+            // binding only if it ran binding from the start). A legacy header without a recorded
+            // mode counts as diagnostic for a diagnostic run and is never inherited by a binding one.
+            // The skip is announced when it changes the outcome (the file would have been inherited)
+            // and always for a legacy file seen by a binding run, since that one is easy to miss.
+            if (!ModeAllowsContinuing(header.Diagnostic, diagnostic))
+            {
+                var wouldHaveBeenInherited = age >= 0 && age <= MaxResumeAgeInDays;
+                if (wouldHaveBeenInherited || (header.Diagnostic is null && !diagnostic))
+                {
+                    logger.LogWarning(
+                        "Unfinished harness run file '{File}' (window {From}..{To}) is not continued: it was collected {Recorded}, this invocation is {Current}, and a run is binding only if it ran binding from the start. This invocation derives its own window. To start fresh deliberately, move the file aside. If the file is known to have been collected in this invocation's mode, record that by hand in header line 1 (add \"diagnostic\":{Flag} to the header object); that is an attestation by the operator, nothing verifies it.",
+                        path, Iso(header.Identity.WindowFrom), Iso(header.Identity.WindowTo),
+                        header.Diagnostic is null ? "without a recorded mode (written before the mode was recorded)" : header.Diagnostic.Value ? "as a diagnostic run" : "as a binding run",
+                        diagnostic ? "as a diagnostic run" : "as a binding run",
+                        diagnostic ? "true" : "false");
+                }
+
+                continue;
+            }
+
             if (age < 0)
             {
                 // A window ending after the last complete UTC day cannot have been frozen by this
@@ -818,7 +989,87 @@ public sealed class HarnessRunner(
             Iso(day), reason, resumePoint is { } value ? Iso(value) : "keiner");
     }
 
+    /// <summary>
+    /// Whether a run in mode <paramref name="diagnostic"/> may continue or inherit a file whose header
+    /// recorded <paramref name="recorded"/>. An unrecorded (legacy) mode is read as diagnostic: that
+    /// can only ever lower a run's standing, never raise it, so a diagnostic run may continue such a
+    /// file and a binding run may not.
+    /// </summary>
+    private static bool ModeAllowsContinuing(bool? recorded, bool diagnostic) => (recorded ?? true) == diagnostic;
+
     private static DateOnly Later(DateOnly left, DateOnly right) => left > right ? left : right;
+
+    /// <summary>
+    /// Which days of <paramref name="from"/>..<paramref name="to"/> have more than one line, and the
+    /// first day that has none. Days outside the window are ignored. Shared by the report-only
+    /// recompute (#119) and the closed-run decision (#87), which refuse on either finding.
+    /// </summary>
+    private static (IReadOnlyList<DateOnly> DuplicateDays, DateOnly? FirstMissingDay) CheckWindowCoverage(
+        IReadOnlyList<ReplayDayLine> days, DateOnly from, DateOnly to)
+    {
+        var duplicateDays = days
+            .Where(d => d.Day >= from && d.Day <= to)
+            .GroupBy(d => d.Day)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        var daysPresent = new HashSet<DateOnly>(days.Select(d => d.Day));
+        for (var day = from; day <= to; day = day.AddDays(1))
+        {
+            if (!daysPresent.Contains(day))
+            {
+                return (duplicateDays, day);
+            }
+        }
+
+        return (duplicateDays, null);
+    }
+
+    /// <summary>
+    /// Why <paramref name="report"/> is not the finished report of the run named by
+    /// <paramref name="identity"/>, or <c>null</c> if it is one: all four sections present, marked
+    /// complete, and covering exactly the identity's window. Deliberately stricter than
+    /// <see cref="HarnessReportFile.TryReadExistingReport"/>, which only guarantees a readable
+    /// <c>run.diagnostic</c> and must stay that tolerant for the recompute's fail-closed
+    /// inheritance (#119) — a <c>{"run":{"diagnostic":false}}</c> passes there and must not pass here.
+    /// </summary>
+    private static string? DescribeReportDefect(ReplayFinalReport? report, HarnessRunIdentity identity)
+    {
+        if (report?.Run is null)
+        {
+            return "missing, unreadable or without a boolean run.diagnostic";
+        }
+
+        var defects = new List<string>();
+        if (report.Gate is null)
+        {
+            defects.Add("no gate section");
+        }
+
+        if (report.Plausibility is null)
+        {
+            defects.Add("no plausibility section");
+        }
+
+        if (report.Diagnostics is null)
+        {
+            defects.Add("no diagnostics section");
+        }
+
+        if (!report.Run.RunComplete)
+        {
+            defects.Add("run.runComplete is not true");
+        }
+
+        if (report.Run.WindowFrom != identity.WindowFrom || report.Run.WindowTo != identity.WindowTo)
+        {
+            defects.Add(Invariant(
+                $"window {Iso(report.Run.WindowFrom)}..{Iso(report.Run.WindowTo)} instead of {Iso(identity.WindowFrom)}..{Iso(identity.WindowTo)}"));
+        }
+
+        return defects.Count == 0 ? null : string.Join(", ", defects);
+    }
 
     // ISO 8601 rather than DateOnly's culture-dependent default ToString(): a container's invariant
     // culture renders that as MM/dd/yyyy, which read as an ordinary (if odd) US date in a German
@@ -884,8 +1135,20 @@ public sealed class HarnessRunner(
                 $"> - Bot-Split-Stichtag: ursprünglich `{Iso(recomputation.OriginalBotSplitCutover)}`, aktuell `{Iso(recomputation.CurrentBotSplitCutover)}` (Übereinstimmung: {(recomputation.BotSplitCutoverMatches ? "ja" : "nein")})\n\n"));
         }
 
+        if (recomputation.Warnings.Contains("run-mode-disagreement"))
+        {
+            var headerMode = report.Run.Diagnostic ? "Diagnose" : "bindend";
+            var reportMode = report.Run.Diagnostic ? "bindend" : "Diagnose";
+            text.Append(
+                "> **⚠ Achtung: Lauf-Modus widersprüchlich.** "
+                + $"Zeile 1 der `.jsonl` hält den Lauf als **{headerMode}** fest, der ursprüngliche "
+                + $"`.report.json` sagt **{reportMode}**. Die Neuberechnung folgt dem Kopf; "
+                + "ein von Hand bearbeiteter Kopf wird durch nichts geprüft. Vor jeder Verwendung "
+                + "als bindender Lauf muss der Betreiber klären, welche Angabe stimmt.\n\n");
+        }
+
         text.Append(Invariant(
-            $"Herkunft des Diagnose-Kennzeichens: {(recomputation.DiagnosticSource == "inherited" ? "übernommen aus dem ursprünglichen Bericht" : "keiner vorhanden, fail-closed auf 'Diagnose' (kein Gate-Urteil) zurückgefallen")}.\n\n"));
+            $"Herkunft des Diagnose-Kennzeichens: {(recomputation.DiagnosticSource == "inherited" ? (header.Diagnostic is not null ? "übernommen aus dem Kopf des ursprünglichen Laufs" : "übernommen aus dem ursprünglichen Bericht") : "keiner vorhanden, fail-closed auf 'Diagnose' (kein Gate-Urteil) zurückgefallen")}.\n\n"));
         text.Append("---\n\n");
 
         text.Append(BuildMarkdown(

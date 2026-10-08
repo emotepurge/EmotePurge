@@ -1,11 +1,30 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Observable, Subject, firstValueFrom, of, throwError } from 'rxjs';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  EditableSetResolution,
+  EditableSetTarget,
+  OwnerHint,
+} from '../../core/seven-tv/seven-tv-emote-set.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ExportEnvelope } from '../export/export-envelope';
 import { buildPurgeRunProtocol, purgeRunJson } from '../export/purge-run-export';
+import {
+  buildTransferPlanRecord,
+  buildTransferRunProtocol,
+  parseTransferRunForUndo,
+  transferRunJson,
+} from '../export/transfer-run-export';
+import {
+  buildTransferUndoPlanRecord,
+  buildTransferUndoProtocol,
+  transferUndoJson,
+} from '../export/transfer-undo-export';
 import { FileImportResult, FileImportStep } from './file-import-step';
 
 /**
@@ -18,10 +37,27 @@ const DE_TRANSLATIONS = {
     import: {
       sorts: {
         purgeRun: 'Purge-Protokoll (Wiederherstellen) als JSON',
+        transferRun:
+          'Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen oder Ersetzungen rückgängig machen) als JSON',
+        transferUndo:
+          'Rückweg-Protokoll einer Ersetzung — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON',
         emoteList: 'Emote-Liste (Kopieren) als JSON',
         usageExport: 'Nutzungs-Export (Kopieren) als JSON',
       },
       fileLabel: 'Datei auswählen',
+      choice: {
+        legend: 'Was soll mit dieser Übertragungsdatei geschehen?',
+        restore: {
+          label: 'Lücken schließen',
+          hint: 'Holt entfernte Ziel-Emotes zurück, wo ihr Name frei ist. Entfernt nichts.',
+        },
+        undo: {
+          label: 'Ersetzungen rückgängig machen',
+          hint: 'Entfernt die Quell-Emotes, die den Namen übernommen haben, und holt die Ziele zurück. Vorher kommt eine Bestätigung.',
+          destructive: 'entfernt Emotes',
+          unavailable: 'Diese Datei enthält keine Ersetzung, die sich rückgängig machen ließe.',
+        },
+      },
       errors: {
         notJson: 'Die Datei ist kein gültiges JSON.',
         csvInsteadOfJson:
@@ -32,18 +68,52 @@ const DE_TRANSLATIONS = {
           'Das ist ein Export einer Abstimmung, kein Purge-Protokoll. Ein importierbares Protokoll entsteht erst bei einem Löschlauf und wird direkt danach zum Download angeboten.',
         wrongVersion: 'Die Datei stammt aus einer neueren EmotePurge-Version.',
         noRows: 'Die Datei enthält keine importierbaren Emotes.',
-        wrongChannel: 'Das Protokoll gehört zu einem anderen Channel.',
-        wrongSet:
-          'Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.',
         noRestorableRows:
           'Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.',
+        transferRunNoRows: 'Diese Übertragungsdatei enthält keine entfernten Emotes.',
+        targetNotEditable:
+          'Das Set aus der Datei ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
+        targetNotSelectable: 'Das Set aus der Datei ist kein normales Emote-Set.',
+        targetCheckUnavailable:
+          'Das Set aus der Datei konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.',
+        noTargetSetForCopy:
+          'Diese Seite hat kein Set, in das kopiert werden könnte. Aus einer Datei lässt sich hier nur wiederherstellen.',
       },
     },
   },
 };
 
 const CURRENT_CHANNEL = 'somechannel';
+
+/** The labels of the switch's two options (#254, spec 4.1 point 3). */
+const CHOICE = {
+  restore: DE_TRANSLATIONS.restore.import.choice.restore.label,
+  undo: DE_TRANSLATIONS.restore.import.choice.undo.label,
+};
 const CURRENT_SET = 'set-current';
+
+/** What the shared pre-check answers for the file's set in the default (editable) case — a
+ *  deliberately different display name and owner than anything the file or the page carries, so an
+ *  assertion on the emitted target proves where each field came from (AK 35). */
+const RESOLVED_TARGET: EditableSetTarget = {
+  emoteSetId: CURRENT_SET,
+  setName: 'Hauptset (aus der Zielliste)',
+  ownerDisplayName: 'SomeChannel',
+  twitchLogin: 'somechannel',
+  trackedChannelName: CURRENT_CHANNEL,
+  isActiveSet: true,
+  ownerTwitchChannelId: 'tw-somechannel',
+};
+
+/** The restore rows `purgeRunText()` (with its default single done row) yields. */
+const PURGE_RESTORE_ROWS = [
+  {
+    emoteId: 'e1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'PogU',
+    aliases: ['PogU'],
+  },
+];
 
 /** Always resolves to exactly this string — sidesteps whatever `Blob`/`File.text()` support the
  *  test environment happens to have. */
@@ -59,6 +129,7 @@ function purgeRunText(
     emoteSetId?: string;
     formatVersion?: number;
     items?: (RunQueueItem & { emoteId: string })[];
+    targetOwnerTwitchId?: string | null;
   } = {},
 ): string {
   const protocol = buildPurgeRunProtocol({
@@ -66,8 +137,17 @@ function purgeRunText(
     emoteSetId: overrides.emoteSetId ?? CURRENT_SET,
     startedAt: Date.parse('2026-09-01T10:00:00Z'),
     finishedAt: Date.parse('2026-09-01T10:05:00Z'),
+    targetOwnerTwitchId: overrides.targetOwnerTwitchId ?? null,
     items: overrides.items ?? [
-      { key: 'e1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+      {
+        key: 'e1',
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        status: 'done',
+        completedSteps: 1,
+        failedStep: null,
+      },
     ],
   });
   if (overrides.formatVersion !== undefined) {
@@ -104,6 +184,167 @@ function votingText(): string {
   });
 }
 
+/** A replace row of `Kappa` against target `tgt-1`, which sat in the set as `KappaOld`. */
+const REPLACE_ROW: TransferRow = {
+  action: 'replace',
+  source: { sevenTvEmoteId: 'src-1', name: 'Kappa', imageUrl: null },
+  alias: 'Kappa',
+  target: {
+    sevenTvEmoteId: 'tgt-1',
+    aliases: ['KappaOld'],
+    hasAliaslessEntry: false,
+    defaultName: 'KappaDefault',
+  },
+};
+
+/** Either stage of a transfer-run file with that one replace row, into `channelName`'s `set`. The
+ *  `finished` stage's REMOVE is confirmed unless `removeConfirmed` is false. */
+function transferRunText(
+  stage: 'planned' | 'finished',
+  options: { channelName?: string; removeConfirmed?: boolean } = {},
+): string {
+  const target = {
+    targetEmoteSetId: CURRENT_SET,
+    targetChannelName: options.channelName ?? CURRENT_CHANNEL,
+    targetOwnerDisplayName: null,
+    origin: { kind: 'channel' as const, channelName: 'quellkanal' },
+    targetOwnerTwitchId: null,
+  };
+  if (stage === 'planned') {
+    return transferRunJson(
+      buildTransferPlanRecord({
+        ...target,
+        verifiedAt: 0,
+        plan: { rows: [REPLACE_ROW] },
+        entries: {
+          aliasesById: new Map([['tgt-1', ['KappaOld']]]),
+          aliaslessIds: new Set(),
+          defaultNameById: new Map([['tgt-1', 'KappaDefault']]),
+          animatedById: new Map([['tgt-1', false]]),
+          occupiedSlots: 1,
+          complete: true,
+        },
+        defaultNameById: new Map([['tgt-1', 'KappaDefault']]),
+      }),
+    );
+  }
+  const confirmed = options.removeConfirmed ?? true;
+  return transferRunJson(
+    buildTransferRunProtocol({
+      ...target,
+      startedAt: 0,
+      finishedAt: 1,
+      items: [
+        {
+          key: 'src-1',
+          sevenTvEmoteId: 'src-1',
+          name: 'Kappa',
+          transfer: REPLACE_ROW,
+          status: 'failed',
+          completedSteps: confirmed ? 1 : 0,
+          failedStep: confirmed ? 1 : 0,
+        },
+      ],
+    }),
+  );
+}
+
+/** A transfer-run file whose one replace row lost its alias — hand-edited, never written that way.
+ *  The restore reading still finds the removed target; the undo reading finds no candidate. */
+function transferRunTextWithoutAlias(): string {
+  const envelope = JSON.parse(transferRunText('finished')) as { rows: { alias: string }[] };
+  envelope.rows[0].alias = '';
+  return JSON.stringify(envelope);
+}
+
+/** Either stage of a transfer-undo file for an undo of `REPLACE_ROW` into `set`: one `full` row
+ *  that removed `src-1` (under `Kappa`) and gave `tgt-1` back. */
+function transferUndoText(stage: 'planned' | 'finished', set = CURRENT_SET): string {
+  const candidate = {
+    sourceSevenTvEmoteId: 'src-1',
+    sourceName: 'Kappa',
+    alias: 'Kappa',
+    fileStatus: 'done' as const,
+    target: { sevenTvEmoteId: 'tgt-1', entries: [{ alias: 'KappaOld' }], defaultName: null },
+    provenance: 'confirmed' as const,
+  };
+  const row = {
+    candidate,
+    mode: 'full' as const,
+    adds: [{ alias: 'KappaOld' }],
+    omittedEntries: [],
+    notes: [],
+  };
+  const common = {
+    targetEmoteSetId: set,
+    targetChannelName: CURRENT_CHANNEL,
+    targetOwnerDisplayName: null,
+    sourceFile: {
+      stage: 'finished' as const,
+      exportedAt: '2026-09-01T10:00:00Z',
+      verifiedAt: null,
+      finishedAt: '2026-09-01T10:05:00Z',
+      origin: null,
+    },
+    acknowledgedUnproven: false,
+    targetOwnerTwitchId: null,
+  };
+  if (stage === 'planned') {
+    return transferUndoJson(
+      buildTransferUndoPlanRecord({
+        ...common,
+        verifiedAt: 0,
+        read: {
+          aliasesById: new Map([['src-1', ['Kappa']]]),
+          aliaslessIds: new Set(),
+          defaultNameById: new Map([['src-1', 'Kappa']]),
+          animatedById: new Map([['src-1', false]]),
+          occupiedSlots: 1,
+          complete: true,
+        },
+        rows: [row],
+      }),
+    );
+  }
+  return transferUndoJson(
+    buildTransferUndoProtocol({
+      ...common,
+      startedAt: 0,
+      finishedAt: 1,
+      executed: [
+        {
+          ...row,
+          status: 'done',
+          failedStep: null,
+          completedSteps: 2,
+          errorMessage: null,
+          skippedReason: null,
+          sourceEntriesAtRemove: [{ alias: 'Kappa' }],
+        },
+      ],
+      skipped: [],
+    }),
+  );
+}
+
+/** What either stage of `transferUndoText` restores: the removed source, under its own alias. */
+const TRANSFER_UNDO_RESTORE_ROW = {
+  emoteId: null,
+  sevenTvEmoteId: 'src-1',
+  name: 'Kappa',
+  aliases: ['Kappa'],
+  defaultName: null,
+};
+
+/** What either stage of `transferRunText` restores: the removed target, under its old alias. */
+const TRANSFER_RESTORE_ROW = {
+  emoteId: null,
+  sevenTvEmoteId: 'tgt-1',
+  name: 'KappaOld',
+  aliases: ['KappaOld'],
+  defaultName: 'KappaDefault',
+};
+
 function wrongKindText(): string {
   return JSON.stringify({
     source: 'emotepurge',
@@ -117,9 +358,24 @@ function wrongKindText(): string {
   });
 }
 
+/** The target `picked` must carry for a file naming `emoteSetId`: the pre-check's own answer for
+ *  it plus the two host fields this step was handed — nothing taken from the file itself. */
+function expectedTarget(emoteSetId: string, host: { channel: string; selected: string | null }) {
+  return {
+    ...RESOLVED_TARGET,
+    emoteSetId,
+    hostChannelName: host.channel,
+    hostSelectedSetId: host.selected,
+  };
+}
+
 interface Harness {
   fixture: ComponentFixture<FileImportStep>;
   pickerButton(): HTMLButtonElement;
+  /** The switch's option whose label starts the button's text, or `null` without a switch. */
+  choiceOption(label: string): HTMLButtonElement | null;
+  /** The switch itself — the group labelled by its question — or `null`. */
+  choiceGroup(): HTMLElement | null;
   alertText(): string | null;
   focusableInOrder(): Element[];
   /** Drives `onFileSelected` directly with a synthetic `Event`/`<input>` pair, awaiting the whole
@@ -131,13 +387,24 @@ interface Harness {
 
 describe('FileImportStep', () => {
   let channelName: string;
-  let setId: string;
+  let hostSelectedSetId: string | null;
   let closed: FileImportResult[];
+  /** The shared pre-check (spec 6.2) — `editable` for the file's own set unless a test says
+   *  otherwise. Every call is one would-be request to the target list. */
+  let resolveEditableSet: ReturnType<
+    typeof vi.fn<(emoteSetId: string, hint?: OwnerHint) => Observable<EditableSetResolution>>
+  >;
 
   beforeEach(async () => {
     closed = [];
     channelName = CURRENT_CHANNEL;
-    setId = CURRENT_SET;
+    hostSelectedSetId = CURRENT_SET;
+    resolveEditableSet = vi.fn((emoteSetId: string) =>
+      of<EditableSetResolution>({
+        status: 'editable',
+        target: { ...RESOLVED_TARGET, emoteSetId },
+      }),
+    );
 
     await TestBed.configureTestingModule({
       imports: [
@@ -146,6 +413,12 @@ describe('FileImportStep', () => {
           langs: { de: DE_TRANSLATIONS },
           translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
         }),
+      ],
+      providers: [
+        {
+          provide: SevenTvEmoteSetService,
+          useValue: { resolveEditableSet } as unknown as SevenTvEmoteSetService,
+        },
       ],
     }).compileComponents();
 
@@ -156,7 +429,7 @@ describe('FileImportStep', () => {
     const fixture = TestBed.createComponent(FileImportStep);
     // Frozen values handed in by the trigger, never read in a constructor (Regel 13).
     fixture.componentRef.setInput('channelName', channelName);
-    fixture.componentRef.setInput('setId', setId);
+    fixture.componentRef.setInput('hostSelectedSetId', hostSelectedSetId);
     fixture.componentInstance.picked.subscribe((result) => closed.push(result));
     fixture.detectChanges();
     const host: HTMLElement = fixture.nativeElement;
@@ -174,6 +447,9 @@ describe('FileImportStep', () => {
         }
         return found;
       },
+      choiceOption: (label) =>
+        buttons().find((button) => button.textContent?.trim().startsWith(label)) ?? null,
+      choiceGroup: () => host.querySelector<HTMLElement>('[role="group"]'),
       alertText: () => host.querySelector('[role="alert"]')?.textContent?.trim() ?? null,
       focusableInOrder: () => Array.from(host.querySelectorAll('button, input, a[href]')),
       selectFile: async (selected) => {
@@ -193,20 +469,30 @@ describe('FileImportStep', () => {
   }
 
   describe('reported result by file sort (plan §1.1 — the discriminated result contract)', () => {
-    it('reports a restore result carrying only the done rows of a matching purge-run protocol', async () => {
+    it('reports a restore result carrying only the done rows of a purge-run protocol, and its resolved target', async () => {
       const dialog = render();
 
       await dialog.selectFile(
         file(
           purgeRunText({
             items: [
-              { key: 'e1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+              {
+                key: 'e1',
+                emoteId: 'e1',
+                sevenTvEmoteId: '7tv-1',
+                name: 'PogU',
+                status: 'done',
+                completedSteps: 1,
+                failedStep: null,
+              },
               {
                 key: 'e2',
                 emoteId: 'e2',
                 sevenTvEmoteId: '7tv-2',
                 name: 'KEKW',
                 status: 'failed',
+                completedSteps: 0,
+                failedStep: 0,
                 errorMessage: 'boom',
               },
             ],
@@ -217,18 +503,35 @@ describe('FileImportStep', () => {
       expect(closed).toEqual([
         {
           kind: 'restore',
-          rows: [
-            {
-              emoteId: 'e1',
-              sevenTvEmoteId: '7tv-1',
-              name: 'PogU',
-              status: 'done',
-              errorMessage: null,
-            },
-          ],
+          rows: PURGE_RESTORE_ROWS,
+          target: expectedTarget(CURRENT_SET, { channel: CURRENT_CHANNEL, selected: CURRENT_SET }),
         },
       ]);
     });
+
+    // F10: a transfer-run file now ends at the switch; "Lücken schließen" is the restore it always
+    // was, with the same rows and target.
+    it.each(['planned', 'finished'] as const)(
+      'reports a restore result carrying the removed target of a %s transfer-run file once "close the gaps" is picked',
+      async (stage) => {
+        const dialog = render();
+
+        await dialog.selectFile(file(transferRunText(stage)));
+        dialog.choiceOption(CHOICE.restore)?.click();
+
+        expect(closed).toEqual([
+          {
+            kind: 'restore',
+            rows: [TRANSFER_RESTORE_ROW],
+            target: expectedTarget(CURRENT_SET, {
+              channel: CURRENT_CHANNEL,
+              selected: CURRENT_SET,
+            }),
+          },
+        ]);
+        expect(dialog.alertText()).toBeNull();
+      },
+    );
 
     it("reports an import result for an emote-list file — the target stays the caller's decision", async () => {
       const dialog = render();
@@ -239,11 +542,15 @@ describe('FileImportStep', () => {
       const result = closed[0];
       expect(result?.kind).toBe('import');
       if (result?.kind === 'import') {
-        expect(result.source.rows).toEqual([{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }]);
+        expect(result.source.rows).toEqual([
+          { sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null },
+        ]);
         expect(result.source.origin).toEqual(
           expect.objectContaining({ kind: 'file', channelName: 'otherchannel' }),
         );
       }
+      // A copy file names no target of its own — nothing to check against the target list.
+      expect(resolveEditableSet).not.toHaveBeenCalled();
     });
 
     it('reports an import result for a usage export, same path as an emote-list file', async () => {
@@ -263,15 +570,400 @@ describe('FileImportStep', () => {
     });
   });
 
-  describe('read/validation errors — all nine keys, none of them report a result', () => {
+  describe('the switch for a transfer-run file (#254, spec 4.1 points 2–4, AK 1)', () => {
+    it.each(['planned', 'finished'] as const)(
+      'ends a %s transfer-run file at the switch, reporting nothing until a direction is picked',
+      async (stage) => {
+        const dialog = render();
+
+        await dialog.selectFile(file(transferRunText(stage)));
+
+        expect(closed).toEqual([]);
+        expect(dialog.choiceOption(CHOICE.restore)?.disabled).toBe(false);
+        expect(dialog.choiceOption(CHOICE.undo)?.disabled).toBe(false);
+        expect(resolveEditableSet).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([
+      ['planned', 'unproven'],
+      // The shared `transferRunText('finished')` fixture's one row settles `status: 'failed'` (its
+      // REMOVE confirmed, its ADD not) — so its candidate is 'unproven' too (spec §18: a finished
+      // row is 'confirmed' only once it settled 'done'), not merely by virtue of the file's stage.
+      ['finished', 'unproven'],
+    ] as const)(
+      'reports a transfer-undo result for a %s file once "undo the replacements" is picked — its candidates (%s), the resolved target and where the file came from',
+      async (stage, provenance) => {
+        const text = transferRunText(stage);
+        const expected = parseTransferRunForUndo(text);
+        if (!expected.ok) {
+          throw new Error('fixture must read as an undo');
+        }
+        const dialog = render();
+
+        await dialog.selectFile(file(text));
+        dialog.choiceOption(CHOICE.undo)?.click();
+
+        expect(closed).toEqual([
+          {
+            kind: 'transfer-undo',
+            candidates: expected.candidates,
+            target: expectedTarget(CURRENT_SET, {
+              channel: CURRENT_CHANNEL,
+              selected: CURRENT_SET,
+            }),
+            sourceFile: expected.sourceFile,
+          },
+        ]);
+        expect(expected.candidates.map((candidate) => candidate.provenance)).toEqual([provenance]);
+        expect(expected.sourceFile.stage).toBe(stage);
+      },
+    );
+
+    // AK 22: an untracked target goes through the switch exactly like a tracked one.
+    it('offers the switch for a file whose set belongs to an untracked account, and carries that target on', async () => {
+      const untracked = {
+        emoteSetId: 'set-stranger',
+        setName: 'Wegwerf-Set',
+        ownerDisplayName: 'Stranger',
+        twitchLogin: 'stranger',
+        trackedChannelName: null,
+        isActiveSet: false,
+        ownerTwitchChannelId: 'tw-stranger',
+      };
+      resolveEditableSet.mockReturnValue(of({ status: 'editable', target: untracked }));
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunText('finished')));
+      dialog.choiceOption(CHOICE.undo)?.click();
+
+      expect(closed).toHaveLength(1);
+      expect(closed[0]).toMatchObject({
+        kind: 'transfer-undo',
+        target: { ...untracked, hostChannelName: CURRENT_CHANNEL, hostSelectedSetId: CURRENT_SET },
+      });
+    });
+
+    // The two parsers read the same file for different things: a replace row without its alias
+    // still names a removed target, but no source to take back. The undo option says so instead of
+    // inheriting the restore reading's success.
+    it('keeps the undo option visible but disabled, with its reason, when the file reads as a restore but not as an undo', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunTextWithoutAlias()));
+
+      const undo = dialog.choiceOption(CHOICE.undo);
+      expect(undo?.disabled).toBe(true);
+      expect(undo?.textContent).toContain(DE_TRANSLATIONS.restore.import.choice.undo.unavailable);
+      undo?.click();
+      expect(closed).toEqual([]);
+
+      dialog.choiceOption(CHOICE.restore)?.click();
+      expect(closed).toEqual([
+        {
+          kind: 'restore',
+          rows: [TRANSFER_RESTORE_ROW],
+          target: expectedTarget(CURRENT_SET, { channel: CURRENT_CHANNEL, selected: CURRENT_SET }),
+        },
+      ]);
+    });
+
+    it('drops the switch when another file is picked', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunText('finished')));
+      expect(dialog.choiceGroup()).not.toBeNull();
+      await dialog.selectFile(file('not json{'));
+
+      expect(dialog.choiceGroup()).toBeNull();
+      expect(closed).toEqual([]);
+    });
+
+    it('offers no switch for a purge-run protocol — it reports its restore at once', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(purgeRunText()));
+
+      expect(dialog.choiceGroup()).toBeNull();
+      expect(closed.map((result) => result.kind)).toEqual(['restore']);
+    });
+
+    // Owner-hint design 3.7: the file's own id hint wins over its login fallback.
+    it("hints the pre-check with the file's own owner id when it carries one", async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(purgeRunText({ targetOwnerTwitchId: 'tw-file-owner' })));
+
+      expect(resolveEditableSet).toHaveBeenCalledWith(CURRENT_SET, {
+        twitchChannelId: 'tw-file-owner',
+        twitchLogin: CURRENT_CHANNEL,
+      });
+    });
+
+    // Owner-hint design 3.7, grenzfall: an untracked transfer target has neither an id nor an
+    // envelope channel to fall back to — both fields `null`, which `resolveEditableSet` reads as no
+    // hint at all, the same walk as omitting the argument entirely.
+    it('sends no hint at all for an untracked transfer-undo target', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(
+        file(
+          transferUndoJson(
+            buildTransferUndoProtocol({
+              targetEmoteSetId: 'set-undo',
+              targetChannelName: null,
+              targetOwnerDisplayName: 'Some Owner',
+              sourceFile: {
+                stage: 'finished',
+                exportedAt: '2026-09-01T10:00:00Z',
+                verifiedAt: null,
+                finishedAt: '2026-09-01T10:05:00Z',
+                origin: null,
+              },
+              startedAt: 0,
+              finishedAt: 1,
+              acknowledgedUnproven: false,
+              targetOwnerTwitchId: null,
+              executed: [
+                {
+                  candidate: {
+                    sourceSevenTvEmoteId: 'src-1',
+                    sourceName: 'Kappa',
+                    alias: 'Kappa',
+                    fileStatus: 'done',
+                    target: {
+                      sevenTvEmoteId: 'tgt-1',
+                      entries: [{ alias: 'KappaOld' }],
+                      defaultName: null,
+                    },
+                    provenance: 'confirmed',
+                  },
+                  mode: 'full',
+                  adds: [{ alias: 'KappaOld' }],
+                  omittedEntries: [],
+                  notes: [],
+                  status: 'done',
+                  failedStep: null,
+                  completedSteps: 2,
+                  errorMessage: null,
+                  skippedReason: null,
+                  sourceEntriesAtRemove: [{ alias: 'Kappa' }],
+                },
+              ],
+              skipped: [],
+            }),
+          ),
+        ),
+      );
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-undo', {
+        twitchChannelId: null,
+        twitchLogin: null,
+      });
+    });
+
+    // Spec 4.1 point 2, E12: a transfer-undo file restores the source emotes its run removed, with
+    // no switch — there is no undo of an undo. Its own set is checked like every restore file's.
+    it.each(['planned', 'finished'] as const)(
+      'reads a %s transfer-undo file straight as a restore of the removed sources, after the pre-check and with no switch',
+      async (stage) => {
+        const dialog = render();
+
+        await dialog.selectFile(file(transferUndoText(stage, 'set-undo')));
+
+        expect(resolveEditableSet).toHaveBeenCalledWith('set-undo', {
+          twitchChannelId: null,
+          twitchLogin: CURRENT_CHANNEL,
+        });
+        expect(dialog.choiceGroup()).toBeNull();
+        expect(closed).toEqual([
+          {
+            kind: 'restore',
+            rows: [TRANSFER_UNDO_RESTORE_ROW],
+            target: expectedTarget('set-undo', { channel: CURRENT_CHANNEL, selected: CURRENT_SET }),
+          },
+        ]);
+      },
+    );
+
+    it('reads a transfer-undo file on a page without a selected set too', async () => {
+      hostSelectedSetId = null;
+      const dialog = render();
+
+      await dialog.selectFile(file(transferUndoText('finished')));
+
+      expect(closed.map((result) => result.kind)).toEqual(['restore']);
+      expect(dialog.alertText()).toBeNull();
+    });
+  });
+
+  describe('the file names the target, the target list checks it (spec #253, 4.1/4.2, E1/E2)', () => {
+    // AK 1, 2, 35: a protocol of another channel's (differently cased) other set is not refused —
+    // its set is checked, and what goes out is the pre-check's answer, never the file's own
+    // channel name or a page value.
+    it("checks the file's own set and emits exactly the pre-check's target plus the host fields, whatever page reads it", async () => {
+      resolveEditableSet.mockReturnValue(
+        of({
+          status: 'editable',
+          target: {
+            emoteSetId: 'set-halloween',
+            setName: 'Halloween',
+            ownerDisplayName: 'Andere Besitzerin',
+            twitchLogin: 'besitzerin',
+            trackedChannelName: null,
+            isActiveSet: false,
+            ownerTwitchChannelId: 'tw-besitzerin',
+          },
+        }),
+      );
+      const dialog = render();
+
+      await dialog.selectFile(
+        file(purgeRunText({ channelName: 'OtherChannel', emoteSetId: 'set-halloween' })),
+      );
+
+      expect(resolveEditableSet).toHaveBeenCalledTimes(1);
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-halloween', {
+        twitchChannelId: null,
+        twitchLogin: 'OtherChannel',
+      });
+      expect(closed).toEqual([
+        {
+          kind: 'restore',
+          rows: PURGE_RESTORE_ROWS,
+          target: {
+            emoteSetId: 'set-halloween',
+            setName: 'Halloween',
+            ownerDisplayName: 'Andere Besitzerin',
+            twitchLogin: 'besitzerin',
+            trackedChannelName: null,
+            isActiveSet: false,
+            ownerTwitchChannelId: 'tw-besitzerin',
+            hostChannelName: CURRENT_CHANNEL,
+            hostSelectedSetId: CURRENT_SET,
+          },
+        },
+      ]);
+      expect(dialog.alertText()).toBeNull();
+    });
+
+    // AK 3–5: every blocked outcome keeps the step open with its own banner and reports nothing.
+    it.each([
+      ['notEditable', 'targetNotEditable'],
+      ['notSelectable', 'targetNotSelectable'],
+      ['unavailable', 'targetCheckUnavailable'],
+    ] as const)(
+      'shows the %s outcome of the target check as the %s banner and reports nothing',
+      async (status, key) => {
+        resolveEditableSet.mockReturnValue(of({ status }));
+        const dialog = render();
+
+        await dialog.selectFile(file(transferRunText('finished')));
+
+        expect(closed).toEqual([]);
+        expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors[key]);
+        // #254 AK 2: the banner stands where the switch would have — no switch after a block.
+        expect(dialog.choiceGroup()).toBeNull();
+      },
+    );
+
+    // AK 4 / F3: a 429 (or 503, or a dropped connection) is "not checkable right now", never "not
+    // allowed".
+    it('shows the targetCheckUnavailable banner when the target list request itself fails', async () => {
+      resolveEditableSet.mockReturnValue(
+        throwError(() => new HttpErrorResponse({ status: 429, statusText: 'Too Many Requests' })),
+      );
+      const dialog = render();
+
+      await dialog.selectFile(file(purgeRunText()));
+
+      expect(closed).toEqual([]);
+      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.targetCheckUnavailable);
+    });
+
+    // F6: `picked` closes the dialog, and the check is asynchronous — no second pick meanwhile.
+    it('locks the file control while the check runs and takes no second pick, then unlocks it', async () => {
+      const pending = new Subject<EditableSetResolution>();
+      resolveEditableSet.mockReturnValue(pending);
+      const dialog = render();
+      const fileInput = (dialog.fixture.nativeElement as HTMLElement).querySelector(
+        'input[type="file"]',
+      ) as HTMLInputElement;
+      const openPicker = vi.spyOn(fileInput, 'click').mockImplementation(() => undefined);
+
+      await dialog.selectFile(file(purgeRunText()));
+
+      expect(dialog.pickerButton().getAttribute('aria-disabled')).toBe('true');
+      dialog.pickerButton().click();
+      expect(openPicker).not.toHaveBeenCalled();
+      await dialog.selectFile(file(purgeRunText({ emoteSetId: 'set-other' })));
+      expect(resolveEditableSet).toHaveBeenCalledTimes(1);
+
+      pending.next({ status: 'notEditable' });
+      pending.complete();
+      dialog.fixture.detectChanges();
+
+      expect(dialog.pickerButton().getAttribute('aria-disabled')).toBeNull();
+      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.targetNotEditable);
+      dialog.pickerButton().click();
+      expect(openPicker).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores an answer that arrives after the step is gone (dialog cancelled mid-check)', async () => {
+      const pending = new Subject<EditableSetResolution>();
+      resolveEditableSet.mockReturnValue(pending);
+      const dialog = render();
+
+      await dialog.selectFile(file(purgeRunText()));
+      dialog.fixture.destroy();
+      pending.next({ status: 'editable', target: RESOLVED_TARGET });
+
+      expect(closed).toEqual([]);
+      expect(pending.observed).toBe(false);
+    });
+  });
+
+  describe('a page without a selected set (spec #253, E22, 4.1 point 1)', () => {
+    it('still reads a restore file, with hostSelectedSetId null on the emitted target', async () => {
+      hostSelectedSetId = null;
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunText('planned')));
+      dialog.choiceOption(CHOICE.restore)?.click();
+
+      expect(closed).toEqual([
+        {
+          kind: 'restore',
+          rows: [TRANSFER_RESTORE_ROW],
+          target: expectedTarget(CURRENT_SET, { channel: CURRENT_CHANNEL, selected: null }),
+        },
+      ]);
+    });
+
+    // Refused before the copy parser runs: an emote list without a single valid row would
+    // otherwise be answered `noRows`, which is not the reason it cannot be used here.
+    it('refuses a copy file with noTargetSetForCopy before reading its rows', async () => {
+      hostSelectedSetId = null;
+      const dialog = render();
+
+      await dialog.selectFile(file(emoteListText({ rows: [{ sevenTvEmoteId: '', name: 'x' }] })));
+
+      expect(closed).toEqual([]);
+      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.noTargetSetForCopy);
+      expect(resolveEditableSet).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('read/validation errors — all eight file keys, none of them report a result', () => {
     it.each([
       ['notJson', () => file('not json{')],
       ['csvInsteadOfJson', () => file('seven_tv_emote_id,name\n7tv-1,PogU\n')],
       ['wrongKind', () => file(wrongKindText())],
-      ['wrongChannel', () => file(purgeRunText({ channelName: 'otherchannel' }))],
-      ['wrongSet', () => file(purgeRunText({ emoteSetId: 'set-old' }))],
       ['votingExport', () => file(votingText())],
-      ['wrongVersion', () => file(purgeRunText({ formatVersion: 2 }))],
+      ['transferRunNoRows', () => file(transferRunText('finished', { removeConfirmed: false }))],
+      // 2 is PURGE_RUN_FORMAT_VERSION itself (spec #200, K5 finding C) — 99 is unambiguously beyond
+      // every version this parser knows.
+      ['wrongVersion', () => file(purgeRunText({ formatVersion: 99 }))],
       ['noRows', () => file(emoteListText({ rows: [{ sevenTvEmoteId: '', name: 'x' }] }))],
       [
         'noRestorableRows',
@@ -285,6 +977,8 @@ describe('FileImportStep', () => {
                   sevenTvEmoteId: '7tv-1',
                   name: 'PogU',
                   status: 'failed',
+                  completedSteps: 0,
+                  failedStep: 0,
                   errorMessage: 'boom',
                 },
               ],
@@ -314,26 +1008,19 @@ describe('FileImportStep', () => {
     it('resets a previous error banner on every new attempt, regardless of the new outcome', async () => {
       const dialog = render();
 
-      await dialog.selectFile(file(purgeRunText({ channelName: 'otherchannel' })));
-      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.wrongChannel);
+      await dialog.selectFile(file('not json{'));
+      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.notJson);
 
-      // Same file content re-selected after correcting nothing but the mistake itself — still a
-      // fresh `change`, because the component resets `<input>.value` after every selection.
+      // The corrected file, picked through the same control — still a fresh `change`, because the
+      // component resets `<input>.value` after every selection.
       await dialog.selectFile(file(purgeRunText()));
 
       expect(dialog.alertText()).toBeNull();
       expect(closed).toEqual([
         {
           kind: 'restore',
-          rows: [
-            {
-              emoteId: 'e1',
-              sevenTvEmoteId: '7tv-1',
-              name: 'PogU',
-              status: 'done',
-              errorMessage: null,
-            },
-          ],
+          rows: PURGE_RESTORE_ROWS,
+          target: expectedTarget(CURRENT_SET, { channel: CURRENT_CHANNEL, selected: CURRENT_SET }),
         },
       ]);
     });
@@ -346,6 +1033,21 @@ describe('FileImportStep', () => {
       const picker = dialog.pickerButton();
       expect(picker.textContent?.trim()).toBe('Datei auswählen');
       expect(dialog.focusableInOrder()[0]).toBe(picker);
+    });
+
+    it('names the switch by its question and puts the caret on its first option', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunText('finished')));
+      await dialog.fixture.whenStable();
+
+      const group = dialog.choiceGroup();
+      const legendId = group?.getAttribute('aria-labelledby');
+      expect(legendId).toBeTruthy();
+      expect(
+        (dialog.fixture.nativeElement as HTMLElement).querySelector(`#${legendId}`)?.textContent,
+      ).toContain(DE_TRANSLATIONS.restore.import.choice.legend);
+      expect(document.activeElement).toBe(dialog.choiceOption(CHOICE.restore));
     });
 
     it('renders the error banner with role="alert"', async () => {

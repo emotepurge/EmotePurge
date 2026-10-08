@@ -1,5 +1,6 @@
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Worker.SevenTv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -57,6 +58,7 @@ public class WorkerBootSequenceTests
             Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService),
             new ConfigurationBuilder().Build());
 
@@ -107,6 +109,7 @@ public class WorkerBootSequenceTests
             Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService),
             new ConfigurationBuilder().Build());
 
@@ -152,6 +155,7 @@ public class WorkerBootSequenceTests
             emptySetConfirmations,
             gate,
             Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService),
             new ConfigurationBuilder().Build());
 
@@ -204,6 +208,7 @@ public class WorkerBootSequenceTests
             Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService, syncService),
             new ConfigurationBuilder().Build());
 
@@ -261,6 +266,7 @@ public class WorkerBootSequenceTests
             Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService),
             new ConfigurationBuilder().Build());
 
@@ -322,6 +328,229 @@ public class WorkerBootSequenceTests
         {
             await worker.StopAsync(CancellationToken.None);
         }
+    }
+
+    // Boot recovery runs in two phases: every join happens before the first 7TV sync, live channels
+    // lead both phases, and a throwing join or sync neither stops the host nor the channels behind it.
+    [Fact]
+    public async Task Worker_BootRecovery_WarmsAndJoinsEveryChannelBeforeTheFirstSync_LiveChannelsFirst_AndIsolatesFailures()
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(new List<string> { "alpha", "bravo", "charlie", "delta" });
+
+        var calls = new List<string>();
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        chatManager.JoinChannelAsync(Arg.Any<string>()).Returns(callInfo =>
+        {
+            var name = callInfo.Arg<string>();
+            lock (calls)
+            {
+                calls.Add("join:" + name);
+            }
+
+            return name == "delta" ? Task.FromException(new InvalidOperationException("join boom")) : Task.CompletedTask;
+        });
+
+        var syncService = Substitute.For<ISevenTvSyncService>();
+        syncService.WarmChannelAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(callInfo =>
+        {
+            var name = callInfo.Arg<string>();
+            lock (calls)
+            {
+                calls.Add("warm:" + name);
+            }
+
+            // A failing warm-up must not keep the channel from being joined.
+            return name == "charlie" ? Task.FromException(new InvalidOperationException("warm boom")) : Task.CompletedTask;
+        });
+        syncService.SyncChannelAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(callInfo =>
+        {
+            var name = callInfo.Arg<string>();
+            lock (calls)
+            {
+                calls.Add("sync:" + name);
+            }
+
+            return name == "delta"
+                ? Task.FromException<SevenTvSyncResult?>(new System.Text.Json.JsonException("sync boom"))
+                : Task.FromResult<SevenTvSyncResult?>(null);
+        });
+
+        var liveStatusReader = Substitute.For<ITwitchLiveStatusReader>();
+        liveStatusReader.ReadAsync(Arg.Any<CancellationToken>())
+            .Returns(new TwitchLiveStatusSnapshot(DateTime.UtcNow, ["delta", "charlie"]));
+
+        // alpha and delta have a warm cache after phase 1; charlie (warm-up failed) and bravo stay cold.
+        var cache = Substitute.For<IEmoteMatchCache>();
+        var warm = new Dictionary<string, string> { ["x"] = "id" };
+        // The real cache answers an unknown channel with an empty snapshot, never default(struct).
+        cache.GetChannelSnapshot(Arg.Any<string>())
+            .Returns(new EmoteMatchSnapshot(new Dictionary<string, string>(), string.Empty, DateTimeOffset.UnixEpoch));
+        cache.GetChannelSnapshot("alpha").Returns(new EmoteMatchSnapshot(warm, "set-alpha", DateTimeOffset.UnixEpoch));
+        cache.GetChannelSnapshot("delta").Returns(new EmoteMatchSnapshot(warm, "set-delta", DateTimeOffset.UnixEpoch));
+
+        var subscriber = Substitute.For<IRedisSubscriber>();
+        var worker = new WorkerService(
+            NullLogger<WorkerService>.Instance,
+            chatManager,
+            subscriber,
+            Substitute.For<IRedisPublisher>(),
+            cache,
+            Substitute.For<IEmptySetConfirmationTracker>(),
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            liveStatusReader,
+            CreateScopeFactory(channelService, syncService),
+            new ConfigurationBuilder().Build());
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.Completed.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(
+            [
+                "warm:charlie", "join:charlie", "warm:delta", "join:delta",
+                "warm:alpha", "join:alpha", "warm:bravo", "join:bravo",
+                "sync:charlie", "sync:bravo", "sync:delta", "sync:alpha"
+            ],
+            calls);
+    }
+
+    [Fact]
+    public async Task Worker_BootRecovery_FallsBackToRosterOrder_WhenTheLiveStatusReadThrows()
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(new List<string> { "alpha", "bravo" });
+        var joined = new List<string>();
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        chatManager.When(x => x.JoinChannelAsync(Arg.Any<string>())).Do(c => joined.Add(c.Arg<string>()));
+        var liveStatusReader = Substitute.For<ITwitchLiveStatusReader>();
+        liveStatusReader.ReadAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<TwitchLiveStatusSnapshot?>(new System.Text.Json.JsonException("bad payload")));
+
+        var worker = new WorkerService(
+            NullLogger<WorkerService>.Instance,
+            chatManager,
+            Substitute.For<IRedisSubscriber>(),
+            Substitute.For<IRedisPublisher>(),
+            Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            liveStatusReader,
+            CreateScopeFactory(channelService),
+            new ConfigurationBuilder().Build());
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.Completed.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(["alpha", "bravo"], joined);
+    }
+
+    [Fact]
+    public async Task Worker_BootRecovery_StopsQuietlyOnShutdown_WithoutPerChannelWarnings()
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(new List<string> { "alpha", "bravo", "charlie" });
+        var logger = new RecordingLogger<WorkerService>();
+        // The join stays pending until the test has requested shutdown, so the stop can neither arrive
+        // before ExecuteAsync is registered with the host (StopAsync is a no-op without it, and the
+        // synchronous substitutes would run the whole boot recovery inside StartAsync) nor race the join.
+        var joinEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var joinResult = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        chatManager.JoinChannelAsync(Arg.Any<string>()).Returns(_ =>
+        {
+            joinEntered.TrySetResult();
+            return joinResult.Task;
+        });
+
+        var worker = new WorkerService(
+            logger,
+            chatManager,
+            Substitute.For<IRedisSubscriber>(),
+            Substitute.For<IRedisPublisher>(),
+            Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<ITwitchLiveStatusReader>(),
+            CreateScopeFactory(channelService),
+            new ConfigurationBuilder().Build());
+
+        await worker.StartAsync(CancellationToken.None);
+        await joinEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Shutdown arrives while the first join is in flight; the join then fails with a cancellation.
+        var stop = worker.StopAsync(CancellationToken.None);
+        joinResult.SetException(new OperationCanceledException());
+        await stop.WaitAsync(TimeSpan.FromSeconds(5));
+        await gate.Completed.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await chatManager.Received(1).JoinChannelAsync(Arg.Any<string>());
+        Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task Worker_BootRecovery_FallsBackToRosterOrder_WhenTheLiveStatusReadNeverCompletes()
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(new List<string> { "alpha", "bravo" });
+        var joined = new List<string>();
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        chatManager.When(x => x.JoinChannelAsync(Arg.Any<string>())).Do(c => joined.Add(c.Arg<string>()));
+        var liveStatusReader = Substitute.For<ITwitchLiveStatusReader>();
+        liveStatusReader.ReadAsync(Arg.Any<CancellationToken>())
+            .Returns(new TaskCompletionSource<TwitchLiveStatusSnapshot?>().Task);
+
+        var worker = new WorkerService(
+            NullLogger<WorkerService>.Instance,
+            chatManager,
+            Substitute.For<IRedisSubscriber>(),
+            Substitute.For<IRedisPublisher>(),
+            Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            liveStatusReader,
+            CreateScopeFactory(channelService),
+            new ConfigurationBuilder().Build())
+        {
+            LiveStatusReadTimeout = TimeSpan.FromMilliseconds(100)
+        };
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.Completed.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(["alpha", "bravo"], joined);
     }
 
     private static IServiceScopeFactory CreateScopeFactory(IChannelService channelService, ISevenTvSyncService? syncService = null)

@@ -32,10 +32,15 @@ public static class UsageStatsEndpoints
             return Results.Ok(stats);
         });
 
+        // emoteSetId is optional on all three reads below; absent means the channel's active set,
+        // so a client that predates #200 keeps the answers it always got. EmoteSetIdValidationFilter
+        // rejects a malformed id before the handler runs; a well-formed but unknown/foreign id still
+        // reaches the service, where it can only ever miss and answer empty.
         group.MapGet("/totals", async (
             string channelName,
             string from,
             string to,
+            string? emoteSetId,
             IUsageStatQueryService usageStatQueryService,
             CancellationToken ct) =>
         {
@@ -45,9 +50,10 @@ public static class UsageStatsEndpoints
                 return rangeError;
             }
 
-            var totals = await usageStatQueryService.GetUsageContextAsync(channelName, fromDate, toDate, ct);
+            var totals = await usageStatQueryService.GetUsageContextAsync(channelName, fromDate, toDate, emoteSetId, ct);
             return Results.Ok(totals);
-        });
+        })
+        .AddEndpointFilter<EmoteSetIdValidationFilter>();
 
         // The drilldown series (idea A5): one emote, server-side filtered — the whole-channel
         // per-day endpoint above stays the unfiltered debug view it always was. On the group's policy
@@ -58,6 +64,8 @@ public static class UsageStatsEndpoints
             string emoteId,
             string from,
             string to,
+            string? emoteSetId,
+            string? setScope,
             IUsageStatQueryService usageStatQueryService,
             CancellationToken ct) =>
         {
@@ -72,11 +80,19 @@ public static class UsageStatsEndpoints
                 return rangeError;
             }
 
+            // emoteSetId (one set) and setScope=all (every set) are alternatives; the parser owns the combination rule.
+            if (!EmoteSetScopeParser.TryParse(setScope, emoteSetId, out var scope))
+            {
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidEmoteSetId });
+            }
+
             // Null covers both "unknown id" and "someone else's emote" — a bare 404 either way, so
             // the response does not confirm that a guessed id exists elsewhere.
-            var series = await usageStatQueryService.GetDailySeriesAsync(channelName, emoteId, fromDate, toDate, ct);
+            var series = await usageStatQueryService.GetDailySeriesAsync(
+                channelName, emoteId, fromDate, toDate, scope, ct);
             return series is null ? Results.NotFound() : Results.Ok(series);
-        });
+        })
+        .AddEndpointFilter<EmoteSetIdValidationFilter>();
 
         // The batch twin of /daily: every unarchived emote's days in one response. It exists to keep
         // the atlas's hover readout off the wire entirely — one call per (channel, range) instead of
@@ -86,6 +102,7 @@ public static class UsageStatsEndpoints
             string channelName,
             string from,
             string to,
+            string? emoteSetId,
             IUsageStatQueryService usageStatQueryService,
             CancellationToken ct) =>
         {
@@ -95,9 +112,10 @@ public static class UsageStatsEndpoints
                 return rangeError;
             }
 
-            var series = await usageStatQueryService.GetChannelSeriesAsync(channelName, fromDate, toDate, ct);
+            var series = await usageStatQueryService.GetChannelSeriesAsync(channelName, fromDate, toDate, emoteSetId, ct);
             return Results.Ok(series);
-        });
+        })
+        .AddEndpointFilter<EmoteSetIdValidationFilter>();
     }
 
     /// <summary>

@@ -84,7 +84,7 @@ public class ModeratedChannelsProvider(
     private async Task<IReadOnlyList<TwitchModeratedChannelInfo>?> TryReadCacheAsync(string twitchUserId)
     {
         var cached = await ReadCacheAsync(twitchUserId);
-        telemetry.RecordCacheLookup(RateLimitCacheNames.ModeratedChannels, cached is not null);
+        telemetry.ReportCacheLookup(RateLimitCacheNames.ModeratedChannels, cached is not null);
         return cached;
     }
 

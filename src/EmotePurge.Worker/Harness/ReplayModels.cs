@@ -415,9 +415,11 @@ public sealed record ReplayRunInfo(
     DateOnly? ResumePoint,
     bool RunComplete,
     // Not part of HarnessRunIdentity (Plan-Entscheidung 7, D4): a diagnostic run counts exactly the
-    // same as a binding one, it only carries no gate verdict. A binding run may therefore resume a
-    // diagnostic file of the same identity and simply rewrite the report without this marker — that
-    // is intended, not a bug in the resume logic.
+    // same as a binding one, it only carries no gate verdict. The mode is recorded beside the
+    // identity in the header (HarnessReportHeader.Diagnostic, #314), and no file changes mode, closed
+    // or unfinished (#87, operator decision 2026-10-03): a rerun in the other mode is refused with
+    // exit 3, because a run is binding only if it ran binding from the start — see
+    // HarnessRunner.DecideClosedRun and the mode check in ExecuteAsync.
     bool Diagnostic);
 
 /// <summary>
@@ -459,19 +461,19 @@ public sealed record ReplayFinalReport(
 /// the remark on <c>HarnessRunner.RecomputeReportAsync</c>.
 /// </para>
 /// <para>
-/// <see cref="DiagnosticSource"/> is <c>"inherited"</c> when the original run's
-/// <c>&lt;stem&gt;.report.json</c> exists and is readable, so its own <c>Run.Diagnostic</c> flag can
-/// be reused, and <c>"defaulted"</c> when it does not — missing, unparsable or otherwise unreadable
-/// are all the same case (the diagnostic flag is never part of <c>HarnessRunIdentity</c> or the
-/// header — see the remark on <see cref="ReplayRunInfo.Diagnostic"/> — so a header-only recompute has
-/// no other source for it). A defaulted flag falls back to <c>true</c>, not <c>false</c>: the same
-/// fail-closed spirit as D4 — a missing original must never silently turn a diagnostic run into a
-/// binding verdict just because nothing was left to say otherwise.
+/// <see cref="DiagnosticSource"/> is <c>"inherited"</c> when a mode could be taken from the original
+/// run: the header's recorded <c>diagnostic</c> flag (#314) first, otherwise the <c>Run.Diagnostic</c>
+/// of its readable <c>&lt;stem&gt;.report.json</c>; it is <c>"defaulted"</c> when neither exists — a
+/// legacy header without the flag and a missing, unparsable or otherwise unreadable report. A
+/// defaulted flag falls back to <c>true</c>, not <c>false</c>: the same fail-closed spirit as D4 — a
+/// missing original must never silently turn a diagnostic run into a binding verdict just because
+/// nothing was left to say otherwise.
 /// </para>
 /// <para>
 /// <see cref="Warnings"/> carries machine-readable codes rather than prose, so a caller can branch
-/// on it without parsing a sentence: currently <c>"input-hash-mismatch"</c> and/or
-/// <c>"bot-split-cutover-drift"</c>, each also logged as its own English warning line and rendered
+/// on it without parsing a sentence: currently <c>"input-hash-mismatch"</c>,
+/// <c>"bot-split-cutover-drift"</c> and/or <c>"run-mode-disagreement"</c> (the header's recorded mode
+/// differs from the original report's; the header wins), each also logged as its own English warning line and rendered
 /// as a prominent block at the top of the recompute's Markdown.
 /// </para>
 /// </summary>
