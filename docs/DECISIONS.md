@@ -10,6 +10,24 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — The K7 rollback uses a generated migration script, not `database update <older id>`
+
+**Betrifft:** `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (17, AK 84) ·
+`docs/plans/Plan-200-Emote-Sets.md` (K7)
+
+`dotnet ef database update 20260907080507_AddUsageStatSharedChatUseCount` reverts every applied
+migration with a later ID, not just the epic's. Since 2026-09-24 production also carries
+`20260923194321_AddRetentionTimestamps`, which sorts after `20260920191131_AddUsageStatEmoteSetId`.
+That command would drop `Users.LastSeenAtUtc` and `Channels.DeactivatedAtUtc` (the data behind the
+retention deadlines), and the old image would then see the retention migration as pending and stop at
+`PendingMigrationGuard`. The rollback is therefore a script generated ahead of the window with
+`dotnet ef migrations script 20260920191131_AddUsageStatEmoteSetId
+20260907080507_AddUsageStatSharedChatUseCount`, which reverts only the epic migration and is applied
+with `psql -v ON_ERROR_STOP=1`. It was rehearsed locally on 2026-10-08: the retention columns stayed,
+the epic migration was pending again. Spec 17 and the K7 plan are corrected accordingly. AK 84 is
+evidenced by the sync log line (`7TV-Set {SetId} ... synchronized`) plus a database query, because the
+warm-start log line carries no set ID.
+
 ### 2026-10-08 — HandOfBlood's set-switch boundary is 2026-10-08, one day after the measured switch
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.cs` ·

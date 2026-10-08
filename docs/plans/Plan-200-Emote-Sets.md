@@ -436,8 +436,8 @@ Nummern; ausgezählt: 3 + 1 + 1 + 1 + 2 + 3 = 11.
 `Integration/PendingMigrationGuardTests.cs` bleibt grün.
 
 **Gate:** BE grün; `dotnet ef migrations list` gegen die lokale Dev-DB zeigt genau eine Pending;
-`dotnet ef database update` lokal läuft durch **und** `dotnet ef database update
-20260907080507_AddUsageStatSharedChatUseCount` rollt sauber zurück (Dev-DB hat keinen
+`dotnet ef database update` lokal läuft durch **und** das Rollback-Skript (`dotnet ef migrations script 20260920191131_AddUsageStatEmoteSetId
+20260907080507_AddUsageStatSharedChatUseCount`, nicht `database update 20260907…`, Spec 17) rollt sauber zurück (Dev-DB hat keinen
 Set-Wechsel — falls doch, ist der Abbruch an Schranke 1 das **erwartete** Ergebnis und kein
 Task-Fehler; dann die `'set-switch'`-Zeile der Dev-DB vorher entfernen). Die Dev-DB trägt seit dem
 Leerräumen am 2026-09-20 keine Nutzungszeilen; Prüfung 2 und Prüfung 3 sind damit leer erfüllt,
@@ -1363,8 +1363,10 @@ ist, alte Images starten, Fenster als **Nulllauf** beenden. Ob `Up` noch rechnet
 Nachwirkung aus Spec 17. **Ein** Folge-Issue für **beide** Übergangsfelder wird mit Datum „frühestens +14 Tage"
 angelegt und ins Epic #200 eingetragen (Vertrag: Spec 21, ein Tor für beide).
 
-**Rollback im Fenster:** neuen `worker` **und** `api` stoppen, `dotnet ef database update
-20260907080507_AddUsageStatSharedChatUseCount --connection '…'`, alte Images starten — nur bis
+**Rollback im Fenster:** neuen `worker` **und** `api` stoppen, das vorab per `dotnet ef migrations script
+20260920191131_AddUsageStatEmoteSetId 20260907080507_AddUsageStatSharedChatUseCount` erzeugte
+Rollback-Skript per `psql -v ON_ERROR_STOP=1` einspielen (**nicht** `database update 20260907…`: das
+nähme auch `20260923194321_AddRetentionTimestamps` zurück, Spec 17), alte Images starten — nur bis
 zum ersten beobachteten Set-Wechsel nach Schritt 7 (5). Ein Abbruch **während** Schritt 5 ist kein
 Rollback, sondern ein Nulllauf: es ist nichts geschehen, und es genügt, die alten Images wieder zu
 starten.
