@@ -3,6 +3,9 @@ using System.Text;
 using System.Text.Json;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Services;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
 
@@ -74,6 +77,64 @@ public class UnbindableBodyTests : IClassFixture<ApiFactory>
         Assert.DoesNotContain("secret-detail", text);
     }
 
+    [Fact]
+    public async Task UnbindableBody_LogsNothingAtErrorLevel_ButAGenuineExceptionDoes()
+    {
+        var log = new ErrorCapture();
+        using var factory = _factory.WithWebHostBuilder(b => b.ConfigureLogging(l => l.AddProvider(log)));
+        using var client = factory.CreateClient();
+
+        using var bad = await SendAsync(client, VotePath, """{"emoteId":"abc","type":"Keep"}""");
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        Assert.Empty(log.Errors);
+
+        _factory.VoteEligibility.EvaluateAsync(Arg.Any<TwitchPrincipalInfo>(), "testchannel", 1, Arg.Any<CancellationToken>())
+            .Returns<VoteEligibilityResult>(_ => throw new InvalidOperationException("boom"));
+        using var crash = await SendAsync(client, VotePath, """{"emoteId":"abc","type":0}""");
+        Assert.Equal(HttpStatusCode.InternalServerError, crash.StatusCode);
+        Assert.Contains(log.Errors, e => e.Contains("ExceptionHandlerMiddleware"));
+    }
+
+    private sealed class ErrorCapture : ILoggerProvider
+    {
+        private readonly List<string> _errors = [];
+
+        public IReadOnlyList<string> Errors
+        {
+            get
+            {
+                lock (_errors)
+                {
+                    return _errors.ToList();
+                }
+            }
+        }
+
+        public ILogger CreateLogger(string categoryName) => new Capture(categoryName, this);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Capture(string category, ErrorCapture owner) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                if (logLevel >= LogLevel.Error)
+                {
+                    lock (owner._errors)
+                    {
+                        owner._errors.Add(category);
+                    }
+                }
+            }
+        }
+    }
+
     private static async Task<string?> ReadErrorCodeAsync(HttpResponseMessage response)
     {
         var body = await response.Content.ReadAsStringAsync();
@@ -83,6 +144,11 @@ public class UnbindableBodyTests : IClassFixture<ApiFactory>
     private async Task<HttpResponseMessage> PostAsync(string path, string body)
     {
         using var client = _factory.CreateClient();
+        return await SendAsync(client, path, body);
+    }
+
+    private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string path, string body)
+    {
         var request = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),

@@ -11,7 +11,6 @@ using EmotePurge.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
-using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.StaticFiles;
@@ -279,25 +278,38 @@ if (app.Environment.IsDevelopment())
 // exist, a missing body, a wrong content type) in one of two ways, chosen by
 // RouteHandlerOptions.ThrowOnBadRequest, whose default is "true in Development only": either it
 // throws BadHttpRequestException out of the request delegate, or it logs and answers a body-less
-// 400. Development therefore flattened the throw into a 500 unexpected_error here (found in the
-// #245 live run: "type":"Keep" on POST .../votes), while every other environment answered a 400
-// with no errorCode. The option is now on everywhere and this handler turns the exception into the
-// 4xx the framework chose plus a language-neutral code - one behaviour in every environment.
+// 400. Development therefore flattened the throw into a 500 unexpected_error (found in the #245
+// live run: "type":"Keep" on POST .../votes), while every other environment answered a 400 with no
+// errorCode. The option is now on everywhere; the middleware below turns the exception into the
+// 4xx the framework chose plus a language-neutral code.
+//
+// A middleware rather than a branch inside the handler on purpose: ExceptionHandlerMiddleware logs
+// everything that reaches it as `fail:` with a stack trace, and an unbindable body is client input
+// anyone can send, so that would be externally triggerable error noise. Sitting inside the handler
+// (registered after it), this catch answers first and the exception never reaches the handler, which
+// stays reserved for genuine server errors. Logged at Debug, without the exception.
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 {
-    var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
-    if (exception is BadHttpRequestException badRequest)
-    {
-        context.Response.StatusCode = badRequest.StatusCode;
-        context.Response.ContentType = "application/json";
-        await context.Response.WriteAsJsonAsync(new { errorCode = ApiErrorCodes.InvalidRequestBody });
-        return;
-    }
-
     context.Response.StatusCode = StatusCodes.Status500InternalServerError;
     context.Response.ContentType = "application/json";
     await context.Response.WriteAsJsonAsync(new { errorCode = ApiErrorCodes.UnexpectedError });
 }));
+
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (BadHttpRequestException badRequest) when (!context.Response.HasStarted)
+    {
+        app.Logger.LogDebug("Rejected unbindable request body on {Path}: {Reason}", context.Request.Path, badRequest.Message);
+        context.Response.Clear();
+        context.Response.StatusCode = badRequest.StatusCode;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new { errorCode = ApiErrorCodes.InvalidRequestBody });
+    }
+});
 
 // Behind a host-level reverse proxy (TLS termination) the connection reaches the container through
 // the Docker bridge gateway address, not through loopback, so the middleware's default trust list

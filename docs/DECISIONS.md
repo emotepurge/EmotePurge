@@ -22,10 +22,14 @@ the binder throws `BadHttpRequestException` (status 400), which the global `UseE
 flattened into a 500. In every other environment the option is off and the framework answers a
 body-less 400, so production had no `errorCode` for these cases either.
 
-**Decision.** The option is now on everywhere and the exception handler maps `BadHttpRequestException`
-to the exception's own 4xx status plus the new language-neutral code `invalid_request_body` (Rule 7
-chain complete: `ApiErrorCodes`, `api-error.ts`, both locale files). Any other exception still
-answers 500 `unexpected_error`; no exception text reaches the body. Consequence: binding still runs
+**Decision.** The option is now on everywhere and a small middleware registered right after
+`UseExceptionHandler` maps `BadHttpRequestException` to the exception's own 4xx status plus the new
+language-neutral code `invalid_request_body` (Rule 7 chain complete: `ApiErrorCodes`, `api-error.ts`,
+both locale files). It is a middleware, not a branch in the handler, so the exception never reaches
+`ExceptionHandlerMiddleware`: that logs everything as `fail:` with a stack trace, which for input any
+client can send would be externally triggerable error noise in production. The rejection is logged at
+Debug without the exception. Any other exception still goes through the handler: 500
+`unexpected_error`, `fail:` log, no exception text in the body. Consequence: binding still runs
 before endpoint filters, so a malformed body is a 400 even for a caller a filter would have
 rejected with 401/403 - unchanged from before, only the body differs.
 
