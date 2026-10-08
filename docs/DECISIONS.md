@@ -10,6 +10,35 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — Broadcaster self-service purge and a DB re-add lock (#245)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs`
+
+**Table, not a flag.** A broadcaster who purges their own channel's data must not be re-added by
+anyone but a global admin. The lock lives in its own table `BroadcasterChannelLocks`
+(`TwitchChannelId` text primary key, `LockedAtUtc`), without a foreign key: the channel row it
+belongs to is exactly what the purge deletes, so a flag or tombstone on `Channels` could not survive
+it. The key is the immutable numeric Twitch id, never a login, which can be reassigned.
+
+**Two mechanisms beside each other.** The operator's GDPR Art. 21 list (`IExcludedChannelFilter`,
+configuration, immutable at runtime) and this table (written by the self-service purge, changes at
+runtime) are independent; where both apply, the env list wins. They are not merged into one filter
+because a cache in front of a mutable table would reopen the gap the lock closes, which is why the
+service exposes an `IQueryable` for SQL anti-joins instead of an in-memory set.
+
+**Transaction contract.** `BroadcasterChannelLockService` shares the caller's scoped `AppDbContext`
+and only stages (`LockAsync`, `UnlockAsync`); the caller saves and commits, so the lock is written
+or lifted in the same transaction as the purge or the admin join. Only the broadcaster purge writes
+a lock, only a join by a global admin removes one.
+
+**No retention.** `RetentionPolicy`/`DataRetentionWorker` do not know the table: a lock without an
+expiry is the point (a lock that lapses would let the removed channel be re-added silently).
+
+**Data protection.** The table holds only the numeric Twitch id and a timestamp. After the owner's
+account deletion (#243) the row stays, since it is what keeps the objection effective.
+
+The later parts of #245 (purge path, read sites, API, admin lift) extend this entry in their own commits.
+
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteSetIdValidation.cs` · `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `web/src/app/core/i18n/api-error.ts`
