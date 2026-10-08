@@ -33,9 +33,11 @@ public record TwitchUserInfo(string Id, string Login, string DisplayName, string
 public record TwitchModeratedChannelInfo(string Login, string BroadcasterId);
 
 // One currently live stream from GET /helix/streams. UserLogin is Twitch's lowercase login, i.e.
-// already in ChannelName.Normalize form. StartedAtUtc is carried for the eventual per-stream
+// already in ChannelName.Normalize form. UserId is the broadcaster's immutable Twitch id (#245): the
+// live coverage keeps an excluded or broadcaster-locked channel out by it, whether or not the
+// channel row already carries its id. StartedAtUtc is carried for the eventual per-stream
 // accounting (A10 Stufe 2), even though the per-day coverage only needs "was live".
-public record TwitchStreamInfo(string UserLogin, DateTime StartedAtUtc);
+public record TwitchStreamInfo(string UserLogin, string UserId, DateTime StartedAtUtc);
 
 // One identity from GET /helix/users, resolved by id or by login for identity reconciliation
 // (rename tracking, id backfill). Login is Twitch's lowercase login, but the caller normalizes it

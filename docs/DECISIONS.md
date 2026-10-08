@@ -40,7 +40,7 @@ login-based warning on purpose. After the deploy the login variable stays config
 
 ### 2026-10-08 — Broadcaster self-service purge and a DB re-add lock (#245)
 
-**Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs` · `src/EmotePurge.Core/Services/IChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` · `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` · `src/EmotePurge.Core/Services/IChannelIdentityService.cs` · `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmoteService.cs` · `src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` · `src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` · `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs`
+**Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs` · `src/EmotePurge.Core/Services/IChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` · `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` · `src/EmotePurge.Core/Services/IChannelIdentityService.cs` · `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmoteService.cs` · `src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` · `src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` · `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `src/EmotePurge.Core/Twitch/TwitchModels.cs` · `src/EmotePurge.Infrastructure/Twitch/TwitchApiDtos.cs` · `src/EmotePurge.Infrastructure/Twitch/TwitchHelixClient.cs` · `src/EmotePurge.Core/Services/ILiveCoverageService.cs` · `src/EmotePurge.Infrastructure/Services/LiveCoverageService.cs` · `src/EmotePurge.Worker/TwitchLivePollWorker.cs`
 
 **Table, not a flag.** A broadcaster who purges their own channel's data must not be re-added by
 anyone but a global admin. The lock lives in its own table `BroadcasterChannelLocks`
@@ -193,6 +193,17 @@ and independent of it: an id-less rename duplicate whose old-login row still hol
 refused by the sync as a duplicate, and once the mod team has given it a tag (even an empty one) the
 reconcile refuses the merge — it stays uncounted until a person removes the tag or the duplicate
 (pinned by `ChannelIdentityServiceTests`, no behaviour change).
+
+**Live coverage decides on Helix's user id.** The live poll's minutes (`ChannelLiveDays`) used to be
+matched by login only, so a locked or excluded channel whose row does not carry its id yet — the row
+a join creates during a Helix outage — still collected live minutes; the roster cannot filter such a
+row. `TwitchStreamInfo` therefore carries Helix's `user_id` (`UserId`; `TwitchStreamDto` reads it),
+`ILiveCoverageService.AddLiveMinutesAsync` takes (login, user id) pairs, and `LiveCoverageService`
+skips a stream whose user id is on the env list or locked (one batch lookup), whatever the row stores
+— a check beside the seven read points above, on Helix's id instead of a stored one. This closes the
+same, older gap for the env list. No id is written back there; that stays the sync's
+and the reconcile's job. The live-status publish (`worker:live-status`, Redis with a TTL, shown in
+`/mine` and the admin list) stays unfiltered: a display value that writes nothing lasting.
 
 The API part of #245 (endpoints, the admin's 409, the audit-log generation boundary) extends this entry
 in its own commit.

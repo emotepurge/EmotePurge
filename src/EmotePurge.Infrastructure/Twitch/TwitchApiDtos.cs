@@ -75,6 +75,7 @@ internal sealed class TwitchGetStreamsResponseDto
 
 internal sealed class TwitchStreamDto
 {
+    public string UserId { get; set; } = string.Empty;
     public string UserLogin { get; set; } = string.Empty;
     public DateTime StartedAt { get; set; }
 }
