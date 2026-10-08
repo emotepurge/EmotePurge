@@ -26,8 +26,17 @@ export interface ImportShortcutState {
    *  one, or a confirmed start of any run still being checked before its start (#280). Named for the
    *  first case, which is what it meant before #280. */
   readonly hasActiveRun: boolean;
+  /** The shown set view is switching, or its live member list is loading / unreadable / truncated
+   *  (`sharedSetViewLockReasonKey`) — the lock delete and vote already carry. In that state every
+   *  row is merged as `live` without being verified, so a copy could take archived emotes. */
+  readonly setViewLocked: boolean;
 }
 
 export function importShortcutDisabled(state: ImportShortcutState): boolean {
-  return state.selectionCount === 0 || state.hasActiveRun || !state.importScopeCurrent;
+  return (
+    state.selectionCount === 0 ||
+    state.hasActiveRun ||
+    !state.importScopeCurrent ||
+    state.setViewLocked
+  );
 }

@@ -3499,6 +3499,88 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(openSpy).not.toHaveBeenCalled();
   });
 
+  describe("import keeps a 'left' row out (E23 extended to the copy flow)", () => {
+    function spyOnPicker() {
+      return vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+        closed: new Subject<unknown>(),
+      } as unknown as ReturnType<Dialog['open']>);
+    }
+
+    it("hands neither scope a 'left' row after mark-all, and counts what it copies", async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('gone', 'GoneEmote'), emote('a', 'PeepoA')],
+        members: memberList([member('7tv-a', 'PeepoA')]),
+      });
+      expect(
+        component['emotes']()
+          .map((row) => row.membership)
+          .sort(),
+      ).toEqual(['left', 'live']);
+      component['markAll']();
+      expect(component['selection'].selectedKeys()).toHaveLength(2);
+
+      expect(component['importShortcutSelectionCount']()).toBe(1);
+      const openSpy = spyOnPicker();
+      component['openImportTarget']();
+
+      expect(openSpy).toHaveBeenCalledTimes(1);
+      const data = openSpy.mock.calls[0][1]?.data as {
+        visibleCount: number;
+        selectionCount: number;
+      };
+      expect(data.visibleCount).toBe(1);
+      expect(data.selectionCount).toBe(1);
+    });
+
+    it("opens no picker and locks the header button and shortcut when only 'left' rows exist", async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('gone', 'GoneEmote')],
+        members: memberList([member('7tv-other', 'Other')]),
+      });
+      const left = component['emotes']().find((row) => row.membership === 'left')!;
+      component['selection'].onRowClick(left, { shiftKey: false } as MouseEvent);
+      const openSpy = spyOnPicker();
+
+      expect(component['importShortcutLocked']()).toBe(true);
+      component['openImportTarget']('selection');
+      expect(openSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['unavailable', 'unavailable' as const],
+      ['truncated', memberList([member('7tv-a', 'PeepoA')], { truncated: true, totalCount: 900 })],
+    ])('is locked like delete and vote while the member list is %s', async (_label, members) => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'PeepoA')],
+        members,
+      });
+      component['markAll']();
+      expect(component['selection'].selectedKeys()).toHaveLength(1);
+      expect(component['deleteLockReasonKey']()).not.toBeNull();
+      const openSpy = spyOnPicker();
+
+      expect(component['importShortcutLocked']()).toBe(true);
+      expect(component['transferButtonDisabled']()).toBe(true);
+      component['openImportTarget']();
+      expect(openSpy).not.toHaveBeenCalled();
+    });
+
+    it('stays open for a settled view with a whole member list', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'PeepoA')],
+        members: memberList([member('7tv-a', 'PeepoA')]),
+      });
+      component['markAll']();
+
+      expect(component['importShortcutLocked']()).toBe(false);
+      expect(component['transferButtonDisabled']()).toBe(false);
+    });
+  });
+
   // --- T4.4: loading and reloads ---------------------------------------------------------------
 
   it('loads the member list beside /totals and /series for a non-active set, and holds the union until it is there (8.3, AK 51)', async () => {

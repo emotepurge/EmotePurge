@@ -1726,9 +1726,10 @@ export class UsageStatsPage {
    */
   protected readonly transferButtonDisabled = computed(
     () =>
-      (this.atlasOrder().length === 0 && this.selection.selectedItems().length === 0) ||
+      (this.importableVisible().length === 0 && this.importableSelection().length === 0) ||
       this.arbiter.startLocked() ||
-      !this.importScopeCurrent(),
+      !this.importScopeCurrent() ||
+      this.sharedSetViewLockReasonKey() !== null,
   );
 
   /** Whether the sheet is actually showing the rows `atlasOrder()` describes — the same condition
@@ -1786,7 +1787,27 @@ export class UsageStatsPage {
    * only some rows survive, the label would announce more emotes than the run actually copies.
    */
   protected readonly importShortcutSelectionCount = computed(
-    () => this.selection.selectedItems().length,
+    () => this.importableSelection().length,
+  );
+
+  /**
+   * The marked rows the copy flow may take: `membership === 'live'` only. A `left` row (E23) is
+   * counted under the shown non-active set but no longer in it on 7TV — copying it would put an
+   * emote into the target that the source set no longer holds. Same rule as `selectedForDelete`
+   * and `voteBallotSevenTvEmoteIds`; the dialog's counts and the copied rows read this one source.
+   */
+  private readonly importableSelection = computed(() =>
+    this.selection
+      .selectedItems()
+      .filter((emote) => emote.membership === 'live')
+      .map(toImportRow),
+  );
+
+  /** `importableSelection`'s counterpart for the "visible" scope (the grid as filtered). */
+  private readonly importableVisible = computed(() =>
+    this.atlasOrder()
+      .filter((emote) => emote.membership === 'live')
+      .map(toImportRow),
   );
 
   /** Wording for the dock's hidden-by-filter secondary line (Konzept "Auswahl überlebt Suche und
@@ -1872,6 +1893,7 @@ export class UsageStatsPage {
       selectionCount: this.importShortcutSelectionCount(),
       importScopeCurrent: this.importScopeCurrent(),
       hasActiveRun: this.arbiter.startLocked(),
+      setViewLocked: this.sharedSetViewLockReasonKey() !== null,
     }),
   );
 
@@ -2679,7 +2701,12 @@ export class UsageStatsPage {
     // The selected set — the one the rows below were loaded for (importScopeCurrent checks exactly
     // that), so the picker disables the right set as "the source" (spec 7.3, 8.6).
     const emoteSetId = this.selectedEmoteSetId();
-    if (emoteSetId === null || !this.importScopeCurrent() || this.arbiter.startLocked()) {
+    if (
+      emoteSetId === null ||
+      !this.importScopeCurrent() ||
+      this.arbiter.startLocked() ||
+      this.sharedSetViewLockReasonKey() !== null
+    ) {
       // The header button is gated on all three, so this only guards against a click that
       // outraces a channel switch or the arbiter's lock (`startLocked`: a run running or settling,
       // or a confirmed start of any run still being checked before its start, #280) — silently, since
@@ -2692,10 +2719,13 @@ export class UsageStatsPage {
     const captured: CapturedImportScope = {
       channelName: this.channelName(),
       emoteSetId,
-      selection: this.selection.selectedItems().map(toImportRow),
-      visible: this.atlasOrder().map(toImportRow),
+      selection: this.importableSelection(),
+      visible: this.importableVisible(),
     };
-    if (forcedScope === 'selection' && captured.selection.length === 0) {
+    if (
+      (forcedScope === 'selection' && captured.selection.length === 0) ||
+      (captured.selection.length === 0 && captured.visible.length === 0)
+    ) {
       // The dock shortcut's own template disables the button on an empty selection
       // (importShortcutLocked/importShortcutDisabled) — this only guards a click that outraces
       // that, the same role the emoteSetId/importScopeCurrent check above plays for the header.

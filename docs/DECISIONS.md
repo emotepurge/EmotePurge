@@ -10,6 +10,24 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — A set view's `left` rows never reach the copy flow, and import obeys the shared set-view lock
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/shared/seven-tv/import-shortcut.ts` · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` · `web/src/app/shared/seven-tv/import-shortcut.spec.ts`
+
+E23 keeps `left` rows (counted under a non-active set, no longer in it on 7TV) out of the delete run
+and the vote ballot. The copy/import flow started from the usage-stats page was the one consumer
+that did not: marking everything in an inactive main set and copying it into the Halloween set also
+copied the emotes that had already left the main set. Both import scopes (selection and visible)
+now take `membership === 'live'` rows only, and the counts the target dialog and the dock shortcut
+show come from the same filtered lists, so they match what is copied. A scope with no live row left
+behaves like the existing empty case (button disabled, click opens nothing).
+
+Import also obeys `sharedSetViewLockReasonKey` now, like delete and vote: the header button, the
+dock shortcut and the guard inside `openImportTarget` are locked while the view is switching, the
+status is unreadable, or the live member list is loading, unavailable or truncated. In those states
+`mergeSetView` marks every row `live` without verifying it, so an unlocked import would have
+copied archived emotes silently.
+
 ### 2026-10-08 — A 7TV set that really is empty is accepted: set switch at once, same set after repeated spaced zeros, never against v4 (#76)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationTracker.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationOptions.cs` · `src/EmotePurge.Core/Services/IEmptySetConfirmationTracker.cs` · `src/EmotePurge.Core/SevenTv/SevenTvModels.cs` · `src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs` · `src/EmotePurge.Worker/Worker.cs` · `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` · `src/EmotePurge.Worker/appsettings.json` · `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceEmptySetTests.cs`
