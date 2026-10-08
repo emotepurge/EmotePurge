@@ -14,8 +14,9 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `PRODUCT.md` (principle 4, "Bestätigte Funktionalität", operating context) ·
 `web/public/i18n/de.json` and `en.json` (`landing.does.purge.body`, `landing.how.join.body`,
-`landing.how.purge.note`, `landing.cta.app`, `landing.close.subtitleApp`) ·
-`web/src/app/features/landing/landing-page.{ts,html}` (logged-in CTAs)
+`landing.how.purge.note`, `landing.cta.app`, `landing.close.subtitleApp`, `login.appButton`, `login.titleLoggedIn`,
+`login.subtitleLoggedIn`) · `web/src/app/features/landing/landing-page.{ts,html}` (logged-in CTAs) ·
+`web/src/app/features/login/login-page.ts` (logged-in state)
 
 Since the landing was written (2026-08-06) the product gained restore from the purge protocol, emote
 tags, several emote sets, import/transfer with the 7TV leaderboard, and export. The landing does not
@@ -42,7 +43,9 @@ still pending, keep the login buttons, so the main audience never waits or sees 
 deliberately no redirect from `/welcome` to `/`: the landing is the only explainer page and a logged-in
 user may read it or show it to someone. The page only reads `isResolved()`/`currentUser()`; the
 account menu in the nav already triggers `ensureLoaded()`, which does not de-duplicate in-flight
-requests.
+requests. The login page follows the same pattern: logged in, its button becomes a "Open app" link to
+`/` with an "already logged in as …" heading, the scopes section stays, and nothing changes while
+anonymous or pending; login notices are independent of this state and still shown.
 
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 

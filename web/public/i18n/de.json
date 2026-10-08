@@ -51,6 +51,9 @@
       "deletionUnknown": "Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde – die Verbindung wurde unterbrochen und deine Sitzung ist beendet. Melde dich bitte nicht an, um nachzusehen, denn dabei würde ein neues Konto angelegt; schreib uns über das Kontaktformular, wir bestätigen es dir."
     },
     "loginButton": "Mit Twitch einloggen",
+    "appButton": "Zur App",
+    "titleLoggedIn": "Du bist schon eingeloggt",
+    "subtitleLoggedIn": "Angemeldet als {{ name }}. Deine Channels warten in der App.",
     "scopes": {
       "title": "Was Twitch dabei freigibt",
       "moderatedChannels": "Die Kanäle, in denen du Moderator bist — daran hängt, welche Channels du hier verwalten darfst.",
