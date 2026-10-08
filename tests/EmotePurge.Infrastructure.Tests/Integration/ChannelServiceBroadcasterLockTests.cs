@@ -66,13 +66,17 @@ public class ChannelServiceBroadcasterLockTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task Join_ByAGlobalAdminWithTheFlag_LiftsTheLock_AndTheEntryNamesTheAdminOverride()
+    public async Task Join_ByAGlobalAdminConfirmingTheLocksDate_LiftsTheLock_AndTheEntryNamesTheAdminOverride()
     {
         await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "bl-100004");
         await using var db = fixture.CreateDbContext();
 
         var result = await CreateService(db, Found("bl-100004", "bladminflag"))
-            .JoinAsync("bladminflag", new AuditActor("bl-admin", "bladmin"), isGlobalAdmin: true, liftBroadcasterLock: true);
+            .JoinAsync(
+                "bladminflag",
+                new AuditActor("bl-admin", "bladmin"),
+                isGlobalAdmin: true,
+                adminLiftConfirmedLockedAtUtc: lockScope.LockedAtUtc);
 
         Assert.Equal(ChannelJoinStatus.Joined, result.Status);
         Assert.Null(await LoadLockedAtAsync("bl-100004"));
@@ -84,16 +88,67 @@ public class ChannelServiceBroadcasterLockTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task Join_WithTheFlagButWithoutTheAdminRole_IsRefusedLikeAnyModerator()
+    public async Task Join_WithAConfirmedDateButWithoutTheAdminRole_IsRefusedLikeAnyModerator()
     {
         await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "bl-100005");
         await using var db = fixture.CreateDbContext();
 
         var result = await CreateService(db, Found("bl-100005", "blflagnoadmin"))
-            .JoinAsync("blflagnoadmin", Moderator, isGlobalAdmin: false, liftBroadcasterLock: true);
+            .JoinAsync("blflagnoadmin", Moderator, isGlobalAdmin: false, adminLiftConfirmedLockedAtUtc: lockScope.LockedAtUtc);
 
         Assert.Equal(ChannelJoinStatus.LockedByBroadcaster, result.Status);
         await AssertNothingWrittenAsync("blflagnoadmin", "bl-100005");
+    }
+
+    [Fact]
+    public async Task Join_ByAGlobalAdminConfirmingAnOtherDate_IsRefusedWithTheCurrentDate_AndWritesNothing()
+    {
+        // The broadcaster lifted and set the lock again after the admin's dialog showed the old date:
+        // the admin confirmed overriding a decision that no longer stands, so nothing is lifted and the
+        // refusal carries the new date for a fresh confirmation.
+        var current = new DateTime(2026, 10, 7, 9, 30, 0, DateTimeKind.Utc);
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "bl-100015", current);
+        await using var db = fixture.CreateDbContext();
+
+        var result = await CreateService(db, Found("bl-100015", "blstaledate"))
+            .JoinAsync(
+                "blstaledate",
+                new AuditActor("bl-admin", "bladmin"),
+                isGlobalAdmin: true,
+                adminLiftConfirmedLockedAtUtc: new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc));
+
+        Assert.Equal(ChannelJoinStatus.LockedByBroadcaster, result.Status);
+        Assert.Equal(current, result.LockedAtUtc);
+        Assert.True(result.LockLiftableByAdmin);
+        await AssertNothingWrittenAsync("blstaledate", "bl-100015");
+    }
+
+    [Fact]
+    public async Task Join_TouchingTwoBroadcastersLocks_IsNotLiftableByAnAdmin_AndBothLocksStay()
+    {
+        // Helix gives the login to one locked account, the row under it still stores another locked id.
+        // One confirmation names one date and overrides one decision; this join would override two,
+        // so it lifts neither, and the refusal says an admin cannot lift it here either.
+        var identityLockedAt = new DateTime(2026, 10, 2, 8, 0, 0, DateTimeKind.Utc);
+        await using var identityLock = await BroadcasterLockScope.CreateAsync(fixture, "bl-100016", identityLockedAt);
+        await using var storedLock = await BroadcasterLockScope.CreateAsync(
+            fixture, "bl-100017", new DateTime(2026, 10, 4, 8, 0, 0, DateTimeKind.Utc));
+        await SeedChannelAsync("bltwolocks", "bl-100017", isBotActive: false);
+        await using var db = fixture.CreateDbContext();
+
+        var result = await CreateService(db, Found("bl-100016", "bltwolocks"))
+            .JoinAsync(
+                "bltwolocks",
+                new AuditActor("bl-admin", "bladmin"),
+                isGlobalAdmin: true,
+                adminLiftConfirmedLockedAtUtc: identityLockedAt);
+
+        Assert.Equal(ChannelJoinStatus.LockedByBroadcaster, result.Status);
+        Assert.Equal(identityLockedAt, result.LockedAtUtc);
+        Assert.False(result.LockLiftableByAdmin);
+        Assert.Equal(identityLock.LockedAtUtc, await LoadLockedAtAsync("bl-100016"));
+        Assert.Equal(storedLock.LockedAtUtc, await LoadLockedAtAsync("bl-100017"));
+        Assert.Empty(await LoadAuditEntriesAsync("bltwolocks"));
     }
 
     [Fact]

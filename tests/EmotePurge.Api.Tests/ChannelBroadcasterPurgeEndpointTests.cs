@@ -26,6 +26,7 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
         factory.ChannelAccess.ClearReceivedCalls();
         factory.AuditLogQuery.ClearReceivedCalls();
         factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(false);
+        factory.ChannelAccess.IsGlobalAdminById(Arg.Any<TwitchPrincipalInfo>()).Returns(false);
         factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(false);
     }
@@ -230,7 +231,7 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Join_Answers403_WithTheLockCode_ForANonAdmin()
     {
-        ArrangeJoin(isAdmin: false, ChannelJoinResult.LockedByBroadcaster(new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc)));
+        ArrangeJoin(isAdmin: false, isAdminById: false, ChannelJoinResult.LockedByBroadcaster(new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc)));
 
         var response = await SendAsync("POST", $"/api/channels/{Channel}/join", OwnerId);
 
@@ -239,9 +240,9 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Join_Answers409_WithCodeAndIsoDate_ForAnAdminWithoutTheFlag()
+    public async Task Join_Answers409_WithCodeAndIsoDate_ForAnIdAdminWithoutTheFlag()
     {
-        ArrangeJoin(isAdmin: true, ChannelJoinResult.LockedByBroadcaster(new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc)));
+        ArrangeJoin(isAdmin: true, isAdminById: true, ChannelJoinResult.LockedByBroadcaster(new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc)));
 
         var response = await SendAsync("POST", $"/api/channels/{Channel}/join", OwnerId);
 
@@ -251,22 +252,67 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
         // The raw text, not a parsed DateTime: the wire format is ISO-8601 with an explicit UTC marker.
         Assert.Equal("2026-10-03T12:00:00Z", doc.RootElement.GetProperty("lockedAtUtc").GetString());
         await _factory.Channels.Received(1)
-            .JoinAsync(Channel, Arg.Any<AuditActor>(), true, false, Arg.Any<CancellationToken>());
+            .JoinAsync(Channel, Arg.Any<AuditActor>(), true, null, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Join_Answers403_ForAnAdminKnownOnlyByLogin_EvenWithAConfirmedDate()
+    {
+        // The login fallback keeps every other admin right during the transition, but lifting a
+        // broadcaster's lock hangs on the immutable id: such an admin is refused like a moderator.
+        ArrangeJoin(isAdmin: true, isAdminById: false, ChannelJoinResult.LockedByBroadcaster(new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc)));
+
+        var response = await SendAsync(
+            "POST", $"/api/channels/{Channel}/join?liftBroadcasterLock=true&confirmedLockedAtUtc=2026-10-03T12:00:00Z", OwnerId);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ChannelLockedByBroadcaster, await ReadErrorCodeAsync(response));
+        // Still a global admin for the cap, but no lift reaches the service.
+        await _factory.Channels.Received(1)
+            .JoinAsync(Channel, Arg.Any<AuditActor>(), true, null, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Join_Answers403_ForAnIdAdmin_WhenTheServiceSaysNoAdminCanLiftIt()
+    {
+        // Two broadcasters' locks meet in this join; a 409 would invite a confirmation that cannot work.
+        ArrangeJoin(
+            isAdmin: true,
+            isAdminById: true,
+            ChannelJoinResult.LockedByBroadcaster(new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc), liftableByAdmin: false));
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join", OwnerId);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ChannelLockedByBroadcaster, await ReadErrorCodeAsync(response));
     }
 
     [Theory]
-    [InlineData(true, "true", true)]
-    [InlineData(true, "false", false)]
-    [InlineData(false, "true", false)]
-    public async Task Join_PassesTheLiftFlagToTheService_OnlyForAGlobalAdmin(bool isAdmin, string flag, bool expectedLift)
+    // An id admin who confirmed the date: the exact instant reaches the service, as UTC.
+    [InlineData(true, true, "liftBroadcasterLock=true&confirmedLockedAtUtc=2026-10-03T12:00:00.123456Z", "2026-10-03T12:00:00.123456Z")]
+    [InlineData(true, true, "liftBroadcasterLock=false&confirmedLockedAtUtc=2026-10-03T12:00:00Z", null)]
+    // The flag without a date, or with one that does not parse, confirms nothing.
+    [InlineData(true, true, "liftBroadcasterLock=true", null)]
+    [InlineData(true, true, "liftBroadcasterLock=true&confirmedLockedAtUtc=yesterday", null)]
+    [InlineData(true, false, "liftBroadcasterLock=true&confirmedLockedAtUtc=2026-10-03T12:00:00Z", null)]
+    [InlineData(false, false, "liftBroadcasterLock=true&confirmedLockedAtUtc=2026-10-03T12:00:00Z", null)]
+    public async Task Join_PassesTheConfirmedLockDateToTheService_OnlyForAnIdAdminWithTheFlag(
+        bool isAdmin, bool isAdminById, string query, string? expectedUtc)
     {
-        ArrangeJoin(isAdmin, ChannelJoinResult.Joined(new Channel { ChannelName = Channel }));
+        ArrangeJoin(isAdmin, isAdminById, ChannelJoinResult.Joined(new Channel { ChannelName = Channel }));
+        DateTime? expected = expectedUtc is null
+            ? null
+            : DateTime.Parse(expectedUtc, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal);
 
-        var response = await SendAsync("POST", $"/api/channels/{Channel}/join?liftBroadcasterLock={flag}", OwnerId);
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join?{query}", OwnerId);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        await _factory.Channels.Received(1)
-            .JoinAsync(Channel, Arg.Any<AuditActor>(), isAdmin, expectedLift, Arg.Any<CancellationToken>());
+        await _factory.Channels.Received(1).JoinAsync(
+            Channel,
+            Arg.Any<AuditActor>(),
+            isAdmin,
+            Arg.Is<DateTime?>(d => d == expected && (d == null || d.Value.Kind == DateTimeKind.Utc)),
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -340,12 +386,13 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
     private void ArrangeRow(Channel? row) =>
         _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>()).Returns(row);
 
-    private void ArrangeJoin(bool isAdmin, ChannelJoinResult result)
+    private void ArrangeJoin(bool isAdmin, bool isAdminById, ChannelJoinResult result)
     {
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
         _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(isAdmin);
-        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        _factory.ChannelAccess.IsGlobalAdminById(Arg.Any<TwitchPrincipalInfo>()).Returns(isAdminById);
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>())
             .Returns(result);
     }
 

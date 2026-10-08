@@ -127,6 +127,30 @@ public class GlobalAdminAllowlistTests
         Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Warning);
     }
 
+    [Fact]
+    public void IsAdminById_IsTrue_OnlyForAnIdOnTheConfiguredIdList()
+    {
+        var (allowlist, _) = Create(new()
+        {
+            ["Auth:AdminTwitchUserIds"] = "42",
+            ["Auth:AdminTwitchLogins"] = "loginadmin",
+        });
+
+        Assert.True(allowlist.IsAdminById(Principal("42", "whoever")));
+        Assert.False(allowlist.IsAdminById(Principal("999", "loginadmin")));
+    }
+
+    [Fact]
+    public void IsAdminById_IsFalse_ForAnAdminRecognisedOnlyThroughTheLoginFallback()
+    {
+        // Lifting a broadcaster's lock overrides the streamer's own decision; a login can be released
+        // and re-registered, so the login fallback stays admin for everything else but not for this.
+        var (allowlist, _) = Create(new() { ["Auth:AdminTwitchLogins"] = "LoginAdmin" });
+
+        Assert.True(allowlist.IsAdmin(Principal("1", "loginadmin")));
+        Assert.False(allowlist.IsAdminById(Principal("1", "loginadmin")));
+    }
+
     private static TwitchPrincipalInfo Principal(string id, string login = "login") => new(id, login, AccessToken: null);
 
     private static (GlobalAdminAllowlist Allowlist, RecordingLogger<GlobalAdminAllowlist> Logger) Create(Dictionary<string, string?> settings)

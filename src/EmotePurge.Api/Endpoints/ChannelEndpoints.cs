@@ -1,3 +1,4 @@
+using System.Globalization;
 using EmotePurge.Api.Auth;
 using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
@@ -153,6 +154,7 @@ public static class ChannelEndpoints
             IChannelService channelService,
             IChannelAccessService channelAccessService,
             bool? liftBroadcasterLock,
+            string? confirmedLockedAtUtc,
             CancellationToken ct) =>
         {
             var actor = httpContext.User.TryBuildAuditActor();
@@ -168,8 +170,16 @@ public static class ChannelEndpoints
             var principal = httpContext.User.TryBuildTwitchPrincipal();
             var isGlobalAdmin = principal is not null && channelAccessService.IsGlobalAdmin(principal);
 
-            var result = await channelService.JoinAsync(
-                channelName, actor, isGlobalAdmin, liftBroadcasterLock: isGlobalAdmin && liftBroadcasterLock == true, ct);
+            // Lifting a broadcaster's lock overrides the streamer's own decision, so it hangs on the
+            // immutable id: an admin known only through the login fallback keeps the cap exemption but
+            // is refused like a moderator here. The lift is bound to the lock the admin confirmed —
+            // the 409's lockedAtUtc, sent back verbatim — so a lock set again since is not lifted blind.
+            var mayLiftLock = isGlobalAdmin && channelAccessService.IsGlobalAdminById(principal!);
+            var adminLiftConfirmedLockedAtUtc = mayLiftLock && liftBroadcasterLock == true
+                ? ParseConfirmedLockedAtUtc(confirmedLockedAtUtc)
+                : null;
+
+            var result = await channelService.JoinAsync(channelName, actor, isGlobalAdmin, adminLiftConfirmedLockedAtUtc, ct);
             // A switch over every status rather than an `is null` check on Channel: a future third
             // status (e.g. "channel suspended") would otherwise silently fall through the old
             // two-way check and be reported as ChannelNotOnTwitch. This way the compiler flags a
@@ -204,10 +214,12 @@ public static class ChannelEndpoints
                         new { errorCode = ApiErrorCodes.ChannelExcluded }, statusCode: StatusCodes.Status403Forbidden),
 
                 // The broadcaster locked the channel against re-adding (#245). 403 for everyone who
-                // cannot lift the lock. A global admin who did not ask to lift it gets a 409 with the
-                // lock date instead: the lift is an explicit, confirmed repeat of the request
-                // (liftBroadcasterLock=true), never a side effect of the first one.
-                ChannelJoinStatus.LockedByBroadcaster => isGlobalAdmin
+                // cannot lift the lock — a login-fallback admin included, and every admin when two
+                // broadcasters' locks meet in this join. An id admin who did not (validly) confirm it
+                // gets a 409 with the lock date instead: the lift is an explicit, confirmed repeat of
+                // the request (liftBroadcasterLock=true&confirmedLockedAtUtc=<this date>), never a
+                // side effect of the first one, and a stale date is answered with the current one.
+                ChannelJoinStatus.LockedByBroadcaster => mayLiftLock && result.LockLiftableByAdmin
                     ? Results.Conflict(new
                     {
                         errorCode = ApiErrorCodes.ChannelLockedByBroadcaster,
@@ -419,6 +431,19 @@ public static class ChannelEndpoints
         // place to inherit an exemption by accident.
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
     }
+
+    // The lock date an admin confirmed, as the 409 sent it (ISO-8601 with a UTC marker), read back as
+    // a UTC instant at full precision so the service can compare it tick for tick. Bound as a string
+    // rather than a DateTime? so the parse rules are visible here: a missing or unparseable value
+    // confirms nothing — the service then answers the 409 again with the current date.
+    private static DateTime? ParseConfirmedLockedAtUtc(string? value) =>
+        DateTime.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+            out var parsed)
+            ? parsed
+            : null;
 }
 
 /// <summary>

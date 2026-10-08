@@ -12,7 +12,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ### 2026-10-08 — Global admins are allowlisted by immutable Twitch id, logins remain a transitional fallback (#245)
 
-**Betrifft:** `src/EmotePurge.Infrastructure/Services/GlobalAdminAllowlist.cs` · `src/EmotePurge.Infrastructure/Services/IGlobalAdminAllowlist.cs` · `src/EmotePurge.Infrastructure/Services/ChannelAccessService.cs` · `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` · `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/appsettings.json` · `docker-compose.yml` · `docker-compose.prod.yml` · `.env.example` · `README.md` · `PRODUCT.md` · `docs/Operations.md` · `docs/Architectur.md` · `tests/EmotePurge.Infrastructure.Tests/Unit/GlobalAdminAllowlistTests.cs` · `Auth:AdminTwitchUserIds` · `ADMIN_TWITCH_USER_IDS`
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/GlobalAdminAllowlist.cs` · `src/EmotePurge.Infrastructure/Services/IGlobalAdminAllowlist.cs` · `src/EmotePurge.Infrastructure/Services/ChannelAccessService.cs` · `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` · `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/appsettings.json` · `docker-compose.yml` · `docker-compose.prod.yml` · `.env.example` · `README.md` · `PRODUCT.md` · `docs/Operations.md` · `docs/Architectur.md` · `tests/EmotePurge.Infrastructure.Tests/Unit/GlobalAdminAllowlistTests.cs` · `src/EmotePurge.Core/Services/IChannelAccessService.cs` · `Auth:AdminTwitchUserIds` · `ADMIN_TWITCH_USER_IDS`
 
 **Why.** The admin check compared the Twitch login. A login can be released after a rename and
 registered by someone else, and #245 makes the admin the only party who can lift a broadcaster's
@@ -21,7 +21,8 @@ reassignable string. `Auth:AdminTwitchUserIds` (JSON array or comma-separated sc
 `ADMIN_TWITCH_USER_IDS`, scalar wins, ordinal comparison against `principal.TwitchUserId`) is now the
 source; `IsGlobalAdmin` delegates to the singleton `IGlobalAdminAllowlist`, so every admin path
 (admin group filter, `/auth/me`, `/permissions`, the join handler, the admin account deletion of
-#243) switches at once.
+#243) switches at once. The one exception is lifting a broadcaster's lock, which also requires the admin
+to be on the id list (`IsAdminById`, never the login fallback; see the #245 entry below).
 
 **Transition rule.** A non-empty id list decides alone; `Auth:AdminTwitchLogins` is then ignored.
 With an empty id list the login list still decides, case-insensitively, as before. Both empty: nobody
@@ -143,12 +144,14 @@ join landed on — the purge and the reconcile's lock pass take the same lock, s
 interleave — and after both env gates. For every locked id among the resolved identity and the
 row's stored id, in this binding order: the actor is that broadcaster (`actor.TwitchUserId` equals the
 id) → lifted, the `channel.join` entry carries `{ broadcasterLockLifted: true }`; a global admin with
-`liftBroadcasterLock` → lifted, the entry carries `{ broadcasterLockLifted: true, liftedByAdmin: true,
+a confirmation of exactly this lock's date (`adminLiftConfirmedLockedAtUtc`, see "The admin lift is
+explicit" below) → lifted, the entry carries `{ broadcasterLockLifted: true, liftedByAdmin: true,
 lockedAtUtc }`, so a third party overriding the broadcaster's decision stays recognisable; anyone
-else, a global admin without the flag included → `ChannelJoinStatus.LockedByBroadcaster` with
-`ChannelJoinResult.LockedAtUtc` (its own factory; `Failed()` refuses the status so no caller can drop
-the date), and nothing is written — the transaction is disposed without a commit. A broadcaster who is
-also an admin lifts as the owner, without the dialog. The flag means nothing without the admin role.
+else, a global admin without a matching confirmation included → `ChannelJoinStatus.LockedByBroadcaster`
+with `ChannelJoinResult.LockedAtUtc` (its own factory; `Failed()` refuses the status so no caller can
+drop the date), and nothing is written — the transaction is disposed without a commit. A broadcaster
+who is also an admin lifts as the owner, without the dialog. The confirmation means nothing without
+the admin role.
 The lift is staged only after the active-channel cap has let the join through, in the join's own
 transaction, so a join refused by the cap leaves the lock exactly as it was. The endpoint maps it as
 described under "API contract" below.
@@ -218,7 +221,7 @@ and the reconcile's job. The live-status publish (`worker:live-status`, Redis wi
 |---|---|---|
 | `DELETE /api/channels/{name}/data?expectedTwitchUserId=` (`Bookkeeping`) | `ChannelBroadcasterAuthorizationFilter` | 204 · 400 `invalid_channel_name` · 401 · 403 (no body: stored id is foreign, or the service's `NotBroadcaster`) · 404 (no row / `NotFound`) · 409 `account_mismatch` (parameter missing or not the session's id, answered before the service) · 409 `channel_identity_unresolved` |
 | `GET /api/channels/{name}/data-summary` (`InteractiveRead`) | `ChannelBroadcasterSummaryAuthorizationFilter` | 200 `{ emoteCount, voteSessionCount, liveDayCount, tagCount }` · 400 · 401 · 403 (also for an id-less row whose name is not the caller's current login) · 404 |
-| `POST /api/channels/{name}/join?liftBroadcasterLock=true` | unchanged | `LockedByBroadcaster`: non-admin 403 `{ errorCode }`; admin without the flag 409 `{ errorCode: channel_locked_by_broadcaster, lockedAtUtc }` (ISO-8601, UTC); the flag reaches the service only as `isGlobalAdmin && liftBroadcasterLock` |
+| `POST /api/channels/{name}/join?liftBroadcasterLock=true&confirmedLockedAtUtc=` | unchanged | `LockedByBroadcaster`: 403 `{ errorCode }` for a non-admin, for an admin known only by login, and for every admin when the lock is not liftable (two broadcasters' locks); an id admin without a valid confirmation 409 `{ errorCode: channel_locked_by_broadcaster, lockedAtUtc }` (ISO-8601, UTC, full precision); the confirmed date reaches the service only for an id admin with the flag, parsed as UTC (missing or unparseable → none) |
 | `GET /api/channels/{name}/audit-log` | `TrackedChannelFilter` before `ChannelManagementAuthorizationFilter` | new: 404 `channel_not_found` without a row, for every principal |
 | `GET /api/channels/{name}/permissions` | none | `ChannelPermissionsDto` gains `canPurgeAsBroadcaster` after `tagRunsEnabled` |
 
@@ -245,9 +248,33 @@ decision 2026-10-08) because the purge also removes the mod team's tags. New cod
 Regel-7 chain (`ApiErrorCodes.cs`, `api-error.ts`, both locales): `channel_locked_by_broadcaster`,
 `channel_identity_unresolved`.
 
-**The admin lift is explicit.** A global admin's first join against a locked channel is a pure read: 409
-with the lock date, nothing written. Only the repeated request with `liftBroadcasterLock=true` lifts the
-lock (and audits it, see above). It is never a side effect of the first request.
+**The admin lift is explicit, bound to the confirmed lock, and needs the id-based admin.** A global
+admin's first join against a locked channel is a pure read: 409 with the lock date, nothing written.
+Only the repeated request with `liftBroadcasterLock=true` lifts the lock (and audits it, see above). It
+is never a side effect of the first request. Tightened after the pre-merge review (2026-10-08), three
+ways:
+
+- *Bound to the confirmed lock.* The retry carries `confirmedLockedAtUtc`, the 409's `lockedAtUtc`
+  sent back verbatim (the client never re-formats it, so no precision is lost). The service lifts
+  only when that equals the current lock's date, compared tick for tick; otherwise — the broadcaster
+  lifted and locked again in between, or the date is missing or unparseable — the answer is the 409
+  again with the current date, and the client asks once more with the new date (only when it differs
+  from the one just confirmed, so a repeat never loops). Before, a bare flag lifted whatever lock
+  stood at retry time.
+- *Exactly one lock.* An admin lift removes the one lock the 409 showed, not every locked candidate.
+  When the join meets two locks of accounts other than the actor's (the resolved identity and a
+  different stored id on the row it landed on), `ChannelJoinResult.LockLiftableByAdmin` is false and
+  every admin gets the 403: answering 409 for one of them would make each confirmation refuse on the
+  other — a ping-pong of dialogs that can never succeed. The state is rare and settles once the
+  identity reconcile has deactivated the stale row; Operations names the manual way out. A lock the
+  actor owns is still lifted beside an admin's lift, as before.
+- *Id-based admins only.* `IChannelAccessService.IsGlobalAdminById` (→ `IGlobalAdminAllowlist.IsAdminById`)
+  is true only for an id on `Auth:AdminTwitchUserIds`, never through the login fallback. The endpoint
+  passes a confirmation to the service and answers 409 only for such an admin; an admin known only by
+  login keeps the cap exemption and every other admin right, but is refused here with the moderator's
+  403 `channel_locked_by_broadcaster` (no new code: the message is accurate, and Operations explains
+  the id requirement). The id list exists because this right must not hang on a reassignable login
+  (entry above); the transitional login fallback would otherwise have undercut exactly that.
 
 **A lost answer to the purge is an unknown outcome.** The workspace used one error path for the summary
 read and the deletion, and told the broadcaster "nothing has changed, try again" also for status 0 or a

@@ -63,6 +63,8 @@ public class ChannelAccessService(
 
     public bool IsGlobalAdmin(TwitchPrincipalInfo principal) => globalAdminAllowlist.IsAdmin(principal);
 
+    public bool IsGlobalAdminById(TwitchPrincipalInfo principal) => globalAdminAllowlist.IsAdminById(principal);
+
     // Twitch permits renames and releases the old name again after a grace period. Deciding "is
     // broadcaster" on the login alone therefore handed the channel to whoever registered the freed-up
     // name next: a pure string comparison, without consulting Twitch, 7TV or the database, granting

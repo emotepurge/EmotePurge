@@ -55,6 +55,9 @@ public sealed class GlobalAdminAllowlist : IGlobalAdminAllowlist
         return _adminTwitchLogins.Contains(principal.TwitchLogin);
     }
 
+    // An empty id list contains nothing, so the login fallback never reaches this answer.
+    public bool IsAdminById(TwitchPrincipalInfo principal) => _adminTwitchUserIds.Contains(principal.TwitchUserId);
+
     // Accepts both shapes on purpose, and the scalar wins: a JSON array in appsettings.json lands on
     // the indexed keys (Key:0..), while an environment variable or user secret can only set the plain
     // key. Same rule as ExcludedChannelFilter.ReadExcludedChannelIds. A blank scalar (compose expands

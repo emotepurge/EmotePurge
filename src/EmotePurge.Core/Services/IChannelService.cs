@@ -82,10 +82,11 @@ public enum ChannelJoinStatus
 
     // The broadcaster behind this Twitch id purged their own channel's data and locked it against
     // re-adding (#245, BroadcasterChannelLocks). Lifted only by a join of the broadcaster themselves
-    // or by a global admin who asks for it explicitly (liftBroadcasterLock); everyone else, admins
-    // without the flag included, gets this status with ChannelJoinResult.LockedAtUtc. Checked on the
-    // resolved identity and on the stored id of the row the join landed on, under that row's lock;
-    // the excluded-channel list is checked first and wins. Nothing is written for it.
+    // or by a global admin who confirmed this lock's date (adminLiftConfirmedLockedAtUtc); everyone
+    // else, admins without a matching confirmation included, gets this status with
+    // ChannelJoinResult.LockedAtUtc and LockLiftableByAdmin. Checked on the resolved identity and on
+    // the stored id of the row the join landed on, under that row's lock; the excluded-channel list is
+    // checked first and wins. Nothing is written for it.
     LockedByBroadcaster,
 }
 
@@ -104,11 +105,12 @@ public enum ChannelJoinStatus
 /// </summary>
 public sealed class ChannelJoinResult
 {
-    private ChannelJoinResult(ChannelJoinStatus status, Channel? channel, DateTime? lockedAtUtc)
+    private ChannelJoinResult(ChannelJoinStatus status, Channel? channel, DateTime? lockedAtUtc, bool lockLiftableByAdmin)
     {
         Status = status;
         Channel = channel;
         LockedAtUtc = lockedAtUtc;
+        LockLiftableByAdmin = lockLiftableByAdmin;
     }
 
     public ChannelJoinStatus Status { get; }
@@ -122,18 +124,26 @@ public sealed class ChannelJoinResult
     /// </summary>
     public DateTime? LockedAtUtc { get; }
 
+    /// <summary>
+    /// Whether a global admin could lift the refusing lock by confirming <see cref="LockedAtUtc"/>:
+    /// true when exactly one lock of someone other than the actor stands in the way, false when two
+    /// broadcasters' locks meet in this join (one confirmation overrides one decision, not two), and
+    /// false for every other status. The endpoint offers the admin's 409 only when this is true.
+    /// </summary>
+    public bool LockLiftableByAdmin { get; }
+
     public static ChannelJoinResult Joined(Channel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        return new ChannelJoinResult(ChannelJoinStatus.Joined, channel, lockedAtUtc: null);
+        return new ChannelJoinResult(ChannelJoinStatus.Joined, channel, lockedAtUtc: null, lockLiftableByAdmin: false);
     }
 
     /// <summary>
     /// The one way to build a <see cref="ChannelJoinStatus.LockedByBroadcaster"/> result, so that no
     /// call site can forget the date the admin's confirmation shows.
     /// </summary>
-    public static ChannelJoinResult LockedByBroadcaster(DateTime lockedAtUtc) =>
-        new(ChannelJoinStatus.LockedByBroadcaster, channel: null, lockedAtUtc);
+    public static ChannelJoinResult LockedByBroadcaster(DateTime lockedAtUtc, bool liftableByAdmin = true) =>
+        new(ChannelJoinStatus.LockedByBroadcaster, channel: null, lockedAtUtc, liftableByAdmin);
 
     /// <summary>
     /// Builds a rejected join. Rejects a success status outright: a caller that passes one is asking
@@ -170,7 +180,7 @@ public sealed class ChannelJoinResult
                 nameof(status), status, "Unbekannter ChannelJoinStatus.");
         }
 
-        return new ChannelJoinResult(status, channel: null, lockedAtUtc: null);
+        return new ChannelJoinResult(status, channel: null, lockedAtUtc: null, lockLiftableByAdmin: false);
     }
 }
 
@@ -197,15 +207,20 @@ public interface IChannelService
     //
     // The broadcaster re-add lock (#245): when the resolved identity or the stored id of the row the
     // join lands on is locked, the join is refused with LockedByBroadcaster — unless the actor is that
-    // broadcaster (actor.TwitchUserId equals the locked id), or isGlobalAdmin and liftBroadcasterLock
-    // are both true. Either lifts the lock in the join's own transaction and records it on the
-    // channel.join entry ({ broadcasterLockLifted }, plus { liftedByAdmin, lockedAtUtc } for the
-    // admin). liftBroadcasterLock means nothing without isGlobalAdmin, and nothing without a lock.
+    // broadcaster (actor.TwitchUserId equals the locked id), or isGlobalAdmin is true and
+    // adminLiftConfirmedLockedAtUtc equals the date of the one lock in the way: the admin's
+    // confirmation is bound to the lock it was shown, so a lock set again since then is refused with
+    // its new date. Exactly one lock of someone else can be lifted that way; when two meet in one
+    // join, the refusal says LockLiftableByAdmin = false and nothing is lifted. Either lift happens in
+    // the join's own transaction and is recorded on the channel.join entry ({ broadcasterLockLifted },
+    // plus { liftedByAdmin, lockedAtUtc } for the admin). The confirmation means nothing without
+    // isGlobalAdmin, and nothing without a lock. Whether the admin may lift at all (recognised by id,
+    // not by the login fallback) is the caller's decision: it passes null otherwise.
     Task<ChannelJoinResult> JoinAsync(
         string channelName,
         AuditActor actor,
         bool isGlobalAdmin = false,
-        bool liftBroadcasterLock = false,
+        DateTime? adminLiftConfirmedLockedAtUtc = null,
         CancellationToken cancellationToken = default);
 
     // Deactivates the bot for this channel and keeps the row and all its history. Reversible via

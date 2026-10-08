@@ -227,6 +227,12 @@ The Api logs exactly one of these warnings at startup, with counts only, never t
 
 With neither list set nobody is an admin (the area answers a blank 403).
 
+**Lifting a broadcaster's lock needs the id list.** An admin recognised only through the login
+fallback keeps every other admin right, but a join against a locked channel is refused for them like
+for a moderator (`403 channel_locked_by_broadcaster`, no confirmation dialog): overriding a streamer's
+own decision must not hang on a reassignable login. Set `ADMIN_TWITCH_USER_IDS` before an admin needs
+to lift a lock.
+
 **Finding your id.** `GET https://api.twitch.tv/helix/users?login=<login>` with an App Access Token
 (the same credentials the worker's Helix calls use) returns it in `data[0].id`; a third-party lookup
 tool works as well.
@@ -405,12 +411,20 @@ broadcaster's own and changes at runtime.
 
 - The broadcaster adds their own channel again (the prompt in the overview asks for the join); the
   `channel.join` audit entry carries `broadcasterLockLifted`.
-- A global admin joins with `liftBroadcasterLock=true`. The first join without the flag is a pure
-  read (`409 channel_locked_by_broadcaster` with `lockedAtUtc`); the admin channel list asks for
-  confirmation and repeats with the flag. The audit entry carries `liftedByAdmin: true` and the
-  original lock date, so overriding a broadcaster's decision stays recognisable.
+- A global admin on the id list (not via the login fallback, see [Global admins](#global-admins))
+  joins with `liftBroadcasterLock=true&confirmedLockedAtUtc=<lockedAtUtc>`. The first join without
+  the flag is a pure read (`409 channel_locked_by_broadcaster` with `lockedAtUtc`); the admin channel
+  list asks for confirmation, naming that date, and repeats the join with the flag and the date
+  exactly as the `409` sent it. The lock is lifted only while its date is still that one; if the
+  broadcaster has locked again since, the answer is another `409` with the new date and a new
+  confirmation. The audit entry carries `liftedByAdmin: true` and the original lock date, so
+  overriding a broadcaster's decision stays recognisable.
 
-Nobody else can: a moderator or editor gets the `403`.
+Nobody else can: a moderator or editor gets the `403`, and so does every admin in the rare case where
+one join meets two different broadcasters' locks (Twitch gives the login to one locked account while
+the row under it still stores another locked id) — one confirmation overrides one decision, not two.
+That state settles once the identity reconcile has deactivated the stale row; if an admin really has to
+override both, the lock rows are removed by hand in `BroadcasterChannelLocks`.
 
 **Limits.**
 

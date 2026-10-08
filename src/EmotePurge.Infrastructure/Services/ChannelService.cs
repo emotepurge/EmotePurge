@@ -33,7 +33,7 @@ public class ChannelService(
         string channelName,
         AuditActor actor,
         bool isGlobalAdmin = false,
-        bool liftBroadcasterLock = false,
+        DateTime? adminLiftConfirmedLockedAtUtc = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(actor);
@@ -54,7 +54,7 @@ public class ChannelService(
         if (lookup.Status == TwitchUserLookupStatus.NotFound)
         {
             return await HandleUnknownTwitchLoginAsync(
-                normalized, actor, isGlobalAdmin, liftBroadcasterLock, transaction, cancellationToken);
+                normalized, actor, isGlobalAdmin, adminLiftConfirmedLockedAtUtc, transaction, cancellationToken);
         }
 
         // Null for Unavailable, and that is the whole contract of that status: without an identity
@@ -107,7 +107,7 @@ public class ChannelService(
         // with either. Checked on the resolved identity and on the stored id of the chosen row: a
         // join during a Helix outage has no identity, but the row it reuses may carry the locked id.
         var lockDecision = await DecideBroadcasterLockAsync(
-            [identity?.Id, channel.TwitchChannelId], actor, isGlobalAdmin, liftBroadcasterLock, cancellationToken);
+            [identity?.Id, channel.TwitchChannelId], actor, isGlobalAdmin, adminLiftConfirmedLockedAtUtc, cancellationToken);
         if (lockDecision.Refusal is { } refusal)
         {
             return refusal;
@@ -523,7 +523,7 @@ public class ChannelService(
         string normalized,
         AuditActor actor,
         bool isGlobalAdmin,
-        bool liftBroadcasterLock,
+        DateTime? adminLiftConfirmedLockedAtUtc,
         IDbContextTransaction transaction,
         CancellationToken cancellationToken)
     {
@@ -553,7 +553,7 @@ public class ChannelService(
         // The likely shape is a row the identity reconcile deactivated for its lock, joined while
         // Twitch does not know the login.
         var lockDecision = await DecideBroadcasterLockAsync(
-            [knownChannel.TwitchChannelId], actor, isGlobalAdmin, liftBroadcasterLock, cancellationToken);
+            [knownChannel.TwitchChannelId], actor, isGlobalAdmin, adminLiftConfirmedLockedAtUtc, cancellationToken);
         if (lockDecision.Refusal is { } refusal)
         {
             return refusal;
@@ -587,21 +587,24 @@ public class ChannelService(
 
     /// <summary>
     /// The broadcaster re-add lock's decision for one join (#245, plan contract "Join"), over the ids
-    /// the join could be about — the resolved identity and the stored id of the row it landed on.
-    /// For every locked one, in this binding order: the actor is that broadcaster → lifted; a global
-    /// admin who asked for it → lifted, recorded as the admin's; anyone else, an admin without the
-    /// flag included → refused with the lock's date. Nothing is staged here: a lift is carried to
-    /// <see cref="CompleteJoinAsync"/>, which stages it only once the cap has let the join through.
+    /// the join could be about — the resolved identity and the stored id of the row it landed on, in
+    /// that order. A lock whose id is the actor's own is lifted (the broadcaster's join). Of the locks
+    /// that belong to someone else, a global admin may lift exactly one, and only by confirming its
+    /// date: a confirmation names the lock it was shown, so a lock set again since then is refused with
+    /// its new date, and two such locks in one join — two broadcasters' decisions — are refused as not
+    /// liftable by an admin at all, rather than inviting a confirmation that could only ever cover one
+    /// of them. Anyone else is refused with the first such lock's date. Nothing is staged here: a lift is
+    /// carried to <see cref="CompleteJoinAsync"/>, which stages it only once the cap has let the join through.
     /// </summary>
     private async Task<BroadcasterLockDecision> DecideBroadcasterLockAsync(
         IEnumerable<string?> candidateIds,
         AuditActor actor,
         bool isGlobalAdmin,
-        bool liftBroadcasterLock,
+        DateTime? adminLiftConfirmedLockedAtUtc,
         CancellationToken cancellationToken)
     {
         var liftedIds = new List<string>(capacity: 2);
-        DateTime? liftedByAdminLockedAtUtc = null;
+        var foreignLocks = new List<(string Id, DateTime LockedAtUtc)>(capacity: 2);
         foreach (var candidateId in candidateIds.Distinct(StringComparer.Ordinal))
         {
             var lockedAtUtc = await broadcasterChannelLocks.GetLockedAtUtcAsync(candidateId, cancellationToken);
@@ -615,25 +618,36 @@ public class ChannelService(
             if (string.Equals(actor.TwitchUserId, candidateId, StringComparison.Ordinal))
             {
                 liftedIds.Add(candidateId!);
-                continue;
             }
-
-            if (isGlobalAdmin && liftBroadcasterLock)
+            else
             {
-                liftedIds.Add(candidateId!);
-                liftedByAdminLockedAtUtc = lockedAtUtc;
-                continue;
+                foreignLocks.Add((candidateId!, lockedAtUtc.Value));
             }
-
-            // Neither the id nor the name: the lock is not secret, but the line has nothing to add
-            // that the 403/409 does not already tell the caller.
-            logger.LogInformation("Join rejected: the broadcaster has locked the channel against re-adding.");
-            return new BroadcasterLockDecision(ChannelJoinResult.LockedByBroadcaster(lockedAtUtc.Value), Lift: null);
         }
 
-        return liftedIds.Count == 0
-            ? new BroadcasterLockDecision(Refusal: null, Lift: null)
-            : new BroadcasterLockDecision(Refusal: null, new BroadcasterLockLift(liftedIds, liftedByAdminLockedAtUtc));
+        if (foreignLocks.Count == 0)
+        {
+            return liftedIds.Count == 0
+                ? new BroadcasterLockDecision(Refusal: null, Lift: null)
+                : new BroadcasterLockDecision(Refusal: null, new BroadcasterLockLift(liftedIds, LiftedByAdminLockedAtUtc: null));
+        }
+
+        var blocking = foreignLocks[0];
+        var liftableByAdmin = foreignLocks.Count == 1;
+
+        // DateTime equality compares ticks: the endpoint parses the confirmed date as UTC from the
+        // 409's own wire format, which carries the stored timestamp's full precision.
+        if (liftableByAdmin && isGlobalAdmin && adminLiftConfirmedLockedAtUtc == blocking.LockedAtUtc)
+        {
+            liftedIds.Add(blocking.Id);
+            return new BroadcasterLockDecision(Refusal: null, new BroadcasterLockLift(liftedIds, blocking.LockedAtUtc));
+        }
+
+        // Neither the id nor the name: the lock is not secret, but the line has nothing to add
+        // that the 403/409 does not already tell the caller.
+        logger.LogInformation("Join rejected: the broadcaster has locked the channel against re-adding.");
+        return new BroadcasterLockDecision(
+            ChannelJoinResult.LockedByBroadcaster(blocking.LockedAtUtc, liftableByAdmin), Lift: null);
     }
 
     /// <summary>
