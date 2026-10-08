@@ -772,7 +772,11 @@ export class TagsPage {
         if (this.channelName() !== channel) {
           return;
         }
-        this.selection.clear();
+        // Only what this request submitted, and only while its tag is still the one on screen: the
+        // user may have switched tags and marked cells there while the request was in flight.
+        if (this.selectedTag()?.id === tag.id) {
+          this.selection.deselectKeys(ids);
+        }
         this.showFeedback(pluralKey(result.removedCount, 'tags.feedback.unassigned'), {
           count: result.removedCount,
           tag: tag.name,

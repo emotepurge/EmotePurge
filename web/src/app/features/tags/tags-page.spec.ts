@@ -855,6 +855,39 @@ describe('TagsPage', () => {
       expectEntries(1).flush({ emoteSetId: 'set-a', isActiveSet: true, entries: [entry('e2')] });
     });
 
+    it('a mark made in another tag while a removal is in flight survives its answer', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const { harness, page } = await openDetail([entry('e1'), entry('e2')]);
+      cells(harness)[0].click();
+      await settle(harness);
+
+      buttonByName(harness, 'Aus dem Tag entfernen (1)')!.click();
+      const req = httpMock.expectOne(`${BASE}/1/entries/remove`);
+
+      await harness.navigateByUrl('/channels/a/tags?tag=2');
+      await settle(harness);
+      expectEntries(2).flush({
+        emoteSetId: 'set-a',
+        isActiveSet: true,
+        entries: [entry('e1'), entry('e9')],
+      });
+      await settle(harness);
+      cells(harness)[0].click();
+      await settle(harness);
+      expect(page.selection.selectedKeys()).toEqual(['e1']);
+
+      req.flush({ removedCount: 1 });
+      await settle(harness);
+
+      expect(page.selection.selectedKeys()).toEqual(['e1']);
+      expectList().flush(tagList(tag(1, 'Stronghold'), tag(2, 'Halloween')));
+      expectEntries(2).flush({
+        emoteSetId: 'set-a',
+        isActiveSet: true,
+        entries: [entry('e1'), entry('e9')],
+      });
+    });
+
     it('the removal button carries the tag name whole in its accessible name', async () => {
       const { harness } = await openDetail([entry('e1'), entry('e2')]);
 

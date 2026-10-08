@@ -365,6 +365,25 @@ describe('ListSelection', () => {
     expect(selection.selectedKeys().sort()).toEqual(['a', 'e', 'f']);
   });
 
+  it('deselectKeys() unmarks only the given keys and leaves the other marks alone', () => {
+    const { selection, byId } = setup('a', 'b', 'c');
+
+    selection.selectMany([byId('a'), byId('b'), byId('c')]);
+    selection.deselectKeys(['a', 'b', 'unknown']);
+
+    expect(selection.selectedKeys()).toEqual(['c']);
+  });
+
+  it('deselectKeys() drops an anchor it unmarked, so the next shift-click degrades to a toggle', () => {
+    const { selection, byId } = setup('a', 'b', 'c');
+
+    selection.onRowClick(byId('a'), click());
+    selection.deselectKeys(['a']);
+    selection.onRowClick(byId('c'), click(true));
+
+    expect(selection.selectedKeys()).toEqual(['c']);
+  });
+
   it('notifies a computed() that reads the selection', () => {
     const { selection, byId } = setup('a', 'b', 'c');
     // Regression guard: with a plain mutable set instead of a signal, these stayed frozen at their
