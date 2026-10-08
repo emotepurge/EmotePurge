@@ -14,4 +14,13 @@ public interface IExcludedChatterFilter
     /// failing.
     /// </summary>
     bool IsExcluded(string? chatterId);
+
+    /// <summary>
+    /// Every id this filter drops, exactly as configured. Read-only and exposed for one reason —
+    /// the chat-log backfill harness (issue #69/#260) folds it into its run identity (as a digest,
+    /// never the raw ids — see <c>ExcludedChatterIdsDigest</c>), so a changed exclusion policy is
+    /// guaranteed to start a fresh run instead of resuming or recomputing a file whose day lines
+    /// were counted under a different policy. Mirrors <see cref="IBotChatterDetector.KnownBotAccountIds"/>.
+    /// </summary>
+    IReadOnlySet<string> ExcludedChatterIds { get; }
 }

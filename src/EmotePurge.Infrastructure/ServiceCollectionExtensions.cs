@@ -111,6 +111,16 @@ public static class ServiceCollectionExtensions
         })
         .AddHttpMessageHandler(sp => ProviderTelemetry(sp, RateLimitProviders.SevenTv, RateLimitCallSources.SevenTvRest));
         services.AddSingleton<ChannelSyncGate>();
+        // The zero-emote confirmation streak must outlive the scoped sync service, hence a singleton
+        // (state in memory only; a restart delays acceptance of a really empty set by a few ticks).
+        // Options bound and validated eagerly like ChannelCapacityOptions; the clock is the shared
+        // TimeProvider, TryAdd'ed here because this registration comes before the retention one.
+        var emptySetConfirmationOptions = new EmptySetConfirmationOptions();
+        configuration.GetSection(EmptySetConfirmationOptions.SectionName).Bind(emptySetConfirmationOptions);
+        emptySetConfirmationOptions.Validate();
+        services.AddSingleton(emptySetConfirmationOptions);
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddSingleton<IEmptySetConfirmationTracker, EmptySetConfirmationTracker>();
         services.AddScoped<ISevenTvSyncService, SevenTvSyncService>();
 
         // The K3 source-set list's own Helix login resolution (spec 2026-09-20 K3 review, P3-1): a
