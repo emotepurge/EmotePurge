@@ -208,6 +208,49 @@ describe('TagAssignDialog', () => {
     httpMock.verify();
   });
 
+  it('a failed list read after an inline create keeps the new tag listed, ticked and assignable', () => {
+    const fixture = TestBed.createComponent(TagAssignDialog);
+    fixture.detectChanges();
+    fixture.componentInstance['create']('Neu');
+    httpMock.expectOne({ method: 'POST', url: BASE }).flush({ id: 7, name: 'Neu' });
+    httpMock.expectOne(BASE).flush({ errorCode: 'x' }, { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+
+    const host: HTMLElement = fixture.nativeElement;
+    const boxes = host.querySelectorAll<HTMLInputElement>('input[type=checkbox]');
+    expect(boxes.length).toBe(1);
+    expect(boxes[0].checked).toBe(true);
+    expect(host.textContent).toContain('Serverfehler.');
+
+    const confirm = Array.from(host.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === '3 Emotes zuweisen',
+    ) as HTMLButtonElement;
+    confirm.click();
+    httpMock.expectOne(`${BASE}/7/entries`).flush(added(3));
+    expect(closed).toEqual([{ tagNames: ['Neu'], emoteCount: 3, skippedNotInSetCount: 0 }]);
+    httpMock.verify();
+  });
+
+  it('a list read that already contains the created tag does not list it twice or assign it twice', () => {
+    const fixture = TestBed.createComponent(TagAssignDialog);
+    fixture.detectChanges();
+    fixture.componentInstance['create']('Neu');
+    httpMock.expectOne({ method: 'GET', url: BASE }).flush(tagList([1, 'Stronghold'], [7, 'Neu']));
+    httpMock.expectOne({ method: 'POST', url: BASE }).flush({ id: 7, name: 'Neu' });
+    fixture.detectChanges();
+
+    const host: HTMLElement = fixture.nativeElement;
+    expect(host.querySelectorAll('input[type=checkbox]').length).toBe(2);
+
+    const confirm = Array.from(host.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === '3 Emotes zuweisen',
+    ) as HTMLButtonElement;
+    confirm.click();
+    httpMock.expectOne(`${BASE}/7/entries`).flush(added(3));
+    expect(closed).toEqual([{ tagNames: ['Neu'], emoteCount: 3, skippedNotInSetCount: 0 }]);
+    httpMock.verify();
+  });
+
   it('cannot be dismissed while an inline create is pending, and can be afterwards', () => {
     const view = render();
     view.fixture.componentInstance['create']('Neu');
@@ -265,6 +308,42 @@ describe('TagAssignDialog', () => {
 
     keydown.next(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(closed).toEqual([{ tagNames: ['Stronghold'], emoteCount: 3, skippedNotInSetCount: 0 }]);
+  });
+
+  it('counts the union of emotes over all tags, not the largest single batch', () => {
+    const view = render();
+    view.tick(0);
+    view.tick(1);
+    view.confirm().click();
+    httpMock.expectOne(`${BASE}/1/entries`).flush(added(2, ['e3']));
+    httpMock.expectOne(`${BASE}/2/entries`).flush(added(2, ['e1']));
+
+    expect(closed).toEqual([
+      { tagNames: ['Stronghold', 'Boss'], emoteCount: 3, skippedNotInSetCount: 2 },
+    ]);
+    httpMock.verify();
+  });
+
+  it('names each tag and counts each emote once when a retry repeats a tag that already went through', () => {
+    const view = render();
+    view.tick(0);
+    view.tick(1);
+    view.confirm().click();
+    httpMock.expectOne(`${BASE}/1/entries`).flush(added(3));
+    httpMock
+      .expectOne(`${BASE}/2/entries`)
+      .flush({ errorCode: 'tag_entry_limit_reached' }, { status: 409, statusText: 'Conflict' });
+    view.fixture.detectChanges();
+
+    view.tick(0);
+    view.confirm().click();
+    httpMock.expectOne(`${BASE}/1/entries`).flush(added(0, [], 3));
+    httpMock.expectOne(`${BASE}/2/entries`).flush(added(3));
+
+    expect(closed).toEqual([
+      { tagNames: ['Stronghold', 'Boss'], emoteCount: 3, skippedNotInSetCount: 0 },
+    ]);
+    httpMock.verify();
   });
 
   it('Escape or a backdrop click without any assignment closes once with undefined', () => {

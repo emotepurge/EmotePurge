@@ -142,6 +142,11 @@ export class TagAssignDialog {
   private readonly nameFieldRef = viewChild.required(TagNameField);
   // Across retries after a partial failure, so the caller's count stays honest.
   private readonly skippedIds = new Set<string>();
+  // Also across retries: each tag and each emote goes into the result once, however often a retry
+  // repeats a request the server already answered. The server returns counts, not the emotes it
+  // took, so a batch's emotes are the requested ids minus the ones it reports as not in the set.
+  private readonly assignedTags = new Map<number, string>();
+  private readonly assignedEmoteIds = new Set<string>();
 
   protected readonly tags = signal<readonly EmoteTagSummary[] | null>(null);
   protected readonly loadErrorKey = signal<string | null>(null);
@@ -176,8 +181,13 @@ export class TagAssignDialog {
             ...(current ?? []).filter((t) => !result.tags.some((r) => r.id === t.id)),
           ]),
         error: (error: HttpErrorResponse) => {
-          this.tags.set(null);
-          this.loadErrorKey.set(apiErrorTranslationKey(error));
+          // A tag created inline meanwhile is still assignable; only the failed read is reported.
+          const key = apiErrorTranslationKey(error);
+          if (this.tags() === null) {
+            this.loadErrorKey.set(key);
+          } else {
+            this.errorKey.set(key);
+          }
         },
       });
 
@@ -230,8 +240,9 @@ export class TagAssignDialog {
       .subscribe({
         next: (tag) => {
           this.settleCreate();
+          // By id, like the list response: a read that already saw the committed tag lists it.
           this.tags.update((list) => [
-            ...(list ?? []),
+            ...(list ?? []).filter((t) => t.id !== tag.id),
             {
               id: tag.id,
               name: tag.name,
@@ -263,7 +274,6 @@ export class TagAssignDialog {
       return;
     }
     const succeeded: EmoteTagSummary[] = [];
-    let emoteCount = this.partial()?.emoteCount ?? 0;
     const skipped = this.skippedIds;
 
     this.errorKey.set(null);
@@ -283,20 +293,24 @@ export class TagAssignDialog {
       .subscribe({
         next: ({ tag, result }) => {
           succeeded.push(tag);
-          emoteCount = Math.max(emoteCount, result.addedCount + result.alreadyTaggedCount);
+          this.assignedTags.set(tag.id, tag.name);
+          const notInSet = new Set(result.skippedNotInSetIds);
+          this.data.sevenTvEmoteIds
+            .filter((id) => !notInSet.has(id))
+            .forEach((id) => this.assignedEmoteIds.add(id));
           result.skippedNotInSetIds.forEach((id) => skipped.add(id));
         },
         error: (error: HttpErrorResponse) => {
           this.isSubmitting.set(false);
           this.errorKey.set(apiErrorTranslationKey(error));
           if (succeeded.length > 0) {
-            this.keepPartial(succeeded, emoteCount, skipped);
+            this.keepPartial(succeeded);
           } else if (this.partial() === null) {
             this.dialogRef.disableClose = false;
           }
         },
         complete: () => {
-          this.dialogRef.close(this.buildResult(this.partial(), succeeded, emoteCount, skipped));
+          this.dialogRef.close(this.buildResult());
         },
       });
   }
@@ -310,12 +324,8 @@ export class TagAssignDialog {
    * Records the tags that went through, unticks them so a retry only repeats the failed rest, and
    * keeps the dialog open (and away from the CDK's own close) until the user dismisses it.
    */
-  private keepPartial(
-    succeeded: readonly EmoteTagSummary[],
-    emoteCount: number,
-    skipped: ReadonlySet<string>,
-  ): void {
-    this.partial.set(this.buildResult(this.partial(), succeeded, emoteCount, skipped));
+  private keepPartial(succeeded: readonly EmoteTagSummary[]): void {
+    this.partial.set(this.buildResult());
     this.checked.update((current) => {
       const next = new Set(current);
       succeeded.forEach((tag) => next.delete(tag.id));
@@ -323,16 +333,11 @@ export class TagAssignDialog {
     });
   }
 
-  private buildResult(
-    earlier: TagAssignDialogResult | null,
-    succeeded: readonly EmoteTagSummary[],
-    emoteCount: number,
-    skipped: ReadonlySet<string>,
-  ): TagAssignDialogResult {
+  private buildResult(): TagAssignDialogResult {
     return {
-      tagNames: [...(earlier?.tagNames ?? []), ...succeeded.map((tag) => tag.name)],
-      emoteCount,
-      skippedNotInSetCount: skipped.size,
+      tagNames: [...this.assignedTags.values()],
+      emoteCount: this.assignedEmoteIds.size,
+      skippedNotInSetCount: this.skippedIds.size,
     };
   }
 }
