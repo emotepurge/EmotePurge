@@ -355,8 +355,10 @@ public static class ChannelEndpoints
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
         // What the purge above would delete, for the confirmation dialog's numbers (#245). Same
-        // audience as the purge. InteractiveRead rather than folded into /permissions, the most
-        // requested route in the app, which must not carry four COUNTs.
+        // audience as the purge, but decided without Twitch: its own filter admits an id-less row only
+        // for the caller whose current login is the row's name, since nothing here proves it live.
+        // InteractiveRead rather than folded into /permissions, the most requested route in the app,
+        // which must not carry four COUNTs.
         group.MapGet("/{channelName}/data-summary", async (
             string channelName,
             IChannelService channelService,
@@ -373,7 +375,7 @@ public static class ChannelEndpoints
                     tagCount = summary.TagCount,
                 });
         })
-        .AddEndpointFilter<ChannelBroadcasterAuthorizationFilter>()
+        .AddEndpointFilter<ChannelBroadcasterSummaryAuthorizationFilter>()
         .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
 
         // Admin-only: the only way to irreversibly remove a channel with its emotes, usage history,

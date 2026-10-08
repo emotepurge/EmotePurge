@@ -170,6 +170,33 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task DataSummary_Answers403_ForAnIdLessRow_WhoseNameIsNotTheCallersLogin()
+    {
+        // The purge may let an id-less row through, because the service proves it live against Twitch.
+        // The summary has no such proof, so it admits only the caller whose current login is the row's
+        // name — otherwise any logged-in account could read a stranger's numbers.
+        ArrangeRow(new Channel { ChannelName = Channel });
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/data-summary", OwnerId, login: "someoneelse");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await _factory.Channels.DidNotReceive().GetDataSummaryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DataSummary_Answers200_ForAnIdLessRow_WhoseNameIsTheCallersLogin()
+    {
+        // Compared on the normalized login, like canPurgeAsBroadcaster.
+        ArrangeRow(new Channel { ChannelName = Channel });
+        _factory.Channels.GetDataSummaryAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(new ChannelDataSummary(EmoteCount: 1, VoteSessionCount: 0, LiveDayCount: 0, TagCount: 0));
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/data-summary", OwnerId, login: "TestChannel");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task DataSummary_Answers200_WithAllFourCounts()
     {
         ArrangeRow(RowWithId(OwnerId));

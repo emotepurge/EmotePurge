@@ -5,8 +5,8 @@ namespace EmotePurge.Api.Auth;
 
 /// <summary>
 /// The one place that decides whether a caller looks like a channel's broadcaster (#245), shared by
-/// <see cref="ChannelBroadcasterAuthorizationFilter"/> and the <c>/permissions</c> handler so the
-/// two cannot drift. Pure: it reads the stored row and the claims, nothing external.
+/// both broadcaster filters and the <c>/permissions</c> handler so they cannot drift. Pure: it reads
+/// the stored row and the claims, nothing external.
 /// </summary>
 internal static class BroadcasterOwnership
 {
@@ -19,8 +19,10 @@ internal static class BroadcasterOwnership
         || string.Equals(channel.TwitchChannelId, principal.TwitchUserId, StringComparison.Ordinal);
 
     /// <summary>
-    /// Whether the UI should offer the purge: an id match, or — only for an id-less row — a login
-    /// match. The login branch is visibility only; it never authorizes anything by itself.
+    /// Whether the UI should offer the purge, and who may read its data summary: an id match, or — only
+    /// for an id-less row — a match of the caller's current login. The login branch never authorizes
+    /// the purge itself (its service proves the login live); it does decide the summary, whose numbers
+    /// are what the purge button would show this same caller.
     /// </summary>
     public static bool CanPurge(Channel? channel, TwitchPrincipalInfo principal)
     {

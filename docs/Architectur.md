@@ -144,6 +144,7 @@ There is **no** `Role` column and no role enum. "Role" here means: one of four c
 | `ChannelManagementAuthorizationFilter` | admin, broadcaster, moderator | 400 `invalid_channel_name` · 401 · 403 |
 | `UsageStatsAccessAuthorizationFilter` | + 7TV editor | as above |
 | `ChannelBroadcasterAuthorizationFilter` (#245) | the channel's own broadcaster only — **no** admin, **no** moderator; a row without a stored id passes (the service proves it live) | 400 `invalid_channel_name` · 401 · 404 `channel_not_found` · 403 |
+| `ChannelBroadcasterSummaryAuthorizationFilter` (#245, data summary) | as above, but a row without a stored id passes only when its name is the caller's current login — the summary has no live proof | as above |
 | `TrackedChannelFilter` (#245) | any principal, but only for a channel with a row; sits *before* the authorization filter on the channel audit log | 400 · 401 · 404 `channel_not_found` |
 | `VoteEligibilityFilter` (casting a vote) | admin/broadcaster/mod **always**, otherwise per `AllowedRoles` | 404 `vote_session_not_found` · **409 `vote_session_ended`** · 403 |
 | `VoteAudienceFilter` (viewing results) | the same role logic | 404 · 403 — **no 409**: ended sessions stay visible to their target audience |
