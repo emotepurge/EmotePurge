@@ -53,9 +53,11 @@ export class EmoteTagService {
     channelName: string,
     tagId: number,
     sevenTvEmoteIds: readonly string[],
+    emoteSetId?: string,
   ): Observable<AddTagEntriesResult> {
     return this.http.post<AddTagEntriesResult>(`${this.base(channelName)}/${tagId}/entries`, {
       sevenTvEmoteIds,
+      ...(emoteSetId ? { emoteSetId } : {}),
     });
   }
 

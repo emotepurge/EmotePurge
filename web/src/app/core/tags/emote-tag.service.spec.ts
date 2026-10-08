@@ -74,6 +74,11 @@ describe('EmoteTagService', () => {
     expect(add.request.body).toEqual({ sevenTvEmoteIds: ['A', 'B'] });
     add.flush({ addedCount: 2, alreadyTaggedCount: 0, skippedNotInSetIds: [] });
 
+    service.addEntries('somechannel', 3, ['A'], 'set-b').subscribe();
+    const fromOtherSet = http.expectOne('/api/channels/somechannel/tags/3/entries');
+    expect(fromOtherSet.request.body).toEqual({ sevenTvEmoteIds: ['A'], emoteSetId: 'set-b' });
+    fromOtherSet.flush({ addedCount: 1, alreadyTaggedCount: 0, skippedNotInSetIds: [] });
+
     service.removeEntries('somechannel', 3, ['A']).subscribe();
     const remove = http.expectOne('/api/channels/somechannel/tags/3/entries/remove');
     expect(remove.request.method).toBe('POST');

@@ -288,6 +288,28 @@ describe('TagAssignDialog', () => {
     httpMock.verify();
   });
 
+  it('forwards the set the selection was taken from with every tag request', () => {
+    const data = TestBed.inject(DIALOG_DATA) as { sevenTvEmoteIds: string[]; emoteSetId?: string };
+    data.emoteSetId = 'set-b';
+    const view = render();
+    view.tick(0);
+    view.tick(1);
+    view.confirm().click();
+
+    const first = httpMock.expectOne(`${BASE}/1/entries`);
+    expect(first.request.body).toEqual({
+      sevenTvEmoteIds: ['e1', 'e2', 'e3'],
+      emoteSetId: 'set-b',
+    });
+    first.flush(added(1));
+    const second = httpMock.expectOne(`${BASE}/2/entries`);
+    expect(second.request.body).toEqual({
+      sevenTvEmoteIds: ['e1', 'e2', 'e3'],
+      emoteSetId: 'set-b',
+    });
+    second.flush(added(1));
+  });
+
   it('a failure on the second tag keeps the first in the result and offers only the rest again', () => {
     const view = render();
     view.tick(0);
