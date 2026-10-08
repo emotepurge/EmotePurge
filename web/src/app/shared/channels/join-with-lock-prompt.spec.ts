@@ -63,7 +63,7 @@ describe('joinWithBroadcasterLockPrompt', () => {
     expect(open).toHaveBeenCalledTimes(1);
     expect(translate).toHaveBeenCalledWith(
       'broadcasterLock.liftConfirm',
-      expect.objectContaining({ date: 'Oct 1, 2026' }),
+      expect.objectContaining({ date: 'Oct 1, 2026', channelName: 'sensitron' }),
     );
     expect(join).toHaveBeenCalledTimes(1);
 
@@ -90,7 +90,7 @@ describe('joinWithBroadcasterLockPrompt', () => {
     expect(open).toHaveBeenCalledTimes(2);
     expect(translate).toHaveBeenCalledWith(
       'broadcasterLock.liftConfirm',
-      expect.objectContaining({ date: 'Oct 5, 2026' }),
+      expect.objectContaining({ date: 'Oct 5, 2026', channelName: 'sensitron' }),
     );
     closed.next(true);
     expect(join).toHaveBeenCalledTimes(3);

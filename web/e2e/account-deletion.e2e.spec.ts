@@ -97,7 +97,7 @@ test.describe('account deletion from the account menu', () => {
     const dialog = await openDeleteDialog(page);
 
     await expect(
-      dialog.getByText(/Die Daten deines Kanals „sensitron“ bleiben erhalten/),
+      dialog.getByText(/Die Daten deines Channels „sensitron“ bleiben erhalten/),
     ).toBeVisible();
     await expect(dialog.getByText(/zuerst im Workspace deines Kanals/)).toBeVisible();
   });
@@ -108,7 +108,7 @@ test.describe('account deletion from the account menu', () => {
     const dialog = await openDeleteDialog(page);
 
     await expect(dialog.getByText(/jede Stimme, die du abgegeben hast/)).toBeVisible();
-    await expect(dialog.getByText(/Daten deines Kanals/)).toHaveCount(0);
+    await expect(dialog.getByText(/Daten deines Channels/)).toHaveCount(0);
   });
 
   test('still opens the dialog, without the hint, when the channel list fails', async ({

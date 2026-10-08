@@ -327,7 +327,7 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
     channelWorkspace: {
       leaveChannel: 'Channel verlassen',
       rejoinChannel: 'Bot reaktivieren',
-      purgeOwnData: 'Kanaldaten löschen',
+      purgeOwnData: 'Channel-Daten löschen',
       purgeOwnDataDialog: {
         title: 'T',
         message: 'E{{ emotes }} V{{ voteSessions }} L{{ liveDays }} T{{ tags }}',
@@ -421,18 +421,20 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
   const dialogData = () => dialogOpen.mock.calls[0][1].data as Record<string, string>;
 
   it('offers the purge button only when the server says the viewer is the broadcaster — also on an inactive channel', () => {
-    expect(button(render({ canPurgeAsBroadcaster: false }), 'Kanaldaten löschen')).toBeUndefined();
+    expect(
+      button(render({ canPurgeAsBroadcaster: false }), 'Channel-Daten löschen'),
+    ).toBeUndefined();
     TestBed.resetTestingModule();
-    expect(button(render({ canPurgeAsBroadcaster: true }), 'Kanaldaten löschen')).toBeDefined();
+    expect(button(render({ canPurgeAsBroadcaster: true }), 'Channel-Daten löschen')).toBeDefined();
     TestBed.resetTestingModule();
     expect(
-      button(render({ canPurgeAsBroadcaster: true, isBotActive: false }), 'Kanaldaten löschen'),
+      button(render({ canPurgeAsBroadcaster: true, isBotActive: false }), 'Channel-Daten löschen'),
     ).toBeDefined();
   });
 
   it('opens the typed confirmation with the server numbers and the channel name, and purges nothing on cancel', () => {
     const fixture = render({ canPurgeAsBroadcaster: true });
-    button(fixture, 'Kanaldaten löschen')!.click();
+    button(fixture, 'Channel-Daten löschen')!.click();
 
     expect(channelService.getDataSummary).toHaveBeenCalledWith('a');
     expect(dialogData()['requiredText']).toBe('a');
@@ -442,12 +444,12 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
     expect(channelService.purgeOwnData).not.toHaveBeenCalled();
     expect(navigateByUrl).not.toHaveBeenCalled();
     fixture.detectChanges();
-    expect(button(fixture, 'Kanaldaten löschen')!.disabled).toBe(false);
+    expect(button(fixture, 'Channel-Daten löschen')!.disabled).toBe(false);
   });
 
   it('purges bound to the signed-in account on confirmation and goes to the overview', () => {
     const fixture = render({ canPurgeAsBroadcaster: true });
-    button(fixture, 'Kanaldaten löschen')!.click();
+    button(fixture, 'Channel-Daten löschen')!.click();
     dialogClosed.next(true);
 
     expect(channelService.purgeOwnData).toHaveBeenCalledWith('a', '42');
@@ -461,7 +463,7 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
         () => new HttpErrorResponse({ status: 409, error: { errorCode: 'account_mismatch' } }),
       ),
     );
-    button(fixture, 'Kanaldaten löschen')!.click();
+    button(fixture, 'Channel-Daten löschen')!.click();
     dialogClosed.next(true);
     fixture.detectChanges();
 
@@ -474,7 +476,7 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
     channelService.getDataSummary.mockReturnValue(
       throwError(() => new HttpErrorResponse({ status: 500 })),
     );
-    button(fixture, 'Kanaldaten löschen')!.click();
+    button(fixture, 'Channel-Daten löschen')!.click();
     fixture.detectChanges();
 
     expect(text(fixture)).toContain('PURGE-FAILED');
@@ -488,7 +490,7 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
       channelService.purgeOwnData.mockReturnValue(
         throwError(() => new HttpErrorResponse({ status })),
       );
-      button(fixture, 'Kanaldaten löschen')!.click();
+      button(fixture, 'Channel-Daten löschen')!.click();
       dialogClosed.next(true);
       fixture.detectChanges();
 
@@ -503,7 +505,7 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
     channelService.purgeOwnData.mockReturnValue(
       throwError(() => new HttpErrorResponse({ status: 403 })),
     );
-    button(fixture, 'Kanaldaten löschen')!.click();
+    button(fixture, 'Channel-Daten löschen')!.click();
     dialogClosed.next(true);
     fixture.detectChanges();
 
@@ -516,7 +518,7 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
     channelService.getDataSummary.mockReturnValue(
       throwError(() => new HttpErrorResponse({ status: 0 })),
     );
-    button(fixture, 'Kanaldaten löschen')!.click();
+    button(fixture, 'Channel-Daten löschen')!.click();
     fixture.detectChanges();
 
     expect(text(fixture)).toContain('PURGE-FAILED');

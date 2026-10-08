@@ -26,7 +26,7 @@
       "failed": "Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen.",
       "unconfirmed": "Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde – die Verbindung wurde unterbrochen. Lade die Seite neu: Bist du danach weiterhin angemeldet, wurde nichts gelöscht und du kannst es erneut versuchen. Bist du abgemeldet, können wir das von hier aus nicht erkennen – melde dich bitte nicht an, um nachzusehen, denn dabei würde ein neues Konto angelegt; schreib uns über das Kontaktformular, wir bestätigen es dir.",
       "mismatch": "Du bist in einem anderen Tab mit einem anderen Konto angemeldet – es wurde nichts gelöscht. Lade die Seite neu, um mit dem Konto weiterzumachen, das tatsächlich angemeldet ist.",
-      "channelHint": "Die Daten deines Kanals „{{ login }}“ bleiben erhalten und werden weiter gezählt. Wenn du sie löschen willst, tu das zuerst im Workspace deines Kanals."
+      "channelHint": "Die Daten deines Channels „{{ login }}“ bleiben erhalten und werden weiter gezählt. Wenn du sie löschen willst, tu das zuerst im Workspace deines Channels."
     }
   },
   "shell": {
@@ -250,12 +250,12 @@
   "channelWorkspace": {
     "leaveChannel": "Channel verlassen",
     "rejoinChannel": "Bot reaktivieren",
-    "purgeOwnData": "Kanaldaten löschen",
+    "purgeOwnData": "Channel-Daten löschen",
     "purgeOwnDataDialog": {
-      "title": "Kanaldaten unwiderruflich löschen",
-      "message": "Alle Daten des Kanals #{{ channelName }} werden gelöscht:\n• Emotes: {{ emotes }}\n• Abstimmungen: {{ voteSessions }}\n• Live-Tage: {{ liveDays }}\n• Tags deines Mod-Teams: {{ tags }}\n\nDas lässt sich nicht rückgängig machen. Gelöscht wird dein Kanal unter diesem Namen und, falls wir ihn nach einer Umbenennung noch unter deinem früheren Namen führen, auch dieser Eintrag – jeweils samt allem, was daran hängt; die Zahlen oben zählen beides zusammen. Eine Altzeile von vor einer Umbenennung, die sich nicht mehr als deine nachweisen lässt, wird 180 Tage nach ihrer Deaktivierung automatisch entfernt. Audit-Einträge bleiben 12 Monate erhalten, Backups bis zu 60 Tage. Danach kann nur du selbst den Kanal wieder hinzufügen, deine Moderatoren nicht.",
-      "inputLabel": "Zur Bestätigung den Kanalnamen eingeben",
-      "confirm": "Kanaldaten endgültig löschen"
+      "title": "Channel-Daten unwiderruflich löschen",
+      "message": "Alle Daten des Channels #{{ channelName }} werden gelöscht:\n• Emotes: {{ emotes }}\n• Abstimmungen: {{ voteSessions }}\n• Live-Tage: {{ liveDays }}\n• Tags deines Mod-Teams: {{ tags }}\n\nDas lässt sich nicht rückgängig machen. Gelöscht wird dein Channel unter diesem Namen und, falls wir ihn nach einer Umbenennung noch unter deinem früheren Namen führen, auch dieser Eintrag – jeweils samt allem, was daran hängt; die Zahlen oben zählen beides zusammen. Eine Altzeile von vor einer Umbenennung, die sich nicht mehr als deine nachweisen lässt, wird 180 Tage nach ihrer Deaktivierung automatisch entfernt. Audit-Einträge bleiben 12 Monate erhalten, Backups bis zu 60 Tage. Danach kann nur du selbst den Channel wieder hinzufügen, deine Moderatoren nicht.",
+      "inputLabel": "Zur Bestätigung den Channel-Namen eingeben",
+      "confirm": "Channel-Daten endgültig löschen"
     },
     "botInactiveNotice": "Der Bot ist für diesen Channel derzeit inaktiv und erfasst keine neuen Chat-Daten. Bereits erfasste Daten bleiben erhalten.",
     "leaveConfirm": "Channel #{{ channelName }} wirklich verlassen? Der Bot verlässt den Chat und erfasst keine neuen Daten mehr. Bereits erfasste Emotes, Nutzungsstatistiken und Abstimmungen bleiben erhalten und sind nach einem erneuten Beitritt wieder da.",
@@ -285,12 +285,12 @@
       "leaveForbidden": "Nicht berechtigt, diesen Channel zu verlassen.",
       "leaveFailed": "Channel konnte nicht verlassen werden.",
       "rejoinFailed": "Bot konnte nicht reaktiviert werden.",
-      "purgeOwnDataFailed": "Die Kanaldaten konnten nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen.",
-      "purgeOwnDataUnconfirmed": "Ob die Kanaldaten gelöscht wurden, ist unklar – die Antwort ist nicht angekommen. Lade die Seite neu: Ist der Kanal dann verschwunden, wurde er gelöscht."
+      "purgeOwnDataFailed": "Die Channel-Daten konnten nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen.",
+      "purgeOwnDataUnconfirmed": "Ob die Channel-Daten gelöscht wurden, ist unklar – die Antwort ist nicht angekommen. Lade die Seite neu: Ist der Channel dann verschwunden, wurde er gelöscht."
     }
   },
   "broadcasterLock": {
-    "liftConfirm": "Der Streamer hat diesen Kanal am {{ date }} gelöscht und gesperrt. Trotzdem hinzufügen?",
+    "liftConfirm": "Der Streamer von #{{ channelName }} hat den Channel am {{ date }} gelöscht und gesperrt. Trotzdem hinzufügen?",
     "liftConfirmLabel": "Trotzdem hinzufügen"
   },
   "admin": {
@@ -1941,8 +1941,8 @@
       "channel_not_on_twitch": "Diesen Channel gibt es auf Twitch nicht (mehr). Bitte prüf die Schreibweise.",
       "channel_capacity_reached": "Gerade sind keine freien Channel-Plätze verfügbar. Bitte wende dich an den Betreiber.",
       "channel_excluded": "Dieser Kanal kann nicht hinzugefügt werden.",
-      "channel_locked_by_broadcaster": "Der Streamer hat diesen Kanal aus EmotePurge entfernt. Nur er selbst kann ihn wieder hinzufügen.",
-      "channel_identity_unresolved": "Die Kanal-Identität konnte gerade nicht bestätigt werden — bitte später erneut.",
+      "channel_locked_by_broadcaster": "Der Streamer hat diesen Channel aus EmotePurge entfernt. Nur er selbst kann ihn wieder hinzufügen.",
+      "channel_identity_unresolved": "Die Channel-Identität konnte gerade nicht bestätigt werden — bitte später erneut.",
       "account_mismatch": "Du bist in einem anderen Tab mit einem anderen Konto angemeldet. Es wurde nichts gelöscht.",
       "foreign_channel_twitch_unavailable": "Twitch ist gerade nicht erreichbar. Bitte versuch es in Kürze erneut.",
       "foreign_channel_no_seventv_account": "Für diesen Channel existiert kein 7TV-Account.",

@@ -292,14 +292,14 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
   test('only the channel own broadcaster is offered the button', async ({ page }) => {
     await mockChannelPermissions(page, 'sensitron', { canPurgeAsBroadcaster: true });
     await page.goto('/channels/sensitron/usage-stats');
-    await expect(page.getByRole('button', { name: 'Kanaldaten löschen' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Channel-Daten löschen' })).toBeVisible();
   });
 
   test('a moderator does not see the button', async ({ page }) => {
     await mockChannelPermissions(page, 'sensitron', { canPurgeAsBroadcaster: false });
     await page.goto('/channels/sensitron/usage-stats');
     await expect(page.getByRole('button', { name: 'Channel verlassen' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Kanaldaten löschen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Channel-Daten löschen' })).toHaveCount(0);
   });
 
   test('stays available on a deactivated channel', async ({ page }) => {
@@ -309,7 +309,7 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     });
     await page.goto('/channels/sensitron/usage-stats');
     await expect(page.getByRole('button', { name: 'Bot reaktivieren' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Kanaldaten löschen' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Channel-Daten löschen' })).toBeVisible();
   });
 
   test('names the numbers and the limits, unlocks on the typed name, deletes bound to the account and lands on the overview', async ({
@@ -326,11 +326,11 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     await mockMyChannels(page, []);
 
     await page.goto('/channels/sensitron/usage-stats');
-    await page.getByRole('button', { name: 'Kanaldaten löschen' }).click();
+    await page.getByRole('button', { name: 'Channel-Daten löschen' }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(
-      dialog.getByRole('heading', { name: 'Kanaldaten unwiderruflich löschen' }),
+      dialog.getByRole('heading', { name: 'Channel-Daten unwiderruflich löschen' }),
     ).toBeVisible();
     await expect(dialog.getByText('Emotes: 903')).toBeVisible();
     await expect(dialog.getByText(/Abstimmungen: 4/)).toBeVisible();
@@ -341,8 +341,8 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     await expect(dialog.getByText(/Backups bis zu 60 Tage/)).toBeVisible();
     await expect(dialog.getByText(/deine Moderatoren nicht/)).toBeVisible();
 
-    const confirm = dialog.getByRole('button', { name: 'Kanaldaten endgültig löschen' });
-    const input = dialog.getByLabel('Zur Bestätigung den Kanalnamen eingeben');
+    const confirm = dialog.getByRole('button', { name: 'Channel-Daten endgültig löschen' });
+    const input = dialog.getByLabel('Zur Bestätigung den Channel-Namen eingeben');
     await expect(confirm).toBeDisabled();
     await input.fill('sensitro');
     await expect(confirm).toBeDisabled();
@@ -369,7 +369,7 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     const purgeUrls = await mockPurgeOwnData(page, 'sensitron');
 
     await page.goto('/channels/sensitron/usage-stats');
-    await page.getByRole('button', { name: 'Kanaldaten löschen' }).click();
+    await page.getByRole('button', { name: 'Channel-Daten löschen' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Abbrechen' }).click();
 
     await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -379,7 +379,7 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
 
   for (const [code, text] of [
     ['account_mismatch', /in einem anderen Tab mit einem anderen Konto angemeldet/],
-    ['channel_identity_unresolved', /Kanal-Identität konnte gerade nicht bestätigt werden/],
+    ['channel_identity_unresolved', /Channel-Identität konnte gerade nicht bestätigt werden/],
   ] as const) {
     test(`a 409 ${code} is shown as a message and the page stays`, async ({ page }) => {
       await mockChannelPermissions(page, 'sensitron', { canPurgeAsBroadcaster: true });
@@ -387,14 +387,14 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
       await mockPurgeOwnData(page, 'sensitron', { status: 409, body: { errorCode: code } });
 
       await page.goto('/channels/sensitron/usage-stats');
-      await page.getByRole('button', { name: 'Kanaldaten löschen' }).click();
+      await page.getByRole('button', { name: 'Channel-Daten löschen' }).click();
       const dialog = page.getByRole('dialog');
-      await dialog.getByLabel('Zur Bestätigung den Kanalnamen eingeben').fill('sensitron');
-      await dialog.getByRole('button', { name: 'Kanaldaten endgültig löschen' }).click();
+      await dialog.getByLabel('Zur Bestätigung den Channel-Namen eingeben').fill('sensitron');
+      await dialog.getByRole('button', { name: 'Channel-Daten endgültig löschen' }).click();
 
       await expect(page.getByRole('alert').filter({ hasText: text })).toBeVisible();
       await expect(page).toHaveURL(/usage-stats$/);
-      await expect(page.getByRole('button', { name: 'Kanaldaten löschen' })).toBeEnabled();
+      await expect(page.getByRole('button', { name: 'Channel-Daten löschen' })).toBeEnabled();
     });
   }
 
@@ -411,7 +411,7 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     await expect(
       page
         .getByRole('alert')
-        .filter({ hasText: 'Der Streamer hat diesen Kanal aus EmotePurge entfernt' }),
+        .filter({ hasText: 'Der Streamer hat diesen Channel aus EmotePurge entfernt' }),
     ).toBeVisible();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     expect(joinUrls).toHaveLength(1);
@@ -429,7 +429,7 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     await expect(
       page
         .getByRole('alert')
-        .filter({ hasText: 'Der Streamer hat diesen Kanal aus EmotePurge entfernt' }),
+        .filter({ hasText: 'Der Streamer hat diesen Channel aus EmotePurge entfernt' }),
     ).toBeVisible();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     expect(joinUrls).toHaveLength(1);
@@ -449,7 +449,7 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     await expect(
       page
         .getByRole('alert')
-        .filter({ hasText: 'Der Streamer hat diesen Kanal aus EmotePurge entfernt' }),
+        .filter({ hasText: 'Der Streamer hat diesen Channel aus EmotePurge entfernt' }),
     ).toBeVisible();
     expect(joinUrls).toHaveLength(1);
   });

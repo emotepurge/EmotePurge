@@ -290,7 +290,7 @@
     }
   },
   "broadcasterLock": {
-    "liftConfirm": "The streamer deleted and locked this channel on {{ date }}. Add it anyway?",
+    "liftConfirm": "The streamer of #{{ channelName }} deleted and locked the channel on {{ date }}. Add it anyway?",
     "liftConfirmLabel": "Add anyway"
   },
   "admin": {
