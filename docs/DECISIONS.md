@@ -10,6 +10,49 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — A convergence JOIN built on a roster read older than a processed LEAVE is dropped (leave ledger, #245 live run)
+
+**Betrifft:** `src/EmotePurge.Worker/ChannelLeaveLedger.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` · `src/EmotePurge.Worker/ITwitchChatManager.cs` · `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` · `src/EmotePurge.Worker/Worker.cs` · `tests/EmotePurge.Worker.Tests/ChannelLeaveLedgerTests.cs` · `tests/EmotePurge.Worker.Tests/TwitchChatManagerLeaveRaceTests.cs` · `tests/EmotePurge.Worker.Tests/SevenTvPeriodicResyncWorkerTests.cs`
+
+**Observed.** In the #245 live run the identity reconcile deactivated a channel (`locked`, then
+`loginUnresolvable`), its LEAVE arrived and was processed, and right after it the worker logged
+`JOIN für <channel> angestoßen (Quelle ConvergenceNet)` — the bot sat in the chat of a locked
+channel until the roster prune parted it two ticks later. Nothing was counted (the sync refuses the
+inactive row), but the bot was present in a channel whose broadcaster had asked to be left alone.
+
+**Root cause.** Not a lost LEAVE, so not the case the two-tick prune (issue #41) was justified for.
+`SevenTvPeriodicResyncWorker` reads the active roster once and then walks it for seconds to minutes
+(throttled JOINs, one 7TV request per channel). A deactivation committed during the walk publishes its
+LEAVE after the commit; the LEAVE removes the channel from `TwitchChatManager`'s desired set; then the
+walk reaches the channel and `EnsureJoinedAsync` re-created the intent from the stale list
+(`AddOrUpdate` on a key the LEAVE had just removed) and joined. `TryJoinAsync`'s re-check after the
+join gate could not help: the intent it re-checks had just been re-created by the same call. The same
+holds for any LEAVE during the walk — a user's leave, the excluded-channel list, a rename's LEAVE of the
+old login — and, with a narrower window, for the `RESYNC` command between its roster check and its join.
+
+**Decided: a leave ledger in the manager, a stamp taken before the roster read.** `ChannelLeaveLedger`
+(pure, worker-internal) counts LEAVEs and remembers per channel (case-insensitive) the count at its last
+LEAVE. A caller of `EnsureJoinedAsync` takes `CaptureLeaveStamp()` *before* reading the roster and
+passes it in; `EnsureJoinedAsync` drops the JOIN (Debug line) when the channel was left after that
+stamp. Why that order is sufficient: every LEAVE is published after its commit, so a LEAVE recorded
+before the stamp belongs to a commit the later roster read already sees, and one recorded after it is
+exactly the one the read may predate. The ledger check and the intent write share one latch
+(`_intentGate`, no await inside) with `LeaveChannelAsync`'s record-and-remove, otherwise a LEAVE between
+"left?" and "add" would still be undone. A roster-checked `JoinChannelAsync` (JOIN command, boot
+recovery) clears the channel's entry — it is newer than any stale read — which also bounds the ledger
+to the channels currently left. A channel that is genuinely active again is on the next tick's roster,
+read after the LEAVE, and joined then: at most one tick of delay for a lost JOIN command, as before.
+
+Rejected: re-reading the row per channel right before the JOIN (one query per channel per minute, and
+the window between that read and the JOIN stays open), and moving the JOIN behind the 7TV sync's own
+re-read (changes join latency for every channel and couples IRC presence to 7TV's availability).
+
+Unchanged: the two-tick roster prune stays the net for a *lost* LEAVE (Redis outage) and for
+cache/registry ghosts (#59); the 7TV sync of the stale name still runs, its narrowing re-read already
+returns `null` for an inactive row. The JOIN-command path (`IsInActiveRosterAsync` then
+`JoinChannelAsync`) is not stamped: a LEAVE arriving between those two steps is a pre-existing,
+command-order race and stays the prune's case.
+
 ### 2026-10-08 — Global admins are allowlisted by immutable Twitch id, logins remain a transitional fallback (#245)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/GlobalAdminAllowlist.cs` · `src/EmotePurge.Infrastructure/Services/IGlobalAdminAllowlist.cs` · `src/EmotePurge.Infrastructure/Services/ChannelAccessService.cs` · `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` · `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/appsettings.json` · `docker-compose.yml` · `docker-compose.prod.yml` · `.env.example` · `README.md` · `PRODUCT.md` · `docs/Operations.md` · `docs/Architectur.md` · `tests/EmotePurge.Infrastructure.Tests/Unit/GlobalAdminAllowlistTests.cs` · `src/EmotePurge.Core/Services/IChannelAccessService.cs` · `Auth:AdminTwitchUserIds` · `ADMIN_TWITCH_USER_IDS`
@@ -172,6 +215,8 @@ again under the row lock (a join that was faster has removed it: nothing is writ
 deactivation — and the id-less pass does the same by primary key (`LoadChannelByIdForUpdateAsync`).
 LEAVE goes out only after the commit; a failed publish is logged and not thrown, since retrying would
 find the row already inactive and the roster prune parts the channel within about two ticks.
+(Two ticks applies to a *lost* LEAVE only; a delivered LEAVE racing the periodic resync's walk used
+to be joined straight back — closed by the leave ledger, see the entry of the same date above.)
 `ChannelDeactivation` is split for that into `StageAsync` (closes the open set-observation interval —
 the #200 invariant "inactive implies no open interval" — flips the flags, stages the audit entry) and
 `PublishLeaveAsync`; `DeactivateAsync` stays as their composition for the callers without a

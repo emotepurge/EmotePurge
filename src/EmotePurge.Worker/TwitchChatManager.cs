@@ -75,6 +75,15 @@ public class TwitchChatManager(
     // and EnsureJoinedAsync).
     private readonly ConcurrentDictionary<string, bool> _desiredChannels = new(StringComparer.OrdinalIgnoreCase);
 
+    // Which channels were left since a given roster read (see ChannelLeaveLedger). Both it and every
+    // add to or removal from _desiredChannels in JoinChannelAsync, EnsureJoinedAsync and
+    // LeaveChannelAsync run under _intentGate: a LEAVE landing between EnsureJoinedAsync's "was it
+    // left?" and its "record the intent" would otherwise be undone by exactly the stale JOIN the
+    // ledger exists to stop. No await runs inside it. The confirmation flips (OnJoinedChannel, the
+    // reset on a rebuild) only update existing entries and stay outside it.
+    private readonly ChannelLeaveLedger _leaveLedger = new();
+    private readonly Lock _intentGate = new();
+
     // Per channel what _lastMessageReceivedUtcTicks is for the connection as a whole. The global
     // one answers "is the socket alive", this one answers "is *this* channel alive" — the question
     // a support case actually asks, and one the global figure hides: a single busy channel keeps it
@@ -187,21 +196,52 @@ public class TwitchChatManager(
         // whose JOIN failed — e.g. because the client happened to be mid-rebuild — was never
         // retried by any reconnect: database and match cache looked correct while usage data
         // stayed empty forever, with no signal anywhere.
-        _desiredChannels.AddOrUpdate(channelName, false, (_, confirmed) => confirmed);
+        lock (_intentGate)
+        {
+            // A roster-checked JOIN is newer than any stale roster read still in flight, so it
+            // clears the channel's leave entry rather than being blocked by it.
+            _leaveLedger.Forget(channelName);
+            _desiredChannels.AddOrUpdate(channelName, false, (_, confirmed) => confirmed);
+        }
+
         await TryJoinAsync(channelName, TwitchJoinSource.Command, CancellationToken.None);
     }
 
-    public async Task EnsureJoinedAsync(string channelName)
+    public long CaptureLeaveStamp()
+    {
+        lock (_intentGate)
+        {
+            return _leaveLedger.Stamp;
+        }
+    }
+
+    public async Task EnsureJoinedAsync(string channelName, long leaveStamp)
     {
         // Safety net driven by the periodic resync, which enumerates all active channels anyway:
         // covers lost Redis commands, joins that failed during boot recovery, and joins Twitch
         // never confirmed.
-        if (_desiredChannels.TryGetValue(channelName, out var confirmed) && confirmed)
+        lock (_intentGate)
         {
-            return;
+            if (_desiredChannels.TryGetValue(channelName, out var confirmed) && confirmed)
+            {
+                return;
+            }
+
+            // The caller's roster read predates a LEAVE for this channel (#245 live run: the
+            // identity reconcile deactivated a locked channel mid-resync, and this net joined it
+            // straight back from the stale list). The LEAVE is the newer truth; a channel that is
+            // genuinely active again is on the next tick's roster, taken after this LEAVE.
+            if (_leaveLedger.LeftSince(channelName, leaveStamp))
+            {
+                logger.LogDebug(
+                    "Convergence JOIN for {Channel} dropped — the channel was left after the caller read the active roster.",
+                    channelName);
+                return;
+            }
+
+            _desiredChannels.AddOrUpdate(channelName, false, (_, stored) => stored);
         }
 
-        _desiredChannels.AddOrUpdate(channelName, false, (_, stored) => stored);
         await TryJoinAsync(channelName, TwitchJoinSource.ConvergenceNet, CancellationToken.None);
     }
 
@@ -210,8 +250,14 @@ public class TwitchChatManager(
         // Drop the intent first, so nothing rejoins this channel afterwards even if the leave
         // itself fails or the client is currently disconnected. TryJoinAsync re-checks the intent
         // after its gate, so a leave that lands mid-rejoin also stops the JOIN that round would
-        // otherwise still send.
-        _desiredChannels.TryRemove(channelName, out _);
+        // otherwise still send. The ledger entry keeps a convergence JOIN built on an older roster
+        // read from re-creating the intent afterwards (see ChannelLeaveLedger).
+        lock (_intentGate)
+        {
+            _leaveLedger.RecordLeave(channelName);
+            _desiredChannels.TryRemove(channelName, out _);
+        }
+
         // A left channel's last message time would otherwise outlive it for the process lifetime and
         // resurrect as a stale timestamp if the channel is ever rejoined.
         _lastMessageByChannelTicks.TryRemove(channelName, out _);
