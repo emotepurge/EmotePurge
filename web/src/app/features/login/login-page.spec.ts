@@ -13,6 +13,9 @@ const TRANSLATIONS = {
     title: 'Anmelden',
     subtitle: 's',
     loginButton: 'Mit Twitch einloggen',
+    appButton: 'Zur App',
+    titleLoggedIn: 'Angemeldet',
+    subtitleLoggedIn: 'Hallo {{name}}',
     notice: {
       deletionSessionEnded: 'Nichts gelöscht.',
       deletionUnknown: 'Unklar.',
@@ -97,5 +100,70 @@ describe('LoginPage notice', () => {
 
   it('shows no notice by default', () => {
     expect(render().querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+describe('LoginPage for a signed-in visitor', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [provideRouter([]), provideHttpClient(), provideHttpClientTesting()],
+    });
+  });
+
+  function render(): HTMLElement {
+    const fixture = TestBed.createComponent(LoginPage);
+    fixture.detectChanges();
+    return fixture.nativeElement as HTMLElement;
+  }
+
+  function resolveAs(user: { twitchUserId: string; displayName: string } | null): void {
+    TestBed.inject(AuthService).ensureLoaded().subscribe();
+    const req = TestBed.inject(HttpTestingController).expectOne('/api/auth/me');
+    if (user) {
+      req.flush(user);
+    } else {
+      req.flush(null, { status: 401, statusText: 'Unauthorized' });
+    }
+  }
+
+  it('offers a link into the app instead of the login button, and greets by display name', () => {
+    resolveAs({ twitchUserId: '1', displayName: 'Streamer_Name' });
+    const el = render();
+
+    const link = Array.from(el.querySelectorAll('main a')).find(
+      (a) => a.textContent?.trim() === 'Zur App',
+    );
+    expect(link?.getAttribute('href')).toBe('/');
+    expect(el.querySelector('main button')).toBeNull();
+    expect(el.querySelector('main')?.textContent).toContain('Streamer_Name');
+  });
+
+  it('keeps the login button while the answer is pending, even if a user is already set', () => {
+    TestBed.inject(AuthService).currentUser.set({
+      twitchUserId: '1',
+      displayName: 'Streamer_Name',
+    } as never);
+    const el = render();
+
+    expect(el.querySelector('main button')).not.toBeNull();
+    expect(
+      Array.from(el.querySelectorAll('main a')).some((a) => a.getAttribute('href') === '/'),
+    ).toBe(false);
+  });
+
+  it('keeps the login button for a resolved anonymous visitor', () => {
+    resolveAs(null);
+    const el = render();
+
+    expect(el.querySelector('main button')).not.toBeNull();
+    expect(
+      Array.from(el.querySelectorAll('main a')).some((a) => a.getAttribute('href') === '/'),
+    ).toBe(false);
   });
 });
