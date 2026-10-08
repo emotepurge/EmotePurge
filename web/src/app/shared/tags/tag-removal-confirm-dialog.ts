@@ -256,12 +256,16 @@ type ListItem =
         </p>
       }
 
-      <div class="flex flex-col gap-1">
-        <p class="text-sm text-fg-secondary">{{ 'massDelete.irreversibleNotice' | transloco }}</p>
-        <p class="text-xs text-fg-muted">
-          {{ 'massDelete.undetectableChannelsNotice' | transloco }}
-        </p>
-      </div>
+      <!-- Both notices are about deleting on 7TV. With nothing ticked nothing is deleted, and the
+           sentence above says so: a warning that deleting cannot be undone would contradict it. -->
+      @if (removeCount() > 0) {
+        <div class="flex flex-col gap-1">
+          <p class="text-sm text-fg-secondary">{{ 'massDelete.irreversibleNotice' | transloco }}</p>
+          <p class="text-xs text-fg-muted">
+            {{ 'massDelete.undetectableChannelsNotice' | transloco }}
+          </p>
+        </div>
+      }
 
       @if (data.warningLoading()) {
         <p dialog-actions id="tag-removal-confirm-hint" class="mr-auto text-xs text-fg-muted">

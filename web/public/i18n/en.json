@@ -1277,6 +1277,7 @@
         "one": "Copy {{ count }} emote into the set ‚{{ setName }}'?",
         "other": "Copy {{ count }} emotes into the set ‚{{ setName }}'?"
       },
+      "titleNothing": "Nothing to copy",
       "titleAlign": {
         "one": "Align {{ count }} name in the target set?",
         "other": "Align {{ count }} names in the target set?"
@@ -1850,7 +1851,7 @@
         "one": "{{count}} more emote of this tag is not in the set.",
         "other": "{{count}} more emotes of this tag are not in the set."
       },
-      "nothingToDelete": "Nothing will be deleted on 7TV; the tag is then no longer recorded as added to the set.",
+      "nothingToDelete": "Nothing will be deleted on 7TV. Confirming only deactivates the tag: it is then no longer recorded as added to the set.",
       "nothingToDeleteNotPlayedIn": "Nothing will be deleted on 7TV.",
       "notPlayedInLead": "Nothing is in the set via this tag right now — all its emotes in the set are proposed except those another tag needs.",
       "markedLead": {

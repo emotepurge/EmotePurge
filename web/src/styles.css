@@ -405,6 +405,14 @@
     color: var(--ep-fg);
   }
 
+  /* The open list of a native select is drawn by the browser, which keeps its own light colours
+     for it unless the options carry the field's own. The closed control already follows the
+     tokens through .app-input / .app-input-sm. */
+  option {
+    background-color: var(--ep-field);
+    color: var(--ep-fg);
+  }
+
   /* Single global keyboard-focus indicator (WCAG 2.4.7 / 1.4.11): every interactive element
      gets the same visible ring; individual components must not remove it without replacement. */
   :focus-visible {

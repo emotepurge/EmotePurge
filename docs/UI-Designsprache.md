@@ -351,7 +351,8 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   risks, no longer two exits of the same dialog.
 - **Confirmation dialog, row order:** title (count + target channel — or, for a plan with no ADD at
   all and at least one adopted rename, "Align N names in the target set?" instead, since "0 emotes …
-  copy?" would misdescribe a run that only renames) → origin row (channel,
+  copy?" would misdescribe a run that only renames; and for a plan with nothing to add at all "Nothing to copy"
+  instead of "0 emotes … copy?") → origin row (channel,
   or file with export date/channel) → target row "Target: channel · set …" as soon as the target data
   are there → exactly **one** of three loading states (hand-rolled skeleton per the §6.1 pattern /
   `no-set` banner / `failed` banner with retry) → shared-set warning (error) or "check not
@@ -365,7 +366,8 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   failed-read case's reload repeats the ordinary load — and, in the same banner, the committed decisions a
   reload of the target no longer fits, by name) → slot projection (overflow as a warning banner,
   otherwise quiet text; net change of the plan, so a replace counts its removed entries) →
-  stale notice if the last sync of the target failed → "already in the target set" row →
+  stale notice if the last sync of the target failed → "already in the target set" row (left out when
+  every offered row is already there: the "nothing to add" banner below then says the same) →
   name-collisions row with its **"Resolve" trigger** (`outline`, visible text "Resolve", accessible
   name naming the group, locked while a live read runs) + "resolved: N" (only once a row
   of the group carries a decision) + `NamePreviewList` → alias-mismatch row with its own

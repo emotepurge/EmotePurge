@@ -464,7 +464,9 @@ const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
         }
 
         @if (preview(); as preview) {
-          @if (preview.alreadyPresent > 0) {
+          <!-- Not when the nothing-to-add banner below already says every row is in the set: the same
+               fact twice, one sentence apart. A mixed plan (collisions, other aliases) keeps it. -->
+          @if (preview.alreadyPresent > 0 && !(nothingToAdd() && allAlreadyPresent())) {
             <p class="text-sm text-fg-secondary">
               {{ alreadyPresentKey() | transloco: { count: preview.alreadyPresent } }}
             </p>
@@ -909,6 +911,13 @@ export class ImportConfirmDialog {
   // down, in the dock). `titleIsRenameOnly` overrides both with a third key that names no channel or
   // set at all, because a rename-only run has no ADD destination to name.
   protected readonly titleKey = computed(() => {
+    // Every offered row is already in the set: "0 Emotes … kopieren?" would read as a question
+    // about a run that does not exist. The title names the empty case instead; the banner below says
+    // why. Not for a plan emptied by name collisions — those rows can still be resolved into the
+    // plan, so the count is a real, changing number there.
+    if (this.nothingToAdd() && this.allAlreadyPresent()) {
+      return 'import.confirm.titleNothing';
+    }
     if (this.titleIsRenameOnly()) {
       return pluralKey(this.adoptCount(), 'import.confirm.titleAlign');
     }
@@ -982,7 +991,7 @@ export class ImportConfirmDialog {
 
   /** Every offered row is already in the target set — the one empty plan a tag play-in may confirm
    *  (`emptyConfirmAllowed`). */
-  private readonly allAlreadyPresent = computed(() => {
+  protected readonly allAlreadyPresent = computed(() => {
     const preview = this.preview();
     return preview !== null && preview.alreadyPresent === this.data.source.rows.length;
   });

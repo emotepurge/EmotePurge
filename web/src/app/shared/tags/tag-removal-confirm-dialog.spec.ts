@@ -250,6 +250,8 @@ describe('TagRemovalConfirmDialog', () => {
     expect(host.textContent).toContain(
       'Es wird nichts gelöscht; danach nicht mehr ins Set geholt.',
     );
+    // Nothing is deleted, so the "cannot be undone" warning has nothing to warn about.
+    expect(host.textContent).not.toContain('Nicht rückgängig zu machen.');
 
     button(host, 'Aus dem Set entfernen').click();
     expect(results).toEqual([{ checkedIds: [] }]);

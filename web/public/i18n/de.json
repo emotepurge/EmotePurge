@@ -1277,6 +1277,7 @@
         "one": "{{ count }} Emote in Set ‚{{ setName }}' kopieren?",
         "other": "{{ count }} Emotes in Set ‚{{ setName }}' kopieren?"
       },
+      "titleNothing": "Nichts zu kopieren",
       "titleAlign": {
         "one": "{{ count }} Namen im Zielset angleichen?",
         "other": "{{ count }} Namen im Zielset angleichen?"
@@ -1850,7 +1851,7 @@
         "one": "{{count}} weiteres Emote dieses Tags ist nicht im Set.",
         "other": "{{count}} weitere Emotes dieses Tags sind nicht im Set."
       },
-      "nothingToDelete": "Es wird nichts bei 7TV gelöscht; der Tag ist danach nicht mehr als ins Set geholt vermerkt.",
+      "nothingToDelete": "Es wird nichts bei 7TV gelöscht. Bestätigen deaktiviert nur den Tag: Er ist danach nicht mehr als ins Set geholt vermerkt.",
       "nothingToDeleteNotPlayedIn": "Es wird nichts bei 7TV gelöscht.",
       "notPlayedInLead": "Über diesen Tag ist gerade nichts im Set — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
       "markedLead": {

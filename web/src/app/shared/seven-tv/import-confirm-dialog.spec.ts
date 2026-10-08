@@ -60,6 +60,7 @@ const DE_TRANSLATIONS = {
         one: "{{ count }} Emote in Set ‚{{ setName }}' kopieren?",
         other: "{{ count }} Emotes in Set ‚{{ setName }}' kopieren?",
       },
+      titleNothing: 'Nichts zu kopieren',
       titleAlign: {
         one: '{{ count }} Namen im Zielset angleichen?',
         other: '{{ count }} Namen im Zielset angleichen?',
@@ -680,6 +681,13 @@ describe('ImportConfirmDialog', () => {
         expect(dialog.element('import-confirm-nothing-to-add')?.textContent).toContain(
           'Alle 2 Emotes sind bereits im Zielset.',
         );
+        // The empty case is named in the title, and the fact is said once — not also as the
+        // "skipped" line above the banner.
+        expect(dialog.title()).toBe('Nichts zu kopieren');
+        expect(dialog.element('import-confirm-nothing-to-add')?.textContent).toContain(
+          'Alle 2 Emotes sind bereits im Zielset.',
+        );
+        expect(dialog.text()).not.toContain('werden übersprungen');
 
         execute.click();
 
@@ -1296,8 +1304,8 @@ describe('ImportConfirmDialog', () => {
         }),
       });
 
+      // The "already in the target set" row is absent here: the banner says the same thing.
       const contract = [
-        '1 Emote ist bereits im Zielset',
         '1 doppelte Zeile in der Quelle zusammengefasst.',
         'Das einzige Emote ist bereits im Zielset.',
         'Diese Liste stammt aus diesem Kanal.',
