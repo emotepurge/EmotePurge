@@ -268,7 +268,7 @@ public class EmoteTagEndpointsTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task AddEntries_Answer200WithTheCounts_AndForwardsTheIds()
     {
-        _factory.EmoteTags.AddEntriesAsync(Channel, 7, Arg.Any<IReadOnlyList<string>?>(), Arg.Any<CancellationToken>())
+        _factory.EmoteTags.AddEntriesAsync(Channel, 7, Arg.Any<IReadOnlyList<string>?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new EmoteTagAddEntriesResult(EmoteTagAddEntriesStatus.Ok, 2, 1, ["GONE"]));
 
         var response = await SendAsync("POST", Base + "/7/entries", """{"sevenTvEmoteIds":["A","B","C","GONE"]}""");
@@ -278,7 +278,18 @@ public class EmoteTagEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal((2, 1), (body.GetProperty("addedCount").GetInt32(), body.GetProperty("alreadyTaggedCount").GetInt32()));
         Assert.Equal("GONE", body.GetProperty("skippedNotInSetIds")[0].GetString());
         await _factory.EmoteTags.Received(1).AddEntriesAsync(
-            Channel, 7, Arg.Is<IReadOnlyList<string>?>(ids => ids!.SequenceEqual(new[] { "A", "B", "C", "GONE" })), Arg.Any<CancellationToken>());
+            Channel, 7, Arg.Is<IReadOnlyList<string>?>(ids => ids!.SequenceEqual(new[] { "A", "B", "C", "GONE" })), null, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AddEntries_ForwardsTheEmoteSetIdFromTheBody()
+    {
+        _factory.EmoteTags.AddEntriesAsync(Channel, 7, Arg.Any<IReadOnlyList<string>?>(), "01JOTHERSET00000000000000B", Arg.Any<CancellationToken>())
+            .Returns(new EmoteTagAddEntriesResult(EmoteTagAddEntriesStatus.Ok, 1, 0, []));
+
+        var response = await SendAsync("POST", Base + "/7/entries", """{"sevenTvEmoteIds":["A"],"emoteSetId":"01JOTHERSET00000000000000B"}""");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Theory]
@@ -287,9 +298,14 @@ public class EmoteTagEndpointsTests : IClassFixture<ApiFactory>
     [InlineData(EmoteTagAddEntriesStatus.EmoteIdsEmpty, HttpStatusCode.BadRequest, ApiErrorCodes.EmoteIdsEmpty)]
     [InlineData(EmoteTagAddEntriesStatus.EmoteIdsInvalid, HttpStatusCode.BadRequest, ApiErrorCodes.EmoteIdsInvalid)]
     [InlineData(EmoteTagAddEntriesStatus.EntryLimitReached, HttpStatusCode.Conflict, ApiErrorCodes.TagEntryLimitReached)]
+    [InlineData(EmoteTagAddEntriesStatus.InvalidEmoteSetId, HttpStatusCode.BadRequest, ApiErrorCodes.InvalidEmoteSetId)]
+    [InlineData(EmoteTagAddEntriesStatus.EmoteSetNotFound, HttpStatusCode.NotFound, ApiErrorCodes.EmoteSetNotFound)]
+    [InlineData(EmoteTagAddEntriesStatus.SevenTvUnavailable, HttpStatusCode.ServiceUnavailable, ApiErrorCodes.ForeignChannelSevenTvUnavailable)]
+    [InlineData(EmoteTagAddEntriesStatus.SourceSetIncomplete, HttpStatusCode.Conflict, ApiErrorCodes.TagSourceSetIncomplete)]
+    [InlineData(EmoteTagAddEntriesStatus.SourceSetChanged, HttpStatusCode.Conflict, ApiErrorCodes.TagSourceSetChanged)]
     public async Task AddEntries_MapEveryFailureStatus(EmoteTagAddEntriesStatus status, HttpStatusCode expected, string code)
     {
-        _factory.EmoteTags.AddEntriesAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<IReadOnlyList<string>?>(), Arg.Any<CancellationToken>())
+        _factory.EmoteTags.AddEntriesAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<IReadOnlyList<string>?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new EmoteTagAddEntriesResult(status, 0, 0, []));
 
         var response = await SendAsync("POST", Base + "/7/entries", """{"sevenTvEmoteIds":["A"]}""");
@@ -301,7 +317,7 @@ public class EmoteTagEndpointsTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task AddAndRemove_WithANullBody_ReachTheServiceWithoutIds()
     {
-        _factory.EmoteTags.AddEntriesAsync(Channel, 7, null, Arg.Any<CancellationToken>())
+        _factory.EmoteTags.AddEntriesAsync(Channel, 7, null, null, Arg.Any<CancellationToken>())
             .Returns(new EmoteTagAddEntriesResult(EmoteTagAddEntriesStatus.EmoteIdsEmpty, 0, 0, []));
         _factory.EmoteTags.RemoveEntriesAsync(Channel, 7, null, Arg.Any<CancellationToken>())
             .Returns(new EmoteTagRemoveEntriesResult(EmoteTagRemoveEntriesStatus.EmoteIdsEmpty, 0));
@@ -349,7 +365,7 @@ public class EmoteTagEndpointsTests : IClassFixture<ApiFactory>
         // The cap itself lives in the service (EmoteTagLimits.MaxIdsPerRequest); the endpoint's part is
         // that the body of that size binds and the status maps to the existing code.
         var ids = Enumerable.Repeat("A", EmoteTagLimits.MaxIdsPerRequest + 1).ToList();
-        _factory.EmoteTags.AddEntriesAsync(Channel, 7, Arg.Is<IReadOnlyList<string>?>(l => l!.Count == ids.Count), Arg.Any<CancellationToken>())
+        _factory.EmoteTags.AddEntriesAsync(Channel, 7, Arg.Is<IReadOnlyList<string>?>(l => l!.Count == ids.Count), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new EmoteTagAddEntriesResult(EmoteTagAddEntriesStatus.EmoteIdsInvalid, 0, 0, []));
 
         var response = await SendAsync("POST", Base + "/7/entries", JsonSerializer.Serialize(new { sevenTvEmoteIds = ids }));

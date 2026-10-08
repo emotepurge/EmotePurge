@@ -1,7 +1,9 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -33,7 +35,10 @@ namespace EmotePurge.Infrastructure.Services;
 /// way whether or not the channel or tag exists.
 /// </para>
 /// </summary>
-public class EmoteTagService(AppDbContext db) : IEmoteTagService
+public class EmoteTagService(
+    AppDbContext db,
+    ITrackedEmoteSetMembershipService membershipService,
+    IForeignEmoteSetService foreignEmoteSetService) : IEmoteTagService
 {
     private const string TagTargetType = "emoteTag";
     private const string TagNameIndexName = "IX_EmoteTags_ChannelId_NormalizedName";
@@ -294,31 +299,73 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
     }
 
     public async Task<EmoteTagAddEntriesResult> AddEntriesAsync(
-        string channelName, long tagId, IReadOnlyList<string>? sevenTvEmoteIds, CancellationToken cancellationToken = default)
+        string channelName, long tagId, IReadOnlyList<string>? sevenTvEmoteIds, string? emoteSetId = null,
+        CancellationToken cancellationToken = default)
     {
         var (inputStatus, ids) = CheckEmoteIds(sevenTvEmoteIds);
         if (inputStatus != EmoteTagIdListStatus.Ok)
         {
-            return new EmoteTagAddEntriesResult(
-                inputStatus == EmoteTagIdListStatus.Empty ? EmoteTagAddEntriesStatus.EmoteIdsEmpty : EmoteTagAddEntriesStatus.EmoteIdsInvalid,
-                0, 0, []);
+            return AddEntriesFailure(inputStatus == EmoteTagIdListStatus.Empty ? EmoteTagAddEntriesStatus.EmoteIdsEmpty : EmoteTagAddEntriesStatus.EmoteIdsInvalid);
+        }
+
+        // Blank counts as absent; everything below sees only "absent" or a non-blank id.
+        var requestedSetId = string.IsNullOrWhiteSpace(emoteSetId) ? null : emoteSetId;
+
+        // Pre-lock phase. Only an explicit set id needs it: the channel is read without a lock to pick
+        // the branch, and a non-active set is proven and read here - before any transaction exists, so
+        // no 7TV call can ever happen while the channel row is held (the lock contract in the class comment).
+        Dictionary<string, (string Name, string ImageUrl)>? foreignSnapshot = null;
+        if (requestedSetId is not null)
+        {
+            if (!SevenTvEmoteSetIdValidation.IsValid(requestedSetId))
+            {
+                return AddEntriesFailure(EmoteTagAddEntriesStatus.InvalidEmoteSetId);
+            }
+
+            var preRead = await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
+            if (preRead is null)
+            {
+                return AddEntriesFailure(EmoteTagAddEntriesStatus.ChannelNotFound);
+            }
+
+            if (!string.Equals(preRead.ActiveEmoteSetId, requestedSetId, StringComparison.Ordinal))
+            {
+                var (failure, snapshot) = await ReadForeignSnapshotAsync(channelName, requestedSetId, cancellationToken);
+                if (failure is not null)
+                {
+                    return AddEntriesFailure(failure.Value);
+                }
+
+                foreignSnapshot = snapshot;
+            }
+
+            await AfterPreLockReadAsync(cancellationToken);
         }
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var (status, channel, tag) = await LoadForMutationAsync(channelName, tagId, cancellationToken);
         if (status != EmoteTagMutationStatus.Ok)
         {
-            return new EmoteTagAddEntriesResult(
-                status == EmoteTagMutationStatus.ChannelNotFound ? EmoteTagAddEntriesStatus.ChannelNotFound : EmoteTagAddEntriesStatus.TagNotFound,
-                0, 0, []);
+            return AddEntriesFailure(
+                status == EmoteTagMutationStatus.ChannelNotFound ? EmoteTagAddEntriesStatus.ChannelNotFound : EmoteTagAddEntriesStatus.TagNotFound);
         }
 
-        // Snapshot source (E23): the channel's unarchived row, never the client.
-        var rows = await db.Emotes
+        // Set-switch race: the active branch was chosen from the unlocked read. If the locked row no
+        // longer names the set the caller asked for, the Emotes rows mirror a different set now.
+        if (foreignSnapshot is null
+            && requestedSetId is not null
+            && !string.Equals(channel!.ActiveEmoteSetId, requestedSetId, StringComparison.Ordinal))
+        {
+            return AddEntriesFailure(EmoteTagAddEntriesStatus.SourceSetChanged);
+        }
+
+        // Snapshot source (E23): for the active set the channel's unarchived row, for another set the
+        // server-side read from before the lock - never the client.
+        var rows = foreignSnapshot ?? await db.Emotes
             .AsNoTracking()
             .Where(e => e.ChannelId == channel!.Id && !e.IsArchived && ids.Contains(e.SevenTvEmoteId))
             .Select(e => new { e.SevenTvEmoteId, e.Name, e.ImageUrl })
-            .ToDictionaryAsync(e => e.SevenTvEmoteId, StringComparer.Ordinal, cancellationToken);
+            .ToDictionaryAsync(e => e.SevenTvEmoteId, e => (e.Name, e.ImageUrl), StringComparer.Ordinal, cancellationToken);
         var alreadyTagged = (await db.EmoteTagEntries
                 .Where(e => e.TagId == tag!.Id && ids.Contains(e.SevenTvEmoteId))
                 .Select(e => e.SevenTvEmoteId)
@@ -336,7 +383,7 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         var existingCount = await db.EmoteTagEntries.CountAsync(e => e.TagId == tag!.Id, cancellationToken);
         if (existingCount + toAdd.Count > EmoteTagLimits.MaxEntriesPerTag)
         {
-            return new EmoteTagAddEntriesResult(EmoteTagAddEntriesStatus.EntryLimitReached, 0, 0, []);
+            return AddEntriesFailure(EmoteTagAddEntriesStatus.EntryLimitReached);
         }
 
         var now = DateTime.UtcNow;
@@ -705,6 +752,58 @@ public class EmoteTagService(AppDbContext db) : IEmoteTagService
         await transaction.CommitAsync(cancellationToken);
 
         return new TagRemovalReportResult(TagReportStatus.Ok, false, deletedCount, transferredCount, droppedCount, sweptCount, deactivated);
+    }
+
+    /// <summary>
+    /// Test seam between the unlocked channel read and the locked one of
+    /// <see cref="AddEntriesAsync"/>; the place a concurrent set switch can land. Does nothing in
+    /// production. Internal and virtual so the integration tests can change the channel here.
+    /// </summary>
+    internal virtual Task AfterPreLockReadAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    private static EmoteTagAddEntriesResult AddEntriesFailure(EmoteTagAddEntriesStatus status) => new(status, 0, 0, []);
+
+    /// <summary>
+    /// Membership proof plus the set read (cache accepted, <c>refresh: false</c>) for a set that is not
+    /// the channel's active one. Network I/O: must only run before the channel lock is taken.
+    /// </summary>
+    private async Task<(EmoteTagAddEntriesStatus? Failure, Dictionary<string, (string Name, string ImageUrl)>? Snapshot)> ReadForeignSnapshotAsync(
+        string channelName, string emoteSetId, CancellationToken cancellationToken)
+    {
+        var membership = await membershipService.CheckAsync(channelName, emoteSetId, cancellationToken);
+        switch (membership)
+        {
+            case TrackedEmoteSetMembership.Member:
+                break;
+            case TrackedEmoteSetMembership.ChannelNotFound:
+                return (EmoteTagAddEntriesStatus.ChannelNotFound, null);
+            case TrackedEmoteSetMembership.NotMember:
+                return (EmoteTagAddEntriesStatus.EmoteSetNotFound, null);
+            case TrackedEmoteSetMembership.SevenTvUnavailable:
+                return (EmoteTagAddEntriesStatus.SevenTvUnavailable, null);
+            default:
+                throw new UnreachableException($"Unexpected {nameof(TrackedEmoteSetMembership)} value: {membership}.");
+        }
+
+        var read = await foreignEmoteSetService.GetForeignEmoteSetBySetIdAsync(channelName, emoteSetId, false, cancellationToken);
+        if (read.Status != ForeignEmoteSetLookupStatus.Ok || read.EmoteSet is null)
+        {
+            return (EmoteTagAddEntriesStatus.SevenTvUnavailable, null);
+        }
+
+        if (read.EmoteSet.Truncated)
+        {
+            return (EmoteTagAddEntriesStatus.SourceSetIncomplete, null);
+        }
+
+        // Name is the alias in that set; the same emote id twice in one set (should not happen) keeps the first.
+        var snapshot = new Dictionary<string, (string Name, string ImageUrl)>(StringComparer.Ordinal);
+        foreach (var row in read.EmoteSet.Emotes)
+        {
+            snapshot.TryAdd(row.SevenTvEmoteId, (row.Name, row.ImageUrl));
+        }
+
+        return (null, snapshot);
     }
 
     /// <summary>

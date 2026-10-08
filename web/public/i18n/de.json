@@ -1953,6 +1953,8 @@
       "tag_limit_reached": "Dieser Channel hat die maximale Zahl an Tags erreicht.",
       "tag_not_found": "Dieser Tag existiert nicht mehr.",
       "tag_entry_limit_reached": "Dieser Tag hat die maximale Zahl an Emotes erreicht. Es wurde nichts hinzugefügt.",
+      "tag_source_set_incomplete": "Die Emote-Liste dieses Sets ist unvollständig. Es wurde nichts zugewiesen.",
+      "tag_source_set_changed": "Das aktive Set hat sich gerade geändert. Es wurde nichts zugewiesen, bitte erneut versuchen.",
       "tag_operation_id_invalid": "Der Lauf konnte nicht gemeldet werden: Die Vorgangskennung ist ungültig.",
       "tag_operation_unknown": "Dieser Vorgang ist dem Server nicht bekannt. Starte den Lauf bitte neu.",
       "tag_operation_conflict": "Dieser Vorgang gehört zu einem anderen Tag oder Set. Starte den Lauf bitte neu.",

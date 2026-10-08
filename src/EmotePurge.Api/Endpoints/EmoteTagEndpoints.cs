@@ -133,7 +133,7 @@ public static class EmoteTagEndpoints
             IEmoteTagService tagService,
             CancellationToken ct) =>
         {
-            var result = await tagService.AddEntriesAsync(channelName, tagId, request?.SevenTvEmoteIds, ct);
+            var result = await tagService.AddEntriesAsync(channelName, tagId, request?.SevenTvEmoteIds, request?.EmoteSetId, ct);
             return result.Status switch
             {
                 EmoteTagAddEntriesStatus.Ok => Results.Ok(
@@ -143,6 +143,13 @@ public static class EmoteTagEndpoints
                 EmoteTagAddEntriesStatus.EmoteIdsEmpty => Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsEmpty }),
                 EmoteTagAddEntriesStatus.EmoteIdsInvalid => Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsInvalid }),
                 EmoteTagAddEntriesStatus.EntryLimitReached => Results.Conflict(new { errorCode = ApiErrorCodes.TagEntryLimitReached }),
+                EmoteTagAddEntriesStatus.InvalidEmoteSetId => Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidEmoteSetId }),
+                EmoteTagAddEntriesStatus.EmoteSetNotFound => Results.NotFound(new { errorCode = ApiErrorCodes.EmoteSetNotFound }),
+                EmoteTagAddEntriesStatus.SevenTvUnavailable => Results.Json(
+                    new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                    statusCode: StatusCodes.Status503ServiceUnavailable),
+                EmoteTagAddEntriesStatus.SourceSetIncomplete => Results.Conflict(new { errorCode = ApiErrorCodes.TagSourceSetIncomplete }),
+                EmoteTagAddEntriesStatus.SourceSetChanged => Results.Conflict(new { errorCode = ApiErrorCodes.TagSourceSetChanged }),
                 _ => throw new UnreachableException($"Unexpected {nameof(EmoteTagAddEntriesStatus)} value: {result.Status}.")
             };
         });
@@ -453,7 +460,7 @@ public sealed record CreateTagRequest(string? Name);
 
 public sealed record RenameTagRequest(string? Name);
 
-public sealed record TagEntryIdsRequest(IReadOnlyList<string>? SevenTvEmoteIds);
+public sealed record TagEntryIdsRequest(IReadOnlyList<string>? SevenTvEmoteIds, string? EmoteSetId = null);
 
 // Bodies of the report group (#201 T-C, spec 6.4). Every field is nullable on purpose: the handler's
 // form step answers a missing field with its own error code instead of the framework's bare 400.
