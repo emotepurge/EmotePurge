@@ -89,7 +89,7 @@
       "purge": {
         "label": "irreversible",
         "title": "Remove from 7TV in bulk",
-        "body": "Flagged emotes leave your set in one go. That happens directly at 7TV and cannot be undone from here — which is why you select first, then confirm, then execute."
+        "body": "Flagged emotes leave your set in one go. That happens directly at 7TV and is final there — which is why you select first, then confirm, then execute. From the run's log you can add emotes back as long as they still exist on 7TV; anything seasonal is better parked in a tag than deleted."
       }
     },
     "how": {
@@ -101,7 +101,7 @@
       },
       "join": {
         "title": "Join a channel",
-        "body": "The bot joins your chat and syncs your active 7TV set.",
+        "body": "The bot joins your chat and counts for whichever 7TV set is active — if you switch sets, it carries on with the new one.",
         "note": "Counting starts at the join. The first days are empty for that reason — not a bug, but the beginning of the measurement."
       },
       "measure": {
@@ -111,7 +111,7 @@
       "purge": {
         "title": "Clean up",
         "body": "Pick emotes based on measured usage and remove them from 7TV in bulk.",
-        "note": "Deleting needs a 7TV token that you copy out of your browser's devtools once. 7TV offers no login for this. The token stays in your browser."
+        "note": "Everything that writes to 7TV — deleting, adding emotes back, bringing tags into the set — needs a 7TV token that you copy out of your browser's devtools once. 7TV offers no login for this. The token stays in your browser."
       }
     },
     "close": {
