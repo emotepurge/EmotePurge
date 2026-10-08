@@ -2,6 +2,8 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.SevenTv;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -60,8 +62,8 @@ public class SevenTvSyncServiceRenameHandoverTests(PostgresFixture fixture)
         var result = await syncTask.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.NotNull(result);
-        Assert.True(cache.GetChannelEmotes("handover_new").ContainsKey("Alpha"));
-        Assert.Empty(cache.GetChannelEmotes("handover_old"));
+        Assert.True(cache.GetChannelSnapshot("handover_new").NameToEmoteId.ContainsKey("Alpha"));
+        Assert.Empty(cache.GetChannelSnapshot("handover_old").NameToEmoteId);
 
         // Issue #60: the cache assertions above only prove the *service* followed the rename. Until
         // the new login also travelled out with the result, every worker caller went on keying its
@@ -128,7 +130,7 @@ public class SevenTvSyncServiceRenameHandoverTests(PostgresFixture fixture)
         rowLease.Dispose();
 
         Assert.Null(await syncTask.WaitAsync(TimeSpan.FromSeconds(30)));
-        Assert.Empty(cache.GetChannelEmotes("handover_merged"));
+        Assert.Empty(cache.GetChannelSnapshot("handover_merged").NameToEmoteId);
     }
 
     [Fact]
@@ -191,7 +193,8 @@ public class SevenTvSyncServiceRenameHandoverTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(twitchUserId, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(SetId, liveEmotes))));
         return new SevenTvSyncService(
-            db, apiClient, cache, new DuplicateEmoteNameTracker(), gate, Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), gate,
+            Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
     }
 
     private static async Task<Channel> SeedChannelAsync(AppDbContext db, string name)

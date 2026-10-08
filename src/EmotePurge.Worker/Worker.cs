@@ -11,6 +11,7 @@ public class Worker(
     IRedisSubscriber redisSubscriber,
     IRedisPublisher redisPublisher,
     IEmoteMatchCache emoteMatchCache,
+    IEmptySetConfirmationTracker emptySetConfirmations,
     BootRecoveryGate bootRecoveryGate,
     ISevenTvEventClient sevenTvEventClient,
     ITwitchLiveStatusReader liveStatusReader,
@@ -73,6 +74,9 @@ public class Worker(
                 logger.LogInformation("Redis command: leaving a channel.");
                 logger.LogDebug("Redis command: leaving {Channel}.", channelName);
                 emoteMatchCache.RemoveChannel(channelName);
+                // A channel off the roster is no longer observed, so its zero-emote streak (issue
+                // #76) must not survive into a later rejoin.
+                emptySetConfirmations.Reset(channelName);
                 sevenTvEventClient.Unsubscribe(channelName);
                 await twitchChatManager.LeaveChannelAsync(channelName);
             }
@@ -147,7 +151,7 @@ public class Worker(
             // Phase 2 starts with the channels that still count nothing (never-synced rows, a warm-up
             // that found nothing or failed): only their sync makes them count, so they must not wait
             // behind channels that are already counting from the warm start.
-            var cold = channels.Where(name => emoteMatchCache.GetChannelEmotes(name).Count == 0).ToHashSet(StringComparer.Ordinal);
+            var cold = channels.Where(name => emoteMatchCache.GetChannelSnapshot(name).NameToEmoteId.Count == 0).ToHashSet(StringComparer.Ordinal);
             foreach (var channelName in BootRecoveryOrderPolicy.ColdFirst(channels, cold))
             {
                 stoppingToken.ThrowIfCancellationRequested();

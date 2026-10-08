@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using EmotePurge.Api.Auth;
 using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
@@ -44,18 +45,130 @@ public static class EmoteEndpoints
             return emotes is null ? Results.NotFound() : Results.Ok(new { emotes });
         });
 
+        // Spec 6.1: /api/channels/{channelName}/emote-sets — a route sibling of the /emotes group
+        // above (not nested under it), but carrying the exact same filter chain and policy, in the
+        // same file, rather than a second, independently-assembled combination (the "kein zweiter
+        // Filtersatz" the spec calls for). Registered on `app`, not on `group`, because the group
+        // object's prefix would otherwise nest this under /emotes/emote-sets instead of the sibling
+        // path the spec names. isActive/isPersonal and observations are assembled here, not carried
+        // by the shared ISevenTvEmoteSetListService result: E21 makes "active" a per-route question
+        // (this route's answer is Channel.ActiveEmoteSetId, our own observed state — never 7TV's
+        // style.activeEmoteSetId, which /me/emote-set-targets and the foreign-channel source picker
+        // use instead), and one cached list answer has to serve all three routes' notions of it.
+        app.MapGet("/api/channels/{channelName}/emote-sets", async (
+            string channelName,
+            IChannelService channelService,
+            ISevenTvEmoteSetListService emoteSetListService,
+            IChannelEmoteSetObservationService observationService,
+            CancellationToken ct) =>
+        {
+            var channel = await channelService.GetByNameAsync(channelName, ct);
+            if (channel is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (channel.TwitchChannelId is null)
+            {
+                // No sync has ever resolved a Twitch identity for this channel — nothing to ask 7TV
+                // about yet. Not a failure: an empty list with the channel's (necessarily empty)
+                // ActiveEmoteSetId is a complete answer (spec 6.1's state table).
+                return Results.Ok(new EmoteSetListResponse(channel.ActiveEmoteSetId, []));
+            }
+
+            var result = await emoteSetListService.ListByTwitchIdAsync(channel.TwitchChannelId, ct);
+            return result.Status switch
+            {
+                EmoteSetListStatus.Ok => Results.Ok(
+                    await BuildEmoteSetListResponseAsync(channel, result.List!, observationService, ct)),
+                // 7TV genuinely has no account for this Twitch id — an answer, not a failure (spec
+                // 6.1). Channel.ActiveEmoteSetId is still reported: for a tracked channel it is our
+                // own observed truth regardless of what 7TV currently says about the account (E21).
+                EmoteSetListStatus.NoSevenTvAccount => Results.Ok(new EmoteSetListResponse(channel.ActiveEmoteSetId, [])),
+                EmoteSetListStatus.RateLimited
+                    or EmoteSetListStatus.Unavailable
+                    or EmoteSetListStatus.BudgetExhausted => Results.Json(
+                    new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                    statusCode: StatusCodes.Status503ServiceUnavailable),
+                _ => throw new UnreachableException(
+                    $"Unexpected {nameof(EmoteSetListStatus)} value: {result.Status}.")
+            };
+        })
+        .RequireAuthorization()
+        // Ahead of the authorization filter on purpose — see ChannelNameValidationFilter.
+        .AddEndpointFilter<ChannelNameValidationFilter>()
+        .AddEndpointFilter<UsageStatsAccessAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
+
+        // GET /api/channels/{channelName}/emote-sets/{emoteSetId}/emotes (#220): the set preview of a
+        // tracked channel. Registered on `app` beside the dropdown route above for the same prefix
+        // reason, and it carries its own policy, TrackedEmoteSetPreview, instead of the shared
+        // ForeignEmoteLookup bucket: switching sets on a channel one may view is a different load
+        // profile (one cached preview call per switch) from a foreign-channel import lookup. Exactly
+        // one policy applies to an endpoint — this route names it itself, nothing is inherited.
+        // Filter order is the tested contract: an invalid channel name answers 400 first, a caller
+        // without usage-stats access 403 before the set id is looked at, then 400 invalid_emote_set_id.
+        // Membership comes before the preview and is fail-closed: without a positive proof that the set
+        // belongs to this channel there is no preview, so the route cannot read arbitrary sets.
+        // refresh=true only reaches the preview read; the membership proof reads the set list through
+        // that service's own 60 s cache and is not bypassed by it — the list is the proof, not the
+        // payload, and it is as fresh as the dropdown that offered the choice.
+        app.MapGet("/api/channels/{channelName}/emote-sets/{emoteSetId}/emotes", async (
+            string channelName,
+            string emoteSetId,
+            ITrackedEmoteSetMembershipService membershipService,
+            IForeignEmoteSetService foreignEmoteSetService,
+            CancellationToken ct,
+            bool refresh = false) =>
+        {
+            var membership = await membershipService.CheckAsync(channelName, emoteSetId, ct);
+            switch (membership)
+            {
+                case TrackedEmoteSetMembership.Member:
+                    break;
+                case TrackedEmoteSetMembership.ChannelNotFound:
+                    return Results.NotFound();
+                case TrackedEmoteSetMembership.NotMember:
+                    return Results.NotFound(new { errorCode = ApiErrorCodes.EmoteSetNotFound });
+                case TrackedEmoteSetMembership.SevenTvUnavailable:
+                    return Results.Json(
+                        new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                default:
+                    throw new UnreachableException(
+                        $"Unexpected {nameof(TrackedEmoteSetMembership)} value: {membership}.");
+            }
+
+            var result = await foreignEmoteSetService.GetForeignEmoteSetBySetIdAsync(channelName, emoteSetId, refresh, ct);
+            return SevenTvEndpoints.MapLookupResult(result);
+        })
+        .RequireAuthorization()
+        // Ahead of the authorization filter on purpose — see ChannelNameValidationFilter.
+        .AddEndpointFilter<ChannelNameValidationFilter>()
+        .AddEndpointFilter<UsageStatsAccessAuthorizationFilter>()
+        .AddEndpointFilter<EmoteSetIdValidationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.TrackedEmoteSetPreview);
+
+        // The legacy Guid-keyed form (restore-per-set spec 5.6, E4): kept alive until the E3 gate of
+        // the spec-200 plan, but no longer changes a row (H4) — it only counts which reported ids are
+        // rows of this channel, audits that count with legacyBodyForm: true, and lets stage 7 below
+        // trigger the channel's guarded resync, which is what actually reconciles the row against
+        // 7TV. The set-scoped body shape and its own ladder steps are gone: a body still sending
+        // sevenTvEmoteIds lands on EmoteIds == null and gets the same 400 as any other empty body.
         group.MapPost("/sync-deleted", async (
             string channelName,
             SyncDeletedRequest request,
             HttpContext httpContext,
             IEmoteService emoteService,
-            IRedisPublisher redisPublisher,
+            IChannelResyncCooldown resyncCooldown,
+            IChannelService channelService,
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
-            if (request.EmoteIds is null || request.EmoteIds.Count == 0)
+            var vocabularyError = ValidateSyncBookkeepingBody(request.EmoteIds);
+            if (vocabularyError is not null)
             {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsEmpty });
+                return Results.BadRequest(new { errorCode = vocabularyError });
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
@@ -64,13 +177,20 @@ public static class EmoteEndpoints
                 return Results.Unauthorized();
             }
 
-            var result = await emoteService.MarkDeletedAsync(channelName, request.EmoteIds, actor, ct);
-            if (result.NewlyArchivedCount > 0)
-            {
-                await PublishChannelSyncedAsync(redisPublisher, logger, channelName);
-            }
+            var result = await emoteService.MarkDeletedAsync(channelName, request.EmoteIds!, actor, ct);
 
-            return Results.Ok(new { archivedCount = result.ArchivedCount, notFoundIds = result.NotFoundIds });
+            // Stage 7 (spec 5.1/5.6): no row changed here any more, so there is no NewlyArchivedCount
+            // to publish a channel.synced live event on (5.4) — the guarded resync under the
+            // per-channel cooldown is what actually reconciles the channel against 7TV, whether the
+            // channel row exists or not (TryTriggerGuardedResyncAsync's own TriggerResyncAsync call
+            // answers NotFound and hands the cooldown slot back either way).
+            await SevenTvEndpoints.TryTriggerGuardedResyncAsync(channelName, actor, resyncCooldown, channelService, logger);
+
+            return Results.Ok(new
+            {
+                archivedCount = result.ArchivedCount,
+                notFoundIds = result.NotFoundIds,
+            });
         })
         // Overrides the group's policy: this is the one call that must never be dropped. The emotes
         // are already gone from 7TV by the time it runs, so a 429 here leaves the database diverging
@@ -78,22 +198,24 @@ public static class EmoteEndpoints
         // several delete batches in one minute could exhaust.
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
-        // The restore counterpart: the browser has already re-added the emotes on 7TV, this call
-        // un-archives them here and — its actual reason to exist — writes the emotes.syncRestored
-        // audit entry. Without it a restore only ever showed up as an anonymous channel.resync
+        // The restore counterpart: same legacy-form treatment as sync-deleted above, in the opposite
+        // direction — its actual reason to exist is the emotes.syncRestored audit entry plus the
+        // resync it triggers. Without it a restore only ever showed up as an anonymous channel.resync
         // (or, under the resync cooldown, not at all).
         group.MapPost("/sync-restored", async (
             string channelName,
             SyncRestoredRequest request,
             HttpContext httpContext,
             IEmoteService emoteService,
-            IRedisPublisher redisPublisher,
+            IChannelResyncCooldown resyncCooldown,
+            IChannelService channelService,
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
-            if (request.EmoteIds is null || request.EmoteIds.Count == 0)
+            var vocabularyError = ValidateSyncBookkeepingBody(request.EmoteIds);
+            if (vocabularyError is not null)
             {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsEmpty });
+                return Results.BadRequest(new { errorCode = vocabularyError });
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
@@ -102,13 +224,16 @@ public static class EmoteEndpoints
                 return Results.Unauthorized();
             }
 
-            var result = await emoteService.MarkRestoredAsync(channelName, request.EmoteIds, actor, ct);
-            if (result.NewlyRestoredCount > 0)
-            {
-                await PublishChannelSyncedAsync(redisPublisher, logger, channelName);
-            }
+            var result = await emoteService.MarkRestoredAsync(channelName, request.EmoteIds!, actor, ct);
 
-            return Results.Ok(new { restoredCount = result.RestoredCount, notFoundIds = result.NotFoundIds });
+            // Stage 7 (spec 5.1/5.6), mirror of sync-deleted above.
+            await SevenTvEndpoints.TryTriggerGuardedResyncAsync(channelName, actor, resyncCooldown, channelService, logger);
+
+            return Results.Ok(new
+            {
+                restoredCount = result.RestoredCount,
+                notFoundIds = result.NotFoundIds,
+            });
         })
         // Same reasoning as sync-deleted: the emotes are already back on 7TV, a dropped call here
         // costs the paper trail and leaves the database stale until the next sync.
@@ -126,72 +251,20 @@ public static class EmoteEndpoints
             IEmoteService emoteService,
             CancellationToken ct) =>
         {
-            if (request.SevenTvEmoteIds is null || request.SevenTvEmoteIds.Count == 0)
+            var vocabularyError = ValidateSyncImportedVocabulary(
+                request.SevenTvEmoteIds, request.SourceChannelName, request.SourceKind, request.LeaderboardSort);
+            if (vocabularyError is not null)
             {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsEmpty });
+                return Results.BadRequest(new { errorCode = vocabularyError });
             }
 
-            // Ordinal and strictly lower-case (F3, import plan): the only caller is our own
-            // frontend, so a silent case-insensitive fallback would hide a frontend bug rather than
-            // surfacing it.
-            // "seventv-channel" is the third member (foreign-import spec E6/F5.1): a channel
-            // EmotePurge does not track, read straight from 7TV. "seventv-leaderboard" is the fourth
-            // (leaderboard-import spec E8/F1): a network-wide 7TV ranking, which has no source
-            // channel at all — its origin travels in LeaderboardSort instead (see the vocabulary
-            // table below). Every word is deliberately its own rather than folded into an existing
-            // one — they are read through different paths and an audit row must still say which one
-            // it was, forever. Adding a word here is never enough on its own:
-            // AuditLogQueryService.ProjectDetail has to learn it too, or every row written with it
-            // silently loses its provenance (F5.3/F1 Station 5).
-            if (request.SourceKind is not ("channel" or "file" or "seventv-channel" or "seventv-leaderboard"))
+            // TargetEmoteSetId (spec 6.7, E5): stays optional forever, so this only ever rejects a
+            // malformed value, never a missing one — the query-string half of EmoteSetIdValidationFilter
+            // does not apply here since this is a body field, not a query/route parameter, so the check
+            // is inline instead of a shared filter (AK 29).
+            if (request.TargetEmoteSetId is not null && !EmoteSetIdValidation.IsValid(request.TargetEmoteSetId))
             {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
-            }
-
-            // SourceChannelName is attacker-controlled free text that ends up in jsonb forever
-            // (R6, import plan) — validated like every other inbound channel name, but only when the
-            // caller actually set one; the kind-versus-name agreement is checked just below.
-            if (request.SourceChannelName is not null && !ChannelNameValidation.IsValid(request.SourceChannelName))
-            {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidChannelName });
-            }
-
-            // The kind decides what else may be set, in both directions. Audit rows are write-once
-            // and kept forever, so an inconsistent body would leave a permanently wrong entry:
-            // "channel"/"seventv-channel" without a name claims an origin they cannot name, "file"
-            // or "seventv-leaderboard" with one gets filed under a channel origin the import never
-            // had, and any kind other than "seventv-leaderboard" carrying a LeaderboardSort claims a
-            // ranking it did not come from. This used to be a single binary check ("file versus
-            // not-file"), which covered "seventv-channel" correctly only by accident (F5.2) and
-            // predicted its own failure for a fourth, source-less kind (comment removed above) —
-            // this vocabulary table (leaderboard-import spec F1 Station 3) is that fourth kind's
-            // answer. A LeaderboardSort that is present but outside 7TV's own sort vocabulary is its
-            // own error, invalid_leaderboard_sort, because it is not "the wrong kind of import" —
-            // the kind is right, the sort code just is not one the endpoint knows how to hand to 7TV.
-            var isChannelSourceKind = request.SourceKind is "channel" or "seventv-channel";
-            if (isChannelSourceKind
-                && (string.IsNullOrWhiteSpace(request.SourceChannelName) || request.LeaderboardSort is not null))
-            {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
-            }
-
-            if (request.SourceKind == "file"
-                && (!string.IsNullOrWhiteSpace(request.SourceChannelName) || request.LeaderboardSort is not null))
-            {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
-            }
-
-            if (request.SourceKind == "seventv-leaderboard")
-            {
-                if (!string.IsNullOrWhiteSpace(request.SourceChannelName) || request.LeaderboardSort is null)
-                {
-                    return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
-                }
-
-                if (!SevenTvLeaderboardSortWireCode.TryParse(request.LeaderboardSort, out _))
-                {
-                    return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidLeaderboardSort });
-                }
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidEmoteSetId });
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
@@ -202,7 +275,7 @@ public static class EmoteEndpoints
 
             var written = await emoteService.MarkImportedAsync(
                 channelName, request.SevenTvEmoteIds, request.SourceChannelName, request.SourceKind,
-                request.LeaderboardSort, actor, ct);
+                request.LeaderboardSort, actor, request.TargetEmoteSetId, ct);
             return written ? Results.NoContent() : Results.NotFound();
         })
         // Same reasoning as its two neighbors above: the emotes were already imported on 7TV by the
@@ -213,12 +286,17 @@ public static class EmoteEndpoints
             string channelName,
             HttpContext httpContext,
             IEmoteSetOwnershipService emoteSetOwnershipService,
-            CancellationToken ct) =>
+            CancellationToken ct,
+            string? emoteSetId = null) =>
         {
             var principal = httpContext.User.TryBuildTwitchPrincipal();
-            var warning = await emoteSetOwnershipService.CheckAsync(channelName, principal, ct);
+            var warning = await emoteSetOwnershipService.CheckAsync(channelName, principal, emoteSetId, ct);
             return Results.Ok(warning);
-        });
+        })
+        // Spec 6.8/E14: format-validated ahead of the handler, same idiom as ChannelNameValidationFilter
+        // on the group above. Attached to this one route, not the group — emoteSetId is meaningless on
+        // every other route in it.
+        .AddEndpointFilter<EmoteSetIdValidationFilter>();
 
         // Deliberately separate from GET /api/channels/{channelName} (which stays management-only,
         // since it also backs the join-status/leave-button check): the mass-delete panel needs the
@@ -237,6 +315,97 @@ public static class EmoteEndpoints
     }
 
     /// <summary>
+    /// The <c>sync-deleted</c>/<c>sync-restored</c> validation, shared verbatim by both handlers above
+    /// so they cannot drift apart. Restore-per-set spec 5.6/E4 retired the set-scoped body shape and
+    /// its own ladder steps along with it — this is now just the one check the legacy Guid form ever
+    /// had: <paramref name="emoteIds"/> missing or empty → <see cref="ApiErrorCodes.EmoteIdsEmpty"/>.
+    /// A body that still sends <c>sevenTvEmoteIds</c> (an old caller of the retired shape, or the
+    /// set-centric body sent at the wrong route) has no <c>emoteIds</c> property of its own, so it
+    /// lands here the same way an empty body does. Returns <c>null</c> when the body is consistent.
+    /// </summary>
+    internal static string? ValidateSyncBookkeepingBody(IReadOnlyList<string>? emoteIds) =>
+        emoteIds is { Count: > 0 } ? null : ApiErrorCodes.EmoteIdsEmpty;
+
+    /// <summary>
+    /// The <c>sync-imported</c> body vocabulary table (spec 6.7), shared verbatim by this group's own
+    /// <c>/sync-imported</c> handler above and by the set-centric
+    /// <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-imported</c> in <c>SevenTvEndpoints</c> — it
+    /// exists exactly once so the two routes cannot drift apart. Ordinal and strictly lower-case (F3,
+    /// import plan): the only caller is our own frontend, so a silent case-insensitive fallback would
+    /// hide a frontend bug rather than surfacing it. "seventv-channel" is the third vocabulary word
+    /// (foreign-import spec E6/F5.1): a channel EmotePurge does not track, read straight from 7TV.
+    /// "seventv-leaderboard" is the fourth (leaderboard-import spec E8/F1): a network-wide 7TV ranking,
+    /// which has no source channel at all — its origin travels in <paramref name="leaderboardSort"/>
+    /// instead. Every word is deliberately its own rather than folded into an existing one — they are
+    /// read through different paths and an audit row must still say which one it was, forever. Adding
+    /// a word here is never enough on its own: <c>AuditLogQueryService.ProjectDetail</c> has to learn
+    /// it too, or every row written with it silently loses its provenance (F5.3/F1 Station 5).
+    /// <para>
+    /// Returns the <see cref="ApiErrorCodes"/> value for the first violation found, or <c>null</c> when
+    /// the body is internally consistent — never a <c>Results</c> value itself, so each caller (whose
+    /// filter chain and route shape differ — this group carries <c>ChannelNameValidationFilter</c>, the
+    /// set-centric route carries <c>EmoteSetIdValidationFilter</c> instead) decides how to answer.
+    /// </para>
+    /// </summary>
+    internal static string? ValidateSyncImportedVocabulary(
+        IReadOnlyList<string>? sevenTvEmoteIds, string? sourceChannelName, string sourceKind, string? leaderboardSort)
+    {
+        if (sevenTvEmoteIds is null || sevenTvEmoteIds.Count == 0)
+        {
+            return ApiErrorCodes.EmoteIdsEmpty;
+        }
+
+        if (sourceKind is not ("channel" or "file" or "tag" or "seventv-channel" or "seventv-leaderboard"))
+        {
+            return ApiErrorCodes.InvalidSourceKind;
+        }
+
+        // SourceChannelName is attacker-controlled free text that ends up in jsonb forever (R6, import
+        // plan) — validated like every other inbound channel name, but only when the caller actually
+        // set one; the kind-versus-name agreement is checked just below.
+        if (sourceChannelName is not null && !ChannelNameValidation.IsValid(sourceChannelName))
+        {
+            return ApiErrorCodes.InvalidChannelName;
+        }
+
+        // The kind decides what else may be set, in both directions. Audit rows are write-once and
+        // kept forever, so an inconsistent body would leave a permanently wrong entry: "channel"/
+        // "seventv-channel" without a name claims an origin they cannot name, "file" or
+        // "seventv-leaderboard" with one gets filed under a channel origin the import never had, and
+        // any kind other than "seventv-leaderboard" carrying a LeaderboardSort claims a ranking it did
+        // not come from. A LeaderboardSort that is present but outside 7TV's own sort vocabulary is its
+        // own error, invalid_leaderboard_sort, because it is not "the wrong kind of import" — the kind
+        // is right, the sort code just is not one the endpoint knows how to hand to 7TV.
+        var isChannelSourceKind = sourceKind is "channel" or "seventv-channel";
+        if (isChannelSourceKind && (string.IsNullOrWhiteSpace(sourceChannelName) || leaderboardSort is not null))
+        {
+            return ApiErrorCodes.InvalidSourceKind;
+        }
+
+        // "tag" (#201 T-C, a play-in of a channel tag): like "file" it names no channel — the tag's
+        // name is deliberately not on the wire at all (E30), the audit row keeps only the count.
+        if (sourceKind is "file" or "tag" && (!string.IsNullOrWhiteSpace(sourceChannelName) || leaderboardSort is not null))
+        {
+            return ApiErrorCodes.InvalidSourceKind;
+        }
+
+        if (sourceKind == "seventv-leaderboard")
+        {
+            if (!string.IsNullOrWhiteSpace(sourceChannelName) || leaderboardSort is null)
+            {
+                return ApiErrorCodes.InvalidSourceKind;
+            }
+
+            if (!SevenTvLeaderboardSortWireCode.TryParse(leaderboardSort, out _))
+            {
+                return ApiErrorCodes.InvalidLeaderboardSort;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Announces "this channel's emote inventory changed" — the same event the worker's sync paths
     /// publish, because the effect on every open page is identical: the database now reflects what
     /// happened on 7TV (archived after a delete, active again after a restore). Published only when
@@ -248,8 +417,13 @@ public static class EmoteEndpoints
     /// allowed by rule 4. Failure is logged and swallowed — the archiving is committed and the
     /// response must not change because Redis hiccuped.
     /// </para>
+    /// <para>
+    /// <c>internal</c> because the set-centric <c>sync-deleted</c>/<c>sync-restored</c> in
+    /// <see cref="SevenTvEndpoints"/> publish through this same method, once per changed channel
+    /// (restore-per-set spec 5.4) — one helper, one error handling, no copy.
+    /// </para>
     /// </summary>
-    private static async Task PublishChannelSyncedAsync(
+    internal static async Task PublishChannelSyncedAsync(
         IRedisPublisher redisPublisher,
         ILogger logger,
         string channelName)
@@ -269,16 +443,87 @@ public static class EmoteEndpoints
                 LiveEvents.ChannelSynced, channelName);
         }
     }
+
+    /// <summary>
+    /// Assembles the wire response for <c>GET /emote-sets</c> (spec 6.1) from the shared list
+    /// service's answer: <c>isActive</c> compares each set's id against <see cref="Channel.ActiveEmoteSetId"/>
+    /// — this route's own source of "active" (E21) — and <c>observations</c> comes from one
+    /// channel-wide read of <see cref="IChannelEmoteSetObservationService.ListIntervalsByChannelAsync"/>
+    /// (see <see cref="EmoteSetSummaryDto"/>), not one query per set. Ordering: the active set first,
+    /// then every other set ordinal by name.
+    /// </summary>
+    private static async Task<EmoteSetListResponse> BuildEmoteSetListResponseAsync(
+        Channel channel, EmoteSetList list, IChannelEmoteSetObservationService observationService, CancellationToken ct)
+    {
+        var observationsBySetId = await observationService.ListIntervalsByChannelAsync(channel.Id, ct);
+
+        var sets = list.Sets
+            .Select(summary => new EmoteSetSummaryDto(
+                summary.Id,
+                summary.Name,
+                summary.Capacity,
+                summary.Kind,
+                string.Equals(summary.Id, channel.ActiveEmoteSetId, StringComparison.Ordinal),
+                summary.IsPersonal,
+                summary.OwnerDisplayName,
+                observationsBySetId.TryGetValue(summary.Id, out var intervals)
+                    ? intervals.Select(interval => new EmoteSetObservationDto(interval.FromUtc, interval.ToUtc)).ToList()
+                    : []))
+            .OrderByDescending(summary => summary.IsActive)
+            .ThenBy(summary => summary.Name, StringComparer.Ordinal)
+            .ToList();
+
+        return new EmoteSetListResponse(channel.ActiveEmoteSetId, sets);
+    }
 }
 
-internal sealed record SyncDeletedRequest(IReadOnlyList<string> EmoteIds);
+/// <summary>
+/// Wire shape of <c>GET /api/channels/{channelName}/emote-sets</c> (spec 6.1).
+/// </summary>
+internal sealed record EmoteSetListResponse(string ActiveEmoteSetId, IReadOnlyList<EmoteSetSummaryDto> Sets);
 
-internal sealed record SyncRestoredRequest(IReadOnlyList<string> EmoteIds);
+/// <summary>
+/// One set in <see cref="EmoteSetListResponse"/>. <see cref="IsActive"/> and <see cref="IsPersonal"/>
+/// are assembled at the API edge, not carried on <c>EmoteSetSummary</c> — the shared list service's
+/// result serves three routes with three different notions of "active" (E21), so the flag belongs to
+/// each route's own response, not to the cached value underneath all three.
+/// </summary>
+/// <param name="Observations">
+/// Every interval <c>ChannelEmoteSetObservation</c> (K1, T1.3a/T1.5) has recorded for this set on
+/// this channel, ascending, <c>[]</c> if the set has never been observed — read once per request via
+/// <see cref="IChannelEmoteSetObservationService.ListIntervalsByChannelAsync"/> (spec 6.1). K4 is the
+/// only consumer today (Konzept 8.4/8.5).
+/// </param>
+internal sealed record EmoteSetSummaryDto(
+    string Id,
+    string Name,
+    int? Capacity,
+    string Kind,
+    bool IsActive,
+    bool IsPersonal,
+    string? OwnerDisplayName,
+    IReadOnlyList<EmoteSetObservationDto> Observations);
+
+internal sealed record EmoteSetObservationDto(DateTime FromUtc, DateTime? ToUtc);
+
+// The legacy Guid form only (restore-per-set spec 5.6, E4): the set-scoped shape
+// (EmoteSetId/SevenTvEmoteIds) this record used to carry alongside it is gone — the set-centric
+// sync-deleted/sync-restored in SevenTvEndpoints is its replacement. EmoteIds stays optional so a
+// missing or empty body reaches ValidateSyncBookkeepingBody's own check rather than failing model
+// binding first, the same reasoning that applied when this record had more than one shape.
+internal sealed record SyncDeletedRequest(IReadOnlyList<string>? EmoteIds = null);
+
+internal sealed record SyncRestoredRequest(IReadOnlyList<string>? EmoteIds = null);
 
 // LeaderboardSort is the wire code (SevenTvLeaderboardSortWireCode.TrendingDailyWireCode /
 // TopAllTimeWireCode) carried separately from SourceChannelName (leaderboard-import spec E8): a
 // sort code is not a channel name and never validates as one (ChannelNameValidation.IsValid would
 // reject "TRENDING_DAILY" — the exact F1/F6-class bug this field exists to avoid, a 400 arriving
 // after the 7TV mutation already happened).
+// TargetEmoteSetId (spec 6.7, E5) stays optional forever: an old open tab that never learned this
+// field is still a valid caller, and the audit row honestly records "no set known" rather than
+// failing a mutation that already happened on 7TV. Format-checked in the handler, not by
+// EmoteSetIdValidationFilter — that filter reads the query string and route values, not a body field.
 internal sealed record SyncImportedRequest(
-    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null);
+    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind,
+    string? LeaderboardSort = null, string? TargetEmoteSetId = null);

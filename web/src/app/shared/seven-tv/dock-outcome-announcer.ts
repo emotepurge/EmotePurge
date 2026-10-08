@@ -1,21 +1,219 @@
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, Signal, computed, effect, inject, input, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
-import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import {
   ResyncTriggerState,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
+import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
+import {
+  SyncReportReason,
+  SyncReportState,
+  TargetCheckBlockReason,
+} from '../../core/seven-tv/sync-report-outcome';
+import { UNDO_SKIP_REASONS, UndoSkipReason, UndoSkippedRow } from '../../core/seven-tv/undo-plan';
+
+/** Translation key for the shared pre-check's block reason on a replace-carrying start (spec 4.5
+ *  point 17, AK 32), or `null` while nothing is blocked — shared by this announcer and the visible
+ *  (but aria-hidden) notice it speaks for (`ImportProgressSection`), same reason as
+ *  {@link resyncNoticeKey} above. `import.errors.*`, this flow's own family (Plan-253 §6, Nr. 4) —
+ *  never `restore.errors.*`/`massDelete.errors.*`, which name the *other* two first-mutation
+ *  pre-checks. Same three key names as those two families (`targetNotEditable`/
+ *  `targetNotSelectable`/`targetCheckUnavailable`), not the bare `TargetCheckBlockReason` value. */
+export function importTargetCheckBlockedKey(reason: TargetCheckBlockReason | null): string | null {
+  switch (reason) {
+    case null:
+      return null;
+    case 'notEditable':
+      return 'import.errors.targetNotEditable';
+    case 'notSelectable':
+      return 'import.errors.targetNotSelectable';
+    case 'unavailable':
+      return 'import.errors.targetCheckUnavailable';
+  }
+}
 
 /** Translation key for a run's resync acknowledgement, or `null` while there is nothing to say.
- *  Shared by this announcer and the two visible notices it speaks for (`MassDeletePanel`,
- *  `ImportProgressSection`), so the spoken and the shown wording cannot drift apart. */
+ *  Shared by this announcer and the three visible notices it speaks for (`RestoreProgressSection`,
+ *  `ImportProgressSection` — moved out of `MassDeletePanel` in #253/T9 — and
+ *  `UndoProgressSection`), so the spoken and the shown wording cannot drift apart. Every
+ *  non-`'idle'` state maps to `<family>.resync.<state>`, so a new `ResyncTriggerState` needs its
+ *  key in both locales — `'backendTriggered'` only under `restore` and `undo`, since the import
+ *  never takes it (spec 6.4/6.5; #254 spec 4.5 point 17). */
 export function resyncNoticeKey(
   state: ResyncTriggerState,
-  family: 'import' | 'restore',
+  family: 'import' | 'restore' | 'undo',
 ): string | null {
   return state === 'idle' ? null : `${family}.resync.${state}`;
+}
+
+/** Translation key for the state of a tag play-in's placement report (#201 T-C, spec 7.1/8), or
+ *  `null` while there is none (`'idle'`: not a tag run, or not settled yet) — shared by this
+ *  announcer and the dock line in `ImportProgressSection`, like {@link resyncNoticeKey}. The report
+ *  never ends `'partial'`; should it, it reads as failed. */
+export function tagPlacementReportNoticeKey(state: SyncReportState): string | null {
+  switch (state) {
+    case 'idle':
+      return null;
+    case 'pending':
+      return 'sevenTvRun.tagReport.pending';
+    case 'succeeded':
+      return 'sevenTvRun.tagReport.succeeded';
+    case 'partial':
+    case 'failed':
+      return 'sevenTvRun.tagReport.failed';
+  }
+}
+
+/** The reason line under a failed placement report, `null` for any other state. */
+export function tagPlacementReportReasonKey(
+  state: SyncReportState,
+  reason: SyncReportReason | null,
+): string | null {
+  return (state === 'failed' || state === 'partial') && reason !== null
+    ? `syncReportReason.${reason}`
+    : null;
+}
+
+/** Translation key for "k emotes were removed meanwhile and not recorded" after a successful
+ *  placement report, or `null` while there is nothing to say. */
+export function tagPlacementDiscardedStaleNoticeKey(
+  state: SyncReportState,
+  count: number,
+): string | null {
+  return state === 'succeeded' && count > 0
+    ? pluralKey(count, 'sevenTvRun.tagReport.discardedStale')
+    : null;
+}
+
+/** How long a confirmed run's last live read has to be out before the announcer
+ *  speaks the wait (#280). Most reads answer well inside it, and a line on every start that was
+ *  gone again a moment later would only be noise; the triggers lock at once regardless. */
+export const START_CHECK_ANNOUNCE_DELAY_MS = 1000;
+
+/** One line of the undo's skipped candidates: how many were skipped for `reason`. */
+export interface UndoSkippedLine {
+  reason: UndoSkipReason;
+  count: number;
+}
+
+/** The non-empty reasons of `countsByReason`, in `UNDO_SKIP_REASONS` order (the classification's
+ *  own table order, then the callers') — the one order in which both the dock and this announcer
+ *  name skipped undo candidates. Each reason is one line (`undo.summary.skipped`), so a candidate
+ *  is named exactly once, under the reason it carries. */
+export function undoSkippedLines(
+  countsByReason: Readonly<Partial<Record<UndoSkipReason, number>>>,
+): UndoSkippedLine[] {
+  return UNDO_SKIP_REASONS.map((reason) => ({ reason, count: countsByReason[reason] ?? 0 })).filter(
+    (line) => line.count > 0,
+  );
+}
+
+/**
+ * The undo's transient skipped notice (#254 spec 4.7): the candidates the last `startUndo` call
+ * skipped (dialog, freshness check, the service's own locks), by reason — or `null` while there is
+ * nothing to say. Shared by `UndoProgressSection` (visible, aria-hidden) and this announcer (spoken),
+ * so both follow the same gate.
+ *
+ * Silent once the run that call started has stopped running; that run's summary names the very
+ * same candidates under the same reasons (they are its `skipped`, the array the notice was set
+ * from) once the run has settled — while it is `settling` neither is shown — and showing both
+ * would name each candidate twice. A call that
+ * started nothing — everything skipped, or refused — leaves no run of its own, so the notice is the
+ * only place those candidates are named and it stays for its whole window.
+ */
+export function undoSkippedNotice(state: {
+  noticePending: boolean;
+  noticeSkipped: readonly UndoSkippedRow[];
+  run: UndoRunInfo | null;
+  isRunning: boolean;
+}): UndoSkippedLine[] | null {
+  if (!state.noticePending || state.noticeSkipped.length === 0) {
+    return null;
+  }
+  if (state.run !== null && state.run.skipped === state.noticeSkipped && !state.isRunning) {
+    return null;
+  }
+  const counts: Partial<Record<UndoSkipReason, number>> = {};
+  for (const row of state.noticeSkipped) {
+    counts[row.reason] = (counts[row.reason] ?? 0) + 1;
+  }
+  return undoSkippedLines(counts);
+}
+
+/** The two settled-run notices below (`copiedNotActiveNotice`, `renamedNotActiveNotice`) share this
+ *  gate: a *settled* (`settlement === 'settled'`) run into a tracked, non-active set — the case
+ *  `SevenTvImportService.onRunComplete`'s resync never fires for at all (there is nothing for
+ *  `resyncTrigger` to become but 'idle'), so one of these two notices fills the gap that would
+ *  otherwise leave the run's actual outcome unstated once it settles. Returns `null` for a run that
+ *  is untracked, still active, still in flight or still `settling`, or fully failed (nothing to
+ *  report either way — #255 P2-2 narrowed this from "any settled run" to "a settled run with
+ *  something to show").
+ *
+ *  The gate is the settlement, not `result`: the import publishes its snapshot as `result` while it
+ *  is still `settling` (Plan-284 E1), and an `unknown` row the re-read may still turn `done` — or
+ *  leave unclear — would otherwise decide the notice early. Held back here, it is held back for the
+ *  spoken and the shown notice alike (docs/UI-Designsprache.md §4.5), in step with the dock, whose
+ *  `RunProgressPanel` holds back its whole summary block while the run is `settling`. */
+function notActiveNoticeParams(
+  run: ImportRunInfo | null,
+): { channel: string; setName: string } | null {
+  if (
+    run === null ||
+    run.settlement !== 'settled' ||
+    run.targetChannelName === null ||
+    run.targetIsActiveSet
+  ) {
+    return null;
+  }
+  return { channel: run.targetChannelName, setName: run.targetSetName };
+}
+
+/** Whether `run.result` has at least one `done` row whose action actually adds an entry to the
+ *  target set (`'add'`, `'replace'`, `'renameSource'` — everything but `'adoptSourceName'`, the one
+ *  action that renames an existing target entry in place instead, see `TransferRow`'s own doc). A
+ *  run in flight (`result === null`) or with no items at all answers `false`. */
+function hasAddDone(run: ImportRunInfo | null): boolean {
+  const items = run?.result?.items ?? [];
+  return items.some((item) => item.status === 'done' && item.transfer.action !== 'adoptSourceName');
+}
+
+/** The `'adoptSourceName'` counterpart to {@link hasAddDone} — at least one `done` rename-in-place. */
+function hasAdoptDone(run: ImportRunInfo | null): boolean {
+  const items = run?.result?.items ?? [];
+  return items.some((item) => item.status === 'done' && item.transfer.action === 'adoptSourceName');
+}
+
+/** The `import.summary.copiedNotActive` transloco params, or `null` while the notice does not apply
+ *  (finding 3, Live-Verifikation K2 2026-09-21) — shared by this announcer and the visible (but
+ *  aria-hidden) notice it speaks for (`ImportProgressSection`), same reason as {@link resyncNoticeKey}
+ *  above.
+ *
+ *  Requires at least one `done` ADD (#255 P2-2, review finding): a rename-only run (every `done`
+ *  row an adopt, none an ADD) copied nothing in, so "kopiert" would misdescribe it the same way the
+ *  confirm dialog's "Kopieren" button would — {@link renamedNotActiveNotice} covers that case with
+ *  its own wording instead, and a run where nothing at all succeeded gets neither notice. */
+export function copiedNotActiveNotice(
+  run: ImportRunInfo | null,
+): { channel: string; setName: string } | null {
+  return hasAddDone(run) ? notActiveNoticeParams(run) : null;
+}
+
+/** The `import.summary.renamedNotActive` transloco params, or `null` while the notice does not
+ *  apply (#255 P2-2, review finding) — the rename-only counterpart to {@link copiedNotActiveNotice}:
+ *  fires only for a settled run into a tracked non-active set whose `done` rows are *exclusively*
+ *  adopts (at least one, none an ADD). A mixed run (at least one ADD *and* at least one adopt done)
+ *  still gets the "kopiert" notice above — same rule the confirm dialog's title/button already
+ *  follow (`titleIsRenameOnly`, `import-confirm-dialog.ts`): mixed reads as "copied", never
+ *  "renamed", because it did in fact add something. A run where nothing at all succeeded (every row
+ *  failed) gets neither notice — there is nothing true to say about what landed in the target set. */
+export function renamedNotActiveNotice(
+  run: ImportRunInfo | null,
+): { channel: string; setName: string } | null {
+  return !hasAddDone(run) && hasAdoptDone(run) ? notActiveNoticeParams(run) : null;
 }
 
 /** Translation key for the dock's "n of them hidden by the filter" line, shared by this announcer
@@ -53,10 +251,23 @@ export function markedCountNoticeKey(count: number): string {
  * every gate of the dock (`!isCoarse()` included) — its region always exists, only the text inside
  * comes and goes, mirroring the service signals the visible notices are gated on.
  *
+ * Since #280 it also speaks the one state the dock cannot show at all: a confirmed delete, restore,
+ * import or undo whose last live read is still out, between the confirmation closing and the run
+ * appearing. The
+ * visible side of that window is only the disabled trigger (docs/UI-Designsprache.md §6.1 — a
+ * disabled button, no loading text), which a screen reader does not hear change. That makes it
+ * the one named exception to §4.5's rule that this region says nothing the dock does not show.
+ * The line only enters once the read has been out for `START_CHECK_ANNOUNCE_DELAY_MS`: most
+ * reads answer sooner, and a line on every single start would be noise.
+ *
  * Several messages at once: one paragraph each, in the dock's own reading order — the marked-count
  * row first (it sits at the very top of the marking half), then the hidden-by-filter line (it sits
- * just below), then restore (the marking half) before import, and within each the skipped count,
- * the check-unavailable notice, then the resync acknowledgement. `role="status"` is implicitly
+ * just below), then the delete's pre-run wait (#280, the marking half's own), then restore before
+ * import, then the undo (#254). Within each of those three groups the pre-run wait of that kind
+ * comes first (#280), then the skipped count (for restore followed by its name-taken count, for the
+ * undo one line per skip reason), the check-unavailable notice, then the resync acknowledgement —
+ * in full: marked → hidden → delete wait → restore wait → restore outcomes → import wait → import
+ * outcomes → undo wait → undo outcomes. `role="status"` is implicitly
  * `aria-atomic="true"` (WAI-ARIA 1.2, §status), and Blink/WebKit apply that default — so without an
  * explicit override, a new or changed paragraph would make the whole region, standing ones
  * included, be read again. This multi-message region therefore sets `aria-atomic="false"` on its
@@ -64,8 +275,12 @@ export function markedCountNoticeKey(count: number): string {
  * interpolated text node so an in-place pending→succeeded change is still read as the full new
  * sentence, not a fragment.
  *
- * `withImport`: the import section only exists on the usage-stats page. The voting-results page
- * mounts the mass-delete panel alone and must not speak for an import run it does not show.
+ * `withImport`: the import section — and since #254 the undo section — only exists on the
+ * usage-stats page. The voting-results page mounts the mass-delete panel alone and must not speak
+ * for an import or undo run it does not show. The two pre-run waits that can outlive a navigation
+ * — the delete's and the import's (#280) — are the exception: both are spoken on either page,
+ * because either can lock that page's mass-delete button. The undo's is not: its reads are dropped
+ * with the trigger that started them.
  *
  * `hiddenSelectedCount` is not a run outcome but a standing condition: how many marked rows a filter
  * currently hides. It does not self-clear the way a run outcome does (docs/UI-Designsprache.md §4.4,
@@ -99,9 +314,38 @@ export function markedCountNoticeKey(count: number): string {
     @if (hiddenSelectedCount(); as hidden) {
       <p>{{ hiddenByFilterKey() | transloco: { count: hidden } }}</p>
     }
+    <!-- #280: a confirmed delete whose live alias read is still out — the marking half's own wait,
+         so after the two marking lines and before the restore group; spoken on both pages, since
+         both mount the mass-delete panel. -->
+    @if (deleteStartCheckAudible()) {
+      <p>{{ 'massDelete.startChecking' | transloco }}</p>
+    }
+    <!-- A tag removal's report (#201 T-C), the delete run's own outcome — outside the withImport()
+         gate like the wait above, since the delete section is mounted on every page. Its end state
+         only; the dock also shows the pending line, which would only be noise here. The reason
+         rides in the same sentence (one text node). -->
+    @if (deleteTagReportKey(); as key) {
+      @if (deleteTagReportReasonKey(); as reasonKey) {
+        <p>{{ key | transloco }} {{ reasonKey | transloco }}</p>
+      } @else {
+        <p>{{ key | transloco }}</p>
+      }
+    }
+    <!-- #280: a confirmed restore whose last live check is still out — the confirmation has
+         closed and nothing in the dock says so yet; the buttons that would start another restore
+         are disabled meanwhile, and this is what says why. First in the restore group: it comes
+         before any outcome of the run it precedes. -->
+    @if (restoreStartCheckAudible()) {
+      <p>{{ 'restore.startChecking' | transloco }}</p>
+    }
     @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
       <p>
         {{ restoreSkippedKey() | transloco: { count: restoreService.skippedDuplicates() } }}
+      </p>
+    }
+    @if (restoreService.duplicateNoticePending() && restoreService.skippedNameTaken() > 0) {
+      <p>
+        {{ restoreNameTakenKey() | transloco: { count: restoreService.skippedNameTaken() } }}
       </p>
     }
     @if (restoreService.duplicateNoticePending() && !restoreService.duplicateCheckAvailable()) {
@@ -109,6 +353,14 @@ export function markedCountNoticeKey(count: number): string {
     }
     @if (restoreResyncKey(); as key) {
       <p>{{ key | transloco }}</p>
+    }
+    <!-- #280: a confirmed import whose last checks are still out, first in the import group — the
+         same reasoning as the restore's line above. Outside the withImport() gate, unlike the rest
+         of the group: those checks are not dropped on navigation, so one confirmed on the
+         usage-stats page can still be out on a vote-session page, whose mass-delete button it then
+         locks (startLocked) — this line is the reason given for that lock there too. -->
+    @if (importStartCheckAudible()) {
+      <p>{{ 'import.startChecking' | transloco }}</p>
     }
     @if (withImport()) {
       @if (importService.duplicateNoticePending() && importService.skippedDuplicates() > 0) {
@@ -119,7 +371,59 @@ export function markedCountNoticeKey(count: number): string {
       @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
         <p>{{ 'import.duplicateCheckUnavailable' | transloco }}</p>
       }
-      @if (importResyncKey(); as key) {
+      @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
+        <p>
+          {{
+            importReplaceSkippedDriftKey()
+              | transloco: { count: importService.replaceSkippedDrift() }
+          }}
+        </p>
+      }
+      <!-- The shared pre-check blocked a replace-carrying start before anything ran (spec 4.5
+           point 17, AK 32) — shares duplicateNoticePending's window and gate, same reasoning as the
+           drift notice above: a blocked pre-check leaves no run/queue behind either, so this is the
+           only mounted place its reason can be spoken from. -->
+      @if (importTargetCheckBlockedNoticeKey(); as key) {
+        <p>{{ key | transloco }}</p>
+      }
+      @if (importCopiedNotActive(); as notActive) {
+        <p>{{ 'import.summary.copiedNotActive' | transloco: notActive }}</p>
+      } @else if (importRenamedNotActive(); as notActive) {
+        <p>{{ 'import.summary.renamedNotActive' | transloco: notActive }}</p>
+      } @else if (importResyncKey(); as key) {
+        <p>{{ key | transloco }}</p>
+      }
+      <!-- A tag play-in's placement report (#201 T-C), after the import's own outcomes as in the
+           dock. Its end state only — the dock also shows the pending line, which would only be
+           noise here. The reason rides in the same sentence (one text node). -->
+      @if (importTagReportKey(); as key) {
+        @if (importTagReportReasonKey(); as reasonKey) {
+          <p>{{ key | transloco }} {{ reasonKey | transloco }}</p>
+        } @else {
+          <p>{{ key | transloco }}</p>
+        }
+      }
+      @if (importTagDiscardedStaleKey(); as key) {
+        <p>
+          {{ key | transloco: { count: importService.tagPlacementDiscardedStaleCount() } }}
+        </p>
+      }
+      <!-- The undo (#254) after the import, in the dock's own order: its skipped notice, then its
+           resync acknowledgement — both aria-hidden in UndoProgressSection. Before them the wait
+           for a confirmed undo's freshness check (#280), same reasoning as the restore's above. -->
+      @if (undoStartCheckAudible()) {
+        <p>{{ 'undo.startChecking' | transloco }}</p>
+      }
+      @for (line of undoSkippedNotice(); track line.reason) {
+        <p>
+          {{
+            'undo.summary.skipped'
+              | transloco
+                : { count: line.count, reason: ('undo.confirm.reason.' + line.reason | transloco) }
+          }}
+        </p>
+      }
+      @if (undoResyncKey(); as key) {
         <p>{{ key | transloco }}</p>
       }
     }
@@ -140,6 +444,8 @@ export class DockOutcomeAnnouncer {
 
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
+  private readonly undoService = inject(SevenTvUndoService);
+  private readonly deleteService = inject(SevenTvDeleteService);
 
   protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>
@@ -148,8 +454,19 @@ export class DockOutcomeAnnouncer {
   protected readonly restoreSkippedKey = computed(() =>
     pluralKey(this.restoreService.skippedDuplicates(), 'restore.skippedDuplicates'),
   );
+  protected readonly restoreNameTakenKey = computed(() =>
+    pluralKey(this.restoreService.skippedNameTaken(), 'restore.skippedNameTaken'),
+  );
   protected readonly importSkippedKey = computed(() =>
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
+  );
+  protected readonly importReplaceSkippedDriftKey = computed(() =>
+    pluralKey(this.importService.replaceSkippedDrift(), 'import.summary.replaceSkippedDrift'),
+  );
+  protected readonly importTargetCheckBlockedNoticeKey = computed(() =>
+    this.importService.duplicateNoticePending()
+      ? importTargetCheckBlockedKey(this.importService.targetCheckBlockReason())
+      : null,
   );
   protected readonly restoreResyncKey = computed(() =>
     resyncNoticeKey(this.restoreService.resyncTrigger(), 'restore'),
@@ -157,4 +474,85 @@ export class DockOutcomeAnnouncer {
   protected readonly importResyncKey = computed(() =>
     resyncNoticeKey(this.importService.resyncTrigger(), 'import'),
   );
+  protected readonly importCopiedNotActive = computed(() =>
+    copiedNotActiveNotice(this.importService.run()),
+  );
+  protected readonly importRenamedNotActive = computed(() =>
+    renamedNotActiveNotice(this.importService.run()),
+  );
+  protected readonly deleteTagReportKey = computed(() => {
+    const state = this.deleteService.tagRemovalReport();
+    return state === 'pending' ? null : tagPlacementReportNoticeKey(state);
+  });
+  protected readonly deleteTagReportReasonKey = computed(() =>
+    tagPlacementReportReasonKey(
+      this.deleteService.tagRemovalReport(),
+      this.deleteService.tagRemovalReportReason(),
+    ),
+  );
+  protected readonly importTagReportKey = computed(() => {
+    const state = this.importService.tagPlacementReport();
+    return state === 'pending' ? null : tagPlacementReportNoticeKey(state);
+  });
+  protected readonly importTagReportReasonKey = computed(() =>
+    tagPlacementReportReasonKey(
+      this.importService.tagPlacementReport(),
+      this.importService.tagPlacementReportReason(),
+    ),
+  );
+  protected readonly importTagDiscardedStaleKey = computed(() =>
+    tagPlacementDiscardedStaleNoticeKey(
+      this.importService.tagPlacementReport(),
+      this.importService.tagPlacementDiscardedStaleCount(),
+    ),
+  );
+  protected readonly undoSkippedNotice = computed(
+    () =>
+      undoSkippedNotice({
+        noticePending: this.undoService.noticePending(),
+        noticeSkipped: this.undoService.noticeSkipped(),
+        run: this.undoService.run(),
+        isRunning: this.undoService.isRunning(),
+      }) ?? [],
+  );
+  protected readonly undoResyncKey = computed(() =>
+    resyncNoticeKey(this.undoService.resyncTrigger(), 'undo'),
+  );
+  /** Each run service's `startCheckPending`, but only once it has held for
+   *  {@link START_CHECK_ANNOUNCE_DELAY_MS} — see `afterHolding`. */
+  protected readonly deleteStartCheckAudible = afterHolding(
+    this.deleteService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+  protected readonly restoreStartCheckAudible = afterHolding(
+    this.restoreService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+  protected readonly importStartCheckAudible = afterHolding(
+    this.importService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+  protected readonly undoStartCheckAudible = afterHolding(
+    this.undoService.startCheckPending,
+    START_CHECK_ANNOUNCE_DELAY_MS,
+  );
+}
+
+/**
+ * `true` once `source` has been `true` for `delayMs` without a break, `false` again the moment it
+ * turns `false` — the timer is cleared on that change and on the caller's destroy (the effect's own
+ * cleanup), so the line can never appear after the wait it names has ended. Call from an injection
+ * context (a field initializer).
+ */
+function afterHolding(source: Signal<boolean>, delayMs: number): Signal<boolean> {
+  const held = signal(false);
+  effect((onCleanup) => {
+    if (!source()) {
+      held.set(false);
+      return;
+    }
+    const timer = setTimeout(() => held.set(true), delayMs);
+    onCleanup(() => clearTimeout(timer));
+  });
+  return held.asReadonly();
 }

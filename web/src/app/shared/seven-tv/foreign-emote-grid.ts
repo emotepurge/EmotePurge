@@ -116,23 +116,33 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
  * scrollbars over the same list was the reported defect; a percentage height chain is not available
  * as a fix, because it dies on the two `display: inline` component hosts between the pane and this
  * element (design language §7). So the viewport is measured against `dvh` instead:
- * `min(34rem, max(4rem, 100dvh - 26rem))`.
+ * `min(34rem, max(4rem, 100dvh - (26rem + reservedRem)))`.
  *
  *  - `34rem` is the ceiling — a tall desktop screen should not turn the dialog into a wall of emotes.
- *  - `26rem` is the allowance for everything else in the pane. Measured at 22rem (the dialog chrome
- *    plus the pane's own 2rem margin), so this carries about 4rem of slack. As long as this term
- *    dominates, the content is by construction shorter than the pane and the pane cannot grow a bar.
+ *  - `26rem` is the allowance for the chrome this component always renders itself (the sort/count row,
+ *    the score hint). Measured at 22rem (the dialog chrome plus the pane's own 2rem margin) with no
+ *    caller chrome above the grid, so this carries about 4rem of slack on its own.
+ *  - {@link reservedRem} is a caller's *own* chrome above the grid, inside the same scrolling pane —
+ *    e.g. the foreign-channel step's source-set radiogroup, which renders zero to N rows depending on
+ *    the channel. `0` by default (unset), reproducing the original fixed 26rem exactly. This exists
+ *    because a fixed allowance sized for "no caller chrome" regressed to the exact double-scrollbar
+ *    defect described above the moment K3's source-set radiogroup started rendering unconditionally
+ *    (spec addendum 2026-09-21, review finding P2-1): four rows of radiogroup ate the 4rem slack many
+ *    times over on any but the tallest windows. This component cannot size for markup it does not
+ *    render itself, so the caller computes its own reservedRem and passes it through.
  *  - `4rem` is a **floor, not a minimum useful size**, and it was deliberately lowered from 16rem:
- *    a floor of F re-creates the double scrollbar for every viewport below `F + 22rem`, so 16rem put
- *    the defect back on any window under ~608 px — a 1366×768 laptop, or any zoomed one. Measured at
- *    500 px the pane overflowed by 107 px. At 4rem the band is under ~416 px, i.e. shorter than the
- *    dialog's own chrome, where nothing can help.
+ *    a floor of F re-creates the double scrollbar for every viewport below `F + 22rem + reservedRem`,
+ *    so 16rem put the defect back on any window under ~608 px — a 1366×768 laptop, or any zoomed one.
+ *    Measured at 500 px the pane overflowed by 107 px. At 4rem the band is under ~416 px, i.e. shorter
+ *    than the dialog's own chrome, where nothing can help.
  *
  * No positive floor removes that band entirely; only a real height chain from the pane could, and
  * that would mean making `DialogShell`'s host a flex column for all twelve of its dialogs. Not worth
  * it for a band this small — but that is the fix if the floor ever has to rise again. The numbers
- * above are pinned by an E2E case ("the grid shrinks on a short window…", `emote-import.e2e.spec.ts`)
- * because jsdom has no layout and nothing else here can see them.
+ * above (with `reservedRem` at its default of `0`) are pinned by an E2E case ("the grid shrinks on a
+ * short window…", `emote-import.e2e.spec.ts`); a second case pins the non-zero-reservedRem path
+ * across several window heights and set counts ("a multi-set radiogroup does not grow a second
+ * scrollbar…", same file) — jsdom has no layout and nothing else here can see either.
  */
 @Component({
   selector: 'app-foreign-emote-grid',
@@ -203,10 +213,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
           [attr.aria-label]="'import.foreignChannel.grid.ariaLabel' | transloco"
           (mouseleave)="onGridLeave()"
         >
-          <cdk-virtual-scroll-viewport
-            [itemSize]="rowPx"
-            class="h-[min(34rem,max(4rem,calc(100dvh-26rem)))]"
-          >
+          <cdk-virtual-scroll-viewport [itemSize]="rowPx" [style.height]="viewportHeight()">
             <div
               *cdkVirtualFor="let row of rows(); trackBy: trackRowIndex"
               [style.height.px]="rowPx"
@@ -301,6 +308,16 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
   host: { class: 'flex flex-col gap-3' },
 })
 export class ForeignEmoteGrid {
+  /**
+   * A new reference here always means a genuinely different list — a fresh fetch, a switch to
+   * another source set, or an explicit refresh, never the same list re-passed — so the constructor
+   * effect below clears {@link selection} whenever this changes, not only on this component's own
+   * (re)construction. That is what lets a host reuse one grid instance across a switch it can
+   * answer instantly from its own cache (`ForeignChannelStep.previewCache`, K3 follow-up fix)
+   * without falling back to destroying and recreating this whole component just to get a clean
+   * selection — the previous approach, back when every switch meant a real request and the host's
+   * `@switch` always passed through a `'loading'` case in between that tore this component down.
+   */
   readonly emotes = input.required<ForeignEmoteRow[]>();
   /** Whether the source's page cap was hit while 7TV reported more entries (spec F3) — never
    *  silently swallowed, see the notice above. */
@@ -323,6 +340,11 @@ export class ForeignEmoteGrid {
   readonly emptyMessageKey = input('import.foreignChannel.empty');
   readonly truncatedMessageKey = input('import.foreignChannel.truncated');
   readonly scoreHintKey = input('import.foreignChannel.sort.scoreHint');
+
+  /** Extra vertical rem a caller's own chrome above this grid takes inside the same scrolling pane —
+   *  folded into the viewport's height budget (see the class doc above). `0` (the default) reproduces
+   *  the original, caller-agnostic height exactly. */
+  readonly reservedRem = input(0);
 
   /** The current selection, emitted on every change so a host (the picker step) can gate the
    *  dialog's "weiter" button and build the eventual `ImportRow[]`. */
@@ -399,6 +421,15 @@ export class ForeignEmoteGrid {
   protected readonly columns = computed(() => columnsForWidth(this.containerWidth()));
   protected readonly rows = computed(() => chunkIntoRows(this.sortedEmotes(), this.columns()));
 
+  /** The viewport's `height` style — a `computed()` rather than the static Tailwind class the pane
+   *  used before {@link reservedRem} existed: Tailwind's arbitrary-value classes are resolved at
+   *  build time from the literal string in source and cannot take a runtime input, so a dynamic
+   *  allowance has to be a plain inline style instead (Regel 14 applies to it the same as to
+   *  anything else the template reads reactively). */
+  protected readonly viewportHeight = computed(
+    () => `min(34rem, max(4rem, calc(100dvh - ${26 + this.reservedRem()}rem)))`,
+  );
+
   protected readonly selection = new ListSelection<ForeignEmoteRow>(
     this.sortedEmotes,
     (row) => row.sevenTvEmoteId,
@@ -454,6 +485,23 @@ export class ForeignEmoteGrid {
   });
 
   constructor() {
+    // Clears the selection whenever a *different* list arrives — see `emotes`'s own doc for why
+    // this is keyed off the input itself rather than left to construction/destruction: it is what
+    // makes a same-instance, cache-served switch (K3 follow-up fix) behave exactly like the
+    // destroy/recreate a host previously relied on to get a clean pick. Skips its own first run —
+    // a freshly constructed instance starts unselected regardless, and emitting on mount would be a
+    // pointless extra `selectionChange` a host has no reason to expect.
+    let sawFirstEmotes = false;
+    effect(() => {
+      this.emotes();
+      if (!sawFirstEmotes) {
+        sawFirstEmotes = true;
+        return;
+      }
+      this.selection.clear();
+      this.selectionChange.emit([]);
+    });
+
     // Same pattern as `usage-stats-page.ts`'s sheet-width effect: the column count follows the
     // element that actually holds the cells, not the viewport, and jsdom has no ResizeObserver at
     // all — specs stub the global the same way that page's do.

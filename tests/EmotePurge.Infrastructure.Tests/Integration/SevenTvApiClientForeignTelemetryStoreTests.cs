@@ -59,7 +59,7 @@ public class SevenTvApiClientForeignTelemetryStoreTests(RedisFixture fixture)
             InnerHandler = new StubHandler(response),
         };
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
-        return new SevenTvApiClient(httpClient, telemetry, new RecordingForeignUpstreamRequestBudget(), new RecordingLogger<SevenTvApiClient>());
+        return new SevenTvApiClient(httpClient, telemetry, new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), new RecordingLogger<SevenTvApiClient>());
     }
 
     private sealed class StubHandler(HttpResponseMessage response) : HttpMessageHandler

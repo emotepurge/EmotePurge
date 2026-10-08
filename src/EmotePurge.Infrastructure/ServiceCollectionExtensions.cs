@@ -59,6 +59,13 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IRedisSubscriber>(),
             sp.GetRequiredService<ILogger<RedisLiveEventStream>>()));
 
+        // Owns every write to ChannelEmoteSetObservation (spec 4.3); ChannelService,
+        // ChannelIdentityService and SevenTvSyncService all depend on it instead of touching the
+        // table directly. Scoped like them, so all four share one AppDbContext/change tracker per
+        // request or worker tick — the point of the "tracked only, rides the caller's SaveChangesAsync"
+        // contract on most of its methods.
+        services.AddScoped<IChannelEmoteSetObservationService, ChannelEmoteSetObservationService>();
+
         // Bound and validated eagerly (fail-fast, same reasoning as RateLimitingOptions.Validate() in
         // the Api's Program.cs) rather than behind IOptions: ChannelService reads it on every join,
         // and there is no reload hook that would ever make a live snapshot indirection pay for itself.
@@ -66,6 +73,12 @@ public static class ServiceCollectionExtensions
         configuration.GetSection(ChannelCapacityOptions.SectionName).Bind(channelCapacityOptions);
         channelCapacityOptions.Validate();
         services.AddSingleton(channelCapacityOptions);
+
+        // Only a switch the Api hands to the browser with the channel permissions; no Validate(),
+        // nothing a typo could turn into an outage (a bad boolean already fails the bind).
+        var emoteTagOptions = new EmoteTagOptions();
+        configuration.GetSection(EmoteTagOptions.SectionName).Bind(emoteTagOptions);
+        services.AddSingleton(emoteTagOptions);
 
         // GDPR Art. 21 objection gate for channels (#252, the counterpart of
         // IExcludedChatterFilter in EmotePurge.Worker): read once here so both the Api's join
@@ -86,8 +99,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAuditLogQueryService, AuditLogQueryService>();
         services.AddScoped<IEmoteService, EmoteService>();
         services.AddScoped<IEmoteSetOwnershipService, EmoteSetOwnershipService>();
+        services.AddScoped<ITrackedEmoteSetMembershipService, TrackedEmoteSetMembershipService>();
         services.AddScoped<IEmoteSetStatusService, EmoteSetStatusService>();
         services.AddScoped<IEmoteListQueryService, EmoteListQueryService>();
+        services.AddScoped<IEmoteTagService, EmoteTagService>();
 
         services.AddSingleton<IEmoteMatchCache, EmoteMatchCache>();
         services.AddSingleton<IDuplicateEmoteNameTracker, DuplicateEmoteNameTracker>();
@@ -103,7 +118,44 @@ public static class ServiceCollectionExtensions
         })
         .AddHttpMessageHandler(sp => ProviderTelemetry(sp, RateLimitProviders.SevenTv, RateLimitCallSources.SevenTvRest));
         services.AddSingleton<ChannelSyncGate>();
+        // The zero-emote confirmation streak must outlive the scoped sync service, hence a singleton
+        // (state in memory only; a restart delays acceptance of a really empty set by a few ticks).
+        // Options bound and validated eagerly like ChannelCapacityOptions; the clock is the shared
+        // TimeProvider, TryAdd'ed here because this registration comes before the retention one.
+        var emptySetConfirmationOptions = new EmptySetConfirmationOptions();
+        configuration.GetSection(EmptySetConfirmationOptions.SectionName).Bind(emptySetConfirmationOptions);
+        emptySetConfirmationOptions.Validate();
+        services.AddSingleton(emptySetConfirmationOptions);
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddSingleton<IEmptySetConfirmationTracker, EmptySetConfirmationTracker>();
         services.AddScoped<ISevenTvSyncService, SevenTvSyncService>();
+
+        // The K3 source-set list's own Helix login resolution (spec 2026-09-20 K3 review, P3-1): a
+        // short-lived cache so a picker reopened for the same channel does not pay a fresh Helix
+        // request and a budget permit on every call, on top of everything ISevenTvEmoteSetListService
+        // already caches downstream of the resolved Twitch id. Singleton, same reasoning as every
+        // other cache on this path — a scoped instance would cache nothing across requests.
+        services.AddSingleton<IForeignChannelIdentityCache, ForeignChannelIdentityCache>();
+
+        // 7TV's search bucket (design note docs/Konzept-7TV-Such-Budget-2026-10-03.md): one budget
+        // in Redis shared by the Api's leaderboard and the Worker's Twitch-id resolution, plus the
+        // Worker's per-channel backoff for ids that never resolve. Options bound and validated
+        // eagerly, like the channel cap above. The budget is built through a factory so its key
+        // prefix keeps its production default, and with TimeProvider.System rather than the DI
+        // clock: its window is compared across two processes, so it must run on the wall clock both
+        // of them share (same reasoning as RateLimitTelemetryStore below). The backoff is a
+        // singleton because its table must outlive the scoped sync service that consults it.
+        var searchBudgetOptions = new SevenTvSearchBudgetOptions();
+        configuration.GetSection(SevenTvSearchBudgetOptions.SectionName).Bind(searchBudgetOptions);
+        searchBudgetOptions.Validate();
+        services.AddSingleton(searchBudgetOptions);
+        services.AddSingleton<ISevenTvSearchBudget>(sp => new RedisSevenTvSearchBudget(
+            sp.GetRequiredService<IConnectionMultiplexer>(),
+            searchBudgetOptions,
+            TimeProvider.System,
+            sp.GetRequiredService<ILogger<RedisSevenTvSearchBudget>>()));
+        services.AddSingleton(sp => new TwitchIdResolutionBackoff(
+            searchBudgetOptions, sp.GetRequiredService<TimeProvider>()));
 
         // Foreign-channel-import read path (spec 2026-09-09). The raw resolution chain (T1) is
         // registered under a key so the hardening decorator (T2, below) can depend on
@@ -137,6 +189,28 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IRateLimitTelemetry>(),
             sp.GetRequiredService<ILogger<HardenedForeignEmoteSetService>>()));
 
+        // The emote-set list of a 7TV account (spec 2026-09-20, 6.1/E6): one service behind three
+        // routes, and therefore one cache and one guard chain. It shares the preview's budget (the
+        // same object above, in both of its faces) and the preview's breaker instance — under its
+        // own operation name, which is what keeps a broken list query out of the preview's failure
+        // streak. Its coalescer is its own closed type: sharing one in-flight table across two
+        // result types is not a thing that can be made to typecheck, and would be wrong if it were.
+        services.AddSingleton<ISevenTvEmoteSetListCache, SevenTvEmoteSetListCache>();
+        services.AddSingleton<ForeignEmoteSetRequestCoalescer<EmoteSetListResult>>();
+        services.AddScoped<ISevenTvEmoteSetListService, SevenTvEmoteSetListService>();
+
+        // The set-centric import's owner check (spec 2026-09-20, section 32): answers from the lists
+        // above and only falls back to one direct owner lookup — under the same budget and breaker
+        // instance, with an operation name of its own.
+        services.AddScoped<IImportTargetOwnershipService, ImportTargetOwnershipService>();
+
+        // Its grants, when the grant cache has none, come through a guarded refresh of their own
+        // (section 32, second review round): same budget and breaker instance, operation name
+        // editor-grants, failures held in a key space only it reads. Nothing else resolves this
+        // interface — authorization, the picker and the overview keep ISevenTvEditorService.
+        services.AddSingleton<ISevenTvEditorGrantsHoldCache, SevenTvEditorGrantsHoldCache>();
+        services.AddScoped<IGuardedSevenTvEditorGrantsService, GuardedSevenTvEditorGrantsService>();
+
         // Leaderboard import source (spec 2026-09-13, section 6, T3). Purely additive: the typed
         // ForeignSevenTvBreakerPolicy registration above is untouched, and the HardenedForeignEmoteSetService
         // factory above still takes that same typed instance through GetRequiredService, not a keyed
@@ -159,6 +233,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISevenTvLeaderboardService>(sp => new SevenTvLeaderboardService(
             sp.GetRequiredService<ISevenTvApiClient>(),
             sp.GetRequiredService<SevenTvLeaderboardStore<SevenTvLeaderboardResult>>(),
+            sp.GetRequiredService<ISevenTvSearchBudget>(),
             sp.GetRequiredService<SevenTvLeaderboardRequestBudget>(),
             sp.GetRequiredKeyedService<ForeignSevenTvBreakerPolicy>(LeaderboardBreakerKey),
             sp.GetRequiredService<SevenTvLeaderboardBudgetAlarm>(),

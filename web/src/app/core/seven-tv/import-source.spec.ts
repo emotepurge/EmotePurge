@@ -10,25 +10,25 @@ import {
 describe('dedupeImportRows', () => {
   it('collapses a duplicate sevenTvEmoteId and keeps the first occurrence', () => {
     const rows: ImportRow[] = [
-      { sevenTvEmoteId: 'a1', name: 'PogU' },
-      { sevenTvEmoteId: 'a2', name: 'Kappa' },
-      { sevenTvEmoteId: 'a1', name: 'PogU-again' },
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
+      { sevenTvEmoteId: 'a1', name: 'PogU-again', imageUrl: null },
     ];
 
     const result = dedupeImportRows(rows);
 
     expect(result.duplicatesCollapsed).toBe(1);
     expect(result.rows).toEqual([
-      { sevenTvEmoteId: 'a1', name: 'PogU' },
-      { sevenTvEmoteId: 'a2', name: 'Kappa' },
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
     ]);
   });
 
   it('reports zero collapsed and preserves order when there are no duplicates', () => {
     const rows: ImportRow[] = [
-      { sevenTvEmoteId: 'a1', name: 'PogU' },
-      { sevenTvEmoteId: 'a2', name: 'Kappa' },
-      { sevenTvEmoteId: 'a3', name: 'monkaS' },
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
+      { sevenTvEmoteId: 'a3', name: 'monkaS', imageUrl: null },
     ];
 
     const result = dedupeImportRows(rows);
@@ -73,6 +73,18 @@ describe('importOriginSourceChannelName', () => {
     ).toBeNull();
   });
 
+  it('sends no channel for a tag origin, although it carries its own channel name', () => {
+    expect(
+      importOriginSourceChannelName({
+        kind: 'tag',
+        tagId: 7,
+        tagName: 'Stronghold',
+        channelName: 'handofblood',
+        alreadyInSetCount: 3,
+      }),
+    ).toBeNull();
+  });
+
   it('sends no channel for a leaderboard origin — it has no source channel at all', () => {
     expect(
       importOriginSourceChannelName({ kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' }),
@@ -88,6 +100,18 @@ describe('importOriginLeaderboardSort', () => {
     expect(
       importOriginLeaderboardSort({ kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' }),
     ).toBe('TOP_ALL_TIME');
+  });
+
+  it('sends no sort for a tag origin', () => {
+    expect(
+      importOriginLeaderboardSort({
+        kind: 'tag',
+        tagId: 7,
+        tagName: 'Stronghold',
+        channelName: 'handofblood',
+        alreadyInSetCount: 3,
+      }),
+    ).toBeNull();
   });
 
   it('sends no sort for the three origins that are not a leaderboard pick', () => {

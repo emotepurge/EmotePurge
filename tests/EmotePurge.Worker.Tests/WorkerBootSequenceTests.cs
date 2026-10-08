@@ -55,6 +55,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -105,6 +106,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -124,6 +126,53 @@ public class WorkerBootSequenceTests
         }
 
         await chatManager.DidNotReceive().SimulateServerReconnectAsync();
+    }
+
+    // Issue #76: the zero-emote streak counts consecutive observations of a channel, and a channel
+    // that leaves the roster is no longer observed — so the LEAVE command forgets it, next to the
+    // match-cache entry, and a later rejoin starts from nothing.
+    [Fact]
+    public async Task Worker_LeaveCommand_ResetsTheEmptySetStreakNextToTheMatchCache()
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(new List<string>());
+
+        Func<string, string, Task>? capturedHandler = null;
+        var subscriber = Substitute.For<IRedisSubscriber>();
+        subscriber.When(x => x.SubscribeAsync(Arg.Any<string>(), Arg.Any<Func<string, string, Task>>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo => capturedHandler = callInfo.Arg<Func<string, string, Task>>());
+        var emoteMatchCache = Substitute.For<IEmoteMatchCache>();
+        var emptySetConfirmations = Substitute.For<IEmptySetConfirmationTracker>();
+
+        var worker = new WorkerService(
+            NullLogger<WorkerService>.Instance,
+            Substitute.For<ITwitchChatManager>(),
+            subscriber,
+            Substitute.For<IRedisPublisher>(),
+            emoteMatchCache,
+            emptySetConfirmations,
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<ITwitchLiveStatusReader>(),
+            CreateScopeFactory(channelService),
+            new ConfigurationBuilder().Build());
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.CommandChannelSubscribed.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(capturedHandler);
+            await capturedHandler!(BotCommands.Channel, BotCommands.LeavePrefix + "leftchannel");
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        emoteMatchCache.Received(1).RemoveChannel("leftchannel");
+        emptySetConfirmations.Received(1).Reset("leftchannel");
     }
 
     // Fourth Codex review of the block list: JOIN and RESYNC commands used to be followed blindly, so
@@ -156,6 +205,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -213,6 +263,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -334,8 +385,11 @@ public class WorkerBootSequenceTests
         // alpha and delta have a warm cache after phase 1; charlie (warm-up failed) and bravo stay cold.
         var cache = Substitute.For<IEmoteMatchCache>();
         var warm = new Dictionary<string, string> { ["x"] = "id" };
-        cache.GetChannelEmotes("alpha").Returns(warm);
-        cache.GetChannelEmotes("delta").Returns(warm);
+        // The real cache answers an unknown channel with an empty snapshot, never default(struct).
+        cache.GetChannelSnapshot(Arg.Any<string>())
+            .Returns(new EmoteMatchSnapshot(new Dictionary<string, string>(), string.Empty, DateTimeOffset.UnixEpoch));
+        cache.GetChannelSnapshot("alpha").Returns(new EmoteMatchSnapshot(warm, "set-alpha", DateTimeOffset.UnixEpoch));
+        cache.GetChannelSnapshot("delta").Returns(new EmoteMatchSnapshot(warm, "set-delta", DateTimeOffset.UnixEpoch));
 
         var subscriber = Substitute.For<IRedisSubscriber>();
         var worker = new WorkerService(
@@ -344,6 +398,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             cache,
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             liveStatusReader,
@@ -389,6 +444,7 @@ public class WorkerBootSequenceTests
             Substitute.For<IRedisSubscriber>(),
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             liveStatusReader,
@@ -416,21 +472,25 @@ public class WorkerBootSequenceTests
         channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
             .Returns(new List<string> { "alpha", "bravo", "charlie" });
         var logger = new RecordingLogger<WorkerService>();
-        WorkerService? worker = null;
+        // The join stays pending until the test has requested shutdown, so the stop can neither arrive
+        // before ExecuteAsync is registered with the host (StopAsync is a no-op without it, and the
+        // synchronous substitutes would run the whole boot recovery inside StartAsync) nor race the join.
+        var joinEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var joinResult = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var chatManager = Substitute.For<ITwitchChatManager>();
-        chatManager.JoinChannelAsync(Arg.Any<string>()).Returns(call =>
+        chatManager.JoinChannelAsync(Arg.Any<string>()).Returns(_ =>
         {
-            // Shutdown arrives while the first join is in flight; the join then fails with a cancellation.
-            _ = worker!.StopAsync(CancellationToken.None);
-            return Task.FromException(new OperationCanceledException());
+            joinEntered.TrySetResult();
+            return joinResult.Task;
         });
 
-        worker = new WorkerService(
+        var worker = new WorkerService(
             logger,
             chatManager,
             Substitute.For<IRedisSubscriber>(),
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -438,8 +498,13 @@ public class WorkerBootSequenceTests
             new ConfigurationBuilder().Build());
 
         await worker.StartAsync(CancellationToken.None);
+        await joinEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Shutdown arrives while the first join is in flight; the join then fails with a cancellation.
+        var stop = worker.StopAsync(CancellationToken.None);
+        joinResult.SetException(new OperationCanceledException());
+        await stop.WaitAsync(TimeSpan.FromSeconds(5));
         await gate.Completed.WaitAsync(TimeSpan.FromSeconds(5));
-        await worker.StopAsync(CancellationToken.None);
 
         await chatManager.Received(1).JoinChannelAsync(Arg.Any<string>());
         Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Warning);
@@ -465,6 +530,7 @@ public class WorkerBootSequenceTests
             Substitute.For<IRedisSubscriber>(),
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             liveStatusReader,

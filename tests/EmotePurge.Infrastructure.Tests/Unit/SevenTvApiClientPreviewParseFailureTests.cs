@@ -49,6 +49,7 @@ public class SevenTvApiClientPreviewParseFailureTests
             httpClient,
             new RecordingRateLimitTelemetry(),
             new RecordingForeignUpstreamRequestBudget(),
+            new RecordingSevenTvSearchBudget(),
             logger);
     }
 

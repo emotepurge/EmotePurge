@@ -25,6 +25,11 @@ export type AuditAction =
   | 'emotes.syncDeleted'
   | 'emotes.syncRestored'
   | 'emotes.syncImported'
+  | 'tag.create'
+  | 'tag.rename'
+  | 'tag.delete'
+  | 'tag.playedIn'
+  | 'tag.removed'
   | 'user.revokeSessions'
   | 'user.invalidateRoleCache'
   | 'user.delete';
@@ -36,7 +41,44 @@ export type AuditDetailKind =
   | 'title'
   | 'importedFromChannel'
   | 'importedFromFile'
-  | 'importedFromLeaderboard';
+  | 'importedFromLeaderboard'
+  /** A tag play-in (T-C): count only — the server never sends the tag's name (E30). */
+  | 'importedFromTag';
+
+/**
+ * An action's target set (spec 2026-09-20), present on an `AuditLogDetail` whenever the row's
+ * `DetailsJson` named one. Two independent write paths feed this: the import ladder (6.7) —
+ * optionally on the channel-scoped `sync-imported` (E5) or always on the set-centric endpoint —
+ * and the set-scoped `sync-deleted`/`sync-restored` (6.6, K5). `id`/`ownerLogin` are never a display
+ * name — identification is by id, and the paper trail records a Twitch login rather than 7TV's own
+ * (changeable) display name. `ownerLogin` is exclusively an import-ladder field —
+ * `sync-deleted`/`sync-restored` never resolves one.
+ */
+export interface AuditLogTargetEmoteSet {
+  id: string;
+  /**
+   * Three-valued (E5): `true`/`false` when the channel-scoped endpoint compared the reported set
+   * against the channel's active set at write time, `null` when no set was reported, or — for the
+   * set-centric endpoint — because there is no channel of ours to compare against at all.
+   */
+  isActiveSetOfChannel: boolean | null;
+  /** The set's owner, as a Twitch login — `null` for the channel-scoped endpoint. */
+  ownerLogin: string | null;
+  /**
+   * The channel a set-scoped `sync-deleted`/`sync-restored` report expected to hit
+   * (`expectedChannelName`, spec E18) but did not — present only alongside `unresolvedReason` and
+   * `unresolvedSevenTvEmoteIds` (#273, restore-per-set spec 5.5 addendum N3); the import ladder
+   * never sends any of the three. Optional, not just nullable, for the same reason `targetEmoteSet`
+   * itself is on `AuditLogDetail`: a build older than #273 built this object without them.
+   */
+  unresolvedChannelName?: string | null;
+  /** Why `unresolvedChannelName` was not hit — `'notTracked'` or `'activeSetDiffers'`
+   *  (`UnresolvedChannelReasons` on the server), typed loosely since an unrecognized value is a
+   *  display decision for the consumer, not a safety one. */
+  unresolvedReason?: string | null;
+  /** The reported 7TV emote ids, verbatim — none of them was matched in `unresolvedChannelName`. */
+  unresolvedSevenTvEmoteIds?: readonly string[] | null;
+}
 
 /**
  * The renderable part of an entry's details, already reduced to a closed set of shapes by the
@@ -50,11 +92,25 @@ export type AuditDetailKind =
  * `kind` is typed `AuditDetailKind | (string & {})` rather than plain `AuditDetailKind | string`:
  * the intersection keeps editor autocomplete offering the known literals while still widening to
  * any string, which a bare union with `string` would swallow.
+ *
+ * `targetEmoteSet` is optional, not just nullable: this field lands here in T2.4 purely additively,
+ * ahead of the view that renders it (T2.6) — every existing literal that builds an `AuditLogDetail`
+ * without it (tests, e2e mocks) stays valid rather than needing a mechanical `targetEmoteSet: null`
+ * added everywhere. A server response always sends the key (`null` when the row has no target set).
  */
 export interface AuditLogDetail {
   kind: AuditDetailKind | (string & {});
   count: number | null;
   text: string | null;
+  targetEmoteSet?: AuditLogTargetEmoteSet | null;
+  /**
+   * `true` for an `emoteCount` row written by the channel-bound Guid-keyed legacy form of
+   * `sync-deleted`/`sync-restored` (restore-per-set spec 5.6, E4; server field #273) — never
+   * alongside `targetEmoteSet`, since that form carries no set of its own. Optional for the same
+   * write-once-additive reason as `targetEmoteSet`: a row from before #273 has no such key at all,
+   * which reads as falsy the same way an explicit `false` would.
+   */
+  legacyBodyForm?: boolean;
 }
 
 /**

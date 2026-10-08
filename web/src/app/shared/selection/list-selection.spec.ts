@@ -365,6 +365,25 @@ describe('ListSelection', () => {
     expect(selection.selectedKeys().sort()).toEqual(['a', 'e', 'f']);
   });
 
+  it('deselectKeys() unmarks only the given keys and leaves the other marks alone', () => {
+    const { selection, byId } = setup('a', 'b', 'c');
+
+    selection.selectMany([byId('a'), byId('b'), byId('c')]);
+    selection.deselectKeys(['a', 'b', 'unknown']);
+
+    expect(selection.selectedKeys()).toEqual(['c']);
+  });
+
+  it('deselectKeys() drops an anchor it unmarked, so the next shift-click degrades to a toggle', () => {
+    const { selection, byId } = setup('a', 'b', 'c');
+
+    selection.onRowClick(byId('a'), click());
+    selection.deselectKeys(['a']);
+    selection.onRowClick(byId('c'), click(true));
+
+    expect(selection.selectedKeys()).toEqual(['c']);
+  });
+
   it('notifies a computed() that reads the selection', () => {
     const { selection, byId } = setup('a', 'b', 'c');
     // Regression guard: with a plain mutable set instead of a signal, these stayed frozen at their
@@ -382,5 +401,43 @@ describe('ListSelection', () => {
     selection.onRowClick(byId('a'), click());
     expect(keyCount()).toBe(0);
     expect(itemLabels()).toEqual([]);
+  });
+
+  // Spec #200, AK 54 — as a consumer spec: the usage page keys its selection by the 7TV id, because
+  // a set view's live member without a counted row has no `Emote.Id`. The class is unchanged (spec
+  // 18); what these two pin is that a key function over a non-null field keeps such rows apart.
+  describe('keyed by a 7TV id, with rows that carry no Guid', () => {
+    interface SetViewRow {
+      emoteId: string | null;
+      sevenTvEmoteId: string;
+    }
+
+    function guidless(...ids: string[]): SetViewRow[] {
+      return ids.map((sevenTvEmoteId) => ({ emoteId: null, sevenTvEmoteId }));
+    }
+
+    it('selects two Guid-less rows individually and tells them apart', () => {
+      const items = signal(guidless('7tv-x', '7tv-y'));
+      const selection = new ListSelection<SetViewRow>(items, (row) => row.sevenTvEmoteId);
+      const [x, y] = items();
+
+      selection.onRowClick(x, click());
+
+      expect(selection.isSelected(x)).toBe(true);
+      expect(selection.isSelected(y)).toBe(false);
+      selection.onRowClick(y, click());
+      expect(selection.selectedKeys()).toEqual(['7tv-x', '7tv-y']);
+    });
+
+    it('retainAmong() keeps exactly the Guid-less row that is still there', () => {
+      const items = signal(guidless('7tv-x', '7tv-y'));
+      const selection = new ListSelection<SetViewRow>(items, (row) => row.sevenTvEmoteId);
+      selection.selectMany(items());
+
+      const removed = selection.retainAmong(guidless('7tv-y'));
+
+      expect(removed).toBe(1);
+      expect(selection.selectedKeys()).toEqual(['7tv-y']);
+    });
   });
 });

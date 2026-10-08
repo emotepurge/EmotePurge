@@ -188,7 +188,7 @@ public class SevenTvApiClientChannelStateTests
         var handler = CreateHandler(userPayload, ("emote-sets", emoteSetPayload));
         var logger = new RecordingLogger<SevenTvApiClient>();
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
-        var client = new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), logger);
+        var client = new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), logger);
 
         await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
 
@@ -197,15 +197,157 @@ public class SevenTvApiClientChannelStateTests
         Assert.Contains(logger.Entries, e => e.Message.Contains("lade Set separat", StringComparison.Ordinal));
     }
 
+    // Pins the REAL shape of a genuinely empty 7TV set: the upstream compat model skips an empty
+    // `emotes` list and a default `emote_count`, so both keys are simply absent. This must stay Ok
+    // with zero emotes (the sync's wipe guard decides what to do with it) — "fixing" a missing
+    // list into Unavailable would make a truly empty set unsyncable forever (issue #76).
+    [Fact]
+    public async Task EmoteSetWithoutEmotesAndCount_IsOk_WithZeroEmotes()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600},"user":{"id":"USER1","connections":[]}}""";
+        var client = CreateClient(CreateHandler(userPayload));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Ok, result.Status);
+        Assert.Empty(result.State!.EmoteSet.Emotes);
+    }
+
+    [Fact]
+    public async Task PositiveEmoteCountWithEmptyEmotes_IsUnavailable()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600,"emote_count":5,"emotes":[]},"user":{"id":"USER1","connections":[]}}""";
+        var client = CreateClient(CreateHandler(userPayload));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Unavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task ExplicitNullEmotes_IsUnavailable()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600,"emotes":null},"user":{"id":"USER1","connections":[]}}""";
+        var client = CreateClient(CreateHandler(userPayload));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Unavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task ReloadedSetWithPositiveEmoteCountAndNoEmotes_IsUnavailable()
+    {
+        const string userPayload = """{"emote_set":null,"emote_set_id":"SET2","user":{"id":"USER1","connections":[]}}""";
+        const string emoteSetPayload = """{"id":"SET2","capacity":700,"emote_count":3}""";
+        var client = CreateClient(CreateHandler(userPayload, ("emote-sets", emoteSetPayload)));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Unavailable, result.Status);
+    }
+
+    // Issue #76: the v4 entry count is the cross-check against a v3 zero, so it has to arrive
+    // exactly when v3 lists nothing. Counted over every page; an entry without a resolved emote is
+    // not counted, an entry without a date is.
+    [Fact]
+    public async Task V4EntryCount_IsReportedOverAllPages_EvenWhenV3ListsNoEmotes()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600},"user":{"id":"USER1","connections":[]}}""";
+        string[] pages =
+        [
+            """{"data":{"emote_sets":{"emote_set":{"emotes":{"page_count":2,"items":[{"added_at":"2026-09-01T10:00:00Z","emote":{"id":"a"}},{"added_at":null,"emote":{"id":"b"}}]}}}}}""",
+            """{"data":{"emote_sets":{"emote_set":{"emotes":{"page_count":2,"items":[{"added_at":"2026-09-02T10:00:00Z","emote":{"id":"c"}},{"added_at":"2026-09-03T10:00:00Z","emote":null}]}}}}}""",
+        ];
+        var page = 0;
+        var client = CreateClient(CreateHandler(userPayload, v4Response: () => JsonResponse(HttpStatusCode.OK, pages[page++])));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Ok, result.Status);
+        Assert.Empty(result.State!.EmoteSet.Emotes);
+        Assert.Equal(3, result.State.EmoteSet.RemoteEntryCount);
+    }
+
+    [Fact]
+    public async Task V4ListingNoEntries_ReportsZero()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600},"user":{"id":"USER1","connections":[]}}""";
+        var client = CreateClient(CreateHandler(userPayload));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(0, result.State!.EmoteSet.RemoteEntryCount);
+    }
+
+    public static TheoryData<HttpStatusCode, string> FailedV4Answers => new()
+    {
+        { HttpStatusCode.InternalServerError, "" },
+        { HttpStatusCode.OK, """{"data":{"emote_sets":{"emote_set":null}}}""" },
+        { HttpStatusCode.OK, """{"data":null,"errors":[{"message":"rate limited","extensions":{"status":429}}]}""" },
+        { HttpStatusCode.OK, "{not json" },
+    };
+
+    [Theory]
+    [MemberData(nameof(FailedV4Answers))]
+    public async Task V4LookupThatFails_LeavesRemoteEntryCountUnknown(HttpStatusCode status, string payload)
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600},"user":{"id":"USER1","connections":[]}}""";
+        var client = CreateClient(CreateHandler(userPayload, v4Response: () => JsonResponse(status, payload)));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Ok, result.Status);
+        Assert.Null(result.State!.EmoteSet.RemoteEntryCount);
+    }
+
+    // Codex P1 on the veto: entries seen on page 1 are positive evidence even when a later page
+    // fails, so the count survives as a lower bound. The dates stay all-or-nothing as before: none of
+    // them is applied, not even the one page 1 delivered.
+    [Theory]
+    [MemberData(nameof(FailedV4Answers))]
+    public async Task V4PagingThatFailsAfterPageOne_ReportsTheCountSoFar_ButNoDates(HttpStatusCode status, string payload)
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600,"emotes":[{"id":"a","name":"Foo"}]},"user":{"id":"USER1","connections":[]}}""";
+        const string firstPage =
+            """{"data":{"emote_sets":{"emote_set":{"emotes":{"page_count":2,"items":[{"added_at":"2026-09-01T10:00:00Z","emote":{"id":"a"}},{"added_at":"2026-09-01T11:00:00Z","emote":{"id":"b"}}]}}}}}""";
+        var page = 0;
+        var client = CreateClient(CreateHandler(
+            userPayload,
+            v4Response: () => page++ == 0 ? JsonResponse(HttpStatusCode.OK, firstPage) : JsonResponse(status, payload)));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(SevenTvLookupStatus.Ok, result.Status);
+        Assert.Equal(2, result.State!.EmoteSet.RemoteEntryCount);
+        Assert.Null(Assert.Single(result.State.EmoteSet.Emotes).AddedToSetAt);
+    }
+
+    [Fact]
+    public async Task V4PagingThatFailsAfterAnEmptyFirstPage_StaysUnknown()
+    {
+        const string userPayload = """{"emote_set":{"id":"SET","capacity":600},"user":{"id":"USER1","connections":[]}}""";
+        const string firstPage = """{"data":{"emote_sets":{"emote_set":{"emotes":{"page_count":2,"items":[{"added_at":null,"emote":null}]}}}}}""";
+        var page = 0;
+        var client = CreateClient(CreateHandler(
+            userPayload,
+            v4Response: () => page++ == 0 ? JsonResponse(HttpStatusCode.OK, firstPage) : new HttpResponseMessage(HttpStatusCode.InternalServerError)));
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Null(result.State!.EmoteSet.RemoteEntryCount);
+    }
+
     private static RoutingStubHandler CreateHandler(
         string userPayload,
         (string PathPrefix, string Payload)? emoteSetRoute = null,
-        HttpStatusCode statusFor = HttpStatusCode.OK)
+        HttpStatusCode statusFor = HttpStatusCode.OK,
+        Func<HttpResponseMessage>? v4Response = null)
     {
         var routes = new List<(string Prefix, Func<HttpResponseMessage> Factory)>
         {
             ("users/twitch/", () => JsonResponse(HttpStatusCode.OK, userPayload)),
-            ("/v4/gql", () => JsonResponse(HttpStatusCode.OK, HarmlessV4GqlPayload)),
+            ("/v4/gql", v4Response ?? (() => JsonResponse(HttpStatusCode.OK, HarmlessV4GqlPayload))),
         };
 
         if (emoteSetRoute is { } route)
@@ -223,7 +365,7 @@ public class SevenTvApiClientChannelStateTests
     private static SevenTvApiClient CreateClient(RoutingStubHandler handler)
     {
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
-        return new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingLogger<SevenTvApiClient>());
+        return new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), new RecordingLogger<SevenTvApiClient>());
     }
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string payload) =>

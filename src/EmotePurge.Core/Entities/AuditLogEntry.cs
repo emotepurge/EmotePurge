@@ -32,6 +32,14 @@ public static class AuditActions
     // name every other view addresses the channel by.
     public const string ChannelRename = "channel.rename";
     public const string ChannelMerge = "channel.merge";
+
+    // Emote tags (#201). Details carry only the tag id (plus the entry count on delete) — never the
+    // name, so the audit log does not hold free text a moderator typed.
+    public const string TagCreate = "tag.create";
+    public const string TagRename = "tag.rename";
+    public const string TagDelete = "tag.delete";
+    public const string TagPlayedIn = "tag.playedIn";
+    public const string TagRemoved = "tag.removed";
 }
 
 /// <summary>

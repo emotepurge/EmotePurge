@@ -1,6 +1,59 @@
 namespace EmotePurge.Core.Services;
 
 /// <summary>
+/// An action's target set, projected onto an <see cref="AuditLogDetail"/> whenever
+/// <c>DetailsJson</c> names one. Two independent write paths feed this: the import ladder
+/// (<c>targetEmoteSetId</c>, spec 6.7) — from either <c>emotes.MarkImportedAsync</c> (a set on the
+/// channel-scoped endpoint, E5) or <c>emotes.MarkImportedToSetAsync</c> (the set-centric endpoint,
+/// always) — and the set-scoped <c>emotes.syncDeleted</c>/<c>emotes.syncRestored</c>
+/// (<c>emoteSetId</c>, spec 6.6, K5/T5.2). <see cref="Id"/> and <see cref="OwnerLogin"/> are never a
+/// display name: identification is always by id (<c>targetOwnerSevenTvUserId</c>, the entry's own
+/// <c>TargetId</c>), and the paper trail records a Twitch login rather than 7TV's own display name,
+/// which can change without the account changing (spec 6.7's deliberate split between the
+/// confirmation dialog's <c>ownerDisplayName</c> and this field). <see cref="OwnerLogin"/> is
+/// exclusively an import-ladder field — sync-deleted/sync-restored never resolves one.
+/// </summary>
+/// <param name="Id">The target set's 7TV id — the entry's own <c>TargetId</c>, echoed here so a
+/// consumer never has to cross-reference the two.</param>
+/// <param name="IsActiveSetOfChannel">
+/// Three-valued (E5): <c>true</c>/<c>false</c> when the channel-scoped endpoint compared the
+/// reported set against <c>Channel.ActiveEmoteSetId</c> at write time, <c>null</c> when no set was
+/// reported at all, or — for the set-centric endpoint — because the target set has no channel of
+/// ours to compare against in the first place. The set-scoped sync-deleted/sync-restored always
+/// writes <c>true</c> or <c>false</c> when it names a target at all (spec 6.6) — it never reports a
+/// set without comparing it against the channel's active one.
+/// </param>
+/// <param name="OwnerLogin">
+/// The Twitch login of the set's owner (the set-centric endpoint's own account, or the matching
+/// editor grant's channel) — <c>null</c> for the channel-scoped endpoint, which never resolves one.
+/// </param>
+/// <param name="UnresolvedChannelName">
+/// The normalized channel name the client expected the set-scoped report to hit
+/// (<c>expectedChannelName</c>, spec E18) but did not — <c>null</c> whenever every channel the
+/// client expected was among the hit channels, or no channel was expected at all. Exclusively a
+/// set-scoped sync-deleted/sync-restored field (restore-per-set spec 5.5); the import ladder never
+/// writes one. Always accompanied by <see cref="UnresolvedReason"/> and
+/// <see cref="UnresolvedSevenTvEmoteIds"/> — the three are written together or not at all.
+/// </param>
+/// <param name="UnresolvedReason">
+/// Why <see cref="UnresolvedChannelName"/> was not hit — one of
+/// <see cref="UnresolvedChannelReasons"/> (<c>"notTracked"</c>/<c>"activeSetDiffers"</c>), read
+/// through as-is rather than validated against that closed vocabulary here: an unrecognized value
+/// is a display decision for the consumer, the same way an unrecognized <c>Kind</c> already is.
+/// </param>
+/// <param name="UnresolvedSevenTvEmoteIds">
+/// The reported 7TV emote ids, verbatim — none of them was matched in
+/// <see cref="UnresolvedChannelName"/>, since that channel was never a hit.
+/// </param>
+public record AuditLogTargetEmoteSet(
+    string Id,
+    bool? IsActiveSetOfChannel,
+    string? OwnerLogin,
+    string? UnresolvedChannelName = null,
+    string? UnresolvedReason = null,
+    IReadOnlyList<string>? UnresolvedSevenTvEmoteIds = null);
+
+/// <summary>
 /// The renderable part of an entry's <c>DetailsJson</c>, reduced to a closed set of shapes.
 /// <paramref name="Kind"/> is language-neutral like <see cref="Entities.AuditActions"/> — the
 /// frontend maps it to a translation key and owns the wording. <paramref name="Count"/> carries the
@@ -14,7 +67,18 @@ namespace EmotePurge.Core.Services;
 /// to every consumer until someone adds it to <see cref="Kinds"/> on purpose.
 /// </para>
 /// </summary>
-public record AuditLogDetail(string Kind, long? Count, string? Text)
+/// <param name="LegacyBodyForm">
+/// <c>true</c> for an <see cref="Kinds.EmoteCount"/> row written by the channel-bound Guid-keyed
+/// legacy form of <c>sync-deleted</c>/<c>sync-restored</c> (restore-per-set spec 5.6, E4) — never
+/// alongside a <see cref="TargetEmoteSet"/>, since that form carries no set of its own. Defaults to
+/// <c>false</c> so every row written before this field existed still projects exactly as before.
+/// </param>
+public record AuditLogDetail(
+    string Kind,
+    long? Count,
+    string? Text,
+    AuditLogTargetEmoteSet? TargetEmoteSet = null,
+    bool LegacyBodyForm = false)
 {
     /// <summary>The recognized <see cref="Kind"/> values. Anything else is dropped.</summary>
     public static class Kinds
@@ -31,6 +95,10 @@ public record AuditLogDetail(string Kind, long? Count, string? Text)
         // carries the language-neutral sort wire code (e.g. "TRENDING_DAILY") instead of a channel
         // name, and the frontend translates it — the same contract as every other Kind here (rule 7).
         public const string ImportedFromLeaderboard = "importedFromLeaderboard";
+        // A play-in of a channel tag (#201 T-C, sourceKind "tag"): carries only Count. Never the
+        // tag's name — it stays out of the audit payload (E30) — so the frontend's label cannot name
+        // one either ("from a tag", not "from tag X"), and it is not ImportedFromFile ("from a file").
+        public const string ImportedFromTag = "importedFromTag";
     }
 }
 

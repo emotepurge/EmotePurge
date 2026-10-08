@@ -15,8 +15,7 @@ export type LiveEventFilter = readonly string[] | ((event: LiveEvent) => boolean
  *
  * A named constant rather than a literal inline so the reasoning stays attached to the number, not
  * because more than one page shares it today — usage-stats-page.ts is its only channel-scoped
- * consumer (channel-workspace-layout.ts is mounted right alongside it but keeps its own live
- * subscription deliberately undebounced, see that file's own comment). One second is the usage
+ * consumer (channel-workspace-layout.ts no longer subscribes to the live stream). One second is the usage
  * page's figure: the worker flushes chat usage in 30-second batches, so pushes arrive in bursts
  * rather than continuously, and a second merges a burst without making the update feel delayed.
  * Against a 7TV mass delete (one event every ~275 ms) it collapses the whole run into one or two

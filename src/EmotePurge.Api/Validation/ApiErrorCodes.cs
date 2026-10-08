@@ -93,6 +93,26 @@ internal static class ApiErrorCodes
     public const string NoHealthData = "no_health_data";
     public const string HealthDataUnreadable = "health_data_unreadable";
 
+    // Three codes for the emote-set surface (spec 2026-09-20, E13). All three land in this one
+    // task even though only the first is wired to a route yet: the other two belong to routes
+    // later tasks build (the set-centric import endpoint, the vote-session ballot rule), and
+    // adding codes piecemeal per task would leave this file, api-error.ts and the locale files out
+    // of step for the stretch between tasks — exactly the drift Regel 7 exists to prevent (AK 45).
+    // A fourth code originally landed here too, for sync-deleted/sync-restored's set-scoped body
+    // form — EmoteSetIdEmpty, retired along with that body shape (restore-per-set spec 5.6/E4, T3:
+    // "Delete, restore and a replace's removals report per emote set", DECISIONS 2026-09-25).
+    // EmoteSetIdValidationFilter's format check (E14) — the one code this task's routes return.
+    public const string InvalidEmoteSetId = "invalid_emote_set_id";
+    // The set-centric import endpoint (6.7, T2.4) and the tracked-channel set preview (#220, where it
+    // means "this set does not belong to the channel") — 7TV does not know the given set id. Distinct
+    // from ForeignChannelNoActiveEmoteSet above, which the query-parameter preview path (6.4) reuses
+    // for the very same underlying "unknown set" answer: that path already had a code whose text
+    // fits, this one has no existing endpoint to borrow from.
+    public const string EmoteSetNotFound = "emote_set_not_found";
+    // CreateVoteSessionRequest's exclusion rule (6.9, K6): emoteSetId and sevenTvEmoteIds/emoteIds
+    // disagree about which of the two session shapes this is.
+    public const string VoteSessionSetBallotInvalid = "vote_session_set_ballot_invalid";
+
     // 404 from GET /api/legal/{kind}/{language} (issue #247): the operator has not configured this
     // document (no ContentPath, or no German file for it — German is authoritative, see
     // ILegalContentService), or the route carried a kind/language outside the closed vocabulary
@@ -116,4 +136,29 @@ internal static class ApiErrorCodes
     // three, same reasoning as ForeignChannelSevenTvUnavailable — "not now" is the only actionable
     // fact in any of the three cases.
     public const string ContactUnavailable = "contact_unavailable";
+
+    // Channel emote tags (#201). 400: the name is missing, blank, over 40 characters or carries control
+    // characters (a missing request body counts as a missing name).
+    public const string TagNameInvalid = "tag_name_invalid";
+    // 409: another tag of the channel has the same name after trimming and lower-casing.
+    public const string TagNameTaken = "tag_name_taken";
+    // 409: the channel already has EmoteTagLimits.MaxTagsPerChannel tags.
+    public const string TagLimitReached = "tag_limit_reached";
+    // 404: no such tag in this channel (a tag of another channel is the same answer).
+    public const string TagNotFound = "tag_not_found";
+    // 409: adding would push the tag past EmoteTagLimits.MaxEntriesPerTag; nothing was written.
+    public const string TagEntryLimitReached = "tag_entry_limit_reached";
+    // 409: assigning from a non-active set, whose server-side read is truncated; nothing was written.
+    public const string TagSourceSetIncomplete = "tag_source_set_incomplete";
+    // 409: the explicitly named set was active when the request began but not any more at lock time; nothing was written.
+    public const string TagSourceSetChanged = "tag_source_set_changed";
+    // Tag operations and placement reports (#201 T-C). 400: the operation id (or a snapshot revision)
+    // is not a UUID or is the nil UUID.
+    public const string TagOperationIdInvalid = "tag_operation_id_invalid";
+    // 404: a report names an operation that was never registered. A deleted tag answers tag_not_found instead.
+    public const string TagOperationUnknown = "tag_operation_unknown";
+    // 409: the operation id is registered for another tag, kind or set than the request names.
+    public const string TagOperationConflict = "tag_operation_conflict";
+    // 400: the registration's kind is missing or not one of EmoteTagOperationKind.
+    public const string TagOperationKindInvalid = "tag_operation_kind_invalid";
 }

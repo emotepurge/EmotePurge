@@ -93,8 +93,8 @@ Whoever builds new UI works through the [checklist in section 11](#11-checklist-
 - **It follows the theme** instead of staying dark in both modes. A theme-fixed dark canvas would sit on **every** cell and would be the loudest element on a light page — while the emotes it is meant to protect are the minority. The price deliberately accepted: an emote with a white outline loses its contour in light mode. The trade sits in exactly one place and is one line.
 - **The selection wash lies on the cell, not under the image.** Otherwise wash and image material fight over the same pixels — the `inset-ring` (8.5) carries the selection, the surface only reinforces it.
 - **The surface is flat — no alpha checkerboard.** A checkerboard answers a question these pages never ask (*which pixels are transparent*) and makes the never-used band look like a different kind of thing instead of the same thing with a zero on it.
-- **`.app-sprite-cell-void` is ballot-only.** There it marks an **archived** emote in the middle of a mixed grid in which no heading says so — the case a plate of its own exists for. In the atlas it has no business: "never used in the range" is already said there by the band heading, the printed 0 on every cell and the missing fill bar. **A marking that applies to every member of its own group marks nothing** — it only costs the evenness of the sheet.
-- **Reference:** `web/src/styles.css` (`--color-emote-canvas`, `.app-sprite-cell`), `web/src/app/features/usage-stats/usage-stats-page.html`, `web/src/app/features/voting/vote-session-detail-page.html`.
+- **`.app-sprite-cell-void` is for mixed grids without a heading: the ballot and the tags page.** On the ballot it marks an **archived** emote in the middle of a mixed grid in which no heading says so — the case a plate of its own exists for. The tags page's entries grid (#201, spec 9.4) is the same case: entries still in the set and entries that left it stand side by side, so a gone entry carries the plate plus a dimmed sprite. In the atlas it has no business: "never used in the range" is already said there by the band heading, the printed 0 on every cell and the missing fill bar. **A marking that applies to every member of its own group marks nothing** — it only costs the evenness of the sheet.
+- **Reference:** `web/src/styles.css` (`--color-emote-canvas`, `.app-sprite-cell`), `web/src/app/features/usage-stats/usage-stats-page.html`, `web/src/app/features/voting/vote-session-detail-page.html`, `web/src/app/features/tags/tags-page.html`.
 
 ### 2.5 The sprite sheet: bands, sidecar, dock
 
@@ -110,9 +110,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **The distribution strip carries the same four colours and a 3 px plinth.** Without a plinth a bar of the dead tail is one pixel high, and nobody perceives a colour on one pixel; the plinth also represents "never used" correctly — that is not a small number but a category of its own. Below it a flat segment bar whose widths are the usage shares: the same matter on the other axis, and read together the Pareto statement. It describes the **whole** set even when a filter is active — the strip says "the whole set, ordered by usage", a band heading says what lies underneath it. What gets labelled is not the segment but a wrapping legend beneath it — colour chip, share, band name, sized by content. Forcing the label into the segment width was the attempt to answer a pixel question with a percentage threshold: measured, "11% regular" needs 105 px and gets only 68 even at 1280 px, so it was cut off at **every** width — in English merely less conspicuously, because the words are shorter. Alignment under its own segment is the price for that, and at 11% width it was none anyway.
 - **The sidecar is the magnifier from `lg` up** (`<aside>`, sticky, 16 rem; the grid only becomes two-column once something is actually being inspected). Below that a compact meta row (`lg:hidden`) carries the same numbers. **The drilldown dialog stays** — it is the only way on the ballot, below `lg`, by touch and by keyboard, and it additionally carries the range, first and last use and the voting block. Y axis, peak rate and the live-days row appear in both.
 - **The sidecar never loads per cell.** Its day series comes from **one** call per (channel, range) — `GET /usage-stats/series`. A surface that hangs off the mouse pointer must not generate requests; sweeping through a band would otherwise be a load profile.
-- **Animation is earned by dwelling, and only ever for one emote at a time.** Cells draw every emote as its still. `EmoteSpriteAnimated` (sidecar, inspector row, drilldown dialog, ballot, and the hovered cell of the import grid, §7.3) keeps the still and lays the `2x.webp` animation on top only after the pointer or focus has rested for 200 ms; a still emote never gets a second request. **Under `prefers-reduced-motion: reduce` no animation is fetched or played at all** — the still stays, and switching the preference on while an animation shows withdraws it. This is decided inside `EmoteSpriteAnimated` (via `ReducedMotionService`, `core/motion/`), not at the call sites, so no surface can forget it.
-- **`.app-dock` appears only as long as there is something to do or to read:** a selection, or a 7TV run (delete, restore, import) that is running or has just finished — whose summary carries the protocol for download and must survive the last delete. A permanently parked action bar is a control the first visit has to read past. The dock carries, as the only surface of the app, a line in the accent colour — it marks the boundary of a living, reversible state. Which commands may stand in it and which belong in the page header is governed by §8.7.
-- **The active emote set gates only the marking half of the dock, not the dock itself.** The count row, the mass-delete panel and the ballot button are about the set of *this* channel and need one; the import section shows a run into a **foreign** set (§7.2) and is therefore mounted outside this gate. Otherwise a writing run together with its cancel button would disappear on a usage page without an active set while it is still running.
+- **Animation is earned by dwelling, and only ever for one emote at a time.** Cells draw every emote as its still. `EmoteSpriteAnimated` (sidecar, inspector row, drilldown dialog, ballot, and the hovered or focused cell of the import grid, §7.3, and of the tag entries grid, which plays on the same one-key rule and not at all on a coarse pointer) keeps the still and lays the `2x.webp` animation on top only after the pointer or focus has rested for 200 ms; a still emote never gets a second request. **Under `prefers-reduced-motion: reduce` no animation is fetched or played at all** — the still stays, and switching the preference on while an animation shows withdraws it. This is decided inside `EmoteSpriteAnimated` (via `ReducedMotionService`, `core/motion/`), not at the call sites, so no surface can forget it. **Named exception: the import confirm dialog's resolution step (§7.2) animates one ROW at a time, both its cells together** — comparing a source emote against its target needs both sides animated at once, not one after the other, so "one emote" widens to "one row" there without widening any further (every other row still draws plain stills).
+- **`.app-dock` appears only as long as there is something to do or to read:** a selection, or a 7TV run (delete, restore, import, undo) that is running or has just finished — whose summary carries the protocol for download and must survive the last delete. Close itself waits on that survival: `RunProgressPanel` only offers Close once the run has fully closed (its `dismissible` input, #230; since #256 bound to the run's own `phase === 'closed'` for all four docks — import, delete, restore and undo alike, not only the import). A run whose 7TV work is done but whose outcome is not yet final shows neither Cancel nor Close, so the summary and its protocol cannot be dismissed before either exists — that covers both the one re-read of a run's `unknown` rows (`settling`, for all four runs: up to 20 s, after a user's own cancel preceded by a 3 s grace) and, for all four docks, the closing report that follows it: up to `REPORT_TIMEOUT_MS` (30 s) per attempt, three attempts with backoff in between, so up to roughly 96 s before a report that never answers gives up and closes the run itself. A delete keeps the tab's unload guard through all of it, up to roughly 119 s after the last click; an import that replaces also up to roughly 119 s (its two reports run in parallel), an undo with a `full` row up to roughly 215 s (its two reports run one after the other); a restore has no unload guard. While a run is `settling`, its dock — delete, restore, import and undo alike — keeps the bar, the progress count and the failed rows exactly as the run left them and says "Finishing…", but shows no summary (its counts and every line and action beneath it) and no `unknown` rows until the re-read has answered (`RunProgressPanel`'s `settling` input); the not-active notice of an import is neither shown nor spoken before then (`DockOutcomeAnnouncer`, §4.5). A failed row reads the same before and after: import and undo give it its final reason already in the snapshot they publish for `settling`. A permanently parked action bar is a control the first visit has to read past. The dock carries, as the only surface of the app, a line in the accent colour — it marks the boundary of a living, reversible state. Which commands may stand in it and which belong in the page header is governed by §8.7.
+- **The active emote set gates only the marking half of the dock, not the dock itself.** The count row, the mass-delete panel and the ballot button are about the set of *this* channel and need one; the import section shows a run into a **foreign** set (§7.2) and is therefore mounted outside this gate. Otherwise a writing run together with its cancel button would disappear on a usage page without an active set while it is still running. **The restore run is its own section for the same reason (`RestoreProgressSection`, #253, since T9):** since the import entry stays reachable without a selected set (§7.3), a restore it starts can write into a set the page never had selected — the run therefore lives outside the marking half's gate, exactly like the import section, on both the usage-stats page and the voting-results page (whose mass-delete panel carries the same "Restore" entry at a finished delete run). What stays in the mass-delete panel is only the entry points: the delete button and the "Restore" button at a finished run, each with its own pre-check — never the run's own progress, notices or target line.
 - **Selection, dock and the 20 px history trigger are additionally gated behind `PointerModeService.isCoarse` — no 7TV write access without a mouse.** The 7TV write token can only be copied out of the devtools on 7tv.app, which a phone does not have; the gate is therefore the pointer type, not the width (`(pointer: coarse)`, not `any-pointer` — a desktop with an attached touchscreen keeps everything, because devtools remain). On `coarse` a click on the cell no longer marks anything but opens the drilldown dialog directly (§7.1), the mass-delete panel does not render at all, and in the page header of the usage page the same gate removes the entire `@if` block of the 7TV write paths — the Transfer button **and** the file-ingest trigger (§7.3).
 - **What falls away on `coarse` is not explained — what points into the void on `coarse` is.** The dock, the mass-delete panel and the two 7TV write paths of the page header disappear without comment: visually nothing is missing, so there is nothing to say. A *pointer* to one of these capabilities is the other case — it stays visibly in place and promises something whose target cannot deliver there. The example: the voting list's page header carries a permanent link to the usage-stats atlas, because that is where a ballot is now assembled (2026-09-19) — on coarse it gives way to a sentence (`voting.list.createEntryDesktopOnly`), since the atlas's own marking and dock are themselves `!isCoarse()`-gated and a mod on a phone would have nowhere to land. The manager how-to beneath it (`voting.list.createEntryHint`) no longer names that destination itself — the button already does — and says only what the button cannot: that a ballot is made of emotes the manager marks. It stands inside the page header itself, as its own row beneath the heading/button row — not merely placed after the header in the page's own `gap-8` flex column (that left it visually equidistant from the header above and the list below, and wrong the moment an error banner sat between them, 2026-09-19 correction) and not inside the empty state either — an empty-state-only placement disappeared the moment a session existed, exactly when a returning manager would look for it again (2026-09-19 correction, docs/DECISIONS.md) — and it is hidden the same way, for the same reason: it must not repeat to a coarse reader what the header already said they cannot do here. Purely visual switching of this kind belongs in the variant pair `pointer-coarse:hidden` / `hidden pointer-coarse:inline`, not in `PointerModeService` — the service is for decisions the code makes.
 - **The keyboard is equal, not an afterthought:** roving tabindex across the sheet, arrows move, space marks, Enter opens the history, shift-click transfers the state of the most recently clicked cell to a whole range — so it marks that range, or unmarks it again if the last click removed a mark. A *group* action must not do that: "mark all" stays purely additive, because a second press would otherwise destroy a hand-built selection in one click. The hint text for this is translated and stands visibly at the side — a keyboard operation nobody mentions does not exist for most people.
@@ -182,8 +182,8 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   Mnemonic: outline triggers, solid executes, quiet is outline in series. That the irreversible purge is **triggered** via outline and the reversible leave is **confirmed** via solid is thereby correct.
 - **When to apply:** Every destructive action gets a trigger **and** an execution: `danger`/`danger-quiet` trigger → dialog → `danger-solid` confirmation. A destructive button without a confirmation dialog is not provided for. Which surface the trigger sits on and at which position in an action row is said by §8.7 — this tiering only says how it looks.
 - **Severity justifies no exception from the repetition rule.** Purge and session revoke, too, run as `danger-quiet` in the admin lists — the longer the list, the worse the colour ladder. An irreversible action is safeguarded by the typed name confirmation, not by a red frame you see twenty-five times underneath one another.
-- **While a 7TV run of any kind (delete, restore, from K3 on import) is in progress, all 7TV start buttons are disabled, without hint text.** The `SevenTvRunArbiter` makes the mutual exclusivity visible without repeating it in words — the running progress is in the same dock and is itself the hint (#70). Since #72 this also holds for the header button "Transfer" (`usage-stats-page.html`, `[disabled]="atlasOrder().length === 0 || arbiter.activeRun() !== null"`) and since #91 for the file-ingest trigger next to it (`shared/seven-tv/file-import-trigger-gate.ts`) — both blocked during **each** of the three kinds of run, not only during an import of their own. The trigger does not inherit all of its neighbour's blocks in doing so: `atlasOrder().length === 0` deliberately does not apply to it, because the file brings its own rows along (§7.3).
-- **Reference:** Triggers: `web/src/app/features/channel-workspace/channel-workspace-layout.ts`, header buttons `web/src/app/features/usage-stats/usage-stats-page.html` and `web/src/app/shared/seven-tv/file-import-trigger.ts` (+ `file-import-trigger-gate.ts`); in series: `web/src/app/features/voting/vote-session-list-page.html`, `web/src/app/features/admin/admin-channels-page.ts`, `web/src/app/features/admin/admin-users-page.ts`. Execution: `web/src/app/shared/ui/confirm-dialog.ts`, `web/src/app/shared/seven-tv/mass-delete-panel.ts`.
+- **While a 7TV run of any kind (delete, restore, from K3 on import) is in progress, all 7TV start buttons are disabled, without hint text.** "In progress" includes the settling window after the last row — a re-read or a report to the backend without an end state yet (#256). Where the blocking run's own dock is mounted on the same page, that dock shows it as "Finishing…" (`<prefix>.settling`) and is the hint (#70); a page that mounts no dock for the blocking run at all (e.g. `vote-session-detail-page.html`, whose only 7TV-writing surface is the mass-delete panel) locks the same way but without that explanation on screen. The `SevenTvRunArbiter` makes the mutual exclusivity itself visible without repeating it in words. Since #72 this also holds for the header button "Transfer" (`usage-stats-page.html`, `[disabled]="transferButtonDisabled()"`) and since #91 for the import trigger next to it (`shared/seven-tv/import-trigger-gate.ts`) — both blocked during any run of any kind, running or settling, not only during an import of their own. The trigger does not inherit all of its neighbour's blocks in doing so: `atlasOrder().length === 0` deliberately does not apply to it, because the file brings its own rows along (§7.3). **Since #280 the same buttons also lock before a run exists:** a confirmed delete, restore, import or undo whose last live read is still out — the delete's live alias read, the restore's confirm-time duplicate check, the import's pre-check and re-check, the undo's freshness read; each service's `startCheckPending`, united in `SevenTvRunArbiter.startPending` — holds the same buttons: header "Transfer", the import trigger, the dock's copy shortcut, the mass-delete CTA and the import confirmation's executor bind to one condition, `SevenTvRunArbiter.startLocked` (a run running or settling, or such a start pending), and their click handlers return silently on it; the dock's restore entry reaches the same effect in its own shape — hidden while a run holds the arbiter, disabled on `restoreConfirmPending() || startPending()`. So neither window leaves a different set of these buttons usable. Each flag is set only after its own confirmation has closed, and the confirmed start points keep reading `activeRun`/`activeClaim`, so no run locks out its own start. No dock shows this wait; it is audible only via `DockOutcomeAnnouncer` (§4.5). Since #256, a *confirmed* start that the arbiter still refuses says why: the transient status message of §4.5 (`sevenTvRun.notStarted.*`) on the page and, where a panel already has its own persistent notice (the mass-delete panel's `abortNotice`), there instead — the still-silent locks above (a disabled trigger, the confirm dialog's own `runBlocked`) are unaffected.
+- **Reference:** Triggers: `web/src/app/features/channel-workspace/channel-workspace-layout.ts`, header buttons `web/src/app/features/usage-stats/usage-stats-page.html` and `web/src/app/shared/seven-tv/import-trigger.ts` (+ `import-trigger-gate.ts`); in series: `web/src/app/features/voting/vote-session-list-page.html`, `web/src/app/features/admin/admin-channels-page.ts`, `web/src/app/features/admin/admin-users-page.ts`. Execution: `web/src/app/shared/ui/confirm-dialog.ts`, `web/src/app/shared/seven-tv/mass-delete-panel.ts`. The tag clear-out's execution is `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` (trigger `tag-run-actions.ts`, §7.5).
 
 ### 4.3 StatusBadge
 
@@ -196,7 +196,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   | `success` | LIVE · "running" states |
   | `neutral` | inactive/neutral |
   | `warning` | degraded/warning |
-  | `danger` | error/disconnected |
+  | `danger` | error/disconnected · since #254 also the mark of a **destructive option** in a choice: "removes emotes" on the undo row of the file step's switch (§7.3) — the one place the tone marks what an option *will do* rather than a state |
 
 - **The test question is "notable how often?"** A pill that stands in every row no longer marks anything — it is a colour ladder. What is the same word on most rows becomes quiet text: the **roles** in the overview (broadcaster/moderator/7TV editor) are a fact about *you* and repeat themselves; the **voting audience** carries its restriction as a contrast step instead of as a blue pill; **offline** is the inconspicuous case. The pill stays reserved for what applies *right now* and does not stand on every row — **LIVE** is the model case.
 - **State ≠ property.** What a row currently *is* (bot is measuring / session is running / Twitch token present) is `<app-state-dot>` with `tone="on"|"off"` — dot plus word instead of a pill. That way the state does not compete with the properties next to it, and the colour carries no meaning the word does not already carry.
@@ -219,10 +219,10 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 
 - **What applies:** Feedback that acknowledges something just completed and has nothing more to say afterwards is **not** a banner but a `<span role="status">` that disappears on its own after 4000 ms. There is **no** toast service and none is to arise; the pattern is deliberately written out per place: a constant `…_FEEDBACK_MS = 4000`, a signal with the translation key, a `setTimeout` handle that is cleared **first** when it is set anew, and a cleanup when the component is destroyed.
 - **The role is `status`, never `alert`.** An acknowledgement is not an error; `alert` interrupts the screen reader mid-sentence and is reserved for something that demands attention immediately (4.4).
-- **When to apply:** "Resync is queued", "n emotes have dropped out of the selection" — things that *have happened*. A state that **persists** (reauth needed, sync pending, request failed) belongs in a `NoticeBanner` and must not fade out while it applies.
-- **The place must survive the case it reports.** The message does not belong on a surface that disappears through the same event. Concretely: a message about a shrunken selection must not stand in the dock, because the dock unmounts as soon as the selection is empty (2, 8.7) — that is, in exactly the worst case. It therefore sits on the emote count row, which always stands. The same holds for the *announcement* of what the dock does show: the duplicate and resync notices of a restore and of an import stand visibly in the dock, but the dock mounts and unmounts with its own content (`actionDockHasContent`) — and a fully refused run (every row already present) is exactly what mounts it. A status region inside the dock is then created in the same change-detection pass as its text and announces nothing. Their announcement therefore comes from `DockOutcomeAnnouncer` (`shared/seven-tv/dock-outcome-announcer.ts`), which each host page mounts permanently outside every dock gate, `!isCoarse()` included — `usage-stats-page.html` with import outcomes, `vote-session-detail-page.html` with restore outcomes only, since it shows no import section. **The same holds for a line inside an already-mounted dock whose own `@if` creates it together with its sentence**: the usage-stats dock's "n of them hidden by the filter" row (`hiddenSelectedCount`) is spoken by the same announcer, fed a count that is 0 whenever the row is not on screen, so the region never says something the dock does not show. **The marked-count row differs (Opus review, 2026-09-19):** it is reachable in the accessibility tree itself again, not `aria-hidden` — this is the one visible dock line the announcer does *not* continuously mirror, because an individual mark or unmark already announces itself through its own cell's `aria-pressed` flip, and mirroring the live count here too spoke every one of those a second time. The announcer instead speaks only the outcome of a bulk-mark gesture ("mark all" in the toolbar, §8.7, or the per-band one) — exactly the gesture that can take the row from unmounted to a double-digit count with nothing else to announce it — holding that number until a non-bulk change retires it (an individual mark/unmark, a filter-driven prune, a clear) or the row itself leaves the screen, and *not* merely until the selection empties (follow-up, 2026-09-19): a lone deselect that leaves the selection non-empty must retire the announcement too, otherwise a later bulk gesture landing back on the same total would repeat the paragraph's text unchanged and `role="status"` would announce nothing for a gesture that really happened. The notices in the dock and in the mass-delete panel, and the hidden-by-filter row, are `aria-hidden` — the text only, never a focusable control inside it (axe `aria-hidden-focus`); the hidden-by-filter row's "reset filters" button therefore stays outside the hidden span. With several messages at once it speaks one paragraph each, in the dock's reading order: the marked count first, then the hidden-by-filter line, then restore before import, and within each the skipped count, the check-unavailable notice, then the resync acknowledgement. `role="status"` is implicitly `aria-atomic="true"` (WAI-ARIA 1.2, §status); a status region that holds several messages at once, as this one does, must set `aria-atomic="false"` explicitly, otherwise every added or changed paragraph re-reads all of them — a single-message status region elsewhere keeps the implicit default.
-- **The live region itself is permanently mounted, only its text comes and goes.** A `role="status"` element that only enters the DOM together with its content (`@if (feedback(); as f) { <span role="status">…</span> }`) announces **nothing** on most screen reader/browser pairings — those announce only a mutation *inside* an already existing region, not its own appearance. Binding, therefore, are two elements: a permanently mounted `sr-only` region with `role="status"` in which only the *content* changes via `@if`, plus a visible twin next to it marked with `aria-hidden="true"` — otherwise the same message is read out twice, once from the live region, once from the visible text. Precedent and rationale in the comment: `app-shell.ts` (the `liveQuotaExhausted` message); since #94 (P2) likewise `usage-stats-page.html`; since #134 likewise `channel-workspace-layout.ts`, `admin-channels-page.ts`, `admin-users-page.ts`, `vote-session-list-page.html`, and for the dock's outcome notices and its hidden-by-filter line `DockOutcomeAnnouncer` on `usage-stats-page.html` and `vote-session-detail-page.html` (see the bullet above for why not inside the dock). **Not everything that cannot announce itself needs a twin:** inside a modal the dialog pulls focus and is read out whole on open, so a block that mounts with the dialog gains nothing from a live region and only competes with the banners already in it — `delete-confirm-dialog.ts`'s hidden-by-filter block is deliberately a plain paragraph for that reason. **One known open instance:** `run-progress-panel.ts` — the whole progress panel is `role="status"` and mounts together with its first state, so the start of a run is not announced.
-- **Reference:** `channel-workspace-layout.ts` (`showResyncFeedback`), `admin-channels-page.ts`, `admin-users-page.ts` (role-cache-cleared notice), `vote-session-list-page.html` (copy-link notice), `dock-outcome-announcer.ts` (duplicate/resync notices of the dock, placed by `usage-stats-page.html` and `vote-session-detail-page.html`), `usage-stats-page.ts` (`showSelectionPrunedFeedback`), `app-shell.ts` (live-region precedent).
+- **When to apply:** "Resync is queued" (admin channel list), "n emotes have dropped out of the selection" — things that *have happened*. A state that **persists** (reauth needed, sync pending, request failed) belongs in a `NoticeBanner` and must not fade out while it applies.
+- **The place must survive the case it reports.** The message does not belong on a surface that disappears through the same event. Concretely: a message about a shrunken selection must not stand in the dock, because the dock unmounts as soon as the selection is empty (2, 8.7) — that is, in exactly the worst case. It therefore sits on the emote count row, which always stands. The same holds for the *announcement* of what the dock does show: the duplicate and resync notices of a restore and of an import stand visibly in the dock, but the dock mounts and unmounts with its own content (`actionDockHasContent`) — and a fully refused run (every row already present) is exactly what mounts it. A status region inside the dock is then created in the same change-detection pass as its text and announces nothing. Their announcement therefore comes from `DockOutcomeAnnouncer` (`shared/seven-tv/dock-outcome-announcer.ts`), which each host page mounts permanently outside every dock gate, `!isCoarse()` included — `usage-stats-page.html` with import and undo outcomes, `vote-session-detail-page.html` with restore outcomes only, since it shows no import or undo section — plus, on both, the pre-run waits of the delete and the import (#280, see below). **The same holds for a line inside an already-mounted dock whose own `@if` creates it together with its sentence**: the usage-stats dock's "n of them hidden by the filter" row (`hiddenSelectedCount`) is spoken by the same announcer, fed a count that is 0 whenever the row is not on screen. **The rule: the region never says something the dock does not show.** **The one named exception (#280) is the pre-run wait:** between a confirmed delete's, restore's, import's or undo's confirmation closing and its run appearing, the last live read (the delete's live alias read, the restore's confirm-time duplicate check, the import's pre-check and re-check, the undo's freshness read) runs with nothing in the dock at all, and the only visible sign is the locked start triggers (§4.2) — a disabled button changes silently for a screen reader, and §6.1 allows no loading text for it. The announcer therefore speaks `massDelete.startChecking`/`restore.startChecking`/`import.startChecking`/`undo.startChecking` while that read is out, but only once it has lasted `START_CHECK_ANNOUNCE_DELAY_MS` (1 s): most reads answer sooner, and a line opening every single start would be noise; the triggers lock at once regardless. **The marked-count row differs (Opus review, 2026-09-19):** it is reachable in the accessibility tree itself again, not `aria-hidden` — this is the one visible dock line the announcer does *not* continuously mirror, because an individual mark or unmark already announces itself through its own cell's `aria-pressed` flip, and mirroring the live count here too spoke every one of those a second time. The announcer instead speaks only the outcome of a bulk-mark gesture ("mark all" in the toolbar, §8.7, or the per-band one) — exactly the gesture that can take the row from unmounted to a double-digit count with nothing else to announce it — holding that number until a non-bulk change retires it (an individual mark/unmark, a filter-driven prune, a clear) or the row itself leaves the screen, and *not* merely until the selection empties (follow-up, 2026-09-19): a lone deselect that leaves the selection non-empty must retire the announcement too, otherwise a later bulk gesture landing back on the same total would repeat the paragraph's text unchanged and `role="status"` would announce nothing for a gesture that really happened. The notices in the dock and in the mass-delete panel, and the hidden-by-filter row, are `aria-hidden` — the text only, never a focusable control inside it (axe `aria-hidden-focus`); the hidden-by-filter row's "reset filters" button therefore stays outside the hidden span. With several messages at once it speaks one paragraph each, in the dock's reading order: the marked count first, then the hidden-by-filter line, then the delete's pre-run wait (#280, `massDelete.startChecking` — the marking half's own, on both pages that mount the mass-delete panel), then restore before import, then the undo (#254), and within each first the pre-run wait of that family when it stands (#280: `restore.startChecking` in the restore group, `import.startChecking` in the import group, `undo.startChecking` in the undo group — the import's on both pages, because its checks outlive a navigation and can lock a vote-session page's mass-delete button, the undo's on the usage-stats page only, because its reads are dropped with the trigger that started them), then the skipped count (the undo: one line per skip reason — its transient notice of a start gives way once the run that start began stops running; the run's summary lines name the same candidates once the run has settled — while it is `settling` neither stands, and the two never stand together), the check-unavailable notice, then the resync acknowledgement — for an import into a tracked channel's *non-active* set (2026-09-21), the resync never fires at all, and a `copiedNotActiveNotice` (`dock-outcome-announcer.ts`) takes that same slot instead, naming the set the copy actually landed in rather than claiming a channel-page update that never happens. `role="status"` is implicitly `aria-atomic="true"` (WAI-ARIA 1.2, §status); a status region that holds several messages at once, as this one does, must set `aria-atomic="false"` explicitly, otherwise every added or changed paragraph re-reads all of them — a single-message status region elsewhere keeps the implicit default.
+- **The live region itself is permanently mounted, only its text comes and goes.** A `role="status"` element that only enters the DOM together with its content (`@if (feedback(); as f) { <span role="status">…</span> }`) announces **nothing** on most screen reader/browser pairings — those announce only a mutation *inside* an already existing region, not its own appearance. Binding, therefore, are two elements: a permanently mounted `sr-only` region with `role="status"` in which only the *content* changes via `@if`, plus a visible twin next to it marked with `aria-hidden="true"` — otherwise the same message is read out twice, once from the live region, once from the visible text. Precedent and rationale in the comment: `app-shell.ts` (the `liveQuotaExhausted` message); since #94 (P2) likewise `usage-stats-page.html`; since #134 likewise `admin-channels-page.ts`, `admin-users-page.ts`, `vote-session-list-page.html`, and for the dock's outcome notices and its hidden-by-filter line `DockOutcomeAnnouncer` on `usage-stats-page.html` and `vote-session-detail-page.html` (see the bullet above for why not inside the dock). **Not everything that cannot announce itself needs a twin:** inside a modal the dialog pulls focus and is read out whole on open, so a block that mounts with the dialog gains nothing from a live region and only competes with the banners already in it — `delete-confirm-dialog.ts`'s hidden-by-filter block is deliberately a plain paragraph for that reason. **One known open instance:** `run-progress-panel.ts` — the whole progress panel is `role="status"` and mounts together with its first state, so the start of a run is not announced. **Its failure list follows the pattern, though (#275):** a `role="alert"` region with an explicit `aria-atomic="false"` (`role="alert"` is implicitly atomic, like `status`) that stays mounted as long as the panel does, empty until the first failed or unclear row — every row is inserted into that same region and spoken on its own, and a row that leaves and rejoins it (an `unknown` row across a run's `settling`) is spoken once more without the rows that stayed. **The undo's second report has a region of its own (#254):** the panel's region carries the removal report (`sync-deleted`) with its reason and retry; the restore report (`sync-restored`) stands right below the panel in `UndoProgressSection`'s own `role="status"` `aria-atomic="false"` block, mounted with the run rather than with the report's end state, so its failure and its retry are announced when they appear. Both read in the order they are sent: removal report first, restore report second (F8).
+- **Reference:** `admin-channels-page.ts` (`showResyncFeedback`), `admin-users-page.ts` (role-cache-cleared notice), `vote-session-list-page.html` (copy-link notice), `dock-outcome-announcer.ts` (duplicate/resync notices of the dock, placed by `usage-stats-page.html` and `vote-session-detail-page.html`; since #254 also the undo's skipped notice and resync acknowledgement, placed by `usage-stats-page.html` only), `undo-progress-section.ts` (the restore report's own region), `usage-stats-page.ts` (`showSelectionPrunedFeedback`; since #256 also the arbiter's `refusedStart` notice — no timer of its own, the arbiter holds `REFUSED_START_FEEDBACK_MS`), `app-shell.ts` (live-region precedent).
 
 ## 5. Forms & validation
 
@@ -290,10 +290,11 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **What applies:** **Every** dialog runs through `@angular/cdk/dialog` — never `window.confirm`, never hand-built overlays. Focus trap, Escape, backdrop click, `aria-modal`, focus return come from the CDK.
 - **Opening: never `Dialog.open` directly.** Every dialog component exports its own `open<X>Dialog(dialog, data)` function next to it, which internally calls `openAppDialog` (`shared/ui/dialog.ts`) — that is where `backdropClass`, `panelClass` and the naming sit. The reason is measured: the three-liner stood at twelve call sites by hand, five of which had forgotten `ariaLabelledBy`. A new dialog gets its `open…()` function in the same commit as the component.
 - **Inside: `<app-dialog-shell>`** (`shared/ui/dialog-shell.ts`) — surface, padding, heading, body, action row. The spacing is done by the shell (flex column), **not** by `mb-*` on every child; content that belongs together more tightly wraps itself in its own `flex flex-col gap-1`. The width **and the height** belong to the pane (`.cdk-overlay-pane.app-dialog-panel`), never to the content.
+- **The action row stays visible while the body scrolls (#226), and the sheet's drag handle is pinned by the same rule.** Both are `position: sticky` against the pane, the handle to its top edge, the row to its bottom — `-mx-6 -mt-6` (handle) and `-mx-6 -mb-6` (row) cancel the shell's own `p-6` on those sides so each one's margin box reaches the pane's edge, and the sticky offset itself is plain **`0`** (`top-0`, `bottom-0`) — **not** a second negative value. A margin and a sticky offset do two different jobs: the margin decides where the box sits in normal flow (bled out past the shell's padding), the offset decides where the *stuck* box is clamped to relative to the pane's own edge — `0` means flush with it. An earlier version of both (`-top-6` on the handle, mirrored as `-bottom-6` on the row when #226 was first built) read the margin and the offset as cancelling one another, which happened to look right at rest and at the very end of a scroll — the only two states that are *not* actually stuck — but for every position in between, the real defect, it pinned each one 24 px past the pane's true edge: the handle's own grab bar (the `span` inside the 44 px touch target) was entirely clipped out of view for as long as it was genuinely stuck, and the row's `pb-6` cushion was clipped the same way, leaving its buttons flush against the raw pane edge with no visible padding. Caught by measuring `getBoundingClientRect()` mid-scroll, not at the ends — `web/e2e/dialog-action-row.e2e.spec.ts` and `web/e2e/touch-mobile.e2e.spec.ts` both pin a case for it. The fix is in `DialogShell` itself, once, for every dialog that uses it — never a second, nested scroll area inside one dialog's own content: that was tried for the import target picker and rejected, because a scroll area inside a scrolling pane behaves badly on touch and would make that one dialog behave differently from the other eleven. This is deliberately a sticky offset, not a flex-column height chain (`h-full` on the shell, `overflow-y-auto` on the body): two component hosts sit between the pane and the shell, both `display: inline` by default, and a height chain does not survive them — the same reason the pane, not the shell, is the scroll container in the first place. The row carries its own opaque surface (`bg-surface`) and a `border-t border-border` — without the first, content scrolling underneath would show through; without the second, there would be nothing to mark where "still scrolling" ends and "always visible" begins. It rounds its bottom corners (`rounded-b-lg`) to match the shell's own **only on a fine pointer** — the sheet's shell has no bottom radius to match, it is flush with the screen edge instead. `overflow-hidden` on the shell remains forbidden for the reason given above (it would break both sticky pins the same way); nothing about this changes that constraint or the pane's role as the one scroll container.
 - **On a coarse pointer the same dialog is a bottom sheet — the same instance, a second appearance, no second overlay stack.** Two separate `@media (pointer: coarse)` rules carry that, not one: the docking sits on the **wrapper**, not on the pane — `.cdk-global-overlay-wrapper:has(> .app-dialog-panel) { align-items: flex-end !important; }`, the `!important` mandatory because CDK's `GlobalPositionStrategy` writes `align-items` as an inline style onto the same wrapper, and inline is only beaten by `!important`. The second rule stays on the pane class and changes `max-width` (`none` instead of `min(28rem, calc(100vw - 2rem))`) and `max-height` (`85dvh` instead of `calc(100dvh - 2rem)`) — `width: 100%` is already in the base rule and never changes, so it is never "full width instead of 28rem" but "no capping any more". Whoever transfers the docking to a new panel class and copies only the pane rule gets a centred dialog — the same type of mistake as the two CDK traps below, only not yet listed at this spot. The geometry gets by without `openAppDialog()` and without a change to the pane choice; `PointerModeService.isCoarse` decides live instead of once at opening time. The sheet **chrome**, by contrast, sits in `dialog-shell.ts`: `DialogShell` renders the drag area with the attribute `data-sheet-handle` — the `SheetDrag` directive looks for exactly that in order to allow a drag gesture; if the name changes on one side without the other, drag-to-dismiss breaks silently. **The drag area is the entire top edge of the sheet, not the visible bar:** the sticky bar is dimensioned at `min-h-11` (44 px, the comfort target from §10 — the bar itself is 4 px high), and the head block beneath it carries the same attribute, because a drag that starts on the heading means the sheet and not the content. The two have to abut **without a gap**: the head block swallows the shell's `gap-4` via `-mt-4 pt-4` and gives it back as padding of its own. If the gap stays with the shell, it is neither handle nor `touch-none` — a strip in which a gesture has to compete with the browser's scrolling, and precisely where a thumb is aiming. `web/e2e/touch-mobile.e2e.spec.ts` pins one half of this (`toHaveCount(2)` on `[data-sheet-handle]` inside the pane, height of the bar ≥ 44 px, and the two boxes touching) — that a real dialog renders the handles under this name at all; for the other half, the literal string in `SheetDrag`, only the directive's spec stands. The geometry says nothing about either, it comes from the media query and holds even without a handle at all. The handle carries the shell's `rounded-t-2xl` a second time: its negative margins blend it into the corners the shell's radius leaves free — without that the sheet reads square at the top. `overflow-hidden` on the shell would be the other way and is forbidden, it would make the shell its own scroll container and would break the sticky anchoring of the handle. The pane remains the scroll container here as well, see the CDK traps below.
 - **Drag-to-dismiss** (`shared/ui/sheet-drag.ts` + `sheet-drag-policy.ts`) closes via `DialogRef.close()` and is therefore not a fourth exit next to backdrop tap and Escape. The gesture begins only at the handle or when the pane is scrolled to the top — otherwise a downward drag means "scroll the content up". The second path is not a substitute for the first: as soon as the content is longer than the sheet, the browser takes a downward movement as a scroll for itself and cancels the pointer. Reliable is only what carries `data-sheet-handle` and is thereby `touch-none`. **And it begins only with the first movement beyond 4 px: a mere press takes no pointer capture and writes no inline style.** That is not a subtlety — `setPointerCapture` on `pointerdown` relocates the following `click` onto the capture element, that is onto the shell, underneath which every button of the dialog lies. With pointer type `touch` that goes unnoticed, with pointer type `mouse` every button in every dialog is dead — and precisely this combination (`pointer: coarse` with mouse input) is the devtools emulation with which this view is checked by hand. The dismissal threshold has **three** numbers, not two: `distancePx ≥ 72` **or** `velocityPxPerMs ≥ 0.5`, but only from a minimum distance of `24 px` — without the lower bound a four-pixel twitch while tapping would close the sheet, because a short movement is by definition fast. **Both quantities are measured at the end of the gesture, not over its course**, and that is the part that was wrong twice: velocity averaged over the whole gesture divides every millisecond of a resting finger into the result (hence `VELOCITY_WINDOW_MS`, the last 100 ms), and the distance, read from the last *reported* movement, lags behind, because the browser coalesces and discards `pointermove` — the hastier the gesture, the more so. A hasty gesture is a short one, so it stands and falls with exactly these two numbers.
 - **Naming (every dialog needs an accessible name):** either a visible heading — then `[dialogTitle]` or a `[dialog-header]` slot with `id="app-dialog-title"`, and `openAppDialog` wires up `ariaLabelledBy` itself — **or** an `ariaLabel` with a short action phrase. A dialog with neither is a bug.
-- **Action row: cancel always comes first.** That way the CDK's `first-tabbable` default lands on the harmless button; an explicit `cdkFocusInitial` becomes unnecessary. A *choice* (format, scope) belongs in the body as a radio group, not as a second exit button in the footer — otherwise equal-ranking options compete as buttons and one has to be arbitrarily toned down.
+- **Action row: cancel always comes first.** That way the CDK's `first-tabbable` default lands on the harmless button; an explicit `cdkFocusInitial` becomes unnecessary. The one exception is a secondary navigation link in the action row (the emote drilldown's "Open on 7TV"): it sits at the start, before the harmless control, which then carries `cdkFocusInitial` so initial focus still lands on it. A *choice* (format, scope) belongs in the body as a radio group, not as a second exit button in the footer — otherwise equal-ranking options compete as buttons and one has to be arbitrarily toned down.
 - **Colour in a dialog means "this case is unusual".** Notices that apply to *every* run ("irreversible", "not all channels detectable") are quiet — `fg-secondary`/`fg-muted`. Only the finding that distinguishes this run from the others becomes an `<app-notice-banner>`. Four stacked warning colours in the delete dialog effectively said: none of them is important.
 - **Name lists** ("this will be deleted") via `<app-name-preview-list>` — capped at 50 plus a counted remainder, ruled rows per §2.1, bleeding full-width against the shell's `p-6`.
 - **Choice criterion:**
@@ -348,19 +349,85 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   been in the export dialog (§7.4) since #141 and inherits its scope default `visible` — the target dialog
   stays with its `selection` default, because the two are now separate commands with separate
   risks, no longer two exits of the same dialog.
-- **Confirmation dialog, row order:** title (count + target channel) → origin row (channel,
+- **Confirmation dialog, row order:** title (count + target channel — or, for a plan with no ADD at
+  all and at least one adopted rename, "Align N names in the target set?" instead, since "0 emotes …
+  copy?" would misdescribe a run that only renames; and for a plan with nothing to add at all "Nothing to copy"
+  instead of "0 emotes … copy?") → origin row (channel,
   or file with export date/channel) → target row "Target: channel · set …" as soon as the target data
   are there → exactly **one** of three loading states (hand-rolled skeleton per the §6.1 pattern /
   `no-set` banner / `failed` banner with retry) → shared-set warning (error) or "check not
-  possible" (warning) → slot projection (overflow as a warning banner, otherwise quiet text) →
-  stale notice if the last sync of the target failed → "already in the target set" row →
-  name-collisions row + `NamePreviewList` → invalid-names row + `NamePreviewList`
+  possible" (warning) → **removal line** (warning banner "N emotes will be removed from the target
+  set", only while the plan replaces a target — #230) → **rename line** (quiet text, not a banner —
+  nothing is lost, an existing entry is only renamed — "N entries in the target set will be
+  renamed", only while the plan holds at least one adopted rename) → **target-check banner**
+  (error, only after a live read did not release the run: the drifted rows by name, or the failed read, or a refused
+  download; notice action "Reload target" for the drifted and failed-read cases, absent for a
+  refused download — the drifted case's own reload reads the target live (#256 point 2), while the
+  failed-read case's reload repeats the ordinary load — and, in the same banner, the committed decisions a
+  reload of the target no longer fits, by name) → slot projection (overflow as a warning banner,
+  otherwise quiet text; net change of the plan, so a replace counts its removed entries) →
+  stale notice if the last sync of the target failed → "already in the target set" row (left out when
+  every offered row is already there: the "nothing to add" banner below then says the same) →
+  name-collisions row with its **"Resolve" trigger** (`outline`, visible text "Resolve", accessible
+  name naming the group, locked while a live read runs) + "resolved: N" (only once a row
+  of the group carries a decision) + `NamePreviewList` → alias-mismatch row with its own
+  "Resolve" trigger + "resolved: N" + `NamePreviewList` → invalid-names row + `NamePreviewList`
   (non-ASCII characters in the emote name — both rows say "7TV will reject this" and therefore
   stand next to each other) → **discarded rows before collapsed
   duplicates** (real data loss weighs more than mere consolidation — the reason is stated at
   `discardedRows`/`duplicatesCollapsed`) → "nothing to add" banner → "This list comes from
   this channel" → the quiet notice about the automatic run → (only in the loading state: the
-  loading hint next to the action buttons) → Cancel / Copy.
+  loading hint next to the action buttons; only while the live read runs: the verifying hint in the
+  same place) → Cancel / the executor. Without a conflict none of the #230 rows exists and the
+  dialog reads exactly as before.
+- **The executor has three states, one button — but only when the plan removes something**
+  (#230, docs/plans/Plan-230-Namenskonflikte.md section 2). Without a replace it is "Copy", as
+  always: no read, no download. With one it reads "Save recovery file" (`primary`, `lg`); the
+  click reads the target set live and checks every replace target at entry level (button locked,
+  the verifying hint beside it via `aria-describedby`), then downloads the recovery file and the
+  button turns into "Start", which closes the dialog with the plan. "Start" is not reachable before
+  the download, and only the newest read may answer — a new read cancels the one before it. A
+  drifted target sends the button back to "Save recovery file", sets that row back
+  to skip and shows its live counterpart in the resolution step; a failed or incomplete read
+  releases nothing and keeps the decisions. Any change to the decisions after the file was saved
+  makes the button ask for a new file — the one on disk describes a plan that no longer is.
+  `runBlocked` locks all three states silently, like "Copy".
+- **The resolution step is the second step of the same dialog, not an overlay of its own.**
+  One conflict group per opening; the pane widens to `app-dialog-panel-wide` for exactly this step
+  and narrows again on the way back. Row order: a quiet explanation of the actions → **column
+  headers** ("Source" → "Target · {set name}" | "Action", `label` micro type, `aria-hidden` — the
+  wide layout only; the target's name is the dialog's own resolved `targetSetLabel`, so header and
+  title never disagree) → the virtualized table (source sprite and name, target sprite and
+  name(s) — both aliases for a #74 duplicate —, then a radio group per row named "Action for
+  {source}") → "Back" / "Apply" in the action row, the lock reason beside "Apply" naming the rows
+  by source name. Only the row under the pointer, or failing that the row holding keyboard focus,
+  animates its two sprites — both cells together, since the row is a comparison (§113's named
+  exception); every other row draws a plain, always-settled still, the same `pointerKey ??
+  focusKey` idea `foreign-emote-grid.ts` uses for its own hovered cell (§7.3). Below 760px content width the header row disappears and each stacked source/target
+  cell instead carries its own `aria-hidden` caption (issue #268). Actions that do not
+  apply to a row stay listed, disabled, with their reason in brackets (the target picker's idiom
+  above) — replace for an untracked target or for a drifted row whose live counterpart no
+  longer holds the name ("reload target first"), adopt where the target name is taken or
+  duplicated. A
+  rename opens a text field prefilled with the source name, with the §5.3 field error. **A reserved
+  consequence line sits below the name on whichever side an action affects** (issue #268), always
+  rendered so a chosen action never changes the row's fixed height: replace dims and strikes
+  through the target sprite/name and reads "will be removed" (`text-danger-fg`); adopt reads
+  "becomes '{source name}'" under the target; rename reads "will be added as '{typed alias}'"
+  under the source, following every keystroke; skip reads "will be kept" under the target (quiet
+  text, not a banner — nothing changes, the line only says which side survives untouched) unless
+  the target is already gone, where skip leaves both lines empty like every other action that
+  touches nothing there. Each row's radiogroup
+  points `aria-describedby` at both its source and target consequence line ids, present whether or
+  not they currently hold text. "Apply"
+  commits the group's decisions; "Back" keeps the committed ones as they were and keeps the edits
+  for the next opening. The rows carry a roving tabindex (arrow up/down, Home/End, scrolled into
+  the viewport first), because a virtualized row outside the buffer is not in the DOM and Tab alone
+  never reaches it. The roving tabindex covers the row containers only: the controls inside the
+  rows keep their natural tab stops, so Tab walks through the radio group and rename field of each
+  rendered row in turn and on into the next one, up to the end of the buffer. The viewport is the only scroll container (`dvh`
+  sizing as in the foreign emote grid), and there is no sheet variant: the 7TV write paths are
+  hidden on a coarse pointer.
 - **The target-data loader (`core/emotes/import-target-loader.ts`, `loadImportTarget`) emits exactly
   once and never throws** — the three inner requests (`getSetStatus`, `listEmotes`,
   `getSetWarning`) catch their own error and deliver a tagged value instead of letting the `forkJoin`
@@ -381,19 +448,30 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   later. **This difference is intentional, not a straggler** — when unifying,
   read up here first, do not "correct" the import.
 - **Reference:** `web/src/app/shared/seven-tv/import-target-dialog.ts`, `import-confirm-dialog.ts`,
+  `import-conflict-resolution-step.ts`, `conflict-resolution.ts`,
   `import-target-options.ts`, `import-preview.ts`, `slot-projection.ts`,
   `web/src/app/core/emotes/import-target-loader.ts`; caller `web/src/app/shared/seven-tv/import-flow.ts`.
 
 ### 7.3 Ingest dialog (#91, since #147 the one import dialog)
 
-- **What applies:** Everything that brings emotes **into** the channel of the page begins in the page
-  header with the trigger `<app-import-trigger>` (§8.7 governs the surface, §4.2 the blocks) and runs through **one**
+- **What applies:** Everything that brings emotes **into** a set from a channel page — into the
+  channel of the page for the copy sources, into the set a restore file names for a restore (#253), and back into
+  the set a transfer file names when its replacements are undone (#254) —
+  begins in the page header with the trigger `<app-import-trigger>` (§8.7 governs the surface, §4.2 the blocks) and runs through **one**
   dialog: `ImportSourceDialog` (`shared/seven-tv/import-source-dialog.ts`,
   `openImportSourceDialog`). **Its first step is the source selection** — until #147 the
   foreign channel had a header button of its own next to it, which contradicted spec decision E1 ("one source among others
   in the import dialog, not a page of its own"). A fourth source is a fourth row in
   this step, not another button and explicitly **not** a greyed-out placeholder as long as it
   does not exist.
+- **The trigger stays visible on a channel page without a selected set (#253, since T9).** A
+  restore file names and checks its own target regardless of the page (see the file branch
+  below), so a channel before its first sync, or one that just replaced its way into the
+  untracked, still needs a way in. Only the two copy-source rows — "From a channel" and "From
+  7TV's leaderboard" — are disabled then, each with a reason line beneath its label ("No set to
+  copy into"), the same **shown, not hidden** idiom every other disabled row in this app uses
+  (§10, "Disabled explains itself"; the target picker's own disabled rows, #200 8.6). The file
+  row is never one of the disabled two — see the file branch below.
 - **Step sequence (contract):**
   1. **Source selection** — one ruled row per source with a label and a muted hint line
      beneath it, both part of the accessible name (the same two-line pattern as §7.4). The row
@@ -430,20 +508,69 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   "Load set" — the pane grows around the field, the field does not move.
 - **File branch (`FileImportStep`, `shared/seven-tv/file-import-step.ts`).** It **reads and checks**
   the file — nothing more. Until #147 it was a dialog of its own (`FileImportDialog`); what changed is
-  only its housing, not its behaviour.
+  only its housing, not its behaviour. **A restore file names its own target, and the step checks
+  it** (#253): the set comes from the file (`meta.emoteSetId` of a purge protocol,
+  `meta.targetEmoteSetId` of a transfer protocol), never from the page, and is not held against the
+  page's channel or selected set. The check is the step's third one, after the envelope and the
+  parser: the set must be in the caller's target list, `NORMAL` and editable
+  (`resolveEditableSet`). A blocked check is a banner like any other file error — "not editable or no
+  longer there", "not a normal set", or "cannot be checked right now" — and the dialog stays open;
+  only a cleared target closes it. While the check runs the file control carries `aria-disabled`
+  (not `disabled`: it is where the caret sits after the native file window closes) and takes no
+  second pick. **Without a selected set on the page the branch reads restore files only**; an emote
+  list or a usage export is refused with its own banner (no set to copy into) before it is parsed.
 - **Row order in the file branch (contract):**
-  1. The **list of the three permissible kinds of file**, each its own list entry with the addition
-     "as JSON": purge protocol (restore) · emote list (copy) · usage export
-     (copy). It stands **above** the control it explains, and is a list and not a
+  1. The **list of the five permissible kinds of file**, each its own list entry with the addition
+     "as JSON": purge protocol (restore) · transfer protocol, recovery file or result protocol
+     (restore or undo the replacements) · recovery file or result protocol of an undo (restore,
+     #254) · emote list (copy) · usage export (copy). The three restore sorts come first, in that
+     order. It stands **above** the control it explains, and is a list and not a
      sentence with commas — the German versions would otherwise break at an arbitrary point at 360 px
      (§12).
   2. The **file control**: visibly labelled button plus hidden
      `<input type="file" accept="application/json">`. The button is the first meaningful
      control of the step and receives focus on entry (see the focus contract below).
      §7 "cancel always comes first" applies to the action row and stays untouched by this.
-  3. The error banner (`NoticeBanner` `error`) — only in the error case.
+  3. The **switch** (#254) — only for a transfer protocol whose set passed the check, see below.
+  4. The error banner (`NoticeBanner` `error`) — only in the error case.
 
-  There is **no** "Continue" button in this branch: the file selection itself is the execution.
+  There is **no** "Continue" button in this branch: the file selection itself is the execution —
+  for a transfer protocol, the pick at the switch.
+- **The switch for a transfer protocol is a contract (#254).** A transfer protocol (either stage)
+  can do two things — close the gaps its replacements left, or undo the replacements — and the step
+  asks which, instead of reporting straight away. Only this kind gets the switch: a purge protocol,
+  an undo's own file and the two copy sorts report straight away, and a file whose set fails the check
+  shows its banner and no switch. The switch is a question (`restore.import.choice.legend`, the
+  group's accessible name) over **two ruled rows in the source selection's idiom** — buttons, not a
+  radio group: a pick navigates, and the confirmation of what it does comes after, in the restore's
+  or the undo's own dialog. **The non-destructive option comes first and takes focus** when the
+  switch appears ("Close the gaps": adds back, removes nothing); the undo comes second and carries a
+  `danger` `StatusBadge` "removes emotes" next to its label — a new use of that tone (§4.3), marking
+  the one option in a choice that takes something out of a set. **Disabled explains itself (§10):**
+  when the file reads as a restore but not as an undo (no replacement an undo could reverse), the
+  undo row stays in place, disabled, its reason as a third line inside the button, so the reason is
+  part of the row's accessible name — the house pattern of the source rows. A new file removes the
+  switch; the undo side never infers its own success from the restore side's.
+- **The undo confirmation (`UndoConfirmDialog`, `shared/seven-tv/undo-confirm-dialog.ts`, #254),
+  row order top to bottom (contract):** the file line (which stage, from when) and the origin of the
+  undone transfer → the target lines (set, set id, owner; channel and "not active" for a tracked
+  target — #253's lines) → the foreign-to-view hint when the target is not the set on screen → the
+  removal banner (`warning`, only while a row removes a source) → the read note with "Reload target"
+  → **the rows, in the file's order**, source (its still image) beside target (the resolution
+  step's empty plate, name and entries), then what the read makes of it ("Source out, target back",
+  "Target back only", or "Skipped: reason" with the live counterpart); **a skipped row stays in its
+  place** with its reason — it is neither hidden nor moved to the end, so toggling the confirmation
+  below only changes a row's status line → the totals (mode counts, entries coming back, entries
+  already there, entries left out, one line per skip reason) → the slot projection (a warning,
+  never a lock) → the refused-download banner → the confirmation for unproven rows (only when the
+  plan has an unproven `full` row — a `planned` file whose rows would all only add shows none;
+  right above the action row) → Cancel / the executor, with its reason beside it while it
+  is locked. The executor follows §7.2's recovery-file pattern, but only for a plan that removes
+  something: "Save recovery file" downloads the undo's own `planned` file from the read the dialog
+  already holds (no second request), then turns into "Start"; a plan that only adds starts directly
+  and writes no file. A failed or incomplete read opens the dialog in its error state and releases
+  nothing until "Reload target" brings a complete one. The token is asked for **before** the first
+  read, as for delete and restore — §7.2's import exception does not apply.
 - **Channel branch (`ForeignChannelStep`, `shared/seven-tv/foreign-channel-step.ts`):** visibly
   labelled channel field (§5.2 applies here in full — it is not a filter bar) plus "Load set", after that
   loading state/error banner and the `ForeignEmoteGrid`. The step closes nothing; it reports its
@@ -510,19 +637,22 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   making `DialogShell`'s host a flex column for all twelve dialogs — deliberately not done.
   The numbers hang on an E2E case, because jsdom has no layout.
 - **Result contract:** on success the dialog closes with a discriminated result —
-  "Restore" with the restorable rows of the protocol, "Import" with the `ImportSource` from the
-  file or "Foreign" with the rows marked in the grid —, on cancel/Escape/backdrop with
+  "Restore" with the restorable rows of the file and its checked target, "Undo" with the undo
+  candidates of a transfer protocol, its checked target and where the file came from (#254),
+  "Import" with the `ImportSource` from the file or "Foreign" with the rows marked in the grid —, on cancel/Escape/backdrop with
   `undefined`. It starts **no** run, chooses **no** import target and opens **no** further
   dialog. In the error case it stays open and shows the banner; every new attempt resets it, and
   the file input is cleared after every selection so that the same corrected file triggers a
   `change` again.
-- **The target is not asked for, it is fixed:** the channel of the page from whose header the trigger
-  was clicked — the same for **all** sources. Until #147 the foreign-channel path still had
+- **The target is not asked for, it is fixed:** for the copy sources, the channel of the page from
+  whose header the trigger was clicked — the same for all three; for a restore file, the set the file
+  names (see the file branch above), which the page neither chooses nor overrides. Until #147 the foreign-channel path still had
   `ImportTargetDialog` with `forcedScope: 'selection'` in between; with the scope radio group suppressed,
   exactly one question remained there that the page context had already answered. The step is
   deleted without replacement. `forcedScope` itself stays — the dock entry point in §8.7 still uses it.
 - **The chains run one after another, not into one another.** First the import dialog closes with its
-  result, then the trigger starts the matching chain — `startRestoreFlow` (token → confirmation)
+  result, then the trigger starts the matching chain — `startRestoreFlow` (token → confirmation),
+  `startUndoFlow` (arbiter → token → first read → confirmation → freshness read → start, #254)
   or `startImportFlow` (confirmation → token, §7.2). No dialog of these chains is opened out of an
   open dialog; the one-dialog contract from §7 stays intact and both
   orders stay as they are.
@@ -563,26 +693,29 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   tile has only an en dash for it and a screen reader does not pronounce that at all.
 - **Reference:** `web/src/app/shared/seven-tv/import-source-dialog.ts`, `file-import-step.ts`,
   `foreign-channel-step.ts`, `leaderboard-step.ts`, `foreign-emote-grid.ts`, `import-trigger.ts`,
-  `import-trigger-gate.ts`, `restore-flow.ts`; `core/seven-tv/seven-tv-leaderboard.service.ts`,
+  `import-trigger-gate.ts`, `restore-flow.ts`, `restore-progress-section.ts`, `undo-flow.ts`,
+  `undo-confirm-dialog.ts`, `undo-progress-section.ts`; `core/seven-tv/undo-plan.ts`;
+  `core/seven-tv/seven-tv-leaderboard.service.ts`,
   `leaderboard.model.ts`; parsers `shared/export/read-envelope.ts`, `purge-run-export.ts`,
-  `import-source-parser.ts`.
+  `transfer-run-export.ts`, `transfer-undo-export.ts`, `import-source-parser.ts`.
 
 ### 7.4 Export dialog (purpose instead of format)
 
-- **What applies:** `ExportDialog` (`shared/export/export-dialog.ts`, `openExportDialog`) has three
-  callers — usage statistics, voting detail page, delete protocol —, but only one of them
-  orders its options by purpose instead of by format. The dialog itself no longer hard-wires anything
-  for that: the option list comes from the caller (`ExportDialogData.options`), the dialog treats
-  every `id` as opaque and never switches on it itself.
+- **What applies:** `ExportDialog` (`shared/export/export-dialog.ts`, `openExportDialog`) has five
+  callers — usage statistics, voting detail page, and the three run-protocol exports (delete/purge,
+  transfer, transfer-undo) —, but only one of them orders its options by purpose instead of by
+  format. The dialog itself no longer hard-wires anything for that: the option list comes from the
+  caller (`ExportDialogData.options`), the dialog treats every `id` as opaque and never switches on
+  it itself.
 - **Row order in the body:**
   1. Scope radio group `visible`/`selection` (`export.scopeLabel`) — only if a grid selection
      exists (`selectionCount > 0`); if the selection is empty but the concept is present
      (`selectionCount === 0`), the muted hint
      `export.scopeNoSelectionHint` (#144) stands in the same place instead, explaining the absence rather than leaving it
      uncommented. If the caller has no grid-selection concept at all (`selectionCount === null` — voting
-     detail page, delete protocol: the set that gets exported is not up for choice there),
-     **both** are dropped at this spot, radio group as well as hint — Codex review on PR #145,
-     see DECISIONS.
+     detail page, the three run-protocol exports: the set that gets exported is not up for choice
+     there), **both** are dropped at this spot, radio group as well as hint — Codex review on
+     PR #145, see DECISIONS.
   2. Option group — the legend is `optionsLegendKey`, per option `labelKey` on the first line,
      below it `hintKey`, if set.
   3. Row count (`export.rowCount`, follows the selected scope) plus `filteredHint` if the
@@ -590,18 +723,20 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   4. Notice banners (`noticeKeys`) — explanations for missing columns (secret vote, usage figures
      visible only to managers).
   5. Cancel / Export.
-- **`options[0]` is the default — the only default rule.** There is no second
-  notion of a default in the dialog. That keeps "CSV first" for the two unchanged callers (via the
-  shared constant `FORMAT_EXPORT_OPTIONS`) and makes "Analyse the numbers" (= CSV) the default
-  of the usage statistics, without the dialog knowing what a "format" is.
+- **`options[0]` is the default — the only default rule.** There is no second notion of a default
+  in the dialog. The three run-protocol exports (delete/purge, transfer, transfer-undo) list JSON
+  first (`FORMAT_EXPORT_OPTIONS_JSON_FIRST`) — the JSON file is the only one that can be read back
+  in (file-import step, restore), so it must be the default (decided 2026-09-26, see DECISIONS).
+  The voting export keeps CSV first (`FORMAT_EXPORT_OPTIONS`) — its file is a report, never read
+  back in. The usage statistics default to "Analyse the numbers" (= CSV). The dialog itself knows
+  none of this; it only ever preselects `options[0]`.
 - **The purpose ordering of the usage statistics is a wording contract** (`export.purposeLabel` as the
   legend), in this order:
   - "Analyse the numbers" / "Usage statistics as CSV"
   - "Process the numbers further" / "Usage statistics as JSON"
   - "Import the emotes again later" / "Emote list as JSON"
-  Voting detail page and delete protocol stay with CSV/JSON (`export.formatLabel`,
-  `FORMAT_EXPORT_OPTIONS`) — the purpose list applies only where more than one purpose sits behind the same
-  action.
+  The voting detail page keeps CSV first (`export.formatLabel`, `FORMAT_EXPORT_OPTIONS`); the
+  purpose list applies only where more than one purpose sits behind the same action.
 - **The hint line stands inside the `<label>` and is thereby part of the accessible name**
   ("Analyse the numbers Usage statistics as CSV") — intention, not accident. The target picker from §7.2
   hangs "(channel has to join first)" into its name in the same way, and an E2E case there already matches
@@ -612,7 +747,50 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   occurrences are not a pattern).
 - **Reference:** `web/src/app/shared/export/export-dialog.ts`, `export-dialog.spec.ts`; callers
   `features/usage-stats/usage-stats-page.ts`, `features/voting/vote-session-detail-page.ts`,
-  `shared/seven-tv/mass-delete-panel.ts`.
+  `shared/seven-tv/delete-progress-section.ts`.
+
+### 7.5 Preview-as-confirmation (tag removal)
+
+- **What applies:** Clearing a tag out of a set (#201) has no separate preview step: the confirmation
+  dialog `TagRemovalConfirmDialog` (`shared/tags/tag-removal-confirm-dialog.ts`) *is* the preview,
+  built from the delete dialog's pieces (set line, shared-set banner, quiet sentences) and opened
+  through `openAppDialog`. It has **no plain name list** below the rows (unlike the delete dialog's
+  `NamePreviewList`): the ticked rows are that list, and a second copy only duplicated them. Its confirm button is the §4.2 execution
+  (`danger-solid`). Like the delete dialog, the token prompt comes before the confirmation (after the registration, before the live read).
+- **Two blocks, "Vorgeschlagen" above "Nicht vorgeschlagen".** The server's proposal sorts the rows.
+  For a played-in tag, placements it can vouch for come ticked, everything else (an emote that did not
+  come into the set via this tag, one another active tag still needs) comes unticked, each with its reason and, where
+  there is one, the date it was added to the set ("am <date> ins Set geholt"). For a tag that is not played in (never, or cleared out
+  before) every emote of it in the set comes ticked, without a second line, except one another active
+  tag still needs ("wird noch von X gebraucht"); "nicht über diesen Tag ins Set gekommen" never appears there. Because
+  those ticks follow another rule than the familiar one, one quiet sentence above the list says so: "Über
+  diesen Tag ist gerade nichts im Set — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein
+  anderer Tag braucht." (only with at least one row). It describes the current state, never a history: a
+  tag that once added emotes and was cleared out with nothing ticked did add them. **A marking on the tags page grid overrides both rules:**
+  with at least one marked entry at the click, exactly the marked emotes in the set come ticked, every
+  unmarked one comes unticked with "nicht markiert", and one another active tag still needs stays
+  unticked with "wird noch von X gebraucht", marked or not; the sentence above the list then reads
+  "Vorgeschlagen sind deine n markierten Emotes." instead — or, when a marked emote in the set is held
+  and so not proposed, "Vorgeschlagen sind n von m markierten Emotes." (m = the marked emotes in the
+  set), and "Keines deiner markierten Emotes ist vorgeschlagen." when none is. The marking is taken at the click (the open
+  dialog does not follow the grid) and is dropped once the confirmed clear-out goes ahead, kept on
+  Cancel. **Block membership is the proposal's start state and never changes.** A tick
+  toggles *in place*, in either direction, for every row — the human decides — and changes only the
+  checkbox and the summary line; a row never jumps under the pointer and a keyboard user keeps their
+  position.
+- **The button is never disabled by the count.** With n = 0 a tag is still cleared out (it is
+  deactivated without a delete run); the dialog then says so in a sentence ("Es wird nichts bei 7TV
+  gelöscht; der Tag ist danach nicht mehr als ins Set geholt vermerkt.", for a tag that is not played in only
+  "Es wird nichts bei 7TV gelöscht.") in the list's place. The button is
+  locked only while the shared-set check is still running, as in the delete dialog.
+- **The summary is the dialog's only status region** ("n Emotes werden entfernt, m bleiben im Set"),
+  present from the start so it announces changes, not its arrival (§4.5).
+- **Past 50 rows the list is virtualised with a roving tabindex:** the active row's checkbox is the one
+  tab stop, arrow keys, Home and End move between rows, `scrollToIndex` brings the target into the
+  viewport (Tab alone never reaches a row outside the CDK buffer). The viewport is sized against `dvh`
+  (§7.2). The whole row is the `<label>`, so a tap anywhere toggles it (§10).
+- **Reference:** `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` (+ spec), caller
+  `tag-removal-flow.ts`, rows `tag-removal.ts`.
 
 ## 8. Navigation
 
@@ -629,7 +807,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   **The tab itself is a primitive** (`shared/ui/tab-link.ts`) and is never rebuilt as a class chain — a contract that lives in copied string literals drifts on the first edit. `ariaCurrentWhenActive="page"` sits in the primitive and is thereby unforgettable. `display: contents` on the host: the anchor has to be the flex child itself, otherwise it centres in a box of its own instead of carrying the bar's `h-10`.
 
   `h-10` and `flex items-center` (instead of `py-2`) are part of the sticky contract from §8.5 — the tab bar height is the `top` offset of the filter toolbars.
-- **Reference:** `web/src/app/shared/ui/tab-link.ts`; bars in `admin-layout.ts`, `channel-workspace-layout.ts`.
+- **Reference:** `web/src/app/shared/ui/tab-link.ts`; bars in `admin-layout.ts`, `channel-workspace-layout.ts` (a fourth tab, "Tags", since #201 — shown under the same condition as "Usage", the bar's `h-10` unchanged).
 
 ### 8.2 In-page anchors
 
@@ -678,10 +856,10 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 ### 8.4a Content width (one, deliberately)
 
 - **What applies:** The content column has **one** width, app-wide: `max-w-7xl` (80 rem). No page and no route sets one of its own.
-- **It stands in nine places, and they always move together.** `app-shell.ts` (header row and `<main>`), `landing-page.html` (six times: navigation, hero, diagram, walkthrough, closing, footer) and `usage-stats-page.html` (the inner container of the `.app-dock`). The ninth is the one that gets overlooked — if the dock stays behind, the action row stands narrower than the sheet it sits above. The `max-w-2xl`/`max-w-3xl` **inside** the landing page are prose widths and not shell widths; they stay where they are.
+- **It stands in ten places, and they always move together.** `app-shell.ts` (header row and `<main>`), `landing-page.html` (six times: navigation, hero, diagram, walkthrough, closing, footer) and `usage-stats-page.html` and `tags-page.html` (each the inner container of its `.app-dock`). The last two are the ones that get overlooked — if the dock stays behind, the action row stands narrower than the sheet it sits above. The `max-w-2xl`/`max-w-3xl` **inside** the landing page are prose widths and not shell widths; they stay where they are.
 - **The frame must not jump per route.** A second width for the sprite sheets (2.5) can be justified on the merits — there width is not decoration but emote columns —, but **when switching between a sheet page and a list page the frame then jumps**, and a layout that changes its width on every navigation is more restless than a sheet page that gives away 500 px. A route-driven shell width (`data.wideLayout` or similar) is therefore ruled out, not open.
 - **If a sheet needs more width**, it takes it *inside* the constant column — the sheet surface breaks out, the shell column stays put.
-- **What is forbidden is the second number, not a different one.** This section does not fix a value for all time — it demands that there be **one**. Changing it means changing it in all nine places at once, carrying the audit harness (§12) along and writing the reason into the decision log.
+- **What is forbidden is the second number, not a different one.** This section does not fix a value for all time — it demands that there be **one**. Changing it means changing it in all ten places at once, carrying the audit harness (§12) along and writing the reason into the decision log.
 - **Reference:** `web/src/app/features/shell/app-shell.ts` (comment on the header row).
 
 ### 8.5 Sticky layers (header · tabs · filters)
@@ -716,16 +894,17 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 
 ### 8.7 Action surfaces: which surface carries which command
 
-- **Area of application:** pages with multiple selection on a sheet — today the usage stats page and the voting detail page.
+- **Area of application:** pages with multiple selection on a sheet — today the usage stats page, the voting detail page and, since #201, the tags page (its entries grid; fine pointer only).
 - **The page header** (the header *of the page*, not the shell header) carries commands that are complete without a selection. Each has exactly one intent; if two overlap, one is renamed or dropped — not moved. **Overlap means: two commands with different names for the same intent.** The same action under the same verb in two places is a second entry point, not an overlap — the sameness of the verb is a condition here, not an accessory. **Confirmed since #141:** "Transfer…" and "Export" were exactly this borderline case as long as "Transfer…" was also usable as a file exit — since the target dialog lost its file target, they are two real intents (channel vs. file) instead of two names for one overlapping intent. No rule change, only the case at which it now decides cleanly.
 - **Selection-bound commands** — those that cannot be executed at all without a selection (delete, put up for a vote) — do **not** stand in the page header. Where there is a dock, they stand there; where there is none, in the flow beneath the sheet, as on the voting detail page (`vote-session-detail-page.html:149-157`). The dock is an addition, not a requirement.
 - **Selection-*creating* commands** — a control whose whole purpose is to produce a selection out of nothing (mark-all) — belong neither in the header nor in the dock. The dock does not render at zero selection (`actionDockHasContent`), so it cannot host the one control that would put something into it; the header's commands, by contrast, are page-wide and carry no notion of "the current view" to mark. It sits with the controls that define that view instead, and the scope decides which controls those are: **scope = the whole view → the filter row**, beside the reset control (the toolbar's "mark all"); **scope = one group inside the sheet → that group's own heading** (the `dead` band's own "mark all", the one existing instance of the narrower case). Both carry a bare verb, not a count in the label (corrects an earlier version of this bullet, docs/DECISIONS.md 2026-09-19): each already has its scope stated right beside it — the emote-count line at the end of the filter row for the toolbar button, the band heading's own count for the band button — so neither needs to say it twice. The toolbar button is additionally absent outright, not merely disabled, whenever the sheet is not actually showing that view (still loading, or the "sync pending" banner standing in its place while `atlasOrder()` still holds an unrelated response); on top of that it is disabled, without disappearing, once the view it would act on is already fully marked.
-- **The dock also carries the run state** — progress, protocol, restore after a run. No other surface can do that, because it has to outlast a *finished* run.
+- **The dock also carries the run state** — progress, protocol, restore after a run. No other surface can do that, because it has to outlast a *finished* run. For the delete run, this surface is `DeleteProgressSection` (`shared/seven-tv/delete-progress-section.ts`), which mounts inside the mass-delete panel and can also be mounted on its own.
 - **Permission, not obligation:** a command whose result depends on the selection **may** additionally stand in the dock as a short form — same verb, without the scope question, with the count in the text. The justification is findability at the moment of marking, not saved clicks: the page header scrolls away, the dock does not. **This justification is so far unsubstantiated** (n = 1); it is therefore phrased as "may" and forces no future action into two entry points.
 
   *Example of why "may" and not "must":* the export deliberately carries **no** short form. Its scope default is `visible` (`export-dialog.ts:139-141`), running counter to the target dialog, which stands at `selection` — §7.2 records the asymmetry as intentional. An export short form with a forced `selection` would silently turn that default into its opposite.
 - **Order:** destructive actions stand at the end of the **constructive** group, with a gap before them (NN/G on bulk actions); neutral exits such as "clear selection" may follow. That is an instruction about *position*, not about looks: the button variants stay as §4.2 prescribes them.
-- **Reference:** page header `web/src/app/features/usage-stats/usage-stats-page.html`; dock `.app-dock` (§2.5) together with the action row that is projected via `ngProjectAs="[selection-actions]"` **into** `web/src/app/shared/seven-tv/mass-delete-panel.ts`; without a dock, in the flow: `web/src/app/features/voting/vote-session-detail-page.html`.
+- **The tags page (#201) carries the run state in its own page-level dock.** Its selection-bound command ("Aus dem Tag entfernen (n)") still stands in the flow beneath the grid, as on the voting detail page; the dock is run-only (`tagRunDockHasContent` has no selection half and the dock does not render at zero runs), so it hosts no selection command; the run state (a tag play-in, a clear-out, a restore started from it) stands in a `.app-dock` mounted at page level, outside the list/detail split, gated by `tagRunDockHasContent` (`shared/seven-tv/action-dock.ts`) and `!isCoarse()`, so a run started from one tag stays visible while another tag or the list alone is shown. Its `DockOutcomeAnnouncer` and run status region are mounted at page level too. It has no bands (§2.5 stays unchanged: the grid is not sorted by usage). **Named exception to the order rule above:** the tag header is two groups with a visible gap between them, each action naming its target: set actions "Ins Set holen" · "Aus dem Set entfernen" (with a grid marking each carries its number and acts on the marked emotes only: "Ins Set holen (n)" counts the marked emotes not in the set and adds only those, "Aus dem Set entfernen (n)" counts the marked emotes in the set; a marking with nothing missing leaves "Ins Set holen (0)" standing but locked, its reason — "Alle markierten Emotes sind schon im Set." — in the marking's own line under the grid, where its coming and going moves neither the header nor the grid, and a marking with nothing in the set does the same to "Aus dem Set entfernen (0)" with "Keines der markierten Emotes ist im Set."; without a marking "Aus dem Set entfernen" stays usable for a played-in tag with nothing in the set (its clear-out with nothing ticked ends the activation); the marking is taken at the click and dropped once the run goes ahead, kept on Cancel), then tag actions "Umbenennen" · "Tag löschen" (operator decision 2026-10-05; the buttons stay conditional, so nothing shifts when one appears). Wherever the run buttons are shown, both groups stand on a line of their own under the heading rather than beside it: the counts that appear with the first click on the grid would otherwise, at some name lengths (measured: "Halloween 2026" at 1024 px), wrap the actions onto a second line and move the grid under the pointer — the e2e case "emote tag header while marking" pins the grid's position across that click. Each run command is *missing*, not locked, where it has nothing to do (#201 spec 7.2, "fehlt statt gesperrt"): "Ins Set holen" while no emote of the tag is missing from the set, "Aus dem Set entfernen" while no emote of the tag is in the set and it is not played in either (since 2026-10-05; before, "Aus dem Set entfernen" was missing for every tag that was not played in, which left a tag of emotes already in the set no way out). These are the **only** place tag runs start — the usage page's tag filter is the dropdown alone, with no summary and no run button — and only what the tag brought into the set is ever named ("n über den Tag ins Set geholt" for n > 0; in the detail head "über den Tag ins Set geholt am <date>"), never its absence. The page head explains the feature in one muted line (the run sentence only where the buttons exist) above the set line. The two run commands come from one component (`TagRunActions`; splitting it would duplicate its pending and notice state) and stay one group; the tag's own actions, rename and the irreversible "Tag löschen", form the second group after the gap. **The usage page's dock grew by two constructive commands** — "Tag zuweisen…" before the vote button and "Aus dem Tag entfernen (n)" after it, the latter only with a tag filter set — both ahead of the gap before the destructive delete; the label does not carry the tag name; the accessible name and title append it after the visible words.
+- **Reference:** page header `web/src/app/features/usage-stats/usage-stats-page.html`; dock `.app-dock` (§2.5) together with the action row that is projected via `ngProjectAs="[selection-actions]"` **into** `web/src/app/shared/seven-tv/mass-delete-panel.ts`; the delete run's progress, protocol and restore entry in `web/src/app/shared/seven-tv/delete-progress-section.ts`; without a dock, in the flow: `web/src/app/features/voting/vote-session-detail-page.html`; the tags page's run dock and header: `web/src/app/features/tags/tags-page.html`, `web/src/app/shared/tags/tag-run-actions.ts`.
 
 ## 9. i18n duties
 

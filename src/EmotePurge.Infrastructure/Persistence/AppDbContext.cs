@@ -9,6 +9,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Emote> Emotes => Set<Emote>();
     public DbSet<UsageStat> UsageStats => Set<UsageStat>();
     public DbSet<ChannelLiveDay> ChannelLiveDays => Set<ChannelLiveDay>();
+    public DbSet<ChannelEmoteSetObservation> ChannelEmoteSetObservations => Set<ChannelEmoteSetObservation>();
+    public DbSet<EmoteTag> EmoteTags => Set<EmoteTag>();
+    public DbSet<EmoteTagEntry> EmoteTagEntries => Set<EmoteTagEntry>();
+    public DbSet<EmoteTagPlacement> EmoteTagPlacements => Set<EmoteTagPlacement>();
+    public DbSet<EmoteTagActivation> EmoteTagActivations => Set<EmoteTagActivation>();
+    public DbSet<EmoteTagOperation> EmoteTagOperations => Set<EmoteTagOperation>();
+    public DbSet<EmoteSetLeaveObservation> EmoteSetLeaveObservations => Set<EmoteSetLeaveObservation>();
     public DbSet<User> Users => Set<User>();
     public DbSet<VoteSession> VoteSessions => Set<VoteSession>();
     public DbSet<VoteSessionEmote> VoteSessionEmotes => Set<VoteSessionEmote>();
@@ -37,9 +44,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<UsageStat>(entity =>
         {
-            // One aggregated row per emote per UTC day. Covering index (UseCount included)
-            // so range-sum queries over (EmoteId, Date) can be answered as an index-only scan.
-            entity.HasIndex(u => new { u.EmoteId, u.Date })
+            // One aggregated row per emote per emote set per UTC day (#200, spec section 4.1): the
+            // same emote can be counted under two set ids on the same day (a mid-day set switch), so
+            // the old (EmoteId, Date) key stopped being able to hold one row per real count. Covering
+            // index (UseCount included) so range-sum queries over (EmoteId, EmoteSetId, Date) — and,
+            // with the EmoteId-only prefix, over (EmoteId, Date) for set-agnostic reads — can still
+            // be answered as an index-only scan. Replaces the former
+            // IX_UsageStats_EmoteId_Date, which the AddUsageStatEmoteSetId migration (T1.3b) drops.
+            entity.HasIndex(u => new { u.EmoteId, u.EmoteSetId, u.Date })
                 .IsUnique()
                 .IncludeProperties(u => u.UseCount);
 
@@ -62,6 +74,127 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasOne(d => d.Channel)
                 .WithMany()
                 .HasForeignKey(d => d.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ChannelEmoteSetObservation>(entity =>
+        {
+            // Access pattern is "this channel's intervals, newest first" (open-interval lookup,
+            // history for the "observed during this set" preset in spec 8.5).
+            entity.HasIndex(o => new { o.ChannelId, o.ObservedFromUtc });
+
+            // Invariant of the observation log (spec section 4.3): at most one open interval per
+            // channel at a time. A partial index — rather than application-level locking — makes a
+            // second concurrent "open" a unique-violation instead of a race two writers could both
+            // win.
+            entity.HasIndex(o => o.ChannelId)
+                .IsUnique()
+                .HasFilter("\"ObservedToUtc\" IS NULL");
+
+            // No inverse collection on Channel, same as ChannelLiveDay above — nothing navigates
+            // from a channel to its observations; every reader queries this table directly.
+            entity.HasOne(o => o.Channel)
+                .WithMany()
+                .HasForeignKey(o => o.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTag>(entity =>
+        {
+            entity.Property(t => t.Name).HasMaxLength(EmoteTagName.MaxLength);
+            entity.Property(t => t.NormalizedName).HasMaxLength(EmoteTagName.MaxLength);
+
+            // "Funny" and "funny" are one tag per channel.
+            entity.HasIndex(t => new { t.ChannelId, t.NormalizedName }).IsUnique();
+            // The tag list reads "this channel's tags in creation order".
+            entity.HasIndex(t => new { t.ChannelId, t.CreatedAtUtc });
+
+            // No inverse collection on Channel, same as ChannelEmoteSetObservation above.
+            entity.HasOne(t => t.Channel)
+                .WithMany()
+                .HasForeignKey(t => t.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTagEntry>(entity =>
+        {
+            // Pure join-style table: the natural key is the primary key.
+            entity.HasKey(e => new { e.TagId, e.SevenTvEmoteId });
+            entity.Property(e => e.SevenTvEmoteId).HasMaxLength(32);
+
+            // Deliberately no FK to Emote: a tag outlives the emote row (E22, rule 8).
+            entity.HasOne(e => e.Tag)
+                .WithMany()
+                .HasForeignKey(e => e.TagId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTagPlacement>(entity =>
+        {
+            entity.HasKey(p => new { p.TagId, p.SevenTvEmoteId, p.SevenTvEmoteSetId });
+            // 7TV ids (emote and set) are 26-character ULIDs; 32 matches SevenTvEmoteIdValidation.
+            entity.Property(p => p.SevenTvEmoteId).HasMaxLength(32);
+            entity.Property(p => p.SevenTvEmoteSetId).HasMaxLength(32);
+
+            // "Who holds X in S" and the read-time rule against the leave observations.
+            entity.HasIndex(p => new { p.SevenTvEmoteSetId, p.SevenTvEmoteId });
+
+            entity.HasOne(p => p.Tag)
+                .WithMany()
+                .HasForeignKey(p => p.TagId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // The database upholds "no placement without an entry" (and takes the placements in every
+            // set along when an entry is removed) independent of any caller's locking. Two cascade
+            // paths from the tag (direct, and via the entry) are fine in Postgres. No navigation from
+            // the entry. Deliberately no FK to EmoteTagOperation: it would force a delete order the
+            // sweep does not need. OperationId is provenance only; validity is anchored on the
+            // placement's own RegisteredAtUtc, because operations cascade with their tag while a
+            // transfer points another tag's placement at the removed tag's operation.
+            entity.HasOne<EmoteTagEntry>()
+                .WithMany()
+                .HasForeignKey(p => new { p.TagId, p.SevenTvEmoteId })
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTagActivation>(entity =>
+        {
+            entity.HasKey(a => new { a.TagId, a.SevenTvEmoteSetId });
+            entity.Property(a => a.SevenTvEmoteSetId).HasMaxLength(32);
+
+            entity.HasOne(a => a.Tag)
+                .WithMany()
+                .HasForeignKey(a => a.TagId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteTagOperation>(entity =>
+        {
+            entity.HasKey(o => o.OperationId);
+            // The id comes from the client; a Guid.Empty must not be silently replaced by a generated one.
+            entity.Property(o => o.OperationId).ValueGeneratedNever();
+            entity.Property(o => o.Kind).HasMaxLength(16);
+            entity.Property(o => o.SevenTvEmoteSetId).HasMaxLength(32);
+
+            entity.HasIndex(o => new { o.TagId, o.SevenTvEmoteSetId });
+
+            entity.HasOne(o => o.Tag)
+                .WithMany()
+                .HasForeignKey(o => o.TagId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<EmoteSetLeaveObservation>(entity =>
+        {
+            entity.HasKey(o => new { o.ChannelId, o.SevenTvEmoteId, o.SevenTvEmoteSetId });
+            entity.Property(o => o.SevenTvEmoteId).HasMaxLength(32);
+            entity.Property(o => o.SevenTvEmoteSetId).HasMaxLength(32);
+
+            // A channel-level fact, not a tag table: it must exist before any tag report arrives and
+            // falls with the channel's purge. No inverse collection on Channel, and no FK to Emote.
+            entity.HasOne(o => o.Channel)
+                .WithMany()
+                .HasForeignKey(o => o.ChannelId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

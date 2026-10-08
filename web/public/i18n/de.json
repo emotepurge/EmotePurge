@@ -196,9 +196,19 @@
     "preset7Days": "7 Tage",
     "preset30Days": "30 Tage",
     "presetAll": "Seit Beginn",
+    "presetSetObserved": "Während dieses Set beobachtet wurde",
+    "presetSetObservedShort": "beobachtet",
     "presetCustom": "Eigener Zeitraum",
     "from": "Von",
     "to": "Bis"
+  },
+  "emoteSetMenu": {
+    "label": "Set",
+    "menuLabel": "Set wählen",
+    "loading": "Lädt …",
+    "unavailable": "Set-Liste nicht verfügbar",
+    "active": "aktiv",
+    "lockedDuringDelete": "Set-Wechsel gesperrt, bis der Löschlauf abgeschlossen ist."
   },
   "datetimePicker": {
     "placeholder": "Jetzt (Standard)",
@@ -243,14 +253,9 @@
     "leaveConfirm": "Channel #{{ channelName }} wirklich verlassen? Der Bot verlässt den Chat und erfasst keine neuen Daten mehr. Bereits erfasste Emotes, Nutzungsstatistiken und Abstimmungen bleiben erhalten und sind nach einem erneuten Beitritt wieder da.",
     "tabs": {
       "usage": "Nutzung",
+      "tags": "Tags",
       "voting": "Votings",
       "activity": "Aktivität"
-    },
-    "resync": {
-      "label": "Neu synchronisieren",
-      "title": "Emote-Set jetzt neu von 7TV einlesen, statt auf den nächsten automatischen Abgleich zu warten",
-      "queued": "Resync angestoßen …",
-      "completed": "Resync abgeschlossen."
     },
     "activity": {
       "title": "Aktivitätsverlauf",
@@ -349,6 +354,7 @@
           "ChannelResync": "Manueller Channel-Resync",
           "PublicHealth": "Öffentlicher Health-Check",
           "ForeignEmoteLookup": "Fremdkanal-Vorschau (7TV)",
+          "TrackedEmoteSetPreview": "Set-Vorschau getrackter Kanäle (7TV)",
           "SevenTvLeaderboard": "7TV-Bestenliste"
         }
       },
@@ -589,21 +595,51 @@
       "emotesSyncDeleted": "Emotes als gelöscht markiert",
       "emotesSyncRestored": "Emotes wiederhergestellt",
       "emotesSyncImported": "Emotes importiert",
+      "tagCreate": "Tag angelegt",
+      "tagRename": "Tag umbenannt",
+      "tagDelete": "Tag gelöscht",
+      "tagPlayedIn": "Tag ins Set geholt",
+      "tagRemoved": "Tag aus dem Set entfernt",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
     },
     "details": {
-      "emoteCount": "{{count}} Emotes",
-      "removedEntries": "{{count}} Einträge entfernt",
+      "emoteCount": {
+        "one": "{{count}} Emote",
+        "other": "{{count}} Emotes"
+      },
+      "removedEntries": {
+        "one": "{{count}} Eintrag entfernt",
+        "other": "{{count}} Einträge entfernt"
+      },
       "title": "„{{title}}“",
-      "importedFromChannel": "{{count}} Emotes aus {{title}}",
-      "importedFromFile": "{{count}} Emotes aus einer Datei",
-      "importedFromLeaderboard": "{{count}} Emotes aus {{title}}",
+      "importedFromChannel": {
+        "one": "{{count}} Emote aus {{title}}",
+        "other": "{{count}} Emotes aus {{title}}"
+      },
+      "importedFromFile": {
+        "one": "{{count}} Emote aus einer Datei",
+        "other": "{{count}} Emotes aus einer Datei"
+      },
+      "importedFromLeaderboard": {
+        "one": "{{count}} Emote aus {{title}}",
+        "other": "{{count}} Emotes aus {{title}}"
+      },
+      "importedFromTag": {
+        "one": "{{count}} Emote aus einem Tag",
+        "other": "{{count}} Emotes aus einem Tag"
+      },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
         "TOP_ALL_TIME": "7TV Top insgesamt"
-      }
+      },
+      "targetEmoteSet": "in Set {{setId}}",
+      "targetEmoteSetNotActive": "in Set {{setId}} (nicht das aktive Set)",
+      "targetEmoteSetForOwner": "in Set {{setId}} für {{ownerLogin}}",
+      "legacyBodyForm": "(alte Form)",
+      "unresolvedChannelNotTracked": "erwarteter Kanal {{channelName}}: nicht getrackt",
+      "unresolvedChannelActiveSetDiffers": "erwarteter Kanal {{channelName}}: laut EmotePurge gerade nicht dessen aktives Set"
     }
   },
   "emoteCount": {
@@ -646,6 +682,7 @@
       "liveLegend": "Grün: Stream war live"
     },
     "drilldown": {
+      "openOnSevenTv": "Auf 7TV öffnen",
       "open": "Details zu {{name}} anzeigen",
       "openWithCount": "Details zu {{name}} anzeigen ({{count}}×)",
       "range": "{{from}} bis {{to}}",
@@ -688,7 +725,11 @@
       "share": "{{share}} der Nutzung",
       "count": "{{count}} Emotes",
       "countOne": "1 Emote",
-      "selectAll": "alle markieren"
+      "selectAll": "alle markieren",
+      "uncounted": {
+        "title": "Keine Zählungen",
+        "hint": "unter diesem Set"
+      }
     },
     "sidecar": {
       "share": "Anteil",
@@ -717,6 +758,7 @@
       "one": "Im gewählten Zeitraum war der Stream an einem Tag live.",
       "other": "Im gewählten Zeitraum war der Stream an {{ live }} Tagen live."
     },
+    "autoSyncNote": "Das Emote-Set wird regelmäßig automatisch mit 7TV abgeglichen. Neu hinzugefügte Emotes können bis zu 30 Minuten brauchen, bis 7TV sie hier meldet.",
     "trackedSince": "Wir zählen für diesen Channel seit dem {{ date }}.",
     "botsExcludedSince": "Nachrichten bekannter Bots zählen seit dem {{ date }} nicht mit; Zahlen davor enthalten sie noch.",
     "sharedChatSeparatedSince": "Nutzung aus dem geteilten Chat anderer Kanäle zählt seit dem {{ date }} nicht mit; Zahlen davor enthalten sie noch.",
@@ -759,6 +801,33 @@
     },
     "errors": {
       "loadFailed": "Nutzungsdaten konnten nicht geladen werden."
+    },
+    "setView": {
+      "noCounts": "keine Zählungen unter diesem Set",
+      "leftBadge": "Nicht mehr im Set",
+      "slots": "{{count}} Plätze im Set: {{aliases}}",
+      "nameTwin": "Unter diesem Namen liegt in „{{sets}}“ ein anderes Emote.",
+      "facts": {
+        "notObserved": "Dieses Set war im gewählten Zeitraum nicht als aktiv beobachtet.",
+        "countedSince": "Für dieses Set gezählt seit dem {{date}}.",
+        "noCounts": "Für dieses Set liegen im gewählten Zeitraum keine Zählungen vor."
+      },
+      "membersUnavailable": "Die Mitgliederliste dieses Sets ist gerade nicht verfügbar – gezeigt werden nur Emotes mit Zählungen.",
+      "truncated": "Die Mitgliederliste dieses Sets ist unvollständig (laut 7TV {{total}} Einträge).",
+      "lock": {
+        "membersUnavailable": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
+        "truncated": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
+        "switching": "Löschen und Abstimmen gesperrt, bis das gewählte Set geladen ist.",
+        "statusUnavailable": "Löschen und Abstimmen gesperrt: Das aktive Set des Kanals ist gerade nicht bekannt."
+      },
+      "importLock": {
+        "membersUnavailable": "Übertragen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
+        "truncated": "Übertragen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
+        "switching": "Übertragen gesperrt, bis das gewählte Set geladen ist.",
+        "statusUnavailable": "Übertragen gesperrt: Das aktive Set des Kanals ist gerade nicht bekannt."
+      },
+      "loadFailedTitle": "Das gewählte Set konnte nicht geladen werden",
+      "retry": "Erneut versuchen"
     }
   },
   "sevenTvSync": {
@@ -870,6 +939,7 @@
   "common": {
     "cancel": "Abbrechen",
     "close": "Schließen",
+    "opensInNewTab": "(öffnet in neuem Tab)",
     "loading": "Lädt …",
     "typedConfirmHint": "Zum Fortfahren exakt „{{text}}“ eingeben.",
     "andMore": {
@@ -887,53 +957,118 @@
     "button": "Emotes wiederherstellen",
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Wiederherstellungsfortschritt",
+    "settling": "Wird abgeschlossen…",
+    "startChecking": "Das Zielset wird vor dem Start der Wiederherstellung noch einmal live geprüft…",
     "deleteFailedFallback": "Wiederherstellen fehlgeschlagen",
+    "unknownOutcome": "Unklar, ob wiederhergestellt — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "confirmTitle": {
       "one": "{{ count }} Emote wieder zum Set hinzufügen?",
       "other": "{{ count }} Emotes wieder zum Set hinzufügen?"
     },
+    "confirmTitleUpTo": {
+      "one": "Bis zu {{ count }} Emote wieder zum Set hinzufügen?",
+      "other": "Bis zu {{ count }} Emotes wieder zum Set hinzufügen?"
+    },
+    "confirmSetLine": "In das Set „{{ setName }}“.",
+    "confirmSetIdLine": "Set-ID: {{ emoteSetId }}",
+    "confirmOwnerLine": "Besitzer: {{ ownerDisplayName }}",
+    "confirmChannelLine": "Kanal: {{ channelName }}",
+    "confirmSetNotActive": "Dieses Set ist gerade nicht aktiv.",
+    "confirmForeignToView": "Diese Ansicht zeigt von diesem Lauf nichts.",
     "confirmExecute": "Wiederherstellen",
+    "confirm": {
+      "nothingToRestore": "Nichts wiederherzustellen",
+      "uncertainDropped": {
+        "one": "{{ count }} unklares Emote wird nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob es noch im Set ist.",
+        "other": "{{ count }} unklare Emotes werden nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob sie noch im Set sind."
+      }
+    },
     "capacityProjection": "Das Set hätte danach {{ projected }} von {{ capacity }} Slots belegt.",
+    "capacityProjectionUpTo": "Das Set hätte danach bis zu {{ projected }} von {{ capacity }} Slots belegt.",
     "capacityWarning": "Das überschreitet die Kapazität — 7TV wird überzählige Emotes ablehnen.",
+    "capacityWarningUpTo": "Das könnte die Kapazität überschreiten — 7TV würde überzählige Emotes dann ablehnen.",
     "historyNote": "Die Nutzungshistorie bleibt unverändert.",
+    "nothingRestored": "Nichts wiederhergestellt.",
+    "errors": {
+      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+      "targetNotSelectable": "Das Set ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
+      "channelUnknown": "Der Kanal dieses Laufs ist nicht bekannt — Wiederherstellen ist deshalb gesperrt."
+    },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV wiederhergestellt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "syncPartialTitle": "Rückmeldung an EmotePurge unvollständig",
+    "syncPartial": "Die Emotes sind bei 7TV wiederhergestellt und bei EmotePurge vermerkt — aber nicht vollständig.",
     "syncRetry": "Erneut melden",
     "syncRetrySucceeded": "Rückmeldung erfolgreich.",
     "summary": {
-      "counts": "{{done}} wiederhergestellt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen"
+      "counts": "{{done}} wiederhergestellt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
+      "unknownRows": {
+        "one": "Bei {{ count }} Emote ist unklar, ob 7TV es wiederhergestellt hat — bitte das Set bei 7TV prüfen.",
+        "other": "Bei {{ count }} Emotes ist unklar, ob 7TV sie wiederhergestellt hat — bitte das Set bei 7TV prüfen."
+      }
     },
     "resync": {
       "pending": "Synchronisierung wird angestoßen…",
       "succeeded": "Synchronisierung angestoßen — die Liste aktualisiert sich gleich.",
       "cooldown": "Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.",
-      "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach."
+      "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.",
+      "backendTriggered": "Abgleich läuft bereits — die Liste aktualisiert sich gleich."
+    },
+    "targetLine": {
+      "channel": "Ziel: {{ channel }} · Set {{ setName }}",
+      "owner": "Ziel: Set {{ setName }} von {{ owner }}"
     },
     "import": {
       "trigger": "Importieren",
       "title": "Datei importieren",
       "sorts": {
         "purgeRun": "Purge-Protokoll (Wiederherstellen) als JSON",
+        "transferRun": "Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen oder Ersetzungen rückgängig machen) als JSON",
+        "transferUndo": "Rückweg-Protokoll einer Ersetzung — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON",
         "emoteList": "Emote-Liste (Kopieren) als JSON",
         "usageExport": "Nutzungs-Export (Kopieren) als JSON"
       },
       "fileLabel": "Datei auswählen",
+      "choice": {
+        "legend": "Was soll mit dieser Übertragungsdatei geschehen?",
+        "restore": {
+          "label": "Lücken schließen",
+          "hint": "Holt entfernte Ziel-Emotes zurück, wo ihr Name frei ist. Entfernt nichts."
+        },
+        "undo": {
+          "label": "Ersetzungen rückgängig machen",
+          "hint": "Entfernt die Quell-Emotes, die den Namen übernommen haben, und holt die Ziele zurück. Vorher kommt eine Bestätigung.",
+          "destructive": "entfernt Emotes",
+          "unavailable": "Diese Datei enthält keine Ersetzung, die sich rückgängig machen ließe."
+        }
+      },
       "errors": {
         "notJson": "Die Datei ist kein gültiges JSON.",
         "csvInsteadOfJson": "Das ist die CSV-Fassung. Der Import braucht dieselbe Datei als JSON — beim Export das Format JSON wählen.",
-        "wrongKind": "Die Datei ist kein EmotePurge-Export. Importierbar sind Purge-Protokolle, Emote-Listen und Nutzungs-Exporte im JSON-Format.",
+        "wrongKind": "Die Datei ist kein EmotePurge-Export. Importierbar sind Purge-Protokolle, Übertragungsprotokolle, Emote-Listen und Nutzungs-Exporte im JSON-Format.",
         "votingExport": "Das ist ein Export einer Abstimmung, kein Purge-Protokoll. Ein importierbares Protokoll entsteht erst bei einem Löschlauf und wird direkt danach zum Download angeboten.",
+        "transferRun": "Das ist das Protokoll eines Übertragungslaufs (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.",
         "wrongVersion": "Die Datei stammt aus einer neueren EmotePurge-Version.",
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
-        "wrongChannel": "Das Protokoll gehört zu einem anderen Channel.",
-        "wrongSet": "Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.",
-        "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen."
+        "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.",
+        "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes.",
+        "transferUndo": "Das ist das Rückweg-Protokoll einer Ersetzung (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.",
+        "transferUndoNoRows": "Diese Rückweg-Datei enthält keine entfernten Quell-Emotes.",
+        "targetNotEditable": "Das Set aus der Datei ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+        "targetNotSelectable": "Das Set aus der Datei ist kein normales Emote-Set.",
+        "targetCheckUnavailable": "Das Set aus der Datei konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
+        "noTargetSetForCopy": "Diese Seite hat kein Set, in das kopiert werden könnte. Aus einer Datei lässt sich hier nur wiederherstellen."
       }
     },
     "skippedDuplicates": {
-      "one": "{{ count }} Emote ist bereits im Zielset und wurde übersprungen.",
-      "other": "{{ count }} Emotes sind bereits im Zielset und wurden übersprungen."
+      "one": "{{ count }} Eintrag war bereits im Zielset und wurde übersprungen.",
+      "other": "{{ count }} Einträge waren bereits im Zielset und wurden übersprungen."
+    },
+    "skippedNameTaken": {
+      "one": "{{ count }} Alias übersprungen — der Name gehört inzwischen einem anderen Emote.",
+      "other": "{{ count }} Aliase übersprungen — die Namen gehören inzwischen anderen Emotes."
     },
     "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
   },
@@ -969,14 +1104,20 @@
     "clearSelection": "Auswahl aufheben",
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Löschfortschritt",
+    "settling": "Wird abgeschlossen…",
+    "startChecking": "Das Set wird vor dem Start des Löschlaufs noch einmal live geprüft…",
     "deleteFailedFallback": "Löschen fehlgeschlagen",
+    "unknownOutcome": "Unklar, ob gelöscht — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "confirmTitle": {
       "one": "{{ count }} Emote von 7TV löschen?",
       "other": "{{ count }} Emotes von 7TV löschen?"
     },
+    "confirmSetLine": "Aus dem Set „{{ setName }}“.",
+    "confirmSetNotActive": "Dieses Set ist gerade nicht aktiv.",
     "checkingSharedSets": "Prüfe geteilte Sets…",
-    "sharedSetWarningTitle": "Achtung: Das aktive Emote-Set gehört möglicherweise nicht (nur) diesem Channel.",
-    "notOwnSet": "Das aktive Set gehört nicht dem eigenen 7TV-Account dieses Channels.",
+    "confirmSelectionEmpty": "Es ist nichts mehr zum Löschen übrig — die Auswahl wurde inzwischen geleert.",
+    "sharedSetWarningTitle": "Achtung: Dieses Emote-Set gehört möglicherweise nicht (nur) diesem Channel.",
+    "notOwnSet": "Dieses Set gehört nicht dem eigenen 7TV-Account dieses Channels.",
     "knownAffected": "Bei uns bekannt betroffen: {{ list }}",
     "moderatedAffected": "Von dir moderiert, ebenfalls betroffen: {{ list }}",
     "ownershipCheckUnavailable": "Wir konnten gerade nicht prüfen, ob dieses Set wirklich diesem Channel gehört — bitte vor dem Löschen selbst auf 7tv.app kontrollieren.",
@@ -989,21 +1130,65 @@
     "startDelete": "Löschen starten",
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "syncPartialTitle": "Rückmeldung an EmotePurge unvollständig",
+    "syncPartial": "Die Emotes sind bei 7TV gelöscht und bei EmotePurge vermerkt — aber nicht vollständig.",
     "syncRetry": "Erneut melden",
-    "syncRetrySucceeded": "Rückmeldung erfolgreich nachgeholt.",
+    "syncRetrySucceeded": "Rückmeldung erfolgreich.",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
       "counts": "{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
       "downloadProtocol": "Protokoll herunterladen",
-      "protocolNotSaved": "Protokoll noch nicht gespeichert — nach dem Schließen ist es weg."
+      "protocolNotSaved": "Protokoll noch nicht gespeichert — nach dem Schließen ist es weg.",
+      "unknownRows": {
+        "one": "Bei {{ count }} Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.",
+        "other": "Bei {{ count }} Emotes ist unklar, ob 7TV sie gelöscht hat — bitte das Set bei 7TV prüfen."
+      },
+      "unknownInProtocol": {
+        "one": "Im Protokoll steht es als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.",
+        "other": "Im Protokoll stehen sie als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt sie zurück, falls sie fehlen."
+      }
     },
     "errors": {
       "tokenInvalid": "Token ungültig oder abgelaufen — bitte neues 7TV-Token eintragen.",
       "rateLimited": "Zu viele Anfragen an 7TV (Rate Limit) — später erneut versuchen.",
       "rateLimitedGaveUp": "7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.",
+      "cancelledMidRow": "Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.",
+      "beforeStepFailed": "Übersprungen — die Prüfung vor dem Schritt ist fehlgeschlagen.",
+      "unconfirmedAnswer": "7TV hat geantwortet, die Änderung aber nicht bestätigt.",
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
-      "genericStatus": "7TV-Fehler (Status {{ status }})."
+      "genericStatus": "7TV-Fehler (Status {{ status }}).",
+      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+      "targetNotSelectable": "Das Set ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
+    },
+    "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",
+    "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt.",
+    "selectionGoneDuringConfirm": "Die bestätigten Emotes gehören nicht mehr zu diesem Set.",
+    "tokenGoneDuringConfirm": "Das gespeicherte 7TV-Token ist inzwischen weg — bitte neu eintragen.",
+    "nothingDeleted": "Nichts gelöscht.",
+    "memberRead": {
+      "unavailable": "Die aktuellen Einträge dieses Sets konnten nicht von 7TV gelesen werden.",
+      "truncated": "Die Einträge dieses Sets konnten nur teilweise gelesen werden.",
+      "missingFromSet": {
+        "one": "{{names}} ist nicht mehr im Set — abwählen und den Lauf erneut starten.",
+        "other": "{{names}} sind nicht mehr im Set — abwählen und den Lauf erneut starten."
+      },
+      "lock": {
+        "unavailable": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar. Seite neu laden, um es erneut zu versuchen.",
+        "truncated": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig. Seite neu laden, um es erneut zu versuchen.",
+        "loading": "Löschen gesperrt, bis die Mitgliederliste dieses Sets geladen ist."
+      }
     }
+  },
+  "syncReportReason": {
+    "forbidden": "Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.",
+    "setNotFound": "Grund: Das Set gibt es bei 7TV nicht mehr.",
+    "tagUnknown": "Grund: EmotePurge kennt diesen Tag oder diesen Vorgang nicht mehr.",
+    "unavailable": "Grund: EmotePurge oder 7TV war gerade nicht erreichbar.",
+    "channelMismatchNotTracked": "Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.",
+    "channelMismatchActiveSetDiffers": "Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.",
+    "shortfall": "Grund: Nicht alle Emotes waren in EmotePurge vermerkt.",
+    "other": "Grund: Unerwarteter Fehler."
   },
   "import": {
     "copyButton": "Übertragen",
@@ -1024,19 +1209,30 @@
       "leaderboard": {
         "label": "Aus 7TVs Bestenliste",
         "hint": "Die netzwerkweit vorn liegenden Emotes — ohne zu wissen, in welchem Kanal sie stecken"
-      }
+      },
+      "noTargetSet": "Kein Set, in das kopiert werden könnte"
     },
     "dockCopyButton": "Übertragen ({{ count }})",
+    "startChecking": "Das Zielset wird vor dem Start der Übertragung noch einmal live geprüft…",
     "target": {
       "title": "Emotes übertragen",
-      "label": "Zielkanal",
-      "notTracked": "Kanal muss erst beitreten",
-      "none": "Kein weiterer Kanal, in dem du Broadcaster oder 7TV-Editor bist.",
-      "listIncomplete": "Die Kanalliste ist gerade unvollständig — fehlende Kanäle erscheinen nach einem erneuten Laden.",
-      "reauthRequired": "Deine Twitch-Anmeldung ist abgelaufen oder wurde widerrufen — Zielkanäle gibt es erst nach einem neuen Login.",
-      "loadFailed": "Die Kanalliste konnte nicht geladen werden.",
+      "label": "Ziel",
+      "active": "aktiv",
+      "untracked": "nicht getrackt",
+      "kindUnavailable": "kein Zielset",
+      "isSource": "das ist die Quelle",
+      "notEditable": "nicht bearbeitbar",
+      "setsUnavailable": "Sets nicht lesbar",
+      "noUsableSets": "Kein nutzbares Set",
+      "none": "Kein Set gefunden, in das kopiert werden kann.",
+      "listIncomplete": "Die Angebotsliste ist gerade unvollständig — fehlende Ziele erscheinen nach einem erneuten Laden.",
+      "loadFailed": "Die Angebotsliste konnte nicht geladen werden.",
       "retry": "Erneut laden",
-      "submit": "Weiter"
+      "submit": "Weiter",
+      "confirmUntracked": "Ziel ist das Set ‚{{setName}}' von ‚{{ownerDisplayName}}' — dieses Konto trackt EmotePurge nicht.",
+      "unknownOwner": "Besitzer unbekannt",
+      "confirmUntrackedAccept": "Ja, dieses Set",
+      "confirmUntrackedReject": "Anderes Set wählen"
     },
     "foreignChannel": {
       "title": "Aus einem Kanal importieren",
@@ -1045,9 +1241,13 @@
       "invalidChannelName": "Kein gültiger Twitch-Kanalname.",
       "load": "Set laden",
       "reload": "Neu laden",
+      "setsLabel": "Quell-Set",
+      "active": "aktiv",
+      "noActiveSet": "Kein aktives 7TV-Set. Ein auswählbares Set oben markieren, um eine Vorschau zu laden.",
+      "kindUnavailable": "kein Quellset",
       "retry": "Erneut versuchen",
       "continue": "Weiter",
-      "empty": "Das aktive 7TV-Set dieses Kanals hat keine Emotes.",
+      "empty": "Dieses Set hat keine Emotes.",
       "truncated": "Nur ein Teil des Sets konnte geladen werden ({{ loaded }} von {{ totalCount }}) — 7TV begrenzt, wie viele Einträge ein Abruf zurückgibt.",
       "selectedCount": "{{ count }} ausgewählt",
       "grid": {
@@ -1081,26 +1281,48 @@
         "one": "{{ count }} Emote nach {{ channel }} kopieren?",
         "other": "{{ count }} Emotes nach {{ channel }} kopieren?"
       },
+      "titleSet": {
+        "one": "{{ count }} Emote in Set ‚{{ setName }}' kopieren?",
+        "other": "{{ count }} Emotes in Set ‚{{ setName }}' kopieren?"
+      },
+      "titleNothing": "Nichts zu kopieren",
+      "titleAlign": {
+        "one": "{{ count }} Namen im Zielset angleichen?",
+        "other": "{{ count }} Namen im Zielset angleichen?"
+      },
       "originChannel": "Aus Kanal {{ channel }}",
       "originFile": "Aus Datei {{ fileName }}",
       "originFileDetails": "Export aus {{ channel }}, {{ date }}",
       "originLeaderboard": "Aus 7TVs Bestenliste: {{ sort }}",
+      "originTag": "Aus Tag {{ tag }}",
+      "originTagSkipped": {
+        "one": "{{ count }} ist schon im Set",
+        "other": "{{ count }} sind schon im Set"
+      },
       "dateUnknown": "Datum unbekannt",
       "channelUnknown": "Kanal unbekannt",
-      "target": "Ziel: {{ channel }} · Set {{ setId }}",
+      "target": "Ziel: {{ channel }} · Set {{ setName }}",
+      "targetUntracked": "Ziel: Set {{ setName }} von {{ owner }}",
       "loadingHint": "Zieldaten werden geladen…",
       "noTargetSet": "Der Zielkanal hat noch kein aktives 7TV-Set — der erste Abgleich läuft noch oder ist fehlgeschlagen.",
       "loadFailed": "Die Daten des Zielkanals konnten nicht geladen werden.",
       "retry": "Erneut laden",
       "staleHint": "Der letzte Abgleich des Zielkanals ist fehlgeschlagen — unser Abbild kann veraltet sein, 7TV entscheidet.",
+      "untrackedTarget": "EmotePurge trackt diesen Account nicht — 7TV lässt das Kopieren nur zu, wenn du dort Editor bist.",
+      "ownershipCheckUnavailable": "Wir konnten gerade nicht prüfen, ob dieses Set wirklich diesem Channel gehört — bitte vor dem Kopieren selbst auf 7tv.app kontrollieren.",
       "alreadyPresent": {
         "one": "{{ count }} Emote ist bereits im Zielset und wird übersprungen.",
         "other": "{{ count }} Emotes sind bereits im Zielset und werden übersprungen."
       },
       "nameCollisions": {
-        "one": "{{ count }} Name ist im Zielset schon vergeben — 7TV wird dieses Emote ablehnen:",
-        "other": "{{ count }} Namen sind im Zielset schon vergeben — 7TV wird diese Emotes ablehnen:"
+        "one": "{{ count }} Emote trägt einen Namen, der im Zielset schon vergeben ist — wird nicht übertragen:",
+        "other": "{{ count }} Emotes tragen einen Namen, der im Zielset schon vergeben ist — werden nicht übertragen:"
       },
+      "aliasMismatches": {
+        "one": "{{ count }} ist im Zielset bereits vorhanden, heißt dort aber anders:",
+        "other": "{{ count }} sind im Zielset bereits vorhanden, heißen dort aber anders:"
+      },
+      "aliasMismatchRow": "{{ source }} → {{ target }}",
       "invalidNames": {
         "one": "{{ count }} Name enthält Zeichen, die 7TV nicht anlegen kann — 7TV wird dieses Emote ablehnen:",
         "other": "{{ count }} Namen enthalten Zeichen, die 7TV nicht anlegen kann — 7TV wird diese Emotes ablehnen:"
@@ -1117,24 +1339,147 @@
         "one": "Das einzige Emote ist bereits im Zielset.",
         "other": "Alle {{ count }} Emotes sind bereits im Zielset."
       },
+      "nothingToAddBlocked": {
+        "one": "Das einzige Emote kann nicht hinzugefügt werden — es ist bereits im Zielset, durch eine Namenskollision blockiert oder dort unter einem anderen Alias vorhanden.",
+        "other": "Keines der {{ count }} Emotes kann hinzugefügt werden — jedes ist bereits im Zielset, durch eine Namenskollision blockiert oder dort unter einem anderen Alias vorhanden."
+      },
       "sameChannelFile": "Diese Liste stammt aus diesem Kanal.",
       "runNotice": "Das Hinzufügen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.",
-      "execute": "Kopieren"
+      "runNoticeRenameOnly": "Das Umbenennen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Einträgen.",
+      "execute": "Kopieren",
+      "executeRenameOnly": "Angleichen",
+      "removals": {
+        "one": "{{ count }} Emote wird aus dem Zielset entfernt und durch das Quell-Emote ersetzt.",
+        "other": "{{ count }} Emotes werden aus dem Zielset entfernt und durch die Quell-Emotes ersetzt."
+      },
+      "renames": {
+        "one": "{{ count }} Eintrag im Zielset wird umbenannt.",
+        "other": "{{ count }} Einträge im Zielset werden umbenannt."
+      },
+      "saveRecovery": "Rückweg sichern",
+      "start": "Starten",
+      "verifying": "Das Zielset wird gerade live geprüft…",
+      "targetDrifted": "Das Zielset hat sich seit der Vorschau geändert: {{ rows }}. Diese Zeilen stehen wieder auf „Überspringen“ und zeigen jetzt das aktuelle Gegenstück — bitte prüfen und erneut bestätigen.",
+      "targetReadFailed": "Das Zielset ließ sich gerade nicht vollständig lesen. Ohne vollständigen Stand wird nichts entfernt — bitte erneut versuchen.",
+      "saveRecoveryFailed": "Der Browser hat den Download der Rückweg-Datei verweigert. Ohne diese Datei startet kein Lauf, der etwas entfernt.",
+      "reloadTarget": "Ziel neu laden",
+      "decisionsDropped": "Nach dem Neuladen passt die Entscheidung für diese Zeilen nicht mehr, sie stehen wieder auf „Überspringen“: {{ rows }}."
+    },
+    "resolve": {
+      "open": "Auflösen",
+      "openCollisions": "Namenskollisionen auflösen",
+      "openMismatches": "Abweichende Namen auflösen",
+      "resolvedCount": "Davon aufgelöst: {{ count }}",
+      "titleCollisions": {
+        "one": "{{ count }} Namenskollision auflösen",
+        "other": "{{ count }} Namenskollisionen auflösen"
+      },
+      "titleMismatches": {
+        "one": "{{ count }} abweichenden Namen auflösen",
+        "other": "{{ count }} abweichende Namen auflösen"
+      },
+      "hintCollisions": "Der Name ist im Zielset schon vergeben. Umbenennen fügt das Emote unter einem neuen Namen hinzu, „Ziel ersetzen“ entfernt das Emote im Ziel und fügt dieses an seiner Stelle ein.",
+      "hintMismatches": "Das Emote ist im Zielset schon vorhanden, heißt dort aber anders. „Namen übernehmen“ benennt es im Ziel um, fügt aber nichts hinzu.",
+      "listLabelCollisions": "Namenskollisionen",
+      "listLabelMismatches": "Abweichende Namen",
+      "rowLabel": "Quelle: {{ source }}, Ziel: {{ target }}",
+      "header": {
+        "source": "Quelle",
+        "target": "Ziel · {{ set }}",
+        "targetPlain": "Ziel",
+        "action": "Aktion"
+      },
+      "consequence": {
+        "removed": "wird entfernt",
+        "becomes": "wird zu „{{ name }}“",
+        "addedAs": "wird als „{{ name }}“ hinzugefügt",
+        "kept": "wird behalten"
+      },
+      "targetGone": "nicht mehr im Zielset",
+      "aliaslessEntry": "+ ein Eintrag ohne Namen",
+      "actionGroupLabel": "Aktion für {{ sourceName }}",
+      "action": {
+        "skip": "Überspringen",
+        "renameSource": "Umbenennen",
+        "replaceTarget": "Ziel ersetzen",
+        "adoptSourceName": "Namen übernehmen"
+      },
+      "reloadTargetFirst": "Ziel hat sich geändert — erst neu laden",
+      "adoptBlocked": {
+        "nameTaken": "Name im Zielset vergeben",
+        "duplicateTarget": "im Ziel doppelt vorhanden",
+        "aliaslessTarget": "im Ziel ohne Namen eingetragen"
+      },
+      "renameLabel": "Neuer Name",
+      "fieldError": {
+        "invalid": "Diesen Namen nimmt 7TV nicht an.",
+        "taken": "Dieser Name ist im Zielset schon vergeben.",
+        "duplicate": "Diesen Namen erzeugt auch eine andere Zeile."
+      },
+      "violation": {
+        "duplicateGeneratedAlias": "Mehrere Zeilen erzeugen denselben Namen: {{ rows }}.",
+        "aliasHeldByTarget": "Name im Zielset schon vergeben: {{ rows }}.",
+        "invalidTypedAlias": "Name, den 7TV nicht annimmt: {{ rows }}.",
+        "duplicateReplaceTarget": "Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.",
+        "targetTouchedByReplaceAndAdopt": "Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.",
+        "adoptBlocked": "Namen übernehmen ist hier nicht möglich: {{ rows }}."
+      },
+      "back": "Zurück",
+      "apply": "Übernehmen"
     },
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Kopierfortschritt",
+    "settling": "Wird abgeschlossen…",
     "deleteFailedFallback": "Kopieren fehlgeschlagen",
+    "unknownOutcome": "Unklar, ob kopiert — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
+    "errors": {
+      "nameTakenNow": "Der Name ist inzwischen im Zielset vergeben — diese Zeile wurde nicht übernommen.",
+      "removedButNotAdded": "Das Ziel-Emote wurde entfernt, das neue aber nicht hinzugefügt — im Zielset fehlt jetzt dieser Name. Die Rückweg-Datei stellt das Ziel-Emote wieder her.",
+      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
+      "targetNotEditable": "Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+      "targetNotSelectable": "Das Zielset ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Das Zielset konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
+    },
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
       "counts": "{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
+      "countsWithRenamed": "{{done}} kopiert · {{renamed}} umbenannt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
       "target": "Ziel: {{ channel }}",
+      "targetWithSet": "Ziel: {{ channel }} · Set {{ setName }}",
+      "targetSet": "Ziel: Set {{ setName }} von {{ owner }}",
       "openTarget": "Zielkanal öffnen",
-      "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde nach der ersten Zeile abgebrochen."
+      "copiedNotActive": "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      "renamedNotActive": "In Set ‚{{ setName }}' umbenannt — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde nach der ersten Zeile abgebrochen.",
+      "removed": {
+        "one": "{{ count }} Emote wurde aus dem Zielset entfernt.",
+        "other": "{{ count }} Emotes wurden aus dem Zielset entfernt."
+      },
+      "replaceSkippedDrift": {
+        "one": "{{ count }} Ersetzung wurde nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.",
+        "other": "{{ count }} Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert."
+      },
+      "unknownRows": {
+        "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
+        "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
+      },
+      "unknownRecordedIn": {
+        "one": "Bei {{ count }} Ersetzung ist unklar, ob das Ziel-Emote entfernt wurde — im Ergebnisprotokoll steht sie nicht als bestätigte Entfernung, nur die Rückweg-Datei deckt sie ab.",
+        "other": "Bei {{ count }} Ersetzungen ist unklar, ob die Ziel-Emotes entfernt wurden — im Ergebnisprotokoll stehen sie nicht als bestätigte Entfernung, nur die Rückweg-Datei deckt sie ab."
+      },
+      "downloadProtocol": "Protokoll herunterladen",
+      "protocolNotSaved": "Protokoll noch nicht gespeichert — nach dem Schließen ist es weg."
     },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV hinzugefügt, aber EmotePurge konnte es nicht vermerken. Der Zielkanal übernimmt sie beim nächsten Abgleich trotzdem.",
     "syncRetry": "Erneut melden",
     "syncRetrySucceeded": "Rückmeldung erfolgreich.",
+    "removalSyncFailedTitle": "Rückmeldung über die Entfernung fehlgeschlagen",
+    "removalSyncFailed": "Die Emotes sind bei 7TV aus dem Zielset entfernt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "removalSyncPartialTitle": "Rückmeldung über die Entfernung unvollständig",
+    "removalSyncPartial": "Die Emotes sind bei 7TV aus dem Zielset entfernt und bei EmotePurge vermerkt — aber nicht vollständig.",
+    "removalSyncRetry": "Erneut melden",
+    "removalSyncSucceeded": "Rückmeldung über die Entfernung erfolgreich.",
     "resync": {
       "pending": "Abgleich des Zielkanals wird angestoßen…",
       "succeeded": "Abgleich angestoßen — der Zielkanal zeigt die Emotes gleich.",
@@ -1151,10 +1496,199 @@
     },
     "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
   },
+  "undo": {
+    "confirm": {
+      "title": {
+        "one": "{{ count }} Ersetzung aus der Datei rückgängig machen?",
+        "other": "{{ count }} Ersetzungen aus der Datei rückgängig machen?"
+      },
+      "fileLine": {
+        "planned": "Aus einer Rückweg-Datei der Übertragung, geschrieben am {{ date }} — vor ihrem ersten Schritt.",
+        "finished": "Aus dem Ergebnisprotokoll der Übertragung vom {{ date }}."
+      },
+      "origin": {
+        "channel": "Die Übertragung kam aus dem Kanal {{ channel }}.",
+        "file": "Die Übertragung kam aus der Datei {{ fileName }}.",
+        "leaderboard": "Die Übertragung kam aus 7TVs Bestenliste: {{ sort }}.",
+        "tag": "Die Übertragung kam aus dem Tag {{ tag }}.",
+        "unknown": "Woher die Übertragung kam, nennt die Datei nicht."
+      },
+      "setLine": "Im Set „{{ setName }}“.",
+      "removals": {
+        "one": "{{ count }} Quell-Emote wird aus dem Set entfernt.",
+        "other": "{{ count }} Quell-Emotes werden aus dem Set entfernt."
+      },
+      "readNote": "Geprüft gegen den aktuellen Stand des Zielsets; vor dem Start und vor jeder Entfernung wird erneut gelesen.",
+      "reloadTarget": "Ziel neu laden",
+      "listLabel": "Ersetzungen aus der Datei",
+      "sourceAlias": "unter „{{ alias }}“",
+      "targetUnnamed": "Ziel ohne Standardnamen",
+      "unnamedEntry": "(ohne Namen)",
+      "mode": {
+        "full": "Quelle raus, Ziel zurück",
+        "addOnly": "Nur Ziel zurück"
+      },
+      "skippedRow": "Übersprungen: {{ reason }}",
+      "reason": {
+        "duplicateInFile": "doppelt in der Datei",
+        "sourceUnderOtherName": "die Quelle heißt inzwischen anders",
+        "sourceHasMoreEntries": "die Quelle hat inzwischen weitere Einträge",
+        "targetNameUnverifiable": "ein Ziel-Eintrag ohne Namen lässt sich nicht prüfen",
+        "targetHasForeignEntries": "das Ziel trägt einen Eintrag, den die Datei nicht kennt",
+        "targetNameTaken": "ein Ziel-Name ist von einem anderen Emote belegt",
+        "inconsistent": "Datei und Set passen nicht zusammen",
+        "nothingToDo": "nichts zu tun",
+        "skippedUnproven": "unbelegt und nicht bestätigt",
+        "skippedDrift": "seit der Prüfung geändert",
+        "recheckUnavailable": "nicht erneut prüfbar"
+      },
+      "unproven": "unbelegt",
+      "adds": "Kommt zurück als: {{ names }}",
+      "omitted": {
+        "targetNameTaken": "„{{ alias }}“ bleibt aus — der Name ist von einem anderen Emote belegt.",
+        "targetNameUnverifiable": "Ein Eintrag ohne Namen bleibt aus — die Datei nennt keinen Standardnamen."
+      },
+      "foreignNote": "Das Ziel trägt schon einen Eintrag, den die Datei nicht kennt — er bleibt unangetastet.",
+      "liveSource": "Jetzt im Set — Quelle:",
+      "liveTarget": "Ziel:",
+      "liveAbsent": "nicht im Set",
+      "modeCounts": "Quelle raus, Ziel zurück: {{ full }} · nur Ziel zurück: {{ addOnly }} · übersprungen: {{ skipped }}",
+      "additions": {
+        "one": "{{ count }} Ziel-Eintrag kommt zurück.",
+        "other": "{{ count }} Ziel-Einträge kommen zurück."
+      },
+      "alreadyPresent": {
+        "one": "{{ count }} Ziel-Eintrag aus der Datei ist schon im Set.",
+        "other": "{{ count }} Ziel-Einträge aus der Datei sind schon im Set."
+      },
+      "omittedCount": {
+        "one": "{{ count }} Ziel-Eintrag kommt nicht zurück, weil sein Name belegt oder nicht prüfbar ist.",
+        "other": "{{ count }} Ziel-Einträge kommen nicht zurück, weil ihr Name belegt oder nicht prüfbar ist."
+      },
+      "skippedCount": "{{ count }} übersprungen: {{ reason }}",
+      "reading": "Das Zielset wird gelesen…",
+      "readFailed": "Das Zielset ließ sich nicht vollständig lesen. Ohne vollständigen Stand wird nichts freigegeben.",
+      "saveFailed": "Der Browser hat den Download der Rückweg-Datei verweigert. Ohne diese Datei startet kein Lauf, der etwas entfernt.",
+      "acknowledgeUnproven": {
+        "planned": "Die eingelesene Datei wurde vor der Übertragung geschrieben und belegt nicht, dass die Übertragung gelaufen ist. Ich habe geprüft, dass die gezeigten Quell-Emotes aus dieser Übertragung stammen.",
+        "finished": "Laut Ergebnisprotokoll ist die Übertragung bei den markierten Zeilen nicht vollständig durchgelaufen; die Datei belegt also nicht, dass die gezeigten Quell-Emotes durch sie ins Set kamen. Ich habe geprüft, dass sie aus dieser Übertragung stammen."
+      },
+      "acknowledgeHint": {
+        "one": "Ohne Bestätigung wird die als unbelegt markierte Zeile übersprungen.",
+        "other": "Ohne Bestätigung werden die {{ count }} als unbelegt markierten Zeilen übersprungen."
+      },
+      "blockedUnproven": "Ohne die Bestätigung oben läuft keine Zeile.",
+      "blockedNothing": "Keine Zeile läuft — alle sind übersprungen.",
+      "saveRecovery": "Rückweg sichern",
+      "start": "Starten"
+    },
+    "settling": "Wird abgeschlossen — Nachlesen und Rückmeldungen laufen noch…",
+    "startChecking": "Das Zielset wird vor dem Start der Rücknahme noch einmal live geprüft…",
+    "errors": {
+      "removedButNotRestored": "Das Quell-Emote wurde entfernt, das Ziel aber nicht vollständig zurückgeholt — im Set fehlt jetzt ein Eintrag. Dieselbe Rücknahme aus derselben Datei noch einmal starten, um die Lücke zu schließen.",
+      "cancelledMidRow": "Abgebrochen, nachdem das Quell-Emote schon entfernt war — das Ziel ist nicht vollständig zurück. Dieselbe Rücknahme noch einmal starten, um die Lücke zu schließen.",
+      "restoreIncomplete": "Nicht alle Einträge des Ziels wurden zurückgeholt. Dieselbe Rücknahme noch einmal starten, um den Rest nachzuholen.",
+      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
+      "skippedDrift": "Übersprungen — das Set hat sich seit der Bestätigung verändert; an dieser Zeile wurde nichts geändert.",
+      "recheckUnavailable": "Übersprungen — das Set ließ sich unmittelbar vor dem Entfernen nicht lesen; an dieser Zeile wurde nichts geändert."
+    },
+    "progress": "{{ finished }} / {{ total }} verarbeitet",
+    "progressBarLabel": "Fortschritt der Rücknahme",
+    "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
+    "unknownOutcome": "Unklar, ob zurückgenommen — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
+    "deleteFailedFallback": "Rücknahme fehlgeschlagen",
+    "syncFailedTitle": "Rückmeldung über die Entfernung fehlgeschlagen",
+    "syncFailed": "Die Quell-Emotes sind bei 7TV aus dem Set entfernt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "syncPartialTitle": "Rückmeldung über die Entfernung unvollständig",
+    "syncPartial": "Die Quell-Emotes sind bei 7TV aus dem Set entfernt und bei EmotePurge vermerkt — aber nicht vollständig.",
+    "syncRetry": "Entfernung erneut melden",
+    "syncRetrySucceeded": "Rückmeldung über die Entfernung erfolgreich.",
+    "restoreSyncFailedTitle": "Rückmeldung über die Wiederherstellung fehlgeschlagen",
+    "restoreSyncFailed": "Die Ziel-Emotes sind bei 7TV wieder im Set, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "restoreSyncPartialTitle": "Rückmeldung über die Wiederherstellung unvollständig",
+    "restoreSyncPartial": "Die Ziel-Emotes sind bei 7TV wieder im Set und bei EmotePurge vermerkt — aber nicht vollständig.",
+    "restoreSyncRetry": "Wiederherstellung erneut melden",
+    "restoreSyncSucceeded": "Rückmeldung über die Wiederherstellung erfolgreich.",
+    "resync": {
+      "pending": "Synchronisierung wird angestoßen…",
+      "succeeded": "Synchronisierung angestoßen — die Liste aktualisiert sich gleich.",
+      "cooldown": "Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.",
+      "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.",
+      "backendTriggered": "Abgleich läuft bereits — die Liste aktualisiert sich gleich."
+    },
+    "leaveWhileRunning": {
+      "message": "Die Rücknahme der Ersetzungen läuft noch. Sie läuft im Hintergrund weiter, ihr Fortschritt ist aber nur auf der Emote-Nutzungsseite sichtbar. Seite trotzdem verlassen?",
+      "confirm": "Verlassen"
+    },
+    "summary": {
+      "counts": "{{done}} zurückgenommen · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
+      "targetChannel": "Ziel: {{ channel }} · Set {{ setName }}",
+      "targetOwner": "Ziel: Set {{ setName }} von {{ owner }}",
+      "removed": {
+        "one": "{{ count }} Quell-Emote wurde entfernt.",
+        "other": "{{ count }} Quell-Emotes wurden entfernt."
+      },
+      "restored": {
+        "one": "{{ count }} Ziel-Eintrag ist wieder da.",
+        "other": "{{ count }} Ziel-Einträge sind wieder da."
+      },
+      "unknownRows": {
+        "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
+        "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
+      },
+      "unknownRecordedIn": {
+        "one": "Bei {{ count }} Zeile ist unklar, ob das Quell-Emote entfernt wurde — im Ergebnisprotokoll steht sie nicht als bestätigte Entfernung, nur die Rückweg-Datei der Rücknahme deckt sie ab.",
+        "other": "Bei {{ count }} Zeilen ist unklar, ob das Quell-Emote entfernt wurde — im Ergebnisprotokoll stehen sie nicht als bestätigte Entfernungen, nur die Rückweg-Datei der Rücknahme deckt sie ab."
+      },
+      "gaps": {
+        "one": "{{ count }} Zeile hat eine Lücke hinterlassen: das Quell-Emote ist weg, das Ziel aber nicht vollständig zurück. Dieselbe Rücknahme aus derselben Datei erneut starten schließt sie.",
+        "other": "{{ count }} Zeilen haben eine Lücke hinterlassen: die Quell-Emotes sind weg, die Ziele aber nicht vollständig zurück. Dieselbe Rücknahme aus derselben Datei erneut starten schließt sie."
+      },
+      "partialRows": {
+        "one": "Von den zurückgenommenen Zeilen ist {{ count }} nur teilweise zurück — ein Eintrag blieb aus.",
+        "other": "Von den zurückgenommenen Zeilen sind {{ count }} nur teilweise zurück — Einträge blieben aus."
+      },
+      "omittedEntries": {
+        "one": "{{ count }} Ziel-Eintrag blieb aus, weil sein Name belegt oder nicht prüfbar ist — Namen freimachen und dieselbe Rücknahme erneut starten.",
+        "other": "{{ count }} Ziel-Einträge blieben aus, weil ihre Namen belegt oder nicht prüfbar sind — Namen freimachen und dieselbe Rücknahme erneut starten."
+      },
+      "foreignNoted": {
+        "one": "{{ count }} Ziel trug schon einen Eintrag, den die Datei nicht kennt — er blieb unangetastet.",
+        "other": "{{ count }} Ziele trugen schon einen Eintrag, den die Datei nicht kennt — er blieb jeweils unangetastet."
+      },
+      "skipped": "{{ count }} übersprungen: {{ reason }}",
+      "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde abgebrochen und das Token entfernt.",
+      "downloadProtocol": "Ergebnisprotokoll herunterladen",
+      "protocolNotSaved": "Ergebnisprotokoll noch nicht gespeichert — nach dem Schließen ist es weg."
+    }
+  },
+  "sevenTvRun": {
+    "notStarted": {
+      "running": "Nichts gestartet — {{ kind }} läuft noch.",
+      "settling": "Nichts gestartet — {{ kind }} wird noch abgeschlossen."
+    },
+    "kind": {
+      "delete": "der Löschlauf",
+      "restore": "die Wiederherstellung",
+      "import": "die Übertragung",
+      "undo": "die Rücknahme der Ersetzungen"
+    },
+    "tagReport": {
+      "pending": "Wird beim Tag vermerkt …",
+      "succeeded": "Beim Tag vermerkt.",
+      "failed": "EmotePurge konnte beim Tag nicht vermerken, was dieser Lauf bei 7TV geändert hat.",
+      "retry": "Erneut melden",
+      "discardedStale": {
+        "one": "{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.",
+        "other": "{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt."
+      },
+      "restoreHint": "Wiederhergestellte Emotes sind danach wieder im Set, aber nicht als über den Tag ins Set geholt vermerkt — wird der Tag später ins Set geholt, gelten sie beim Entfernen aus dem Set als „nicht über diesen Tag ins Set gekommen“."
+    }
+  },
   "sevenTvToken": {
     "tokenSet": "7TV-Token gesetzt",
     "remove": "Entfernen",
-    "intro": "Zum Löschen brauchst du dein eigenes 7TV-Schreib-Token aus deiner eingeloggten 7tv.app-Session:",
+    "intro": "Für diese Aktion brauchst du dein eigenes 7TV-Schreib-Token aus deiner eingeloggten 7tv.app-Session:",
     "step1": "Auf 7tv.app einloggen (falls noch nicht geschehen).",
     "step2": "Entwicklertools öffnen (F12) → Tab \"Application\" (Chrome) bzw. \"Speicher\" (Firefox) → \"Local Storage\" → \"https://7tv.app\".",
     "step3Prefix": "Den Eintrag mit dem Schlüssel",
@@ -1165,6 +1699,199 @@
     "save": "Speichern",
     "dialogTitle": "7TV-Token hinterlegen",
     "required": "7TV-Token eingeben."
+  },
+  "tags": {
+    "page": {
+      "title": "Tags",
+      "listLabel": "Tags",
+      "intro": "Ein Tag merkt sich Emotes, auch wenn sie gerade nicht im Set sind.",
+      "introRuns": "„Ins Set holen“ fügt sie hinzu, „Aus dem Set entfernen“ nimmt sie wieder heraus – der Tag selbst bleibt dabei erhalten.",
+      "setLine": "Die Zahlen beziehen sich auf das aktive Set {{set}}.",
+      "noActiveSet": "Dieser Channel hat kein aktives Set; Zahlen „im Set“ gibt es deshalb nicht.",
+      "empty": {
+        "title": "Noch keine Tags.",
+        "description": "Wähle im Nutzungsraster Emotes aus und weise ihnen einen Tag zu.",
+        "cta": "Zum Nutzungsraster"
+      },
+      "emptySelection": "Wähle links einen Tag.",
+      "emptyEntries": {
+        "title": "Noch keine Emotes.",
+        "description": "Wähle sie auf der Nutzungsseite aus und weise sie diesem Tag zu."
+      },
+      "micro": {
+        "entries": {
+          "one": "{{count}} Eintrag",
+          "other": "{{count}} Einträge"
+        },
+        "inSet": {
+          "one": "{{count}} im Set",
+          "other": "{{count}} im Set"
+        },
+        "notInSet": {
+          "one": "{{count}} nicht im Set",
+          "other": "{{count}} nicht im Set"
+        },
+        "activePlaced": "{{placed}} über den Tag ins Set geholt"
+      },
+      "currentName": "heute: {{name}}",
+      "notInSetBadge": "nicht im Set",
+      "gridLabel": "Emotes in {{tag}}",
+      "keyboardHint": "Pfeiltasten bewegen den Fokus, Leertaste markiert, Shift-Klick markiert einen Bereich.",
+      "marked": {
+        "one": "{{count}} markiert",
+        "other": "{{count}} markiert"
+      },
+      "retry": "Erneut laden",
+      "deleted": "{{tag}} gelöscht.",
+      "tagGone": "Dieser Tag wurde inzwischen gelöscht.",
+      "state": {
+        "active": "über den Tag ins Set geholt am {{date}}",
+        "activeUndated": "über den Tag ins Set geholt"
+      },
+      "placedAt": "am {{date}} ins Set geholt"
+    },
+    "assignDialog": {
+      "title": "Tag zuweisen",
+      "listLabel": "Tags",
+      "newTagLabel": "Neuer Tag",
+      "createButton": "Anlegen",
+      "noTagsHint": "Dieser Channel hat noch keine Tags. Lege unten den ersten an.",
+      "confirm": {
+        "one": "{{count}} Emote zuweisen",
+        "other": "{{count}} Emotes zuweisen"
+      },
+      "lockReason": {
+        "noneChecked": "Wähle mindestens einen Tag aus.",
+        "submitting": "Die Zuweisung läuft."
+      },
+      "partial": "Schon zugewiesen: {{tags}}. Der Rest ist fehlgeschlagen."
+    },
+    "nameDialog": {
+      "createTitle": "Neuer Tag",
+      "renameTitle": "Tag umbenennen",
+      "label": "Name",
+      "confirmCreate": "Anlegen",
+      "confirmRename": "Umbenennen"
+    },
+    "actions": {
+      "create": "Neuer Tag",
+      "rename": "Umbenennen",
+      "delete": "Tag löschen",
+      "clearSelection": "Auswahl aufheben",
+      "assign": "Tag zuweisen…",
+      "unassign": "Aus dem Tag entfernen ({{count}})",
+      "unassignNamed": "Aus dem Tag entfernen ({{count}}) – {{tag}}",
+      "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; der Tag nimmt sie danach auch nicht mehr aus dem Set.",
+      "unassignLockReason": {
+        "noneInTag": "Keins der markierten Emotes gehört zu {{tag}}."
+      },
+      "playIn": "Ins Set holen",
+      "playInCount": "Ins Set holen ({{count}})",
+      "playInLockReason": {
+        "allMarkedInSet": "Alle markierten Emotes sind schon im Set."
+      },
+      "remove": "Aus dem Set entfernen",
+      "removeCount": "Aus dem Set entfernen ({{count}})",
+      "removeLockReason": {
+        "noneMarkedInSet": "Keines der markierten Emotes ist im Set."
+      }
+    },
+    "filter": {
+      "label": "Tag",
+      "all": "Alle Tags"
+    },
+    "feedback": {
+      "assigned": {
+        "one": "{{count}} Emote zu {{tag}} hinzugefügt.",
+        "other": "{{count}} Emotes zu {{tag}} hinzugefügt."
+      },
+      "assignedMany": {
+        "one": "{{count}} Emote zu {{tags}} Tags hinzugefügt.",
+        "other": "{{count}} Emotes zu {{tags}} Tags hinzugefügt."
+      },
+      "skippedNotInSet": {
+        "one": "{{count}} Emote war nicht mehr im Set und wurde übersprungen.",
+        "other": "{{count}} Emotes waren nicht mehr im Set und wurden übersprungen."
+      },
+      "unassigned": {
+        "one": "{{count}} Emote aus {{tag}} entfernt.",
+        "other": "{{count}} Emotes aus {{tag}} entfernt."
+      },
+      "allPresent": {
+        "one": "Das einzige Emote von {{tag}} ist schon im Set — der Tag gilt als ins Set geholt.",
+        "other": "Alle {{count}} Emotes von {{tag}} sind schon im Set — der Tag gilt als ins Set geholt."
+      },
+      "allMarkedPresent": {
+        "one": "Das markierte Emote ist schon im Set — der Tag gilt als ins Set geholt.",
+        "other": "Alle {{count}} markierten Emotes sind schon im Set — der Tag gilt als ins Set geholt."
+      },
+      "removedNothing": "Bei {{tag}} war nichts aus dem Set zu entfernen."
+    },
+    "deleteDialog": {
+      "message": "{{tag}} wird gelöscht; die Emotes bleiben im Set.",
+      "confirm": "Tag löschen",
+      "placedHint": {
+        "one": "{{count}} Emote dieses Tags wurde über ihn ins Set geholt und ist noch dort — vorher aus dem Set entfernen?",
+        "other": "{{count}} Emotes dieses Tags wurden über ihn ins Set geholt und sind noch dort — vorher aus dem Set entfernen?"
+      }
+    },
+    "removalDialog": {
+      "title": "{{tag}} aus dem Set entfernen",
+      "summary": {
+        "remove": {
+          "one": "{{count}} Emote wird entfernt",
+          "other": "{{count}} Emotes werden entfernt"
+        },
+        "keep": {
+          "one": "{{count}} bleibt im Set",
+          "other": "{{count}} bleiben im Set"
+        }
+      },
+      "proposedHeading": "Vorgeschlagen",
+      "notProposedHeading": "Nicht vorgeschlagen",
+      "placedAt": "am {{date}} ins Set geholt",
+      "reason": {
+        "alreadyPresent": "nicht über diesen Tag ins Set gekommen",
+        "heldBy": "wird noch von {{tag}} gebraucht",
+        "notMarked": "nicht markiert"
+      },
+      "notInSet": {
+        "one": "{{count}} weiteres Emote dieses Tags ist nicht im Set.",
+        "other": "{{count}} weitere Emotes dieses Tags sind nicht im Set."
+      },
+      "nothingToDelete": "Es wird nichts bei 7TV gelöscht. Bestätigen deaktiviert nur den Tag: Er ist danach nicht mehr als ins Set geholt vermerkt.",
+      "nothingToDeleteNotPlayedIn": "Es wird nichts bei 7TV gelöscht.",
+      "notPlayedInLead": "Über diesen Tag ist gerade nichts im Set — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
+      "markedLead": {
+        "one": "Vorgeschlagen ist dein markiertes Emote.",
+        "other": "Vorgeschlagen sind deine {{count}} markierten Emotes."
+      },
+      "markedLeadPartial": {
+        "one": "Vorgeschlagen ist {{proposed}} von {{marked}} markierten Emotes.",
+        "other": "Vorgeschlagen sind {{proposed}} von {{marked}} markierten Emotes."
+      },
+      "markedLeadNone": "Keines deiner markierten Emotes ist vorgeschlagen.",
+      "confirm": "Aus dem Set entfernen"
+    },
+    "errors": {
+      "setChanged": "Das aktive Set hat gewechselt — Seite neu laden.",
+      "entriesUnavailable": "Die Einträge des Tags konnten gerade nicht geladen werden.",
+      "markedGone": "Keines der markierten Emotes gehört noch zum Tag — es wurde nichts geändert.",
+      "changedDuringConfirm": "Der Tag hat sich inzwischen geändert — öffne „Aus dem Set entfernen“ bitte erneut.",
+      "setReadIncomplete": "Die Einträge des Sets konnten nur teilweise von 7TV gelesen werden — es wurde nichts geändert.",
+      "setReadUnavailable": "Die Einträge des Sets konnten nicht von 7TV gelesen werden — es wurde nichts geändert.",
+      "noWriteRight": "Du darfst dieses Set bei 7TV nicht bearbeiten.",
+      "ownershipUnavailable": "Ob du dieses Set bearbeiten darfst, ließ sich gerade nicht prüfen.",
+      "registrationFailed": "Der Lauf konnte bei EmotePurge nicht angemeldet werden — es wurde nichts geändert.",
+      "reportFailed": "EmotePurge konnte den Stand des Tags nicht vermerken.",
+      "retry": "Erneut versuchen",
+      "target": {
+        "notEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+        "notSelectable": "Das Set ist kein normales Emote-Set.",
+        "unavailable": "Das Set konnte gerade nicht geprüft werden."
+      },
+      "otherRunActive": "Gesperrt, solange {{kind}} auf einer anderen Seite läuft."
+    }
   },
   "errors": {
     "generic": "Etwas ist schiefgelaufen. Bitte versuch es erneut.",
@@ -1216,10 +1943,24 @@
       "unexpected_error": "Auf dem Server ist ein unerwarteter Fehler aufgetreten. Bitte versuch es erneut.",
       "no_health_data": "Es liegen aktuell keine Worker-Daten vor.",
       "health_data_unreadable": "Die Worker-Daten konnten nicht gelesen werden.",
+      "invalid_emote_set_id": "Ungültige Emote-Set-ID.",
+      "emote_set_not_found": "Dieses 7TV-Emote-Set ist unbekannt.",
+      "vote_session_set_ballot_invalid": "Ungültige Stimmzettel-Angabe für diese Abstimmung.",
       "legal_document_not_found": "Dieses Dokument ist nicht verfügbar.",
       "contact_invalid": "Bitte überprüfe deine Angaben.",
       "contact_captcha_failed": "Die Sicherheitsabfrage konnte nicht bestätigt werden. Bitte versuch es erneut.",
-      "contact_unavailable": "Das Kontaktformular ist gerade nicht erreichbar. Bitte versuch es später erneut."
+      "contact_unavailable": "Das Kontaktformular ist gerade nicht erreichbar. Bitte versuch es später erneut.",
+      "tag_name_invalid": "Der Tag-Name ist ungültig. Er darf nicht leer sein und höchstens 40 Zeichen lang.",
+      "tag_name_taken": "Einen Tag mit diesem Namen gibt es in diesem Channel schon.",
+      "tag_limit_reached": "Dieser Channel hat die maximale Zahl an Tags erreicht.",
+      "tag_not_found": "Dieser Tag existiert nicht mehr.",
+      "tag_entry_limit_reached": "Dieser Tag hat die maximale Zahl an Emotes erreicht. Es wurde nichts hinzugefügt.",
+      "tag_source_set_incomplete": "Die Emote-Liste dieses Sets ist unvollständig. Es wurde nichts zugewiesen.",
+      "tag_source_set_changed": "Das aktive Set hat sich gerade geändert. Es wurde nichts zugewiesen, bitte erneut versuchen.",
+      "tag_operation_id_invalid": "Der Lauf konnte nicht gemeldet werden: Die Vorgangskennung ist ungültig.",
+      "tag_operation_unknown": "Dieser Vorgang ist dem Server nicht bekannt. Starte den Lauf bitte neu.",
+      "tag_operation_conflict": "Dieser Vorgang gehört zu einem anderen Tag oder Set. Starte den Lauf bitte neu.",
+      "tag_operation_kind_invalid": "Die Art des Vorgangs ist ungültig."
     }
   }
 }

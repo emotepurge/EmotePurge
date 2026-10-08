@@ -51,6 +51,8 @@ export class VoteSessionService {
       ...(request.startedAt ? { startedAt: request.startedAt } : {}),
       ...(request.emoteIds?.length ? { emoteIds: request.emoteIds } : {}),
       ...(request.hideResultsUntilEnd ? { hideResultsUntilEnd: true } : {}),
+      ...(request.emoteSetId ? { emoteSetId: request.emoteSetId } : {}),
+      ...(request.sevenTvEmoteIds?.length ? { sevenTvEmoteIds: request.sevenTvEmoteIds } : {}),
     });
   }
 

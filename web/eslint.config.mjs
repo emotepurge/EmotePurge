@@ -67,6 +67,30 @@ export default defineConfig(
     },
   },
   {
+    // E2E specs take `test` and `expect` from the shared fixture, which stubs and guards the 7TV CDN
+    // (see e2e/support/test.ts and docs/DECISIONS.md, 2026-09-28). A spec that imports them from
+    // `@playwright/test` still cannot reach the CDN — the Playwright config blocks it at DNS — but
+    // it silently loses the stub and the guard: sprites stay invisible and the console fills with
+    // DNS errors. Type imports stay allowed; support/, the measure spec and the audit harness are
+    // not specs and are not covered.
+    files: ['e2e/**/*.spec.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@playwright/test',
+              allowTypeImports: true,
+              message:
+                "Import test/expect from './support/test' — it stubs and guards the 7TV CDN for every test.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['**/*.html'],
     languageOptions: { parser: angular.templateParser },
     plugins: { '@angular-eslint/template': angular.templatePlugin },

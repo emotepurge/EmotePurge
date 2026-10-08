@@ -4,6 +4,8 @@ import { isUnderObservation } from './emote-context';
 
 interface FilterableEmote {
   emoteName: string;
+  // The key tags are stored by (rule 8: not the internal Emote.Id).
+  sevenTvEmoteId: string;
   // null = usage withheld/unknown (non-manager voting view). Usage bounds never match null —
   // "unused" means a confirmed 0, not "no data".
   totalUseCount: number | null;
@@ -37,12 +39,17 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
   private readonly maxCount = signal<number | null>(null);
   private readonly nameFilter = signal('');
   private readonly hideObserved = signal(false);
+  private readonly selectedTagId = signal<number | null>(null);
+  private readonly selectedTagKeys = signal<ReadonlySet<string> | null>(null);
 
   readonly min = this.minCount.asReadonly();
   readonly max = this.maxCount.asReadonly();
   readonly nameQuery = this.nameFilter.asReadonly();
   readonly isUnusedActive = computed(() => this.minCount() === 0 && this.maxCount() === 0);
   readonly isHideObservedActive = this.hideObserved.asReadonly();
+  readonly tagId = this.selectedTagId.asReadonly();
+  /** The chosen tag's 7TV emote ids; `null` until the page has loaded them (see {@link apply}). */
+  readonly tagKeys = this.selectedTagKeys.asReadonly();
 
   private readonly nameFilterRegex = computed(() => {
     const query = this.nameFilter();
@@ -54,10 +61,16 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
     const max = this.maxCount();
     const nameRegex = this.nameFilterRegex();
     const hideObserved = this.hideObserved();
+    // A tag whose keys are not loaded yet lets everything through: filtering to empty meanwhile
+    // would flash the empty state on every tag switch. The usage page does not show that pass-through
+    // while the keys are merely on their way — it holds its view empty under a skeleton
+    // (`tagFilterPending`) — only once their load failed, under its error banner.
+    const tagKeys = this.selectedTagId() === null ? null : this.selectedTagKeys();
     return items.filter((item) => {
       if (min !== null && (item.totalUseCount === null || item.totalUseCount < min)) return false;
       if (max !== null && (item.totalUseCount === null || item.totalUseCount > max)) return false;
       if (nameRegex && !nameRegex.test(item.emoteName)) return false;
+      if (tagKeys && !tagKeys.has(item.sevenTvEmoteId)) return false;
       if (hideObserved && isUnderObservation(item.firstSeenAt ?? null, now)) return false;
       return true;
     });
@@ -75,6 +88,16 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
 
   setNameFilter(value: string): void {
     this.nameFilter.set(value);
+  }
+
+  /** Choosing (or clearing) a tag drops the old keys; the page loads the new ones and calls setTagKeys. */
+  setTag(tagId: number | null): void {
+    this.selectedTagId.set(tagId);
+    this.selectedTagKeys.set(null);
+  }
+
+  setTagKeys(keys: ReadonlySet<string>): void {
+    this.selectedTagKeys.set(keys);
   }
 
   /**
@@ -106,7 +129,8 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
       this.minCount() !== null ||
       this.maxCount() !== null ||
       this.nameFilter().trim() !== '' ||
-      this.hideObserved()
+      this.hideObserved() ||
+      this.selectedTagId() !== null
     );
   }
 
@@ -115,5 +139,7 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
     this.maxCount.set(null);
     this.nameFilter.set('');
     this.hideObserved.set(false);
+    this.selectedTagId.set(null);
+    this.selectedTagKeys.set(null);
   }
 }

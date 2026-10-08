@@ -48,6 +48,18 @@ import { AuditRow } from './audit-row';
               <span aria-hidden="true">·</span>
               <span>{{ detail.key | transloco: detail.params }}</span>
             }
+            @if (row.targetSet; as targetSet) {
+              <span aria-hidden="true">·</span>
+              <span>{{ targetSet.key | transloco: targetSet.params }}</span>
+            }
+            @if (row.legacyForm; as legacyForm) {
+              <span aria-hidden="true">·</span>
+              <span>{{ legacyForm.key | transloco: legacyForm.params }}</span>
+            }
+            @if (row.unresolvedChannel; as unresolvedChannel) {
+              <span aria-hidden="true">·</span>
+              <span>{{ unresolvedChannel.key | transloco: unresolvedChannel.params }}</span>
+            }
           </p>
         </li>
       }

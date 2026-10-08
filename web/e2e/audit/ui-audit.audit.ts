@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
 import { Page, expect, test } from '@playwright/test';
 
+import { VoteSessionResult } from '../../src/app/core/voting/vote-session.model';
 import {
   AUTH_USER,
   MockChannel,
@@ -21,10 +22,16 @@ import {
   mockChannelStatus,
   mockContactConfig,
   mockEmoteList,
+  mockEmoteSetTargets,
   mockLegalAvailability,
   mockLegalDocument,
   mockSetWarning,
+  mockSevenTvGql,
+  mockSyncDeletedInSet,
+  mockTagEntries,
+  mockTags,
   mockTurnstile,
+  sevenTvGqlRequestKind,
   failLive,
   mockLiveQuota,
   mockUsageChannelSeries,
@@ -64,6 +71,10 @@ const VIEWPORTS = [
   // 480 is only a single sample of that whole sub-768px range, though: an overflow that starts
   // somewhere between 480 and 768 still passes here unnoticed. This viewport narrows the blind
   // spot, it does not close it.
+  // A mouse at 360px: no phone produces it, but a squeezed desktop window does, and the fine-pointer
+  // write surfaces (dock, assign dialog) never mount on `mobile`. Runs only the scenarios that opt
+  // in with `includeMouseAt360` — not the whole matrix.
+  { name: 'mobile-mouse', width: 360, height: 800, pointerCoarse: false },
   { name: 'narrow', width: 480, height: 800, pointerCoarse: false },
   { name: 'tablet', width: 768, height: 1024, pointerCoarse: false },
   // Two desktop cases, because one cannot cover both ends of the lg range.
@@ -150,15 +161,18 @@ function usageEmotes(count: number) {
 }
 
 /**
- * Daily curves for the sidecar sparkline, keyed like the real /series response. Only the emotes the
- * sidecar can land on need one — it opens on the busiest, which is `e1`.
+ * Daily curves for the sidecar sparkline, keyed by 7TV id like the real /series response. Only the emotes the
+ * sidecar can land on need one — it opens on the busiest, which is `7tv-1` (`e1`).
  */
 function usageSeries(): Record<string, [number, number][]> {
   return {
-    e1: Array.from({ length: 18 }, (_, i) => [i * 1.5 + 1, 40 + Math.round(90 * Math.sin(i / 2.2))])
+    '7tv-1': Array.from({ length: 18 }, (_, i) => [
+      i * 1.5 + 1,
+      40 + Math.round(90 * Math.sin(i / 2.2)),
+    ])
       .filter(([, count]) => count > 0)
       .map(([day, count]) => [Math.round(day), count] as [number, number]),
-    e2: [
+    '7tv-2': [
       [3, 12],
       [4, 30],
       [11, 4],
@@ -210,13 +224,17 @@ function voteResults(sessionId: number, isActive: boolean, options: VoteResultsO
     voterCount,
     hideResultsUntilEnd: hidden !== undefined,
     // Backend order: ascending net score, delete candidates first (name order when withheld).
-    emotes: usageEmotes(count).map((e, i) => ({
+    emotes: usageEmotes(count).map((e, i): VoteSessionResult => ({
       ...e,
       totalUseCount: withUsage ? e.totalUseCount : null,
       keepVotes: talliesWithheld ? null : 2 + i * 4,
       deleteVotes: talliesWithheld ? null : 40 - i * 3,
       score: talliesWithheld ? null : -38 + i * 7,
       isArchived: withArchived && i < 2,
+      // Same rule as e2e/support/mocks.ts's mockVoteSessionResults (~:1171): eligible defaults
+      // to !isArchived. Left inline here rather than defaulted through `?? !isArchived` because
+      // this fixture builds isArchived itself a line below rather than reading it off an input.
+      eligible: !(withArchived && i < 2),
       myVote: i % 3 === 0 ? 1 : i % 3 === 1 ? 2 : null,
     })),
   };
@@ -358,6 +376,122 @@ interface Scenario {
    * mobile state to begin with, only an artifact of the harness's former pointer bug.
    */
   requiresFinePointer?: boolean;
+  /** Also runs at the `mobile-mouse` viewport (360 px, fine pointer). */
+  includeMouseAt360?: boolean;
+  /**
+   * Fails the case on any horizontal overflow or any interactive element past the right edge.
+   * `horizontalOverflowPx` alone is blind to `position: fixed` surfaces (the action dock), whose
+   * overhang never widens the document — `beyondRightEdge` sees them.
+   */
+  strictRightEdge?: boolean;
+}
+
+const LONG_TAG = 'Fuer-die-Halloween-Wochen-Auswahl-2026-xx';
+
+const TAG_LIST = [
+  { id: 7, name: LONG_TAG, entryCount: 24, inSetCount: 20 },
+  { id: 8, name: 'Leer', entryCount: 0, inSetCount: 0 },
+  { id: 9, name: 'Favoriten', entryCount: 12, inSetCount: 12 },
+];
+
+/** Entries of one tag: every sixth has left the set, the first carries a 40-character alias. */
+function tagEntries(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    sevenTvEmoteId: `7tv-${i + 1}`,
+    alias: i === 0 ? 'xXSuperMegaLangerAliasMitVierzigZeichen' : `Emote${i + 1}PogU`,
+    inSet: i % 6 === 5 ? false : true,
+    currentName: i % 6 === 5 ? `Renamed${i + 1}` : null,
+  }));
+}
+
+/**
+ * The tag routes with T-C's fields (#201 T-C): tag 7 is played in to the active set `set-1` with
+ * 18 valid placements (every in-set entry among the first 20), its entries carry the placement
+ * fields, and the registration/report routes of a clear-out answer — plus a 7TV behind
+ * `7tv.io/v4/gql` that reads the set and accepts every REMOVE, so a clear-out can run to its end
+ * and leave its settled run in the tags page's dock. Registered instead of `mockTags`/
+ * `mockTagEntries` (whose answers predate the T-C fields).
+ */
+async function mockTagRuns(page: Page): Promise<void> {
+  const entries = tagEntries(24).map((entry, i) => {
+    const placed = entry.inSet && i < 20;
+    return {
+      ...entry,
+      imageUrl: `https://cdn.7tv.app/emote/${entry.sevenTvEmoteId}/2x.webp`,
+      placedByThisTag: placed,
+      placedAtUtc: placed ? '2026-10-01T18:00:00Z' : null,
+      placementOperationId: placed ? `rev-${i + 1}` : null,
+      // One entry another active tag still needs: the dialog's "not proposed" block.
+      heldByActiveTags: i === 1 ? [{ id: 9, name: 'Favoriten' }] : [],
+      placedByOtherTags: [],
+    };
+  });
+  const tags = TAG_LIST.map((tag) =>
+    tag.id === 7
+      ? { ...tag, placedCount: 18, active: true, activatedAtUtc: '2026-10-01T18:00:00Z' }
+      : { ...tag, placedCount: 0, active: false, activatedAtUtc: null },
+  );
+  await page.route(
+    (url) => url.pathname === '/api/channels/sensitron/tags',
+    (route) => json(route, 200, { emoteSetId: 'set-1', isActiveSet: true, tags }),
+  );
+  await page.route(
+    (url) => /^\/api\/channels\/sensitron\/tags\/\d+\/entries$/.test(url.pathname),
+    (route) => {
+      const id = Number(new URL(route.request().url()).pathname.split('/')[5]);
+      return json(route, 200, {
+        emoteSetId: 'set-1',
+        isActiveSet: true,
+        activationOperationId: id === 7 ? 'act-7' : null,
+        entries: id === 7 ? entries : [],
+      });
+    },
+  );
+  await page.route(
+    (url) => url.pathname === '/api/channels/sensitron/tags/7/operations',
+    (route) => json(route, 200, { registeredAtUtc: '2026-10-05T10:00:00Z' }),
+  );
+  await page.route(
+    (url) => url.pathname === '/api/channels/sensitron/tags/7/placements/removed',
+    (route) =>
+      json(route, 200, {
+        replayed: false,
+        deletedCount: 17,
+        transferredCount: 1,
+        droppedCount: 0,
+        sweptCount: 0,
+        deactivated: true,
+      }),
+  );
+  await mockEmoteSetTargets(page, [
+    {
+      twitchChannelId: 'tw-sensitron',
+      twitchLogin: 'sensitron',
+      isOwnAccount: true,
+      trackedChannelName: 'sensitron',
+      activeEmoteSetId: 'set-1',
+      sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+    },
+  ]);
+  await mockSyncDeletedInSet(page, 'set-1');
+  const live = entries.filter((entry) => entry.inSet);
+  await mockSevenTvGql(page, (request) => {
+    const kind = sevenTvGqlRequestKind(request);
+    if (kind === 'removeEmote') {
+      return {
+        data: { emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } } },
+      };
+    }
+    const items = live.map((entry) => ({
+      alias: entry.alias,
+      emote: { id: entry.sevenTvEmoteId, defaultName: entry.alias },
+    }));
+    return {
+      data: {
+        emoteSets: { emoteSet: { emotes: { totalCount: items.length, pageCount: 1, items } } },
+      },
+    };
+  });
 }
 
 const SCENARIOS: Scenario[] = [
@@ -697,9 +831,17 @@ const SCENARIOS: Scenario[] = [
         {
           1: Array.from({ length: 25 }, (_, i) => ({
             id: 100 - i,
-            action: ['channel.join', 'channel.leave', 'channel.purge', 'voteSession.create'][i % 4],
+            action: [
+              'channel.join',
+              'channel.leave',
+              'channel.purge',
+              'voteSession.create',
+              'tag.create',
+              'tag.rename',
+              'tag.delete',
+            ][i % 7],
             channelName: i % 3 === 0 ? 'superlangertwitchchannelx' : 'sensitron',
-            targetType: i % 4 === 3 ? 'VoteSession' : 'Channel',
+            targetType: i % 7 === 3 ? 'VoteSession' : i % 7 >= 4 ? 'emoteTag' : 'Channel',
             targetId: String(i + 1),
           })),
         },
@@ -803,9 +945,10 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    // The A6/#91 import path in its refusal state: a protocol from another channel renders the
-    // error banner inside the import dialog's file step, under the sort list and the file control
-    // (§1.1's body order) — deterministic (no token prompt, no further dialog).
+    // The A6/#91 import path in its refusal state: a protocol whose set is in none of the caller's
+    // target lists (#253: the file names the target, the target list checks it) renders the error
+    // banner inside the import dialog's file step, under the sort list and the file control (§1.1's
+    // body order) — deterministic (no token prompt, no further dialog).
     slug: 'usage-stats-restore-import-error',
     path: '/channels/sensitron/usage-stats',
     requiresFinePointer: true,
@@ -814,6 +957,9 @@ const SCENARIOS: Scenario[] = [
       await channelWorkspace(page);
       await mockActiveEmoteSet(page, 'sensitron');
       await mockUsageTotals(page, 'sensitron', usageEmotes(8));
+      await mockEmoteSetTargets(page, [
+        { twitchChannelId: 'own-1', twitchLogin: 'sensitron', isOwnAccount: true, sets: [] },
+      ]);
     },
     afterLoad: async (page) => {
       // The file control now lives inside the import dialog (#91, #147), not directly on the page,
@@ -996,6 +1142,19 @@ const SCENARIOS: Scenario[] = [
         ...TYPICAL_CHANNELS,
         { channelName: 'aatrociity', isSevenTvEditor: true, isTracked: true },
       ]);
+      // The picker's own data source since K2 (spec 6.2, same mock the confirm-dialog scenario
+      // below uses) — stale since then, because this scenario predates K2 and was never updated:
+      // without it the picker's target-loading request 404s against the route mock and the dialog
+      // renders its load-failed banner instead of the radio group the screenshot is meant to show.
+      await mockEmoteSetTargets(page, [
+        {
+          twitchChannelId: 'aatrociity-id',
+          twitchLogin: 'aatrociity',
+          trackedChannelName: 'aatrociity',
+          activeEmoteSetId: 'target-set',
+          sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+        },
+      ]);
     },
     afterLoad: async (page) => {
       // Locale-independent handle: the visible label is translated ("Übertragen" / "Transfer")
@@ -1007,6 +1166,9 @@ const SCENARIOS: Scenario[] = [
       // first and silently opens the export dialog instead.
       await page.locator('main header button').nth(1).click();
       await page.locator('#app-dialog-title').waitFor();
+      // The target radio group loads async off the mock above; without waiting for it the
+      // screenshot can still land on the loading skeleton depending on timing.
+      await page.getByRole('radio', { name: /^Main/ }).waitFor();
     },
   },
   {
@@ -1024,6 +1186,20 @@ const SCENARIOS: Scenario[] = [
         ...TYPICAL_CHANNELS,
         { channelName: 'aatrociity', isSevenTvEditor: true, isTracked: true },
       ]);
+      // The picker's own data source since K2 (spec 6.2) — replaces the pre-K2 assumption that
+      // `/api/channels/mine` above was enough to open it on. `target-set` is both this account's
+      // active set and the one `mockActiveEmoteSet`/`mockSetWarning`/`mockEmoteList` below already
+      // answer for, so picking it below stays on the "chosen set is the account's active one" fast
+      // path (spec 8.6 fourth bullet, AK 36) the same way this scenario always has.
+      await mockEmoteSetTargets(page, [
+        {
+          twitchChannelId: 'aatrociity-id',
+          twitchLogin: 'aatrociity',
+          trackedChannelName: 'aatrociity',
+          activeEmoteSetId: 'target-set',
+          sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+        },
+      ]);
       await mockActiveEmoteSet(page, 'aatrociity', 'target-set', {
         capacity: 1000,
         occupiedSlots: 3,
@@ -1039,18 +1215,138 @@ const SCENARIOS: Scenario[] = [
       // why it is scoped to `main`.
       await page.locator('main header button').nth(1).click();
       const picker = page.getByRole('dialog');
-      // Channel logins are not translated, so the radio's own name is locale-independent — unlike
-      // the "Weiter"/"Continue" submit button next to it, matched here by position instead
-      // ([dialog-actions] is the attribute DialogShell's <ng-content select> projects on, so it is
-      // never removed from the DOM; Cancel is always first — dialog-shell.ts's own comment).
-      await picker.getByRole('radio', { name: '#aatrociity' }).check();
+      // Every set is its own radio since addendum 39 (#217) — there is no more merged
+      // "#aatrociity" account-header radio to check. The set's own name ("Main", from the mock
+      // above) is not translated, so a prefix match on it stays locale-independent the same way the
+      // old channel-login match was — unlike its "(aktiv)"/"(active)" suffix, which this regex
+      // deliberately does not pin down.
+      await picker.getByRole('radio', { name: /^Main/ }).check();
       await picker.locator('[dialog-actions]').last().click();
-      // The target load starts async and the dialog opens on its loading skeleton (R8). The dialog
-      // title itself already carries the channel name the moment the dialog opens — before the
-      // target data has loaded — so waiting on the mocked set id instead (only rendered once
-      // `ready()` is true, and, like the channel login, never translated) is what actually proves
-      // the confirm dialog has filled in rather than still showing its skeleton.
-      await page.getByText('target-set').first().waitFor();
+      // The target load starts async and the dialog opens on its loading skeleton (R8). Waiting on
+      // the resolve-collisions trigger (an element id, present only once `ready()` is true AND the
+      // mocked target actually collides, which Emote3PogU/target-99 above always does) is what
+      // actually proves the confirm dialog has filled in rather than still showing its skeleton —
+      // unlike a wait on the raw set id text, the header now shows the set's resolved NAME ("Main")
+      // once a picker choice carries one, so the id itself never appears.
+      await page.locator('#import-confirm-resolve-nameCollision').waitFor();
+    },
+  },
+  {
+    // The confirm dialog's second step (#230): the per-row resolution table for the one name
+    // collision the mock below already produces (Emote3PogU/7tv-3 colliding with a different
+    // target id, same data as usage-stats-import-confirm-dialog above — one step further, not a
+    // new fixture). No coarse-pointer variant exists for this step at all (every 7TV write path is
+    // behind `!isCoarse()`), which is what `requiresFinePointer` below is for.
+    slug: 'usage-stats-import-resolve-step',
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockMyChannelsWithFlags(page, [
+        ...TYPICAL_CHANNELS,
+        { channelName: 'aatrociity', isSevenTvEditor: true, isTracked: true },
+      ]);
+      await mockEmoteSetTargets(page, [
+        {
+          twitchChannelId: 'aatrociity-id',
+          twitchLogin: 'aatrociity',
+          trackedChannelName: 'aatrociity',
+          activeEmoteSetId: 'target-set',
+          sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+        },
+      ]);
+      await mockActiveEmoteSet(page, 'aatrociity', 'target-set', {
+        capacity: 1000,
+        occupiedSlots: 3,
+      });
+      await mockSetWarning(page, 'aatrociity');
+      await mockEmoteList(page, 'aatrociity', [
+        { sevenTvEmoteId: '7tv-1', name: 'Emote1PogU' },
+        { sevenTvEmoteId: 'target-99', name: 'Emote3PogU' },
+      ]);
+    },
+    afterLoad: async (page) => {
+      // Same opening sequence as usage-stats-import-confirm-dialog above (position-based header
+      // click, unnamed-radio-by-prefix, last dialog-actions element). The resolve-collisions
+      // trigger below both proves the confirm dialog has filled in (it only renders once `ready()`
+      // is true, same reasoning as that scenario's own wait) and is the very element this scenario
+      // exists to open — an element id, not a translated label, same reason as everywhere else in
+      // this file that needs to work under both locale projects.
+      await page.locator('main header button').nth(1).click();
+      const picker = page.getByRole('dialog');
+      await picker.getByRole('radio', { name: /^Main/ }).check();
+      await picker.locator('[dialog-actions]').last().click();
+      await page.locator('#import-confirm-resolve-nameCollision').click();
+      await page.locator('[data-resolve-index="0"]').waitFor();
+
+      // AK 22 (plan §0.1, docs/plans/Plan-230-Namenskonflikte.md): since the resolution step has no
+      // coarse-pointer variant, its 360 px requirement means a squeezed DESKTOP window with a
+      // mouse — not the matrix's own 'mobile' viewport, which is coarse and this scenario never
+      // reaches (requiresFinePointer above). Resizing within the already fine-pointer-emulated
+      // viewport reproduces exactly that state. Pinned once — at the 'desktop-narrow' matrix cell,
+      // dark theme only (light only runs at 'desktop') — rather than redundantly at every fine
+      // viewport this afterLoad also runs at.
+      const original = page.viewportSize();
+      if (original?.width === 1024) {
+        await page.setViewportSize({ width: 360, height: original.height });
+        await page.waitForTimeout(50);
+        const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+        expect(
+          scrollWidth,
+          'AK 22: no horizontal scroll inside the dialog pane at 360px',
+        ).toBeLessThanOrEqual(360);
+        // Rows stack source over target below the step's own narrow threshold (760px content
+        // width, comfortably crossed at 360px viewport) — read geometrically (the target block
+        // starts at or below the source block's bottom edge) rather than off a CSS class, which a
+        // redesign could rename without the layout itself changing.
+        const row = page.locator('[data-resolve-index="0"] > div');
+        const sourceBox = await row.locator('> div').nth(0).boundingBox();
+        const targetBox = await row.locator('> div').nth(1).boundingBox();
+        if (sourceBox && targetBox) {
+          expect(
+            targetBox.y,
+            'AK 22: rows stack source over target at 360px',
+          ).toBeGreaterThanOrEqual(sourceBox.y + sourceBox.height - 2);
+        }
+        await page.setViewportSize(original);
+        await page.waitForTimeout(50);
+      }
+
+      // Row-height fix: the side-by-side layout's fixed row height must track its rendered
+      // content — no big empty band below it — and the content must sit vertically centred, not
+      // pinned to the top. Checked once at the 'desktop' matrix cell (1536px, side-by-side layout
+      // there, both themes) rather than at every wide viewport this afterLoad also runs at. This
+      // row is untouched (the default `skip` decision), so its own content is only the 40px sprite
+      // — the row's fixed height still has to leave room for the tallest a row here ever gets, so
+      // some gap is structural to a virtualized list's one-height-fits-all row and not itself a
+      // defect. That budget (`ROW_WIDE_PX`, import-conflict-resolution-step.ts) grew 120 -> 136 in
+      // #268's own P2 fix round and stayed there through #268's own clipping-at-narrow-widths
+      // follow-up, which re-measured the wide layout's own worst case at 110px content — an
+      // untracked target's bracketed "replace" disabled reason, plus a checked rename whose typed
+      // alias collides (aliasHeldByTarget) and its field error, all built around one unbreakable
+      // ~50-char name — comfortably inside 136, so the wide budget itself didn't move again. A
+      // plain skip row's own structural gap is therefore 136 - 40 = 96px; 104 (96 + an 8px margin,
+      // the same margin family that component's own doc comment uses) catches a gross regression
+      // without failing on that now-larger, but still entirely structural, slack.
+      if (original?.width === 1536) {
+        const row = page.locator('[data-resolve-index="0"]');
+        const rowBox = await row.boundingBox();
+        const contentBox = await row.locator('> div').first().boundingBox();
+        if (rowBox && contentBox) {
+          expect(
+            rowBox.height - contentBox.height,
+            'row-height fix: no large empty band below the content in the side-by-side layout',
+          ).toBeLessThan(104);
+          const topGap = contentBox.y - rowBox.y;
+          const bottomGap = rowBox.y + rowBox.height - (contentBox.y + contentBox.height);
+          expect(
+            Math.abs(topGap - bottomGap),
+            'row-height fix: content is vertically centred, not top-aligned',
+          ).toBeLessThan(4);
+        }
+      }
     },
   },
   {
@@ -1113,14 +1409,21 @@ const SCENARIOS: Scenario[] = [
       await mockChannelAuditLog(page, 'sensitron', {
         1: Array.from({ length: 25 }, (_, i) => ({
           id: 100 - i,
-          action: ['channel.join', 'channel.resync', 'voteSession.delete', 'emotes.syncDeleted'][
-            i % 4
-          ],
+          // The three tag actions carry id-only details the server projects to no detail line.
+          action: [
+            'channel.join',
+            'channel.resync',
+            'voteSession.delete',
+            'emotes.syncDeleted',
+            'tag.create',
+            'tag.rename',
+            'tag.delete',
+          ][i % 7],
           actorLogin: i % 2 === 0 ? 'sensitron' : 'averylongmoderatorname',
           detail:
-            i % 4 === 2
+            i % 7 === 2
               ? { kind: 'title', count: null, text: 'Sommer-Purge 2026' }
-              : i % 4 === 3
+              : i % 7 === 3
                 ? { kind: 'emoteCount', count: 128, text: null }
                 : null,
         })),
@@ -1235,6 +1538,195 @@ const SCENARIOS: Scenario[] = [
       await authedShell(page);
       await channelWorkspace(page);
       await mockVoteResults(page, 5, false, { voterCount: 3 });
+    },
+  },
+  {
+    // The tags page (#201, spec 9.4): list and detail side by side from lg, drilldown below. Long
+    // names on both sides (a 40-character tag, a 40-character alias), entries that left the set
+    // (void plate + dimmed sprite + "today: ..." line), and the deep link `?tag=` that opens the
+    // detail on narrow viewports as well.
+    slug: 'tags-page-list-detail',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(24));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+  },
+  {
+    // The tags page with one entry marked (#201, spec 7.0a/E17): the small dock in the flow carries
+    // "Remove from '...' (n)" with a 40-character tag name -- appButton is nowrap, so the whole
+    // label used to push the page past a 360px viewport under a fine pointer. Fine pointer only
+    // (the dock's write buttons do not exist on a coarse one).
+    slug: 'tags-page-marked',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(24));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      await page
+        .getByRole('button', { name: /Emote2PogU/ })
+        .first()
+        .click();
+      await page.getByRole('button', { name: /^(Auswahl aufheben|Clear selection)/ }).waitFor();
+    },
+  },
+  {
+    // The list alone on the drilldown viewports (no `?tag=`): every tag row, long name truncating.
+    slug: 'tags-page-list',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(24));
+    },
+  },
+  {
+    // More than VIRTUALIZE_ABOVE (200) entries: the window-scrolled virtual viewport path.
+    slug: 'tags-page-virtualized',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', [{ ...TAG_LIST[0], entryCount: 250, inSetCount: 230 }]);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(250));
+    },
+  },
+  {
+    // A tag without entries: the detail's own empty state beside a populated list.
+    slug: 'tags-page-tag-empty',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags?tag=8',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 8, []);
+    },
+  },
+  {
+    // No tag at all: the page's empty state with its way to the usage grid.
+    slug: 'tags-page-empty',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', []);
+    },
+  },
+  {
+    // The filter row with the tag select chosen (#201, spec 9.2): the select alone (no summary, no run
+    // buttons) and, with one emote marked, the dock's
+    // "Remove from '...' (n)" carrying a 40-character tag name — the longest label the dock gets.
+    // Fine pointer only: the dock's write buttons do not exist on a coarse one.
+    slug: 'usage-filter-with-tag',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(3));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      // The select's name is "Tag" in both locales.
+      await page.getByRole('combobox', { name: /^Tag$/ }).selectOption('7');
+      await page.getByRole('button', { name: /^Emote1PogU ·/ }).click();
+      await page.locator('.app-dock').waitFor();
+    },
+  },
+  {
+    // The assign dialog (#201, spec 7.0) over two marked emotes: the tag checklist with a
+    // 40-character name, the create row and the confirm button. Fine pointer only (the write path).
+    slug: 'tag-assign-dialog',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockTags(page, 'sensitron', TAG_LIST);
+    },
+    afterLoad: async (page) => {
+      await page.getByRole('button', { name: /^Emote1PogU ·/ }).click();
+      await page.getByRole('button', { name: /^Emote3PogU ·/ }).click();
+      await page.getByRole('button', { name: /^(Tag zuweisen|Assign tag)/ }).click();
+      await page.getByRole('dialog').waitFor();
+    },
+  },
+  {
+    // The tags page with a played-in tag (#201 T-C, spec 9.4): state line, the
+    // list's "n über den Tag ins Set geholt", the run buttons in the detail head — and, after a
+    // clear-out has run to its end against the mocked 7TV, the page-level run dock with the
+    // delete section's settled run, tag report line, restore hint and buttons (the fixed dock has
+    // to pass the right-edge gate at 360 px under a mouse). Fine pointer only: no runs on a coarse
+    // one.
+    slug: 'tags-page-active-with-dock',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { tagRunsEnabled: true });
+      await mockTagRuns(page);
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      await page
+        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .click();
+      const dialog = page.getByRole('dialog');
+      await dialog
+        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .click();
+      await page.locator('.app-dock').waitFor();
+      await page
+        .locator('.app-dock')
+        .getByRole('button', { name: /(wiederherstellen|restore)/i })
+        .waitFor();
+    },
+  },
+  {
+    // The clear-out preview (#201 T-C, spec 7.2/6) over a played-in tag: the "proposed" block with
+    // placement dates, the "not proposed" block with a held-by reason and a 40-character alias,
+    // the summary and the set line. Opened against the mocked 7TV set read. Includes the 480 px
+    // fine-pointer case (`narrow`) the Task 11 report left unverified.
+    slug: 'tag-removal-dialog',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { tagRunsEnabled: true });
+      await mockTagRuns(page);
+    },
+    afterLoad: async (page) => {
+      await page
+        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .click();
+      await page.getByRole('dialog').waitFor();
     },
   },
 ];
@@ -1423,6 +1915,10 @@ for (const theme of THEMES) {
           locale === 'en' && (vp.name === 'tablet' || vp.name === 'narrow'),
           'en only in mobile+desktop-narrow+desktop',
         );
+        test.skip(
+          vp.name === 'mobile-mouse' && !sc.includeMouseAt360,
+          'the 360 px mouse viewport only runs the scenarios that opt in',
+        );
         test.skip(theme === 'light' && vp.name !== 'desktop', 'light only at the widest viewport');
         test.skip(
           Boolean(sc.requiresFinePointer) && vp.pointerCoarse,
@@ -1521,6 +2017,13 @@ for (const theme of THEMES) {
         );
         const metrics = await collectMetrics(page);
         const contrastViolations = await collectContrastViolations(page);
+        if (sc.strictRightEdge) {
+          expect(metrics.horizontalOverflowPx, 'horizontal overflow').toBe(0);
+          expect(
+            metrics.beyondRightEdge.map((t) => `${t.tag} "${t.text}" ends at ${t.x + t.w}`),
+            'interactive elements past the right edge (fixed surfaces included)',
+          ).toEqual([]);
+        }
         fs.writeFileSync(
           path.join(OUT, 'metrics', `${base}.json`),
           JSON.stringify(

@@ -157,6 +157,18 @@ export class ListSelection<T> {
   }
 
   /**
+   * Unmarks exactly the given keys and leaves every other mark alone — what a finished request does
+   * for the keys it submitted, so a mark made while it was in flight survives its answer.
+   */
+  deselectKeys(keys: readonly string[]): void {
+    const gone = new Set(keys);
+    this.selectedKeySet.update((current) => new Set([...current].filter((key) => !gone.has(key))));
+    if (this.anchorKey !== null && gone.has(this.anchorKey)) {
+      this.anchorKey = null;
+    }
+  }
+
+  /**
    * Resets only the shift-click anchor, leaving `selectedKeys` untouched — what a sort-key change
    * calls (see `UsageStatsPage.setSortKey`). The anchor is a position in the *old* order, and
    * carrying it into a differently-ordered list would let the next shift-click sweep up rows the

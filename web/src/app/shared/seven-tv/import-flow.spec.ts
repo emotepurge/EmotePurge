@@ -1,18 +1,29 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { signal, WritableSignal } from '@angular/core';
-import { of, Subject, throwError } from 'rxjs';
+import { computed, signal, WritableSignal } from '@angular/core';
+import { firstValueFrom, Observable, of, Subject, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
+import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
 import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
+import { EditableSetResolution } from '../../core/seven-tv/seven-tv-emote-set.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportConfirmDialogData, ImportConfirmOutcome } from './import-confirm-dialog';
-import { ImportFlowDeps, startImportFlow } from './import-flow';
+import {
+  ImportFlowDeps,
+  ImportFlowTagHook,
+  recheckTransferPlan,
+  startImportFlow,
+} from './import-flow';
+import { ImportTargetChoice } from './import-target-dialog';
+import { LIVE_READ_TIMEOUT_MS } from './recovery-file-gate';
 
 /**
  * `startImportFlow` opens a dialog through the plain `Dialog` object it is handed and never
@@ -22,12 +33,52 @@ import { ImportFlowDeps, startImportFlow } from './import-flow';
  * always the confirm dialog).
  */
 
-function source(rows: ImportRow[] = [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }]): ImportSource {
+function source(
+  rows: ImportRow[] = [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+): ImportSource {
   return {
     origin: { kind: 'channel', channelName: 'origin-channel' },
     rows,
     duplicatesCollapsed: 0,
     discardedRows: 0,
+  };
+}
+
+/** A K2 picker choice — what `usage-stats-page.ts`'s `startImportFromChoice` hands to
+ *  `startImportFlow` as a `'chosen'` target (spec F5, 8.6). */
+function choice(overrides: Partial<ImportTargetChoice> = {}): ImportTargetChoice {
+  return {
+    scope: 'visible',
+    emoteSetId: 'set-halloween',
+    channelName: 'handofblood',
+    ownerDisplayName: 'HandOfBlood',
+    // `null` by default — the owner-hint design's dedicated cases below (`toOwnerHint`/
+    // `toOwnerTwitchIdHint`) override this explicitly; every other test here is indifferent to it.
+    ownerTwitchChannelId: null,
+    setName: 'Halloween',
+    isTracked: true,
+    twitchLogin: 'handofblood',
+    // Deliberately *not* 'set-halloween' — the default choice is a non-active pick, so every
+    // existing test in the 'a chosen target' describe block below keeps exercising the live-list
+    // path unless it says otherwise. The dedicated active-set test overrides both to match.
+    activeEmoteSetId: 'set-active',
+    ...overrides,
+  };
+}
+
+/** A live-list answer (`SevenTvEmoteSetService.loadEmoteSetPreview`, spec 6.4) for a `'chosen'`
+ *  target's loader read. */
+function liveTarget(overrides: Partial<ForeignEmoteSetResponse> = {}): ForeignEmoteSetResponse {
+  return {
+    channelName: 'handofblood',
+    sevenTvUserId: null,
+    emoteSetId: 'set-halloween',
+    emoteSetName: 'Halloween',
+    capacity: 500,
+    totalCount: 338,
+    truncated: false,
+    emotes: [],
+    ...overrides,
   };
 }
 
@@ -49,6 +100,28 @@ function emoteSetPage(ids: string[] = []) {
   };
 }
 
+/** Like `emoteSetPage`, but with each entry's alias — `null` for an entry without one. */
+function aliasedSetPage(entries: { id: string; alias: string | null }[]) {
+  return {
+    data: {
+      emoteSets: {
+        emoteSet: {
+          emotes: {
+            totalCount: entries.length,
+            pageCount: 1,
+            items: entries.map((entry) => ({ alias: entry.alias, emote: { id: entry.id } })),
+          },
+        },
+      },
+    },
+  };
+}
+
+/** The plan a confirmation that resolved nothing hands to the run: one `add` row per row. */
+function addPlan(rows: ImportRow[]): TransferPlan {
+  return { rows: rows.map((row) => ({ action: 'add', source: row, alias: row.name })) };
+}
+
 function readyStatus(overrides: Partial<EmoteSetStatus> = {}): EmoteSetStatus {
   return {
     activeEmoteSetId: 'set-1',
@@ -66,6 +139,10 @@ function readyStatus(overrides: Partial<EmoteSetStatus> = {}): EmoteSetStatus {
 
 interface Harness {
   deps: ImportFlowDeps;
+  /** `getSetWarning` as a bare mock, for asserting which set-warning URL/params a call used — the
+   *  rest of `emoteAdminService` is reachable through `deps.emoteAdminService` too, but this one
+   *  field is the only one any test below inspects directly. */
+  getSetWarning: ReturnType<typeof vi.fn>;
   dialogOpen: ReturnType<typeof vi.fn>;
   /** One entry per `loadImportTarget` call — `emoteAdminService.getSetStatus` is the one blocking
    *  request kept under manual control; `listEmotes`/`getSetWarning` resolve synchronously so only
@@ -79,14 +156,38 @@ interface Harness {
    *  `HttpClient.post` straight to 7TV's `v4` GQL endpoint (`already-present-filter.ts`), not
    *  `emoteAdminService`. Resolves synchronously to an empty target set by default. */
   httpPost: ReturnType<typeof vi.fn>;
+  /** `loadImportTarget`'s live-list read for a `'chosen'` target (spec F5) — only ever called for
+   *  that kind, see the setup() note next to it. */
+  loadEmoteSetPreview: ReturnType<typeof vi.fn>;
+  /** The shared pre-check (spec 4.2, 6.2, E19) `start()` runs before `recheckTransferPlan` when
+   *  the confirmed plan carries at least one replace row (spec 4.5 point 17, AK 32) — resolves
+   *  synchronously to `'editable'` by default, so every test that does not care about the
+   *  pre-check itself keeps starting exactly as it did before this check existed. */
+  resolveEditableSet: ReturnType<typeof vi.fn>;
+  /** `SevenTvImportService.reportTargetCheckBlocked` — what a blocked pre-check calls instead of
+   *  starting anything (AK 32). */
+  reportTargetCheckBlocked: ReturnType<typeof vi.fn>;
   startImport: ReturnType<typeof vi.fn>;
   hasToken: WritableSignal<boolean>;
   activeRun: WritableSignal<SevenTvRunKind | null>;
+  /** The arbiter's `startPending` (#280) — another run's confirmed start still being checked. */
+  startPending: WritableSignal<boolean>;
+  /** `SevenTvImportService.startCheckPending` (#280) on the fake service. */
+  importStartCheckPending: WritableSignal<boolean>;
+  noteRefusedStart: ReturnType<typeof vi.fn>;
 }
 
 function setup(): Harness {
   const statusSubjects: Subject<EmoteSetStatus>[] = [];
   const listEmotes = vi.fn(() => of<EmoteListItem[]>([]));
+  const getSetWarning = vi.fn(() =>
+    of({
+      available: true,
+      isOwnSet: true,
+      otherTrackedChannelsSharingSet: [],
+      otherModeratedChannelsSharingSet: [],
+    }),
+  );
   const emoteAdminService = {
     getSetStatus: vi.fn(() => {
       const subject = new Subject<EmoteSetStatus>();
@@ -96,15 +197,32 @@ function setup(): Harness {
     // Resolves synchronously and is irrelevant to every test below beyond letting forkJoin settle
     // as soon as the status subject does — only that one is kept under manual control.
     listEmotes,
-    getSetWarning: vi.fn(() =>
-      of({
-        available: true,
-        isOwnSet: true,
-        otherTrackedChannelsSharingSet: [],
-        otherModeratedChannelsSharingSet: [],
-      }),
-    ),
+    getSetWarning,
   } as unknown as EmoteAdminService;
+
+  // Only reached by a `'chosen'` target (the picker's own choice, spec F5) — the three
+  // channel-only doors (file, foreign channel, leaderboard) always pass `'activeSet'`, which never
+  // calls this. Default answer is irrelevant to every `'activeSet'` test below; the `'chosen'`
+  // describe block sets its own return value per case.
+  const loadEmoteSetPreview = vi.fn();
+  const resolveEditableSet = vi.fn(() =>
+    of<EditableSetResolution>({
+      status: 'editable',
+      target: {
+        emoteSetId: 'set-1',
+        setName: 'set-1',
+        ownerDisplayName: 'owner',
+        twitchLogin: 'owner',
+        trackedChannelName: 'target-channel',
+        isActiveSet: true,
+        ownerTwitchChannelId: 'tw-owner',
+      },
+    }),
+  );
+  const emoteSetService = {
+    loadEmoteSetPreview,
+    resolveEditableSet,
+  } as unknown as SevenTvEmoteSetService;
 
   const httpPost = vi.fn(() => of(emoteSetPage()));
   const httpClient = { post: httpPost } as unknown as HttpClient;
@@ -113,23 +231,57 @@ function setup(): Harness {
   const tokenService = { hasToken } as unknown as SevenTvTokenService;
 
   const startImport = vi.fn();
-  const importService = { startImport } as unknown as SevenTvImportService;
+  const reportTargetCheckBlocked = vi.fn();
+  const importStartCheckPending = signal(false);
+  const importService = {
+    startImport,
+    reportTargetCheckBlocked,
+    startCheckPending: importStartCheckPending,
+  } as unknown as SevenTvImportService;
 
   const activeRun = signal<SevenTvRunKind | null>(null);
-  const arbiter = { activeRun } as unknown as SevenTvRunArbiter;
+  const noteRefusedStart = vi.fn();
+  // #280: another run's confirmed start still being checked before it begins — the arbiter's
+  // `startPending`; `startLocked` derived from both the way the real arbiter derives it.
+  const startPending = signal(false);
+  const arbiter = {
+    activeRun,
+    noteRefusedStart,
+    startPending,
+    // The import's own start check counts here too, as its registration makes it count in the
+    // real arbiter — which is what the confirmed-start invariant specs below rely on.
+    startLocked: computed(
+      () => activeRun() !== null || startPending() || importStartCheckPending(),
+    ),
+  } as unknown as SevenTvRunArbiter;
 
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const dialog = { open: dialogOpen } as unknown as Dialog;
 
   return {
-    deps: { dialog, emoteAdminService, httpClient, tokenService, importService, arbiter },
+    deps: {
+      dialog,
+      emoteAdminService,
+      emoteSetService,
+      httpClient,
+      tokenService,
+      importService,
+      arbiter,
+    },
+    getSetWarning,
     dialogOpen,
     statusSubjects,
     listEmotes,
     httpPost,
+    loadEmoteSetPreview,
+    resolveEditableSet,
+    reportTargetCheckBlocked,
     startImport,
     hasToken,
     activeRun,
+    startPending,
+    importStartCheckPending,
+    noteRefusedStart,
   };
 }
 
@@ -152,16 +304,27 @@ describe('startImportFlow', () => {
   it('opens the confirm dialog with the target loading, and starts the load immediately', () => {
     const { deps, dialogOpen, statusSubjects } = setup();
 
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
     expect(dialogOpen).toHaveBeenCalledTimes(1);
     expect(confirmData(dialogOpen).target()).toEqual({ status: 'loading' });
     expect(statusSubjects).toHaveLength(1);
   });
 
+  // Findings 1/3 (Live-Verifikation K2 2026-09-21): an 'activeSet' door is always the channel's
+  // active set — the confirm dialog keeps today's title wording and never names the set.
+  it("marks an 'activeSet' target as the active set, with no title set name", () => {
+    const { deps, dialogOpen } = setup();
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+    const data = confirmData(dialogOpen);
+    expect(data.targetIsActiveSet).toBe(true);
+    expect(data.titleSetName).toBeNull();
+  });
+
   it('resolves the target to ready once the load answers', () => {
     const { deps, dialogOpen, statusSubjects } = setup();
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
     statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-9' }));
     statusSubjects[0].complete();
@@ -171,7 +334,7 @@ describe('startImportFlow', () => {
 
   it('resolves the target to failed when a blocking request errors with a non-404 status', () => {
     const { deps, dialogOpen, statusSubjects } = setup();
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
     statusSubjects[0].error(new HttpErrorResponse({ status: 500 }));
 
@@ -180,7 +343,7 @@ describe('startImportFlow', () => {
 
   it('resolves the target to no-set when a blocking request 404s', () => {
     const { deps, dialogOpen, statusSubjects } = setup();
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
     statusSubjects[0].error(new HttpErrorResponse({ status: 404 }));
 
@@ -189,7 +352,7 @@ describe('startImportFlow', () => {
 
   it('drops a stale load answer after a retry, and applies the newer one once it lands', () => {
     const { deps, dialogOpen, statusSubjects } = setup();
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
     const data = confirmData(dialogOpen);
 
     data.retry();
@@ -209,7 +372,7 @@ describe('startImportFlow', () => {
 
   it('ignores a load answer that arrives after the confirm dialog has already closed', () => {
     const { deps, dialogOpen, statusSubjects } = setup();
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
     const data = confirmData(dialogOpen);
 
     confirmClosed(dialogOpen).next(undefined);
@@ -222,7 +385,7 @@ describe('startImportFlow', () => {
 
   it('exposes runBlocked as a live view of the arbiter, for the dialog to disable its own button', () => {
     const { deps, dialogOpen, activeRun } = setup();
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
     const data = confirmData(dialogOpen);
 
     expect(data.runBlocked()).toBe(false);
@@ -232,38 +395,494 @@ describe('startImportFlow', () => {
     expect(data.runBlocked()).toBe(true);
   });
 
+  // #280: the executor locks for the pre-run wait too, not only for a run that already exists.
+  it("blocks the run while another run's confirmed start is still being checked", () => {
+    const { deps, dialogOpen, startPending } = setup();
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+    const data = confirmData(dialogOpen);
+    expect(data.runBlocked()).toBe(false);
+
+    startPending.set(true);
+    expect(data.runBlocked()).toBe(true);
+
+    startPending.set(false);
+    expect(data.runBlocked()).toBe(false);
+  });
+
   it('starts the import immediately when confirmed and a 7TV token is already stored', () => {
     const { deps, dialogOpen, startImport } = setup();
     const src = source();
-    startImportFlow(deps, src, 'target-channel');
+    startImportFlow(deps, src, { kind: 'activeSet', channelName: 'target-channel' });
 
     const outcome: ImportConfirmOutcome = {
       targetSetId: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      targetSetName: 'set-1',
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     };
     confirmClosed(dialogOpen).next(outcome);
 
     // Fourth argument is the fresh #149/T5 re-check's skip count — 0 here because the harness's
     // default 7TV read (`httpPost`) reports an empty target set, so nothing gets filtered a second
     // time. Fifth is whether that check actually ran — true, since the fetch succeeded (#149).
+    // `setName`/`isActiveSet` (findings 2/3) mirror the outcome's own name and this 'activeSet'
+    // door's always-active nature.
     expect(startImport).toHaveBeenCalledWith(
-      { setId: 'set-1', channelName: 'target-channel' },
+      {
+        setId: 'set-1',
+        channelName: 'target-channel',
+        ownerDisplayName: null,
+        setName: 'set-1',
+        isActiveSet: true,
+        // An add-only run into an 'activeSet' door never resolved an owner — nothing to hint with,
+        // and a channel-bound report reads no hint at all (owner-hint design 3.6).
+        targetOwnerTwitchId: null,
+      },
       src.origin,
-      outcome.rows,
+      outcome.plan,
       0,
       true,
+      0,
     );
     // No second dialog — the token prompt is only for a missing token.
     expect(dialogOpen).toHaveBeenCalledTimes(1);
   });
 
-  // #149/T5: `outcome.rows` already passed `buildImportPreview`'s dialog-open-time filter — this
+  it('hands the confirmed plan through to the run, resolved rows included, and gives the dialog its client', () => {
+    const { deps, dialogOpen, startImport } = setup();
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+    // The confirm dialog reads the target set itself before a plan with a replace row may leave it.
+    expect(confirmData(dialogOpen).httpClient).toBe(deps.httpClient);
+
+    const kappa: ImportRow = { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null };
+    const pog: ImportRow = { sevenTvEmoteId: '7tv-2', name: 'Pog', imageUrl: null };
+    const plan: TransferPlan = {
+      rows: [
+        {
+          action: 'adoptSourceName',
+          source: pog,
+          alias: 'Pog',
+          target: {
+            sevenTvEmoteId: '7tv-2',
+            aliases: ['PogOld'],
+            hasAliaslessEntry: false,
+            defaultName: null,
+          },
+        },
+        { action: 'renameSource', source: kappa, alias: 'KappaNew' },
+      ],
+    };
+    confirmClosed(dialogOpen).next({ targetSetId: 'set-1', targetSetName: 'set-1', plan });
+
+    // The harness's 7TV read reports an empty set: nothing drops, and the rename and the adopt row
+    // reach the run exactly as the dialog closed with them — not re-derived from any `rows`.
+    expect(startImport).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: 'set-1' }),
+      expect.anything(),
+      plan,
+      0,
+      true,
+      0,
+    );
+  });
+
+  // Spec 4.5 point 17, AK 32: the shared pre-check (`resolveEditableSet`, E19) runs before
+  // `recheckTransferPlan` exactly when the confirmed plan carries at least one replace row — never
+  // for a plan of plain adds/renames/adopts, since an ADD into a set the actor cannot write to
+  // fails at 7TV itself and its report is already gated on the same right server-side.
+  describe('shared pre-check before a replace-carrying start (spec 4.5 point 17, AK 32)', () => {
+    const replaceRow: TransferRow = {
+      action: 'replace',
+      source: { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null },
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
+    };
+
+    it('never calls the pre-check for a plan without any replace row', () => {
+      const { deps, dialogOpen, resolveEditableSet, startImport } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+      });
+
+      expect(resolveEditableSet).not.toHaveBeenCalled();
+      expect(startImport).toHaveBeenCalledTimes(1);
+    });
+
+    it('blocks a replace-carrying start when the pre-check finds the target not editable, running neither the re-check nor the import', () => {
+      const {
+        deps,
+        dialogOpen,
+        resolveEditableSet,
+        reportTargetCheckBlocked,
+        httpPost,
+        startImport,
+      } = setup();
+      resolveEditableSet.mockReturnValue(of<EditableSetResolution>({ status: 'notEditable' }));
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-1', {
+        twitchChannelId: null,
+        twitchLogin: 'target-channel',
+      });
+      expect(reportTargetCheckBlocked).toHaveBeenCalledWith('notEditable');
+      // recheckTransferPlan's own live read (`already-present-filter.ts`) never ran.
+      expect(httpPost).not.toHaveBeenCalled();
+      expect(startImport).not.toHaveBeenCalled();
+    });
+
+    it('blocks a replace-carrying start as unavailable when the pre-check request itself fails, running neither the re-check nor the import', () => {
+      const {
+        deps,
+        dialogOpen,
+        resolveEditableSet,
+        reportTargetCheckBlocked,
+        httpPost,
+        startImport,
+      } = setup();
+      resolveEditableSet.mockReturnValue(throwError(() => new Error('network error')));
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(reportTargetCheckBlocked).toHaveBeenCalledWith('unavailable');
+      expect(httpPost).not.toHaveBeenCalled();
+      expect(startImport).not.toHaveBeenCalled();
+    });
+
+    it('runs the re-check and starts the import once the pre-check finds the target editable', () => {
+      const {
+        deps,
+        dialogOpen,
+        resolveEditableSet,
+        reportTargetCheckBlocked,
+        httpPost,
+        startImport,
+      } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-1', {
+        twitchChannelId: null,
+        twitchLogin: 'target-channel',
+      });
+      expect(httpPost).toHaveBeenCalled();
+      expect(startImport).toHaveBeenCalledTimes(1);
+      expect(reportTargetCheckBlocked).not.toHaveBeenCalled();
+    });
+  });
+
+  // Owner-hint design 3.6, first row: what this flow hints `resolveEditableSet` with, and what it
+  // eventually carries onto the run/report — the picker's own owner id when the choice has one, the
+  // door's own login otherwise, and (for a replace-carrying plan) the pre-check's own answer rather
+  // than the original hint once it comes back.
+  describe('owner-hint design 3.6 — hinting the pre-check and carrying the owner id onto the run', () => {
+    const replaceRow: TransferRow = {
+      action: 'replace',
+      source: { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null },
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
+    };
+
+    it('hints the pre-check with the picker choice’s own owner id when it has one', () => {
+      const { deps, dialogOpen, resolveEditableSet, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ ownerTwitchChannelId: 'owner-tw-1' }),
+      });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-halloween', {
+        twitchChannelId: 'owner-tw-1',
+        twitchLogin: null,
+      });
+    });
+
+    it('falls back to the choice’s own channel login when it has no owner id', () => {
+      const { deps, dialogOpen, resolveEditableSet, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-halloween', {
+        twitchChannelId: null,
+        twitchLogin: 'handofblood',
+      });
+    });
+
+    it('carries the pre-check’s own resolved owner id onto the run, not the original login hint', () => {
+      const { deps, dialogOpen, resolveEditableSet, startImport, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      // The check resolves a *different* owner id than the login hint named — a grant match the
+      // picker's own choice never knew about (owner-hint design 3.1 Nr. 10).
+      resolveEditableSet.mockReturnValue(
+        of<EditableSetResolution>({
+          status: 'editable',
+          target: {
+            emoteSetId: 'set-halloween',
+            setName: 'Halloween',
+            ownerDisplayName: 'owner',
+            twitchLogin: 'owner',
+            trackedChannelName: 'handofblood',
+            isActiveSet: true,
+            ownerTwitchChannelId: 'checked-owner-tw',
+          },
+        }),
+      );
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ targetOwnerTwitchId: 'checked-owner-tw' }),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('carries the picker choice’s own owner id straight onto an add-only run, without asking the pre-check', () => {
+      const { deps, dialogOpen, resolveEditableSet, startImport, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ ownerTwitchChannelId: 'owner-tw-2' }),
+      });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+      });
+
+      expect(resolveEditableSet).not.toHaveBeenCalled();
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ targetOwnerTwitchId: 'owner-tw-2' }),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('hands the confirm dialog the same owner id it would hint the pre-check with, for the planned transfer file', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ ownerTwitchChannelId: 'owner-tw-3' }),
+      });
+
+      expect(confirmData(dialogOpen).targetOwnerTwitchId).toBe('owner-tw-3');
+    });
+
+    it('gives the confirm dialog no owner id for an activeSet door', () => {
+      const { deps, dialogOpen } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      expect(confirmData(dialogOpen).targetOwnerTwitchId).toBeNull();
+    });
+  });
+
+  // #280: from the confirmation closing to the run, the import's last checks run with nothing on
+  // screen — `startCheckPending` spans exactly that, whatever ends it, and the confirmed start
+  // itself still goes through while its own flag (and with it `startLocked`) is set.
+  describe('the window before the start (#280)', () => {
+    const replaceRow: TransferRow = {
+      action: 'replace',
+      source: { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null },
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
+    };
+    const confirmedReplace = {
+      targetSetId: 'set-1',
+      targetSetName: 'set-1',
+      plan: { rows: [replaceRow] },
+    };
+
+    it('holds the start check across the pre-check and the re-check, and starts the confirmed import while it is still set', () => {
+      const h = setup();
+      const preCheck = new Subject<EditableSetResolution>();
+      const recheck = new Subject<unknown>();
+      h.resolveEditableSet.mockReturnValue(preCheck);
+      h.httpPost.mockReturnValue(recheck);
+      const lockedAtStart: boolean[] = [];
+      h.startImport.mockImplementation(() => {
+        lockedAtStart.push(h.importStartCheckPending() && h.deps.arbiter.startLocked());
+      });
+      startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      expect(h.importStartCheckPending()).toBe(false);
+
+      confirmClosed(h.dialogOpen).next(confirmedReplace);
+      expect(h.importStartCheckPending()).toBe(true);
+
+      preCheck.next({
+        status: 'editable',
+        target: {
+          emoteSetId: 'set-1',
+          setName: 'set-1',
+          ownerDisplayName: 'owner',
+          twitchLogin: 'owner',
+          trackedChannelName: 'target-channel',
+          isActiveSet: true,
+          ownerTwitchChannelId: 'tw-owner',
+        },
+      });
+      preCheck.complete();
+      expect(h.importStartCheckPending()).toBe(true);
+      expect(h.startImport).not.toHaveBeenCalled();
+
+      recheck.next(emoteSetPage());
+      recheck.complete();
+
+      expect(h.startImport).toHaveBeenCalledTimes(1);
+      expect(lockedAtStart).toEqual([true]);
+      expect(h.noteRefusedStart).not.toHaveBeenCalled();
+      expect(h.importStartCheckPending()).toBe(false);
+    });
+
+    it('holds the start check for a plan without a replace row too, across its re-check', () => {
+      const h = setup();
+      const recheck = new Subject<unknown>();
+      h.httpPost.mockReturnValue(recheck);
+      startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(h.dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+      });
+      expect(h.importStartCheckPending()).toBe(true);
+
+      recheck.next(emoteSetPage());
+      recheck.complete();
+      expect(h.startImport).toHaveBeenCalledTimes(1);
+      expect(h.importStartCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the pre-check blocks the start', () => {
+      const h = setup();
+      h.resolveEditableSet.mockReturnValue(of<EditableSetResolution>({ status: 'notEditable' }));
+      startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(h.dialogOpen).next(confirmedReplace);
+
+      expect(h.reportTargetCheckBlocked).toHaveBeenCalledWith('notEditable');
+      expect(h.importStartCheckPending()).toBe(false);
+    });
+
+    it('releases the start check and reports the check unavailable when the pre-check hangs past its timeout', () => {
+      vi.useFakeTimers();
+      try {
+        const h = setup();
+        h.resolveEditableSet.mockReturnValue(new Subject<EditableSetResolution>());
+        startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+        confirmClosed(h.dialogOpen).next(confirmedReplace);
+        expect(h.importStartCheckPending()).toBe(true);
+
+        vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS);
+
+        expect(h.reportTargetCheckBlocked).toHaveBeenCalledWith('unavailable');
+        expect(h.startImport).not.toHaveBeenCalled();
+        expect(h.importStartCheckPending()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('releases the start check when the re-check hangs past its timeout, starting on the failed-read answer', () => {
+      vi.useFakeTimers();
+      try {
+        const h = setup();
+        h.httpPost.mockReturnValue(new Subject<unknown>());
+        startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+        confirmClosed(h.dialogOpen).next(confirmedReplace);
+
+        vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS);
+
+        expect(h.importStartCheckPending()).toBe(false);
+        expect(h.startImport).toHaveBeenCalledTimes(1);
+        // duplicateCheckAvailable false, the replace row held back and counted.
+        expect(h.startImport.mock.calls[0].slice(2)).toEqual([{ rows: [] }, 0, false, 1]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('releases the start check when the arbiter refuses the start after the re-check', () => {
+      const h = setup();
+      const recheck = new Subject<unknown>();
+      h.httpPost.mockReturnValue(recheck);
+      startImportFlow(h.deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      confirmClosed(h.dialogOpen).next(confirmedReplace);
+
+      h.activeRun.set('delete');
+      recheck.next(emoteSetPage());
+      recheck.complete();
+
+      expect(h.noteRefusedStart).toHaveBeenCalledWith('import');
+      expect(h.startImport).not.toHaveBeenCalled();
+      expect(h.importStartCheckPending()).toBe(false);
+    });
+  });
+
+  // #149/T5: `outcome.plan` already passed `buildImportPreview`'s dialog-open-time filter — this
   // pins the *second*, fresh check that runs right before the send, catching a row that became a
   // duplicate only after the dialog opened (another editor, another tab, a long-open dialog).
   describe('fresh pre-send duplicate check (#149/T5)', () => {
     it('re-checks the target set fresh at confirm time, not reusing the dialog-open snapshot', () => {
       const { deps, dialogOpen, listEmotes, httpPost } = setup();
-      startImportFlow(deps, source(), 'target-channel');
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
       // The dialog-open-time fetch (for the preview) has already happened by now — and the fresh
       // check has not, since nothing has been confirmed yet.
@@ -272,7 +891,8 @@ describe('startImportFlow', () => {
 
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        targetSetName: 'set-1',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
       });
 
       // The fresh check runs right here, at confirm time — against 7TV directly (#149 P1), not
@@ -287,7 +907,7 @@ describe('startImportFlow', () => {
 
     it('drops a row that appeared in the target set only after the dialog opened, and reports it as skipped', () => {
       const { deps, dialogOpen, startImport, httpPost } = setup();
-      startImportFlow(deps, source(), 'target-channel');
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
       // Between the dialog opening (still-empty target, from setup()'s default) and the user
       // confirming, another editor added this exact emote to the target set under a different
@@ -296,15 +916,24 @@ describe('startImportFlow', () => {
 
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        targetSetName: 'set-1',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: 'set-1', channelName: 'target-channel' },
+        {
+          setId: 'set-1',
+          channelName: 'target-channel',
+          ownerDisplayName: null,
+          setName: 'set-1',
+          isActiveSet: true,
+          targetOwnerTwitchId: null,
+        },
         source().origin,
-        [],
+        addPlan([]),
         1,
         true,
+        0,
       );
     });
 
@@ -313,21 +942,30 @@ describe('startImportFlow', () => {
     // straight into `startImport`'s fifth argument rather than swallowing it.
     it('fails open on a failed duplicate check and reports it as unavailable rather than a clean skip', () => {
       const { deps, dialogOpen, startImport, httpPost } = setup();
-      startImportFlow(deps, source(), 'target-channel');
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
       httpPost.mockReturnValue(throwError(() => new Error('network error')));
 
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        targetSetName: 'set-1',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: 'set-1', channelName: 'target-channel' },
+        {
+          setId: 'set-1',
+          channelName: 'target-channel',
+          ownerDisplayName: null,
+          setName: 'set-1',
+          isActiveSet: true,
+          targetOwnerTwitchId: null,
+        },
         source().origin,
-        [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
         0,
         false,
+        0,
       );
     });
   });
@@ -336,16 +974,18 @@ describe('startImportFlow', () => {
   // duplicate check's async fetch — a second run could start in that window and would have
   // overlapped this one. Pinned as behaviour, not implementation: confirming while the fetch is
   // still in flight, then having another run claim the arbiter before it answers, must abandon
-  // this start.
-  it('abandons the start when another run claims the arbiter while the fresh check is still in flight', () => {
-    const { deps, dialogOpen, startImport, httpPost, activeRun } = setup();
+  // this start. #256 T4: this is a *confirmed* start finding nothing to start, so it also notes
+  // the refusal (Festlegung Nr. 8) instead of vanishing without a word, as it used to.
+  it('abandons the start and notes the refusal when another run claims the arbiter while the fresh check is still in flight', () => {
+    const { deps, dialogOpen, startImport, httpPost, activeRun, noteRefusedStart } = setup();
     const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
     httpPost.mockReturnValue(fetch);
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      targetSetName: 'set-1',
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     });
 
     // A delete run starts elsewhere while this import's own fresh check is still awaiting 7TV.
@@ -354,11 +994,12 @@ describe('startImportFlow', () => {
     fetch.complete();
 
     expect(startImport).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('import');
   });
 
   it('starts nothing when the confirm dialog is dismissed without an outcome', () => {
     const { deps, dialogOpen, startImport } = setup();
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
     confirmClosed(dialogOpen).next(undefined);
 
@@ -366,27 +1007,30 @@ describe('startImportFlow', () => {
     expect(dialogOpen).toHaveBeenCalledTimes(1);
   });
 
-  it('silently drops a confirmed outcome while another 7TV run is already active', () => {
-    const { deps, dialogOpen, startImport, activeRun } = setup();
+  it('notes a refused start instead of silently dropping a confirmed outcome while another 7TV run is already active', () => {
+    const { deps, dialogOpen, startImport, activeRun, noteRefusedStart } = setup();
     activeRun.set('delete');
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      targetSetName: 'set-1',
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     });
 
     expect(startImport).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('import');
   });
 
   it('prompts for a 7TV token when none is stored, and starts only once the prompt confirms', () => {
     const { deps, dialogOpen, startImport, hasToken } = setup();
     hasToken.set(false);
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      targetSetName: 'set-1',
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     });
 
     expect(dialogOpen).toHaveBeenCalledTimes(2);
@@ -400,14 +1044,807 @@ describe('startImportFlow', () => {
   it('does not start the import when the token prompt is dismissed', () => {
     const { deps, dialogOpen, startImport, hasToken } = setup();
     hasToken.set(false);
-    startImportFlow(deps, source(), 'target-channel');
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      targetSetName: 'set-1',
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     });
     tokenPromptClosed(dialogOpen).next(false);
 
     expect(startImport).not.toHaveBeenCalled();
+  });
+
+  // The bug spec F5 names and the reason T2.5a and T2.5b were forced into one commit ("ein Picker
+  // ohne Loader-Umbau schriebe ins falsche Set"): a `'chosen'` target must drive the loader — and
+  // the eventual run — onto the *picked* set, never silently back onto the channel's active one.
+  describe('a chosen target (spec F5, K2 picker)', () => {
+    it('reads a non-active tracked set from the live list, never the channel active-set endpoint', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview, statusSubjects } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+
+      // The old bug: this used to be `getSetStatus('handofblood')`, which answers with the
+      // channel's *active* set regardless of what was picked. Proving it was never called is as
+      // important here as proving the live list was.
+      expect(statusSubjects).toHaveLength(0);
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('handofblood', 'set-halloween');
+
+      expect(confirmData(dialogOpen).target()).toEqual({
+        status: 'ready',
+        setId: 'set-halloween',
+        setName: 'Halloween',
+        occupiedSlots: 338,
+        capacity: 500,
+        syncFailureReason: null,
+        emotes: [],
+        warning: {
+          available: true,
+          isOwnSet: true,
+          otherTrackedChannelsSharingSet: [],
+          otherModeratedChannelsSharingSet: [],
+        },
+      });
+    });
+
+    // The mirror of the test above (spec 8.6, fourth bullet; AK 36): choosing a set that *is* the
+    // account's own active one must resolve exactly like an 'activeSet' target — same requests, no
+    // live-list read at all. A first draft of this fix sent every tracked choice through the
+    // live-list path unconditionally, which the loader's own tests could not catch (they only ever
+    // see a `'trackedActive'` selection built by hand) — this is the caller-side test that pins the
+    // fork the loader's own suite cannot.
+    it('resolves a choice on the account active set exactly like an activeSet target — no live-list read', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview, statusSubjects } = setup();
+
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ emoteSetId: 'set-active', activeEmoteSetId: 'set-active' }),
+      });
+
+      expect(loadEmoteSetPreview).not.toHaveBeenCalled();
+      expect(statusSubjects).toHaveLength(1);
+
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-active' }));
+      statusSubjects[0].complete();
+
+      expect(confirmData(dialogOpen).target()).toMatchObject({
+        status: 'ready',
+        setId: 'set-active',
+      });
+    });
+
+    // Third Codex round, P2: the 'trackedActive' path never fetches a set name of its own
+    // (loadImportTarget's own contract, `setName: null`) — the picker's own choice already carries
+    // one from the same click, and this is what makes it reach the confirm dialog header instead of
+    // the header falling back to the raw set id (spec 8.6/AK 39).
+    it('carries the picked setName into the ready state for a choice resolved as trackedActive', () => {
+      const { deps, dialogOpen, statusSubjects } = setup();
+
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({
+          emoteSetId: 'set-active',
+          activeEmoteSetId: 'set-active',
+          setName: 'Halloween',
+        }),
+      });
+
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-active' }));
+      statusSubjects[0].complete();
+
+      // No extra request grew out of carrying the name along — still exactly the "today" path's
+      // three requests (AK 36), pinned by the same `loadEmoteSetPreview` assertion the test above
+      // already makes.
+      expect(confirmData(dialogOpen).target()).toMatchObject({
+        status: 'ready',
+        setId: 'set-active',
+        setName: 'Halloween',
+      });
+    });
+
+    // The open question spec F5 leaves on record: the choice is a snapshot from before the dialog
+    // opened, and the account's active set can have moved on by the time getSetStatus actually
+    // answers. The honest response is to not use a name that may no longer belong to the loaded set
+    // — never to guess.
+    it('does not use the chosen name when the loaded active set id no longer matches the chosen one', () => {
+      const { deps, dialogOpen, statusSubjects } = setup();
+
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({
+          emoteSetId: 'set-active',
+          activeEmoteSetId: 'set-active',
+          setName: 'Halloween',
+        }),
+      });
+
+      // The account's active set changed between the picker closing and this answer arriving.
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-changed' }));
+      statusSubjects[0].complete();
+
+      expect(confirmData(dialogOpen).target()).toMatchObject({
+        status: 'ready',
+        setId: 'set-changed',
+        setName: null,
+      });
+    });
+
+    it('checks set-warning for the chosen set id, not the channel active-set warning', () => {
+      const { deps, loadEmoteSetPreview, getSetWarning } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+
+      expect(getSetWarning).toHaveBeenCalledWith('handofblood', 'set-halloween');
+    });
+
+    it('passes the chosen (non-active) set through to the run, not the channel active set', () => {
+      const { deps, dialogOpen, startImport, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+
+      // The confirm dialog would close with `target.setId` from the ready state above — simulated
+      // here exactly as the earlier `'activeSet'` tests simulate a confirm. `targetSetName` mirrors
+      // `liveTarget()`'s own `emoteSetName` ('Halloween') — the resolved name a real dialog would
+      // have closed with (`ImportConfirmDialog.targetSetLabel`).
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+      });
+
+      // setName/isActiveSet (findings 2/3): the picked set is not the account's active one
+      // (choice()'s default), so isActiveSet is false — this is exactly the case `onRunComplete`
+      // must not resync for.
+      expect(startImport).toHaveBeenCalledWith(
+        {
+          setId: 'set-halloween',
+          channelName: 'handofblood',
+          ownerDisplayName: null,
+          setName: 'Halloween',
+          isActiveSet: false,
+          // choice()'s default `ownerTwitchChannelId` is null — nothing to carry onto the run.
+          targetOwnerTwitchId: null,
+        },
+        source().origin,
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+        0,
+        true,
+        0,
+      );
+    });
+
+    it('names the channel and leaves the owner unset for a tracked choice, in the confirm dialog data', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+
+      const data = confirmData(dialogOpen);
+      expect(data.targetChannelName).toBe('handofblood');
+      expect(data.targetOwnerDisplayName).toBeNull();
+    });
+
+    // Findings 1/3: a non-active tracked choice (choice()'s default) is not the active set — the
+    // confirm dialog data says so, and carries the picker's own choice.setName synchronously (the
+    // title must not wait for the live-list load to answer).
+    it('marks a non-active tracked choice as not the active set, with the picked setName for the title', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ setName: 'Halloween' }),
+      });
+
+      const data = confirmData(dialogOpen);
+      expect(data.targetIsActiveSet).toBe(false);
+      expect(data.titleSetName).toBe('Halloween');
+    });
+
+    // The mirror: a choice on the account's own active set resolves exactly like an 'activeSet'
+    // target for the title too (spec 8.6 fourth bullet) — no set name, today's wording.
+    it('marks a choice resolved as trackedActive as the active set, with no title set name', () => {
+      const { deps, dialogOpen } = setup();
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ emoteSetId: 'set-active', activeEmoteSetId: 'set-active' }),
+      });
+
+      const data = confirmData(dialogOpen);
+      expect(data.targetIsActiveSet).toBe(true);
+      expect(data.titleSetName).toBeNull();
+    });
+
+    it('marks an untracked choice as not the active set, with the picked setName for the title', () => {
+      const { deps, loadEmoteSetPreview, dialogOpen } = setup();
+      loadEmoteSetPreview.mockReturnValue(
+        of(liveTarget({ channelName: 'stranger', emoteSetId: 'set-x' })),
+      );
+      const untracked = choice({
+        channelName: null,
+        isTracked: false,
+        twitchLogin: 'stranger',
+        ownerDisplayName: 'Stranger',
+        setName: 'Wegwerf-Set',
+      });
+
+      startImportFlow(deps, source(), { kind: 'chosen', choice: untracked });
+
+      const data = confirmData(dialogOpen);
+      expect(data.targetIsActiveSet).toBe(false);
+      expect(data.titleSetName).toBe('Wegwerf-Set');
+    });
+
+    it('routes an untracked choice through its twitchLogin, never its display name', () => {
+      const { deps, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(
+        of(liveTarget({ channelName: 'stranger', emoteSetId: 'set-x', emoteSetName: 'Wegwerf' })),
+      );
+      const untracked = choice({
+        channelName: null,
+        isTracked: false,
+        twitchLogin: 'stranger',
+        ownerDisplayName: 'Ström & Änger', // a display name a URL path segment could never carry
+        emoteSetId: 'set-x',
+      });
+
+      startImportFlow(deps, source(), { kind: 'chosen', choice: untracked });
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('stranger', 'set-x');
+    });
+
+    it('starts a run with channelName: null for a confirmed untracked choice (T2.6)', () => {
+      // Pre-T2.6 this flow refused to start anything for an untracked choice at all — a defensive
+      // backstop for a state `usage-stats-page.ts`'s own guard was supposed to make unreachable.
+      // T2.6 lifted that guard on purpose (the confirmation now happens earlier, inside the picker
+      // itself, spec 8.6) — a `'chosen'` target with no channel name is exactly what a confirmed
+      // untracked pick looks like once it reaches here, and this flow's job is to start it like any
+      // other, not to refuse it a second time.
+      const { deps, dialogOpen, startImport, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(
+        of(liveTarget({ channelName: 'stranger', emoteSetId: 'set-x' })),
+      );
+      const untracked = choice({
+        channelName: null,
+        isTracked: false,
+        twitchLogin: 'stranger',
+        ownerDisplayName: 'Stranger',
+      });
+      const src = source();
+
+      startImportFlow(deps, src, { kind: 'chosen', choice: untracked });
+      const outcome: ImportConfirmOutcome = {
+        targetSetId: 'set-x',
+        // Mirrors liveTarget()'s default emoteSetName ('Halloween') — the mocked response above
+        // only overrides channelName/emoteSetId, not the name.
+        targetSetName: 'Halloween',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+      };
+      confirmClosed(dialogOpen).next(outcome);
+
+      // The owner name rides along too (T2.6) — import-progress-section.ts's own "Ziel: …" line
+      // needs it once the confirm dialog (which showed the same name, AK 39) is gone. isActiveSet
+      // is false for every untracked choice (no account-scoped "active" notion exists at all).
+      expect(startImport).toHaveBeenCalledWith(
+        {
+          setId: 'set-x',
+          channelName: null,
+          ownerDisplayName: 'Stranger',
+          setName: 'Halloween',
+          isActiveSet: false,
+          targetOwnerTwitchId: null,
+        },
+        src.origin,
+        outcome.plan,
+        0,
+        true,
+        0,
+      );
+    });
+  });
+
+  // #201 T-C, spec 7.1/6 and E29 rev. 3: a tag play-in pins the set it registered, and the flow
+  // checks it is still the same set right before the run starts.
+  describe('a tag play-in (pinSetId, ImportFlowTagHook)', () => {
+    const KAPPA: ImportRow = { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null };
+    const CONTEXT = { tagId: 7, operationId: 'op-1' };
+
+    /** The tag flow's hook, frozen on the active set `set-active`; `active` is the page's signal. */
+    function tagHook(): {
+      hook: ImportFlowTagHook;
+      active: WritableSignal<string | null>;
+      onSetChanged: ReturnType<typeof vi.fn>;
+      onNothingToImport: ReturnType<typeof vi.fn>;
+      onStarted: ReturnType<typeof vi.fn>;
+    } {
+      const active = signal<string | null>('set-active');
+      const onSetChanged = vi.fn();
+      const onNothingToImport = vi.fn();
+      const onStarted = vi.fn();
+      return {
+        hook: {
+          context: CONTEXT,
+          frozenSetId: 'set-active',
+          activeEmoteSetId: active,
+          onSetChanged,
+          onNothingToImport,
+          onStarted,
+        },
+        active,
+        onSetChanged,
+        onNothingToImport,
+        onStarted,
+      };
+    }
+
+    /** `setup()` with the pinned set's live read answering — the loader's `'trackedSet'` branch. */
+    function setupPinned(): Harness {
+      const harness = setup();
+      harness.loadEmoteSetPreview.mockReturnValue(of(liveTarget({ emoteSetId: 'set-active' })));
+      return harness;
+    }
+
+    /** A pinned choice of the account's own active set — exactly what a tag play-in builds. */
+    function pinnedTarget() {
+      return {
+        kind: 'chosen' as const,
+        choice: choice({ emoteSetId: 'set-active', activeEmoteSetId: 'set-active' }),
+        pinSetId: true as const,
+      };
+    }
+
+    function confirmAdd(dialogOpen: ReturnType<typeof vi.fn>, targetSetId = 'set-active'): void {
+      confirmClosed(dialogOpen).next({
+        targetSetId,
+        targetSetName: 'Active',
+        plan: addPlan([KAPPA]),
+      });
+    }
+
+    it('reads the pinned set live even when it is the active one, never the active-set endpoint', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview, statusSubjects } = setupPinned();
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), tagHook().hook);
+
+      expect(statusSubjects).toHaveLength(0);
+      expect(loadEmoteSetPreview).toHaveBeenCalledExactlyOnceWith('handofblood', 'set-active');
+      expect(confirmData(dialogOpen).target()).toMatchObject({
+        status: 'ready',
+        setId: 'set-active',
+      });
+    });
+
+    it('still treats a pinned active set as the active set, so the run resyncs the channel', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), tagHook().hook);
+
+      expect(confirmData(dialogOpen).targetIsActiveSet).toBe(true);
+      confirmAdd(dialogOpen);
+      expect(startImport.mock.calls[0][0]).toMatchObject({ isActiveSet: true });
+    });
+
+    it('lets only a tag play-in confirm a plan with nothing to add', () => {
+      const withHook = setupPinned();
+      startImportFlow(withHook.deps, source([KAPPA]), pinnedTarget(), tagHook().hook);
+      expect(confirmData(withHook.dialogOpen).emptyConfirmAllowed).toBe(true);
+
+      const withoutHook = setupPinned();
+      startImportFlow(withoutHook.deps, source([KAPPA]), {
+        kind: 'activeSet',
+        channelName: 'target-channel',
+      });
+      expect(confirmData(withoutHook.dialogOpen).emptyConfirmAllowed).toBe(false);
+    });
+
+    it('starts the run on the frozen set with the tag context on its target when nothing changed', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      startImport.mockReturnValue(true);
+      const { hook, onSetChanged, onNothingToImport, onStarted } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmAdd(dialogOpen);
+
+      expect(startImport).toHaveBeenCalledExactlyOnceWith(
+        {
+          setId: 'set-active',
+          channelName: 'handofblood',
+          ownerDisplayName: null,
+          setName: 'Active',
+          isActiveSet: true,
+          targetOwnerTwitchId: null,
+          tag: CONTEXT,
+        },
+        source([KAPPA]).origin,
+        addPlan([KAPPA]),
+        0,
+        true,
+        0,
+      );
+      expect(onSetChanged).not.toHaveBeenCalled();
+      expect(onNothingToImport).not.toHaveBeenCalled();
+      expect(onStarted).toHaveBeenCalledOnce();
+    });
+
+    it('starts nothing and reports the switch when the active set changes during the confirmation', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      const { hook, active, onSetChanged, onNothingToImport } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      active.set('set-other');
+      confirmAdd(dialogOpen);
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onSetChanged).toHaveBeenCalledOnce();
+      expect(onNothingToImport).not.toHaveBeenCalled();
+    });
+
+    it('starts nothing when the page no longer knows the active set', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      const { hook, active, onSetChanged } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      active.set(null);
+      confirmAdd(dialogOpen);
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onSetChanged).toHaveBeenCalledOnce();
+    });
+
+    it('starts nothing when the confirmed target is not the frozen set', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      const { hook, onSetChanged } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmAdd(dialogOpen, 'set-other');
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onSetChanged).toHaveBeenCalledOnce();
+    });
+
+    it('checks the set only after the last read, so a switch during the re-check still stops the run', () => {
+      const { deps, dialogOpen, startImport, httpPost } = setupPinned();
+      const { hook, active, onSetChanged } = tagHook();
+      const read = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValue(read);
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmAdd(dialogOpen);
+      expect(onSetChanged).not.toHaveBeenCalled();
+
+      active.set('set-other');
+      read.next(emoteSetPage());
+      read.complete();
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onSetChanged).toHaveBeenCalledOnce();
+    });
+
+    it('hands over to onNothingToImport when the last re-check finds every row already in the set', () => {
+      const { deps, dialogOpen, startImport, httpPost } = setupPinned();
+      const { hook, onSetChanged, onNothingToImport } = tagHook();
+      // The second live read: another editor added the emote while the dialog was open.
+      httpPost.mockReturnValue(of(emoteSetPage(['7tv-1'])));
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmAdd(dialogOpen);
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onNothingToImport).toHaveBeenCalledOnce();
+      expect(onSetChanged).not.toHaveBeenCalled();
+    });
+
+    it('still hands the plan to startImport when held-back replace rows, not presence, emptied it — and calls no onStarted when the engine refuses it', () => {
+      const { deps, dialogOpen, startImport, httpPost } = setupPinned();
+      // The real engine refuses an empty queue (`SevenTvRunEngine.start`).
+      startImport.mockReturnValue(false);
+      const { hook, onNothingToImport, onStarted } = tagHook();
+      const replaceKappa: TransferRow = {
+        action: 'replace',
+        source: KAPPA,
+        alias: 'Kappa',
+        target: {
+          sevenTvEmoteId: 'tgt-k',
+          aliases: ['Kappa'],
+          hasAliaslessEntry: false,
+          defaultName: null,
+        },
+      };
+      // A failed read lets no replace row through: the plan is empty, but nothing is "already there".
+      httpPost.mockReturnValue(throwError(() => new Error('network error')));
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-active',
+        targetSetName: 'Active',
+        plan: { rows: [replaceKappa] },
+      });
+
+      expect(onNothingToImport).not.toHaveBeenCalled();
+      expect(startImport).toHaveBeenCalledOnce();
+      expect(startImport.mock.calls[0][2]).toEqual({ rows: [] });
+      // The drift count reaches the service, whose notice names the held-back rows.
+      expect(startImport.mock.calls[0][5]).toBe(1);
+      // Refused: the play-in did not go ahead, so the marking stays.
+      expect(onStarted).not.toHaveBeenCalled();
+    });
+
+    it('hands a confirmed nothing-to-add straight to onNothingToImport — no token, no re-check, no run', () => {
+      const { deps, dialogOpen, startImport, httpPost, hasToken } = setupPinned();
+      const { hook, onSetChanged, onNothingToImport } = tagHook();
+      hasToken.set(false);
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-active',
+        targetSetName: 'Active',
+        plan: { rows: [] },
+        nothingToAdd: true,
+      });
+
+      expect(onNothingToImport).toHaveBeenCalledOnce();
+      expect(onSetChanged).not.toHaveBeenCalled();
+      expect(httpPost).not.toHaveBeenCalled();
+      expect(startImport).not.toHaveBeenCalled();
+      // Only the confirm dialog ever opened — no token prompt.
+      expect(dialogOpen).toHaveBeenCalledOnce();
+    });
+
+    it('guards a confirmed nothing-to-add against a set switch too', () => {
+      const { deps, dialogOpen } = setupPinned();
+      const { hook, active, onSetChanged, onNothingToImport } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      active.set('set-other');
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-active',
+        targetSetName: 'Active',
+        plan: { rows: [] },
+        nothingToAdd: true,
+      });
+
+      expect(onSetChanged).toHaveBeenCalledOnce();
+      expect(onNothingToImport).not.toHaveBeenCalled();
+    });
+  });
+
+  // Issue #256 point 2: the confirm dialog's drifted-target notice reloads through this, not
+  // through the plain `retry` a failed/loading/no-set target still uses (0.2 Nr. 7 of the plan this
+  // closes). `reloadLive` never asks `target` itself for a set id — only the last `ready` answer's
+  // own `setId` — so a stale target could never leak into the selection either.
+  describe('reloadLive', () => {
+    it('forces the live branch for a tracked active target once it has answered ready, instead of repeating getSetStatus/listEmotes', () => {
+      const { deps, dialogOpen, statusSubjects, loadEmoteSetPreview } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-9' }));
+      statusSubjects[0].complete();
+      loadEmoteSetPreview.mockReturnValue(
+        of(liveTarget({ channelName: 'target-channel', emoteSetId: 'set-9' })),
+      );
+
+      confirmData(dialogOpen).reloadLive();
+
+      // The reload takes 7TV's live branch for the *same* set the "today" path already resolved —
+      // not another getSetStatus/listEmotes round (AK 36 pins only the *first* load's requests).
+      expect(statusSubjects).toHaveLength(1);
+      expect(loadEmoteSetPreview).toHaveBeenCalledTimes(1);
+      // Codex P2 fix: `reloadLive` must bypass the backend's 60 s preview cache, or a reload inside
+      // that window would answer with the exact same drifted data (the drift/reload loop this fix
+      // closes) — `{ refresh: true }` is what makes that a live 7TV read instead of a cache hit.
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('target-channel', 'set-9', {
+        refresh: true,
+      });
+      expect(confirmData(dialogOpen).target()).toMatchObject({ status: 'ready', setId: 'set-9' });
+    });
+
+    it('never forces a refresh for the ordinary first load or a plain retry — only reloadLive does', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+
+      // A `'chosen'` non-active tracked target already takes the live branch on its *first* load
+      // (spec F5) — the case most likely to be confused with `reloadLive` forcing a refresh, since
+      // both call the very same `loadEmoteSetPreview`.
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+      expect(loadEmoteSetPreview).toHaveBeenNthCalledWith(1, 'handofblood', 'set-halloween');
+
+      confirmData(dialogOpen).retry();
+      expect(loadEmoteSetPreview).toHaveBeenNthCalledWith(2, 'handofblood', 'set-halloween');
+      expect(loadEmoteSetPreview).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back to the ordinary load without a known ready state yet — fail-closed rather than reloading nothing', () => {
+      const { deps, dialogOpen, statusSubjects, loadEmoteSetPreview } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      // The first getSetStatus has not answered yet — target() is still 'loading'.
+
+      confirmData(dialogOpen).reloadLive();
+
+      expect(statusSubjects).toHaveLength(2);
+      expect(loadEmoteSetPreview).not.toHaveBeenCalled();
+    });
+
+    it('drops a stale reloadLive answer once a newer reload has started', () => {
+      const { deps, dialogOpen, statusSubjects, loadEmoteSetPreview } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-9' }));
+      statusSubjects[0].complete();
+
+      const first = new Subject<ForeignEmoteSetResponse>();
+      const second = new Subject<ForeignEmoteSetResponse>();
+      loadEmoteSetPreview.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      const data = confirmData(dialogOpen);
+
+      data.reloadLive();
+      data.reloadLive();
+
+      // The newer reload answers first — it applies.
+      second.next(
+        liveTarget({ channelName: 'target-channel', emoteSetId: 'set-9', totalCount: 2 }),
+      );
+      second.complete();
+      expect(data.target()).toMatchObject({ status: 'ready', occupiedSlots: 2 });
+
+      // The stale (first) reload's answer lands after — it must change nothing.
+      first.next(liveTarget({ channelName: 'target-channel', emoteSetId: 'set-9', totalCount: 1 }));
+      first.complete();
+      expect(data.target()).toMatchObject({ status: 'ready', occupiedSlots: 2 });
+    });
+  });
+});
+
+describe('recheckTransferPlan', () => {
+  const kappa: ImportRow = { sevenTvEmoteId: 'src-k', name: 'Kappa', imageUrl: null };
+  const pog: ImportRow = { sevenTvEmoteId: 'src-p', name: 'Pog', imageUrl: null };
+  const replaceKappa: TransferRow = {
+    action: 'replace',
+    source: kappa,
+    alias: 'Kappa',
+    target: {
+      sevenTvEmoteId: 'tgt-k',
+      aliases: ['Kappa'],
+      hasAliaslessEntry: false,
+      defaultName: null,
+    },
+  };
+  const addPog: TransferRow = { action: 'add', source: pog, alias: 'Pog' };
+
+  function httpAnswering(response: Observable<unknown>): HttpClient {
+    return { post: vi.fn(() => response) } as unknown as HttpClient;
+  }
+
+  it('keeps an adopt row even though its source id is in the target set by definition', async () => {
+    const adoptKappa: TransferRow = {
+      action: 'adoptSourceName',
+      source: kappa,
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'src-k',
+        aliases: ['KappaOld'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
+    };
+    const http = httpAnswering(of(aliasedSetPage([{ id: 'src-k', alias: 'KappaOld' }])));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [adoptKappa, addPog] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [adoptKappa, addPog] },
+      skippedDuplicates: 0,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 0,
+    });
+  });
+
+  it('drops a replace row whole when its source id is already in the target set', async () => {
+    const http = httpAnswering(
+      of(
+        aliasedSetPage([
+          { id: 'tgt-k', alias: 'Kappa' },
+          { id: 'src-k', alias: 'KappaCopy' },
+        ]),
+      ),
+    );
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [addPog] },
+      skippedDuplicates: 1,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 0,
+    });
+  });
+
+  it('drops and counts a replace row whose target drifted, and keeps the rest', async () => {
+    const http = httpAnswering(
+      of(
+        aliasedSetPage([
+          { id: 'tgt-k', alias: 'Kappa' },
+          { id: 'tgt-k', alias: null },
+        ]),
+      ),
+    );
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [addPog] },
+      skippedDuplicates: 0,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 1,
+    });
+  });
+
+  it('holds back every replace row on an incomplete read, which still filters duplicates', async () => {
+    // Matches the confirmed target exactly — but the read vouches for only part of the set. What
+    // it did see still counts for duplicates: the Sadge row's source id is already there.
+    const sadge: ImportRow = { sevenTvEmoteId: 'src-s', name: 'Sadge', imageUrl: null };
+    const addSadge: TransferRow = { action: 'add', source: sadge, alias: 'Sadge' };
+    const partial = aliasedSetPage([
+      { id: 'tgt-k', alias: 'Kappa' },
+      { id: 'src-s', alias: 'SadgeOld' },
+    ]);
+    partial.data.emoteSets.emoteSet.emotes.totalCount = 700;
+    const http = httpAnswering(of(partial));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog, addSadge] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [addPog] },
+      skippedDuplicates: 1,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 1,
+    });
+  });
+
+  it('holds back every replace row on a failed read while the duplicate check fails open', async () => {
+    const http = httpAnswering(throwError(() => new Error('network error')));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [addPog] },
+      skippedDuplicates: 0,
+      duplicateCheckAvailable: false,
+      replaceSkippedDrift: 1,
+    });
+  });
+
+  // #280: bounded — a read that hangs past LIVE_READ_TIMEOUT_MS is the failed read above, so a
+  // confirmed import never waits for it forever.
+  it('gives up on a read that hangs past its timeout with exactly the failed-read answer', () => {
+    vi.useFakeTimers();
+    try {
+      const http = httpAnswering(new Subject<unknown>());
+      const answers: unknown[] = [];
+
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog] }).subscribe((result) =>
+        answers.push(result),
+      );
+      vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS - 1);
+      expect(answers).toEqual([]);
+      vi.advanceTimersByTime(1);
+
+      expect(answers).toEqual([
+        {
+          plan: { rows: [addPog] },
+          skippedDuplicates: 0,
+          duplicateCheckAvailable: false,
+          replaceSkippedDrift: 1,
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

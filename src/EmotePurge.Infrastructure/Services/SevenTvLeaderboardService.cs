@@ -64,6 +64,7 @@ namespace EmotePurge.Infrastructure.Services;
 public sealed class SevenTvLeaderboardService(
     ISevenTvApiClient client,
     SevenTvLeaderboardStore<SevenTvLeaderboardResult> stock,
+    ISevenTvSearchBudget searchBudget,
     SevenTvLeaderboardRequestBudget budget,
     ForeignSevenTvBreakerPolicy breaker,
     SevenTvLeaderboardBudgetAlarm alarm,
@@ -168,7 +169,7 @@ public sealed class SevenTvLeaderboardService(
     private async Task<PageAttempt> FetchPageAsync(
         SevenTvLeaderboardSort sortBy, int page, CancellationToken cancellationToken)
     {
-        var decision = breaker.TryAcquire();
+        var decision = breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard);
         if (!decision.Allowed)
         {
             // Debug, not louder: this fires for every rejected request while the breaker is open,
@@ -190,6 +191,34 @@ public sealed class SevenTvLeaderboardService(
         var breakerResolved = false;
         try
         {
+            // The shared search budget before this feature's own lid (design note
+            // docs/Konzept-7TV-Such-Budget-2026-10-03.md): a slot taken there and then left unused
+            // ages out within a minute, one taken from the lid only after an hour. It is the only
+            // guard that sees the Worker's searches, and the only one that honours a lockout another
+            // process observed.
+            var sharedPermit = await searchBudget.TryChargeAsync(SevenTvSearchConsumer.Leaderboard, cancellationToken);
+            if (!sharedPermit.Granted)
+            {
+                logger.LogDebug(
+                    "7TV leaderboard fill for sort {SortBy}, page {Page}: shared 7TV search budget refused ({Refusal}), no upstream request.",
+                    sortBy.ToWireCode(), page, sharedPermit.Refusal);
+
+                // Same as the lid's refusal below: nothing reached 7TV, the breaker learns nothing.
+                breaker.ReleaseProbeWithoutOutcome(ForeignSevenTvBreakerOperations.Leaderboard, decision.Generation);
+                breakerResolved = true;
+
+                // Only a block 7TV imposed — a 429 seen by either process — answers as a rate limit,
+                // stocked for the remaining block (the shelf-life policy keeps that at least 60 s).
+                // A low-watermark block is our own precaution, so it answers like any other
+                // congestion on our side: BudgetRefused, thirty seconds.
+                return sharedPermit is { Refusal: SevenTvSearchRefusal.Blocked, BlockCause: SevenTvSearchBlockCause.RateLimited }
+                    ? PageAttempt.Failed(
+                        SevenTvLeaderboardStatus.SevenTvRateLimited,
+                        SevenTvLeaderboardFillOutcome.RateLimited(sharedPermit.BlockedFor))
+                    : PageAttempt.Failed(
+                        SevenTvLeaderboardStatus.BudgetRefused, SevenTvLeaderboardFillOutcome.BudgetRefused());
+            }
+
             if (!budget.TryCharge(out var usedInWindow))
             {
                 logger.LogDebug(
@@ -198,7 +227,7 @@ public sealed class SevenTvLeaderboardService(
 
                 // Nothing reached 7TV, so the breaker learns nothing — but the probe slot this
                 // decision may have taken still has to be given back, or the breaker jams open.
-                breaker.ReleaseProbeWithoutOutcome(decision.Generation);
+                breaker.ReleaseProbeWithoutOutcome(ForeignSevenTvBreakerOperations.Leaderboard, decision.Generation);
                 breakerResolved = true;
                 return PageAttempt.Failed(
                     SevenTvLeaderboardStatus.BudgetRefused, SevenTvLeaderboardFillOutcome.BudgetRefused());
@@ -245,7 +274,7 @@ public sealed class SevenTvLeaderboardService(
                 // exception on page 2 neither answers page 1's decision twice nor leaves its own
                 // unanswered. The exception itself keeps travelling: it faults the stock entry,
                 // which the store treats as expired on arrival.
-                breaker.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
+                breaker.RecordFailure(ForeignSevenTvBreakerOperations.Leaderboard, ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
             }
         }
     }
@@ -297,10 +326,10 @@ public sealed class SevenTvLeaderboardService(
     private ForeignSevenTvBreakerTransition ApplyBreakerFeedback(
         SevenTvEmoteSearchPageResult result, long generation) => result.Status switch
         {
-            SevenTvEmoteSearchLookupStatus.Ok => breaker.RecordSuccess(generation),
-            SevenTvEmoteSearchLookupStatus.RateLimited => breaker.RecordFailure(
+            SevenTvEmoteSearchLookupStatus.Ok => breaker.RecordSuccess(ForeignSevenTvBreakerOperations.Leaderboard, generation),
+            SevenTvEmoteSearchLookupStatus.RateLimited => breaker.RecordFailure(ForeignSevenTvBreakerOperations.Leaderboard,
                 ForeignSevenTvBreakerOutcome.RateLimited, result.RetryAfter, generation),
-            SevenTvEmoteSearchLookupStatus.Unavailable => breaker.RecordFailure(
+            SevenTvEmoteSearchLookupStatus.Unavailable => breaker.RecordFailure(ForeignSevenTvBreakerOperations.Leaderboard,
                 ForeignSevenTvBreakerOutcome.OtherFailure, null, generation),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(result), result.Status, "Unknown SevenTvEmoteSearchLookupStatus.")

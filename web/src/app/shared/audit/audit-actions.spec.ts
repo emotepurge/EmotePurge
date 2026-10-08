@@ -5,6 +5,9 @@ import {
   CHANNEL_SCOPED_ACTIONS,
   CHANNELLESS_ACTIONS,
   DETAIL_KEYS,
+  LEGACY_BODY_FORM_KEY,
+  TARGET_EMOTE_SET_KEYS,
+  UNRESOLVED_CHANNEL_KEYS,
 } from './audit-actions';
 import de from '../../../../public/i18n/de.json';
 import en from '../../../../public/i18n/en.json';
@@ -23,15 +26,15 @@ function lookup(bundle: unknown, key: string): unknown {
 }
 
 describe('audit action tables', () => {
-  it('names all fifteen AuditActions constants', () => {
+  it('names all twenty AuditActions constants', () => {
     // A gap here is the whole point of the lookup: a newly added backend action must show up as a
     // missing entry rather than as a silently generated key.
-    expect(Object.keys(ACTION_KEYS)).toHaveLength(15);
+    expect(Object.keys(ACTION_KEYS)).toHaveLength(20);
   });
 
   it('excludes the user-scoped actions from the channel-scoped set', () => {
     // A single channel's log can never contain them, so its filter must not offer them.
-    expect(CHANNEL_SCOPED_ACTIONS).toHaveLength(12);
+    expect(CHANNEL_SCOPED_ACTIONS).toHaveLength(17);
     expect(CHANNEL_SCOPED_ACTIONS).not.toContain('user.revokeSessions');
     expect(CHANNEL_SCOPED_ACTIONS).not.toContain('user.invalidateRoleCache');
     expect(CHANNEL_SCOPED_ACTIONS).not.toContain('user.delete');
@@ -43,9 +46,21 @@ describe('audit action tables', () => {
     expect(lookup(en, key)).toBeTypeOf('string');
   });
 
-  it.each(Object.entries(DETAIL_KEYS))('translates the %s detail in both locales', (_kind, key) => {
-    expect(lookup(de, key)).toBeTypeOf('string');
-    expect(lookup(en, key)).toBeTypeOf('string');
+  // #255: every kind but `title` carries a count and is routed through `pluralKey`
+  // (`audit-row.ts`'s `renderDetail`), so its locale entry is a `{ one, other }` pair rather than
+  // a single string — `title` is the one kind that never gets a count and stays a plain string.
+  it.each(Object.entries(DETAIL_KEYS))('translates the %s detail in both locales', (kind, key) => {
+    if (kind === 'title') {
+      expect(lookup(de, key)).toBeTypeOf('string');
+      expect(lookup(en, key)).toBeTypeOf('string');
+      return;
+    }
+    for (const bundle of [de, en]) {
+      const entry = lookup(bundle, key);
+      expect(entry).toBeTypeOf('object');
+      expect((entry as { one: unknown }).one).toBeTypeOf('string');
+      expect((entry as { other: unknown }).other).toBeTypeOf('string');
+    }
   });
 
   it('covers every detail kind the server can send', () => {
@@ -55,10 +70,34 @@ describe('audit action tables', () => {
       'importedFromChannel',
       'importedFromFile',
       'importedFromLeaderboard',
+      'importedFromTag',
       'removedEntries',
       'title',
     ]);
   });
+
+  it.each(Object.values(TARGET_EMOTE_SET_KEYS))(
+    'translates the target-set addendum key %s in both locales (spec 8.10)',
+    (key) => {
+      expect(lookup(de, key)).toBeTypeOf('string');
+      expect(lookup(en, key)).toBeTypeOf('string');
+    },
+  );
+
+  it('translates the legacy-body-form addendum key in both locales (#273)', () => {
+    expect(lookup(de, LEGACY_BODY_FORM_KEY)).toBeTypeOf('string');
+    expect(lookup(en, LEGACY_BODY_FORM_KEY)).toBeTypeOf('string');
+  });
+
+  // Plain strings, not { one, other } pairs (unlike DETAIL_KEYS above): the addendum names a
+  // channel, not a quantity — see UNRESOLVED_CHANNEL_KEYS's own doc.
+  it.each(Object.values(UNRESOLVED_CHANNEL_KEYS))(
+    'translates the unresolved-channel addendum key %s in both locales (#273)',
+    (key) => {
+      expect(lookup(de, key)).toBeTypeOf('string');
+      expect(lookup(en, key)).toBeTypeOf('string');
+    },
+  );
 
   it('translates both leaderboard sort codes in both locales (#148, E9)', () => {
     // Not covered by DETAIL_KEYS itself — `leaderboardSort` is a separate lookup table

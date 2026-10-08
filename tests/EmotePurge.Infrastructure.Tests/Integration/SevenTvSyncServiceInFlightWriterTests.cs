@@ -3,6 +3,8 @@ using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.SevenTv;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -42,7 +44,7 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
 
         Assert.NotNull(result);
         Assert.Equal("inflight_new", result.ChannelName);
-        Assert.Contains("Alpha", cache.GetChannelEmotes("inflight_new").Keys);
+        Assert.Contains("Alpha", cache.GetChannelSnapshot("inflight_new").NameToEmoteId.Keys);
         Assert.DoesNotContain("inflight_old", cache.GetCachedChannelNames());
     }
 
@@ -109,11 +111,11 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
             await writer.SaveChangesAsync();
         }
 
-        cache.ReplaceChannel("inflight_swap_a", new Dictionary<string, string> { ["Live"] = "other-emote" });
+        cache.ReplaceChannel("inflight_swap_a", "other-set", new Dictionary<string, string> { ["Live"] = "other-emote" });
         release.SetResult();
         await syncTask.WaitAsync(TimeSpan.FromSeconds(30));
 
-        Assert.Contains("Live", cache.GetChannelEmotes("inflight_swap_a").Keys);
+        Assert.Contains("Live", cache.GetChannelSnapshot("inflight_swap_a").NameToEmoteId.Keys);
     }
 
     [Fact]
@@ -121,6 +123,25 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         db.Emotes.Add(new Emote { ChannelId = "no-such-channel", SevenTvEmoteId = "fk-1", Name = "Fk", ImageUrl = "https://cdn.7tv.app/emote/fk-1/2x.webp" });
+
+        var ex = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+
+        Assert.True(SevenTvSyncService.IsRowVanishedFor(ex, "no-such-channel"));
+        Assert.False(SevenTvSyncService.IsRowVanishedFor(ex, "some-other-channel"));
+    }
+
+    [Fact]
+    public async Task IsRowVanishedFor_ForeignKeyViolationOnThisChannelsObservation_IsTrueOnlyForThatChannel()
+    {
+        // Epic #200's observation row rides the sync's save; once the channel row is gone, its insert
+        // is what hits the channel foreign key.
+        await using var db = fixture.CreateDbContext();
+        db.ChannelEmoteSetObservations.Add(new ChannelEmoteSetObservation
+        {
+            ChannelId = "no-such-channel",
+            SevenTvEmoteSetId = SetId,
+            ObservedFromUtc = DateTime.UtcNow,
+        });
 
         var ex = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
 
@@ -167,8 +188,8 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
             });
         apiClient.GetChannelStateForTwitchUserAsync(following.TwitchChannelId!, Arg.Any<CancellationToken>()).Returns(state);
         var service = new SevenTvSyncService(
-            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(),
-            Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(),
+            Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         var first = service.SyncChannelAsync("inflight_ctx_gone");
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -183,7 +204,7 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
         var second = await service.SyncChannelAsync("inflight_ctx_next");
 
         Assert.NotNull(second);
-        Assert.Contains("Alpha", cache.GetChannelEmotes("inflight_ctx_next").Keys);
+        Assert.Contains("Alpha", cache.GetChannelSnapshot("inflight_ctx_next").NameToEmoteId.Keys);
     }
 
     private static (SevenTvSyncService Service, TaskCompletionSource Entered, TaskCompletionSource Release) CreateBlockedService(
@@ -205,8 +226,8 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
             });
 
         var service = new SevenTvSyncService(
-            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(),
-            Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(),
+            Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
         return (service, entered, release);
     }
 

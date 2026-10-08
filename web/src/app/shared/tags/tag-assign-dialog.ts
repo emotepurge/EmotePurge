@@ -1,0 +1,361 @@
+import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Component, DestroyRef, computed, inject, signal, viewChild } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { TranslocoPipe } from '@jsverse/transloco';
+import { concatMap, filter, from, map, merge } from 'rxjs';
+
+import { apiErrorTranslationKey } from '../../core/i18n/api-error';
+import { pluralKey } from '../../core/i18n/plural';
+import { EmoteTagSummary } from '../../core/tags/emote-tag.model';
+import { EmoteTagService } from '../../core/tags/emote-tag.service';
+import { Button } from '../ui/button';
+import { openAppDialog } from '../ui/dialog';
+import { DialogShell } from '../ui/dialog-shell';
+import { NoticeBanner } from '../ui/notice-banner';
+import { SkeletonRows } from '../ui/skeleton-rows';
+import { TagNameField } from './tag-name-field';
+
+export interface TagAssignDialogData {
+  channelName: string;
+  /** 7TV emote ids of the selection, as the grid keys them. */
+  sevenTvEmoteIds: readonly string[];
+  /** Set the selection was taken from; only given for a set that is not the channel's active one. */
+  emoteSetId?: string;
+}
+
+/**
+ * What the caller needs for its status message. `undefined` instead of a result when nothing was
+ * assigned (dismissed, or the first request failed).
+ */
+export interface TagAssignDialogResult {
+  /** Names of the tags the emotes were assigned to, in list order. */
+  tagNames: string[];
+  /**
+   * Emotes that are now tagged, counted once — not summed over the tags: the same selection goes to
+   * every chosen tag, so "3 emotes to 2 tags" is 3, not 6. Includes emotes a tag already carried.
+   */
+  emoteCount: number;
+  /** Selected emotes that are no longer in the active set, counted once across all tags. */
+  skippedNotInSetCount: number;
+}
+
+/**
+ * "Tag zuweisen…" from a usage-stats selection (spec 7.0): tick tags, optionally create one inline,
+ * confirm. Add-only, nothing is pre-ticked. One `addEntries` per ticked tag, strictly in list order;
+ * a failure part-way keeps what already succeeded and says so in a banner.
+ */
+@Component({
+  selector: 'app-tag-assign-dialog',
+  imports: [Button, DialogShell, NoticeBanner, SkeletonRows, TagNameField, TranslocoPipe],
+  template: `
+    <app-dialog-shell [dialogTitle]="'tags.assignDialog.title' | transloco">
+      @if (tags(); as list) {
+        @if (list.length === 0) {
+          <p class="text-sm text-fg-muted">{{ 'tags.assignDialog.noTagsHint' | transloco }}</p>
+        } @else {
+          <fieldset class="m-0 min-w-0 border-0 p-0">
+            <legend class="sr-only">{{ 'tags.assignDialog.listLabel' | transloco }}</legend>
+            <ul class="-mx-1 max-h-60 overflow-y-auto px-1">
+              @for (tag of list; track tag.id) {
+                <li>
+                  <label class="flex items-center gap-2 py-1.5 text-sm text-fg">
+                    <input
+                      type="checkbox"
+                      class="h-4 w-4 shrink-0 accent-accent-solid"
+                      [checked]="checked().has(tag.id)"
+                      [disabled]="isSubmitting()"
+                      (change)="toggle(tag.id)"
+                    />
+                    <span class="min-w-0 truncate">{{ tag.name }}</span>
+                  </label>
+                </li>
+              }
+            </ul>
+          </fieldset>
+        }
+      } @else if (loadErrorKey(); as key) {
+        <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
+      } @else {
+        <app-skeleton-rows [count]="3" />
+      }
+
+      <app-tag-name-field
+        [label]="'tags.assignDialog.newTagLabel' | transloco"
+        inputId="tag-assign-new-name"
+        (submitted)="create($event)"
+      >
+        <button
+          field-action
+          type="button"
+          appButton="outline"
+          [disabled]="isCreating() || isSubmitting()"
+          (click)="nameField().submit()"
+        >
+          {{ 'tags.assignDialog.createButton' | transloco }}
+        </button>
+      </app-tag-name-field>
+
+      @if (errorKey(); as key) {
+        <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
+      }
+      @if (partial(); as done) {
+        <app-notice-banner variant="warning">
+          {{ 'tags.assignDialog.partial' | transloco: { tags: done.tagNames.join(', ') } }}
+        </app-notice-banner>
+      }
+
+      @if (lockReasonKey(); as reasonKey) {
+        <p dialog-actions id="tag-assign-lock-hint" class="mr-auto text-xs text-fg-muted">
+          {{ reasonKey | transloco }}
+        </p>
+      }
+      <button
+        dialog-actions
+        type="button"
+        appButton="outline"
+        buttonSize="lg"
+        [disabled]="isSubmitting() || isCreating()"
+        [attr.aria-describedby]="isSubmitting() ? 'tag-assign-lock-hint' : null"
+        (click)="dismiss()"
+      >
+        {{ (partial() ? 'common.close' : 'common.cancel') | transloco }}
+      </button>
+      <button
+        dialog-actions
+        type="button"
+        appButton="primary"
+        buttonSize="lg"
+        [disabled]="lockReasonKey() !== null"
+        [attr.aria-describedby]="lockReasonKey() !== null ? 'tag-assign-lock-hint' : null"
+        (click)="assign()"
+      >
+        {{ confirmKey() | transloco: { count: data.sevenTvEmoteIds.length } }}
+      </button>
+    </app-dialog-shell>
+  `,
+})
+export class TagAssignDialog {
+  protected readonly data = inject<TagAssignDialogData>(DIALOG_DATA);
+  private readonly dialogRef = inject<DialogRef<TagAssignDialogResult | undefined>>(DialogRef);
+  private readonly tagService = inject(EmoteTagService);
+  private readonly destroyRef = inject(DestroyRef);
+
+  private readonly nameFieldRef = viewChild.required(TagNameField);
+  // Across retries after a partial failure, so the caller's count stays honest.
+  private readonly skippedIds = new Set<string>();
+  // Also across retries: each tag and each emote goes into the result once, however often a retry
+  // repeats a request the server already answered. The server returns counts, not the emotes it
+  // took, so a batch's emotes are the requested ids minus the ones it reports as not in the set.
+  private readonly assignedTags = new Map<number, string>();
+  private readonly assignedEmoteIds = new Set<string>();
+
+  protected readonly tags = signal<readonly EmoteTagSummary[] | null>(null);
+  protected readonly loadErrorKey = signal<string | null>(null);
+  protected readonly checked = signal<ReadonlySet<number>>(new Set());
+  protected readonly isCreating = signal(false);
+  protected readonly isSubmitting = signal(false);
+  protected readonly errorKey = signal<string | null>(null);
+  /** What already went through when a later tag failed; also what a dismiss hands back. */
+  protected readonly partial = signal<TagAssignDialogResult | null>(null);
+
+  protected readonly confirmKey = computed(() =>
+    pluralKey(this.data.sevenTvEmoteIds.length, 'tags.assignDialog.confirm'),
+  );
+
+  /** Why confirming is blocked right now, or `null` (§10: a locked button names its reason). */
+  protected readonly lockReasonKey = computed(() => {
+    if (this.isSubmitting()) {
+      return 'tags.assignDialog.lockReason.submitting';
+    }
+    return this.checked().size === 0 ? 'tags.assignDialog.lockReason.noneChecked' : null;
+  });
+
+  constructor() {
+    this.tagService
+      .list(this.data.channelName)
+      .pipe(takeUntilDestroyed())
+      .subscribe({
+        // Merge, not replace: a tag created inline before this response arrived must stay listed.
+        next: (result) =>
+          this.tags.update((current) => [
+            ...result.tags,
+            ...(current ?? []).filter((t) => !result.tags.some((r) => r.id === t.id)),
+          ]),
+        error: (error: HttpErrorResponse) => {
+          // A tag created inline meanwhile is still assignable; only the failed read is reported.
+          const key = apiErrorTranslationKey(error);
+          if (this.tags() === null) {
+            this.loadErrorKey.set(key);
+          } else {
+            this.errorKey.set(key);
+          }
+        },
+      });
+
+    // After a partial failure the dialog may not just vanish with `undefined`: the caller still has
+    // to learn about, and reload for, what went through. Hence Escape and a backdrop click hand the
+    // partial result back like the Close button does (the CDK closes by itself only without it).
+    merge(
+      this.dialogRef.keydownEvents.pipe(filter((event) => event.key === 'Escape')),
+      this.dialogRef.backdropClick,
+    )
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => {
+        // Only reached by the CDK's own close being switched off (disableClose): while a request is
+        // in flight the dialog must stay, afterwards only a partial failure keeps it open.
+        if (!this.isSubmitting() && !this.isCreating() && this.partial() !== null) {
+          this.dismiss();
+        }
+      });
+  }
+
+  protected nameField(): TagNameField {
+    return this.nameFieldRef();
+  }
+
+  protected toggle(tagId: number): void {
+    this.checked.update((current) => {
+      const next = new Set(current);
+      if (!next.delete(tagId)) {
+        next.add(tagId);
+      }
+      return next;
+    });
+  }
+
+  protected dismiss(): void {
+    this.dialogRef.close(this.partial() ?? undefined);
+  }
+
+  protected create(name: string): void {
+    if (this.isCreating() || this.isSubmitting()) {
+      return;
+    }
+    this.errorKey.set(null);
+    this.isCreating.set(true);
+    // Closing now would drop the pending create; afterwards only a partial result keeps it locked.
+    this.dialogRef.disableClose = true;
+    this.tagService
+      .create(this.data.channelName, name)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (tag) => {
+          this.settleCreate();
+          // By id, like the list response: a read that already saw the committed tag lists it.
+          this.tags.update((list) => [
+            ...(list ?? []).filter((t) => t.id !== tag.id),
+            {
+              id: tag.id,
+              name: tag.name,
+              entryCount: 0,
+              inSetCount: null,
+              placedCount: 0,
+              active: false,
+              activatedAtUtc: null,
+            },
+          ]);
+          this.checked.update((current) => new Set(current).add(tag.id));
+          this.nameFieldRef().reset();
+        },
+        error: (error: HttpErrorResponse) => {
+          this.settleCreate();
+          if (!this.nameFieldRef().applyServerError(error)) {
+            this.errorKey.set(apiErrorTranslationKey(error));
+          }
+        },
+      });
+  }
+
+  protected assign(): void {
+    if (this.lockReasonKey() !== null || this.isSubmitting() || this.isCreating()) {
+      return;
+    }
+    const chosen = (this.tags() ?? []).filter((tag) => this.checked().has(tag.id));
+    if (chosen.length === 0) {
+      return;
+    }
+    const succeeded: EmoteTagSummary[] = [];
+    const skipped = this.skippedIds;
+
+    this.errorKey.set(null);
+    this.isSubmitting.set(true);
+    // Not dismissible while requests are in flight: closing now would orphan them, and the caller
+    // would never hear about what went through.
+    this.dialogRef.disableClose = true;
+    // concatMap: one request at a time, in list order — the next starts when the previous completed.
+    from(chosen)
+      .pipe(
+        concatMap((tag) =>
+          this.tagService
+            .addEntries(
+              this.data.channelName,
+              tag.id,
+              this.data.sevenTvEmoteIds,
+              this.data.emoteSetId,
+            )
+            .pipe(map((result) => ({ tag, result }))),
+        ),
+      )
+      .subscribe({
+        next: ({ tag, result }) => {
+          succeeded.push(tag);
+          this.assignedTags.set(tag.id, tag.name);
+          const notInSet = new Set(result.skippedNotInSetIds);
+          this.data.sevenTvEmoteIds
+            .filter((id) => !notInSet.has(id))
+            .forEach((id) => this.assignedEmoteIds.add(id));
+          result.skippedNotInSetIds.forEach((id) => skipped.add(id));
+        },
+        error: (error: HttpErrorResponse) => {
+          this.isSubmitting.set(false);
+          this.errorKey.set(apiErrorTranslationKey(error));
+          if (succeeded.length > 0) {
+            this.keepPartial(succeeded);
+          } else if (this.partial() === null) {
+            this.dialogRef.disableClose = false;
+          }
+        },
+        complete: () => {
+          this.dialogRef.close(this.buildResult());
+        },
+      });
+  }
+
+  private settleCreate(): void {
+    this.isCreating.set(false);
+    this.dialogRef.disableClose = this.partial() !== null;
+  }
+
+  /**
+   * Records the tags that went through, unticks them so a retry only repeats the failed rest, and
+   * keeps the dialog open (and away from the CDK's own close) until the user dismisses it.
+   */
+  private keepPartial(succeeded: readonly EmoteTagSummary[]): void {
+    this.partial.set(this.buildResult());
+    this.checked.update((current) => {
+      const next = new Set(current);
+      succeeded.forEach((tag) => next.delete(tag.id));
+      return next;
+    });
+  }
+
+  private buildResult(): TagAssignDialogResult {
+    return {
+      tagNames: [...this.assignedTags.values()],
+      emoteCount: this.assignedEmoteIds.size,
+      skippedNotInSetCount: this.skippedIds.size,
+    };
+  }
+}
+
+export function openTagAssignDialog(
+  dialog: Dialog,
+  data: TagAssignDialogData,
+): DialogRef<TagAssignDialogResult | undefined> {
+  return openAppDialog<TagAssignDialogResult | undefined, TagAssignDialogData>(
+    dialog,
+    TagAssignDialog,
+    { data },
+  );
+}

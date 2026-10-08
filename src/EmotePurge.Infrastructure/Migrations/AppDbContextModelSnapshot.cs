@@ -125,6 +125,42 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.ToTable("Channels");
                 });
 
+            modelBuilder.Entity("EmotePurge.Core.Entities.ChannelEmoteSetObservation", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ClosedBy")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ObservedFromUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ObservedToUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SevenTvEmoteSetId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChannelId")
+                        .IsUnique()
+                        .HasFilter("\"ObservedToUtc\" IS NULL");
+
+                    b.HasIndex("ChannelId", "ObservedFromUtc");
+
+                    b.ToTable("ChannelEmoteSetObservations");
+                });
+
             modelBuilder.Entity("EmotePurge.Core.Entities.ChannelLiveDay", b =>
                 {
                     b.Property<long>("Id")
@@ -175,6 +211,9 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<bool>("IsArchived")
                         .HasColumnType("boolean");
 
+                    b.Property<DateTime?>("LastEnteredSetAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime>("LastSyncedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -192,6 +231,167 @@ namespace EmotePurge.Infrastructure.Migrations
                         .IsUnique();
 
                     b.ToTable("Emotes");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteSetLeaveObservation", b =>
+                {
+                    b.Property<string>("ChannelId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("SevenTvEmoteId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("SevenTvEmoteSetId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("LastObservedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("ChannelId", "SevenTvEmoteId", "SevenTvEmoteSetId");
+
+                    b.ToTable("EmoteSetLeaveObservations");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTag", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("NormalizedName")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChannelId", "CreatedAtUtc");
+
+                    b.HasIndex("ChannelId", "NormalizedName")
+                        .IsUnique();
+
+                    b.ToTable("EmoteTags");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTagActivation", b =>
+                {
+                    b.Property<long>("TagId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SevenTvEmoteSetId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("ActivatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("TagId", "SevenTvEmoteSetId");
+
+                    b.ToTable("EmoteTagActivations");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTagEntry", b =>
+                {
+                    b.Property<long>("TagId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SevenTvEmoteId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("AddedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Alias")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ImageUrl")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("TagId", "SevenTvEmoteId");
+
+                    b.ToTable("EmoteTagEntries");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTagOperation", b =>
+                {
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("AppliedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTime>("RegisteredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SevenTvEmoteSetId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long>("TagId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("OperationId");
+
+                    b.HasIndex("TagId", "SevenTvEmoteSetId");
+
+                    b.ToTable("EmoteTagOperations");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTagPlacement", b =>
+                {
+                    b.Property<long>("TagId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SevenTvEmoteId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("SevenTvEmoteSetId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("PlacedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("RegisteredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TagId", "SevenTvEmoteId", "SevenTvEmoteSetId");
+
+                    b.HasIndex("SevenTvEmoteSetId", "SevenTvEmoteId");
+
+                    b.ToTable("EmoteTagPlacements");
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.UsageStat", b =>
@@ -212,6 +412,10 @@ namespace EmotePurge.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("EmoteSetId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<int>("SharedChatUseCount")
                         .HasColumnType("integer");
 
@@ -220,10 +424,10 @@ namespace EmotePurge.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmoteId", "Date")
+                    b.HasIndex("EmoteId", "EmoteSetId", "Date")
                         .IsUnique();
 
-                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("EmoteId", "Date"), new[] { "UseCount" });
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("EmoteId", "EmoteSetId", "Date"), new[] { "UseCount" });
 
                     b.ToTable("UsageStats");
                 });
@@ -322,6 +526,9 @@ namespace EmotePurge.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("EmoteSetId")
+                        .HasColumnType("text");
+
                     b.Property<DateTime?>("EndedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -353,11 +560,28 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<string>("EmoteId")
                         .HasColumnType("text");
 
+                    b.Property<string>("ImageUrlAtCreation")
+                        .HasColumnType("text");
+
+                    b.Property<string>("NameAtCreation")
+                        .HasColumnType("text");
+
                     b.HasKey("VoteSessionId", "EmoteId");
 
                     b.HasIndex("EmoteId");
 
                     b.ToTable("VoteSessionEmotes");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.ChannelEmoteSetObservation", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.ChannelLiveDay", b =>
@@ -380,6 +604,78 @@ namespace EmotePurge.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteSetLeaveObservation", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTag", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTagActivation", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.EmoteTag", "Tag")
+                        .WithMany()
+                        .HasForeignKey("TagId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Tag");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTagEntry", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.EmoteTag", "Tag")
+                        .WithMany()
+                        .HasForeignKey("TagId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Tag");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTagOperation", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.EmoteTag", "Tag")
+                        .WithMany()
+                        .HasForeignKey("TagId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Tag");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTagPlacement", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.EmoteTag", "Tag")
+                        .WithMany()
+                        .HasForeignKey("TagId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("EmotePurge.Core.Entities.EmoteTagEntry", null)
+                        .WithMany()
+                        .HasForeignKey("TagId", "SevenTvEmoteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Tag");
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.UsageStat", b =>

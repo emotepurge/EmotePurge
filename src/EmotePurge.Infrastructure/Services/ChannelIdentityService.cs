@@ -28,6 +28,7 @@ public class ChannelIdentityService(
     ITwitchHelixClient helixClient,
     ITwitchAppTokenProvider appTokenProvider,
     IRedisPublisher redisPublisher,
+    IChannelEmoteSetObservationService emoteSetObservationService,
     ChannelIdentityWarningState warningState,
     IExcludedChannelFilter excludedChannelFilter,
     ILogger<ChannelIdentityService> logger) : IChannelIdentityService
@@ -438,7 +439,8 @@ public class ChannelIdentityService(
 
         try
         {
-            await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, AuditActor.System, forExclusion: true, ct);
+            await ChannelDeactivation.DeactivateAsync(
+                db, redisPublisher, emoteSetObservationService, channel, AuditActor.System, forExclusion: true, ct);
         }
         catch (DbUpdateException ex)
         {
@@ -531,6 +533,11 @@ public class ChannelIdentityService(
         // no longer answered, so nothing was counted. That gap is exactly what TrackingResumedAt
         // makes honest; CreatedAt stays, because the row is the same channel it always was.
         channel.TrackingResumedAt = DateTime.UtcNow;
+        // Closes the open observation interval (spec 4.3) — tracked only, riding the
+        // SaveChangesAsync a few lines below together with the rename's audit entry. The next
+        // successful sync opens a fresh interval.
+        await emoteSetObservationService.CloseOpenIntervalAsync(
+            channel.Id, ChannelEmoteSetObservationClosedBy.Rename, ct);
         db.AddAuditEntry(
             AuditActor.System,
             AuditActions.ChannelRename,
@@ -645,8 +652,13 @@ public class ChannelIdentityService(
         // double-count usage or throw half of it away. An emote-less loser has nothing to fuse, and
         // that is the only case handled automatically. Anything else is refused, loudly and without
         // writing, for a human to sort out.
+        //
+        // Tags are the second such case: they are keyed by 7TV emote id, so a loser without emotes
+        // can still own some, and the cascade on the Channels FK would silently delete them with the
+        // loser row. A tag with no entries counts too — the name itself is the moderator's work.
         var loserHasEmotes = await db.Emotes.AnyAsync(e => e.ChannelId == loser.Id, ct);
-        if (loserHasEmotes)
+        var loserHasTags = await db.EmoteTags.AnyAsync(t => t.ChannelId == loser.Id, ct);
+        if (loserHasEmotes || loserHasTags)
         {
             counters.MergesRefused++;
             // Both halves settled: the mirror row would otherwise reach the identical refusal from
@@ -655,7 +667,7 @@ public class ChannelIdentityService(
             settledChannelIds.Add(survivor.Id);
             // Deduplicated like cases 3, 5 and 6, and with the strongest claim of the four: a refusal
             // is by definition never self-resolving — it waits for a person to move or delete the
-            // emotes — so an undeduplicated warning repeats every tick for as long as the process
+            // emotes or tags — so an undeduplicated warning repeats every tick for as long as the process
             // lives. Nothing is lost by warning once: MergesRefused >= 1 makes the summary differ
             // from the empty one, and the worker logs the summary on every tick that does, so the
             // state stays visible hourly; only the second, third and thousandth copy of the same
@@ -663,8 +675,8 @@ public class ChannelIdentityService(
             if (warningState.ShouldWarn(ChannelIdentityWarningState.RefusedKey(loser.Id)))
             {
                 logger.LogWarning(
-                    "Zusammenführung von Kanal {LoserChannelName} ({LoserChannelId}) in {SurvivorChannelName} ({SurvivorChannelId}) verweigert: die aufzulösende Zeile hat noch Emotes.",
-                    loser.ChannelName, loser.Id, survivor.ChannelName, survivor.Id);
+                    "Merge of channel {LoserChannelName} ({LoserChannelId}) into {SurvivorChannelName} ({SurvivorChannelId}) refused: the row to be resolved still has emotes ({HasEmotes}) or tags ({HasTags}).",
+                    loser.ChannelName, loser.Id, survivor.ChannelName, survivor.Id, loserHasEmotes, loserHasTags);
             }
 
             // Nothing was written; disposing the transaction rolls back and releases both locks.
@@ -730,6 +742,12 @@ public class ChannelIdentityService(
 
         survivor.ChannelName = newLogin;
         survivor.TrackingResumedAt = DateTime.UtcNow;
+        // Closes the survivor's open observation interval (spec 4.3) — tracked only, riding the
+        // SaveChangesAsync below together with the merge's audit entry. The loser's own interval, if
+        // any, needs no code: db.Channels.Remove(loser) a few lines down cascades it away, same as
+        // the loser's emotes. The next successful sync on the survivor opens a fresh interval.
+        await emoteSetObservationService.CloseOpenIntervalAsync(
+            survivor.Id, ChannelEmoteSetObservationClosedBy.Merge, ct);
         db.AddAuditEntry(
             AuditActor.System,
             AuditActions.ChannelMerge,

@@ -5,7 +5,7 @@ import { TranslocoTestingModule } from '@jsverse/transloco';
 import { Observable, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
+import { ALL_EMOTE_SETS, EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { VoteType } from '../../core/voting/vote-session.model';
 import { EmoteDrilldownData, EmoteDrilldownDialog } from './emote-drilldown-dialog';
@@ -18,6 +18,7 @@ function data(overrides: Partial<EmoteDrilldownData> = {}): EmoteDrilldownData {
     from: '2026-01-15',
     to: '2026-01-21',
     emoteId: 'emote-1',
+    sevenTvEmoteId: '01FFWH9WV80000JT8GHDKHJNZC',
     emoteName: 'Kappa',
     imageUrl: IMAGE_URL,
     ...overrides,
@@ -180,6 +181,37 @@ describe('EmoteDrilldownDialog', () => {
     });
   });
 
+  describe('7TV page link', () => {
+    function link(): HTMLAnchorElement {
+      return fixture.nativeElement.querySelector('a[target="_blank"]') as HTMLAnchorElement;
+    }
+
+    it('points at the emote page on 7TV and opens in a new tab without leaking the opener', () => {
+      render(data(), of(series()));
+
+      expect(link().getAttribute('href')).toBe('https://7tv.app/emotes/01FFWH9WV80000JT8GHDKHJNZC');
+      expect(link().rel.split(' ')).toEqual(expect.arrayContaining(['noopener', 'noreferrer']));
+    });
+
+    it('marks the close button, not the link, as the initial focus target', () => {
+      render(data(), of(series()));
+
+      const initial = fixture.nativeElement.querySelector('[cdkFocusInitial]') as HTMLElement;
+      expect(initial.tagName).toBe('BUTTON');
+      expect(link().hasAttribute('cdkFocusInitial')).toBe(false);
+    });
+
+    it('names the destination first and says it opens in a new tab, hiding the arrow glyph', () => {
+      render(data(), of(series()));
+
+      // The test transloco has no translations, so the keys stand in for the wording.
+      expect(link().textContent?.trim()).toMatch(
+        /^usageStats\.drilldown\.openOnSevenTv.*common\.opensInNewTab$/s,
+      );
+      expect(link().querySelector('[aria-hidden="true"]')?.textContent).toContain('↗');
+    });
+  });
+
   describe('constructor error branch', () => {
     it('sets no error and stores the series on success', () => {
       render(data(), of(series({ totalUseCount: 42 })));
@@ -208,6 +240,43 @@ describe('EmoteDrilldownDialog', () => {
 
       expect(component['errorKey']()).toBe('usageStats.errors.loadFailed');
       expect(component['series']()).toBeNull();
+    });
+  });
+  describe('set scope (spec #200, 7.2, AK 64)', () => {
+    it('asks for the series of the set frozen into its data', () => {
+      render(data({ emoteSetId: 'set-halloween' }), of());
+
+      expect(TestBed.inject(UsageStatService).getDailySeries).toHaveBeenCalledWith(
+        'sensitron',
+        'emote-1',
+        '2026-01-15',
+        '2026-01-21',
+        'set-halloween',
+      );
+    });
+
+    it("asks for the channel's active set when its data carries no set", () => {
+      render(data(), of());
+
+      expect(TestBed.inject(UsageStatService).getDailySeries).toHaveBeenCalledWith(
+        'sensitron',
+        'emote-1',
+        '2026-01-15',
+        '2026-01-21',
+        null,
+      );
+    });
+
+    it('asks for every set when its data says so (a null-session on the vote page)', () => {
+      render(data({ emoteSetId: ALL_EMOTE_SETS }), of());
+
+      expect(TestBed.inject(UsageStatService).getDailySeries).toHaveBeenCalledWith(
+        'sensitron',
+        'emote-1',
+        '2026-01-15',
+        '2026-01-21',
+        ALL_EMOTE_SETS,
+      );
     });
   });
 });

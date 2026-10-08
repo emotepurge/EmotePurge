@@ -2,9 +2,23 @@ import { Component, computed, inject, input, output } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
+import {
+  SyncReportReason,
+  SyncReportState,
+  isChannelMismatch,
+} from '../../core/seven-tv/sync-report-outcome';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
+
+/** Counts a host hands the panel instead of letting it count `items` by engine status — for a run
+ *  whose rows the engine's statuses alone cannot count (see `RunProgressPanel.tally`). */
+export interface RunProgressTally {
+  /** Rows the run is done with — the bar's value. */
+  finished: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+}
 
 /** Renamed from DeleteProgressPanel when the restore run (A6) became its second consumer — the
  *  mechanics (bar, cancel, rate-limit countdown, failure list) are run-generic; only the wording
@@ -26,10 +40,12 @@ import { NoticeBanner } from '../ui/notice-banner';
           <button type="button" appButton="danger-quiet" (click)="cancelled.emit()">
             {{ 'common.cancel' | transloco }}
           </button>
-        } @else {
+        } @else if (dismissible()) {
           <button type="button" appButton="neutral" (click)="dismissed.emit()">
             {{ 'common.close' | transloco }}
           </button>
+        } @else {
+          <span class="text-fg-muted">{{ labelPrefix() + '.settling' | transloco }}</span>
         }
       </div>
       <!-- The track is one step further from the surface than the panel it sits in, so it stays
@@ -52,13 +68,23 @@ import { NoticeBanner } from '../ui/notice-banner';
         </p>
       }
 
-      @if (failedItems().length > 0) {
-        <ul class="mt-3 space-y-1 text-sm text-danger-fg" role="alert">
-          @for (item of failedItems(); track item.key) {
-            <li>{{ item.name }}: {{ item.errorMessage ?? failedFallback() }}</li>
-          }
-        </ul>
-      }
+      <!-- The failure list's live region lives as long as the panel does; only its rows come and
+           go. role="alert" is implicitly aria-atomic="true" (WAI-ARIA 1.2), so without the
+           explicit "false" every added row would re-read every row already listed — and a region
+           that left the DOM and came back would announce its whole content again. Both matter at
+           the end of a settle (#275): the unknown rows the re-read left unclear rejoin a list
+           whose failed rows never left it, and only the rejoining rows are spoken. The region is
+           a wrapper rather than the ul itself: a ul whose role is overridden is no list, and
+           its items then fail axe's listitem rule. -->
+      <div role="alert" aria-atomic="false" [class.mt-3]="failedItems().length > 0">
+        @if (failedItems().length > 0) {
+          <ul class="space-y-1 text-sm text-danger-fg">
+            @for (item of failedItems(); track item.key) {
+              <li>{{ item.name }}: {{ failureText(item) }}</li>
+            }
+          </ul>
+        }
+      </div>
 
       <!-- Post-run summary (A6): the counts as text, plus whatever run-scoped actions the host
            projects (protocol download, restore). Rendered only once the run has settled — during
@@ -77,11 +103,14 @@ import { NoticeBanner } from '../ui/notice-banner';
            engine's per-row abort hook, not afterwards. It is never visible mid-run only because
            the abort and isRunning.set(false) fall in the same synchronous tick, and zoneless
            change detection renders nothing in between. Should that hook ever gain a warning that
-           does not abort, this block would swallow it silently. -->
-      @if (!isRunning() && total() > 0) {
+           does not abort, this block would swallow it silently.
+
+           settling holds the block back too (#275): the rows are still the pre-settle snapshot
+           then, and a count or a host line read off them could flip once the re-read answers. -->
+      @if (!isRunning() && !settling() && total() > 0) {
         <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
           <span class="text-fg-secondary">
-            {{ labelPrefix() + '.summary.counts' | transloco: summaryCounts() }}
+            {{ summaryCountsKey() | transloco: summaryCounts() }}
           </span>
           <ng-content select="[run-actions]" />
         </div>
@@ -90,17 +119,26 @@ import { NoticeBanner } from '../ui/notice-banner';
       @if (syncReportFailed()) {
         <app-notice-banner class="mt-3 block" variant="warning">
           <span class="flex flex-col gap-1">
-            <span class="font-medium">{{ labelPrefix() + '.syncFailedTitle' | transloco }}</span>
-            <span>{{ labelPrefix() + '.syncFailed' | transloco }}</span>
+            <span class="font-medium">{{ syncReportTitleKey() | transloco }}</span>
+            <span>{{ syncReportTextKey() | transloco }}</span>
+            <!-- Why the report failed or fell short (spec E23) — its own line, because a bare
+                 "failed" does not say whether the right is gone or the server did not answer. -->
+            @if (syncReportReason(); as reason) {
+              <span>{{ 'syncReportReason.' + reason | transloco }}</span>
+            }
           </span>
-          <button
-            notice-action
-            type="button"
-            appButton="outline"
-            (click)="syncRetryRequested.emit()"
-          >
-            {{ labelPrefix() + '.syncRetry' | transloco }}
-          </button>
+          <!-- No retry for a channel mismatch (addendum N4): it is recorded, and the resync that
+               heals it already runs — a retry could only repeat the same mismatch. -->
+          @if (syncRetryOffered()) {
+            <button
+              notice-action
+              type="button"
+              appButton="outline"
+              (click)="syncRetryRequested.emit()"
+            >
+              {{ labelPrefix() + '.syncRetry' | transloco }}
+            </button>
+          }
         </app-notice-banner>
       } @else if (syncReport() === 'succeeded' && !isRunning()) {
         <p class="mt-3 text-sm text-fg-muted">
@@ -114,12 +152,44 @@ export class RunProgressPanel {
   readonly items = input.required<RunQueueItem[]>();
   readonly isRunning = input.required<boolean>();
   /** Which wording family the panel speaks — the union keeps the dynamic keys findable. */
-  readonly labelPrefix = input<'massDelete' | 'restore' | 'import'>('massDelete');
+  readonly labelPrefix = input<'massDelete' | 'restore' | 'import' | 'undo'>('massDelete');
   /** State of the run's closing bookkeeping call (sync-deleted / sync-restored). Defaults to the
    *  state that renders nothing; the notice wording follows labelPrefix. */
   readonly syncReport = input<SyncReportState>('idle');
+  /** Why `syncReport` is `'failed'`/`'partial'` (spec E23) — shown as its own line in the report
+   *  notice, `null` (the default) shows none. One wording family for all three runs. */
+  readonly syncReportReason = input<SyncReportReason | null>(null);
   /** Seconds left on a 7TV rate-limit pause, null while running normally. */
   readonly rateLimitPauseSeconds = input<number | null>(null);
+  /** Whether Close is offered once the run stops running. Every host binds this to its run's
+   *  lifecycle (`run.phase === 'closed'`, #256) so Close cannot end a run whose report is still
+   *  unanswered — the import additionally cannot end one whose protocol does not exist yet, see
+   *  `import-progress-section.ts` for why that window matters there. Defaults to `true` only for a
+   *  caller that has no run record to bind it to (there is none left in this app since #256 T2
+   *  moved delete and restore onto the same lifecycle as the import). */
+  readonly dismissible = input(true);
+  /** Rows counted `done` that are not a copy — today only an import run's adopted renames (an
+   *  existing target entry renamed in place, not a new entry added, spec #255). Subtracted out of
+   *  `summaryCounts().done` and broken out as its own `renamed` count once positive; `null` (the
+   *  default) leaves `summaryCounts()` exactly as it always was — delete and restore never pass it. */
+  readonly renamedCount = input<number | null>(null);
+  /** The host's own counts, for the bar and the summary sentence; `null` (the default) counts
+   *  `items` by engine status, as delete, restore and import always have. Today only the undo
+   *  (#254) passes it: a row its recheck skipped before the REMOVE is `cancelled` for the engine,
+   *  yet it is finished (nothing left to send) and named under its own reason, never as a
+   *  cancellation — counted from `items` it would hold the bar short and appear twice. `total` and
+   *  the failure list keep reading `items`. */
+  readonly tally = input<RunProgressTally | null>(null);
+  /** The run's engine work is over but its `unknown` rows are still being read back once — the
+   *  `settling` phase every run has (#275 for delete and restore, Plan-284 for import and undo);
+   *  each host binds it to `run.phase === 'settling'`. `items` then still holds the pre-settle
+   *  snapshot, which keeps the bar and the progress text exactly where the run left them; what
+   *  the re-read can still change is held back until it answers — the summary block (counts and
+   *  the host's `run-actions`) and the `unknown` rows of the failure list. `failed` rows stay
+   *  listed: the re-read never touches them, and import and undo publish them with their final
+   *  reason already, so a row reads the same before and after. `false` (the default) outside
+   *  that phase. */
+  readonly settling = input(false);
   readonly cancelled = output<void>();
   readonly dismissed = output<void>();
   readonly syncRetryRequested = output<void>();
@@ -127,8 +197,13 @@ export class RunProgressPanel {
   private readonly translocoService = inject(TranslocoService);
 
   protected readonly total = computed(() => this.items().length);
+  // An `unknown` row is finished too: the run is done with it, 7TV's answer is what is missing.
   protected readonly finished = computed(
-    () => this.items().filter((item) => item.status === 'done' || item.status === 'failed').length,
+    () =>
+      this.tally()?.finished ??
+      this.items().filter(
+        (item) => item.status === 'done' || item.status === 'failed' || item.status === 'unknown',
+      ).length,
   );
   protected readonly progressPercent = computed(() =>
     this.total() === 0 ? 0 : (this.finished() / this.total()) * 100,
@@ -138,25 +213,76 @@ export class RunProgressPanel {
   // keeps min <= max for an empty queue; hosts never render the bar for one.
   protected readonly progressValueMax = computed(() => Math.max(1, this.total()));
   protected readonly failedItems = computed(() =>
-    this.items().filter((item) => item.status === 'failed'),
+    this.items().filter(
+      (item) => item.status === 'failed' || (item.status === 'unknown' && !this.settling()),
+    ),
   );
 
   protected readonly summaryCounts = computed(() => {
-    const statuses = this.items().map((item) => item.status);
+    const counts = this.tally() ?? countByStatus(this.items());
+    const renamed = this.renamedCount() ?? 0;
     return {
-      done: statuses.filter((status) => status === 'done').length,
-      failed: statuses.filter((status) => status === 'failed').length,
-      cancelled: statuses.filter((status) => status === 'cancelled').length,
+      done: counts.done - renamed,
+      renamed,
+      failed: counts.failed,
+      cancelled: counts.cancelled,
     };
   });
 
-  // 'partial' shares the notice with 'failed': in both cases the backend's view of the set differs
-  // from what was actually deleted, and the remedy (retry, or wait for the periodic resync) is the same.
+  /** Which summary sentence to speak — the one that also names the renamed count once there is one
+   *  to name, otherwise the same `.summary.counts` every host has always had (massDelete and
+   *  restore never pass `renamedCount`, so `summaryCounts().renamed` is always 0 for them and this
+   *  always resolves to `.summary.counts`). */
+  protected readonly summaryCountsKey = computed(() =>
+    this.summaryCounts().renamed > 0
+      ? `${this.labelPrefix()}.summary.countsWithRenamed`
+      : `${this.labelPrefix()}.summary.counts`,
+  );
+
+  // 'partial' shares the notice slot with 'failed' — same banner, same reason line, same
+  // (conditional) retry button — but not the same title/text (#255): 'failed' means the report
+  // never got through, 'partial' means it did and the backend recorded *something*, just not
+  // everything (`syncPartialTitle`/`syncPartial` say so — "vermerkt, aber …" — instead of the
+  // 'failed' wording's "fehlgeschlagen … konnte es nicht vermerken", which is simply wrong for a
+  // report that was in fact recorded).
   protected readonly syncReportFailed = computed(
     () => this.syncReport() === 'failed' || this.syncReport() === 'partial',
   );
 
-  protected failedFallback(): string {
-    return this.translocoService.translate(`${this.labelPrefix()}.deleteFailedFallback`);
+  /** `.syncPartialTitle` while `syncReport` is `'partial'`, `.syncFailedTitle` otherwise (only
+   *  reached while `syncReportFailed()` is true, i.e. also for `'failed'`). */
+  protected readonly syncReportTitleKey = computed(
+    () =>
+      `${this.labelPrefix()}.${this.syncReport() === 'partial' ? 'syncPartialTitle' : 'syncFailedTitle'}`,
+  );
+
+  /** Same split as {@link syncReportTitleKey}, for the notice's body line. */
+  protected readonly syncReportTextKey = computed(
+    () => `${this.labelPrefix()}.${this.syncReport() === 'partial' ? 'syncPartial' : 'syncFailed'}`,
+  );
+
+  /** "Erneut melden" for `failed` (any reason) and `partial`/`shortfall`, never for either
+   *  channel-mismatch reason (addendum N4, AK 40) — the services refuse that retry as well. */
+  protected readonly syncRetryOffered = computed(() => !isChannelMismatch(this.syncReportReason()));
+
+  /** An `unknown` row gets its own wording family rather than its transport error: the point for
+   *  the user is not *why* 7TV's answer is missing but that the row's outcome has to be checked. */
+  protected failureText(item: RunQueueItem): string {
+    if (item.status === 'unknown') {
+      return this.translocoService.translate(`${this.labelPrefix()}.unknownOutcome`);
+    }
+    return (
+      item.errorMessage ??
+      this.translocoService.translate(`${this.labelPrefix()}.deleteFailedFallback`)
+    );
   }
+}
+
+function countByStatus(items: readonly RunQueueItem[]): Omit<RunProgressTally, 'finished'> {
+  const statuses = items.map((item) => item.status);
+  return {
+    done: statuses.filter((status) => status === 'done').length,
+    failed: statuses.filter((status) => status === 'failed').length,
+    cancelled: statuses.filter((status) => status === 'cancelled').length,
+  };
 }

@@ -9,6 +9,12 @@ import { LeaderboardSort } from './leaderboard.model';
 export interface ImportRow {
   sevenTvEmoteId: string;
   name: string;
+  /** `null` for a file row whose file either predates the export writers carrying an image URL
+   *  (#230) or whose `imageUrl` field failed to parse as a non-empty string
+   *  (`import-source-parser.ts`) — an honest "don't know", never a guess derived from the id. Every
+   *  live source (grid, foreign channel, leaderboard) and a file written since #230 carries its
+   *  emote's own image URL through unchanged. */
+  imageUrl: string | null;
 }
 
 /**
@@ -35,6 +41,11 @@ export interface ImportRow {
  * origin send as its wire name" — use {@link importOriginSourceChannelName} for that and
  * {@link importOriginLeaderboardSort} for the sort, never `origin.kind === 'seventv-leaderboard'`
  * inline: the two helpers are what make a fifth member a compile error here instead of a silent gap.
+ *
+ * `'tag'` (#201 T-C) is a play-in of one tag's entries into a set. It carries a `channelName`, but
+ * that is the tag's own channel, not a source: reading it as one would show "from channel X" and send
+ * a source name the server refuses for this kind (`invalid_source_kind`). Both helpers answer `null`
+ * for it, and the confirm dialog gives it its own branch before the channel one.
  */
 export type ImportOrigin =
   | { kind: 'channel'; channelName: string }
@@ -46,7 +57,16 @@ export type ImportOrigin =
       channelName: string | null;
       envelopeKind: 'emote-list' | 'usage';
     }
-  | { kind: 'seventv-leaderboard'; sortBy: LeaderboardSort };
+  | { kind: 'seventv-leaderboard'; sortBy: LeaderboardSort }
+  | {
+      kind: 'tag';
+      tagId: number;
+      tagName: string;
+      /** The tracked channel the tag belongs to — display only; the wire sends no source channel. */
+      channelName: string;
+      /** Entries step 4 of the play-in already found in the set, for the confirm dialog's line. */
+      alreadyInSetCount: number;
+    };
 
 /**
  * The source channel name that belongs on the wire for an origin, or `null` when the origin has
@@ -71,6 +91,7 @@ export function importOriginSourceChannelName(origin: ImportOrigin): string | nu
       return origin.channelName;
     case 'file':
     case 'seventv-leaderboard':
+    case 'tag':
       return null;
     default:
       return assertUnreachableOrigin(origin);
@@ -96,6 +117,7 @@ export function importOriginLeaderboardSort(origin: ImportOrigin): LeaderboardSo
     case 'channel':
     case 'seventv-channel':
     case 'file':
+    case 'tag':
       return null;
     default:
       return assertUnreachableOrigin(origin);

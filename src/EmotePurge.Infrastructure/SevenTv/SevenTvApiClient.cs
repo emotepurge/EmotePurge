@@ -13,6 +13,7 @@ public class SevenTvApiClient(
     HttpClient httpClient,
     IRateLimitTelemetry telemetry,
     IForeignUpstreamRequestBudget foreignRequestBudget,
+    ISevenTvSearchBudget searchBudget,
     ILogger<SevenTvApiClient> logger) : ISevenTvApiClient
 {
     // 7TV's own spelling of the Twitch platform on a Connection object — matched against exactly,
@@ -64,8 +65,23 @@ public class SevenTvApiClient(
     // to the 174 547 bytes the design doc measured for HandOfBlood's set with a near-identical
     // shape). Deliberately omits Emote.images — see the comment on SevenTvGqlEmoteSetPreviewResponseDto
     // for why, and BuildForeignImageUrl for how the image url is built instead.
+    // name/capacity added spec 2026-09-20 (F6/6.4) — read at the emoteSet level, alongside the
+    // paginated entries, so the assembled ForeignEmoteSet can carry the set's own name and slot
+    // count without a second request.
     private const string GqlEmoteSetPreviewQuery =
-        "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { alias emote { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } } } }";
+        "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { name capacity emotes(page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { alias emote { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } } } }";
+
+    // v4 schema, the emote-set list of one account (spec 2026-09-20, E7/6.1) — the source behind
+    // all three set-list routes. This string is the query that was run live against
+    // https://7tv.io/v4/gql on 2026-09-20 (Sonde 7), character for character, analyzer complexity
+    // 14 / depth 6. It is deliberately NOT aliased to snake_case like GqlSetEntriesQuery and
+    // GqlEmoteSetPreviewQuery above: F17 is the reason — a wrong query does not look wrong, it
+    // looks like 7TV being permanently down, so the one thing worth keeping is that the text here
+    // is the text that was proven to answer. The DTOs carry [JsonPropertyName] for the camelCase
+    // members instead. Whoever changes this query changes it live first and in the fixture second,
+    // never the other way round.
+    private const string GqlEmoteSetListQuery =
+        "query($pid: String!) { users { userByConnection(platform: TWITCH, platformId: $pid) { id style { activeEmoteSetId } emoteSets { id name capacity kind owner { id mainConnection { platformDisplayName } } } } } }";
 
     // v4 schema, the leaderboard import source (spec 2026-09-13, F7): EmoteQuery.search — a
     // network-wide ranking, not a set's contents, so this takes a sort instead of a set id and
@@ -118,12 +134,62 @@ public class SevenTvApiClient(
 
         try
         {
+            // Draws from 7TV's search bucket (users(query:) is a search). The charge is the caller's
+            // (SevenTvSyncService, ISevenTvSearchBudget); reporting what came back is this client's,
+            // because only it sees the headers and the GraphQL error payload.
             var payload = new { query = GqlUsersQuery, variables = new { q = normalized } };
-            var response = await httpClient.PostAsJsonAsync("gql", payload, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            using var response = await httpClient.PostAsJsonAsync("gql", payload, cancellationToken);
+            var remaining = ReadSearchRemainingHeader(response);
+            var resetSeconds = ReadSearchResetHeaderSeconds(response);
 
-            var dto = await response.Content.ReadFromJsonAsync<SevenTvGqlUsersResponseDto>(
-                SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                await ObserveSearchBucketAsync(
+                    remaining, resetSeconds, rateLimited: true,
+                    resetSeconds ?? ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response), cancellationToken);
+                logger.LogWarning("7TV user search for {Channel} was rate limited (HTTP 429).", normalized);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            // Every answer 7TV gave reaches the shared budget, failures included — same rule as
+            // FetchV4PageAsync: a 5xx or an unparseable 200 still carries the bucket's headers, and
+            // a low remaining count there is exactly what the budget must not miss.
+            if (!response.IsSuccessStatusCode)
+            {
+                await ObserveSearchBucketAsync(remaining, resetSeconds, rateLimited: false, retryAfterSeconds: null, cancellationToken);
+                logger.LogWarning(
+                    "7TV user search for {Channel} failed with HTTP {StatusCode}, skipped.",
+                    normalized, (int)response.StatusCode);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            SevenTvGqlUsersResponseDto? dto;
+            try
+            {
+                dto = await response.Content.ReadFromJsonAsync<SevenTvGqlUsersResponseDto>(
+                    SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+            }
+            catch (JsonException ex)
+            {
+                await ObserveSearchBucketAsync(remaining, resetSeconds, rateLimited: false, retryAfterSeconds: null, cancellationToken);
+                logger.LogWarning(ex, "7TV user search for {Channel} returned an unreadable response, skipped.", normalized);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            if (IsRateLimited(dto?.Errors))
+            {
+                // The disguised form: HTTP 200, extensions.status 429. Still Unavailable to the
+                // caller — SevenTvLookupStatus deliberately has no rate-limit member, the UI's
+                // failure reasons hang off it — but the shared budget must hear about it.
+                await ObserveSearchBucketAsync(
+                    remaining, resetSeconds, rateLimited: true,
+                    resetSeconds ?? ReadResetHintSeconds(dto!.Errors) ?? ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response),
+                    cancellationToken);
+                logger.LogWarning("7TV user search for {Channel} was rate limited (GraphQL extensions.status 429).", normalized);
+                return SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            await ObserveSearchBucketAsync(remaining, resetSeconds, rateLimited: false, retryAfterSeconds: null, cancellationToken);
 
             // GraphQL errors surface as HTTP 200 with `data: null` (or `users` missing inside it)
             // plus an `errors` array — that's a failed query, not evidence the account is missing.
@@ -277,8 +343,7 @@ public class SevenTvApiClient(
             // survives 7TV changing the sentinel value itself. `EmoteSetId` on that connection may
             // still be null (account exists, no active set), which is a legitimate Ok — only the
             // connection itself being absent means NoSevenTvAccount.
-            var twitchConnection = user.Connections
-                .FirstOrDefault(c => c.Platform == TwitchPlatform && c.Id == twitchUserId);
+            var twitchConnection = FindOwnTwitchConnection(user, twitchUserId);
             if (twitchConnection is null)
             {
                 logger.LogInformation("Kein 7TV-Account für Twitch-ID {Id}.", twitchUserId);
@@ -320,6 +385,76 @@ public class SevenTvApiClient(
         }
     }
 
+    public async Task<SevenTvEmoteSetOwnerLookupResult> LookUpEmoteSetOwnerAsync(
+        string emoteSetId, CancellationToken cancellationToken = default)
+    {
+        // Charged before the request is built, like the list path (F14): a refusal means nothing
+        // left this process.
+        if (!await foreignRequestBudget.TryChargeRequestAsync(cancellationToken))
+        {
+            logger.LogWarning(
+                "Provider-wide 7TV budget exhausted — owner of emote set {SetId} not requested.", emoteSetId);
+            return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.BudgetExhausted);
+        }
+
+        try
+        {
+            var payload = new { query = GqlEmoteSetOwnerQuery, variables = new { id = emoteSetId } };
+            var response = await httpClient.PostAsJsonAsync("gql", payload, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                logger.LogWarning("7TV reports overload (429) while reading the owner of emote set {SetId}.", emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(
+                    SevenTvEmoteSetOwnerLookupStatus.RateLimited,
+                    ToRetryAfter(ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response)));
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning(
+                    "7TV answered HTTP {StatusCode} while reading the owner of emote set {SetId}.",
+                    (int)response.StatusCode, emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.Unavailable);
+            }
+
+            var dto = await response.Content.ReadFromJsonAsync<SevenTvGqlEmoteSetOwnerResponseDto>(
+                SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+
+            // The disguised 429 (HTTP 200, extensions.status: 429) is checked before the "no owner"
+            // reading, never folded into it — otherwise an overload would answer 404.
+            if (IsRateLimited(dto?.Errors))
+            {
+                logger.LogWarning("7TV reports overload (429 in the body) while reading the owner of emote set {SetId}.", emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.RateLimited);
+            }
+
+            // Only a readable answer to the question can say "no such set": data.emote_set present,
+            // null included. data: null, or data without emote_set, next to a non-429 error is 7TV
+            // failing — Unavailable, so the owner check answers 503 and the breaker counts a
+            // failure instead of a success.
+            if (dto?.Data is not { HasEmoteSet: true } data)
+            {
+                logger.LogWarning(
+                    "7TV answered the owner query for emote set {SetId} without an emote_set (GraphQL error answer?).", emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.Unavailable);
+            }
+
+            var ownerId = data.EmoteSet?.OwnerId;
+            if (string.IsNullOrEmpty(ownerId))
+            {
+                logger.LogInformation("7TV names no owner for emote set {SetId}.", emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.NotFound);
+            }
+
+            return SevenTvEmoteSetOwnerLookupResult.Ok(ownerId);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            logger.LogWarning(ex, "Reading the owner of 7TV emote set {SetId} failed.", emoteSetId);
+            return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.Unavailable);
+        }
+    }
+
     public async Task<SevenTvEditorGrantsResult> GetEditorOfChannelsAsync(string sevenTvUserId, CancellationToken cancellationToken = default)
     {
         try
@@ -352,17 +487,68 @@ public class SevenTvApiClient(
                 return SevenTvEditorGrantsResult.Failed(SevenTvLookupStatus.Unavailable);
             }
 
-            var result = grants
-                .SelectMany(g => g.User?.Connections ?? [])
-                .Where(c => c.Platform == TwitchPlatform)
-                .Select(c => new SevenTvEditorGrant(c.Username, c.Id))
-                .ToList();
-            return SevenTvEditorGrantsResult.Ok(result);
+            return SevenTvEditorGrantsResult.Ok(ToEditorGrants(grants));
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             logger.LogWarning(ex, "7TV-Editor-Abfrage für 7TV-User {Id} fehlgeschlagen, wird übersprungen.", sevenTvUserId);
             return SevenTvEditorGrantsResult.Failed(SevenTvLookupStatus.Unavailable);
+        }
+    }
+
+    public async Task<SevenTvEditorGrantsLookup> LookUpEditorGrantsAsync(
+        string twitchUserId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Request 1 of 2: the 7TV account behind the Twitch id. Same query and the same
+            // placeholder reading as ResolveSevenTvIdentityAsync; only the failures are told apart.
+            var identity = await PostBudgetedGqlAsync<SevenTvGqlUserByConnectionResponseDto>(
+                new { query = GqlUserByConnectionQuery, variables = new { p = TwitchPlatform, id = twitchUserId } },
+                "7TV identity",
+                twitchUserId,
+                cancellationToken);
+            if (identity.Failure is { } identityFailure)
+            {
+                return identityFailure;
+            }
+
+            var user = identity.Dto?.Data?.UserByConnection;
+            if (user is null)
+            {
+                logger.LogWarning("The 7TV identity of Twitch id {Id} came back without usable data.", twitchUserId);
+                return SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.Unavailable);
+            }
+
+            if (FindOwnTwitchConnection(user, twitchUserId) is null)
+            {
+                return SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.NoSevenTvAccount);
+            }
+
+            // Request 2 of 2, with a permit of its own: editor_of of that account.
+            var editorOf = await PostBudgetedGqlAsync<SevenTvGqlEditorOfResponseDto>(
+                new { query = GqlEditorOfQuery, variables = new { id = user.Id } },
+                "7TV editor grants",
+                twitchUserId,
+                cancellationToken);
+            if (editorOf.Failure is { } editorOfFailure)
+            {
+                return editorOfFailure;
+            }
+
+            var grants = editorOf.Dto?.Data?.User?.EditorOf;
+            if (grants is null)
+            {
+                logger.LogWarning("The 7TV editor grants of Twitch id {Id} came back without usable data.", twitchUserId);
+                return SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.Unavailable);
+            }
+
+            return SevenTvEditorGrantsLookup.Ok(ToEditorGrants(grants));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            logger.LogWarning(ex, "Reading the 7TV editor grants of Twitch id {Id} failed.", twitchUserId);
+            return SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.Unavailable);
         }
     }
 
@@ -372,6 +558,8 @@ public class SevenTvApiClient(
         {
             var items = new List<SevenTvEmoteSetPreviewItem>();
             var totalCount = 0;
+            string? setName = null;
+            int? setCapacity = null;
 
             for (var page = 1; page <= MaxSetEntryPages; page++)
             {
@@ -384,6 +572,16 @@ public class SevenTvApiClient(
                 var pageDto = fetch.PageDto!;
                 totalCount = pageDto.TotalCount;
                 items.AddRange(pageDto.Items.Select(MapPreviewItem));
+
+                if (page == 1)
+                {
+                    // 7TV repeats the set's own name/capacity identically on every page of the same
+                    // query (F6) — reading them once off the first page avoids re-deriving Capacity's
+                    // 0-to-null idiom on every iteration for a value that never changes mid-walk.
+                    var setDto = fetch.SetDto!;
+                    setName = setDto.Name;
+                    setCapacity = setDto.Capacity > 0 ? setDto.Capacity : null;
+                }
 
                 if (page >= pageDto.PageCount)
                 {
@@ -404,7 +602,7 @@ public class SevenTvApiClient(
             }
 
             var truncated = items.Count < totalCount;
-            return SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(totalCount, truncated, items));
+            return SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(totalCount, truncated, items, setName, setCapacity));
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -432,6 +630,15 @@ public class SevenTvApiClient(
 
             var result = await FetchV4PageAsync<SevenTvGqlLeaderboardSearchResponseDto>(
                 payload, RateLimitCallSources.SevenTvLeaderboard, cancellationToken);
+
+            // The shared search budget hears every answer, whatever the outcome; the charge before
+            // this request was SevenTvLeaderboardService's.
+            await ObserveSearchBucketAsync(
+                ParseNonNegative(result.HeaderSample?.Remaining),
+                ParsePlausibleResetSeconds(result.HeaderSample?.Reset),
+                result.Status == V4PageStatus.RateLimited,
+                result.RetryAfter is { } retryAfter ? (int)retryAfter.TotalSeconds : null,
+                cancellationToken);
 
             if (result.Status == V4PageStatus.RateLimited)
             {
@@ -473,6 +680,134 @@ public class SevenTvApiClient(
         }
     }
 
+    public async Task<SevenTvEmoteSetListResult> GetEmoteSetListForTwitchUserAsync(
+        string twitchUserId, CancellationToken cancellationToken = default)
+    {
+        // Charged before the request is built, so that a refusal really does mean "nothing left this
+        // process" (F14, AK 24). One permit covers the whole list: unlike the preview, this query is
+        // a single unpaginated page.
+        if (!await foreignRequestBudget.TryChargeRequestAsync(cancellationToken))
+        {
+            logger.LogWarning(
+                "Provider-wide 7TV budget exhausted — emote-set list for Twitch id {TwitchId} not requested.",
+                twitchUserId);
+            return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.BudgetExhausted);
+        }
+
+        try
+        {
+            var payload = new { query = GqlEmoteSetListQuery, variables = new { pid = twitchUserId } };
+            var page = await FetchV4PageAsync<SevenTvGqlEmoteSetListResponseDto>(
+                payload, RateLimitCallSources.SevenTvEmoteSetList, cancellationToken);
+
+            // Both disguises of a 429 are already one outcome by the time they get here; checked
+            // before the "no usable data" branch, never folded into it (the mistake AK 7 is named
+            // after on the preview path).
+            if (page.Status == V4PageStatus.RateLimited)
+            {
+                logger.LogWarning(
+                    "7TV reports overload (429) while reading the emote-set list for Twitch id {TwitchId}.",
+                    twitchUserId);
+                return SevenTvEmoteSetListResult.Failed(
+                    SevenTvEmoteSetListLookupStatus.RateLimited, page.RetryAfter);
+            }
+
+            var users = page.Dto?.Data?.Users;
+            if (page.Status == V4PageStatus.Unavailable || users is null)
+            {
+                if (page.ParseException is { } parseException)
+                {
+                    logger.LogWarning(parseException,
+                        "7TV emote-set list for Twitch id {TwitchId} returned an unparseable response body.",
+                        twitchUserId);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "7TV emote-set list for Twitch id {TwitchId} returned no usable data (GraphQL error response?).",
+                        twitchUserId);
+                }
+
+                return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
+            }
+
+            // The one measured distinction of this method (2026-09-20, platformId 999999999999):
+            // userByConnection null at HTTP 200 with no errors block is an answer — 7TV carries no
+            // account for this connection. A literal GraphQL error (data: null) never reaches here;
+            // it leaves users null, which the branch above already reported as Unavailable. But a
+            // *partial* GraphQL answer can: data.users.userByConnection: null alongside a non-429
+            // errors block (schema drift on a sibling field, say) is 7TV failing, not 7TV naming no
+            // account — third review round, P2, F17. Checked only here, right before the null user
+            // would otherwise be read as NoSevenTvAccount: the rate-limit disguise is already
+            // excluded by the RateLimited branch above, so anything left in Errors at this point is a
+            // genuine failure.
+            if (users.UserByConnection is not { } user)
+            {
+                if (page.Dto?.Errors is { Count: > 0 })
+                {
+                    logger.LogWarning(
+                        "7TV emote-set list for Twitch id {TwitchId} returned userByConnection: null together with a non-rate-limit GraphQL error.",
+                        twitchUserId);
+                    return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
+                }
+
+                logger.LogDebug("No 7TV account carries the Twitch connection {TwitchId}.", twitchUserId);
+                return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.NoSevenTvAccount);
+            }
+
+            // An account without an id cannot be the owner of anything, and the owner check (spec
+            // section 32) compares against exactly this id — so an answer without it is a failure,
+            // not an account that owns nothing.
+            if (string.IsNullOrEmpty(user.Id))
+            {
+                logger.LogWarning(
+                    "7TV emote-set list for Twitch id {TwitchId} carried a user without an id.",
+                    twitchUserId);
+                return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
+            }
+
+            // An account we can see but whose sets we cannot read is a failure, not an account
+            // without sets — the empty list is reserved for a list 7TV actually reported as empty.
+            if (user.EmoteSets is not { } sets)
+            {
+                logger.LogWarning(
+                    "7TV emote-set list for Twitch id {TwitchId} carried a user but no emoteSets member.",
+                    twitchUserId);
+                return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
+            }
+
+            var entries = sets
+                .Select(set => new SevenTvEmoteSetListEntry(
+                    set.Id,
+                    set.Name,
+                    // 0 reads as "not reported", exactly as on the channel-state path: an absent
+                    // field and a genuine zero are indistinguishable, and either one shown as a
+                    // capacity would make the UI claim the set is full.
+                    set.Capacity > 0 ? set.Capacity : null,
+                    set.Kind,
+                    string.IsNullOrEmpty(set.Owner?.MainConnection?.PlatformDisplayName)
+                        ? null
+                        : set.Owner.MainConnection.PlatformDisplayName,
+                    // Already part of the measured query (E7) and read here since the owner check
+                    // moved onto these lists (spec section 32) — no request of its own.
+                    string.IsNullOrEmpty(set.Owner?.Id) ? null : set.Owner.Id))
+                .ToList();
+
+            var activeEmoteSetId = string.IsNullOrEmpty(user.Style?.ActiveEmoteSetId)
+                ? null
+                : user.Style.ActiveEmoteSetId;
+
+            return SevenTvEmoteSetListResult.Ok(new SevenTvEmoteSetListing(activeEmoteSetId, entries, user.Id));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            // Reached only when SendAsync itself throws (connection/DNS/TLS failure, or a timeout
+            // while the body is buffered) — there is no response to read anything off.
+            logger.LogWarning(ex, "7TV emote-set list for Twitch id {TwitchId} failed.", twitchUserId);
+            return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
+        }
+    }
+
     // One loop iteration of GetEmoteSetPreviewAsync, split out along its own business seam: obtain
     // one preview page, or determine — and already log — why it cannot be obtained (exhausted
     // budget, a confirmed 429 in either of its two disguises, or an unparseable/GraphQL-error
@@ -509,7 +844,34 @@ public class SevenTvApiClient(
                 SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.RateLimited, pageResult.RetryAfter));
         }
 
-        var pageDto = pageResult.Dto?.Data?.EmoteSets?.EmoteSet?.Emotes;
+        var setsRoot = pageResult.Dto?.Data?.EmoteSets;
+        var setDto = setsRoot?.EmoteSet;
+        var pageDto = setDto?.Emotes;
+
+        // Vorentscheidung 4 (spec 2026-09-20, 6.4): a well-formed HTTP 200 that names emoteSets but
+        // whose nested emoteSet is null is 7TV's own "no such set" answer, not a failure to reach or
+        // parse 7TV — the set id simply does not exist. Checked ahead of the generic "no usable data"
+        // branch below on purpose: that branch's Unavailable would otherwise swallow this distinction,
+        // the same way a confirmed 429 has to be checked ahead of it (see the comment above). "Well-formed"
+        // includes "and no errors block": a partial GraphQL answer (emoteSet: null next to a non-429
+        // errors block) is 7TV failing, not 7TV naming no such set, and must not be booked as a
+        // breaker success — same shape as the list path's userByConnection check (F17).
+        if (pageResult.Status == V4PageStatus.Ok && setsRoot is not null && setDto is null)
+        {
+            if (pageResult.Dto?.Errors is { Count: > 0 })
+            {
+                logger.LogWarning(
+                    "7TV preview fetch for set {SetId} returned emoteSet: null together with a non-rate-limit GraphQL error, page {Page}.",
+                    emoteSetId, page);
+                return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.Unavailable));
+            }
+
+            logger.LogInformation(
+                "7TV preview fetch for set {SetId}: 7TV does not know this set (emoteSet: null), page {Page}.",
+                emoteSetId, page);
+            return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.NotFound));
+        }
+
         if (pageResult.Status == V4PageStatus.Unavailable || pageDto is null)
         {
             // A parse failure says so and carries the exception; everything else keeps the GraphQL hint.
@@ -529,7 +891,7 @@ public class SevenTvApiClient(
             return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.Unavailable));
         }
 
-        return PreviewPageFetch.Success(pageDto);
+        return PreviewPageFetch.Success(setDto!);
     }
 
     // The shared v4 GraphQL page-fetch behind both FetchPreviewPageAsync and SearchEmotesAsync
@@ -659,7 +1021,7 @@ public class SevenTvApiClient(
         HttpResponseMessage response, string callSource, int? statusOverride, int? retryAfterSeconds)
     {
         var usesSearchHeaders = UsesSearchRateLimitHeaders(callSource);
-        telemetry.RecordProviderResponse(new ProviderResponseObservation(
+        telemetry.ReportProviderResponse(new ProviderResponseObservation(
             RateLimitProviders.SevenTv,
             callSource,
             statusOverride ?? (int)response.StatusCode,
@@ -668,6 +1030,66 @@ public class SevenTvApiClient(
             ProviderRequestTelemetryHandler.ReadHeader(response, usesSearchHeaders ? SearchRateLimitRemainingHeader : "Ratelimit-Remaining"),
             ProviderRequestTelemetryHandler.ReadHeader(response, usesSearchHeaders ? SearchRateLimitResetHeader : "Ratelimit-Reset")));
     }
+
+    // One budgeted GraphQL request of LookUpEditorGrantsAsync: a permit first (refused ⇒ nothing is
+    // sent), then both 429 disguises before the body is read for anything else. Failure is null
+    // exactly when the caller may read Dto.
+    private async Task<BudgetedGqlAnswer<TDto>> PostBudgetedGqlAsync<TDto>(
+        object payload, string what, string twitchUserId, CancellationToken cancellationToken)
+        where TDto : class, ISevenTvGqlErrorEnvelope
+    {
+        if (!await foreignRequestBudget.TryChargeRequestAsync(cancellationToken))
+        {
+            logger.LogWarning("Provider-wide 7TV budget exhausted — {What} of Twitch id {Id} not requested.", what, twitchUserId);
+            return BudgetedGqlAnswer<TDto>.Failed(SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.BudgetExhausted));
+        }
+
+        var response = await httpClient.PostAsJsonAsync("gql", payload, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            logger.LogWarning("7TV reports overload (429) while reading the {What} of Twitch id {Id}.", what, twitchUserId);
+            return BudgetedGqlAnswer<TDto>.Failed(SevenTvEditorGrantsLookup.Failed(
+                SevenTvEditorGrantsLookupStatus.RateLimited,
+                ToRetryAfter(ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response))));
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            logger.LogWarning(
+                "7TV answered HTTP {StatusCode} while reading the {What} of Twitch id {Id}.",
+                (int)response.StatusCode, what, twitchUserId);
+            return BudgetedGqlAnswer<TDto>.Failed(SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.Unavailable));
+        }
+
+        var dto = await response.Content.ReadFromJsonAsync<TDto>(SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+        if (IsRateLimited(dto?.Errors))
+        {
+            logger.LogWarning("7TV reports overload (429 in the body) while reading the {What} of Twitch id {Id}.", what, twitchUserId);
+            return BudgetedGqlAnswer<TDto>.Failed(SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.RateLimited));
+        }
+
+        return new BudgetedGqlAnswer<TDto>(dto, null);
+    }
+
+    // One observation of 7TV's search bucket for the shared budget. Awaited rather than fired and
+    // forgotten: a block learnt here has to be in place before the next charge, wherever that comes
+    // from. The budget never throws for a store failure, so this cannot fail the lookup.
+    private Task ObserveSearchBucketAsync(
+        int? remaining, int? resetSeconds, bool rateLimited, int? retryAfterSeconds, CancellationToken cancellationToken) =>
+        searchBudget.ObserveResponseAsync(
+            new SevenTvSearchObservation(remaining, resetSeconds, rateLimited, ToRetryAfter(retryAfterSeconds)),
+            cancellationToken);
+
+    private static int? ReadSearchRemainingHeader(HttpResponseMessage response) =>
+        ParseNonNegative(ProviderRequestTelemetryHandler.ReadHeader(response, SearchRateLimitRemainingHeader));
+
+    private static int? ParseNonNegative(string? value) =>
+        int.TryParse(value, out var parsed) && parsed >= 0 ? parsed : null;
+
+    // Same bound as ReadSearchResetHeaderSeconds, for a reset that arrives as the header sample's
+    // string: a value that cannot be seconds-until-reset must not decide how long a block lasts.
+    private static int? ParsePlausibleResetSeconds(string? value) =>
+        int.TryParse(value, out var parsed) && parsed > 0 && parsed <= MaxResetHintSeconds ? parsed : null;
 
     private static TimeSpan? ToRetryAfter(int? retryAfterSeconds) =>
         retryAfterSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null;
@@ -679,13 +1101,29 @@ public class SevenTvApiClient(
     private async Task<SevenTvChannelStateResult> BuildChannelStateResultAsync(
         SevenTvEmoteSetJsonDto emoteSetDto, SevenTvUserRestUserDto? user, CancellationToken cancellationToken)
     {
+        // Two shapes that are not "an empty set" and must not be taken for one. An explicit
+        // `emotes: null` is a broken payload. A positive emote_count next to no emotes means the
+        // list was lost on the way, and answering Ok(0) would feed the sync's wipe guard a zero
+        // that 7TV itself contradicts. A MISSING `emotes` (and missing emote_count) is different
+        // and stays an empty list: that is how 7TV serialises a genuinely empty set.
+        if (emoteSetDto.Emotes is null || (emoteSetDto.EmoteCount is > 0 && emoteSetDto.Emotes.Count == 0))
+        {
+            logger.LogWarning(
+                "7TV-Emote-Set {SetId} ist widersprüchlich (emotes {Emotes}, emote_count {Count}) — als nicht verfügbar behandelt.",
+                emoteSetDto.Id, emoteSetDto.Emotes is null ? "null" : "leer", emoteSetDto.EmoteCount);
+            return SevenTvChannelStateResult.Failed(SevenTvLookupStatus.Unavailable);
+        }
+
         var emotes = emoteSetDto.Emotes.Select(SevenTvEmoteJsonMapper.MapDto).ToList();
 
         // Overlay the real set-entry dates from v4. Null (lookup failed) simply leaves every
         // AddedToSetAt unknown — the sync's correction pass fills the gap on a later resync,
-        // which is strictly better than failing the whole channel sync over a date.
-        var addedAtByEmoteId = await GetSetEntryAddedAtAsync(emoteSetDto.Id, cancellationToken);
-        if (addedAtByEmoteId is not null)
+        // which is strictly better than failing the whole channel sync over a date. The same
+        // lookup's entry count travels along as RemoteEntryCount: it runs for the very set id v3
+        // just named, on every sync and also when v3 lists nothing, so it is the cross-check the
+        // sync's wipe guard holds a v3 zero against (issue #76).
+        var setEntries = await GetSetEntriesAsync(emoteSetDto.Id, cancellationToken);
+        if (setEntries?.AddedAtByEmoteId is { } addedAtByEmoteId)
         {
             emotes = emotes
                 .Select(e => addedAtByEmoteId.TryGetValue(e.Id, out var addedAt)
@@ -704,7 +1142,7 @@ public class SevenTvApiClient(
         var capacity = emoteSetDto.Capacity > 0 ? emoteSetDto.Capacity : (int?)null;
 
         return SevenTvChannelStateResult.Ok(
-            new SevenTvChannelState(sevenTvUserId, new SevenTvEmoteSet(emoteSetDto.Id, emotes, capacity)));
+            new SevenTvChannelState(sevenTvUserId, new SevenTvEmoteSet(emoteSetDto.Id, emotes, capacity, setEntries?.EntryCount)));
     }
 
     // Reloads a set that the primary response no longer embeds (issue #43). Any non-success status —
@@ -742,8 +1180,15 @@ public class SevenTvApiClient(
         }
     }
 
-    private async Task<Dictionary<string, DateTime>?> GetSetEntryAddedAtAsync(string emoteSetId, CancellationToken cancellationToken)
+    // The dates are all-or-nothing: a failure on any page (HTTP error, timeout, malformed JSON, a set
+    // v4 does not know, a GraphQL error) drops every date, as before. The entry count is not: entries
+    // already seen on earlier pages are positive evidence that the set is not empty, and throwing
+    // them away would let a stale v3 zero through the sync's v4 veto. So a part-way failure after at
+    // least one resolved entry still reports that count as a lower bound; null only when no page
+    // yielded one, so the caller can tell "no v4 evidence" apart from "v4 lists 0 entries".
+    private async Task<SetEntriesOverlay?> GetSetEntriesAsync(string emoteSetId, CancellationToken cancellationToken)
     {
+        var entryCount = 0;
         try
         {
             var result = new Dictionary<string, DateTime>();
@@ -766,12 +1211,19 @@ public class SevenTvApiClient(
                     logger.LogWarning(
                         "7TV-v4-addedAt-Abruf für Set {SetId} lieferte keine Daten — Beitrittsdaten bleiben vorerst unbekannt.",
                         emoteSetId);
-                    return null;
+                    return PartialCountOnly(entryCount);
                 }
 
-                foreach (var entry in entryPage.Items.Where(entry => entry.Emote is not null && entry.AddedAt is not null))
+                // An entry whose emote did not resolve (`emote: null`, e.g. a deleted emote still
+                // referenced by the set) is neither dated nor counted: it is nothing the v3 list
+                // could be missing.
+                foreach (var entry in entryPage.Items.Where(entry => entry.Emote is not null))
                 {
-                    result[entry.Emote!.Id] = entry.AddedAt!.Value.UtcDateTime;
+                    entryCount++;
+                    if (entry.AddedAt is { } addedAt)
+                    {
+                        result[entry.Emote!.Id] = addedAt.UtcDateTime;
+                    }
                 }
 
                 if (page >= entryPage.PageCount)
@@ -780,7 +1232,7 @@ public class SevenTvApiClient(
                 }
             }
 
-            return result;
+            return new SetEntriesOverlay(result, entryCount);
         }
         // JsonException belongs here rather than in the caller's catch: a malformed v4 answer must
         // stay a missing date, not turn the whole channel Unavailable. The caller now treats
@@ -792,9 +1244,14 @@ public class SevenTvApiClient(
             logger.LogWarning(ex,
                 "7TV-v4-addedAt-Abruf für Set {SetId} fehlgeschlagen — Beitrittsdaten bleiben vorerst unbekannt.",
                 emoteSetId);
-            return null;
+            return PartialCountOnly(entryCount);
         }
     }
+
+    // What a v4 read that failed part-way still yields: no dates, and the entries counted so far
+    // when there was at least one (see GetSetEntriesAsync).
+    private static SetEntriesOverlay? PartialCountOnly(int entryCount) =>
+        entryCount > 0 ? new SetEntriesOverlay(null, entryCount) : null;
 
     // Resolution order for issue #43: the top-level id — this whole response *is* the requested
     // Twitch connection — and otherwise that same connection found by its exact Twitch user id in
@@ -808,32 +1265,16 @@ public class SevenTvApiClient(
     // truthful failure reason. Same exact-id contract ResolveSevenTvIdentityAsync already holds.
     private static string? ResolveFallbackEmoteSetId(SevenTvUserRestDto dto, string twitchUserId)
     {
-        if (IsUsableSevenTvId(dto.EmoteSetId))
+        if (SevenTvIds.IsUsable(dto.EmoteSetId))
         {
             return dto.EmoteSetId;
         }
 
         var ownConnection = (dto.User?.Connections ?? []).FirstOrDefault(c =>
-            c.Platform == TwitchPlatform && c.Id == twitchUserId && IsUsableSevenTvId(c.EmoteSetId));
+            c.Platform == TwitchPlatform && c.Id == twitchUserId && SevenTvIds.IsUsable(c.EmoteSetId));
 
         return ownConnection?.EmoteSetId;
     }
-
-    // 7TV represents "no id" two different ways depending on the endpoint: sometimes a genuine
-    // absence (null/empty), sometimes a placeholder sentinel of all-zero characters — proven live for
-    // a different lookup on this same client (ResolveSevenTvIdentityAsync's
-    // "00000000000000000000000000" placeholder account id, measured 2026-08-31). Both must read as
-    // "not present" here, or a sentinel would be mistaken for a real emote-set id and forwarded to
-    // GET emote-sets/{id}. Checking "every character is '0'" rather than a fixed-length literal
-    // survives 7TV changing the sentinel's length or format.
-    //
-    // For this particular field the sentinel has not been observed: 62 accounts without an active
-    // set, sampled live 2026-09-01, all answered with a plain null emote_set_id (top level and in
-    // connections[]). The all-zero branch is therefore unproven defence, not a fix for a known
-    // behaviour — the null case, which keeps NoActiveEmoteSet reachable after the rollout, is the
-    // measured one.
-    private static bool IsUsableSevenTvId(string? id) =>
-        !string.IsNullOrWhiteSpace(id) && id.Any(c => c != '0');
 
     // 7TV wraps a GraphQL-level failure as HTTP 200 (see GqlEmoteSetPreviewQuery's comment and
     // SevenTvGqlEmoteSetPreviewResponseDto); a rate limit is one specific `errors[].extensions.status`
@@ -965,6 +1406,21 @@ public class SevenTvApiClient(
     private static object BuildSortVariable(SevenTvLeaderboardSort sortBy) =>
         new { sortBy = sortBy.ToWireCode(), order = SearchSortOrderDescending };
 
+    // The connection that proves a real 7TV account behind a Twitch id — absent on 7TV's placeholder
+    // user (see ResolveSevenTvIdentityAsync). Shared by the unbudgeted and the budgeted identity read,
+    // so the two can never disagree about what "no 7TV account" means.
+    private static SevenTvGqlIdentityConnectionDto? FindOwnTwitchConnection(SevenTvGqlIdentityUserDto user, string twitchUserId) =>
+        user.Connections.FirstOrDefault(c => c.Platform == TwitchPlatform && c.Id == twitchUserId);
+
+    // editor_of reduced to the Twitch identity of each granting channel. Shared by
+    // GetEditorOfChannelsAsync and LookUpEditorGrantsAsync for the same reason as above.
+    private static List<SevenTvEditorGrant> ToEditorGrants(IEnumerable<SevenTvGqlEditorOfGrantDto> grants) =>
+        grants
+            .SelectMany(g => g.User?.Connections ?? [])
+            .Where(c => c.Platform == TwitchPlatform)
+            .Select(c => new SevenTvEditorGrant(c.Username, c.Id))
+            .ToList();
+
     private enum V4PageStatus
     {
         Ok,
@@ -985,13 +1441,28 @@ public class SevenTvApiClient(
     // it has to survive into every outcome, not just Ok.
     private readonly record struct V4HeaderSample(string? Limit, string? Remaining, string? Reset);
 
-    // Outcome of FetchClassifiedPreviewPageAsync: exactly one of the two is set. PageDto is the page
-    // ready to fold into GetEmoteSetPreviewAsync's accumulated preview; Failure is the already-built
-    // result that method returns as-is, since the reason (and its log line) was decided here.
-    private readonly record struct PreviewPageFetch(SevenTvGqlEmoteSetPreviewPageDto? PageDto, SevenTvEmoteSetPreviewResult? Failure)
+    // Outcome of FetchClassifiedPreviewPageAsync: exactly one of PageDto/Failure is set. PageDto is
+    // the page ready to fold into GetEmoteSetPreviewAsync's accumulated preview; SetDto is its parent
+    // — the same object one level up, carrying the set's own name/capacity (F6) that repeats
+    // identically on every page; Failure is the already-built result that method returns as-is, since
+    // the reason (and its log line) was decided here.
+    private readonly record struct PreviewPageFetch(
+        SevenTvGqlEmoteSetPreviewPageDto? PageDto, SevenTvGqlEmoteSetPreviewSetDto? SetDto, SevenTvEmoteSetPreviewResult? Failure)
     {
-        public static PreviewPageFetch Success(SevenTvGqlEmoteSetPreviewPageDto pageDto) => new(pageDto, null);
+        public static PreviewPageFetch Success(SevenTvGqlEmoteSetPreviewSetDto setDto) => new(setDto.Emotes, setDto, null);
 
-        public static PreviewPageFetch Failed(SevenTvEmoteSetPreviewResult failure) => new(null, failure);
+        public static PreviewPageFetch Failed(SevenTvEmoteSetPreviewResult failure) => new(null, null, failure);
     }
+
+    // Outcome of PostBudgetedGqlAsync: Failure is null exactly when Dto may be read — the failure is
+    // already the finished LookUpEditorGrantsAsync answer, so its caller returns it as-is.
+    private readonly record struct BudgetedGqlAnswer<TDto>(TDto? Dto, SevenTvEditorGrantsLookup? Failure)
+    {
+        public static BudgetedGqlAnswer<TDto> Failed(SevenTvEditorGrantsLookup failure) => new(default, failure);
+    }
+
+    // What one v4 read of a set's entries yields (GetSetEntriesAsync): the dates for the AddedToSetAt
+    // overlay (null when paging failed part-way), and the number of entries with a resolved emote,
+    // which becomes RemoteEntryCount (a lower bound in that case).
+    private sealed record SetEntriesOverlay(Dictionary<string, DateTime>? AddedAtByEmoteId, int EntryCount);
 }

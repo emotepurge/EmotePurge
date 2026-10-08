@@ -291,6 +291,196 @@ public class ForeignEmoteSetServiceTests
         Assert.Equal(ForeignEmoteSetLookupStatus.ProviderBudgetExhausted, statuses[5]);
     }
 
+    /// <summary>
+    /// E8/6.4: the set-ID mode never resolves an identity at all — neither Helix nor the 7TV
+    /// <c>userByConnection</c> lookup runs, only the paginated preview read for the given set id
+    /// directly. The route's channel name is echoed onto the result, never looked up.
+    /// </summary>
+    [Fact]
+    public async Task BySetId_NeverCallsHelixOrResolvesA7TvIdentity()
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        sevenTv.GetEmoteSetPreviewAsync(EmoteSetId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(0, false, [])));
+        var service = CreateService(identityService, sevenTv);
+
+        var result = await service.GetForeignEmoteSetBySetIdAsync(Channel, EmoteSetId);
+
+        Assert.Equal(ForeignEmoteSetLookupStatus.Ok, result.Status);
+        Assert.Equal(NormalizedChannel, result.EmoteSet!.ChannelName);
+        await identityService.DidNotReceive().LookupByLoginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await sevenTv.DidNotReceive().ResolveSevenTvIdentityAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await sevenTv.DidNotReceive().ResolveTwitchUserIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// E8: the channel row holds no 7TV user id to report, so the set-ID mode's result always carries
+    /// <c>SevenTvUserId: null</c> — never a value invented from the route's channel name.
+    /// </summary>
+    [Fact]
+    public async Task BySetId_AlwaysReturnsANullSevenTvUserId()
+    {
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        var previewItem = new SevenTvEmoteSetPreviewItem("emote-1", "PogU", "PogChamp", "https://cdn.example/1.webp", 500, 12);
+        sevenTv.GetEmoteSetPreviewAsync(EmoteSetId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(1, false, [previewItem], "Some set", 956)));
+        var service = CreateService(Substitute.For<IChannelIdentityService>(), sevenTv);
+
+        var result = await service.GetForeignEmoteSetBySetIdAsync(Channel, EmoteSetId);
+
+        Assert.Equal(ForeignEmoteSetLookupStatus.Ok, result.Status);
+        var emoteSet = result.EmoteSet!;
+        Assert.Null(emoteSet.SevenTvUserId);
+        Assert.Equal(EmoteSetId, emoteSet.EmoteSetId);
+        Assert.Equal("Some set", emoteSet.EmoteSetName);
+        Assert.Equal(956, emoteSet.Capacity);
+        var row = Assert.Single(emoteSet.Emotes);
+        Assert.Equal("emote-1", row.SevenTvEmoteId);
+    }
+
+    /// <summary>
+    /// Vorentscheidung 4 (K2 task brief)/spec 6.4: an unknown set id must reach the caller as the
+    /// existing <see cref="ForeignEmoteSetLookupStatus.NoActiveEmoteSet"/>/404
+    /// <c>foreign_channel_no_active_emote_set</c>, not the 503
+    /// <see cref="ForeignEmoteSetLookupStatus.SevenTvUnavailable"/> a genuine outage produces — the
+    /// two used to be indistinguishable one layer down (<see cref="SevenTvPreviewLookupStatus.Unavailable"/>
+    /// covered both before this task).
+    /// </summary>
+    [Fact]
+    public async Task BySetId_MapsAnUnknownSetToNoActiveEmoteSet_NotSevenTvUnavailable()
+    {
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        sevenTv.GetEmoteSetPreviewAsync(EmoteSetId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.NotFound));
+        var service = CreateService(Substitute.For<IChannelIdentityService>(), sevenTv);
+
+        var result = await service.GetForeignEmoteSetBySetIdAsync(Channel, EmoteSetId);
+
+        Assert.Equal(ForeignEmoteSetLookupStatus.NoActiveEmoteSet, result.Status);
+    }
+
+    // GetForeignEmoteSetListAsync (spec 2026-09-20, 6.3/K3): step 1 reuses the exact Helix resolution
+    // above, step 2 hands the resolved Twitch id straight to the shared list service instead of
+    // resolving a 7TV identity or reading a preview.
+
+    [Fact]
+    public async Task List_ChannelNotOnTwitch_MapsToChannelNotOnTwitch_AndNeverAsksTheListService()
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        identityService.LookupByLoginAsync(NormalizedChannel, Arg.Any<CancellationToken>())
+            .Returns(TwitchUserLookup.Failed(TwitchUserLookupStatus.NotFound));
+        var listService = Substitute.For<ISevenTvEmoteSetListService>();
+        var service = CreateService(identityService, Substitute.For<ISevenTvApiClient>(), emoteSetListService: listService);
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.ChannelNotOnTwitch, result.Status);
+        Assert.Null(result.List);
+        await listService.DidNotReceive().ListByTwitchIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task List_TwitchUnavailable_MapsToTwitchUnavailable()
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        identityService.LookupByLoginAsync(NormalizedChannel, Arg.Any<CancellationToken>())
+            .Returns(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable));
+        var service = CreateService(identityService, Substitute.For<ISevenTvApiClient>());
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.TwitchUnavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task List_NoPermitAtAll_StopsBeforeHelix()
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        var service = CreateService(
+            identityService, Substitute.For<ISevenTvApiClient>(), new RecordingForeignUpstreamRequestBudget(grantCount: 0));
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted, result.Status);
+        await identityService.DidNotReceive().LookupByLoginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // The identity cache (spec 2026-09-20 K3 review, P3-1): a hit skips Helix and the request budget
+    // outright, a miss resolves live and backfills the cache for the next call.
+
+    [Fact]
+    public async Task List_IdentityCacheHit_SkipsHelixAndTheRequestBudget()
+    {
+        var identityCache = new InMemoryForeignChannelIdentityCache();
+        await identityCache.SetTwitchUserIdAsync(NormalizedChannel, TwitchUserId);
+        var identityService = Substitute.For<IChannelIdentityService>();
+        var budget = new RecordingForeignUpstreamRequestBudget();
+        var listService = Substitute.For<ISevenTvEmoteSetListService>();
+        listService.ListByTwitchIdAsync(TwitchUserId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(null, [], SevenTvUserId)));
+        var service = CreateService(
+            identityService, Substitute.For<ISevenTvApiClient>(), budget, listService, identityCache);
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.Ok, result.Status);
+        await identityService.DidNotReceive().LookupByLoginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.Equal(0, budget.Charges);
+        await listService.Received(1).ListByTwitchIdAsync(TwitchUserId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task List_IdentityCacheMiss_ResolvesLiveAndBackfillsTheCache()
+    {
+        var identityCache = new InMemoryForeignChannelIdentityCache();
+        var listService = Substitute.For<ISevenTvEmoteSetListService>();
+        listService.ListByTwitchIdAsync(TwitchUserId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(null, [], SevenTvUserId)));
+        var service = CreateService(
+            FoundIdentityService(), Substitute.For<ISevenTvApiClient>(), emoteSetListService: listService, identityCache: identityCache);
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.Ok, result.Status);
+        Assert.Equal(TwitchUserId, await identityCache.TryGetTwitchUserIdAsync(NormalizedChannel));
+    }
+
+    [Theory]
+    [InlineData(EmoteSetListStatus.NoSevenTvAccount, ForeignEmoteSetListLookupStatus.NoSevenTvAccount)]
+    [InlineData(EmoteSetListStatus.RateLimited, ForeignEmoteSetListLookupStatus.SevenTvRateLimited)]
+    [InlineData(EmoteSetListStatus.Unavailable, ForeignEmoteSetListLookupStatus.SevenTvUnavailable)]
+    [InlineData(EmoteSetListStatus.BudgetExhausted, ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted)]
+    public async Task List_EveryListServiceFailure_MapsToItsOwnStatus(
+        EmoteSetListStatus upstreamStatus, ForeignEmoteSetListLookupStatus expectedStatus)
+    {
+        var listService = Substitute.For<ISevenTvEmoteSetListService>();
+        listService.ListByTwitchIdAsync(TwitchUserId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Failed(upstreamStatus));
+        var service = CreateService(FoundIdentityService(), Substitute.For<ISevenTvApiClient>(), emoteSetListService: listService);
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(expectedStatus, result.Status);
+        Assert.Null(result.List);
+    }
+
+    [Fact]
+    public async Task List_Ok_PassesTheResolvedTwitchIdThrough_AndReturnsTheListVerbatim()
+    {
+        var expectedList = new EmoteSetList(EmoteSetId, [new EmoteSetSummary("set-a", "Alpha", 1000, "NORMAL", false, "Owner")], SevenTvUserId);
+        var listService = Substitute.For<ISevenTvEmoteSetListService>();
+        listService.ListByTwitchIdAsync(TwitchUserId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(expectedList));
+        var service = CreateService(FoundIdentityService(), Substitute.For<ISevenTvApiClient>(), emoteSetListService: listService);
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.Ok, result.Status);
+        Assert.Same(expectedList, result.List);
+        await listService.Received(1).ListByTwitchIdAsync(TwitchUserId, Arg.Any<CancellationToken>());
+    }
+
     private static IChannelIdentityService FoundIdentityService()
     {
         var identityService = Substitute.For<IChannelIdentityService>();
@@ -309,11 +499,18 @@ public class ForeignEmoteSetServiceTests
     private static ForeignEmoteSetService CreateService(
         IChannelIdentityService identityService,
         ISevenTvApiClient sevenTvApiClient,
-        IForeignUpstreamRequestBudget? requestBudget = null) =>
+        IForeignUpstreamRequestBudget? requestBudget = null,
+        ISevenTvEmoteSetListService? emoteSetListService = null,
+        IForeignChannelIdentityCache? identityCache = null) =>
         new(
             identityService,
             sevenTvApiClient,
             requestBudget ?? new RecordingForeignUpstreamRequestBudget(),
+            emoteSetListService ?? Substitute.For<ISevenTvEmoteSetListService>(),
+            // A fresh, always-empty cache by default — every existing test resolves through Helix
+            // exactly as it did before this cache existed; only the two tests above that name it
+            // explicitly exercise the hit/miss behaviour itself.
+            identityCache ?? new InMemoryForeignChannelIdentityCache(),
             NullLogger<ForeignEmoteSetService>.Instance);
 
     // The real budget, asked not to wait: TryChargeRequestAsync's own default would block this test

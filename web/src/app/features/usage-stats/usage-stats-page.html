@@ -84,50 +84,79 @@
       >
         {{ 'export.button' | transloco }}
       </button>
-      <!-- Two 7TV write entry points behind ONE gate, because both act on this channel's active
-           set: the push (#72, K3) copies this channel's emotes into another channel's set, the
-           import (#91, #147) brings emotes INTO this set — from a file (purge protocol to restore,
-           emote list or usage export to copy) or from another channel's 7TV set, the source being
-           the first step of the one dialog it opens. Both are desktop-only like every other 7TV
-           write path (isCoarse — no write token off a phone) and both are gone entirely without an
-           active set: the push would have nothing to copy from, the import no set to write into and
-           none to validate a purge protocol against.
-           Both also carry the same two locks. ANY of the three 7TV-writing runs being active
-           (arbiter.activeRun(), not just the button's own kind) — the same rule the delete trigger
-           already follows, and the running progress in the dock is the only reason given for it
-           (UI-Designsprache.md §4.2/§7). And the set status or the rows still belonging to the
-           PREVIOUS channel: a channel switch inside this route (the import summary's "open target
-           channel" link) moves channelName() at once and leaves both behind until their responses
-           land, so a capture in that window would act on channel A's set under B's name — a wrong
-           7TV write. `importScopeCurrent()`, not `isLoading()`: the new totals can answer before the
-           new set status does, and loading is over by then. See importScopeIsCurrent. The trigger
-           takes that boolean as an input rather than recomputing it, so its lock stays a pure
-           function (import-trigger-gate.ts).
+      <!-- Two 7TV write entry points, desktop-only like every other 7TV write path (isCoarse — no
+           write token off a phone), but no longer behind the same set gate since #253/T9 (E22):
+           the push (#72, K3) copies THIS channel's active set into another channel's set and has
+           nothing to copy from without one, so it stays gated on `selectedEmoteSetId()`. The
+           import entry (`app-import-trigger`, #91/#147) brings emotes INTO a set — from a file
+           (purge protocol/transfer file to restore, emote list or usage export to copy), a foreign
+           channel or the leaderboard — and now stays visible even without a selected set: a restore
+           file names and checks its own target through the shared pre-check
+           (`resolveEditableSet`, spec 6.1/6.2), independent of the page, so a channel with no
+           active set (before its first sync, or after a replace into the untracked) still has a
+           way in. Its `setId` input is therefore `string | null` since #253 — the three copy doors
+           (channel, leaderboard, and the two copy file kinds inside the file branch) are what stays
+           locked without one, shown with a reason rather than hidden
+           (`import.source.noTargetSet`/`restore.import.errors.noTargetSetForCopy`, the same
+           "disabled explains itself" idiom as every other locked control, §10).
+           Both write entry points carry the same two locks. ANY 7TV-writing run being active or
+           settling, or a confirmed start of any run still being checked before its start
+           (arbiter.startLocked(), not just the button's own kind, #280) — the same rule the delete
+           trigger already follows, and the running progress in the dock is the only reason given
+           for it (UI-Designsprache.md §4.2/§7); the pre-run wait has no dock and is spoken by
+           app-dock-outcome-announcer instead (§4.5). And the set status or the rows still belonging to
+           the PREVIOUS channel: a channel switch inside this route (the import summary's "open
+           target channel" link) moves channelName() at once and leaves both behind until their
+           responses land, so a capture in that window would act on channel A's set under B's name —
+           a wrong 7TV write. `importScopeCurrent()`, not `isLoading()`: the new totals can answer
+           before the new set status does, and loading is over by then. See importScopeIsCurrent.
+           The trigger takes that boolean as an input rather than recomputing it, so its lock stays a
+           pure function (import-trigger-gate.ts).
            NOT shared is the empty-scope half of transferButtonDisabled (`atlasOrder().length ===
            0 && selection.selectedItems().length === 0`, Konzept "Auswahl überlebt Suche und
            Filter" nachtrag, 2026-09-19): the push sends either the visible grid or the marked
            selection and has nothing to send only once both are empty, whereas every import source
-           brings its own rows and needs neither a visible row nor a selection to exist. -->
-      @if (!isCoarse() && activeEmoteSetId(); as activeSetId) {
+           brings its own rows and needs neither a visible row nor a selection to exist.
+           Gated on the SELECTED set since spec #200 (8.1): the push copies the rows on screen and
+           names their set as the source, so it works from any set's view. Since T4.5 the import
+           trigger's three copy doors do too — `setId`/`activeSetId` below let `ImportTrigger` build
+           the right target itself (`toImportTarget`) whenever a set is selected. A restore's own
+           target is never built from these two inputs at all (spec #253, E1) — they only travel on
+           as the file step's `hostSelectedSetId`, for the confirmation's "not the set on screen"
+           hint (E21). -->
+      @if (!isCoarse() && selectedEmoteSetId(); as selectedSetId) {
         <button
           type="button"
           appButton="neutral"
           class="disabled:cursor-not-allowed"
           [disabled]="transferButtonDisabled()"
+          [attr.aria-describedby]="importLockReasonKey() ? 'transfer-lock-reason' : null"
           (click)="openImportTarget()"
         >
           {{ 'import.copyButton' | transloco }}
         </button>
+        @if (importLockReasonKey(); as lockKey) {
+          <!-- Why the button above is disabled (UI-Designsprache §10, "Disabled explains itself"):
+               the set-view lock can lock it on a loaded view with nothing selected, where the dock
+               that carries the delete/vote reason is not mounted. -->
+          <span id="transfer-lock-reason" class="text-xs text-fg-muted">
+            {{ lockKey | transloco }}
+          </span>
+        }
+      }
+      @if (!isCoarse()) {
         <app-import-trigger
           [channelName]="channelName()"
-          [setId]="activeSetId"
+          [setId]="selectedEmoteSetId()"
+          [activeSetId]="activeEmoteSetId()"
+          [setName]="selectedEmoteSetName()"
           [importScopeCurrent]="importScopeCurrent()"
         />
       }
       <button
         type="button"
         appButton="neutral"
-        [disabled]="isLoading()"
+        [disabled]="viewLoading()"
         (click)="refresh()"
         [title]="'usageStats.reloadTitle' | transloco"
       >
@@ -153,7 +182,21 @@
         [(to)]="to"
         [(preset)]="rangePreset"
         [earliest]="trackedSinceDate()"
+        [setObservedRange]="setObservedPresetRange()"
       />
+      <!-- Only once there is an active set at all — before that the set list has nothing to offer,
+           and the page already shows its own "awaiting sync"/empty state elsewhere (spec #200,
+           8.1). -->
+      @if (activeEmoteSetId()) {
+        <app-emote-set-menu
+          [sets]="emoteSetList()?.sets ?? []"
+          [selectedEmoteSetId]="selectedEmoteSetId()"
+          [loading]="emoteSetListLoading()"
+          [unavailable]="emoteSetListUnavailable()"
+          [lockedReasonKey]="deleteRunActive() ? 'emoteSetMenu.lockedDuringDelete' : null"
+          (emoteSetIdChange)="onEmoteSetSelected($event)"
+        />
+      }
       <!-- Two segmented controls instead of two toggle buttons that flipped direction when you
            clicked the already-active one. That re-click was the only way to sort ascending and
            nothing on screen said so; the arrow appeared afterwards, as the sole evidence of a state
@@ -207,6 +250,28 @@
       >
         {{ 'usageStats.hideObserved' | transloco }}
       </button>
+      <!-- The tag filter (#201, spec 9.2, E18): a filter among filters, so it sits with them, before
+           the reset that clears it too. Not rendered at all until the channel has a tag — no
+           permanent control for channels that never use one. A native select: one choice out of a
+           list of names, no refetch of the rows behind it (the keys narrow what is loaded). Capped
+           in width so a 40-character name cannot push the row apart. The tag's runs and its
+           not-in-the-set numbers are on the tags page, not here (#201 T-C feedback). -->
+      @if (tagFilterShown()) {
+        <select
+          class="app-input-sm max-w-48"
+          [attr.aria-label]="'tags.filter.label' | transloco"
+          (change)="onTagFilterChange($any($event.target).value)"
+        >
+          <option value="" [selected]="usageFilter.tagId() === null">
+            {{ 'tags.filter.all' | transloco }}
+          </option>
+          @for (tag of tags(); track tag.id) {
+            <option [value]="tag.id" [selected]="tag.id === usageFilter.tagId()">
+              {{ tag.name }}
+            </option>
+          }
+        </select>
+      }
       <!-- Only while something is filtered, like the audit log's. Until now the way back existed
            only when the filter emptied the sheet completely — the reset lived in the empty state.
            Narrow the sheet rather than empty it and you had to undo each control by hand, and
@@ -246,6 +311,7 @@
           'ml-auto whitespace-nowrap ' +
           (usageFilter.isAnyActive() ? 'font-medium text-accent-fg' : 'text-fg-muted')
         "
+        [attr.aria-busy]="tagFilterPending() ? 'true' : null"
       >
         {{ emoteCountKey() | transloco: { shown: atlasOrder().length, total: emotes().length } }}
       </p>
@@ -271,6 +337,50 @@
         <span aria-hidden="true" class="w-full text-xs text-fg-muted">
           {{ feedback.key | transloco: { count: feedback.count } }}
         </span>
+      }
+      <!-- The transient "nothing started" notice (docs/UI-Designsprache.md §4.5, #256 contract P2)
+           for a confirmed push or import the arbiter refused because another 7TV run is running or
+           settling — same two-element split as the selection-pruned feedback above, and for the
+           same reason. No timer here: `refusedStartNotice` only mirrors
+           `SevenTvRunArbiter.refusedStart()`, which clears itself after
+           `REFUSED_START_FEEDBACK_MS`. -->
+      <span role="status" class="sr-only">
+        @if (refusedStartNotice(); as notice) {
+          {{ notice.messageKey | transloco: { kind: notice.kind } }}
+        }
+      </span>
+      @if (refusedStartNotice(); as notice) {
+        <span aria-hidden="true" class="w-full text-xs text-fg-muted">
+          {{ notice.messageKey | transloco: { kind: notice.kind } }}
+        </span>
+      }
+      <!-- The tag acknowledgements (#201, spec 7.0 step 4 and 7.0a, §4.5) — a third region pair,
+           not the selection-pruned one: two messages that can stand at the same time must not
+           overwrite each other. Here and not in the dock for the same reason as that notice: a
+           removal can empty the filtered grid, and the dock is no place a message survives in. -->
+      <span role="status" class="sr-only">
+        @if (tagFeedback(); as sentences) {
+          @for (sentence of sentences; track sentence.key) {
+            {{ sentence.key | transloco: sentence.params }}
+          }
+        }
+      </span>
+      @if (tagFeedback(); as sentences) {
+        <span aria-hidden="true" class="w-full text-xs text-fg-muted">
+          @for (sentence of sentences; track sentence.key) {
+            {{ sentence.key | transloco: sentence.params }}
+          }
+        </span>
+      }
+      <!-- A failed removal from the tag, the tag's entries that could not be loaded (the filter
+           then lets every row through), or the tag list that could not be loaded while a tag is
+           chosen (the select is gone, the grid stays narrowed) — a state, not an
+           acknowledgement, so a banner that stays (§4.5). Gated on the filter's tag id, not on
+           `selectedTag()`: a narrowed grid must never stand without an explanation. -->
+      @if (usageFilter.tagId() !== null && tagErrorKey(); as errorKey) {
+        <app-notice-banner variant="error" class="w-full">{{
+          errorKey | transloco
+        }}</app-notice-banner>
       }
     </div>
 
@@ -300,12 +410,29 @@
              the pointer is here, and "is this still the regular cast or already the tail" is the
              whole question the atlas is scanned for. -->
         <span>{{ 'usageStats.bands.' + inspectedBand() + '.title' | transloco }}</span>
-        <span class="font-mono text-fg-body">
-          {{ formatCount(emote.totalUseCount) }}×
-          @if (inspectedShare(); as share) {
-            <span class="text-fg-muted">({{ formatPercent(share) }})</span>
-          }
-        </span>
+        @if (emote.totalUseCount !== null) {
+          <span class="font-mono text-fg-body">
+            {{ formatCount(emote.totalUseCount) }}×
+            @if (inspectedShare(); as share) {
+              <span class="text-fg-muted">({{ formatPercent(share) }})</span>
+            }
+          </span>
+        } @else {
+          <span>{{ 'usageStats.setView.noCounts' | transloco }}</span>
+        }
+        @if (emote.slotCount > 1) {
+          <span>
+            {{
+              'usageStats.setView.slots'
+                | transloco: { count: emote.slotCount, aliases: emote.aliases.join(', ') }
+            }}
+          </span>
+        }
+        @if (emote.nameTwinEmoteSetIds.length > 0) {
+          <span>{{
+            'usageStats.setView.nameTwin' | transloco: { sets: nameTwinSetNames(emote) }
+          }}</span>
+        }
         <!-- Suppressed entirely rather than rendered as "stable" when the comparison would be an
              artefact — a wrong direction is worse than none. -->
         @if (trendFor(emote); as trend) {
@@ -369,6 +496,12 @@
             | transloco: { date: formatDate(setStatus()?.sharedChatSeparatedSince ?? null) }
         }}
       }
+      <!-- A non-active set's view queues its own statements at the end (spec #200, 8.4/8.3): was the
+           set observed in the range, are there counts at all, and is the member list whole. Each is
+           a sentence only where it applies — never a banner, never a control (§2.5). -->
+      @for (sentence of setViewCaptions(); track sentence.key) {
+        {{ sentence.key | transloco: sentence.params }}
+      }
     </p>
     @if (rangeStartsBeforeTracking()) {
       <!-- Named openly rather than hidden: on incomplete data nobody deletes anything, and a
@@ -378,21 +511,38 @@
         {{ 'usageStats.rangeBeforeTracking' | transloco: { date: formatDate(since) } }}
       </app-notice-banner>
     }
+  } @else if (setViewCaptions().length > 0) {
+    <!-- The same set-view statements when the set status (and with it the tracking start) could not
+         be read: they do not depend on it (spec 8.3/8.4), and the member-list warnings above all
+         must not disappear just because the paragraph they normally close has nothing to open with. -->
+    <p class="text-xs text-fg-muted">
+      @for (sentence of setViewCaptions(); track sentence.key) {
+        {{ sentence.key | transloco: sentence.params }}
+      }
+    </p>
   }
 
-  @if (setStatus(); as status) {
+  @if (slotBudget(); as budget) {
     <app-slot-budget-bar
-      [capacity]="status.capacity"
-      [occupied]="status.occupiedSlots"
-      [pendingRemoval]="selection.selectedItems().length"
+      [capacity]="budget.capacity"
+      [occupied]="budget.occupied"
+      [pendingRemoval]="pendingRemovalSlots()"
     />
+    <!-- Replaces the manual resync button: the worker re-reads every active channel on its own, and
+         a click read the same (up to 30 min stale) 7TV cache. Only for an active channel — a
+         deactivated one is no longer re-read, so the note would be false there. Inside the same @if
+         as the budget bar so both arrive in one frame. -->
+    @if (botActive()) {
+      <p class="text-xs text-fg-muted">{{ 'usageStats.autoSyncNote' | transloco }}</p>
+    }
   }
 
   <!-- The ranked usage curve of the whole set, bucketed so it stays a curve rather than a smear at
        900 emotes. It answers the question the atlas cannot show at a glance — how steep the head is
        and how long the dead tail runs — and it is annotated with the two numbers that matter, so it
-       never has to be read as decoration. Not sticky: this is read once, on arrival. -->
-  @if (emotes().length > 0 && !isLoading()) {
+       never has to be read as decoration. Not sticky: this is read once, on arrival. Not after a
+       failed set switch either (setSwitchFailed): the rows still loaded belong to the previous set. -->
+  @if (countedEmotes().length > 0 && !viewLoading() && !setSwitchFailed()) {
     <div class="flex flex-wrap items-end gap-x-5 gap-y-2">
       <div class="w-28 shrink-0">
         <span class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase">
@@ -470,9 +620,11 @@
     <!-- The element the column count is measured against (see atlasColumns). It wraps every result
        state, so it exists from the first frame and the ResizeObserver never has nothing to watch. -->
     <div #sheet>
-      @if (isLoading()) {
+      @if (viewLoading() || (tagFilterPending() && !setSwitchFailed())) {
         <!-- Atlas-shaped skeleton (NN/g: skeleton for page loads); one status element carries the
-           accessible loading text, the shimmer blocks are decorative. -->
+           accessible loading text, the shimmer blocks are decorative. Also up while a chosen tag's
+           emotes are still loading (`tagFilterPending`, the view is empty meanwhile) — but a failed
+           set switch outranks that wait: its retry must stay reachable even if the entries hang. -->
         <div role="status" [attr.aria-label]="'usageStats.loading' | transloco">
           <div class="flex flex-wrap gap-1" aria-hidden="true">
             @for (cell of skeletonCells; track cell) {
@@ -480,6 +632,17 @@
             }
           </div>
         </div>
+      } @else if (setSwitchFailed()) {
+        <!-- The chosen set's rows did not load (setSwitchFailed): the rows still held belong to the
+             previous set and must not stand here as if they were the chosen one's. What went wrong
+             is the error banner's job above (role="alert", announced); this names the consequence
+             and carries the one way forward. The header's refresh button is free again too
+             (viewLoading() is false by definition here). -->
+        <app-empty-state [title]="'usageStats.setView.loadFailedTitle' | transloco">
+          <button type="button" appButton="neutral" (click)="refresh()">
+            {{ 'usageStats.setView.retry' | transloco }}
+          </button>
+        </app-empty-state>
       } @else if (isAwaitingSync()) {
         <app-notice-banner variant="info">{{
           'usageStats.awaitingSync' | transloco
@@ -546,6 +709,8 @@
                   <span class="whitespace-nowrap">
                     @if (row.band === 'dead') {
                       {{ 'usageStats.bands.dead.hint' | transloco }}
+                    } @else if (row.band === 'uncounted') {
+                      {{ 'usageStats.bands.uncounted.hint' | transloco }}
                     } @else {
                       {{
                         'usageStats.bands.share' | transloco: { share: formatBandShare(row.share) }
@@ -585,7 +750,9 @@
                 class="grid gap-1"
                 [style.grid-template-columns]="'repeat(' + columns() + ', ' + cellPx + 'px)'"
               >
-                @for (emote of row.items; track emote.emoteId; let i = $index) {
+                <!-- Keyed by the 7TV id (spec #200, 7.2): a set view's live member without a counted
+                     row has no Emote.Id, and two of those tracked by a null would collide (NG0955). -->
+                @for (emote of row.items; track emote.sevenTvEmoteId; let i = $index) {
                   <!-- Wrapper, not a nested button: the history trigger has to sit ON the cell, and a
                      <button> inside a <button> is invalid HTML. Both are siblings inside a
                      positioned box instead, so the trigger overlays the cell without nesting. -->
@@ -619,13 +786,29 @@
                       [attr.data-atlas-index]="row.startIndex + i"
                       [attr.tabindex]="activeIndex() === row.startIndex + i ? 0 : -1"
                       [attr.aria-pressed]="isCoarse() ? null : selection.isSelected(emote)"
-                      [attr.aria-haspopup]="isCoarse() ? 'dialog' : null"
+                      [attr.aria-haspopup]="isCoarse() && canDrilldown(emote) ? 'dialog' : null"
                       [attr.aria-label]="
-                        isCoarse()
-                          ? ('usageStats.drilldown.openWithCount'
-                            | transloco
-                              : { name: emote.emoteName, count: formatCount(emote.totalUseCount) })
-                          : emote.emoteName + ' · ' + formatCount(emote.totalUseCount) + '×'
+                        (emote.totalUseCount === null
+                          ? emote.emoteName + ' · ' + ('usageStats.setView.noCounts' | transloco)
+                          : isCoarse()
+                            ? ('usageStats.drilldown.openWithCount'
+                              | transloco
+                                : {
+                                    name: emote.emoteName,
+                                    count: formatCount(emote.totalUseCount),
+                                  })
+                            : emote.emoteName + ' · ' + formatCount(emote.totalUseCount) + '×') +
+                        (emote.slotCount > 1
+                          ? ' · ' +
+                            ('usageStats.setView.slots'
+                              | transloco
+                                : { count: emote.slotCount, aliases: emote.aliases.join(', ') })
+                          : '') +
+                        (emote.nameTwinEmoteSetIds.length > 0
+                          ? ' · ' +
+                            ('usageStats.setView.nameTwin'
+                              | transloco: { sets: nameTwinSetNames(emote) })
+                          : '')
                       "
                       (click)="onCellClick(emote, row.startIndex + i, $event)"
                       (mousedown)="$event.shiftKey && $event.preventDefault()"
@@ -635,16 +818,51 @@
                       <app-emote-sprite [url]="emote.imageUrl" [size]="64" />
                       <!-- The figure is printed onto the sprite rather than under it: a caption row
                        would cost a third of the cell, and the scrim is what makes it legible over
-                       whatever the artwork puts beneath. -->
-                      <span
-                        class="absolute bottom-0 left-0 px-1 font-mono text-[9px] leading-[1.4] font-medium"
-                        [style.background-color]="'var(--ep-sprite-scrim)'"
-                        [style.color]="'var(--ep-sprite-scrim-fg)'"
-                        >{{ shortCount(emote.totalUseCount) }}</span
-                      >
+                       whatever the artwork puts beneath. A row without counts prints nothing — its
+                       group heading already says why, and a "0" would be false (E17). -->
+                      @if (emote.totalUseCount !== null) {
+                        <span
+                          class="absolute bottom-0 left-0 px-1 font-mono text-[9px] leading-[1.4] font-medium"
+                          [style.background-color]="'var(--ep-sprite-scrim)'"
+                          [style.color]="'var(--ep-sprite-scrim-fg)'"
+                          >{{ shortCount(emote.totalUseCount) }}</span
+                        >
+                      }
+                      <!-- Two set-view markers, bottom right, both decorative: the cell's accessible
+                       label and the inspector already say them in words; the title is the pointer
+                       user's tooltip (spec 8.2 — slot count with both aliases for a #74 duplicate;
+                       the name-twin mark naming the other set, E24). -->
+                      @if (emote.slotCount > 1 || emote.nameTwinEmoteSetIds.length > 0) {
+                        <span
+                          class="absolute right-0 bottom-0 flex gap-0.5 px-1 font-mono text-[9px] leading-[1.4] font-medium"
+                          [style.background-color]="'var(--ep-sprite-scrim)'"
+                          [style.color]="'var(--ep-sprite-scrim-fg)'"
+                          aria-hidden="true"
+                        >
+                          @if (emote.nameTwinEmoteSetIds.length > 0) {
+                            <span
+                              [title]="
+                                'usageStats.setView.nameTwin'
+                                  | transloco: { sets: nameTwinSetNames(emote) }
+                              "
+                              >≈</span
+                            >
+                          }
+                          @if (emote.slotCount > 1) {
+                            <span
+                              [title]="
+                                'usageStats.setView.slots'
+                                  | transloco
+                                    : { count: emote.slotCount, aliases: emote.aliases.join(', ') }
+                              "
+                              >×{{ emote.slotCount }}</span
+                            >
+                          }
+                        </span>
+                      }
                       <!-- Weight without a change of size: the bar is the only thing on the cell that
                        differs by usage, measured against its own band's peak. -->
-                      @if (emote.totalUseCount > 0) {
+                      @if ((emote.totalUseCount ?? 0) > 0) {
                         <span class="absolute inset-x-0 bottom-0 block h-0.5 bg-border">
                           <i
                             class="block h-full bg-accent-fg/75"
@@ -683,7 +901,7 @@
                        button, which for keyboard and touch is perfectly reachable.
                        On a coarse pointer this is gone: with no selection left to compete with, the
                        whole 64 px cell is the trigger, which beats a 20 px overlay by every measure. -->
-                    @if (!isCoarse()) {
+                    @if (!isCoarse() && canDrilldown(emote)) {
                       <button
                         type="button"
                         [class]="
@@ -808,7 +1026,7 @@
               {{ 'usageStats.sortByUsage' | transloco }}
             </dt>
             <dd class="text-right font-mono text-xs text-fg-body">
-              {{ formatCount(emote.totalUseCount) }}
+              {{ emote.totalUseCount !== null ? formatCount(emote.totalUseCount) : '—' }}
             </dd>
             @if (inspectedShare(); as share) {
               <dt class="text-[10px] font-semibold tracking-[0.11em] text-fg-muted uppercase">
@@ -848,6 +1066,22 @@
           @if (isUnderObservation(emote)) {
             <p class="text-xs text-info-fg">
               {{ observationLabelKey(emote) | transloco: { days: observationDays(emote) } }}
+            </p>
+          }
+          @if (emote.totalUseCount === null) {
+            <p class="text-xs text-fg-muted">{{ 'usageStats.setView.noCounts' | transloco }}</p>
+          }
+          @if (emote.slotCount > 1) {
+            <p class="text-xs text-fg-muted">
+              {{
+                'usageStats.setView.slots'
+                  | transloco: { count: emote.slotCount, aliases: emote.aliases.join(', ') }
+              }}
+            </p>
+          }
+          @if (emote.nameTwinEmoteSetIds.length > 0) {
+            <p class="text-xs text-fg-muted">
+              {{ 'usageStats.setView.nameTwin' | transloco: { sets: nameTwinSetNames(emote) } }}
             </p>
           }
         </div>
@@ -890,8 +1124,14 @@
     <div class="mx-auto flex max-w-7xl flex-col gap-2 overflow-y-auto px-4 py-3 max-h-[70vh]">
       <!-- The marking half of the dock acts on THIS channel's set, so it needs one. The import
            section below does not (see its own comment), which is why the set gate sits here and
-           not around the whole bar. -->
-      @if (activeEmoteSetId(); as setId) {
+           not around the whole bar. Gated on the SELECTED set since spec #200 (8.1) — the marks
+           belong to whichever set is on screen. The panel is bound to that same SELECTED set since
+           K5/T5.3: the run is set-aware (T5.1/T5.2) and both confirmations name it (spec 8.8), so
+           deleting from — and restoring into — a non-active view no longer needs the active set as
+           a stand-in. `activeSetId`/`setName`/`setNames` feed the confirmations' "not currently
+           active" note and their set name (a finished run's own frozen set can differ from `setId`
+           by the time Restore is clicked — see `setNames`' own doc). -->
+      @if (selectedEmoteSetId(); as setId) {
         <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <!-- Reachable in the accessibility tree again (Opus review, 2026-09-19 — was aria-hidden
                before): the permanently mounted app-dock-outcome-announcer above no longer mirrors
@@ -929,7 +1169,7 @@
              aria-hidden here, so it is not read twice. The button is NOT inside that aria-hidden
              span — hiding a focusable control is its own defect (axe aria-hidden-focus); it keeps
              the same label as the filter bar's own reset. -->
-        @if (selection.hiddenSelectedCount(); as hiddenSelectedCount) {
+        @if (shownHiddenSelectedCount(); as hiddenSelectedCount) {
           <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
             <span aria-hidden="true">
               {{ hiddenSelectedFilterKey() | transloco: { count: hiddenSelectedCount } }}
@@ -940,9 +1180,14 @@
           </div>
         }
         <app-mass-delete-panel
+          #massDeletePanel
           [setId]="setId"
+          [activeSetId]="activeEmoteSetId()"
+          [setName]="selectedEmoteSetName()"
           [channelName]="channelName()"
           [selectedEmotes]="selectedForDelete()"
+          [deleteLockReasonKey]="deleteLockReasonKey()"
+          [readLiveAliasesFromActiveSet]="true"
           [leadingActionsPresent]="true"
           (deleted)="onDeleted($event)"
           (reloadRequested)="onReloadRequested()"
@@ -952,8 +1197,8 @@
                second entry point, not a doubled command). Rendered unconditionally rather than
                behind an @if: it only ever exists here because the dock is already gated on
                !isCoarse() (usage-stats-page.html's `@if (dockVisible() && !isCoarse())`) and this
-               branch is already gated on an active set (`@if (activeEmoteSetId(); as setId)`
-               above) — the header's own two rendering gates, so repeating either would test a
+               branch is already gated on a set (`@if (selectedEmoteSetId(); as setId)` above) —
+               the header's own two rendering gates, so repeating either would test a
                condition that can never be false at this point. The remaining locks
                (importScopeCurrent, any active 7TV run, plus the empty-selection case that only
                applies to this forced-scope entry point) are extracted in importShortcutDisabled —
@@ -967,15 +1212,42 @@
             buttonSize="lg"
             class="disabled:cursor-not-allowed"
             [disabled]="importShortcutLocked()"
+            [attr.aria-describedby]="
+              importLockReasonKey() ? massDeletePanel.deleteLockReasonId : null
+            "
             (click)="openImportTarget('selection')"
           >
             {{ 'import.dockCopyButton' | transloco: { count: importShortcutSelectionCount() } }}
           </button>
+          <!-- "Tag zuweisen…" (#201, spec 7.0/9.1): constructive, so before the vote button and the
+               gap to the delete (§8.7). Projected like the vote button — an @if block carries no
+               selector attribute of its own. Its gate (`tagAssignShown`) includes a view of the
+               active set: tags are written against it (E3). -->
+          <ng-container ngProjectAs="[selection-actions]">
+            @if (tagAssignShown()) {
+              <button type="button" appButton="neutral" buttonSize="lg" (click)="assignTags()">
+                {{ 'tags.actions.assign' | transloco }}
+              </button>
+            }
+          </ng-container>
           <!-- Second consumer of the grid selection besides mass-delete: puts the picked emotes up
-               as a curated vote-session ballot. Count in the label + disabled at zero, mirroring the
-               delete button's conventions; managers only (the endpoint would 403 a 7TV editor).
+               as a curated vote-session ballot. Count in the label + disabled at zero — both read
+               `voteBallotSize()`, the size of the ballot `openCreateVoteSession` would actually
+               send for the view shown now, not the raw selection count; mirrors the delete button's
+               own convention of counting `selectedForDelete()` rather than `selection.selectedItems()`
+               (`mass-delete-panel.html`'s `selectedEmotes().length`). Managers only (the endpoint
+               would 403 a 7TV editor).
                Projected into the panel's action row so both selection consumers share one line;
-               ngProjectAs because an @if block itself carries no selector attribute. -->
+               ngProjectAs because an @if block itself carries no selector attribute.
+               `aria-describedby` only while `voteLocked()` holds (docs/UI-Designsprache.md §10,
+               "Disabled explains itself") — an empty selection already says so via the button's own
+               accessible name (the count in the label), and needs no extra reason text. It points at
+               the delete button's own `deleteLockReasonId` (`#massDeletePanel`, public for exactly
+               this) rather than a second paragraph: since K6 `voteLockReasonKey()` and
+               `deleteLockReasonKey()` are the same `sharedSetViewLockReasonKey` (switching, or a
+               loading/unreadable/truncated member list), so whenever `voteLocked()` is `true` the
+               delete button's reason on screen is the identical text — nothing to duplicate,
+               nothing that can drift out of sync. -->
           <ng-container ngProjectAs="[selection-actions]">
             @if (canManage()) {
               <button
@@ -983,14 +1255,51 @@
                 appButton="primary"
                 buttonSize="lg"
                 class="disabled:cursor-not-allowed"
-                [disabled]="selection.selectedItems().length === 0"
+                [disabled]="voteBallotSize() === 0 || voteLocked()"
+                [attr.aria-describedby]="voteLocked() ? massDeletePanel.deleteLockReasonId : null"
                 (click)="openCreateVoteSession()"
               >
-                {{
-                  'usageStats.createVoteSession'
-                    | transloco: { count: selection.selectedItems().length }
-                }}
+                {{ 'usageStats.createVoteSession' | transloco: { count: voteBallotSize() } }}
               </button>
+            }
+          </ng-container>
+          <!-- "Aus ‚Tag' entfernen (n)" (#201, spec 7.0a): only with a tag filter set, after the vote
+               button and before the gap to the delete. n counts the marked emotes that are in the
+               tag; at 0 the button is disabled and says why in the text beside it, referenced by
+               `aria-describedby` (§10, the vote button's pattern). The title says what else goes
+               with them (E17). -->
+          <ng-container ngProjectAs="[selection-actions]">
+            @if (tagUnassignShown() && selectedTag(); as tag) {
+              <button
+                type="button"
+                appButton="neutral"
+                buttonSize="lg"
+                class="disabled:cursor-not-allowed"
+                [disabled]="tagUnassignCount() === 0 || tagRemovalPending()"
+                [attr.aria-describedby]="
+                  tagUnassignLockReasonKey() ? tagUnassignLockReasonId : null
+                "
+                [attr.aria-label]="
+                  'tags.actions.unassignNamed'
+                    | transloco: { tag: tag.name, count: tagUnassignCount() }
+                "
+                [title]="
+                  ('tags.actions.unassignNamed'
+                    | transloco: { tag: tag.name, count: tagUnassignCount() }) +
+                  ' — ' +
+                  ('tags.actions.unassignTitle' | transloco)
+                "
+                (click)="removeFromTag()"
+              >
+                <!-- The label names its target without the tag's own name (up to 40 characters, wider
+                     than a 360px dock); the accessible name and the title append it. -->
+                {{ 'tags.actions.unassign' | transloco: { count: tagUnassignCount() } }}
+              </button>
+              @if (tagUnassignLockReasonKey(); as reasonKey) {
+                <span [id]="tagUnassignLockReasonId" class="text-xs text-fg-muted">
+                  {{ reasonKey | transloco: { tag: tag.name } }}
+                </span>
+              }
             }
           </ng-container>
         </app-mass-delete-panel>
@@ -1002,6 +1311,17 @@
            hide a still-writing run together with its Cancel button. The component gates its own
            visibility on the run, so it renders nothing between imports. -->
       <app-import-progress-section />
+      <!-- The restore dock, since #253/T9 its own section rather than content inside
+           `app-mass-delete-panel` (spec 6.6, E22): a restore can be started from a page with no
+           selected set at all (`app-import-trigger` reading a restore file, above) or can target a
+           set other than the one on screen (E13/E21), so it sits outside the set gate for the same
+           reason the import section does — a page without an active set must not hide a
+           still-writing restore together with its Cancel button. Renders nothing between restores. -->
+      <app-restore-progress-section />
+      <!-- The replace undo (#254, spec 6.6) — outside the set gate for the same reason as the two
+           sections above: it writes into the set its transfer file names, whichever set this page
+           shows. Renders nothing between undo runs. -->
+      <app-undo-progress-section />
     </div>
   </div>
 }

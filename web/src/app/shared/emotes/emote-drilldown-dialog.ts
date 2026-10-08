@@ -7,7 +7,7 @@ import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
-import { EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
+import { DailySeriesSetScope, EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { VoteType } from '../../core/voting/vote-session.model';
 import { Button } from '../ui/button';
@@ -16,6 +16,7 @@ import { DialogShell } from '../ui/dialog-shell';
 import { NoticeBanner } from '../ui/notice-banner';
 import { UsageTrend, daysInSet, usageTrend } from './emote-context';
 import { EmoteSpriteAnimated } from './emote-sprite-animated';
+import { emotePageUrl } from './emote-url';
 import { UsageSparkline } from './usage-sparkline';
 import {
   SparklinePoint,
@@ -36,8 +37,19 @@ export interface EmoteDrilldownData {
   from: string;
   to: string;
   emoteId: string;
+  /** The 7TV object id, for the link to the emote's page on 7TV. */
+  sevenTvEmoteId: string;
   emoteName: string;
   imageUrl: string;
+  /**
+   * The set the host page's numbers are counted under, frozen when the dialog opens (spec #200,
+   * 7.2/F4, AK 64): a dropdown switch behind an open dialog must not re-point its request. Three
+   * named states: a set id (a set-session on the vote page charts the ballot's set, and the usage
+   * page its shown set); `ALL_EMOTE_SETS` (a null-session, whose numbers are summed across every
+   * set — the chart must agree with the card); `null` or absent, "the channel's active set" (the
+   * usage page before any rows have loaded).
+   */
+  emoteSetId?: DailySeriesSetScope;
   /** Usage page only — trend and time-in-set need these. */
   firstSeenAt?: string | null;
   previousWindowUseCount?: number;
@@ -238,9 +250,22 @@ export interface EmoteDrilldownData {
         </div>
       }
 
+      <!-- Before the close button in the DOM so the visual and the tab order agree; mr-auto sends it
+           to the row's start. Close keeps the initial focus explicitly (§7: the harmless control). -->
+      <a
+        dialog-actions
+        class="mr-auto inline-flex min-h-11 items-center text-sm text-accent-fg underline underline-offset-4 transition hover:text-fg"
+        target="_blank"
+        rel="noopener noreferrer"
+        [href]="pageUrl"
+      >
+        {{ 'usageStats.drilldown.openOnSevenTv' | transloco }}<span aria-hidden="true"> ↗</span
+        ><span class="sr-only"> {{ 'common.opensInNewTab' | transloco }}</span>
+      </a>
       <button
         dialog-actions
         type="button"
+        cdkFocusInitial
         appButton="neutral"
         buttonSize="lg"
         (click)="dialogRef.close()"
@@ -255,6 +280,8 @@ export class EmoteDrilldownDialog {
   protected readonly dialogRef = inject<DialogRef<void>>(DialogRef);
   private readonly usageStatService = inject(UsageStatService);
   private readonly languageService = inject(LanguageService);
+
+  protected readonly pageUrl = emotePageUrl(this.data.sevenTvEmoteId);
 
   protected readonly series = signal<EmoteUsageSeries | null>(null);
   protected readonly errorKey = signal<string | null>(null);
@@ -318,7 +345,13 @@ export class EmoteDrilldownDialog {
 
   constructor() {
     this.usageStatService
-      .getDailySeries(this.data.channelName, this.data.emoteId, this.data.from, this.data.to)
+      .getDailySeries(
+        this.data.channelName,
+        this.data.emoteId,
+        this.data.from,
+        this.data.to,
+        this.data.emoteSetId ?? null,
+      )
       .subscribe({
         next: (series) => this.series.set(series),
         error: (error: unknown) =>
