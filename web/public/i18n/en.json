@@ -51,6 +51,9 @@
       "deletionUnknown": "We couldn’t confirm whether your account was deleted – the connection was interrupted and your session has ended. Please don’t sign in to check, as that would create a new account; contact us via the contact form and we’ll confirm."
     },
     "loginButton": "Log in with Twitch",
+    "appButton": "Open app",
+    "titleLoggedIn": "You're already logged in",
+    "subtitleLoggedIn": "Signed in as {{ name }}. Your channels are waiting in the app.",
     "scopes": {
       "title": "What Twitch shares",
       "moderatedChannels": "The channels you moderate — this determines which channels you may manage here.",

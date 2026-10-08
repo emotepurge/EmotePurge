@@ -57,8 +57,17 @@ const SCOPES = [
       <main class="flex flex-1 items-center justify-center px-4 py-12">
         <div class="flex w-full max-w-md flex-col gap-6">
           <div class="flex flex-col gap-2">
-            <h1 class="text-3xl font-bold tracking-tight">{{ 'login.title' | transloco }}</h1>
-            <p class="text-fg-muted">{{ 'login.subtitle' | transloco }}</p>
+            @if (user(); as current) {
+              <h1 class="text-3xl font-bold tracking-tight">
+                {{ 'login.titleLoggedIn' | transloco }}
+              </h1>
+              <p class="text-fg-muted">
+                {{ 'login.subtitleLoggedIn' | transloco: { name: current.displayName } }}
+              </p>
+            } @else {
+              <h1 class="text-3xl font-bold tracking-tight">{{ 'login.title' | transloco }}</h1>
+              <p class="text-fg-muted">{{ 'login.subtitle' | transloco }}</p>
+            }
           </div>
 
           @if (notice(); as noticeKey) {
@@ -69,17 +78,27 @@ const SCOPES = [
             </div>
           }
 
-          <button
-            type="button"
-            appButton="primary"
-            buttonSize="lg"
-            class="self-start aria-disabled:cursor-not-allowed aria-disabled:border-transparent aria-disabled:bg-surface-inset aria-disabled:text-fg-disabled"
-            [attr.aria-disabled]="deleting() ? 'true' : null"
-            [attr.aria-describedby]="deleting() && notice() ? 'login-notice' : null"
-            (click)="login()"
-          >
-            {{ 'login.loginButton' | transloco }}
-          </button>
+          @if (user()) {
+            <a
+              routerLink="/"
+              appButton="primary"
+              buttonSize="lg"
+              class="inline-flex items-center justify-center self-start"
+              >{{ 'login.appButton' | transloco }}</a
+            >
+          } @else {
+            <button
+              type="button"
+              appButton="primary"
+              buttonSize="lg"
+              class="self-start aria-disabled:cursor-not-allowed aria-disabled:border-transparent aria-disabled:bg-surface-inset aria-disabled:text-fg-disabled"
+              [attr.aria-disabled]="deleting() ? 'true' : null"
+              [attr.aria-describedby]="deleting() && notice() ? 'login-notice' : null"
+              (click)="login()"
+            >
+              {{ 'login.loginButton' | transloco }}
+            </button>
+          }
 
           <div class="flex flex-col gap-3 border-t border-border pt-6">
             <h2
@@ -140,6 +159,16 @@ export class LoginPage {
    */
   protected readonly deleting = computed(
     () => this.authService.deletionState().status === 'pending',
+  );
+  /**
+   * The signed-in user once /api/auth/me has answered, otherwise null — anonymous visitors and
+   * everyone while the answer is pending keep the login button, so the main audience sees neither a
+   * wait nor a flicker. The request is not started here: `app-account-menu` in the header calls
+   * `ensureLoaded()` (which does not de-duplicate in-flight requests), this only reads the signals.
+   * Deliberately no redirect: the scopes below stay readable for a logged-in visitor.
+   */
+  protected readonly user = computed(() =>
+    this.authService.isResolved() ? this.authService.currentUser() : null,
   );
   protected readonly scopes = SCOPES;
   protected readonly logoSrc = LOGO_SRC;
