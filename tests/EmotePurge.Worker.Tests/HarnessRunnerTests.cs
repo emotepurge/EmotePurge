@@ -49,6 +49,7 @@ public class HarnessRunnerTests : IDisposable
     private readonly IUsageStatQueryService _usage = Substitute.For<IUsageStatQueryService>();
     private readonly IChatLogArchiveClient _archive = Substitute.For<IChatLogArchiveClient>();
     private readonly IBotChatterDetector _bots = Substitute.For<IBotChatterDetector>();
+    private readonly IExcludedChatterFilter _excludedChatters = Substitute.For<IExcludedChatterFilter>();
 
     public HarnessRunnerTests()
     {
@@ -65,6 +66,8 @@ public class HarnessRunnerTests : IDisposable
         _usage.GetEarliestBotUsageDateAsync(ChannelId, Arg.Any<CancellationToken>()).Returns(new DateOnly(2026, 8, 30));
         _bots.KnownBotAccountIds.Returns(new HashSet<string> { "19264788" });
         _bots.IsBot(Arg.Any<string?>(), Arg.Any<IReadOnlyList<KeyValuePair<string, string>>?>()).Returns(false);
+        _excludedChatters.IsExcluded(Arg.Any<string?>()).Returns(false);
+        _excludedChatters.ExcludedChatterIds.Returns(new HashSet<string>());
     }
 
     public void Dispose()
@@ -571,7 +574,7 @@ public class HarnessRunnerTests : IDisposable
         Assert.Contains("\"sharedChatCutover\": \"2026-09-01\"", json);
 
         var jsonl = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
-        Assert.Contains("\"algorithmVersion\":\"harness-2\"", jsonl);
+        Assert.Contains("\"algorithmVersion\":\"harness-3\"", jsonl);
         // Day 2's foreign hit lands in the day line's own dictionary, not just the aggregated report.
         Assert.Contains("\"sharedChatCounts\":{\"e1\":1}", jsonl);
         Assert.Contains("\"sharedChatCutover\":\"2026-09-01\"", jsonl);
@@ -595,6 +598,88 @@ public class HarnessRunnerTests : IDisposable
         // not a gate figure.
         Assert.Contains("Quartilsgröße (nominal)", markdown);
         Assert.Contains("keine Gate-Kennzahl, nur Bericht", markdown);
+    }
+
+    // GDPR Art. 21 objection gate (issue #252/#260): the harness must honour
+    // Twitch:ExcludedChatterIds exactly like the live worker does, so a replay of the archive cannot
+    // resurface what an objecting chatter's live traffic no longer produces.
+    [Fact]
+    public async Task AnExcludedChatterId_MessageIsNotCounted()
+    {
+        _excludedChatters.IsExcluded("objector-1").Returns(true);
+
+        RespondWith(async (day, onMessage) =>
+        {
+            // Two chatters hit the same emote on the same day; only the non-excluded one may reach
+            // the counter. The non-excluded message also keeps sawUserId/sawBadges set, so the run
+            // does not fall back to ExitUndecidable for lack of either signal.
+            await onMessage(Message(day, "objector-1", "PogChamp"));
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(2);
+        });
+
+        Assert.Equal(0, await Run(3));
+
+        var jsonl = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        // One hit per day, not two: the excluded chatter's message never reached ReplayDayCounter.
+        Assert.Contains("\"humanCounts\":{\"e1\":1}", jsonl);
+        Assert.DoesNotContain("\"humanCounts\":{\"e1\":2}", jsonl);
+    }
+
+    // P2 Codex finding (issue #260, this revision): before the fix, the NoBadgesNoUserIds fallback
+    // keyed off the archive's raw MessageCount, which stayed positive even when every one of that
+    // day's messages was dropped by the exclusion gate above — sawUserId/sawBadges never got set for
+    // a message that never reached the bookkeeping, so the run wrongly concluded the *logs* carried
+    // no badges or user-ids and aborted with ExitUndecidable. Day 1 here is exactly that case: its
+    // only chatter is excluded. Days 2 and 3 carry an ordinary message each, so a passing run proves
+    // both that day 1 became a valid zero-count day and that the fallback still fires correctly once
+    // a later day actually has a gated message to check.
+    [Fact]
+    public async Task ADayWhereEveryMessageIsFromAnExcludedChatter_RecordsAZeroCountDayInsteadOfAborting()
+    {
+        _excludedChatters.IsExcluded("objector-1").Returns(true);
+
+        RespondWith(async (day, onMessage) =>
+        {
+            if (day == Day1)
+            {
+                await onMessage(Message(day, "objector-1", "PogChamp"));
+            }
+            else
+            {
+                await onMessage(Message(day, "chatter-1", "PogChamp"));
+            }
+
+            return CompleteDay(1);
+        });
+
+        Assert.Equal(0, await Run(3));
+
+        var path = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var content = new HarnessReportFile(path).ReadDays();
+        Assert.DoesNotContain(content.Events, e => e.Status == "NoBadgesNoUserIds");
+        Assert.Equal(3, content.Days.Count);
+        var day1Line = Assert.Single(content.Days, d => d.Day == Day1);
+        Assert.Equal(ReplayDayStatuses.Complete, day1Line.Status);
+        Assert.Empty(day1Line.HumanCounts);
+    }
+
+    [Fact]
+    public async Task NoExcludedChatterIds_MessagesAreCountedExactlyAsBefore()
+    {
+        // The constructor's default IsExcluded(...) => false fixture stands in for an empty/missing
+        // Twitch:ExcludedChatterIds: the gate must change nothing about the counting path when it has
+        // nothing to exclude.
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+
+        Assert.Equal(0, await Run(3));
+
+        var jsonl = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        Assert.Contains("\"humanCounts\":{\"e1\":1}", jsonl);
     }
 
     [Fact]
@@ -653,8 +738,44 @@ public class HarnessRunnerTests : IDisposable
         var staleWindowTo = Day3.AddDays(-1);
         var leftoverIdentity = new HarnessRunIdentity(
             ChannelId, TwitchChannelId, ChannelName, staleWindowFrom, staleWindowTo, new DateOnly(2026, 9, 1),
-            new DateOnly(2026, 9, 1), ["19264788"], "harness-1", new string('a', 64));
+            new DateOnly(2026, 9, 1), ["19264788"], ExcludedChatterIdsDigest.Compute([]), "harness-1", new string('a', 64));
         var leftover = new HarnessReportFile(Path.Combine(_directory, "leftover-harness-1.jsonl"));
+        leftover.WriteHeader(new HarnessReportHeader(leftoverIdentity, DateTime.UtcNow));
+
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+
+        Assert.Equal(0, await Run(3));
+
+        var json = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.report.json")));
+        Assert.Contains("\"windowFrom\": \"2026-09-02\"", json);
+        Assert.Contains("\"windowTo\": \"2026-09-04\"", json);
+
+        Assert.True(File.Exists(leftover.Path));
+        Assert.Equal(2, Directory.GetFiles(_directory, "*.jsonl").Length);
+        Assert.Equal(3, _archive.ReceivedCalls().Count(c => c.GetMethodInfo().Name == nameof(IChatLogArchiveClient.ReadDayAsync)));
+    }
+
+    // RecomputeReportAsync accepts "harness-2" (see HarnessRunner.PriorRecomputableAlgorithmVersion),
+    // but RunAsync/ExecuteAsync must not: FindFrozenWindow only ever compares against
+    // HarnessRunner.AlgorithmVersion ("harness-3"), so a "harness-2" leftover is exactly as invisible
+    // to window discovery as a "harness-1" one above — a fetching run only ever resumes its own
+    // current algorithm, never an older one, no matter how close. Mirrors
+    // AFileWithTheOldAlgorithmVersion_IsNotResumed's proof technique for the same reason: the file
+    // name digest already differs regardless of the check, so only the adopted-window assertion below
+    // actually exercises it.
+    [Fact]
+    public async Task AFileWithTheHarnessTwoAlgorithmVersion_IsNotResumed()
+    {
+        var staleWindowFrom = Day1.AddDays(-1);
+        var staleWindowTo = Day3.AddDays(-1);
+        var leftoverIdentity = new HarnessRunIdentity(
+            ChannelId, TwitchChannelId, ChannelName, staleWindowFrom, staleWindowTo, new DateOnly(2026, 9, 1),
+            new DateOnly(2026, 9, 1), ["19264788"], null!, HarnessRunner.PriorRecomputableAlgorithmVersion, new string('a', 64));
+        var leftover = new HarnessReportFile(Path.Combine(_directory, "leftover-harness-2.jsonl"));
         leftover.WriteHeader(new HarnessReportHeader(leftoverIdentity, DateTime.UtcNow));
 
         RespondWith(async (day, onMessage) =>
@@ -1005,6 +1126,48 @@ public class HarnessRunnerTests : IDisposable
         Assert.Equal(2, files.Length);
         Assert.Contains(firstFile, files);
         // And the new run really fetched all three days again rather than inheriting them.
+        Assert.Equal(3, _archive.ReceivedCalls().Count(c => c.GetMethodInfo().Name == nameof(IChatLogArchiveClient.ReadDayAsync)));
+    }
+
+    // GDPR Art. 21 objection gate (issue #252/#260, P1 Codex finding): saved day lines from before
+    // an exclusion-list change must not be reused — the days a run already wrote under the old
+    // policy would otherwise keep an excluded chatter's counts even after the policy changed,
+    // silently mixed into the same report as days counted under the new one. Mirrors
+    // AChangedDataSnapshot_StartsANewFileInsteadOfContinuingTheOldOne, but with an *interrupted*
+    // first run — a completed run always starts its own new file regardless of resume logic, so
+    // only a resume candidate actually exercises FindFrozenWindow/ReadHeader's identity comparison.
+    [Fact]
+    public async Task AChangedExclusionList_DoesNotResumeDaysSavedUnderTheOldOne()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            if (day == Day3)
+            {
+                return new ChatLogDayResult(ChatLogDayStatus.RateLimited, 0, null, 0, 0, 0, 429);
+            }
+
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(HarnessRunner.ExitAbortedWithResumePoint, await Run(3));
+        var firstFile = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+
+        // The operator adds an id to Twitch:ExcludedChatterIds between the two invocations.
+        _excludedChatters.ExcludedChatterIds.Returns(new HashSet<string> { "objector-1" });
+        _archive.ClearReceivedCalls();
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+
+        Assert.Equal(HarnessRunner.ExitSuccess, await Run(3));
+
+        var files = Directory.GetFiles(_directory, "*.jsonl");
+        Assert.Equal(2, files.Length);
+        Assert.Contains(firstFile, files);
+        // A resume would have refetched only Day3 (the rate-limited one); a fresh run under the new
+        // identity refetches the whole window instead.
         Assert.Equal(3, _archive.ReceivedCalls().Count(c => c.GetMethodInfo().Name == nameof(IChatLogArchiveClient.ReadDayAsync)));
     }
 
@@ -1575,6 +1738,120 @@ public class HarnessRunnerTests : IDisposable
         Assert.Empty(_usage.ReceivedCalls());
     }
 
+    // P2 Codex finding (issue #260, third review round): the algorithm-version refusal above only
+    // catches a foreign counting rule — it says nothing about TWITCH_EXCLUDED_CHATTER_IDS having
+    // changed since the file was written. A *resumed run* already refuses that drift for free,
+    // because ExecuteAsync always rebuilds a fresh HarnessRunIdentity and ReadHeader compares it to
+    // the file's byte for byte (ExcludedChatterIdsDigest is part of that identity, see the class
+    // remark on AlgorithmVersion). A *recompute* only ever reads the header off disk with
+    // TryReadHeader and never ran that comparison — recomputing day lines counted under one
+    // exclusion list against today's different one could issue a binding report that misrepresents
+    // what a fresh run would count today, exactly the gap AlgorithmVersion's own bump closed for a
+    // changed counting rule.
+    [Fact]
+    public async Task ReportOnly_WhenTheExclusionListDriftedSinceTheRun_RefusesBeforeAnyDatabaseAccess()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+
+        // The original run's identity carries the digest of the empty list (the fixture's default,
+        // see the constructor). Simulate an operator having added an id to
+        // TWITCH_EXCLUDED_CHATTER_IDS since — the exact drift the digest exists to catch.
+        _excludedChatters.ExcludedChatterIds.Returns(new HashSet<string> { "999999" });
+
+        var filesBefore = ListFiles();
+        _archive.ClearReceivedCalls();
+        _usage.ClearReceivedCalls();
+        _channels.ClearReceivedCalls();
+
+        var exitCode = await Recompute(fileName);
+
+        Assert.Equal(HarnessRunner.ExitExclusionListChanged, exitCode);
+        Assert.NotEqual(HarnessRunner.ExitPreconditionViolated, exitCode);
+        Assert.Equal(filesBefore, ListFiles());
+        // Refuses before touching the database, like the algorithm-version check right above it —
+        // there is nothing a DB round trip could add to a decision the header alone already settles.
+        Assert.Empty(_archive.ReceivedCalls());
+        Assert.Empty(_usage.ReceivedCalls());
+    }
+
+    // Golden-master check for the harness-3 branch (issue #260/harness-exclusion): a "harness-2"
+    // file carries no ExcludedChatterIdsDigest at all — the field did not exist under that version —
+    // and "harness-2" itself predates the objection gate, so its day lines already equal what an
+    // empty-list run produces today. RecomputeReportAsync must therefore accept it under today's
+    // empty Twitch:ExcludedChatterIds and, because ReplayFidelityCalculator/ReplayDayCounter are
+    // untouched by the exclusion feature, produce the exact numbers the pre-harness-3 algorithm would
+    // have. GoldenMainRecomputeReportJson below was captured by running this same fixture (three
+    // days, one "chatter-1"/"PogChamp" message each, the default empty exclusion list) through
+    // origin/main's HarnessRunner.RecomputeReportAsync (commit 52a857a7, the harness-2 algorithm, no
+    // exclusion feature at all) in a throwaway worktree — see the branch's DECISIONS entry for how.
+    // The only field expected to differ is Recomputation.SourceFile (an absolute path under this
+    // test's own random temp directory); RecomputedAtUtc matches because both runs share this test
+    // class's fixed clock, and both input hashes match because HarnessInputHash and the Lifetimes/
+    // Rows/NewChannel fixtures are byte-for-byte identical to main's.
+    [Fact]
+    public async Task ReportOnly_WithAHarnessTwoFileAndAnEmptyExclusionList_RecomputesIdenticallyToMain()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var fileName = Path.GetFileName(jsonlPath);
+        RewriteHeaderAsHarnessTwo(jsonlPath);
+
+        Assert.Equal(HarnessRunner.ExitSuccess, await Recompute(fileName));
+
+        var reportPath = Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json"));
+
+        // Normalize the one field that legitimately differs (this test's own random temp path)
+        // before comparing the rest of the document field for field.
+        Assert.Equal(
+            NormalizeSourceFile(GoldenMainRecomputeReportJson),
+            NormalizeSourceFile(File.ReadAllText(reportPath)));
+    }
+
+    // Counterpart to the golden test above: a "harness-2" file's day lines are only known-safe
+    // against the empty-list baseline (harness-2 never honoured any exclusion list at all), so a
+    // currently non-empty Twitch:ExcludedChatterIds must refuse exactly like a drifted "harness-3"
+    // list does — the day lines could hold a since-excluded chatter's messages that a fresh run would
+    // no longer count.
+    [Fact]
+    public async Task ReportOnly_WithAHarnessTwoFileAndANonEmptyExclusionList_RefusesWithExclusionListChanged()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var fileName = Path.GetFileName(jsonlPath);
+        RewriteHeaderAsHarnessTwo(jsonlPath);
+
+        _excludedChatters.ExcludedChatterIds.Returns(new HashSet<string> { "999999" });
+        var filesBefore = ListFiles();
+        _archive.ClearReceivedCalls();
+        _usage.ClearReceivedCalls();
+
+        var exitCode = await Recompute(fileName);
+
+        Assert.Equal(HarnessRunner.ExitExclusionListChanged, exitCode);
+        Assert.Equal(filesBefore, ListFiles());
+        Assert.Empty(_archive.ReceivedCalls());
+        Assert.Empty(_usage.ReceivedCalls());
+    }
+
     // P2-2 (Codex "MUST" #2) of the #119 second review round: an ordinary run can never write a
     // duplicated day line itself (its in-memory dayLines dictionary makes a second write for the
     // same day impossible, and a *resumed* run with one already on disk throws on ToDictionary before
@@ -1686,6 +1963,7 @@ public class HarnessRunnerTests : IDisposable
             _usage,
             _archive,
             _bots,
+            _excludedChatters,
             new HarnessOptions
             {
                 OutputDirectory = _directory,
@@ -2048,7 +2326,7 @@ public class HarnessRunnerTests : IDisposable
     {
         var identity = new HarnessRunIdentity(
             ChannelId, TwitchChannelId, ChannelName, Day1.AddDays(-1), Day3.AddDays(-1), new DateOnly(2026, 9, 1),
-            new DateOnly(2026, 9, 1), ["19264788"], HarnessRunner.AlgorithmVersion, new string('a', 64));
+            new DateOnly(2026, 9, 1), ["19264788"], ExcludedChatterIdsDigest.Compute([]), HarnessRunner.AlgorithmVersion, new string('a', 64));
         new HarnessReportFile(Path.Combine(_directory, "leftover.jsonl"))
             .WriteHeader(new HarnessReportHeader(identity, DateTime.UtcNow, recordedDiagnostic));
         return Task.CompletedTask;
@@ -2077,6 +2355,7 @@ public class HarnessRunnerTests : IDisposable
             _usage,
             _archive,
             _bots,
+            _excludedChatters,
             new HarnessOptions
             {
                 OutputDirectory = _directory,
@@ -2100,6 +2379,7 @@ public class HarnessRunnerTests : IDisposable
             _usage,
             _archive,
             _bots,
+            _excludedChatters,
             new HarnessOptions
             {
                 OutputDirectory = _directory,
@@ -2151,6 +2431,191 @@ public class HarnessRunnerTests : IDisposable
     private static ReplayFinalReport ReadReport(string path) =>
         JsonSerializer.Deserialize<ReplayFinalReport>(File.ReadAllText(path), ReadReportOptions)
         ?? throw new InvalidOperationException($"'{path}' did not deserialize to a report.");
+
+    // Turns a freshly written "harness-3" file into the shape a real "harness-2" file has: the
+    // AlgorithmVersion string, and no ExcludedChatterIdsDigest property at all — LineOptions'
+    // DefaultIgnoreCondition = WhenWritingNull drops a null identity field from the JSON entirely,
+    // exactly like the field's plain absence in a file written before it existed. Day lines are
+    // copied unchanged: harness-2's day-line shape (SharedChatCounts included, #73) is the one the
+    // harness-3 bump left untouched — see HarnessRunner.PriorRecomputableAlgorithmVersion.
+    private static void RewriteHeaderAsHarnessTwo(string jsonlPath)
+    {
+        var original = new HarnessReportFile(jsonlPath);
+        var header = original.TryReadHeader() ?? throw new InvalidOperationException("Header must exist.");
+        var content = original.ReadDays();
+        File.Delete(jsonlPath);
+        var rebuilt = new HarnessReportFile(jsonlPath);
+        rebuilt.WriteHeader(header with
+        {
+            Identity = header.Identity with
+            {
+                AlgorithmVersion = HarnessRunner.PriorRecomputableAlgorithmVersion,
+                ExcludedChatterIdsDigest = null!
+            }
+        });
+        foreach (var day in content.Days)
+        {
+            rebuilt.AppendDay(day);
+        }
+    }
+
+    // The one field a recompute of the same fixture legitimately differs on between two separate
+    // runs: an absolute path under whichever process's own random temp directory.
+    private static string NormalizeSourceFile(string reportJson)
+    {
+        var root = JsonNode.Parse(reportJson)!.AsObject();
+        ((JsonObject)root["recomputation"]!)["sourceFile"] = "<normalized>";
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    // Captured by running the fixture built in ReportOnly_WithAHarnessTwoFileAndAnEmptyExclusionList_
+    // RecomputesIdenticallyToMain — three days, one "chatter-1"/"PogChamp" message each, the default
+    // empty exclusion list, --days 3, the class's fixed clock (2026-09-05T12:00:00Z) — through origin/
+    // main's HarnessRunner.RecomputeReportAsync (commit 52a857a7, the pre-harness-exclusion "harness-2"
+    // algorithm) in a throwaway `git worktree add --detach` checkout, with a throwaway test appended
+    // that wrote the resulting .report.json to a file. See this branch's DECISIONS entry.
+    private const string GoldenMainRecomputeReportJson =
+        """
+        {
+          "run": {
+            "windowFrom": "2026-09-02",
+            "windowTo": "2026-09-04",
+            "botSplitCutover": "2026-08-30",
+            "sharedChatCutover": "2026-09-01",
+            "windowDays": 3,
+            "dayLineCount": 3,
+            "totalBytes": 3072,
+            "rateLimitedDays": 0,
+            "resumePoint": "2026-09-04",
+            "runComplete": true,
+            "diagnostic": false
+          },
+          "gate": {
+            "ratedDays": 3,
+            "populationSize": 1,
+            "humanLogTotal": 3,
+            "humanLiveTotal": 2,
+            "sharedChatLogTotal": 0,
+            "sharedChatLiveTotal": 0,
+            "totalDeviation": 0.5,
+            "top20Recall": 1,
+            "top20Size": 1,
+            "top20LiveTieCount": 1,
+            "top20LogTieCount": 1,
+            "bottomQuartilePrecision": 1,
+            "bottomQuartileSize": 1,
+            "bottomQuartileLiveSize": 1,
+            "bottomQuartileLogSize": 1,
+            "bottomQuartileLiveTieCount": 1,
+            "bottomQuartileLogTieCount": 1,
+            "tailDeviation": 0.5,
+            "gateEligible": false,
+            "gateIneligibleReasons": [
+              "window-not-30-days",
+              "rated-days-below-20"
+            ]
+          },
+          "plausibility": {
+            "logTotalWithBots": 3,
+            "liveTotalWithBots": 23,
+            "ratio": 0.1304,
+            "difference": -20
+          },
+          "diagnostics": {
+            "stableSubsetSize": 0,
+            "qualifiedEmoteCount": 0,
+            "minLiveUsesN": 5,
+            "requiredQualifiedM": 30,
+            "stableSubsetDecisive": false,
+            "stableSubsetMedianDeviation": null,
+            "stableSubsetP90Deviation": null,
+            "stableSubsetSpearman": null,
+            "stableSubsetZeroLogCount": 0,
+            "allEmotesQualifiedCount": 0,
+            "allEmotesMedianDeviation": null,
+            "allEmotesP90Deviation": null,
+            "allEmotesSpearman": null,
+            "allEmotesZeroLogCount": 0,
+            "logOnlyEmoteCount": 0,
+            "liveOnlyEmoteCount": 0,
+            "logOnlyShareOfLogTotal": 0,
+            "liveOnlyShareOfLiveTotal": 0,
+            "totalDeviationIncludingFlaggedDays": 0.5,
+            "flaggedIncludedDays": 3,
+            "dailyDeviation": 0.5,
+            "dailyDeviationWithOneDayTolerance": 0.5,
+            "unknownNameHits": 0,
+            "ambiguousNameHits": 0,
+            "beforeFirstSeenHits": 0,
+            "afterArchivedHits": 0,
+            "firstSeenUnknownHits": 0,
+            "ambiguousNameCount": 0,
+            "archivedWithoutDateCount": 0,
+            "totalMessages": 3,
+            "botMessages": 0,
+            "sharedChatMessages": 0,
+            "indeterminateMessages": 0,
+            "outsideDayCount": 0,
+            "nonPrivmsgLines": 0,
+            "malformedLines": 0,
+            "singleChatterCellShare": 1,
+            "kHistogram": [
+              0,
+              3,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "cellCount": 3,
+            "distinctChatterDaySum": 3,
+            "humanOnlyDays": 3,
+            "logDays": 3,
+            "noLogDays": 0,
+            "signallessRatedDays": 0,
+            "dayRatioMedian": 0.125,
+            "liveGapDays": [],
+            "coverageQuestionableDays": [],
+            "sharedChatByDay": [
+              {
+                "day": "2026-09-02",
+                "logTotal": 0,
+                "liveTotal": 0,
+                "ratio": null
+              },
+              {
+                "day": "2026-09-03",
+                "logTotal": 0,
+                "liveTotal": 0,
+                "ratio": null
+              },
+              {
+                "day": "2026-09-04",
+                "logTotal": 0,
+                "liveTotal": 0,
+                "ratio": null
+              }
+            ]
+          },
+          "recomputation": {
+            "sourceFile": "<normalized>",
+            "recomputedAtUtc": "2026-09-05T12:00:00Z",
+            "originalInputHash": "a034de5dd53fce434cd639bea71a2787161dbcc719158152f3ce59f81e0e100b",
+            "currentInputHash": "a034de5dd53fce434cd639bea71a2787161dbcc719158152f3ce59f81e0e100b",
+            "inputHashMatches": true,
+            "originalBotSplitCutover": "2026-08-30",
+            "currentBotSplitCutover": "2026-08-30",
+            "botSplitCutoverMatches": true,
+            "diagnosticSource": "inherited",
+            "warnings": []
+          }
+        }
+        """;
 
     private void RespondWith(
         Func<DateOnly, Func<ChatLogMessage, ValueTask>, Task<ChatLogDayResult>> respond,

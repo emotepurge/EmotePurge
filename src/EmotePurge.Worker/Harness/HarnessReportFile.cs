@@ -25,6 +25,9 @@ public sealed record HarnessRunIdentity(
     DateOnly? BotSplitCutover,
     DateOnly? SharedChatCutover,
     IReadOnlyList<string> BotAccountIds,
+    // The digest of Twitch:ExcludedChatterIds (ExcludedChatterIdsDigest), never the raw ids — see
+    // that class for why this is a digest and not a list like BotAccountIds above it.
+    string ExcludedChatterIdsDigest,
     string AlgorithmVersion,
     string InputHash);
 

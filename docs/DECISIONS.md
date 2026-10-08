@@ -3373,6 +3373,147 @@ channel in connection with the block — and then fixed what failed.
   request — no row, no subscription, no chat — and whether an objection covers that read is a policy
   question for the operator, not a gap in this gate; answering "yes" would need its own refusal
   status and error code.
+### 2026-09-24 — The chat-log backfill harness honours the same objection gate (#260, supersedes a point of the same day's #252 entry)
+
+**Betrifft:** `src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs` · `docker-compose.yml` ·
+`docker-compose.prod.yml` · `docs/Operations.md`
+
+**Not to be merged before the binding harness run of 2026-10-08 has finished and its reports are
+saved (the run starts at 02:00 German time that day; a merge plus deploy that morning would still
+hit it).**
+
+A GDPR review of the privacy policy found the gap the #252 entry below explicitly accepted: it said
+the harness (#69, a second entry point of the same `EmotePurge.Worker` image that replays archived
+chat logs through its own `ReplayDayCounter` rather than the live `TwitchChatManager` path) was
+"untouched" and out of scope, reasoning that it "already stores no identity of its own". That is
+true for what the harness *writes*, but not for what it *counts on the way there*: before this
+change, a re-run of the harness over a channel's archive window would still count every message from
+an objecting chatter into `HumanCounts`/`BotCounts`/the k-distribution, exactly as if the objection
+did not exist — the archive itself is untouched by an objection (it lives outside this repo's
+control), so only the counting step can honour one.
+
+Fixed the same way the live path already does it: `HarnessRunner` now takes the same
+`IExcludedChatterFilter` (already registered for both entry points via `AddWorkerCore`, no new DI
+wiring needed) and checks it as the very first thing in the per-message counting callback inside
+`ExecuteAsync` — before the `sawUserId`/`sawBadges` bookkeeping that decides whether a day's logs
+even carry a chatter signal, and before the message reaches `ReplayDayCounter.Count` at all. Mirrors
+`TwitchChatManager.OnMessageReceived`'s own ordering (check first, drop before anything else touches
+the message) so neither path can count what the other has been told to forget. Wired the existing
+`TWITCH_EXCLUDED_CHATTER_IDS` env var into the `harness` service in both compose files the same way
+it already reaches `worker` — no new config key.
+
+Tested at the `ReplayDayCounter`/message-callback seam in `HarnessRunnerTests` (container-free, like
+the rest of the harness's decision logic): an excluded chatter's hit does not reach a day line's
+`HumanCounts` while a co-present non-excluded chatter's hit still does, and the default
+(non-excluded) fixture used throughout the rest of the file stands in for the empty-list case,
+confirmed by its own explicit test.
+
+`docs/Operations.md`'s "Excluding a chatter" procedure now says the harness picks up the same list
+without a restart step of its own — it is a one-shot process, so every invocation already reads the
+current `.env`.
+
+**Revised 2026-09-24 (Codex P1 review of this branch):** the gate above changed what the counting
+callback does, but nothing in `HarnessRunIdentity`/`HarnessRunner.AlgorithmVersion` changed with it
+— a run started before this gate existed could be resumed under it silently, its saved day lines
+still holding an excluded chatter's counts from before the gate applied, mixed into the same report
+as fresh, gated days. Fixed two ways: `AlgorithmVersion` bumped to `"harness-3"`, so nothing written
+before this change (or the shared-chat one before it) is ever resumed or recomputed again; and a new
+`HarnessRunIdentity.ExcludedChatterIdsDigest` field covers every *later* change of the exclusion
+list the same way `InputHash` covers the live data snapshot — a SHA-256 over the sorted, normalized
+id list (`ExcludedChatterIdsDigest.Compute`), never the raw ids themselves. Not a secrecy measure —
+the same ids already sit in plaintext in the operator's `.env` on the same host that would read a
+`.jsonl` header — but writing the list itself into a file that outlives the run would be exactly the
+kind of processing the objection asked to stop. An empty list hashes to a fixed value, so a
+no-exclusion run's identity is unaffected by this field's mere existence. `IExcludedChatterFilter`
+gained a matching `ExcludedChatterIds` read-only property (mirroring
+`IBotChatterDetector.KnownBotAccountIds`) so the digest is computed from what the filter actually
+enforces, not a second, independent parse of the same configuration key.
+
+**Revised 2026-09-24 (second Codex review of this branch):** the objection gate above dropped an
+excluded chatter's message before `sawUserId`/`sawBadges` bookkeeping, as documented — but the
+`NoBadgesNoUserIds` fallback a few lines further down still asked `result.MessageCount > 0`, the
+archive's raw count *before* that gate. A day whose every message belongs to an excluded chatter
+therefore still had `result.MessageCount > 0` while `sawUserId`/`sawBadges` stayed `false` — read as
+"these logs carry no badges and no user-ids", the format-failure case that verdict exists for, and
+aborted the run with `ExitUndecidable` although nothing was wrong with the archive; the run had simply
+counted nothing on a day where it was told to count nothing. Fixed by counting separately how many
+messages passed the exclusion gate (`gatedMessageCount` in the per-message callback) and keying the
+fallback's `> 0` check off that instead of `result.MessageCount` — an all-excluded day now falls
+through to `AppendDay` as a legitimate zero-count day, and the fallback still fires correctly the first
+time a later day actually has a gated message to check. Tested in `HarnessRunnerTests`
+(`ADayWhereEveryMessageIsFromAnExcludedChatter_RecordsAZeroCountDayInsteadOfAborting`): day 1's only
+chatter is excluded, days 2 and 3 each carry an ordinary message, and the run succeeds with day 1
+recorded as a valid `Complete`, empty-`HumanCounts` day rather than aborting.
+
+**Revised 2026-09-24 (third Codex review of this branch):** the first revision above bumped
+`AlgorithmVersion` and added `ExcludedChatterIdsDigest` so a *resumed run* refuses to continue a file
+written under a different exclusion list — `ExecuteAsync`/`RunAsync` always rebuild a fresh
+`HarnessRunIdentity` and `HarnessReportFile.ReadHeader` compares it to the file's byte for byte. A
+**report-only recompute** (`RecomputeReportAsync`/`ExecuteRecomputeAsync`, #119) never goes through
+that path: it reads the header with `TryReadHeader` and checked `AlgorithmVersion` by hand, but ran no
+comparison against the exclusion list at all — recomputing a file's day lines under a
+`TWITCH_EXCLUDED_CHATTER_IDS` that has since changed could issue a report that no longer reflects what
+a fresh run (or the live worker) would count today, exactly the drift the digest exists to catch on
+the run side. Closed with a new, distinct exit code, `HarnessRunner.ExitExclusionListChanged` (7) —
+not folded into `ExitPreconditionViolated` (3), because an operator reading the exit code needs to
+tell "this file cannot be recomputed at all" from "this file could be recomputed, but not honestly,
+because the policy under it changed"; only the first is fixed by fixing the file, the second only by
+finishing a fresh run. The check sits right after the existing `AlgorithmVersion` refusal, before any
+database access, and compares `ExcludedChatterIdsDigest.Compute(excludedChatterFilter.ExcludedChatterIds)`
+against the header's stored digest — never the raw ids, same reasoning as the digest itself. Tested in
+`HarnessRunnerTests` (`ReportOnly_WhenTheExclusionListDriftedSinceTheRun_RefusesBeforeAnyDatabaseAccess`):
+a run under the default (empty) exclusion list, recomputed after the configured list gained an id,
+refuses with the new exit code and touches neither the archive client nor the usage-stat query
+service. `docs/Operations.md`'s note on `--report-only` and the exclusion list is extended with this
+case.
+
+**Revised 2026-09-24 (fourth revision, the operator-runbook gap): the third revision above made every
+`"harness-2"` file unrecomputable, including the pre-registered binding reports of 2026-10-08 — the
+runbook's `--report-only` path (needed if a formula changes later) reads their `AlgorithmVersion`
+before ever reaching the digest check, and `"harness-2" != "harness-3"` refused them outright.**
+Checked first, before changing anything: does anything on this branch change what a `--report-only`
+recompute *computes* for a `"harness-2"` file with an empty exclusion list, as opposed to merely what
+it *refuses*? `ReplayFidelityCalculator`, `ReplayDayCounter` and `ReplayModels` are untouched by this
+branch (not in its diff against `origin/main` at all); the objection gate and its `gatedMessageCount`
+fallback (second revision above) live entirely inside `ExecuteAsync`'s per-message callback, which a
+recompute never runs — `ExecuteRecomputeAsync` only reads already-written day lines off disk and
+calls the same unchanged `Compute`. The check was proved empirically, not just by reading the diff: a
+throwaway `git worktree add --detach` of `origin/main` (commit `52a857a7`) ran the pre-harness-3
+`RecomputeReportAsync` over a three-day fixture (one message a day, empty exclusion list) and its
+`.report.json` was captured, then discarded with the worktree; this branch's own recompute of the
+identical fixture, rewritten to a genuine `"harness-2"` shape (no `ExcludedChatterIdsDigest` property
+at all — `LineOptions`'s `WhenWritingNull` drops it, exactly like a real pre-harness-3 file that never
+had the field), produces a field-identical report — `Run`, `Gate`, `Plausibility` and `Diagnostics` are
+byte-identical, and even `Recomputation.OriginalInputHash`/`CurrentInputHash` match, because
+`HarnessInputHash` and the fixture data are unchanged too. Only `Recomputation.SourceFile` legitimately
+differs (an absolute path under each run's own temp directory). Golden-master test:
+`ReportOnly_WithAHarnessTwoFileAndAnEmptyExclusionList_RecomputesIdenticallyToMain`.
+
+Check clean, so implemented (a) rather than falling back to a documentation-only workaround (pinning
+recomputes of `"harness-2"` files to a specific pre-`"harness-3"` image by its digest): a new constant,
+`HarnessRunner.PriorRecomputableAlgorithmVersion = "harness-2"`, is accepted by
+`ExecuteRecomputeAsync`'s `AlgorithmVersion` guard *in addition to* the current `AlgorithmVersion` —
+and nowhere else; `RunAsync`/`ExecuteAsync` still never resumes one, because `FindFrozenWindow` matches
+candidates on `AlgorithmVersion` alone and only ever looks for the current value. For the exclusion
+digest check right after it: a `"harness-2"` identity's `ExcludedChatterIdsDigest` deserializes to
+`null` (the field never existed), so instead of comparing that field the check now uses
+`ExcludedChatterIdsDigest.Compute([])` — the fixed empty-list digest — as the expected value whenever
+the file is `"harness-2"`, on the reasoning the check above already established: a `"harness-2"` run
+never honoured any exclusion list, so its day lines are only a faithful re-evaluation under today's
+*empty* `Twitch:ExcludedChatterIds`; a currently non-empty list still refuses with
+`ExitExclusionListChanged` (7), the same exit code and the same reasoning a drifted `"harness-3"` list
+already gets. Any other foreign version (`"harness-1"` and anything else) is unaffected and still
+refused with `ExitPreconditionViolated` (3). Tested in `HarnessRunnerTests`:
+`ReportOnly_WithAHarnessTwoFileAndAnEmptyExclusionList_RecomputesIdenticallyToMain` (the golden test
+above), `ReportOnly_WithAHarnessTwoFileAndANonEmptyExclusionList_RefusesWithExclusionListChanged`, and
+`AFileWithTheHarnessTwoAlgorithmVersion_IsNotResumed` (mirrors the existing `"harness-1"`-leftover
+resume-refusal test, proving `RunAsync` still never adopts a `"harness-2"` file's window).
+
+This revision also corrects the merge note above: "must stay on harness-2" was read by an operator as
+"never merge this branch", when the actual constraint is narrower — the binding run must finish and
+its reports must be saved first (see the note's own wording, revised the same day).
+
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
