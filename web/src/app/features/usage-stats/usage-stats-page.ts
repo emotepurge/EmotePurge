@@ -3026,6 +3026,7 @@ export class UsageStatsPage {
       from: this.from(),
       to: this.to(),
       emoteId: emote.emoteId,
+      sevenTvEmoteId: emote.sevenTvEmoteId,
       // The set these numbers were counted under, frozen into the dialog (F4, AK 64) — the set of
       // the rows on screen, not a dropdown value that may already be moving.
       emoteSetId: this.shownSetId(),
