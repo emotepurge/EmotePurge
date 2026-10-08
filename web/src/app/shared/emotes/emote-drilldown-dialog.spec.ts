@@ -193,6 +193,14 @@ describe('EmoteDrilldownDialog', () => {
       expect(link().rel.split(' ')).toEqual(expect.arrayContaining(['noopener', 'noreferrer']));
     });
 
+    it('marks the close button, not the link, as the initial focus target', () => {
+      render(data(), of(series()));
+
+      const initial = fixture.nativeElement.querySelector('[cdkFocusInitial]') as HTMLElement;
+      expect(initial.tagName).toBe('BUTTON');
+      expect(link().hasAttribute('cdkFocusInitial')).toBe(false);
+    });
+
     it('names the destination first and says it opens in a new tab, hiding the arrow glyph', () => {
       render(data(), of(series()));
 

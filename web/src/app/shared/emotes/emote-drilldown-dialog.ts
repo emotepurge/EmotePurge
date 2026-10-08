@@ -254,7 +254,7 @@ export interface EmoteDrilldownData {
            to the row's start. Close keeps the initial focus explicitly (§7: the harmless control). -->
       <a
         dialog-actions
-        class="mr-auto text-sm text-accent-fg underline underline-offset-4 transition hover:text-fg"
+        class="mr-auto inline-flex min-h-11 items-center text-sm text-accent-fg underline underline-offset-4 transition hover:text-fg"
         target="_blank"
         rel="noopener noreferrer"
         [href]="pageUrl"
