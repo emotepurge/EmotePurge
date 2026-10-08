@@ -980,13 +980,15 @@ public class ChannelServiceTests(PostgresFixture fixture)
         ILogger<ChannelService>? logger = null,
         IChannelEmoteSetObservationService? emoteSetObservationService = null,
         ChannelCapacityOptions? capacityOptions = null,
-        IExcludedChannelFilter? excludedChannelFilter = null)
+        IExcludedChannelFilter? excludedChannelFilter = null,
+        IBroadcasterChannelLockService? broadcasterChannelLocks = null)
     {
         return new ChannelService(
             db,
             redisPublisher ?? Substitute.For<IRedisPublisher>(),
             identityService ?? IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable)),
             emoteSetObservationService ?? Substitute.For<IChannelEmoteSetObservationService>(),
+            broadcasterChannelLocks ?? new BroadcasterChannelLockService(db),
             // Effectively uncapped: this class is not about the cap (that is
             // ChannelServiceCapacityTests, on its own isolated database), and the "Postgres"
             // collection's single shared database accumulates active channels across every test

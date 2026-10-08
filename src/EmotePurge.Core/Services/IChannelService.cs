@@ -25,6 +25,38 @@ public enum ChannelRetentionPurgeResult
     StillActive,
 }
 
+/// <summary>What <see cref="IChannelService.PurgeByBroadcasterAsync"/> did (#245).</summary>
+public enum ChannelBroadcasterPurgeResult
+{
+    /// <summary>
+    /// Every row proven to be the caller's channel is gone with its whole history, a
+    /// <c>channel.purge</c> entry per row was written and the caller's Twitch id is locked against re-adding.
+    /// </summary>
+    Purged,
+
+    /// <summary>No row under this name (any more) — nothing written, not even an audit entry.</summary>
+    NotFound,
+
+    /// <summary>
+    /// The row belongs to a different Twitch account: its stored id is someone else's, or Twitch
+    /// resolved the login of an id-less row to someone else. Nothing written.
+    /// </summary>
+    NotBroadcaster,
+
+    /// <summary>
+    /// The row has no stored Twitch id and Twitch could not confirm who owns its login right now
+    /// (unreachable, or no account under that login). Nothing written; the caller may try again later.
+    /// </summary>
+    IdentityUnresolved,
+}
+
+/// <summary>
+/// What a broadcaster's purge of their own channel would delete, counted per kind for the
+/// confirmation dialog (#245, plan P5). <see cref="TagCount"/> counts the mod team's tags, which the
+/// purge takes down with the channel.
+/// </summary>
+public sealed record ChannelDataSummary(int EmoteCount, int VoteSessionCount, int LiveDayCount, int TagCount);
+
 public enum ChannelJoinStatus
 {
     Joined,
@@ -150,6 +182,32 @@ public interface IChannelService
     // LEAVE is published: the worker is not in an inactive channel.
     Task<ChannelRetentionPurgeResult> PurgeIfInactiveSinceAsync(
         string channelName, DateTime deactivatedBeforeUtc, AuditActor actor, CancellationToken cancellationToken = default);
+
+    // The broadcaster's own purge (#245): deletes the channel like PurgeAsync, but only the rows proven
+    // to be the caller's channel, and locks the caller's Twitch id against re-adding in the same
+    // transaction. actor.TwitchUserId is the caller's identity; this method performs the ownership
+    // proof itself rather than trusting an endpoint filter:
+    //  - a row with a stored Twitch id is the caller's exactly when that id is actor.TwitchUserId
+    //    (no Twitch call);
+    //  - an id-less row is the caller's only when Twitch resolves its login to actor.TwitchUserId,
+    //    asked before any transaction opens; any other answer writes nothing.
+    // Under the row locks (id row first, then the name row — the merge order) the proof is checked
+    // again, so a concurrent backfill, merge or purge cannot widen what is deleted. Besides the routed
+    // row, the row holding the caller's id is purged too (an id-less duplicate under the caller's
+    // login goes with it when the login was proven); a duplicate under some *other* login is not —
+    // the proof covers the login that was asked about, nothing more.
+    // Audited as channel.purge with { reason: "broadcasterRequest" } per deleted row. LEAVE is
+    // published per deleted row only after the commit; a failed publish is logged, not thrown (the
+    // row is the source of truth and the periodic resync's roster prune catches up).
+    // A Postgres deadlock (40P01, e.g. against a 7TV sync holding an emote-set leave observation)
+    // retries the whole transaction up to three attempts with a fresh change tracker; after that, or
+    // on any other failure, the exception propagates and nothing is written.
+    Task<ChannelBroadcasterPurgeResult> PurgeByBroadcasterAsync(
+        string channelName, AuditActor actor, CancellationToken cancellationToken = default);
+
+    // What PurgeByBroadcasterAsync would delete, counted for the confirmation dialog (#245, plan P5);
+    // null when no row holds this name. No authorization here — the endpoint filter decides who asks.
+    Task<ChannelDataSummary?> GetDataSummaryAsync(string channelName, CancellationToken cancellationToken = default);
 
     Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default);
 

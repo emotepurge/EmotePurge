@@ -368,6 +368,7 @@ public class ChannelRetentionPurgeTests(PostgresFixture fixture)
             Substitute.For<IRedisPublisher>(),
             identity ?? Unavailable(),
             new ChannelEmoteSetObservationService(db),
+            new BroadcasterChannelLockService(db),
             // Uncapped: the shared collection database accumulates active channels across tests.
             new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
             Substitute.For<IExcludedChannelFilter>(),

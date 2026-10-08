@@ -643,6 +643,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
             Substitute.For<IRedisPublisher>(),
             identityService,
             new ChannelEmoteSetObservationService(joinDb),
+            new BroadcasterChannelLockService(joinDb),
             new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
             excludedChannelFilter,
             NullLogger<ChannelService>.Instance);

@@ -14,6 +14,7 @@ public class ChannelService(
     IRedisPublisher redisPublisher,
     IChannelIdentityService channelIdentityService,
     IChannelEmoteSetObservationService emoteSetObservationService,
+    IBroadcasterChannelLockService broadcasterChannelLocks,
     ChannelCapacityOptions channelCapacityOptions,
     IExcludedChannelFilter excludedChannelFilter,
     ILogger<ChannelService> logger) : IChannelService
@@ -21,6 +22,12 @@ public class ChannelService(
     // The reason detail of a channel.purge entry written by the retention job, which is what tells it
     // apart from an admin's purge (that one carries no details).
     private const string RetentionPurgeReason = "retention";
+
+    // The reason detail of a channel.purge entry written by PurgeByBroadcasterAsync (#245).
+    private const string BroadcasterPurgeReason = "broadcasterRequest";
+
+    // Attempts in total, not retries: the first try plus two more on a deadlock (R5).
+    private const int BroadcasterPurgeMaxAttempts = 3;
 
     public async Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default)
     {
@@ -145,11 +152,8 @@ public class ChannelService(
         // 2026-09-01): lowest-priority of the three points in #41, and today's UnexpectedError/500
         // is at least honest about "nothing happened".
         await redisPublisher.PublishAsync(BotCommands.Channel, $"{BotCommands.LeavePrefix}{normalized}", cancellationToken);
-        // Staged before the Remove and committed with it: the entry is the only trace this channel
-        // ever existed once the cascade has run, which is exactly why AuditLogEntry.ChannelName is a
-        // snapshot string and not a foreign key — an FK would have cascaded this row away too.
-        db.AddAuditEntry(actor, AuditActions.ChannelPurge, channelName: normalized);
-        db.Channels.Remove(channel);
+        // The admin purge carries no details; that is what tells it apart from the other two.
+        StagePurge(channel, actor, details: null);
         await db.SaveChangesAsync(cancellationToken);
 
         return true;
@@ -186,16 +190,137 @@ public class ChannelService(
         // Same cascade and same audit action as the admin purge, told apart by the reason detail. No
         // LEAVE publish, unlike PurgeAsync: the worker is not in an inactive channel, and publishing
         // under the row lock would only hold the lock across a Redis round trip.
-        db.AddAuditEntry(
-            actor,
-            AuditActions.ChannelPurge,
-            channelName: channel.ChannelName,
-            details: new { reason = RetentionPurgeReason });
-        db.Channels.Remove(channel);
+        StagePurge(channel, actor, details: new { reason = RetentionPurgeReason });
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
         return ChannelRetentionPurgeResult.Purged;
+    }
+
+    public async Task<ChannelBroadcasterPurgeResult> PurgeByBroadcasterAsync(
+        string channelName, AuditActor actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+        var normalized = ChannelName.Normalize(channelName);
+
+        // Steps 1-3 (plan T3): the ownership proof, read unlocked and settled before any transaction
+        // opens, so no row lock is ever held across the Helix round trip (the join's rule too).
+        var routed = await db.LoadChannelReadOnlyAsync(normalized, cancellationToken);
+        if (routed is null)
+        {
+            return ChannelBroadcasterPurgeResult.NotFound;
+        }
+
+        bool loginProven;
+        if (routed.TwitchChannelId is not null)
+        {
+            // Twitch ids are opaque digit strings, compared ordinally and never normalized. A stored id
+            // is the proof; Twitch is not asked.
+            if (!string.Equals(routed.TwitchChannelId, actor.TwitchUserId, StringComparison.Ordinal))
+            {
+                return ChannelBroadcasterPurgeResult.NotBroadcaster;
+            }
+
+            loginProven = false;
+        }
+        else
+        {
+            // An id-less row proves nothing by itself: only Twitch saying that this login is the
+            // caller's account does. NotFound and Unavailable both leave the question open.
+            var lookup = await channelIdentityService.LookupByLoginAsync(normalized, cancellationToken);
+            if (lookup.Status != TwitchUserLookupStatus.Found)
+            {
+                return ChannelBroadcasterPurgeResult.IdentityUnresolved;
+            }
+
+            if (!string.Equals(lookup.User!.Id, actor.TwitchUserId, StringComparison.Ordinal))
+            {
+                return ChannelBroadcasterPurgeResult.NotBroadcaster;
+            }
+
+            loginProven = true;
+        }
+
+        // Steps 4-6 as one retry unit (R5): the full 7TV sync locks an existing emote-set leave
+        // observation row before it updates Channels, this purge locks Channels and then cascades into
+        // that row — the reverse order, so Postgres may pick either as a deadlock victim (40P01).
+        // Reordering the sync was rejected; instead the whole transaction runs again from an empty change
+        // tracker, so nothing staged by the failed attempt (audit entries, the lock, the removals)
+        // survives into the next. The proof above is not repeated: the attempt re-checks it under the
+        // row locks anyway.
+        var outcome = default(BroadcasterPurgeOutcome);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                outcome = await PurgeProvenRowsAsync(normalized, actor, loginProven, cancellationToken);
+                break;
+            }
+            catch (Exception ex) when (IsDeadlock(ex) && attempt < BroadcasterPurgeMaxAttempts)
+            {
+                // The failed attempt's transaction has rolled back on dispose.
+                db.ChangeTracker.Clear();
+                logger.LogWarning(
+                    "Broadcaster purge hit a database deadlock (attempt {Attempt} of {MaxAttempts}); retrying.",
+                    attempt, BroadcasterPurgeMaxAttempts);
+                await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(20, 150)), cancellationToken);
+            }
+        }
+
+        if (outcome.Result != ChannelBroadcasterPurgeResult.Purged)
+        {
+            return outcome.Result;
+        }
+
+        // Step 7: LEAVE only after the commit (unlike PurgeAsync, which publishes before it writes): a
+        // LEAVE for a purge that then rolled back would drop a channel that is still tracked, while a
+        // lost LEAVE after a committed purge is caught up by the periodic resync's roster prune within
+        // two ticks — the row is the source of truth. So a failed publish is logged, never thrown: the
+        // purge has happened and the caller must hear so. Neither name nor id in the line (#246).
+        var failedPublishes = 0;
+        foreach (var purgedName in outcome.PurgedChannelNames)
+        {
+            try
+            {
+                await redisPublisher.PublishAsync(
+                    BotCommands.Channel, $"{BotCommands.LeavePrefix}{purgedName}", cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failedPublishes++;
+            }
+        }
+
+        if (failedPublishes > 0)
+        {
+            logger.LogWarning(
+                "Broadcaster purge committed, but {FailedCount} of {TotalCount} LEAVE publish(es) failed; the periodic roster prune catches up.",
+                failedPublishes, outcome.PurgedChannelNames.Count);
+        }
+
+        return ChannelBroadcasterPurgeResult.Purged;
+    }
+
+    public async Task<ChannelDataSummary?> GetDataSummaryAsync(string channelName, CancellationToken cancellationToken = default)
+    {
+        var normalized = ChannelName.Normalize(channelName);
+        var channelId = await db.Channels
+            .AsNoTracking()
+            .Where(c => c.ChannelName == normalized)
+            .Select(c => c.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (channelId is null)
+        {
+            return null;
+        }
+
+        // Four scalar COUNTs over the channel id (Regel 10: no navigation GroupBy). Not one snapshot —
+        // the numbers feed a confirmation dialog, not a ledger.
+        return new ChannelDataSummary(
+            EmoteCount: await db.Emotes.CountAsync(e => e.ChannelId == channelId, cancellationToken),
+            VoteSessionCount: await db.VoteSessions.CountAsync(s => s.ChannelId == channelId, cancellationToken),
+            LiveDayCount: await db.ChannelLiveDays.CountAsync(d => d.ChannelId == channelId, cancellationToken),
+            TagCount: await db.EmoteTags.CountAsync(t => t.ChannelId == channelId, cancellationToken));
     }
 
     public async Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default)
@@ -260,6 +385,77 @@ public class ChannelService(
         await redisPublisher.PublishAsync(BotCommands.Channel, $"{BotCommands.ResyncPrefix}{normalized}", cancellationToken);
 
         return ChannelResyncResult.Triggered;
+    }
+
+    /// <summary>
+    /// Steps 4-6 of <see cref="PurgeByBroadcasterAsync"/>: one transaction that locks the candidate
+    /// rows, re-checks the proof under the locks, stages the purge of every proven row and the re-add
+    /// lock, and commits. Runs again in full after a deadlock, so it reads nothing it did not load itself.
+    /// </summary>
+    private async Task<BroadcasterPurgeOutcome> PurgeProvenRowsAsync(
+        string normalized, AuditActor actor, bool loginProven, CancellationToken cancellationToken)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // Merge order (ChannelQueries): the row holding the Twitch id first, then the row holding the
+        // name — the join and the identity merge lock in the same order, so none of them can wait on
+        // another in a cycle.
+        var idRow = await db.LoadChannelByTwitchIdForUpdateAsync(actor.TwitchUserId, cancellationToken);
+        var nameRow = idRow is not null && string.Equals(idRow.ChannelName, normalized, StringComparison.Ordinal)
+            ? null
+            : await db.LoadChannelForUpdateAsync(normalized, cancellationToken);
+
+        // The proof, checked again under the locks: the id row carries the caller's id by construction.
+        // The name row belongs only while it is still id-less and its login was proven by Twitch; a row
+        // that carries an id here and is not the id row carries someone else's (a concurrent backfill),
+        // since the id is unique — it drops out.
+        var targets = new List<Channel>(capacity: 2);
+        if (idRow is not null)
+        {
+            targets.Add(idRow);
+        }
+
+        if (nameRow is not null && nameRow.TwitchChannelId is null && loginProven)
+        {
+            targets.Add(nameRow);
+        }
+
+        if (targets.Count == 0)
+        {
+            // Nothing written either way. Both rows gone means a concurrent purge or merge got there
+            // first; a remaining name row that no longer qualifies is someone else's channel.
+            return new BroadcasterPurgeOutcome(
+                nameRow is null ? ChannelBroadcasterPurgeResult.NotFound : ChannelBroadcasterPurgeResult.NotBroadcaster,
+                []);
+        }
+
+        foreach (var target in targets)
+        {
+            StagePurge(target, actor, details: new { reason = BroadcasterPurgeReason });
+        }
+
+        // Staged before the commit, in the same transaction as the deletion: a join waiting on these
+        // row locks sees the lock the moment it gets them, and a purge that rolls back leaves no lock.
+        await broadcasterChannelLocks.LockAsync(actor.TwitchUserId, DateTime.UtcNow, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return new BroadcasterPurgeOutcome(
+            ChannelBroadcasterPurgeResult.Purged,
+            targets.ConvertAll(target => target.ChannelName));
+    }
+
+    /// <summary>
+    /// The one place a channel.purge entry is written (all three purge paths): the audit entry and the
+    /// <c>Remove</c>, staged together for the caller's save. The cascade does the rest. The entry is
+    /// the only trace this channel ever existed once the cascade has run, which is exactly why
+    /// AuditLogEntry.ChannelName is a snapshot string and not a foreign key — an FK would have
+    /// cascaded the entry away too.
+    /// </summary>
+    private void StagePurge(Channel channel, AuditActor actor, object? details)
+    {
+        db.AddAuditEntry(actor, AuditActions.ChannelPurge, channelName: channel.ChannelName, details: details);
+        db.Channels.Remove(channel);
     }
 
     /// <summary>
@@ -548,4 +744,22 @@ public class ChannelService(
 
         return ChannelJoinResult.Joined(channel);
     }
+
+    // A deadlock surfaces either straight from a locking query (PostgresException) or from a save
+    // (DbUpdateException around it), so the whole chain is searched.
+    private static bool IsDeadlock(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.DeadlockDetected })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private readonly record struct BroadcasterPurgeOutcome(
+        ChannelBroadcasterPurgeResult Result, IReadOnlyList<string> PurgedChannelNames);
 }

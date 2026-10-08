@@ -40,7 +40,7 @@ login-based warning on purpose. After the deploy the login variable stays config
 
 ### 2026-10-08 — Broadcaster self-service purge and a DB re-add lock (#245)
 
-**Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs`
+**Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs` · `src/EmotePurge.Core/Services/IChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelService.cs`
 
 **Table, not a flag.** A broadcaster who purges their own channel's data must not be re-added by
 anyone but a global admin. The lock lives in its own table `BroadcasterChannelLocks`
@@ -65,7 +65,51 @@ expiry is the point (a lock that lapses would let the removed channel be re-adde
 **Data protection.** The table holds only the numeric Twitch id and a timestamp. After the owner's
 account deletion (#243) the row stays, since it is what keeps the objection effective.
 
-The later parts of #245 (purge path, read sites, API, admin lift) extend this entry in their own commits.
+**Purge path (`IChannelService.PurgeByBroadcasterAsync`).** Ownership is proven by the service,
+not trusted from the endpoint filter. A row with a stored Twitch id is the caller's exactly when that
+id equals the caller's (ordinal, no Twitch call). An id-less row is the caller's only when Helix
+resolves its login to the caller's id, asked before the transaction opens so no row lock is held
+across the HTTP call; `NotFound` and `Unavailable` both end as `IdentityUnresolved` with nothing
+written. The transaction then locks in merge order (row holding the caller's id, then the row holding
+the routed name) and checks the proof again under the locks, so a concurrent backfill, merge or purge
+cannot widen the target set.
+
+**Target set and the proof boundary.** The purge takes the row holding the caller's id plus, when the
+login was proven, an id-less row under the routed name — the rename leftover that #201 keeps alive
+longer, since the reconcile refuses to merge a row with tags. An id-less duplicate under some *other*
+login stays: nobody asked Twitch about that login, and a stored id proves only the row it sits on.
+That is a named limit, not an oversight; such rows are left to the identity reconcile. Each
+deleted row cascades into every channel-bound table — today thirteen: emotes, usage stats, live days,
+vote sessions, ballot rows, votes, set observations, leave observations and the mod team's tags with
+their entries, placements, activations and operations. The cascade is the contract; there is no
+explicit delete code for the newer tables.
+
+**Lock before commit, LEAVE after it.** Each deleted row gets a `channel.purge` entry with
+`{ reason: "broadcasterRequest" }` (the admin purge stays without details, the retention purge keeps
+`retention`; all three share one staging helper). The lock row is staged in the same transaction, so a
+join waiting on the row locks sees it the moment it gets them, and a rolled-back purge leaves no lock.
+LEAVE is published per deleted row only after the commit, the reverse of `PurgeAsync`: a LEAVE for a
+purge that then rolled back would drop a channel that is still tracked, while a lost LEAVE after a
+commit is caught up by the periodic resync's roster prune within two ticks. A failed publish is
+therefore logged (counts only, no name or id) and not thrown — the purge has happened.
+
+**Deadlock retry.** The full 7TV sync upserts an existing emote-set leave observation (row lock)
+before it updates `Channels`; the purge locks `Channels` and then cascades into that observation row.
+The reverse order can deadlock (40P01). Rather than reorder the sync, the purge's transaction is
+retried as a whole on 40P01 — at most three attempts, a short jittered pause, a cleared change tracker
+so nothing staged by the failed attempt survives; any other error, or a fourth deadlock, propagates as
+before. The LEAVE runs only after the successful attempt. When the sync is the victim instead, every
+caller catches it per channel (periodic resync, boot recovery, EventAPI fan-out and resync, and the
+Redis subscriber around the JOIN/RESYNC commands), and the next tick retries. A purge during a sync
+that holds no observation lock still ends the sync as "row vanished", as for the admin purge; the
+purge does not take `ChannelSyncGate` (different process) — the same accepted limit as admin purge
+and leave.
+
+**Data summary.** `GetDataSummaryAsync` counts what the purge would delete for the confirmation
+dialog — emotes, vote sessions, live days and the mod team's tags — as four scalar counts over the
+channel id; `null` without a row. It authorizes nothing itself.
+
+The later parts of #245 (read sites, API, admin lift) extend this entry in their own commits.
 
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 

@@ -135,6 +135,7 @@ public class ChannelServiceCapacityTests(PostgresFixture fixture)
             redisPublisher ?? Substitute.For<IRedisPublisher>(),
             identityService,
             new ChannelEmoteSetObservationService(db),
+            new BroadcasterChannelLockService(db),
             new ChannelCapacityOptions { MaxActiveChannels = maxActiveChannels },
             Substitute.For<IExcludedChannelFilter>(),
             NullLogger<ChannelService>.Instance);
