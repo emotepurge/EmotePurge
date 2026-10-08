@@ -44,6 +44,10 @@ internal static class ApiErrorCodes
     // language-neutral and free of any mention of a legal objection — the frontend text says only
     // that the channel cannot be added.
     public const string ChannelExcluded = "channel_excluded";
+    // From the join endpoint (#245): the broadcaster purged this channel's data and locked it against
+    // re-adding. 403 for everyone who cannot lift the lock; the admin's 409 with the lock date, and
+    // this code's web/i18n chain (Regel 7), follow with the API task of #245.
+    public const string ChannelLockedByBroadcaster = "channel_locked_by_broadcaster";
     // 409 from DELETE /api/auth/me: the account the client asked to delete (expectedTwitchUserId)
     // is not the one the session cookie belongs to — another tab signed in as someone else. Nothing
     // was deleted, the session is untouched.

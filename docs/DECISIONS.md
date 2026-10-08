@@ -40,7 +40,7 @@ login-based warning on purpose. After the deploy the login variable stays config
 
 ### 2026-10-08 — Broadcaster self-service purge and a DB re-add lock (#245)
 
-**Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs` · `src/EmotePurge.Core/Services/IChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelService.cs`
+**Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs` · `src/EmotePurge.Core/Services/IChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` · `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` · `src/EmotePurge.Core/Services/IChannelIdentityService.cs` · `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmoteService.cs` · `src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` · `src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` · `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs`
 
 **Table, not a flag.** A broadcaster who purges their own channel's data must not be re-added by
 anyone but a global admin. The lock lives in its own table `BroadcasterChannelLocks`
@@ -56,8 +56,9 @@ service exposes an `IQueryable` for SQL anti-joins instead of an in-memory set.
 
 **Transaction contract.** `BroadcasterChannelLockService` shares the caller's scoped `AppDbContext`
 and only stages (`LockAsync`, `UnlockAsync`); the caller saves and commits, so the lock is written
-or lifted in the same transaction as the purge or the admin join. Only the broadcaster purge writes
-a lock, only a join by a global admin removes one.
+or lifted in the same transaction as the purge or the join. Only the broadcaster purge writes a lock;
+only a join removes one — the broadcaster's own, or a global admin's explicit lift (see "Who lifts
+the lock" below).
 
 **No retention.** `RetentionPolicy`/`DataRetentionWorker` do not know the table: a lock without an
 expiry is the point (a lock that lapses would let the removed channel be re-added silently).
@@ -109,7 +110,92 @@ and leave.
 dialog — emotes, vote sessions, live days and the mod team's tags — as four scalar counts over the
 channel id; `null` without a row. It authorizes nothing itself.
 
-The later parts of #245 (read sites, API, admin lift) extend this entry in their own commits.
+**Seven read points.** The lock is read wherever the excluded-channel list is read, the env list
+always first (it wins), and it reads the same way: a locked channel looks untracked. Four points come
+from the concept: (1) the join (`ChannelService.JoinAsync`, on the resolved identity and on the
+stored id of the row the join landed on, plus `HandleUnknownTwitchLoginAsync` on the stored id);
+(2) the 7TV sync (`WarmChannelAsync`, the stored id in `SyncChannelAsync` and in
+`ApplyEmoteSetUpdateAsync`, and the id 7TV resolves for an id-less row, before the duplicate lookup and
+the backfill — silent like the env case, and counted by the #165 backoff as a miss, intended); (3) the
+roster (`ListActiveChannelNamesAsync`, a SQL anti-join, since the table changes at runtime); (4) the
+identity reconcile (a lock pass beside the exclusion pass, and the id-less pass on the resolved id).
+Three come from Epic #200, which added env-list read points after the concept was written:
+(5) `ChannelQueries.LoadActiveChannelByTwitchIdReadOnlyAsync` (the target picker, the editability
+pre-check, the set-centric report's paper entry); (6) `EmoteService.MarkInSetAsync` step 2 (a locked
+channel is no hit: no archive state, no leave observation is written for it, one batch lookup);
+(7) step 3 (a locked expected channel reads `notTracked`). Deliberately **without** a lock twin,
+so the count above is not read as a gap: the two env checks in `ChannelService` that only keep a
+warning quiet (`ResolveChannelByIdentityAsync`, `ResolveOrCreateChannelByNameAsync`) — the lock is not
+secret; in `ChannelIdentityService` the known-id defense in depth (the lock pass has settled such a
+row before), the occupant check that only keeps a warning anonymous, the re-check inside
+`DeactivateExcludedRowAsync` (the lock pass re-checks under its own row lock), and the `MergeAsync`
+guard against `IsBotActive |=` (a locked survivor is deactivated by the lock pass in the same tick).
+
+**Who lifts the lock and how it is audited.** Only a join, decided under the row lock of the row the
+join landed on — the purge and the reconcile's lock pass take the same lock, so neither can
+interleave — and after both env gates. For every locked id among the resolved identity and the
+row's stored id, in this binding order: the actor is that broadcaster (`actor.TwitchUserId` equals the
+id) → lifted, the `channel.join` entry carries `{ broadcasterLockLifted: true }`; a global admin with
+`liftBroadcasterLock` → lifted, the entry carries `{ broadcasterLockLifted: true, liftedByAdmin: true,
+lockedAtUtc }`, so a third party overriding the broadcaster's decision stays recognisable; anyone
+else, a global admin without the flag included → `ChannelJoinStatus.LockedByBroadcaster` with
+`ChannelJoinResult.LockedAtUtc` (its own factory; `Failed()` refuses the status so no caller can drop
+the date), and nothing is written — the transaction is disposed without a commit. A broadcaster who is
+also an admin lifts as the owner, without the dialog. The flag means nothing without the admin role.
+The lift is staged only after the active-channel cap has let the join through, in the join's own
+transaction, so a join refused by the cap leaves the lock exactly as it was. Until the API task of
+#245 the endpoint answers `LockedByBroadcaster` with 403 `channel_locked_by_broadcaster` for everyone.
+
+**Helix outage: the owner's join leaves an id-less row, the lock stays, self-healing.** Lifting needs
+the resolved identity. A join while Helix is unreachable (the owner's or a moderator's with a cached
+role) has none, falls back to the name and creates a fresh id-less row — the same accepted gap as for
+the env list. Nothing is counted for it: the sync's gate on the id 7TV resolves refuses it from the
+first tick, the roster leaves it out once it carries the id, and the identity reconcile writes the id
+down and deactivates it (`reason: "locked"`). The owner's join after the outage resolves the id, lifts
+the lock and reactivates that row. The wrong way round for the owner, but fail-closed and self-healing.
+
+**Why the reconcile locks the row where the exclusion gate does not.** `DeactivateExcludedRowAsync`
+writes without a row lock and relies on its catch: nothing legitimate writes against it. Here the
+broadcaster's join is a legitimate concurrent writer that lifts the lock while holding the row. So the
+lock pass runs one transaction per locked row — `LoadChannelByTwitchIdForUpdateAsync`, the lock read
+again under the row lock (a join that was faster has removed it: nothing is written), then the
+deactivation — and the id-less pass does the same by primary key (`LoadChannelByIdForUpdateAsync`).
+LEAVE goes out only after the commit; a failed publish is logged and not thrown, since retrying would
+find the row already inactive and the roster prune parts the channel within about two ticks.
+`ChannelDeactivation` is split for that into `StageAsync` (closes the open set-observation interval —
+the #200 invariant "inactive implies no open interval" — flips the flags, stages the audit entry) and
+`PublishLeaveAsync`; `DeactivateAsync` stays as their composition for the callers without a
+transaction, and a reason enum replaces the `forExclusion` flag (leave, excluded without a name,
+locked and loginUnresolvable with the name — the lock is not secret). The lock pass runs, like the
+exclusion pass, before the token and Helix early returns, and those returns now report a summary when
+either pass wrote something. `ChannelIdentityReconcileSummary.LockedDeactivated` is a counter of its
+own, named on every summary line of the worker, zero included: its presence in the production log is
+the evidence that the running worker image knows the lock (rollout, D4).
+
+**Unresolvable logins are left (D2).** An active id-less row whose login Helix definitively does not
+know (`NotFound`, never an outage), older than seven days and without a successful 7TV sync for seven
+days, is deactivated under its row lock with `{ reason: "loginUnresolvable" }` and its name, LEAVE
+after the commit, counter `UnresolvableDeactivated`. It then runs into the 180-day retention like every
+leave — which is what the purge's proof boundary relies on: such a row can be proven by nobody. The
+seven days are a constant in `ChannelIdentityService`, not configuration and not a `RetentionPolicy`
+period: a grace period against Helix's occasional empty answer for an existing login.
+
+**Id-less rows are counted only after their identity (D3 = A).** A row without a stored id warms its
+match cache only once 7TV has resolved an id that passed the env list and the lock; every null way out
+of that resolution clears the cache (`SyncChannelAsync`'s single null exit), and boot recovery's
+`WarmChannelAsync` skips id-less rows. The guarantee of 2026-09-08 ("counts from the join, even while
+7TV does not answer") therefore holds only for rows with a stored id; id-less rows come only from a
+Helix outage at join time. Since #165 the resolution waits for the per-channel backoff
+(`SevenTv:SearchBudget:ResolutionBackoffMaxSeconds`, default 3600) and the shared search budget
+(lockout `DefaultLockoutSeconds`, default 3600), so such a row can stay uncounted for about an hour
+**between two attempts**. That bounds the retry spacing, not the recovery. Known limit, older than #245
+and independent of it: an id-less rename duplicate whose old-login row still holds the Twitch id is
+refused by the sync as a duplicate, and once the mod team has given it a tag (even an empty one) the
+reconcile refuses the merge — it stays uncounted until a person removes the tag or the duplicate
+(pinned by `ChannelIdentityServiceTests`, no behaviour change).
+
+The API part of #245 (endpoints, the admin's 409, the audit-log generation boundary) extends this entry
+in its own commit.
 
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 

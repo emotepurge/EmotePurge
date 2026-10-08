@@ -13,8 +13,8 @@ namespace EmotePurge.Infrastructure.Services;
 /// The service shares the caller's scoped <c>AppDbContext</c>, so its write methods run inside the
 /// caller's transaction. They only stage changes in the change tracker and never call
 /// <c>SaveChanges</c>: the caller saves and commits. A new caller that saves in between would
-/// build half a transaction. Only <c>PurgeByBroadcasterAsync</c> writes a lock; only a join by a
-/// global admin removes one.
+/// build half a transaction. Only <c>PurgeByBroadcasterAsync</c> writes a lock; only a join removes
+/// one — the broadcaster's own, or a global admin's explicit lift (<c>ChannelService.JoinAsync</c>).
 /// </remarks>
 public interface IBroadcasterChannelLockService
 {

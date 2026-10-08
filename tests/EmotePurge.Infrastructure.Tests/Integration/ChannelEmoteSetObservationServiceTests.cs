@@ -392,6 +392,7 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
             new ChannelEmoteSetObservationService(db),
             new ChannelSyncGate(),
             Substitute.For<IExcludedChannelFilter>(),
+            new BroadcasterChannelLockService(db),
             new RecordingSevenTvSearchBudget(),
             new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),

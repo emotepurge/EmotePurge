@@ -6,7 +6,11 @@ using Microsoft.Extensions.Logging;
 
 namespace EmotePurge.Infrastructure.Services;
 
-public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExcludedChannelFilter excludedChannelFilter) : IEmoteService
+public class EmoteService(
+    AppDbContext db,
+    ILogger<EmoteService> logger,
+    IExcludedChannelFilter excludedChannelFilter,
+    IBroadcasterChannelLockService broadcasterChannelLocks) : IEmoteService
 {
     public async Task<SyncDeletedResultDto> MarkDeletedAsync(string channelName, IReadOnlyList<string> emoteIds, AuditActor actor, CancellationToken cancellationToken = default)
     {
@@ -225,20 +229,29 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
             .Where(c => c.IsBotActive && c.ActiveEmoteSetId == emoteSetId)
             .Select(c => new { c.Id, c.ChannelName, c.TwitchChannelId })
             .ToListAsync(cancellationToken);
+        // The broadcaster lock (#245) the same way: a locked channel is not a hit, so none of its
+        // rows is archived or restored and no leave observation is written for it. One batch lookup
+        // over the candidates' ids, not a query per channel.
+        var lockedIds = await LoadLockedIdsAsync(candidates.Select(c => c.TwitchChannelId), cancellationToken);
         var hits = candidates
             .Where(c => !excludedChannelFilter.IsExcluded(c.TwitchChannelId))
+            .Where(c => c.TwitchChannelId is null || !lockedIds.Contains(c.TwitchChannelId))
             .OrderBy(c => c.ChannelName, StringComparer.Ordinal)
             .ToList();
 
-        // Step 3 (E18): the expected channel, when it is not a hit. Missing, left or blocked all read
-        // notTracked — the block is never revealed. Only an active, unblocked channel with another
-        // active set is activeSetDiffers (its stored ActiveEmoteSetId may lag a 7TV set switch, F13).
-        // Either way, none of its rows is touched or counted.
+        // Step 3 (E18): the expected channel, when it is not a hit. Missing, left, blocked or locked by
+        // its broadcaster (#245) all read notTracked — the block is never revealed, and a locked
+        // channel looks untracked like a blocked one. Only an active, unblocked, unlocked channel with
+        // another active set is activeSetDiffers (its stored ActiveEmoteSetId may lag a 7TV set switch,
+        // F13). Either way, none of its rows is touched or counted.
         UnresolvedChannelDto? unresolved = null;
         if (normalizedExpected is not null && !hits.Exists(hit => hit.ChannelName == normalizedExpected))
         {
             var expected = await db.LoadChannelReadOnlyAsync(normalizedExpected, cancellationToken);
-            var reason = expected is null || !expected.IsBotActive || excludedChannelFilter.IsExcluded(expected.TwitchChannelId)
+            var reason = expected is null
+                         || !expected.IsBotActive
+                         || excludedChannelFilter.IsExcluded(expected.TwitchChannelId)
+                         || await broadcasterChannelLocks.GetLockedAtUtcAsync(expected.TwitchChannelId, cancellationToken) is not null
                 ? UnresolvedChannelReasons.NotTracked
                 : UnresolvedChannelReasons.ActiveSetDiffers;
             unresolved = new UnresolvedChannelDto(normalizedExpected, reason);
@@ -329,7 +342,8 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
             // trackedChannelName, so the entry names the channel the client saw. By id, not login:
             // logins move (#44), the id does not. It only names the paper entry; no row of the owner
             // channel is touched or counted here, and a blocked one is as invisible as in step 3.
-            var ownerChannel = await db.LoadActiveChannelByTwitchIdReadOnlyAsync(owner.TwitchUserId, excludedChannelFilter, cancellationToken);
+            var ownerChannel = await db.LoadActiveChannelByTwitchIdReadOnlyAsync(
+                owner.TwitchUserId, excludedChannelFilter, broadcasterChannelLocks, cancellationToken);
             var ownerChannelIsActiveHere = ownerChannel is not null && hits.Exists(hit => hit.TwitchChannelId == ownerChannel.TwitchChannelId);
             db.AddAuditEntry(
                 actor,
@@ -361,6 +375,22 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
     }
 
     // The paper entry without an owner channel: the owner identity names the target.
+    // The subset of these Twitch ids its broadcaster has locked (#245), in one query.
+    private async Task<HashSet<string>> LoadLockedIdsAsync(IEnumerable<string?> twitchChannelIds, CancellationToken cancellationToken)
+    {
+        var ids = twitchChannelIds.OfType<string>().Distinct(StringComparer.Ordinal).ToList();
+        if (ids.Count == 0)
+        {
+            return [];
+        }
+
+        var locked = await broadcasterChannelLocks.Locks
+            .Where(l => ids.Contains(l.TwitchChannelId))
+            .Select(l => l.TwitchChannelId)
+            .ToListAsync(cancellationToken);
+        return locked.ToHashSet(StringComparer.Ordinal);
+    }
+
     private static object BuildOwnerPaperDetails(
         IReadOnlyList<string> dedupedIds, string emoteSetId, InSetOwner owner, UnresolvedChannelDto? unresolved) =>
         unresolved is null

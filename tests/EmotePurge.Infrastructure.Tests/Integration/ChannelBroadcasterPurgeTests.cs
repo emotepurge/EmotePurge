@@ -224,17 +224,21 @@ public class ChannelBroadcasterPurgeTests(PostgresFixture fixture)
         Assert.Empty(publisher.ReceivedCalls());
     }
 
+    // The purge has locked the row and parks before its commit; a join of the same channel must wait
+    // (by Twitch id when Helix answers, by name when it does not) and decide only once the purge has
+    // committed — on the lock the purge wrote in the same transaction (#245, plan T4 test 11).
+    //  - a moderator with a resolved identity is refused: no row is created, the lock stays;
+    //  - the broadcaster with a resolved identity lifts the lock and creates the channel afresh;
+    //  - a moderator during a Helix outage has no id to check, so the fresh row is created id-less and
+    //    the lock stays — the accepted gap the 7TV sync's gate and the identity reconcile close.
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task PurgeHoldingTheLock_MakesAModeratorsJoinWait_AndTheJoinThenCreatesAFreshRow(bool joinResolvesTheTwitchId)
+    [InlineData("moderator")]
+    [InlineData("broadcaster")]
+    [InlineData("moderatorDuringOutage")]
+    public async Task PurgeHoldingTheLock_MakesAConcurrentJoinWait_AndTheJoinThenSeesTheLock(string joiner)
     {
-        // The purge has locked the row and parks before its commit; a moderator's join of the same
-        // channel must wait (by name, or by Twitch id when Helix answers) and, once the purge has
-        // committed, finds no row and creates one. T4 turns this outcome into LockedByBroadcaster;
-        // here it pins that the two serialise on the row lock rather than failing.
-        var name = joinResolvesTheTwitchId ? "bpracejoinid" : "bpracejoin";
-        var actor = Broadcaster(joinResolvesTheTwitchId ? "bp-900002" : "bp-900001", name);
+        var name = $"bprace{joiner.Length}";
+        var actor = Broadcaster($"bp-9001{joiner.Length:D2}", name);
         var seeded = await SeedChannelWithFullHistoryAsync(name, actor.TwitchUserId);
 
         await using var auditHold = await HoldTheAuditLogAsync();
@@ -246,23 +250,56 @@ public class ChannelBroadcasterPurgeTests(PostgresFixture fixture)
 
         var joinTag = $"{name}-join";
         await using var joinDb = fixture.CreateTaggedDbContext(joinTag);
-        var joinIdentity = joinResolvesTheTwitchId
-            ? Found(actor.TwitchUserId, name)
-            : Lookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable));
-        var join = CreateService(joinDb, joinIdentity).JoinAsync(name, new AuditActor("bp-mod", "bpmod"));
+        var joinIdentity = joiner == "moderatorDuringOutage"
+            ? Lookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable))
+            : Found(actor.TwitchUserId, name);
+        var joinActor = joiner == "broadcaster" ? actor : new AuditActor("bp-mod", "bpmod");
+        var join = CreateService(joinDb, joinIdentity).JoinAsync(name, joinActor);
         await fixture.WaitUntilBlockedOnLockAsync(joinTag, join);
 
         await auditHold.ReleaseAsync();
 
         Assert.Equal(ChannelBroadcasterPurgeResult.Purged, await purge);
-        Assert.Equal(ChannelJoinStatus.Joined, (await join).Status);
+        var joinResult = await join;
 
         await using var verify = fixture.CreateDbContext();
-        var fresh = await verify.Channels.AsNoTracking().SingleAsync(c => c.ChannelName == name);
-        Assert.NotEqual(seeded.ChannelId, fresh.Id);
         Assert.False(await verify.Emotes.AnyAsync(e => e.ChannelId == seeded.ChannelId));
+        var fresh = await verify.Channels.AsNoTracking().SingleOrDefaultAsync(c => c.ChannelName == name);
         var actions = (await LoadAuditEntriesAsync(name)).Select(e => e.Action).ToList();
-        Assert.Equal([AuditActions.ChannelPurge, AuditActions.ChannelJoin], actions);
+        var lockedAt = await LoadLockedAtAsync(actor.TwitchUserId);
+        try
+        {
+            switch (joiner)
+            {
+                case "moderator":
+                    Assert.Equal(ChannelJoinStatus.LockedByBroadcaster, joinResult.Status);
+                    Assert.Equal(lockedAt, joinResult.LockedAtUtc);
+                    Assert.Null(fresh);
+                    Assert.Equal([AuditActions.ChannelPurge], actions);
+                    break;
+                case "broadcaster":
+                    Assert.Equal(ChannelJoinStatus.Joined, joinResult.Status);
+                    Assert.NotNull(fresh);
+                    Assert.NotEqual(seeded.ChannelId, fresh.Id);
+                    Assert.Equal(actor.TwitchUserId, fresh.TwitchChannelId);
+                    Assert.Null(lockedAt);
+                    Assert.Equal([AuditActions.ChannelPurge, AuditActions.ChannelJoin], actions);
+                    break;
+                default:
+                    Assert.Equal(ChannelJoinStatus.Joined, joinResult.Status);
+                    Assert.NotNull(fresh);
+                    Assert.Null(fresh.TwitchChannelId);
+                    Assert.NotNull(lockedAt);
+                    Assert.Equal([AuditActions.ChannelPurge, AuditActions.ChannelJoin], actions);
+                    break;
+            }
+        }
+        finally
+        {
+            // Neither a fresh row nor the lock may outlive this case in the shared database.
+            await verify.Channels.Where(c => c.ChannelName == name).ExecuteUpdateAsync(c => c.SetProperty(x => x.IsBotActive, false));
+            await verify.BroadcasterChannelLocks.Where(l => l.TwitchChannelId == actor.TwitchUserId).ExecuteDeleteAsync();
+        }
     }
 
     [Fact]

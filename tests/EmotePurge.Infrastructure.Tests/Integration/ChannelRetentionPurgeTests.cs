@@ -406,7 +406,7 @@ public class ChannelRetentionPurgeTests(PostgresFixture fixture)
         return new ChannelIdentityService(
             db, helix, appTokenProvider, Substitute.For<IRedisPublisher>(), new ChannelEmoteSetObservationService(db),
             new ChannelIdentityWarningState(),
-            Substitute.For<IExcludedChannelFilter>(), logger);
+            Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), logger);
     }
 
     private async Task AssertNotPurgedAsync(string channelName, DateTime cutoff, string channelId, ChannelRetentionPurgeResult expected)

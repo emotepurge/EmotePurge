@@ -145,6 +145,63 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
         Assert.DoesNotContain(logger.Entries, e => e.Level > LogLevel.Debug && e.Message.Contains(excluded.ChannelName, StringComparison.Ordinal));
     }
 
+    // #245: the broadcaster lock's twin of the env gate on the resolved id costs the search like the
+    // env case — the backoff counts it, intended — and stays just as quiet in the log.
+    [Fact]
+    public async Task AResolvedIdTheBroadcasterLocked_CountsAsAMiss_AndIsNeverLogged()
+    {
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "880166");
+        await using var db = fixture.CreateDbContext();
+        var locked = await SeedIdLessChannelAsync(db, "wstest_budget_locked");
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        var harness = new Harness(db, logger: logger);
+        harness.Client.ResolveTwitchUserIdAsync(locked.ChannelName, Arg.Any<CancellationToken>())
+            .Returns(SevenTvTwitchUserIdResult.Ok("880166"));
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            Assert.Null(await harness.Service.SyncChannelAsync(locked.ChannelName));
+            Assert.False(harness.Backoff.IsDue(locked.Id, out _));
+            harness.Clock.Advance(TimeSpan.FromHours(1));
+        }
+
+        Assert.Equal(3, harness.Budget.Charges.Count);
+        await harness.Client.DidNotReceive().GetChannelStateForTwitchUserAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.DoesNotContain(logger.Entries, e => e.Level > LogLevel.Debug);
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Debug && e.Message.Contains("locked by its broadcaster", StringComparison.Ordinal));
+        var row = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == locked.Id);
+        Assert.Null(row.TwitchChannelId);
+        Assert.Null(row.LastSyncFailureReason);
+    }
+
+    // D3 = A (#245): every null way out of the id-less resolution leaves the match cache empty, the
+    // two that ask 7TV nothing included — an id-less row is not counted from Postgres before its id
+    // has passed both gates, however long the backoff or the budget hold the resolution back.
+    [Fact]
+    public async Task AnIdLessRow_HeldBackByTheBudgetOrTheBackoff_StaysCold()
+    {
+        await using var db = fixture.CreateDbContext();
+        var refused = await SeedIdLessChannelAsync(db, "wstest_budget_cold_refused");
+        var backedOff = await SeedIdLessChannelAsync(db, "wstest_budget_cold_backoff");
+        db.Emotes.Add(NewEmote(refused.Id, "e-cold-1", "coldrefused"));
+        db.Emotes.Add(NewEmote(backedOff.Id, "e-cold-2", "coldbackoff"));
+        await db.SaveChangesAsync();
+        var harness = new Harness(db);
+        harness.Client.ResolveTwitchUserIdAsync(backedOff.ChannelName, Arg.Any<CancellationToken>())
+            .Returns(SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.NoSevenTvAccount));
+
+        // The first attempt of backedOff is the paid miss; the second is held back by its backoff.
+        Assert.Null(await harness.Service.SyncChannelAsync(backedOff.ChannelName));
+        Assert.Null(await harness.Service.SyncChannelAsync(backedOff.ChannelName));
+        harness.Budget.NextRefusal = SevenTvSearchRefusal.Blocked;
+        Assert.Null(await harness.Service.SyncChannelAsync(refused.ChannelName));
+
+        await harness.Client.Received(1).ResolveTwitchUserIdAsync(backedOff.ChannelName, Arg.Any<CancellationToken>());
+        await harness.Client.DidNotReceive().ResolveTwitchUserIdAsync(refused.ChannelName, Arg.Any<CancellationToken>());
+        Assert.Empty(harness.Cache.GetChannelSnapshot(backedOff.ChannelName).NameToEmoteId);
+        Assert.Empty(harness.Cache.GetChannelSnapshot(refused.ChannelName).NameToEmoteId);
+    }
+
     [Fact]
     public async Task ASuccessfulResolution_ForgetsTheBackoff()
     {
@@ -220,6 +277,14 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
         Assert.Empty(harness.Budget.Charges);
     }
 
+    private static Emote NewEmote(string channelId, string sevenTvEmoteId, string name) => new()
+    {
+        ChannelId = channelId,
+        SevenTvEmoteId = sevenTvEmoteId,
+        Name = name,
+        ImageUrl = $"https://cdn.7tv.app/emote/{sevenTvEmoteId}/2x.webp",
+    };
+
     private static async Task<Channel> SeedIdLessChannelAsync(AppDbContext db, string name)
     {
         var channel = new Channel { ChannelName = name, TwitchChannelId = null, ActiveEmoteSetId = SetId, IsBotActive = true };
@@ -239,14 +304,16 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
             Client = Substitute.For<ISevenTvApiClient>();
             Budget = new RecordingSevenTvSearchBudget();
             Backoff = new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), Clock);
+            Cache = new EmoteMatchCache();
             Service = new SevenTvSyncService(
                 db,
                 Client,
-                new EmoteMatchCache(),
+                Cache,
                 new DuplicateEmoteNameTracker(),
                 new ChannelEmoteSetObservationService(db),
                 new ChannelSyncGate(),
                 excludedChannelFilter ?? Substitute.For<IExcludedChannelFilter>(),
+                new BroadcasterChannelLockService(db),
                 Budget,
                 Backoff,
                 new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), Clock),
@@ -260,6 +327,8 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
         public RecordingSevenTvSearchBudget Budget { get; }
 
         public TwitchIdResolutionBackoff Backoff { get; }
+
+        public EmoteMatchCache Cache { get; }
 
         public SevenTvSyncService Service { get; }
     }

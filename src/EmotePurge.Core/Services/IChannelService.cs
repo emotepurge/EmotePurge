@@ -79,6 +79,14 @@ public enum ChannelJoinStatus
     // from the list. Matched on the immutable Twitch id, resolved before any row is written; never
     // returned for a login Twitch could not resolve at all (that stays ChannelNotOnTwitch).
     ChannelExcluded,
+
+    // The broadcaster behind this Twitch id purged their own channel's data and locked it against
+    // re-adding (#245, BroadcasterChannelLocks). Lifted only by a join of the broadcaster themselves
+    // or by a global admin who asks for it explicitly (liftBroadcasterLock); everyone else, admins
+    // without the flag included, gets this status with ChannelJoinResult.LockedAtUtc. Checked on the
+    // resolved identity and on the stored id of the row the join landed on, under that row's lock;
+    // the excluded-channel list is checked first and wins. Nothing is written for it.
+    LockedByBroadcaster,
 }
 
 /// <summary>
@@ -96,10 +104,11 @@ public enum ChannelJoinStatus
 /// </summary>
 public sealed class ChannelJoinResult
 {
-    private ChannelJoinResult(ChannelJoinStatus status, Channel? channel)
+    private ChannelJoinResult(ChannelJoinStatus status, Channel? channel, DateTime? lockedAtUtc)
     {
         Status = status;
         Channel = channel;
+        LockedAtUtc = lockedAtUtc;
     }
 
     public ChannelJoinStatus Status { get; }
@@ -107,11 +116,24 @@ public sealed class ChannelJoinResult
     /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="ChannelJoinStatus.Joined"/>.</summary>
     public Channel? Channel { get; }
 
+    /// <summary>
+    /// When the broadcaster locked the channel; non-null if and only if <see cref="Status"/> is
+    /// <see cref="ChannelJoinStatus.LockedByBroadcaster"/> (#245). The admin's confirmation names it.
+    /// </summary>
+    public DateTime? LockedAtUtc { get; }
+
     public static ChannelJoinResult Joined(Channel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        return new ChannelJoinResult(ChannelJoinStatus.Joined, channel);
+        return new ChannelJoinResult(ChannelJoinStatus.Joined, channel, lockedAtUtc: null);
     }
+
+    /// <summary>
+    /// The one way to build a <see cref="ChannelJoinStatus.LockedByBroadcaster"/> result, so that no
+    /// call site can forget the date the admin's confirmation shows.
+    /// </summary>
+    public static ChannelJoinResult LockedByBroadcaster(DateTime lockedAtUtc) =>
+        new(ChannelJoinStatus.LockedByBroadcaster, channel: null, lockedAtUtc);
 
     /// <summary>
     /// Builds a rejected join. Rejects a success status outright: a caller that passes one is asking
@@ -130,6 +152,16 @@ public sealed class ChannelJoinResult
                 "ChannelJoinResult.Failed() kann keinen Erfolgsstatus tragen — für Joined ist ChannelJoinResult.Joined(channel) zuständig.");
         }
 
+        // Same reasoning for the one failure that carries a payload: built through Failed() it would
+        // reach the endpoint without the date the admin's confirmation needs.
+        if (status == ChannelJoinStatus.LockedByBroadcaster)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status),
+                status,
+                "ChannelJoinResult.Failed() cannot carry LockedByBroadcaster; use ChannelJoinResult.LockedByBroadcaster(lockedAtUtc).");
+        }
+
         // Keeps an undefined cast like (ChannelJoinStatus)7 out of the type, which is what the join
         // endpoint's switch would otherwise fall through unmatched.
         if (!Enum.IsDefined(status))
@@ -138,7 +170,7 @@ public sealed class ChannelJoinResult
                 nameof(status), status, "Unbekannter ChannelJoinStatus.");
         }
 
-        return new ChannelJoinResult(status, null);
+        return new ChannelJoinResult(status, channel: null, lockedAtUtc: null);
     }
 }
 
@@ -162,7 +194,19 @@ public interface IChannelService
     // already resolved it from the request's claims (IChannelAccessService.IsGlobalAdmin), and this
     // service has no ClaimsPrincipal to work from. Defaults to false so every existing caller keeps
     // being subject to the cap unless it explicitly says otherwise.
-    Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default);
+    //
+    // The broadcaster re-add lock (#245): when the resolved identity or the stored id of the row the
+    // join lands on is locked, the join is refused with LockedByBroadcaster — unless the actor is that
+    // broadcaster (actor.TwitchUserId equals the locked id), or isGlobalAdmin and liftBroadcasterLock
+    // are both true. Either lifts the lock in the join's own transaction and records it on the
+    // channel.join entry ({ broadcasterLockLifted }, plus { liftedByAdmin, lockedAtUtc } for the
+    // admin). liftBroadcasterLock means nothing without isGlobalAdmin, and nothing without a lock.
+    Task<ChannelJoinResult> JoinAsync(
+        string channelName,
+        AuditActor actor,
+        bool isGlobalAdmin = false,
+        bool liftBroadcasterLock = false,
+        CancellationToken cancellationToken = default);
 
     // Deactivates the bot for this channel and keeps the row and all its history. Reversible via
     // JoinAsync. See PurgeAsync for the irreversible variant.
@@ -215,7 +259,8 @@ public interface IChannelService
     // question, asked by Twitch id rather than by name — a 7TV editor grant and the picker's own
     // account both carry an id, never a channel name to look up by. IsBotActive = true only: a
     // channel we once tracked and then left is, for this endpoint's purpose, exactly as untracked as
-    // one we never joined — its ActiveEmoteSetId is stale, not a live observed state (E21).
+    // one we never joined — its ActiveEmoteSetId is stale, not a live observed state (E21). A row
+    // whose id is on the excluded-channel list or locked by its broadcaster (#245) reads as untracked too.
     Task<Channel?> GetActiveByTwitchChannelIdAsync(string twitchChannelId, CancellationToken cancellationToken = default);
 
     // The normalized names of every channel the bot is currently meant to be in — the worker's
@@ -231,6 +276,10 @@ public interface IChannelService
     // observing it the moment it restarts with the id configured, before the identity reconcile has
     // deactivated the row itself. Admin views that must still show the row read their own query
     // (IAdminChannelQueryService), not this one.
+    //
+    // It also excludes a row whose stored Twitch id is locked by its broadcaster (#245), as a SQL
+    // anti-join against BroadcasterChannelLocks rather than in memory: the table changes at runtime.
+    // An id-less row never matches the lock here; the 7TV sync's gate on the resolved id covers it.
     Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default);
 
     // Publishes a RESYNC command for an active channel, making the worker re-resolve the full 7TV

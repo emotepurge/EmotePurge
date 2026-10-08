@@ -31,8 +31,16 @@ public class ChannelIdentityService(
     IChannelEmoteSetObservationService emoteSetObservationService,
     ChannelIdentityWarningState warningState,
     IExcludedChannelFilter excludedChannelFilter,
+    IBroadcasterChannelLockService broadcasterChannelLocks,
     ILogger<ChannelIdentityService> logger) : IChannelIdentityService
 {
+    // D2 (#245): how long an id-less row whose login Twitch does not know may stay active. Not a
+    // retention period (RetentionPolicy holds those, and the privacy policy states them) but a grace
+    // period against a false NotFound — Helix occasionally answers an existing login with empty data —
+    // so it needs both a week of age and a week without a successful 7TV sync before the row is left.
+    // A constant, not configuration, like RetentionPolicy: it encodes a judgement, not a deployment.
+    private static readonly TimeSpan UnresolvableLoginGracePeriod = TimeSpan.FromDays(7);
+
     public async Task<ChannelIdentityReconcileSummary?> ReconcileActiveChannelsAsync(CancellationToken ct = default)
     {
         // Scalar projection, not entities: the pass mutates at most a handful of the rows it looks
@@ -42,12 +50,12 @@ public class ChannelIdentityService(
         var rows = await db.Channels
             .AsNoTracking()
             .Where(c => c.IsBotActive)
-            .Select(c => new ChannelIdentityRow(c.Id, c.TwitchChannelId, c.ChannelName))
+            .Select(c => new ChannelIdentityRow(c.Id, c.TwitchChannelId, c.ChannelName, c.CreatedAt, c.LastSyncedAtUtc))
             .ToListAsync(ct);
 
         if (rows.Count == 0)
         {
-            return new ChannelIdentityReconcileSummary(0, 0, 0, 0, 0, 0, 0);
+            return new ChannelIdentityReconcileSummary(0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         var counters = new ReconcileCounters();
@@ -80,6 +88,11 @@ public class ChannelIdentityService(
             settledChannelIds.Add(row.Id);
         }
 
+        // The broadcaster lock's twin of the pass above (#245, plan P13), also before the token/Helix
+        // early returns: a locked stored id needs no Helix answer either. After the env pass, so a row
+        // on both lists is settled as excluded (the env list wins).
+        await DeactivateLockedRowsAsync(rows, counters, settledChannelIds, ct);
+
         var appToken = await appTokenProvider.GetTokenAsync(ct);
         if (appToken is null)
         {
@@ -89,8 +102,10 @@ public class ChannelIdentityService(
             // exclusion pass above may have written something despite the outage, and that is worth
             // the worker's log line — null stays reserved for "nothing happened", now genuinely true
             // only when nothing was deactivated either.
-            return counters.Deactivated > 0
-                ? new ChannelIdentityReconcileSummary(rows.Count, 0, 0, 0, 0, 0, counters.Deactivated)
+            // LockedDeactivated counts too (#245): the lock pass runs before this return as well, and a
+            // lock deactivation during an outage must not vanish from the log.
+            return counters.Deactivated > 0 || counters.LockedDeactivated > 0
+                ? new ChannelIdentityReconcileSummary(rows.Count, 0, 0, 0, 0, 0, counters.Deactivated, counters.LockedDeactivated, 0)
                 : null;
         }
 
@@ -105,8 +120,10 @@ public class ChannelIdentityService(
             logger.LogInformation(
                 "Helix nicht erreichbar — Identitätsabgleich für {ChannelCount} Kanäle übersprungen.", rows.Count);
             // See the app-token early return above for why this is no longer unconditionally null.
-            return counters.Deactivated > 0
-                ? new ChannelIdentityReconcileSummary(rows.Count, 0, 0, 0, 0, 0, counters.Deactivated)
+            // LockedDeactivated counts too (#245): the lock pass runs before this return as well, and a
+            // lock deactivation during an outage must not vanish from the log.
+            return counters.Deactivated > 0 || counters.LockedDeactivated > 0
+                ? new ChannelIdentityReconcileSummary(rows.Count, 0, 0, 0, 0, 0, counters.Deactivated, counters.LockedDeactivated, 0)
                 : null;
         }
 
@@ -166,7 +183,9 @@ public class ChannelIdentityService(
             counters.Merged,
             counters.MergesRefused,
             counters.LoginsMissing,
-            counters.Deactivated);
+            counters.Deactivated,
+            counters.LockedDeactivated,
+            counters.UnresolvableDeactivated);
     }
 
     public async Task<TwitchUserLookup> LookupByLoginAsync(string login, CancellationToken ct = default)
@@ -331,6 +350,15 @@ public class ChannelIdentityService(
                     row.ChannelName);
             }
 
+            // D2 (#245): a row like this used to stay active forever — nothing ties it to an account,
+            // so neither the broadcaster's purge can prove it nor the retention ever sees it. Past the
+            // grace period it is left like any other channel and runs into the 180-day retention. Only
+            // reached on Helix's definite answer: an outage returns before this pass runs at all.
+            if (IsPastUnresolvableLoginGracePeriod(row))
+            {
+                await DeactivateUnresolvableRowAsync(row, counters, ct);
+            }
+
             return;
         }
 
@@ -347,6 +375,16 @@ public class ChannelIdentityService(
         if (excludedChannelFilter.IsExcluded(identity.Id))
         {
             await DeactivateExcludedRowAsync(row, identity.Id, counters, ct);
+            return;
+        }
+
+        // The broadcaster lock's id-less gate (#245): the login resolves to a locked id — typically a
+        // row a join created during a Helix outage after the broadcaster's purge. Deactivated under
+        // the row lock, with the id written down when it is free, so every later join path refuses the
+        // row by its stored id. After the env gate: the env list wins.
+        if (await broadcasterChannelLocks.GetLockedAtUtcAsync(identity.Id, ct) is not null)
+        {
+            await DeactivateLockedIdLessRowAsync(row, identity.Id, counters, settledChannelIds, ct);
             return;
         }
 
@@ -440,7 +478,7 @@ public class ChannelIdentityService(
         try
         {
             await ChannelDeactivation.DeactivateAsync(
-                db, redisPublisher, emoteSetObservationService, channel, AuditActor.System, forExclusion: true, ct);
+                db, redisPublisher, emoteSetObservationService, channel, AuditActor.System, ChannelDeactivationReason.Excluded, ct);
         }
         catch (DbUpdateException ex)
         {
@@ -490,6 +528,212 @@ public class ChannelIdentityService(
         // refusal: a log line naming which channel this concerns would itself leak the objection the
         // block exists to honour.
         logger.LogWarning("Channel deactivated: the channel is on the excluded-channel list.");
+    }
+
+    /// <summary>
+    /// The lock pass (#245, plan P13/P17): every active row whose stored Twitch id is locked by its
+    /// broadcaster is deactivated — named, with <c>reason = "locked"</c> — each in its own transaction
+    /// under the row lock, and LEAVE is published only after that commit.
+    /// <para>
+    /// Unlike <see cref="DeactivateExcludedRowAsync"/>, which writes without a row lock and relies on
+    /// its catch, this one locks: here there is a legitimate concurrent writer. The broadcaster's own
+    /// join lifts the lock while holding the same row lock, so the lock is checked again once this
+    /// pass holds the row — a join that was faster has removed it, and nothing is written.
+    /// </para>
+    /// </summary>
+    private async Task DeactivateLockedRowsAsync(
+        IReadOnlyList<ChannelIdentityRow> rows,
+        ReconcileCounters counters,
+        HashSet<string> settledChannelIds,
+        CancellationToken ct)
+    {
+        var storedIds = rows
+            .Where(r => r.TwitchChannelId is not null && !settledChannelIds.Contains(r.Id))
+            .Select(r => r.TwitchChannelId!)
+            .ToList();
+        if (storedIds.Count == 0)
+        {
+            return;
+        }
+
+        // One batch lookup for the whole snapshot, not a query per row; the decision per hit is
+        // re-taken under its row lock below anyway.
+        var lockedIds = (await broadcasterChannelLocks.Locks
+                .Where(l => storedIds.Contains(l.TwitchChannelId))
+                .Select(l => l.TwitchChannelId)
+                .ToListAsync(ct))
+            .ToHashSet(StringComparer.Ordinal);
+        if (lockedIds.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var row in rows)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (row.TwitchChannelId is not { } lockedId || !lockedIds.Contains(lockedId) || settledChannelIds.Contains(row.Id))
+            {
+                continue;
+            }
+
+            settledChannelIds.Add(row.Id);
+            try
+            {
+                await DeactivateLockedRowUnderLockAsync(row, lockedId, counters, ct);
+            }
+            catch (DbUpdateException ex)
+            {
+                // Same reasoning as the per-row catch of the main loop: one failed write must not cost
+                // the rest of the tick, and the failed changes must not be re-sent by the next save.
+                // The row may be named — the lock is not secret. The next tick retries it.
+                db.ChangeTracker.Clear();
+                logger.LogWarning(
+                    ex,
+                    "Deactivating channel {ChannelName} ({ChannelId}) for its broadcaster lock failed — skipped, the next pass retries it.",
+                    row.ChannelName, row.Id);
+            }
+        }
+    }
+
+    private async Task DeactivateLockedRowUnderLockAsync(
+        ChannelIdentityRow row, string lockedId, ReconcileCounters counters, CancellationToken ct)
+    {
+        string channelName;
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+        {
+            var channel = await db.LoadChannelByTwitchIdForUpdateAsync(lockedId, ct);
+            if (channel is null
+                || !channel.IsBotActive
+                || !string.Equals(channel.Id, row.Id, StringComparison.Ordinal)
+                || await broadcasterChannelLocks.GetLockedAtUtcAsync(lockedId, ct) is null)
+            {
+                // Gone (a purge), already left, a different row holds the id by now (a merge), or the
+                // broadcaster's join lifted the lock while this pass waited for the row: nothing to do.
+                // Disposing without a commit releases the row lock.
+                return;
+            }
+
+            await ChannelDeactivation.StageAsync(
+                db, emoteSetObservationService, channel, AuditActor.System, ChannelDeactivationReason.Locked, ct);
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+            channelName = channel.ChannelName;
+        }
+
+        counters.LockedDeactivated++;
+        logger.LogInformation(
+            "Channel {ChannelName} deactivated: its broadcaster has locked it against re-adding.", channelName);
+        await PublishLeaveAfterCommitAsync(channelName, ct);
+    }
+
+    /// <summary>
+    /// The id-less half of the lock pass (#245): the row's login resolved to a locked id. Locked by
+    /// primary key, re-checked under the lock (still active, still without an id of its own, still
+    /// locked), then the id is written down when no other row holds it — the same reason
+    /// <see cref="DeactivateExcludedRowAsync"/> writes it: every later join path then refuses the row by
+    /// its stored id — and the row is deactivated, committed before LEAVE is published.
+    /// </summary>
+    private async Task DeactivateLockedIdLessRowAsync(
+        ChannelIdentityRow row,
+        string lockedId,
+        ReconcileCounters counters,
+        HashSet<string> settledChannelIds,
+        CancellationToken ct)
+    {
+        settledChannelIds.Add(row.Id);
+        string channelName;
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+        {
+            var channel = await db.LoadChannelByIdForUpdateAsync(row.Id, ct);
+            if (channel is null
+                || !channel.IsBotActive
+                || channel.TwitchChannelId is not null
+                || await broadcasterChannelLocks.GetLockedAtUtcAsync(lockedId, ct) is null)
+            {
+                // Gone, left, settled by a join that wrote its own id (the broadcaster's lifts the lock
+                // in the same commit), or the lock is gone: the next tick decides afresh.
+                return;
+            }
+
+            if (!await db.Channels.AnyAsync(c => c.TwitchChannelId == lockedId, ct))
+            {
+                channel.TwitchChannelId = lockedId;
+            }
+
+            await ChannelDeactivation.StageAsync(
+                db, emoteSetObservationService, channel, AuditActor.System, ChannelDeactivationReason.Locked, ct);
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+            channelName = channel.ChannelName;
+        }
+
+        counters.LockedDeactivated++;
+        logger.LogInformation(
+            "Channel {ChannelName} deactivated: its login resolves to a Twitch id its broadcaster has locked against re-adding.",
+            channelName);
+        await PublishLeaveAfterCommitAsync(channelName, ct);
+    }
+
+    /// <summary>
+    /// D2 (#245): an active id-less row whose login Twitch definitively does not know, past the grace
+    /// period, is left like any other channel — named, <c>reason = "loginUnresolvable"</c>, under the
+    /// row lock, committed before LEAVE. It then runs into the 180-day retention like every leave,
+    /// which is what makes the broadcaster purge's proof boundary hold for such rows.
+    /// </summary>
+    private async Task DeactivateUnresolvableRowAsync(ChannelIdentityRow row, ReconcileCounters counters, CancellationToken ct)
+    {
+        string channelName;
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+        {
+            var channel = await db.LoadChannelByIdForUpdateAsync(row.Id, ct);
+            if (channel is null
+                || !channel.IsBotActive
+                || channel.TwitchChannelId is not null
+                || !string.Equals(channel.ChannelName, row.ChannelName, StringComparison.Ordinal))
+            {
+                // Changed since the snapshot (a leave, a backfill, a rename): Helix's answer was about
+                // the row as it was, so nothing is written.
+                return;
+            }
+
+            await ChannelDeactivation.StageAsync(
+                db, emoteSetObservationService, channel, AuditActor.System, ChannelDeactivationReason.LoginUnresolvable, ct);
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+            channelName = channel.ChannelName;
+        }
+
+        counters.UnresolvableDeactivated++;
+        logger.LogInformation(
+            "Channel {ChannelName} deactivated: Twitch has not known its login for over {GraceDays} days and the row has no Twitch id.",
+            channelName, UnresolvableLoginGracePeriod.Days);
+        await PublishLeaveAfterCommitAsync(channelName, ct);
+    }
+
+    /// <summary>
+    /// LEAVE for a deactivation this pass has already committed. A failed publish is logged and not
+    /// thrown: the row is the source of truth, retrying would find it inactive and never publish again,
+    /// and the periodic resync's roster prune (RosterPrunePolicy, issue #41) parts the channel within
+    /// about two ticks anyway — the same reasoning as <see cref="DeactivateExcludedRowAsync"/>'s catch.
+    /// </summary>
+    private async Task PublishLeaveAfterCommitAsync(string channelName, CancellationToken ct)
+    {
+        try
+        {
+            await ChannelDeactivation.PublishLeaveAsync(redisPublisher, channelName, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                ex,
+                "Channel deactivated, but 1 LEAVE announcement could not be published — the periodic 7TV resync's roster prune (issue #41) will still stop the worker from observing it within about two minutes.");
+        }
+    }
+
+    private static bool IsPastUnresolvableLoginGracePeriod(ChannelIdentityRow row)
+    {
+        var cutoff = DateTime.UtcNow - UnresolvableLoginGracePeriod;
+        return row.CreatedAt < cutoff && (row.LastSyncedAtUtc is null || row.LastSyncedAtUtc < cutoff);
     }
 
     private async Task BackfillIdAsync(
@@ -831,8 +1075,9 @@ public class ChannelIdentityService(
     }
 
     // The snapshot one pass works from. A record rather than a tuple so the projection reads as
-    // three named facts about a channel.
-    private sealed record ChannelIdentityRow(string Id, string? TwitchChannelId, string ChannelName);
+    // named facts about a channel; the two timestamps serve the D2 grace period (#245).
+    private sealed record ChannelIdentityRow(
+        string Id, string? TwitchChannelId, string ChannelName, DateTime CreatedAt, DateTime? LastSyncedAtUtc);
 
     private sealed class ReconcileCounters
     {
@@ -842,5 +1087,7 @@ public class ChannelIdentityService(
         public int MergesRefused;
         public int LoginsMissing;
         public int Deactivated;
+        public int LockedDeactivated;
+        public int UnresolvableDeactivated;
     }
 }

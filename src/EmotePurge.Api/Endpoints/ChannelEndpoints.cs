@@ -155,7 +155,7 @@ public static class ChannelEndpoints
             var principal = httpContext.User.TryBuildTwitchPrincipal();
             var isGlobalAdmin = principal is not null && channelAccessService.IsGlobalAdmin(principal);
 
-            var result = await channelService.JoinAsync(channelName, actor, isGlobalAdmin, ct);
+            var result = await channelService.JoinAsync(channelName, actor, isGlobalAdmin, liftBroadcasterLock: false, ct);
             // A switch over every status rather than an `is null` check on Channel: a future third
             // status (e.g. "channel suspended") would otherwise silently fall through the old
             // two-way check and be reported as ChannelNotOnTwitch. This way the compiler flags a
@@ -188,6 +188,12 @@ public static class ChannelEndpoints
                 ChannelJoinStatus.ChannelExcluded =>
                     Results.Json(
                         new { errorCode = ApiErrorCodes.ChannelExcluded }, statusCode: StatusCodes.Status403Forbidden),
+
+                // 403: the broadcaster locked the channel against re-adding (#245). For now the same
+                // answer for every caller; the admin's 409 with the lock date comes with the admin lift.
+                ChannelJoinStatus.LockedByBroadcaster =>
+                    Results.Json(
+                        new { errorCode = ApiErrorCodes.ChannelLockedByBroadcaster }, statusCode: StatusCodes.Status403Forbidden),
 
                 // The stored login, which is always the one that was asked for: LookupByLoginAsync
                 // only reports Found on a normalized name match, so even in the rename case the

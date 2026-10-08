@@ -508,6 +508,82 @@ public class EmoteServiceTests(PostgresFixture fixture)
         Assert.DoesNotContain("exclu", audit.DetailsJson, StringComparison.OrdinalIgnoreCase);
     }
 
+    // #245: the broadcaster lock reads like the block list at all three of the report's read points
+    // (step 2 hits, step 3 expected channel, step 3a owner channel) — a locked channel looks untracked.
+    [Fact]
+    public async Task MarkDeletedInSetAsync_LockedChannelWithTheSetActive_IsNeitherTouchedNorNamed()
+    {
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "4495");
+        await using var db = fixture.CreateDbContext();
+        var locked = SeedChannel(db, "insetdel_locked", "4495", "set-insetdel-locked");
+        var emote = SeedEmote(db, locked, "7tv-idl1");
+        await db.SaveChangesAsync();
+
+        try
+        {
+            var result = await CreateService(db).MarkDeletedInSetAsync(
+                "set-insetdel-locked", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idl1"], null, Actor);
+
+            Assert.Empty(result.Channels);
+            Assert.Null(result.UnresolvedChannel);
+            Assert.False(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
+            Assert.False(await db.EmoteSetLeaveObservations.AnyAsync(o => o.ChannelId == locked.Id));
+            var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-locked"));
+            Assert.Null(audit.ChannelName);
+        }
+        finally
+        {
+            await DeactivateAsync(locked.Id);
+        }
+    }
+
+    [Fact]
+    public async Task MarkDeletedInSetAsync_LockedChannelAsTheExpectedOne_IsNotTracked()
+    {
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "4496");
+        await using var db = fixture.CreateDbContext();
+        var locked = SeedChannel(db, "insetdel_lockedexp", "4496", "set-insetdel-lockedexp-active");
+        await db.SaveChangesAsync();
+
+        try
+        {
+            var result = await CreateService(db).MarkDeletedInSetAsync(
+                "set-insetdel-lockedexp-other", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idle1"], "insetdel_lockedexp", Actor);
+
+            // Without the lock this channel would read activeSetDiffers (active, another set).
+            Assert.Equal(new UnresolvedChannelDto("insetdel_lockedexp", UnresolvedChannelReasons.NotTracked), result.UnresolvedChannel);
+        }
+        finally
+        {
+            await DeactivateAsync(locked.Id);
+        }
+    }
+
+    [Fact]
+    public async Task MarkDeletedInSetAsync_NonActiveSetOfALockedOwnerChannel_WritesThePaperEntryWithoutAChannel()
+    {
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "4497");
+        await using var db = fixture.CreateDbContext();
+        var locked = SeedChannel(db, "insetdel_lockedowner", "4497", "set-insetdel-lockedowner-active");
+        await db.SaveChangesAsync();
+
+        try
+        {
+            await CreateService(db).MarkDeletedInSetAsync(
+                "set-insetdel-lockedowner-other", OwnerSevenTvUserId, OwnerTwitchLogin, "4497", ["7tv-idlo1"], null, Actor);
+
+            var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-lockedowner-other"));
+            Assert.Null(audit.ChannelName);
+            Assert.Equal(
+                """{"emoteCount":1,"emoteSetId":"set-insetdel-lockedowner-other","targetOwnerSevenTvUserId":"owner-seven-tv-id","targetOwnerTwitchLogin":"setowner"}""",
+                audit.DetailsJson);
+        }
+        finally
+        {
+            await DeactivateAsync(locked.Id);
+        }
+    }
+
     [Fact]
     public async Task MarkDeletedInSetAsync_UntrackedSet_WritesOnlyThePaperEntry_WithTheOwner()
     {
@@ -1150,7 +1226,14 @@ public class EmoteServiceTests(PostgresFixture fixture)
             .Build();
         var excludedChannelFilter = new ExcludedChannelFilter(configuration, NullLogger<ExcludedChannelFilter>.Instance);
 
-        return new EmoteService(db, logger ?? NullLogger<EmoteService>.Instance, excludedChannelFilter);
+        return new EmoteService(db, logger ?? NullLogger<EmoteService>.Instance, excludedChannelFilter, new BroadcasterChannelLockService(db));
+    }
+
+    // A row whose id a test locked is left again afterwards (see BroadcasterLockScope).
+    private async Task DeactivateAsync(string channelId)
+    {
+        await using var db = fixture.CreateDbContext();
+        await db.Channels.Where(c => c.Id == channelId).ExecuteUpdateAsync(c => c.SetProperty(x => x.IsBotActive, false));
     }
 
     private static Channel SeedChannel(AppDbContext db, string channelName, string twitchChannelId, string activeEmoteSetId, bool isBotActive = true)
