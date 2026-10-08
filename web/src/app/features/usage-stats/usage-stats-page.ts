@@ -474,7 +474,15 @@ export class UsageStatsPage {
     if (this.liveMembersState() === 'none') {
       return mergeSetView(rows, null, true);
     }
-    return mergeSetView(rows, this.liveMembers()?.emotes ?? null, false);
+    // `'left'` rows (counted under this set, no longer in it on 7TV) are dropped here: the active
+    // set's view never shows an archived emote, and the asymmetry misled a moderator into copying
+    // removed emotes. Dropped *before* every consumer below, so bands, sums, the Pareto denominator,
+    // the count, mark-all and the drilldown never see them. Rows that ARE in the set but carry no
+    // counts (E17) stay. Without a readable member list `mergeSetView` marks everything `'live'`;
+    // the shared set-view lock covers the actions in that state.
+    return mergeSetView(rows, this.liveMembers()?.emotes ?? null, false).filter(
+      (row) => row.membership === 'live',
+    );
   });
   protected readonly setStatus = signal<EmoteSetStatus | null>(null);
   /**
@@ -1085,7 +1093,7 @@ export class UsageStatsPage {
    * Every row that has a count under the shown set — the only rows bands, sort, sums, the Pareto
    * denominator, the distribution strip and the fill bars may see (spec 8.2, F16). A `null` row is
    * split off *before* any of them, never coerced: `null` means "no counts under this set", which is
-   * not the same statement as 0 (E17). `'left'` rows do have counts and stay (E23, AK 57).
+   * not the same statement as 0 (E17). `'left'` rows never get this far (`emotes`).
    */
   protected readonly countedEmotes = computed(() => this.emotes().filter(isCounted));
 
@@ -1791,10 +1799,10 @@ export class UsageStatsPage {
   );
 
   /**
-   * The marked rows the copy flow may take: `membership === 'live'` only. A `left` row (E23) is
-   * counted under the shown non-active set but no longer in it on 7TV — copying it would put an
-   * emote into the target that the source set no longer holds. Same rule as `selectedForDelete`
-   * and `voteBallotSevenTvEmoteIds`; the dialog's counts and the copied rows read this one source.
+   * The marked rows the copy flow may take: `membership === 'live'` only. `emotes()` already
+   * drops `left` rows; this stays as defense in depth, because copying one would put an emote into
+   * the target that the source set no longer holds. Same rule as `selectedForDelete` and
+   * `voteBallotSevenTvEmoteIds`; the dialog's counts and the copied rows read this one source.
    */
   private readonly importableSelection = computed(() =>
     this.selection
@@ -2281,7 +2289,7 @@ export class UsageStatsPage {
   /**
    * Whether a row has a history to open (spec #200, 7.2, drilldown gate): `/daily` asks by
    * `Emote.Id` and answers in counts, so a row without either — a live member with no counts under
-   * the shown set — has nothing the dialog could show. `'left'` rows do have both and keep it.
+   * the shown set — has nothing the dialog could show.
    */
   protected canDrilldown(emote: EmoteUsageTotal): boolean {
     return emote.emoteId !== null && emote.totalUseCount !== null;

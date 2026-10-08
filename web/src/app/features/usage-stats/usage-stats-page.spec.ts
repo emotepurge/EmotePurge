@@ -3399,7 +3399,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     await openView({
       emoteSetId: 'set-b',
       totals: [emote('gone', 'OldPumpkin', 30)],
-      members: memberList([member('7tv-x', 'PumpkinX')]),
+      members: memberList([member('7tv-x', 'PumpkinX'), member('7tv-gone', 'OldPumpkin')]),
     });
     const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
       closed: of(undefined),
@@ -3450,103 +3450,12 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect([...component['voteBallotSevenTvEmoteIds']()].sort()).toEqual(['7tv-a', '7tv-c']);
   });
 
-  it("excludes a 'left' row from the set-session ballot — CreateAsync validates all-or-nothing against the LIVE 7TV set (K6 whole-branch review, Fable B)", async () => {
-    await openView({
-      emoteSetId: 'set-b',
-      // 'gone' is counted here but absent from the live list below ⇒ 'left' (E23). 'a' and
-      // 'live2' are both live — 'live2' has no totals row of its own (class-2b), same as the
-      // sibling test above.
-      totals: [emote('a', 'PeepoA'), emote('gone', 'GoneEmote')],
-      members: memberList([member('7tv-a', 'PeepoA'), member('7tv-live2', 'Live2')]),
-    });
-    const rows = component['emotes']();
-    expect(rows.map((row) => row.membership).sort()).toEqual(['left', 'live', 'live']);
-    for (const row of rows) {
-      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
-    }
-    expect(component['selection'].selectedKeys()).toHaveLength(3);
-
-    // Sending 'gone' alongside the two live ids would fail VoteSessionService.CreateAsync's
-    // all-or-nothing live-membership check (spec section 9 step 2, 400 emote_ids_invalid) and
-    // silently drop the two rows that WERE still valid along with it.
-    expect([...component['voteBallotSevenTvEmoteIds']()].sort()).toEqual(['7tv-a', '7tv-live2']);
-    // voteBallotSize() is what the vote button's label and [disabled] actually read (arbitrated
-    // review round 2) — it must count the ballot CreateAsync would receive (the two live rows),
-    // not the raw selection (all three rows, including the excluded 'left' one).
-    expect(component['voteBallotSize']()).toBe(2);
-  });
-
-  it("counts the ballot at zero and opens no dialog when only a 'left' row is selected (arbitrated review round 2)", async () => {
-    // Same shape as the sibling test above, but this time only the 'left' row is picked — the
-    // ballot openCreateVoteSession would actually send is then empty even though the selection
-    // itself is not, which is exactly the gap voteBallotSize() (rather than the raw selection
-    // count) closes for both the button's [disabled] and this early return.
-    await openView({
-      emoteSetId: 'set-b',
-      totals: [emote('gone', 'GoneEmote')],
-      members: memberList([member('7tv-a', 'PeepoA')]),
-    });
-    const left = component['emotes']().find((row) => row.membership === 'left')!;
-    component['selection'].onRowClick(left, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['7tv-gone']);
-
-    expect(component['voteBallotSize']()).toBe(0);
-    expect(component['voteLocked']()).toBe(false);
-
-    const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open');
-    component['openCreateVoteSession']();
-
-    expect(openSpy).not.toHaveBeenCalled();
-  });
-
-  describe("import keeps a 'left' row out (E23 extended to the copy flow)", () => {
+  describe('import obeys the shared set-view lock', () => {
     function spyOnPicker() {
       return vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
         closed: new Subject<unknown>(),
       } as unknown as ReturnType<Dialog['open']>);
     }
-
-    it("hands neither scope a 'left' row after mark-all, and counts what it copies", async () => {
-      await openView({
-        emoteSetId: 'set-b',
-        totals: [emote('gone', 'GoneEmote'), emote('a', 'PeepoA')],
-        members: memberList([member('7tv-a', 'PeepoA')]),
-      });
-      expect(
-        component['emotes']()
-          .map((row) => row.membership)
-          .sort(),
-      ).toEqual(['left', 'live']);
-      component['markAll']();
-      expect(component['selection'].selectedKeys()).toHaveLength(2);
-
-      expect(component['importShortcutSelectionCount']()).toBe(1);
-      const openSpy = spyOnPicker();
-      component['openImportTarget']();
-
-      expect(openSpy).toHaveBeenCalledTimes(1);
-      const data = openSpy.mock.calls[0][1]?.data as {
-        visibleCount: number;
-        selectionCount: number;
-      };
-      expect(data.visibleCount).toBe(1);
-      expect(data.selectionCount).toBe(1);
-    });
-
-    it("opens no picker and locks the header button and shortcut when only 'left' rows exist", async () => {
-      await openView({
-        emoteSetId: 'set-b',
-        totals: [emote('gone', 'GoneEmote')],
-        members: memberList([member('7tv-other', 'Other')]),
-      });
-      const left = component['emotes']().find((row) => row.membership === 'left')!;
-      component['selection'].onRowClick(left, { shiftKey: false } as MouseEvent);
-      const openSpy = spyOnPicker();
-
-      expect(component['importShortcutLocked']()).toBe(true);
-      component['openImportTarget']('selection');
-      expect(openSpy).not.toHaveBeenCalled();
-    });
 
     it.each([
       ['unavailable', 'unavailable' as const],
@@ -3698,20 +3607,22 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['inspectedPoints']().length).toBeGreaterThan(0);
   });
 
-  it("marks a counted row that left the set as 'left', keeps it in the sums, and never hands it to the delete run (AK 57)", async () => {
+  it('hides a counted row that left the set: it is not in the grid, the count or the denominator, while a live row without counts stays (E23 reversed)', async () => {
     await openView({
       emoteSetId: 'set-b',
       totals: [emote('gone', 'OldPumpkin', 30), emote('a', 'Alpha', 70)],
-      members: memberList([member('7tv-a', 'Alpha')]),
+      members: memberList([member('7tv-a', 'Alpha'), member('7tv-fresh', 'Fresh')]),
     });
-    const left = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-gone')!;
-    expect(left.membership).toBe('left');
-    expect(component['totalUsage']()).toBe(100);
 
-    const alpha = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-a')!;
-    component['selection'].onRowClick(left, { shiftKey: false } as MouseEvent);
-    component['selection'].onRowClick(alpha, { shiftKey: false } as MouseEvent);
-    expect(component['selectedForDelete']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+    const ids = component['emotes']().map((row) => row.sevenTvEmoteId);
+    expect(ids).toEqual(['7tv-a', '7tv-fresh']);
+    expect(component['atlasOrder']().map((row) => row.sevenTvEmoteId)).toEqual(ids);
+    expect(component['emotes']().every((row) => row.membership === 'live')).toBe(true);
+    // 70, not 100: the departed row's 30 uses are not part of the shown set any more.
+    expect(component['totalUsage']()).toBe(70);
+
+    component['markAll']();
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-fresh']);
   });
 
   it("counts a #74 duplicate cell as two slots of the shown set's own budget (AK 58)", async () => {
