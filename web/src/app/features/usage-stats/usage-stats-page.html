@@ -130,10 +130,19 @@
           appButton="neutral"
           class="disabled:cursor-not-allowed"
           [disabled]="transferButtonDisabled()"
+          [attr.aria-describedby]="importLockReasonKey() ? 'transfer-lock-reason' : null"
           (click)="openImportTarget()"
         >
           {{ 'import.copyButton' | transloco }}
         </button>
+        @if (importLockReasonKey(); as lockKey) {
+          <!-- Why the button above is disabled (UI-Designsprache §10, "Disabled explains itself"):
+               the set-view lock can lock it on a loaded view with nothing selected, where the dock
+               that carries the delete/vote reason is not mounted. -->
+          <span id="transfer-lock-reason" class="text-xs text-fg-muted">
+            {{ lockKey | transloco }}
+          </span>
+        }
       }
       @if (!isCoarse()) {
         <app-import-trigger
@@ -343,9 +352,6 @@
           />
         </span>
         <span class="font-medium text-fg">{{ emote.emoteName }}</span>
-        @if (emote.membership === 'left') {
-          <span class="text-warning-fg">{{ 'usageStats.setView.leftBadge' | transloco }}</span>
-        }
         @if (inspectedRank(); as rank) {
           <span class="font-mono">#{{ rank }}</span>
         }
@@ -720,7 +726,6 @@
                       type="button"
                       [class]="
                         'app-sprite-cell relative block h-full w-full scroll-mt-48 transition-shadow ' +
-                        (emote.membership === 'left' ? 'app-sprite-cell-void ' : '') +
                         (selection.isSelected(emote)
                           ? ''
                           : 'hover:inset-ring-1 hover:inset-ring-border-strong')
@@ -740,9 +745,6 @@
                                     count: formatCount(emote.totalUseCount),
                                   })
                             : emote.emoteName + ' · ' + formatCount(emote.totalUseCount) + '×') +
-                        (emote.membership === 'left'
-                          ? ' · ' + ('usageStats.setView.leftBadge' | transloco)
-                          : '') +
                         (emote.slotCount > 1
                           ? ' · ' +
                             ('usageStats.setView.slots'
@@ -760,15 +762,7 @@
                       (mouseenter)="inspect(emote)"
                       (focus)="onCellFocus(emote, row.startIndex + i)"
                     >
-                      <!-- A 'left' row (spec #200, 8.2, E23) keeps its numbers but is no longer in the
-                       set: the ballot's archived treatment (void plate, dimmed sprite), because it
-                       sits mixed among live cells with no heading to say it — the one case §2.4
-                       keeps the plate for. -->
-                      <app-emote-sprite
-                        [url]="emote.imageUrl"
-                        [size]="64"
-                        [dimmed]="emote.membership === 'left'"
-                      />
+                      <app-emote-sprite [url]="emote.imageUrl" [size]="64" />
                       <!-- The figure is printed onto the sprite rather than under it: a caption row
                        would cost a third of the cell, and the scrim is what makes it legible over
                        whatever the artwork puts beneath. A row without counts prints nothing — its
@@ -906,11 +900,6 @@
             </span>
             <div class="min-w-0">
               <p class="text-sm font-semibold break-all text-fg">{{ emote.emoteName }}</p>
-              @if (emote.membership === 'left') {
-                <p class="mt-0.5 text-[11px] text-warning-fg">
-                  {{ 'usageStats.setView.leftBadge' | transloco }}
-                </p>
-              }
               <p class="mt-0.5 font-mono text-[11px] text-fg-muted">
                 @if (inspectedRank(); as rank) {
                   #{{ rank }} ·
@@ -1170,6 +1159,9 @@
             buttonSize="lg"
             class="disabled:cursor-not-allowed"
             [disabled]="importShortcutLocked()"
+            [attr.aria-describedby]="
+              importLockReasonKey() ? massDeletePanel.deleteLockReasonId : null
+            "
             (click)="openImportTarget('selection')"
           >
             {{ 'import.dockCopyButton' | transloco: { count: importShortcutSelectionCount() } }}

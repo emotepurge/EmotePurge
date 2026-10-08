@@ -7,6 +7,7 @@ function state(overrides: Partial<ImportShortcutState> = {}): ImportShortcutStat
     selectionCount: 1,
     importScopeCurrent: true,
     hasActiveRun: false,
+    setViewLocked: false,
     ...overrides,
   };
 }
@@ -26,6 +27,10 @@ describe('importShortcutDisabled', () => {
 
   it("disables when importScopeCurrent is false — a mid-channel-switch capture would copy channel A's emotes under B's name", () => {
     expect(importShortcutDisabled(state({ importScopeCurrent: false }))).toBe(true);
+  });
+
+  it('disables while the set view is locked — its rows are not verified against the live member list', () => {
+    expect(importShortcutDisabled(state({ setViewLocked: true }))).toBe(true);
   });
 
   it('disables when several locks apply at once', () => {

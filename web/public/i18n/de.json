@@ -809,6 +809,12 @@
         "switching": "Löschen und Abstimmen gesperrt, bis das gewählte Set geladen ist.",
         "statusUnavailable": "Löschen und Abstimmen gesperrt: Das aktive Set des Kanals ist gerade nicht bekannt."
       },
+      "importLock": {
+        "membersUnavailable": "Übertragen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
+        "truncated": "Übertragen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
+        "switching": "Übertragen gesperrt, bis das gewählte Set geladen ist.",
+        "statusUnavailable": "Übertragen gesperrt: Das aktive Set des Kanals ist gerade nicht bekannt."
+      },
       "loadFailedTitle": "Das gewählte Set konnte nicht geladen werden",
       "retry": "Erneut versuchen"
     }
