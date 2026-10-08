@@ -17,6 +17,7 @@ public class SevenTvPeriodicResyncWorker(
     BootRecoveryGate bootRecoveryGate,
     ISevenTvEventClient sevenTvEventClient,
     IEmoteMatchCache emoteMatchCache,
+    IEmptySetConfirmationTracker emptySetConfirmations,
     IRedisPublisher redisPublisher,
     IConfiguration configuration,
     IServiceScopeFactory scopeFactory) : BackgroundService
@@ -113,9 +114,10 @@ public class SevenTvPeriodicResyncWorker(
         }
     }
 
-    // Symmetric counterpart to Worker.cs's Redis LEAVE handler — same three steps, in the same
-    // order (the IRC leave only for names on the roster), for every channel RosterPrunePolicy decides has fallen out of the active set. Neither
-    // EmoteMatchCache.RemoveChannel nor ISevenTvEventClient.Unsubscribe perform I/O, and
+    // Symmetric counterpart to Worker.cs's Redis LEAVE handler — same four steps, in the same
+    // order (the IRC leave only for names on the roster), for every channel RosterPrunePolicy decides
+    // has fallen out of the active set. Neither EmoteMatchCache.RemoveChannel,
+    // IEmptySetConfirmationTracker.Reset nor ISevenTvEventClient.Unsubscribe perform I/O, and
     // LeaveChannelAsync already swallows its own exceptions, so no per-channel try/catch is needed
     // here beyond the one already wrapping this whole tick in ResyncOnceAsync.
     private async Task PruneStaleChannelsAsync(IReadOnlyList<string> activeChannels)
@@ -140,6 +142,7 @@ public class SevenTvPeriodicResyncWorker(
         {
             logger.LogDebug("Convergence net: leaving {Channel}.", channelName);
             emoteMatchCache.RemoveChannel(channelName);
+            emptySetConfirmations.Reset(channelName);
             sevenTvEventClient.Unsubscribe(channelName);
 
             // Only for names the IRC roster actually holds: a pure cache/registry ghost (re-created

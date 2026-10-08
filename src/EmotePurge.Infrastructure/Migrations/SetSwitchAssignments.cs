@@ -17,22 +17,6 @@ namespace EmotePurge.Infrastructure.Migrations;
 // constant.
 internal static class SetSwitchAssignments
 {
-    // ---------------------------------------------------------------------------------------
-    // PLACEHOLDER. THIS IS NOT THE REAL SWITCH DATE AND MUST NOT BE MIGRATED WITH.
-    //
-    // HandOfBlood switches his active emote set on 2026-10-01; the operator names the actual day
-    // once it has happened, and a separate chore: commit replaces this value — before the
-    // migration probe (T1.10) and before the maintenance window. Until then the entry below reads
-    // "BoundaryUtc: BoundaryDateNotYetNamedByTheOperator", which is the whole point: the line
-    // cannot be mistaken for a date anybody measured.
-    //
-    // The value is 1900-01-01 rather than something plausible so that a run against real data
-    // cannot quietly do the wrong thing: it lies outside any UsageStats range this project will
-    // ever hold, so the migration's third check aborts and names the channel, the boundary and the
-    // range. That is the existing check doing its job, not an extra safeguard.
-    // ---------------------------------------------------------------------------------------
-    internal static readonly DateOnly BoundaryDateNotYetNamedByTheOperator = new(1900, 1, 1);
-
     // Exactly one entry, per spec 4.2 / E1 / Nachtrag 31. Both set ids are HandOfBlood's own and
     // publicly visible on 7TV; they were measured on 2026-09-20 (Sonde 1, spec section 11):
     // "HandOfBlood's Emotes" (active until the switch) and "Halloween Set" (active after it).
@@ -47,6 +31,14 @@ internal static class SetSwitchAssignments
             TwitchChannelId: "49140130",
             OldEmoteSetId: "01GV88A38G0006FW5TVZVMG507",
             NewEmoteSetId: "01J94NYQR0000D15QN0BDGN85E",
-            BoundaryUtc: BoundaryDateNotYetNamedByTheOperator),
+            // HandOfBlood's switch was detected by the dev worker on 2026-10-07 at 19:57:33 UTC
+            // (7TV itself may have switched up to ~60 s earlier), not on 2026-10-01 as planned.
+            // Rows strictly before this date go to the old set; the boundary day itself goes to
+            // the new one. The switch fell late in the UTC day, so 2026-10-07 lands wholly on one
+            // side either way; counted on the dev stack, that day holds 42 uses for the old set
+            // and 9 for the new one. Naming 2026-10-08 misattributes 9 uses, naming 2026-10-07
+            // would misattribute 42. The operator named 2026-10-08 on 2026-10-08 — deliberately
+            // the day after the switch, not "the day of the switch" as the spec words it.
+            BoundaryUtc: new DateOnly(2026, 10, 8)),
     ];
 }

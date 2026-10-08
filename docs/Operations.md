@@ -232,6 +232,39 @@ either the emote counters or the bot detector — the sender is no longer proces
 category. There is nothing to do retroactively: already aggregated usage counts contain no
 identity, so no per-person removal is possible or necessary against them.
 
+**The harness (issue #69) honours the same list, since 2026-09-24 (#260).** `docker compose
+--profile harness run ...` reads `Twitch:ExcludedChatterIds` through the same
+`IExcludedChatterFilter` as the worker and drops an excluded chatter's archived messages before
+they reach `ReplayDayCounter` — a replay can therefore not resurface what the live path no longer
+counts. No separate step is needed for it beyond updating `TWITCH_EXCLUDED_CHATTER_IDS` in step 2
+above: the harness is a one-shot process, so every invocation already starts fresh with the current
+`.env`, unlike the worker's step 3, which only needs an explicit restart because it otherwise keeps
+running.
+
+One consequence worth knowing before changing the list mid-measurement: a 30-day binding run is
+invoked several times (a large channel's window is ~490 MB against the 200 MB per-invocation cap),
+and each invocation resumes the previous one's unfinished `.jsonl` by default. Changing
+`TWITCH_EXCLUDED_CHATTER_IDS` between two such invocations ends that resume — the next invocation
+starts a fresh file and re-fetches the whole window instead of continuing the interrupted one, so an
+exclusion-list change mid-run costs the archive requests already spent on it. This is deliberate
+(a changed policy must not silently keep counts gathered under the old one), but it means: finish a
+binding run before adding an ID if at all possible, and expect a resumed multi-invocation run to
+restart from scratch if the list changes underneath it.
+
+The same drift check applies to `--report-only`: recomputing an existing run's file refuses with
+exit code 7 if `TWITCH_EXCLUDED_CHATTER_IDS` has changed since the file was written (distinct from
+exit code 3, which means the file itself cannot be recomputed at all — a foreign algorithm version,
+a missing or damaged header, and the like). There is no way to recompute around this: finish a fresh
+run instead, the same advice as above for a list change mid-measurement.
+
+**A report written before this feature existed (`AlgorithmVersion` `"harness-2"`, everything from
+before 2026-09-24/#260) stays recomputable — but only with an empty `TWITCH_EXCLUDED_CHATTER_IDS`.**
+Such a file never honoured any exclusion list at all, so its day lines are a faithful re-evaluation
+only under today's *empty* list; with anything configured, `--report-only` refuses with exit code 7,
+same as a genuinely changed list on a newer file. This is why the binding `"harness-2"` reports of
+2026-10-08 stay recomputable with a later worker image (needed if a formula changes later): recompute
+them before adding any ID to `TWITCH_EXCLUDED_CHATTER_IDS`, or with it temporarily emptied.
+
 ## Blocking a channel from being rejoined (GDPR objection)
 
 The chatter exclusion above stops processing a single person's messages; it does not stop a

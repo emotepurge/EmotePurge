@@ -1899,7 +1899,8 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
 
 84. Nach dem Fenster: `GET /api/health` 200; eine Set-Ansicht eines nicht-aktiven Sets lädt; eine
     `UsageStats`-Zeile des Tages trägt die aktive `EmoteSetId`; das Worker-Log zeigt den Warmstart
-    mit Set-ID.
+    mit Set-ID. *(Belegt wird das über die Sync-Logzeile `7TV-Set {SetId} … synchronisiert` plus
+    DB-Abfrage der `EmoteSetId`; die Warmstart-Zeile selbst trägt keine Set-ID.)*
 85. Picker am Testkanal: Sets mit Namen; ein nicht-aktives Set gewählt ⇒ der Dialog zeigt dessen
     Belegung und Kapazität, nicht die des aktiven.
 86. `dotnet ef migrations list` zeigt keine Pending; das Fenster hat weniger als 15 Minuten gedauert
@@ -2123,8 +2124,16 @@ und drei Verträge (Zählen, Ziel, Voting), die je einen DECISIONS-Eintrag brauc
 ## 17. Rollback
 
 **Bis zum ersten beobachteten Set-Wechsel nach dem Deploy** ist die Migration umkehrbar: neuen
-Worker **und** neue Api stoppen, `dotnet ef database update 20260907080507_AddUsageStatSharedChatUseCount
---connection '…'`, alte Images starten. `Down` entfernt Spalte, Tabelle und Voting-Spalten und
+Worker **und** neue Api stoppen, das vorab erzeugte Rollback-Skript einspielen, alte Images starten.
+Das Skript entsteht in V3 ohne Datenbank per `dotnet ef migrations script
+20260920191131_AddUsageStatEmoteSetId 20260907080507_AddUsageStatSharedChatUseCount --no-build
+--project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api -o k7-rollback.sql`
+(Gegenprobe: kein Treffer auf `LastSeenAtUtc`, `DeactivatedAtUtc`, `AddRetentionTimestamps`) und läuft
+per `psql -v ON_ERROR_STOP=1 < k7-rollback.sql`. **Nicht** `dotnet ef database update
+20260907080507_…`: Das nähme auch das seit 2026-09-24 auf Prod angewandte
+`20260923194321_AddRetentionTimestamps` zurück (Drop von `Users.LastSeenAtUtc` und
+`Channels.DeactivatedAtUtc`), und das alte Image bräche danach am `PendingMigrationGuard` ab. Das
+Skript nimmt nur `AddUsageStatEmoteSetId` zurück. `Down` entfernt Spalte, Tabelle und Voting-Spalten und
 stellt `(EmoteId, Date) INCLUDE (UseCount)` her.
 
 **Danach bricht `Down` ab, und zwar an zwei voneinander unabhängigen Schranken** (4.2):

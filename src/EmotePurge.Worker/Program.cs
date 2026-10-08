@@ -80,7 +80,7 @@ async Task<int> RunHarnessAsync(HarnessCommandLineResult.RunHarness request)
         // (ServiceCollectionExtensions, no abortConnect=false) — shared DI wiring the harness cannot
         // opt out of even though it never publishes or subscribes itself. Without this try/catch, an
         // unreachable Redis at startup would throw ConnectionMultiplexer.Connect's exception straight
-        // out of Main with a runtime-invented exit status instead of one of the six documented ones.
+        // out of Main with a runtime-invented exit status instead of one of the documented ones.
         runner = scope.ServiceProvider.GetRequiredService<HarnessRunner>();
         options = scope.ServiceProvider.GetRequiredService<HarnessOptions>();
     }

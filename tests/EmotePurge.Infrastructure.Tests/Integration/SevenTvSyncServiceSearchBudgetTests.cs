@@ -249,6 +249,7 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
                 excludedChannelFilter ?? Substitute.For<IExcludedChannelFilter>(),
                 Budget,
                 Backoff,
+                new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), Clock),
                 logger ?? NullLogger<SevenTvSyncService>.Instance);
         }
 

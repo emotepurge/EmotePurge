@@ -36,6 +36,8 @@ public sealed class ExcludedChatterFilter : IExcludedChatterFilter
     public bool IsExcluded(string? chatterId) =>
         !string.IsNullOrEmpty(chatterId) && _excludedChatterIds.Contains(chatterId);
 
+    public IReadOnlySet<string> ExcludedChatterIds => _excludedChatterIds;
+
     // Same two accepted shapes and the same scalar-wins rule as
     // BotChatterDetector.ReadAdditionalBotAccountIds — see that method's comment for why.
     private static IEnumerable<string> ReadExcludedChatterIds(IConfiguration configuration)

@@ -257,12 +257,6 @@
       "voting": "Votings",
       "activity": "Aktivität"
     },
-    "resync": {
-      "label": "Neu synchronisieren",
-      "title": "Emote-Set jetzt neu von 7TV einlesen, statt auf den nächsten automatischen Abgleich zu warten",
-      "queued": "Resync angestoßen …",
-      "completed": "Resync abgeschlossen."
-    },
     "activity": {
       "title": "Aktivitätsverlauf",
       "refresh": "Aktualisieren",
@@ -757,6 +751,7 @@
       "one": "Im gewählten Zeitraum war der Stream an einem Tag live.",
       "other": "Im gewählten Zeitraum war der Stream an {{ live }} Tagen live."
     },
+    "autoSyncNote": "Das Emote-Set wird regelmäßig automatisch mit 7TV abgeglichen. Neu hinzugefügte Emotes können bis zu 30 Minuten brauchen, bis 7TV sie hier meldet.",
     "trackedSince": "Wir zählen für diesen Channel seit dem {{ date }}.",
     "botsExcludedSince": "Nachrichten bekannter Bots zählen seit dem {{ date }} nicht mit; Zahlen davor enthalten sie noch.",
     "sharedChatSeparatedSince": "Nutzung aus dem geteilten Chat anderer Kanäle zählt seit dem {{ date }} nicht mit; Zahlen davor enthalten sie noch.",

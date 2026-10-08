@@ -37,11 +37,23 @@ namespace EmotePurge.Worker.Harness;
 /// <c>ServiceCollectionExtensions</c>).
 /// </para>
 /// <para>
-/// The return value is the process exit code, and the four non-zero ones say different things on
+/// The return value is the process exit code, and the non-zero ones say different things on
 /// purpose: a violated precondition (3) means the question could not be asked, an abort (4) means
 /// it can be asked again from the resume point, and "undecidable" (5) means the approach itself has
-/// to be reassessed. None of them is "the numbers were bad" — that verdict is a human reading the
+/// to be reassessed. <see cref="ExitExclusionListChanged"/> (7) is a <c>--report-only</c> recompute's
+/// own precondition, kept distinct from (3) rather than folded into it — see its own doc comment.
+/// None of them is meant to read as "the numbers were bad": that verdict is a human reading the
 /// report against the pre-registration in #69.
+/// </para>
+/// <para>
+/// <b>Honours the same objection gate as the live worker (GDPR Art. 21, issue #252/#260).</b> A
+/// message from an id in <c>Twitch:ExcludedChatterIds</c> is dropped in the counting callback before
+/// <c>sawUserId</c>/<c>sawBadges</c> bookkeeping and before it reaches <see cref="ReplayDayCounter"/>
+/// at all — the same ordering <c>TwitchChatManager.OnMessageReceived</c> uses for the live path, so a
+/// replayed archive cannot resurface what an objecting chatter's live traffic no longer produces. The
+/// <c>NoBadgesNoUserIds</c> fallback below is keyed off how many messages actually passed that gate,
+/// not the archive's raw <c>MessageCount</c>, so a day made up entirely of an excluded chatter's
+/// traffic still records a valid zero-count day instead of wrongly aborting the run.
 /// </para>
 /// </summary>
 public sealed class HarnessRunner(
@@ -49,6 +61,7 @@ public sealed class HarnessRunner(
     IUsageStatQueryService usageStatQueryService,
     IChatLogArchiveClient archiveClient,
     IBotChatterDetector botChatterDetector,
+    IExcludedChatterFilter excludedChatterFilter,
     HarnessOptions options,
     TimeProvider timeProvider,
     ILogger<HarnessRunner> logger)
@@ -60,8 +73,36 @@ public sealed class HarnessRunner(
     /// indeterminate room now moves <see cref="ReplayDayLine.SharedChatCounts"/> instead of
     /// <see cref="ReplayDayLine.HumanCounts"/> or <see cref="ReplayDayLine.BotCounts"/>, so a
     /// "harness-1" file must not be silently resumed under the new rule.
+    /// <para>
+    /// Bumped again to "harness-3" for the objection gate itself (issue #252/#260, P1 Codex
+    /// finding): the counting callback below started dropping excluded chatters' messages before
+    /// <see cref="HarnessRunIdentity"/> carried anything that depended on the exclusion list, so a
+    /// run started before the gate existed could be resumed under it silently — the file's day
+    /// lines would still hold the excluded chatter's counts from before the gate applied, mixed
+    /// into the same report as fresh, gated days from the resumed run.
+    /// <see cref="HarnessRunIdentity.ExcludedChatterIdsDigest"/> (added in the same change) covers
+    /// every *later* change of the list the same way; this version bump is what invalidates
+    /// everything written before either existed at all.
+    /// </para>
     /// </summary>
-    public const string AlgorithmVersion = "harness-2";
+    public const string AlgorithmVersion = "harness-3";
+
+    /// <summary>
+    /// The one prior version <see cref="RecomputeReportAsync"/> still accepts, and only there —
+    /// <see cref="RunAsync"/>/<see cref="ExecuteAsync"/> never resumes it (see
+    /// <see cref="FindFrozenWindow"/>, which matches on <see cref="AlgorithmVersion"/> alone).
+    /// <para>
+    /// A "harness-2" file's day lines are counted exactly like an empty-list "harness-3" run's would
+    /// be: the objection gate the "harness-3" bump exists for did not exist yet, so nothing in a
+    /// "harness-2" file was ever dropped for being an excluded chatter's message, the same outcome an
+    /// empty <c>Twitch:ExcludedChatterIds</c> gives today. Its day-line *shape* is also unchanged —
+    /// <see cref="ReplayDayLine.SharedChatCounts"/> already existed at "harness-2" (#73) — so
+    /// <see cref="ReplayFidelityCalculator.Compute"/> reads it exactly as it reads a "harness-3" file's.
+    /// The operator runbook needs this: the binding "harness-2" reports of 2026-10-08 must stay
+    /// recomputable with a later image, and this is that path (see docs/DECISIONS.md).
+    /// </para>
+    /// </summary>
+    public const string PriorRecomputableAlgorithmVersion = "harness-2";
 
     /// <summary>
     /// The window covered completely; both final reports were written — by this invocation, or by
@@ -99,6 +140,23 @@ public sealed class HarnessRunner(
     /// exception is logged; the file on disk stays valid and resumable.
     /// </summary>
     public const int ExitUnexpectedError = 6;
+
+    /// <summary>
+    /// A <c>--report-only</c> recompute (<see cref="RecomputeReportAsync"/>) found that the report
+    /// file's <see cref="HarnessRunIdentity.ExcludedChatterIdsDigest"/> no longer matches the
+    /// currently configured <c>Twitch:ExcludedChatterIds</c> (P2 Codex finding, issue #260, third
+    /// review). Distinct from <see cref="ExitPreconditionViolated"/> on purpose: that code covers a
+    /// file that cannot be recomputed at all (missing, malformed, foreign algorithm version, wrong
+    /// channel); this one covers a file that reads fine but whose day lines were counted under a
+    /// chatter exclusion policy that no longer holds — recomputing it anyway would issue a possibly
+    /// binding report from stale day lines, and an operator reading the exit code needs to tell the
+    /// two apart: this one is fixed only by a fresh run, not by fixing the file. Resuming a run
+    /// (<see cref="RunAsync"/>) already refuses the same drift on its own, byte-for-byte, via
+    /// <see cref="HarnessReportFile.ReadHeader"/> comparing the whole identity — a recompute reads
+    /// the header with <see cref="HarnessReportFile.TryReadHeader"/> instead and never ran that
+    /// comparison, which is the gap this exit code closes.
+    /// </summary>
+    public const int ExitExclusionListChanged = 7;
 
     private const int BytesPerMegabyte = 1024 * 1024;
 
@@ -298,6 +356,7 @@ public sealed class HarnessRunner(
             botSplitCutover,
             sharedChatCutover,
             [.. botAccountIds.Order(StringComparer.Ordinal)],
+            ExcludedChatterIdsDigest.Compute(excludedChatterFilter.ExcludedChatterIds),
             AlgorithmVersion,
             HarnessInputHash.Compute(lifetimes, liveRowDtos, botAccountIds, from));
 
@@ -402,6 +461,14 @@ public sealed class HarnessRunner(
             var counter = new ReplayDayCounter(day, emotes, botChatterDetector.IsBot);
             var sawUserId = false;
             var sawBadges = false;
+            // P2 Codex finding (issue #260, this revision): the fallback below used to key off
+            // result.MessageCount, the archive's raw count before the objection gate. A day whose
+            // every message comes from an excluded chatter still has MessageCount > 0 although
+            // nothing of it ever reaches sawUserId/sawBadges — that read as "logs without badges or
+            // user-ids", the format-failure case NoBadgesNoUserIds exists for, and aborted a run
+            // that had nothing wrong with it. Counted separately so the fallback can ask "did any
+            // message that passed the gate carry a signal" instead.
+            var gatedMessageCount = 0;
 
             ChatLogDayResult result;
             try
@@ -412,6 +479,19 @@ public sealed class HarnessRunner(
                     remainingBytes,
                     message =>
                     {
+                        // Objection gate (GDPR Art. 21, issue #252/#260): dropped before the
+                        // sawUserId/sawBadges bookkeeping below and before the message reaches
+                        // ReplayDayCounter at all — same ordering as the early return in
+                        // TwitchChatManager.OnMessageReceived, so a replayed archive counts nothing
+                        // an excluded chatter's live traffic would not count either. Matches only
+                        // the immutable Twitch user id, never a login.
+                        if (excludedChatterFilter.IsExcluded(message.UserId))
+                        {
+                            return ValueTask.CompletedTask;
+                        }
+
+                        gatedMessageCount++;
+
                         if (!string.IsNullOrEmpty(message.UserId))
                         {
                             sawUserId = true;
@@ -461,7 +541,12 @@ public sealed class HarnessRunner(
                     // day and reaches the same verdict instead of quietly building on it. The day was
                     // still read in full, though, so its bytes go on the event line — same as the
                     // `default:` branch below — or a resume would see the cap as untouched.
-                    if (!fallbackChecked && result.MessageCount > 0)
+                    //
+                    // gatedMessageCount, not result.MessageCount (P2 Codex finding, issue #260): a
+                    // day where every message belongs to an excluded chatter must fall through to
+                    // AppendDay below as a legitimate zero-count day, not trip this fallback — the
+                    // archive answered fine, this run simply counted nothing on it.
+                    if (!fallbackChecked && gatedMessageCount > 0)
                     {
                         fallbackChecked = true;
                         if (!sawUserId && !sawBadges)
@@ -559,18 +644,57 @@ public sealed class HarnessRunner(
 
         var identity = header.Identity;
 
-        // Refuses a foreign AlgorithmVersion before any DB access (issue #119, second review round):
-        // ReplayDayCounter's day-line shape changed at "harness-2" (SharedChatCounts, #73), and
-        // ReplayFidelityCalculator reads that dictionary unconditionally — recomputing a "harness-1"
-        // file throws (a bare NullReferenceException today) rather than refusing cleanly. There is no
-        // migration path between versions: a version bump means the counting rule itself changed, so
-        // an old file's day lines cannot be reinterpreted under the new one, only refused.
-        if (!string.Equals(identity.AlgorithmVersion, AlgorithmVersion, StringComparison.Ordinal))
+        // Refuses a foreign AlgorithmVersion before any DB access (issue #119, second review round),
+        // with one deliberate exception: "harness-2", accepted here and nowhere else (RunAsync never
+        // resumes it — FindFrozenWindow matches on AlgorithmVersion alone). ReplayDayCounter's
+        // day-line shape changed at "harness-2" (SharedChatCounts, #73) and stayed there through the
+        // "harness-3" bump — that later bump only changed what feeds the counting callback during a
+        // *fetch* (the objection gate), never the shape ReplayFidelityCalculator reads — so a
+        // "harness-2" file's day lines are exactly as readable by today's calculator as a "harness-3"
+        // file's. Every other foreign version (starting with "harness-1", whose day lines predate
+        // SharedChatCounts and would NRE) has no such guarantee and stays refused: there is no
+        // migration path between versions in general, "harness-2" is the one already-proven exception.
+        var isPriorRecomputableVersion = string.Equals(
+            identity.AlgorithmVersion, PriorRecomputableAlgorithmVersion, StringComparison.Ordinal);
+        if (!isPriorRecomputableVersion && !string.Equals(identity.AlgorithmVersion, AlgorithmVersion, StringComparison.Ordinal))
         {
             logger.LogError(
-                "Report-only file '{File}' was written by algorithm version '{FileVersion}', but this build only recomputes '{CurrentVersion}'; there is no migration between versions.",
-                sourceFile.Path, identity.AlgorithmVersion, AlgorithmVersion);
+                "Report-only file '{File}' was written by algorithm version '{FileVersion}', but this build only recomputes '{CurrentVersion}' or '{PriorVersion}'; there is no migration between any other versions.",
+                sourceFile.Path, identity.AlgorithmVersion, AlgorithmVersion, PriorRecomputableAlgorithmVersion);
             return ExitPreconditionViolated;
+        }
+
+        // Refuses a drifted chatter exclusion list, the recompute-side counterpart of the check
+        // above (P2 Codex finding, issue #260, third review): TryReadHeader just above reads the
+        // header without comparing it, unlike ReadHeader's byte-for-byte identity check that a
+        // resumed *run* (RunAsync/ExecuteAsync) already gets "for free" because it always rebuilds a
+        // fresh identity to compare against. A recompute never rebuilds one — it only reads what is
+        // on disk — so nothing here previously noticed that TWITCH_EXCLUDED_CHATTER_IDS changed
+        // since the file was written. Left unrefused, the day lines being recomputed could have been
+        // counted while the archive still saw messages from a chatter who has objected since, and
+        // ExecuteAsync's original run would already have gated those messages out — a report claiming
+        // to be a faithful re-evaluation of that same run would silently no longer be one. Compared as
+        // a digest, never as the raw id list, for the same reason HarnessRunIdentity carries one
+        // rather than the ids themselves (see ExcludedChatterIdsDigest's own remarks).
+        //
+        // A "harness-2" file carries no ExcludedChatterIdsDigest at all — the field did not exist yet
+        // — so identity.ExcludedChatterIdsDigest deserializes to null for one and would never equal
+        // any computed digest, including the empty list's. Its day lines are known-safe against
+        // exactly one baseline regardless of what (if anything) is on disk: the empty-list digest,
+        // because "harness-2" never honoured any exclusion list, so its counts already equal what an
+        // empty-list run would have produced. Comparing against that fixed baseline instead of the
+        // file's own (nonexistent) field is what "harness-2 file + empty list → recomputed, harness-2
+        // file + non-empty list → exit 7" means in practice.
+        var expectedDigest = isPriorRecomputableVersion
+            ? ExcludedChatterIdsDigest.Compute([])
+            : identity.ExcludedChatterIdsDigest;
+        var currentExclusionDigest = ExcludedChatterIdsDigest.Compute(excludedChatterFilter.ExcludedChatterIds);
+        if (!string.Equals(expectedDigest, currentExclusionDigest, StringComparison.Ordinal))
+        {
+            logger.LogError(
+                "Report-only file '{File}' was written under a different chatter exclusion list than is currently configured; recomputing it could issue a binding report built from day lines counted under a policy that no longer holds. Finish a fresh run instead.",
+                sourceFile.Path);
+            return ExitExclusionListChanged;
         }
 
         // The channel NAME is deliberately not compared — a rename (#34/#44) keeps the id and must
