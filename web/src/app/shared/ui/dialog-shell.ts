@@ -106,7 +106,8 @@ import { SheetDrag } from './sheet-drag';
       <div class="flex flex-col gap-3"><ng-content /></div>
 
       <!-- Cancel goes first, always: the CDK's first-tabbable autoFocus default then lands on the
-           harmless control, which is what makes an explicit cdkFocusInitial unnecessary. Sticky to
+           harmless control, which is what makes an explicit cdkFocusInitial unnecessary — unless a secondary
+           navigation link leads the row, then the harmless control carries cdkFocusInitial. Sticky to
            the pane's bottom edge (#226) so the row stays reachable while the body scrolls — see the
            class doc comment above for why this is a sticky offset and not a height chain. -->
       <div [class]="actionsClasses()">
