@@ -244,6 +244,7 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
                 Client,
                 new EmoteMatchCache(),
                 new DuplicateEmoteNameTracker(),
+                new ChannelEmoteSetObservationService(db),
                 new ChannelSyncGate(),
                 excludedChannelFilter ?? Substitute.For<IExcludedChannelFilter>(),
                 Budget,

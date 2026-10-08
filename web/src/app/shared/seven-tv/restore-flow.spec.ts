@@ -1,17 +1,25 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { signal, WritableSignal } from '@angular/core';
+import { DestroyRef, computed, signal, WritableSignal } from '@angular/core';
 import { of, Subject, throwError } from 'rxjs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
+import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
-import { PurgeRunRow } from '../export/purge-run-export';
+import { PurgeRunRow, RestoreRow } from '../export/purge-run-export';
+import {
+  buildTransferUndoProtocol,
+  parseTransferUndoForRestore,
+  transferUndoJson,
+} from '../export/transfer-undo-export';
+import { RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS } from './already-present-filter';
 import { RestoreConfirmDialogData } from './restore-confirm-dialog';
-import { RestoreFlowDeps, startRestoreFlow } from './restore-flow';
+import { ResolvedRestoreTarget, RestoreFlowDeps, startRestoreFlow } from './restore-flow';
 
 /**
  * `startRestoreFlow` opens dialogs through the plain `Dialog` object it is handed and never
@@ -24,10 +32,18 @@ import { RestoreFlowDeps, startRestoreFlow } from './restore-flow';
 
 const CHANNEL = 'frozen-channel';
 const SET_ID = 'frozen-set';
+const SET_NAME = 'Frozen Set';
 
 function rows(): PurgeRunRow[] {
   return [
-    { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done', errorMessage: null },
+    {
+      emoteId: 'e1',
+      sevenTvEmoteId: '7tv-1',
+      name: 'PogU',
+      aliases: ['PogU'],
+      status: 'done',
+      errorMessage: null,
+    },
   ];
 }
 
@@ -49,6 +65,89 @@ function emoteSetPage(ids: string[] = []) {
   };
 }
 
+/** Same page shape as `emoteSetPage`, but with each entry's alias — what the per-alias restore
+ *  check (`filterAlreadyPresentForRestore`) reads. */
+function emoteSetEntriesPage(entries: { id: string; alias: string }[]) {
+  return {
+    data: {
+      emoteSets: {
+        emoteSet: {
+          emotes: {
+            totalCount: entries.length,
+            pageCount: 1,
+            items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+          },
+        },
+      },
+    },
+  };
+}
+
+/**
+ * The restore rows of the `finished` protocol of an undo (#254, E12): one `full` row that removed
+ * `src-1` (the replace's source, under `Kappa`) and tried to give `tgt-1` back under `Kappa`. `done`
+ * — the target came back; `failed` at its ADD — the source is gone and the target is not back.
+ * Read through the real parser, the way the file step reads such a file.
+ */
+function undoProtocolRows(outcome: 'done' | 'failedAtAdd'): RestoreRow[] {
+  const done = outcome === 'done';
+  const protocol = buildTransferUndoProtocol({
+    targetEmoteSetId: SET_ID,
+    targetChannelName: CHANNEL,
+    targetOwnerDisplayName: null,
+    sourceFile: {
+      stage: 'finished',
+      exportedAt: '2026-09-25T10:00:00.000Z',
+      verifiedAt: null,
+      finishedAt: '2026-09-25T10:00:00.000Z',
+      origin: null,
+    },
+    startedAt: 0,
+    finishedAt: 1,
+    acknowledgedUnproven: false,
+    targetOwnerTwitchId: null,
+    executed: [
+      {
+        candidate: {
+          sourceSevenTvEmoteId: 'src-1',
+          sourceName: 'Kappa',
+          alias: 'Kappa',
+          fileStatus: 'done',
+          target: { sevenTvEmoteId: 'tgt-1', entries: [{ alias: 'Kappa' }], defaultName: null },
+          provenance: 'confirmed',
+        },
+        mode: 'full',
+        adds: [{ alias: 'Kappa' }],
+        omittedEntries: [],
+        notes: [],
+        status: done ? 'done' : 'failed',
+        failedStep: done ? null : 1,
+        completedSteps: done ? 2 : 1,
+        errorMessage: done ? null : 'emote alias already in use',
+        skippedReason: null,
+        sourceEntriesAtRemove: [{ alias: 'Kappa' }],
+      },
+    ],
+    skipped: [],
+  });
+  const parsed = parseTransferUndoForRestore(transferUndoJson(protocol));
+  if (!parsed.ok) {
+    throw new Error(`undo protocol fixture did not parse: ${parsed.errorKey}`);
+  }
+  return parsed.rows;
+}
+
+function duplicateCellRow(): PurgeRunRow {
+  return {
+    emoteId: 'e1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'PogU',
+    aliases: ['PogU', 'PogU2'],
+    status: 'done',
+    errorMessage: null,
+  };
+}
+
 function readyStatus(overrides: Partial<EmoteSetStatus> = {}): EmoteSetStatus {
   return {
     activeEmoteSetId: SET_ID,
@@ -64,10 +163,68 @@ function readyStatus(overrides: Partial<EmoteSetStatus> = {}): EmoteSetStatus {
   };
 }
 
+function readyPreview(overrides: Partial<ForeignEmoteSetResponse> = {}): ForeignEmoteSetResponse {
+  return {
+    channelName: CHANNEL,
+    sevenTvUserId: null,
+    emoteSetId: SET_ID,
+    emoteSetName: SET_NAME,
+    capacity: 1000,
+    totalCount: 10,
+    truncated: false,
+    emotes: [],
+    ...overrides,
+  };
+}
+
+/** A tracked, active target of the frozen `CHANNEL`/`SET_ID`/`SET_NAME` — the shape most tests
+ *  below need, with only the fields a given test cares about overridden (spec 6.1). */
+function target(overrides: Partial<ResolvedRestoreTarget> = {}): ResolvedRestoreTarget {
+  return {
+    emoteSetId: SET_ID,
+    setName: SET_NAME,
+    ownerDisplayName: 'SomeOwner',
+    twitchLogin: CHANNEL,
+    trackedChannelName: CHANNEL,
+    isActiveSet: true,
+    ownerTwitchChannelId: 'tw-owner',
+    hostChannelName: CHANNEL,
+    hostSelectedSetId: SET_ID,
+    ...overrides,
+  };
+}
+
+/** A minimal stand-in for `DestroyRef` (#255 P2a) — `startRestoreFlow` has no injection context of
+ *  its own, so every caller (here, the test) hands in its own. `triggerDestroy()` is the test-only
+ *  half: nothing in the real `DestroyRef` API exposes it, since only Angular itself ever calls a
+ *  component's registered callbacks. */
+interface FakeDestroyRef {
+  onDestroy(callback: () => void): () => void;
+  triggerDestroy(): void;
+}
+
+function fakeDestroyRef(): FakeDestroyRef {
+  const callbacks = new Set<() => void>();
+  return {
+    onDestroy: (callback) => {
+      callbacks.add(callback);
+      return () => callbacks.delete(callback);
+    },
+    triggerDestroy: () => {
+      for (const callback of callbacks) {
+        callback();
+      }
+    },
+  };
+}
+
 interface Harness {
   deps: RestoreFlowDeps;
   dialogOpen: ReturnType<typeof vi.fn>;
   getSetStatus: ReturnType<typeof vi.fn>;
+  /** The non-active set's slot preview (spec #200, 8.3, K5) — only read when `isActiveSet` is
+   *  false. Defaults to a response the active-set tests never touch. */
+  loadEmoteSetPreview: ReturnType<typeof vi.fn>;
   /** The pre-run duplicate check (#149/T5) — since the P1 fix this is a raw `HttpClient.post`
    *  straight to 7TV's `v4` GQL endpoint (`already-present-filter.ts`), not `emoteAdminService`
    *  (our own database, wrong for restore — see that file's doc). Defaults to reporting an empty
@@ -76,11 +233,25 @@ interface Harness {
   startRestore: ReturnType<typeof vi.fn>;
   hasToken: WritableSignal<boolean>;
   activeRun: WritableSignal<SevenTvRunKind | null>;
+  noteRefusedStart: ReturnType<typeof vi.fn>;
+  /** `RestoreFlowDeps.previewPending` (#255 P2a) — read directly by tests that check the flow's own
+   *  re-entrancy guard, rather than only its externally visible effects. */
+  previewPending: WritableSignal<boolean>;
+  /** `SevenTvRestoreService.startCheckPending` (#280) on the fake service. */
+  startCheckPending: WritableSignal<boolean>;
+  /** Another participant's start check on the fake arbiter (an undo's freshness read) — the
+   *  arbiter's `startPending` is this or the restore's own flag, as the real one derives it. */
+  otherStartPending: WritableSignal<boolean>;
+  /** The fake behind `deps.destroyRef` — `triggerDestroy()` simulates the caller's teardown. */
+  destroyRef: FakeDestroyRef;
 }
 
 function setup(): Harness {
   const getSetStatus = vi.fn(() => of(readyStatus()));
   const emoteAdminService = { getSetStatus } as unknown as EmoteAdminService;
+
+  const loadEmoteSetPreview = vi.fn(() => of(readyPreview()));
+  const emoteSetService = { loadEmoteSetPreview } as unknown as SevenTvEmoteSetService;
 
   const httpPost = vi.fn(() => of(emoteSetPage()));
   const httpClient = { post: httpPost } as unknown as HttpClient;
@@ -89,22 +260,50 @@ function setup(): Harness {
   const tokenService = { hasToken } as unknown as SevenTvTokenService;
 
   const startRestore = vi.fn();
-  const restoreService = { startRestore } as unknown as SevenTvRestoreService;
+  const startCheckPending = signal(false);
+  const restoreService = { startRestore, startCheckPending } as unknown as SevenTvRestoreService;
 
   const activeRun = signal<SevenTvRunKind | null>(null);
-  const arbiter = { activeRun } as unknown as SevenTvRunArbiter;
+  const noteRefusedStart = vi.fn();
+  const otherStartPending = signal(false);
+  const startPending = computed(() => startCheckPending() || otherStartPending());
+  const arbiter = {
+    activeRun,
+    noteRefusedStart,
+    startPending,
+    startLocked: computed(() => activeRun() !== null || startPending()),
+  } as unknown as SevenTvRunArbiter;
 
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const dialog = { open: dialogOpen } as unknown as Dialog;
 
+  const previewPending = signal(false);
+  const destroyRef = fakeDestroyRef();
+
   return {
-    deps: { dialog, emoteAdminService, httpClient, tokenService, restoreService, arbiter },
+    deps: {
+      dialog,
+      emoteAdminService,
+      emoteSetService,
+      httpClient,
+      tokenService,
+      restoreService,
+      arbiter,
+      previewPending,
+      destroyRef: destroyRef as unknown as DestroyRef,
+    },
     dialogOpen,
     getSetStatus,
+    loadEmoteSetPreview,
     httpPost,
+    previewPending,
+    startCheckPending,
+    otherStartPending,
+    destroyRef,
     startRestore,
     hasToken,
     activeRun,
+    noteRefusedStart,
   };
 }
 
@@ -125,7 +324,7 @@ describe('startRestoreFlow', () => {
     const { deps, dialogOpen, getSetStatus, startRestore, hasToken } = setup();
     hasToken.set(false);
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
 
     expect(dialogOpen).toHaveBeenCalledTimes(1);
     expect(getSetStatus).not.toHaveBeenCalled();
@@ -135,7 +334,7 @@ describe('startRestoreFlow', () => {
   it('opens the confirmation with the frozen channel once the token prompt confirms', () => {
     const { deps, dialogOpen, getSetStatus, hasToken } = setup();
     hasToken.set(false);
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
 
     firstClosed<boolean>(dialogOpen).next(true);
 
@@ -146,7 +345,7 @@ describe('startRestoreFlow', () => {
   it('goes straight to the confirmation when a token is already stored', () => {
     const { deps, dialogOpen, getSetStatus } = setup();
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
 
     expect(dialogOpen).toHaveBeenCalledTimes(1);
     expect(getSetStatus).toHaveBeenCalledWith(CHANNEL);
@@ -156,62 +355,199 @@ describe('startRestoreFlow', () => {
     const { deps, dialogOpen, startRestore } = setup();
     const theRows = rows();
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, theRows);
+    startRestoreFlow(deps, target(), theRows);
     firstClosed<boolean>(dialogOpen).next(true);
 
     // Fourth argument is the duplicate check's skip count (#149/T5) — 0 here because the harness's
     // default 7TV read (`httpPost`) reports an empty target set, so nothing gets filtered. Fifth is
-    // whether that check actually ran — true, since the fetch succeeded (#149).
+    // whether that check actually ran — true, since the fetch succeeded (#149). Sixth is how many
+    // aliases it left out because another emote holds the name — 0, nothing is held.
     expect(startRestore).toHaveBeenCalledWith(
-      SET_ID,
-      CHANNEL,
-      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+      expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
       0,
       true,
+      0,
     );
+  });
+
+  // Spec 6.4, E12, E18 (derivation from the resolved target): a tracked, active target makes its
+  // channel the expected hit and leaves the resync to the backend; a tracked, non-active target
+  // expects no channel and names it for the client's own resync; an untracked target sends
+  // neither and falls back to the owner's display name for the dock's label.
+  describe('restore start target (spec 6.4)', () => {
+    it('expects the tracked channel and resyncs nothing itself for its active set', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0]).toEqual({
+        setId: SET_ID,
+        expectedChannelName: CHANNEL,
+        resyncChannelName: null,
+        hostChannelName: CHANNEL,
+        setName: SET_NAME,
+        ownerOrChannelLabel: CHANNEL,
+        targetOwnerTwitchId: 'tw-owner',
+      });
+    });
+
+    it('expects no channel and names the tracked channel for its own resync for a non-active set', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(deps, target({ isActiveSet: false, setName: SET_ID }), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0]).toEqual({
+        setId: SET_ID,
+        expectedChannelName: null,
+        resyncChannelName: CHANNEL,
+        hostChannelName: CHANNEL,
+        setName: SET_ID,
+        ownerOrChannelLabel: CHANNEL,
+        targetOwnerTwitchId: 'tw-owner',
+      });
+    });
+
+    it('expects no channel, resyncs nothing itself, and labels the dock with the owner for an untracked target', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(
+        deps,
+        target({ trackedChannelName: null, isActiveSet: false, ownerDisplayName: 'SomeOwner' }),
+        rows(),
+      );
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0]).toEqual({
+        setId: SET_ID,
+        expectedChannelName: null,
+        resyncChannelName: null,
+        hostChannelName: CHANNEL,
+        setName: SET_NAME,
+        ownerOrChannelLabel: 'SomeOwner',
+        targetOwnerTwitchId: 'tw-owner',
+      });
+    });
+
+    // Owner-hint design 3.6: the target's own resolved owner id is what reaches the report, never
+    // a placeholder when it is unknown.
+    it('carries no owner hint when the resolved target names none', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(deps, target({ ownerTwitchChannelId: null }), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0].targetOwnerTwitchId).toBeNull();
+    });
+  });
+
+  // #254 AK 20, E12: the undo's own protocol read back as a restore goes through the unchanged
+  // filter — after a successful undo the source's name belongs to the target again (rule 4), after
+  // an undo that removed the source but could not give the target back it re-adds exactly the source.
+  describe('restoring from a transfer-undo file (#254, AK 20)', () => {
+    it('sends nothing after a successful undo — the source’s name belongs to the restored target again', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: 'tgt-1', alias: 'Kappa' }])));
+
+      startRestoreFlow(deps, target(), undoProtocolRows('done'));
+
+      expect(dialogOpen).not.toHaveBeenCalled();
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      const [, queued, , , nameTaken] = startRestore.mock.calls[0];
+      expect(queued).toEqual([]);
+      expect(nameTaken).toBe(1);
+    });
+
+    it('re-adds exactly the source under its alias after an undo whose ADD failed — source gone, target not back', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([])));
+
+      startRestoreFlow(deps, target(), undoProtocolRows('failedAtAdd'));
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      const [, queued, skipped, available, nameTaken] = startRestore.mock.calls[0];
+      expect(queued).toEqual([
+        expect.objectContaining({ sevenTvEmoteId: 'src-1', name: 'Kappa', aliases: ['Kappa'] }),
+      ]);
+      expect([skipped, available, nameTaken]).toEqual([0, true, 0]);
+    });
   });
 
   // #149/T5: restore never had any duplicate protection — these two pin the fix in from the flow
   // layer down (the filtering logic itself is `already-present-filter.spec.ts`'s job).
   describe('duplicate protection (#149/T5)', () => {
-    it('checks the target set fresh, right at confirm time, not from an earlier snapshot', () => {
-      const { deps, dialogOpen, httpPost } = setup();
+    // Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter"): the check now also
+    // runs once, fresh, before the confirmation opens (so its title/slot projection count what
+    // will actually be sent) — and, unchanged from before, once again at confirm time, against
+    // whatever the target set holds *then*, not the open-time snapshot. Two different answers
+    // prove the second read is genuinely fresh rather than reusing the first.
+    it('re-checks the target set fresh at confirm time, not from the open-time snapshot', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      // Open-time: nothing present yet, so the confirmation shows the full row.
+      httpPost.mockReturnValueOnce(of(emoteSetPage([])));
+      // Confirm-time: the row is now present (e.g. a second tab beat this one to it) — the fresh
+      // read must catch that, not fall back on the first answer.
+      httpPost.mockReturnValueOnce(of(emoteSetPage(['7tv-1'])));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, rows());
-      // The set-status fetch for the slot preview runs on dialog-open — the duplicate check must
-      // not have run yet at that point, only once the user actually confirms.
-      expect(httpPost).not.toHaveBeenCalled();
+      startRestoreFlow(deps, target(), rows());
+      expect(confirmData(dialogOpen).addCount).toBe(1);
 
       firstClosed<boolean>(dialogOpen).next(true);
 
+      expect(httpPost).toHaveBeenCalledTimes(2);
       expect(httpPost).toHaveBeenCalledWith('https://7tv.io/v4/gql', {
         query: expect.stringContaining('emoteSets'),
         variables: { id: SET_ID, page: 1, perPage: 500 },
       });
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        1,
+        true,
+        0,
+      );
     });
 
-    it('drops a row already present in the target set and reports it as skipped, queuing nothing else', () => {
+    // #255: once the open-time check finds every row already present, there is nothing left to
+    // confirm — no dialog opens at all, and the existing "everything already there" notice
+    // (SevenTvRestoreService.duplicateNoticePending) reports it directly.
+    it('drops a row already present in the target set, opens no dialog, and reports it as skipped', () => {
       const { deps, dialogOpen, httpPost, startRestore } = setup();
       httpPost.mockReturnValue(of(emoteSetPage(['7tv-1'])));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, rows());
-      firstClosed<boolean>(dialogOpen).next(true);
+      startRestoreFlow(deps, target(), rows());
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 1, true);
+      expect(dialogOpen).not.toHaveBeenCalled();
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        1,
+        true,
+        0,
+      );
     });
 
     // A second restore over the exact same protocol rows — e.g. the user runs restore, then runs
     // it again without anything having changed in between. Everything is already back in the set,
-    // so nothing should be queued the second time.
-    it('queues nothing on a second restore over rows already restored', () => {
+    // so nothing should be queued the second time, and no dialog opens (#255).
+    it('queues nothing on a second restore over rows already restored, opening no dialog', () => {
       const { deps, dialogOpen, httpPost, startRestore } = setup();
       const theRows = rows();
       httpPost.mockReturnValue(of(emoteSetPage(theRows.map((row) => row.sevenTvEmoteId))));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, theRows);
-      firstClosed<boolean>(dialogOpen).next(true);
+      startRestoreFlow(deps, target(), theRows);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], theRows.length, true);
+      expect(dialogOpen).not.toHaveBeenCalled();
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        theRows.length,
+        true,
+        0,
+      );
     });
 
     // #149 P1 (independent review): the first version of this check asked our own database
@@ -228,48 +564,116 @@ describe('startRestoreFlow', () => {
       // succeeded there), even though nothing here asked our database at all any more.
       httpPost.mockReturnValue(of(emoteSetPage([])));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+      startRestoreFlow(deps, target(), rows());
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
+      );
+    });
+
+    // Operator decision 2026-09-22 ("middle rule", spec 7.2): a restore of a #74 duplicate cell in
+    // which one alias came back and the other failed is re-run from the same protocol — only the
+    // missing alias may be queued, the present one is skipped (counted per ADD).
+    it('re-adds only the missing alias of a duplicate cell whose other alias is already back', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-1', alias: 'PogU' }])));
+
+      startRestoreFlow(deps, target(), [duplicateCellRow()]);
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU2'] }],
+        1,
+        true,
+        0,
+      );
+    });
+
+    // The #149 hole stays shut: the emote sits in the set under a name the row does not know, so
+    // re-adding either alias would enter it a second time. Both aliases end up skipped, so the
+    // open-time filter already leaves nothing to confirm (#255) — same shortcut as a plain
+    // duplicate.
+    it('drops the whole row when the emote is already in the set under an alias the row does not name, opening no dialog', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-1', alias: 'Renamed' }])));
+
+      startRestoreFlow(deps, target(), [duplicateCellRow()]);
+
+      expect(dialogOpen).not.toHaveBeenCalled();
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        2,
+        true,
+        0,
+      );
+    });
+
+    // A purge-run row whose name another emote took since the purge: left out before the run
+    // instead of burning a ticket on a certain name conflict, and counted apart from "already
+    // present" all the way into the run's notice.
+    it('leaves out an alias another emote now holds and forwards that count to the run', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-other', alias: 'PogU' }])));
+
+      startRestoreFlow(deps, target(), [duplicateCellRow()]);
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU2'] }],
+        0,
+        true,
+        1,
       );
     });
 
     // #149: a failed check must fail open (every row still goes through, the run still starts) but
     // must not read as a clean all-clear — the flow forwards `available: false` from the filter
-    // straight into `startRestore`'s fifth argument rather than swallowing it.
-    it('fails open on a failed duplicate check and reports it as unavailable rather than a clean skip', () => {
+    // straight into `startRestore`'s fifth argument rather than swallowing it. #255: the same
+    // failure also marks the confirmation's own count as an upper bound, since the open-time check
+    // fails open too and cannot vouch for it.
+    it('fails open on a failed duplicate check, marks the confirmation count an upper bound, and reports it as unavailable rather than a clean skip', () => {
       const { deps, dialogOpen, httpPost, startRestore } = setup();
       httpPost.mockReturnValue(throwError(() => new Error('network error')));
       const theRows = rows();
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, theRows);
+      startRestoreFlow(deps, target(), theRows);
+
+      expect(confirmData(dialogOpen).countIsUpperBound).toBe(true);
+      expect(confirmData(dialogOpen).addCount).toBe(1);
+
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         false,
+        0,
       );
     });
   });
 
   // #149 P2 (independent review): the arbiter's mutual-exclusion check ran before the fresh
   // duplicate check's async fetch — a second run could start in that window and would have
-  // overlapped this one.
-  it('abandons the start when another run claims the arbiter while the fresh check is still in flight', () => {
-    const { deps, dialogOpen, httpPost, startRestore, activeRun } = setup();
+  // overlapped this one. The open-time check (#255) resolves synchronously here (its default
+  // mock) so the confirmation opens normally; only the *confirm-time* check hangs. #256 T4: this
+  // is a confirmed start finding nothing to start, so it also notes the refusal (Festlegung Nr. 8)
+  // instead of vanishing without a word, as it used to.
+  it('abandons the start and notes the refusal when another run claims the arbiter while the confirm-time check is still in flight', () => {
+    const { deps, dialogOpen, httpPost, startRestore, activeRun, noteRefusedStart } = setup();
+    httpPost.mockReturnValueOnce(of(emoteSetPage()));
     const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
-    httpPost.mockReturnValue(fetch);
+    httpPost.mockReturnValueOnce(fetch);
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
     firstClosed<boolean>(dialogOpen).next(true);
 
     // A delete run starts elsewhere while this restore's own fresh check is still awaiting 7TV.
@@ -278,12 +682,13 @@ describe('startRestoreFlow', () => {
     fetch.complete();
 
     expect(startRestore).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('restore');
   });
 
   it('never opens the confirmation and never runs when the token prompt is cancelled', () => {
     const { deps, dialogOpen, getSetStatus, startRestore, hasToken } = setup();
     hasToken.set(false);
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
 
     firstClosed<boolean>(dialogOpen).next(false);
 
@@ -295,27 +700,28 @@ describe('startRestoreFlow', () => {
   it('does not run when the confirmation is cancelled', () => {
     const { deps, dialogOpen, startRestore } = setup();
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
     firstClosed<boolean>(dialogOpen).next(false);
 
     expect(startRestore).not.toHaveBeenCalled();
   });
 
-  it('silently drops a confirmed outcome while another 7TV run is already active', () => {
-    const { deps, dialogOpen, startRestore, activeRun } = setup();
+  it('notes a refused start instead of silently dropping a confirmed outcome while another 7TV run is already active', () => {
+    const { deps, dialogOpen, startRestore, activeRun, noteRefusedStart } = setup();
     activeRun.set('import');
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
     firstClosed<boolean>(dialogOpen).next(true);
 
     expect(startRestore).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('restore');
   });
 
   it('projects the answered slot numbers into the confirmation', () => {
     const { deps, dialogOpen, getSetStatus } = setup();
     getSetStatus.mockReturnValue(of(readyStatus({ occupiedSlots: 42, capacity: 600 })));
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
 
     expect(confirmData(dialogOpen).slots()).toEqual({ occupied: 42, capacity: 600 });
   });
@@ -324,7 +730,7 @@ describe('startRestoreFlow', () => {
     const { deps, dialogOpen, getSetStatus } = setup();
     getSetStatus.mockReturnValue(of(readyStatus({ capacity: null })));
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
 
     expect(confirmData(dialogOpen).slots()).toBeNull();
   });
@@ -336,12 +742,707 @@ describe('startRestoreFlow', () => {
     const status$ = new Subject<EmoteSetStatus>();
     getSetStatus.mockReturnValue(status$);
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, rows());
+    startRestoreFlow(deps, target(), rows());
     status$.next(readyStatus({ occupiedSlots: 42, capacity: 600 }));
     expect(confirmData(dialogOpen).slots()).toEqual({ occupied: 42, capacity: 600 });
 
     status$.error(new Error('boom'));
 
     expect(confirmData(dialogOpen).slots()).toBeNull();
+  });
+
+  // spec #200, 8.8 (AK 73): the confirmation data carries the resolved target's name and
+  // active-set flag through unchanged.
+  describe('naming the set (spec #200, 8.8)', () => {
+    it('names the given set in the confirmation and marks it active', () => {
+      const { deps, dialogOpen } = setup();
+
+      startRestoreFlow(deps, target(), rows());
+
+      expect(confirmData(dialogOpen).setName).toBe(SET_NAME);
+      expect(confirmData(dialogOpen).isActiveSet).toBe(true);
+    });
+
+    // The "no known name" fallback itself moved upstream since #253: `target.setName` already
+    // carries it (`EditableSetTarget.setName`, T4's `toEditableSetTarget`) — this flow only ever
+    // passes it through unchanged. Covered there (`seven-tv-emote-set.service.spec.ts`), not here.
+
+    it('marks the set not active, and reads its live slot preview instead of EmoteSetStatus, when isActiveSet is false', () => {
+      const { deps, dialogOpen, getSetStatus, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(readyPreview({ totalCount: 900, capacity: 1000 })));
+
+      startRestoreFlow(deps, target({ isActiveSet: false }), rows());
+
+      expect(confirmData(dialogOpen).isActiveSet).toBe(false);
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CHANNEL, SET_ID);
+      expect(getSetStatus).not.toHaveBeenCalled();
+      expect(confirmData(dialogOpen).slots()).toEqual({ occupied: 900, capacity: 1000 });
+    });
+
+    it('shows no slot projection for a non-active set the preview reports no capacity for', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(readyPreview({ capacity: null })));
+
+      startRestoreFlow(deps, target({ isActiveSet: false }), rows());
+
+      expect(confirmData(dialogOpen).slots()).toBeNull();
+    });
+  });
+
+  // Task brief T6, "+6" (1 of 2): the slot-preview source is chosen per target class (spec 4.3,
+  // point 8 — the same fork `loadImportTarget` already uses), not per `isActiveSet` alone.
+  describe('slot preview fork by target class (spec 4.3, point 8)', () => {
+    it('reads EmoteSetStatus by the tracked channel for a tracked, active target', () => {
+      const { deps, getSetStatus, loadEmoteSetPreview } = setup();
+
+      startRestoreFlow(deps, target({ trackedChannelName: CHANNEL, isActiveSet: true }), rows());
+
+      expect(getSetStatus).toHaveBeenCalledWith(CHANNEL);
+      expect(loadEmoteSetPreview).not.toHaveBeenCalled();
+    });
+
+    it('reads the live preview by the tracked channel for a tracked, non-active target', () => {
+      const { deps, getSetStatus, loadEmoteSetPreview } = setup();
+
+      startRestoreFlow(deps, target({ trackedChannelName: CHANNEL, isActiveSet: false }), rows());
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CHANNEL, SET_ID);
+      expect(getSetStatus).not.toHaveBeenCalled();
+    });
+
+    it("reads the live preview by the account's twitchLogin for an untracked target", () => {
+      const { deps, getSetStatus, loadEmoteSetPreview } = setup();
+
+      startRestoreFlow(
+        deps,
+        target({ trackedChannelName: null, isActiveSet: false, twitchLogin: 'sevenTvOwner' }),
+        rows(),
+      );
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('sevenTvOwner', SET_ID);
+      expect(getSetStatus).not.toHaveBeenCalled();
+    });
+  });
+
+  // Task brief T6, "+6" (2 of 2); spec E21, AK 19/35, spec 9.3: the foreign-to-view hint compares
+  // the resolved target's set against the page's *selected* set, never a channel.
+  describe('foreignToView (spec E21, AK 19/35)', () => {
+    it("is false when the target is the page's selected set", () => {
+      const { deps, dialogOpen } = setup();
+
+      startRestoreFlow(deps, target({ hostSelectedSetId: SET_ID }), rows());
+
+      expect(confirmData(dialogOpen).foreignToView).toBe(false);
+    });
+
+    it('is true for a different set of the same tracked channel', () => {
+      const { deps, dialogOpen } = setup();
+
+      startRestoreFlow(deps, target({ hostSelectedSetId: 'some-other-set' }), rows());
+
+      expect(confirmData(dialogOpen).foreignToView).toBe(true);
+    });
+
+    it('is true when the page has no selected set at all', () => {
+      const { deps, dialogOpen } = setup();
+
+      startRestoreFlow(deps, target({ hostSelectedSetId: null }), rows());
+
+      expect(confirmData(dialogOpen).foreignToView).toBe(true);
+    });
+  });
+
+  // spec #200, 7.2: the restore's own capacity math counts ADDs (one per alias), not rows — a #74
+  // duplicate cell is one row in `names` but restores under two aliases.
+  it('projects the ADD count, not the row count, for a duplicate cell restored under two aliases', () => {
+    const { deps, dialogOpen } = setup();
+    const duplicateRow: PurgeRunRow = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-2',
+      name: 'Kappa',
+      aliases: ['Kappa', 'KappaAlt'],
+      status: 'done',
+      errorMessage: null,
+    };
+
+    startRestoreFlow(deps, target(), [duplicateRow]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+    expect(confirmData(dialogOpen).addCount).toBe(2);
+  });
+
+  // Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter"): the confirmation's title
+  // and slot projection count what the open-time check actually found, not every row the caller
+  // named — a row already present in the target set neither counts towards addCount nor appears in
+  // the preview list, while a row that is genuinely missing still does.
+  it('shows only the rows the open-time check actually found missing, not every row the caller passed', () => {
+    const { deps, dialogOpen, httpPost } = setup();
+    // '7tv-1' (PogU, from rows()) is already in the target set; a second, genuinely missing row is
+    // not.
+    httpPost.mockReturnValue(of(emoteSetPage(['7tv-1'])));
+    const missingRow: PurgeRunRow = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-2',
+      name: 'Kappa',
+      aliases: ['Kappa'],
+      status: 'done',
+      errorMessage: null,
+    };
+
+    startRestoreFlow(deps, target(), [...rows(), missingRow]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+    expect(confirmData(dialogOpen).addCount).toBe(1);
+    expect(confirmData(dialogOpen).countIsUpperBound).toBe(false);
+  });
+
+  // #255 P2 (Codex review): a read that succeeds but only sees part of the target set
+  // (`SevenTvSetEntries.complete: false` — here, 7TV's own `totalCount` promising one more entry
+  // than this single page delivered) must not let the confirmation claim an exact count it never
+  // verified. The filtering itself is unaffected — the found-present row still drops out, the
+  // genuinely-missing one still shows — only the wording changes, same as a failed read.
+  it('marks the count an upper bound, while still filtering rows normally, when the open-time read is truncated', () => {
+    const { deps, dialogOpen, httpPost } = setup();
+    // '7tv-1' (PogU, from rows()) is already in the target set; a second, genuinely missing row is
+    // not — same setup as the test above, but the read's own totalCount does not match what this
+    // page delivered.
+    httpPost.mockReturnValue(
+      of({
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: 2,
+                pageCount: 1,
+                items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+              },
+            },
+          },
+        },
+      }),
+    );
+    const missingRow: PurgeRunRow = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-2',
+      name: 'Kappa',
+      aliases: ['Kappa'],
+      status: 'done',
+      errorMessage: null,
+    };
+
+    startRestoreFlow(deps, target(), [...rows(), missingRow]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+    expect(confirmData(dialogOpen).addCount).toBe(1);
+    expect(confirmData(dialogOpen).countIsUpperBound).toBe(true);
+  });
+
+  // A removed transfer target without a named alias: listed under its default name, and its one
+  // entry without an alias is an ADD like any other.
+  it('counts an entry without an alias as an ADD and lists its row under the default name', () => {
+    const { deps, dialogOpen } = setup();
+    const transferRow: RestoreRow = {
+      emoteId: null,
+      sevenTvEmoteId: 'tgt-1',
+      name: 'KappaDefault',
+      aliases: [null],
+      defaultName: 'KappaDefault',
+    };
+
+    startRestoreFlow(deps, target(), [transferRow, ...rows()]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['KappaDefault', 'PogU']);
+    expect(confirmData(dialogOpen).addCount).toBe(2);
+  });
+
+  // #255 P2a: the open-time duplicate check (`loadRestoreConfirmPreview`) is now bounded by the
+  // same timeout budget as every other 7TV read in this app, dropped on the caller's teardown, and
+  // guarded against a second click while it is still out.
+  describe('open-time check: timeout, teardown, double-click (#255 P2a)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('opens the confirmation with an upper-bound count when the open-time check hangs past its timeout, and clears previewPending', () => {
+      vi.useFakeTimers();
+      const { deps, dialogOpen, httpPost, previewPending } = setup();
+      const hang = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(hang);
+
+      startRestoreFlow(deps, target(), rows());
+
+      expect(dialogOpen).not.toHaveBeenCalled();
+      expect(previewPending()).toBe(true);
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+      expect(confirmData(dialogOpen).countIsUpperBound).toBe(true);
+      expect(confirmData(dialogOpen).names).toEqual(['PogU']);
+      expect(previewPending()).toBe(false);
+    });
+
+    it('drops a late open-time answer after the caller tears down, never opening a confirmation', () => {
+      const { deps, dialogOpen, httpPost, destroyRef } = setup();
+      const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(fetch);
+
+      startRestoreFlow(deps, target(), rows());
+      destroyRef.triggerDestroy();
+      fetch.next(emoteSetPage());
+      fetch.complete();
+
+      expect(dialogOpen).not.toHaveBeenCalled();
+    });
+
+    // #255 P2 (Codex review, second finding): `takeUntilDestroyed` tears the read down silently —
+    // neither `next` nor `error` fires — so a reset reachable only from those never ran, and this
+    // flag aliases `SevenTvRestoreService.restorePreCheckPending`, shared with `MassDeletePanel`'s
+    // own restore button: leaving it `true` here left *both* restore entries disabled until a full
+    // page reload, not just this caller's own.
+    it('clears previewPending once the caller tears down mid-read, not just on a settled answer', () => {
+      const { deps, httpPost, previewPending, destroyRef } = setup();
+      httpPost.mockReturnValueOnce(new Subject<ReturnType<typeof emoteSetPage>>());
+
+      startRestoreFlow(deps, target(), rows());
+      expect(previewPending()).toBe(true);
+
+      destroyRef.triggerDestroy();
+
+      expect(previewPending()).toBe(false);
+    });
+
+    it('refuses a second open-time read while the first is still out, so only one confirmation ever opens', () => {
+      const { deps, dialogOpen, httpPost } = setup();
+      const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(fetch);
+
+      startRestoreFlow(deps, target(), rows());
+      // A second click on whatever button opened this flow, outracing its own disabled state (or
+      // a caller with no such guard of its own) — the flow's own `previewPending` check inside
+      // `openConfirm` is what stops this from starting a second read.
+      startRestoreFlow(deps, target(), rows());
+
+      expect(httpPost).toHaveBeenCalledTimes(1);
+
+      fetch.next(emoteSetPage());
+      fetch.complete();
+
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // #255 P2b (the #149 P2 fix's own reasoning, applied to the open-time "everything already
+  // there" shortcut too): that shortcut starts a run exactly as much as the regular confirmed path
+  // does, so it needs the same arbiter check right before it. #256 T4: the direct start at an empty
+  // preview is confirmed too (there is nothing else left to confirm), so it notes the refusal here
+  // as well (Festlegung Nr. 8).
+  it('drops the open-time "everything already there" shortcut and notes the refusal when another run claims the arbiter while the check was out', () => {
+    const { deps, dialogOpen, httpPost, startRestore, activeRun, noteRefusedStart } = setup();
+    const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
+    httpPost.mockReturnValueOnce(fetch);
+
+    startRestoreFlow(deps, target(), rows());
+
+    // A delete run starts elsewhere while the open-time check is still awaiting 7TV.
+    activeRun.set('delete');
+    // '7tv-1' (the only row, PogU) is already present — this would take the shortcut and start a
+    // (skipped-only) restore were the arbiter not re-checked first.
+    fetch.next(emoteSetPage(['7tv-1']));
+    fetch.complete();
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('restore');
+  });
+
+  // Bounded like the open-time check: a confirm-time check that hangs reads as a failed one — the
+  // open-time answer is reused and the duplicate check is reported unavailable, exactly as for a
+  // failed request, instead of the confirmed restore never starting.
+  it('gives up on a confirm-time check that hangs past its timeout, starting on the open-time answer as for a failed check', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      const missingRow: PurgeRunRow = {
+        emoteId: 'e2',
+        sevenTvEmoteId: '7tv-2',
+        name: 'Kappa',
+        aliases: ['Kappa'],
+        status: 'done',
+        errorMessage: null,
+      };
+      httpPost
+        .mockReturnValueOnce(of(emoteSetPage(['7tv-1'])))
+        .mockReturnValueOnce(new Subject<ReturnType<typeof emoteSetPage>>());
+
+      startRestoreFlow(deps, target(), [...rows(), missingRow]);
+      firstClosed<boolean>(dialogOpen).next(true);
+      expect(startRestore).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] }],
+        1,
+        false,
+        0,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #280: the confirmation is closed while the confirm-time check is out and nothing runs yet —
+  // `startCheckPending` spans exactly that window, whatever ends it.
+  describe('confirm-time check: the window before the start (#280)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('marks the start check pending exactly while the confirm-time check is out', () => {
+      const { deps, dialogOpen, httpPost, startRestore, startCheckPending } = setup();
+      const confirmCheck = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(of(emoteSetPage())).mockReturnValueOnce(confirmCheck);
+
+      startRestoreFlow(deps, target(), rows());
+      expect(startCheckPending()).toBe(false);
+
+      firstClosed<boolean>(dialogOpen).next(true);
+      expect(startCheckPending()).toBe(true);
+      expect(startRestore).not.toHaveBeenCalled();
+
+      confirmCheck.next(emoteSetPage());
+      confirmCheck.complete();
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it.each([
+      ['restore', (h: Harness) => h.startCheckPending],
+      ['undo', (h: Harness) => h.otherStartPending],
+    ])(
+      'opens nothing for a new restore while a confirmed %s is still being checked',
+      (_kind, flag) => {
+        const h = setup();
+        flag(h).set(true);
+
+        startRestoreFlow(h.deps, target(), rows());
+
+        expect(h.httpPost).not.toHaveBeenCalled();
+        expect(h.dialogOpen).not.toHaveBeenCalled();
+      },
+    );
+
+    // The invariant behind every confirmed start point reading `activeRun`, not `startLocked`: at
+    // the moment the run starts, this restore's own start check is still pending — `startLocked`
+    // would refuse the very run being confirmed, and silently, since no claim exists to name.
+    it('still starts the confirmed restore while its own start check is pending at that moment', () => {
+      const { deps, dialogOpen, httpPost, startRestore, startCheckPending, noteRefusedStart } =
+        setup();
+      const pendingAtStart: boolean[] = [];
+      const lockedAtStart: boolean[] = [];
+      startRestore.mockImplementation(() => {
+        pendingAtStart.push(startCheckPending());
+        lockedAtStart.push(deps.arbiter.startLocked());
+      });
+      httpPost.mockReturnValueOnce(of(emoteSetPage())).mockReturnValueOnce(of(emoteSetPage()));
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      expect(pendingAtStart).toEqual([true]);
+      expect(lockedAtStart).toEqual([true]);
+      expect(noteRefusedStart).not.toHaveBeenCalled();
+    });
+
+    it('releases the start check when the confirm-time check fails', () => {
+      const { deps, dialogOpen, httpPost, startRestore, startCheckPending } = setup();
+      httpPost
+        .mockReturnValueOnce(of(emoteSetPage()))
+        .mockReturnValueOnce(throwError(() => new Error('network error')));
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startCheckPending()).toBe(false);
+      expect(startRestore).toHaveBeenCalledTimes(1);
+    });
+
+    it('releases the start check when the arbiter refuses the start after the check', () => {
+      const { deps, dialogOpen, httpPost, activeRun, noteRefusedStart, startCheckPending } =
+        setup();
+      const confirmCheck = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(of(emoteSetPage())).mockReturnValueOnce(confirmCheck);
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+      activeRun.set('delete');
+      confirmCheck.next(emoteSetPage());
+      confirmCheck.complete();
+
+      expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('restore');
+      expect(startCheckPending()).toBe(false);
+    });
+
+    it('releases the start check when the confirm-time check hangs past its timeout', () => {
+      vi.useFakeTimers();
+      const { deps, dialogOpen, httpPost, startRestore, startCheckPending } = setup();
+      httpPost
+        .mockReturnValueOnce(of(emoteSetPage()))
+        .mockReturnValueOnce(new Subject<ReturnType<typeof emoteSetPage>>());
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+      expect(startCheckPending()).toBe(true);
+
+      vi.advanceTimersByTime(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS);
+
+      expect(startCheckPending()).toBe(false);
+      expect(startRestore).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // #255 P3(7): a confirm-time check that fails outright must not undo the open-time check's own,
+  // still-valid answer by sending every row unfiltered — it falls back to what the open-time check
+  // already found missing instead.
+  it('falls back to the open-time filtered rows when the confirm-time check fails, rather than sending everything unfiltered', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    const missingRow: PurgeRunRow = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-2',
+      name: 'Kappa',
+      aliases: ['Kappa'],
+      status: 'done',
+      errorMessage: null,
+    };
+    // Open-time: '7tv-1' (PogU) is already present, '7tv-2' (Kappa) is not.
+    httpPost.mockReturnValueOnce(of(emoteSetPage(['7tv-1'])));
+    // Confirm-time re-check fails outright (429, 503, no connection).
+    httpPost.mockReturnValueOnce(throwError(() => new Error('network error')));
+
+    startRestoreFlow(deps, target(), [...rows(), missingRow]);
+    expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    // Without the fallback this would resend 'PogU' too, even though the open-time check already
+    // proved it is already back — undoing its own protection the moment the freshest check fails.
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+      [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] }],
+      1,
+      false,
+      0,
+    );
+  });
+
+  // #255 P1 (Codex review): a row the open-time check already found present is hidden from the
+  // confirmation dialog entirely — it must stay hidden from the *run* too, even if it goes missing
+  // from the target set again before the user confirms (another editor, or the confirmation simply
+  // left open a while). Without the fix, the confirm-time re-check's own fresh read — which has to
+  // query the full row set to apply its per-alias rule correctly — would see the row as newly
+  // missing and resend it as an `ADD` the user never saw or agreed to.
+  it('never sends a row the open-time check already hid, even if it goes missing again before confirm', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    const missingRow: PurgeRunRow = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-2',
+      name: 'Kappa',
+      aliases: ['Kappa'],
+      status: 'done',
+      errorMessage: null,
+    };
+    // Open-time: '7tv-1' (PogU) is already present -> hidden from the dialog; '7tv-2' (Kappa) is
+    // not -> shown.
+    httpPost.mockReturnValueOnce(of(emoteSetPage(['7tv-1'])));
+    // Confirm-time: '7tv-1' has since been removed from the set too, so a full re-check now finds
+    // BOTH rows missing.
+    httpPost.mockReturnValueOnce(of(emoteSetPage([])));
+
+    startRestoreFlow(deps, target(), [...rows(), missingRow]);
+    expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    // 'PogU' (7tv-1) never appeared in the confirmation and must not appear in the run either,
+    // however the confirm-time read now classifies it.
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+      [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] }],
+      0,
+      true,
+      0,
+    );
+  });
+});
+
+// #275 (plan Festlegungen 16, 17): a purge-run row whose delete ended `unknown` comes back from the
+// parser marked `uncertain`. The file door offers it alongside the `done` rows; the duplicate
+// checks drop it whenever their read cannot vouch for it (failed, timed out, incomplete), and the
+// confirmation says how many. The flow itself adds no branch beyond not taking the "everything
+// already there" shortcut while anything was dropped.
+describe('startRestoreFlow — unclear protocol rows (#275)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const doneRow: RestoreRow = {
+    emoteId: 'e1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'PogU',
+    aliases: ['PogU'],
+  };
+  const unclearRow: RestoreRow = {
+    emoteId: 'e2',
+    sevenTvEmoteId: '7tv-2',
+    name: 'KEKW',
+    aliases: ['KEKW'],
+    uncertain: true,
+  };
+
+  /** A single, last page whose `totalCount` promises one entry more than it delivers — a read that
+   *  succeeds with `complete: false`. */
+  function truncatedPage(ids: string[] = []) {
+    const page = emoteSetPage(ids);
+    page.data.emoteSets.emoteSet.emotes.totalCount = ids.length + 1;
+    return page;
+  }
+
+  function sentIds(startRestore: ReturnType<typeof vi.fn>): string[] {
+    return (startRestore.mock.calls[0][1] as { sevenTvEmoteId: string }[]).map(
+      (row) => row.sevenTvEmoteId,
+    );
+  }
+
+  it('offers an unclear row alongside a done one once a complete read vouches for both', () => {
+    const { deps, dialogOpen, startRestore } = setup();
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['PogU', 'KEKW']);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(0);
+
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    expect(sentIds(startRestore)).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  it('leaves the unclear row out of the confirmation and the run when both reads fail, keeping the done row fail-open', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValue(throwError(() => new Error('network error')));
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+
+    const data = confirmData(dialogOpen);
+    expect(data.names).toEqual(['PogU']);
+    expect(data.addCount).toBe(1);
+    expect(data.uncertainDropped).toBe(1);
+    expect(data.countIsUpperBound).toBe(true);
+
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    expect(sentIds(startRestore)).toEqual(['7tv-1']);
+    expect(startRestore.mock.calls[0][3]).toBe(false);
+  });
+
+  it('leaves the unclear row out when the open-time read is incomplete', () => {
+    const { deps, dialogOpen, httpPost } = setup();
+    httpPost.mockReturnValueOnce(of(truncatedPage()));
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['PogU']);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(1);
+  });
+
+  it('leaves the unclear row out when the open-time read hangs past its timeout', () => {
+    vi.useFakeTimers();
+    const { deps, dialogOpen, httpPost } = setup();
+    httpPost.mockReturnValueOnce(new Subject<ReturnType<typeof emoteSetPage>>());
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+    vi.advanceTimersByTime(20_000);
+
+    expect(confirmData(dialogOpen).names).toEqual(['PogU']);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(1);
+  });
+
+  it('opens the confirmation with nothing to add, not the "everything already there" shortcut, when every row was unclear and the read is incomplete', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(of(truncatedPage()));
+
+    startRestoreFlow(deps, target(), [unclearRow]);
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData(dialogOpen).addCount).toBe(0);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('spends no slot read on a confirmation with nothing to add', () => {
+    const { deps, getSetStatus, httpPost } = setup();
+    httpPost.mockReturnValueOnce(of(truncatedPage()));
+
+    startRestoreFlow(deps, target(), [unclearRow]);
+
+    expect(getSetStatus).not.toHaveBeenCalled();
+  });
+
+  it('opens the confirmation with nothing to add when every row was unclear and the read fails', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(throwError(() => new Error('network error')));
+
+    startRestoreFlow(deps, target(), [unclearRow]);
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(confirmData(dialogOpen).addCount).toBe(0);
+    expect(confirmData(dialogOpen).uncertainDropped).toBe(1);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // No special rule once the read is complete: an unclear row whose emote is still there is
+  // "already present" like any other, and the shortcut stays what it was.
+  it('still takes the "everything already there" shortcut when a complete read finds the unclear row present', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(of(emoteSetEntriesPage([{ id: '7tv-2', alias: 'KEKW' }])));
+
+    startRestoreFlow(deps, target(), [unclearRow]);
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).toHaveBeenCalledWith(expect.anything(), [], 1, true, 0);
+  });
+
+  // Plan Festlegung 16, unchanged fallback: the open-time read already vouched for the unclear
+  // row and the dialog counted it; a confirm-time read that then fails reuses those open-time rows
+  // as it always did (`fallOnOpenTime`) — no second rule for uncertain rows at confirm time.
+  it('keeps an unclear row the open-time read already vouched for when only the confirm-time read fails', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(of(emoteSetPage([])));
+    httpPost.mockReturnValueOnce(throwError(() => new Error('network error')));
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    expect(sentIds(startRestore)).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  // Accepted on purpose (operator decision 2026-09-27): only a *failed* confirm-time read falls
+  // back to the open-time rows. One that succeeds but comes back incomplete applies the filter's
+  // fail-closed rule afresh — the unclear row the dialog showed is not sent, silently. It can only
+  // ever send less, never a blind ADD.
+  it('drops an unclear row the dialog showed when the confirm-time read succeeds but is incomplete, still sending the done row', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(of(emoteSetPage([])));
+    httpPost.mockReturnValueOnce(of(truncatedPage()));
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+    expect(confirmData(dialogOpen).names).toEqual(['PogU', 'KEKW']);
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    expect(sentIds(startRestore)).toEqual(['7tv-1']);
+    expect(startRestore.mock.calls[0][3]).toBe(true);
   });
 });

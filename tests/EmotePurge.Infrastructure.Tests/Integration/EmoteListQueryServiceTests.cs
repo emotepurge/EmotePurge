@@ -31,6 +31,23 @@ public class EmoteListQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task ListActiveAsync_ReturnsTheEmoteImageUrl()
+    {
+        await using var db = fixture.CreateDbContext();
+        await SeedChannelAsync(db, "emotelist7",
+            ("7tv-a", "Alpha", false));
+
+        var emotes = await new EmoteListQueryService(db).ListActiveAsync("emotelist7");
+
+        Assert.NotNull(emotes);
+        var emote = Assert.Single(emotes);
+        // Straight copy of the tracked Emote's own ImageUrl (T1) — never derived from
+        // SevenTvEmoteId, so this pins the actual value SeedChannelAsync wrote, not just
+        // "non-empty".
+        Assert.Equal("https://cdn.7tv.app/emote/7tv-a/2x.webp", emote.ImageUrl);
+    }
+
+    [Fact]
     public async Task ListActiveAsync_SortsOrdinally_NotByLocaleAwareCollation()
     {
         await using var db = fixture.CreateDbContext();

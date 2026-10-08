@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support/test';
 
 import { AUTH_USER, mockAuditLog, mockAuthMe, mockWorkerHealth } from './support/mocks';
 

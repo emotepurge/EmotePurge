@@ -8,8 +8,8 @@ import { UsageBandKey } from '../emotes/usage-bands';
  * gets the same height as a row of cells and spends most of it on the air above the label, which is
  * what a section heading wants anyway.
  */
-export type AtlasRow<T> =
-  | { kind: 'band'; band: UsageBandKey; count: number; share: number }
+export type AtlasRow<T, K extends string = UsageBandKey> =
+  | { kind: 'band'; band: K; count: number; share: number }
   | { kind: 'cells'; items: T[]; startIndex: number };
 
 /** Cell edge and gutter in px. The row height derived from them is the viewport's `itemSize`. */
@@ -53,13 +53,18 @@ export function atlasColumns(width: number, cell = ATLAS_CELL_PX): number {
  *
  * Bands are packed independently: a band never continues on a row that already holds cells of the
  * previous one, because the header would then sit next to emotes it does not describe.
+ *
+ * `K` defaults to the four usage bands; the usage page widens it by one group key of its own (the
+ * set view's "no counts under this set" group, spec #200 8.2) that is deliberately *not* a band —
+ * it has no share of usage and no place in `USAGE_BAND_ORDER`, it only needs a heading row the same
+ * way a band does.
  */
-export function packAtlasRows<T>(
-  bands: readonly { key: UsageBandKey; items: readonly T[]; share: number }[],
+export function packAtlasRows<T, K extends string = UsageBandKey>(
+  bands: readonly { key: K; items: readonly T[]; share: number }[],
   columns: number,
-): { rows: AtlasRow<T>[]; flat: T[] } {
+): { rows: AtlasRow<T, K>[]; flat: T[] } {
   const safeColumns = Math.max(1, columns);
-  const rows: AtlasRow<T>[] = [];
+  const rows: AtlasRow<T, K>[] = [];
   const flat: T[] = [];
 
   for (const band of bands) {
@@ -91,13 +96,13 @@ export function packAtlasRows<T>(
  * Returns the new flat index, or `null` when the key is not a navigation key or the move would
  * leave the atlas.
  */
-export function moveInAtlas<T>(
-  rows: readonly AtlasRow<T>[],
+export function moveInAtlas<T, K extends string = UsageBandKey>(
+  rows: readonly AtlasRow<T, K>[],
   current: number,
   key: string,
 ): number | null {
   const cellRows = rows.filter(
-    (row): row is Extract<AtlasRow<T>, { kind: 'cells' }> => row.kind === 'cells',
+    (row): row is Extract<AtlasRow<T, K>, { kind: 'cells' }> => row.kind === 'cells',
   );
   if (cellRows.length === 0) {
     return null;
@@ -141,7 +146,10 @@ export function moveInAtlas<T>(
 }
 
 /** Which virtualized row holds a flat index — what `scrollToIndex` needs before focusing a cell. */
-export function atlasRowOfIndex<T>(rows: readonly AtlasRow<T>[], index: number): number {
+export function atlasRowOfIndex<T, K extends string = UsageBandKey>(
+  rows: readonly AtlasRow<T, K>[],
+  index: number,
+): number {
   return rows.findIndex(
     (row) =>
       row.kind === 'cells' && index >= row.startIndex && index < row.startIndex + row.items.length,

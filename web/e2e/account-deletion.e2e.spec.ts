@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from './support/test';
 
 import { AUTH_USER, mockWorkerHealth } from './support/mocks';
 
@@ -8,7 +8,7 @@ import { AUTH_USER, mockWorkerHealth } from './support/mocks';
  * `mockAuthMe` would answer the DELETE with the user object. After a successful DELETE the probe
  * answers 401, like the real API does once the account and its sessions are gone.
  */
-async function mockSession(page: import('@playwright/test').Page, deleteStatus: number) {
+async function mockSession(page: Page, deleteStatus: number) {
   let deleted = false;
   await page.route('**/api/auth/me*', async (route) => {
     const method = route.request().method();
@@ -37,7 +37,7 @@ async function mockSession(page: import('@playwright/test').Page, deleteStatus: 
   });
 }
 
-async function openDeleteDialog(page: import('@playwright/test').Page) {
+async function openDeleteDialog(page: Page) {
   await page.goto('/my-votings');
   await page.getByRole('button', { name: /Konto-Menü von Sensitron/ }).click();
   await page.getByRole('button', { name: 'Konto löschen' }).click();

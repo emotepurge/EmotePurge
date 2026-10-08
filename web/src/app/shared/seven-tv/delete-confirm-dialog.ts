@@ -11,7 +11,14 @@ import { NamePreviewList } from '../ui/name-preview-list';
 import { NoticeBanner } from '../ui/notice-banner';
 
 /** Live view onto the host panel's state: the warning check finishes while the dialog is open,
- *  so the dialog reads the panel's signals instead of taking a snapshot. */
+ *  so the dialog reads the panel's signals instead of taking a snapshot.
+ *
+ *  The two name lists are live for a second reason, and it is load-bearing rather than incidental:
+ *  a pushed reload can prune the host's selection while this dialog is open, and the last screen
+ *  before an irreversible write must name what will actually be deleted. `MassDeletePanel` reads
+ *  the very same signals again, synchronously, in the `closed` callback (operator decision
+ *  2026-09-22), so what the confirmation last showed and what the run deletes are the same list by
+ *  construction. Whoever changes these two to plain values must move that snapshot with them. */
 export interface DeleteConfirmDialogData {
   /** The visible names — same capped preview as before (Konzept "Auswahl überlebt Suche und
    *  Filter" 2.1: they are on screen already, so the 50-name cap costs nothing here). */
@@ -22,6 +29,20 @@ export interface DeleteConfirmDialogData {
   hiddenEmotes: Signal<string[]>;
   warning: Signal<EmoteSetWarning | null>;
   warningLoading: Signal<boolean>;
+  /** The set the run deletes from (spec #200, 8.8) — the page's *selected* set, not necessarily
+   *  the active one. Named here so the confirmation never leaves it to the reader to remember
+   *  which set the dropdown showed when the dialog opened. Falls back to the set id itself when
+   *  the host page's set list has not (or no longer) named it, the same convention every other
+   *  unnamed-set reader in this app uses. A plain value, not a signal: the panel reads it once,
+   *  right before opening the dialog — the very same read the panel freezes into the `frozenSetId`
+   *  it later compares its live `setId()` input against in `startDelete`. That comparison, not this
+   *  dialog changing under it, is what catches a set switch behind an open dialog: the panel aborts
+   *  visibly (`abortedByLock`) when the two disagree at confirm time, whether the switch is still in
+   *  progress (an active host lock) or has already settled (#200 K5 finding A). */
+  setName: string;
+  /** Whether `setName` is the channel's currently active 7TV set — gates the "this set is not
+   *  currently active" addition (spec 8.8). */
+  isActiveSet: boolean;
 }
 
 /**
@@ -37,6 +58,18 @@ export interface DeleteConfirmDialogData {
   imports: [Button, DialogShell, NamePreviewList, NoticeBanner, TranslocoPipe],
   template: `
     <app-dialog-shell [dialogTitle]="titleKey() | transloco: { count: totalCount() }">
+      <!-- Names the set right under the title (spec 8.8) — a duplicate cell (#74, two aliases,
+           one REMOVE) is still exactly one entry in data.emotes() (mass-delete-panel.ts builds
+           one DeletableEmote per cell), so it reads as one deletion here too, in no group of its
+           own (8.9 is gone). -->
+      <p class="text-sm text-fg-secondary">
+        {{ 'massDelete.confirmSetLine' | transloco: { setName: data.setName } }}
+      </p>
+      @if (!data.isActiveSet) {
+        <p class="text-sm text-fg-secondary">
+          {{ 'massDelete.confirmSetNotActive' | transloco }}
+        </p>
+      }
       <app-name-preview-list [names]="data.emotes()" />
 
       <!-- Uncapped on purpose (Konzept "Auswahl überlebt Suche und Filter" 2.1): the 50-name cap
@@ -103,10 +136,11 @@ export interface DeleteConfirmDialogData {
       </div>
 
       <!-- Why the confirm button is locked, stated rather than left to the greyed-out button —
-           same rule as TypedConfirmDialog's retype hint, and it replaces the old loading line. -->
-      @if (data.warningLoading()) {
+           same rule as TypedConfirmDialog's retype hint, and it replaces the old loading line.
+           Two reasons share the slot now; see confirmLockReasonKey for which one wins. -->
+      @if (confirmLockReasonKey(); as reasonKey) {
         <p dialog-actions id="delete-confirm-hint" class="mr-auto text-xs text-fg-muted">
-          {{ 'massDelete.checkingSharedSets' | transloco }}
+          {{ reasonKey | transloco }}
         </p>
       }
       <button
@@ -124,8 +158,8 @@ export interface DeleteConfirmDialogData {
         appButton="danger-solid"
         buttonSize="lg"
         class="disabled:cursor-not-allowed"
-        [disabled]="data.warningLoading()"
-        [attr.aria-describedby]="data.warningLoading() ? 'delete-confirm-hint' : null"
+        [disabled]="confirmLockReasonKey() !== null"
+        [attr.aria-describedby]="confirmLockReasonKey() !== null ? 'delete-confirm-hint' : null"
         (click)="dialogRef.close(true)"
       >
         {{ 'massDelete.startDelete' | transloco }}
@@ -150,6 +184,26 @@ export class DeleteConfirmDialog {
   protected readonly hiddenByFilterKey = computed(() =>
     pluralKey(this.data.hiddenEmotes().length, 'massDelete.hiddenByFilter'),
   );
+
+  /**
+   * Why the destructive button is locked, or `null` when nothing locks it — rendered into the
+   * `#delete-confirm-hint` slot and pointed at by `aria-describedby`, because a disabled control
+   * explains itself (docs/UI-Designsprache.md §10).
+   *
+   * The emptied selection is the newer of the two and takes precedence: the lists here are live
+   * (see `DeleteConfirmDialogData`), so a pushed reload behind the open modal can prune the
+   * selection to nothing, and this dialog would then offer an enabled red "start deleting" button
+   * over the title "delete 0 emotes" and two empty lists. The panel refuses such a confirmation
+   * anyway (`massDelete.selectionGoneDuringConfirm`), but the last screen before an irreversible
+   * write must not invite a click it is going to reject — and between the two reasons, "there is
+   * nothing left" is the final one while "still checking" is merely not-yet.
+   */
+  protected readonly confirmLockReasonKey = computed<string | null>(() => {
+    if (this.totalCount() === 0) {
+      return 'massDelete.confirmSelectionEmpty';
+    }
+    return this.data.warningLoading() ? 'massDelete.checkingSharedSets' : null;
+  });
 
   // Only surface the alarming (red) block when the check actually *ran* and found something to
   // flag — `available: false` means the check itself failed, not that the set was confirmed
