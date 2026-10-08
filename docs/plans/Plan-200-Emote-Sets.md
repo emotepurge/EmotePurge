@@ -414,6 +414,7 @@ Task ausführt, liest Spec 4.2 als Ganzes, nicht diesen Absatz.
   Eintragstyp und die Liste an; `BoundaryUtc` ist bis zum 01.10. ein deutlich markierter
   Platzhalter, den der Betreiber am Wechseltag nennt und der dann in einem `chore:`-Commit auf dem
   Integrationsbranch seinen echten Wert bekommt — **vor** T1.10.
+  *Stand 2026-10-08: erledigt — `BoundaryUtc` = 2026-10-08 (Wechsel real am 2026-10-07 gegen 19:57 UTC, nicht am 01.10.; s. DECISIONS 2026-10-08).*
 - **Die Migrationstests stellen ihre Fälle über die Datenbank her**, nicht über eine Fixture der
   Liste: sie legen einen Kanal mit der `TwitchChannelId` der Konstante an und geben ihm die Zeilen
   und die `ActiveEmoteSetId`, die den jeweiligen Zweig auslösen (Spec 4.2, „Die Tests bringen ihre

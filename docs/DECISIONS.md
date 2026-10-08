@@ -10,6 +10,21 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — HandOfBlood's set-switch boundary is 2026-10-08, one day after the measured switch
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.cs` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (4.2, E1)
+
+The placeholder `BoundaryUtc` is replaced by `2026-10-08`. HandOfBlood's switch from set
+`01GV88A38G0006FW5TVZVMG507` to `01J94NYQR0000D15QN0BDGN85E` was detected by the dev worker on
+2026-10-07 at 19:57:33 UTC (7TV itself may have switched up to ~60 s earlier), not on 2026-10-01 as
+planned. The migration sends rows strictly before the boundary to the old set and the boundary day
+to the new one. Because the switch fell late in the UTC day, 2026-10-07 lands entirely on one side
+either way; counted on the dev stack, that day holds 42 uses for the old set and 9 for the new one.
+Naming 2026-10-08 misattributes 9 uses, naming 2026-10-07 would misattribute 42, so the operator
+chose 2026-10-08 on 2026-10-08. This deliberately deviates from the spec wording "the day of the
+switch".
+
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-set-entries.ts` ·
