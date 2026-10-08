@@ -819,6 +819,12 @@
         "switching": "Deleting and voting are locked until the chosen set has loaded.",
         "statusUnavailable": "Deleting and voting are locked: the channel's active set is not known right now."
       },
+      "importLock": {
+        "membersUnavailable": "Copying is locked: this set’s member list is unavailable.",
+        "truncated": "Copying is locked: this set’s member list is incomplete.",
+        "switching": "Copying is locked until the chosen set has loaded.",
+        "statusUnavailable": "Copying is locked: the channel's active set is not known right now."
+      },
       "loadFailedTitle": "The chosen set could not be loaded",
       "retry": "Try again"
     }

@@ -10,6 +10,41 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — A non-active set's view no longer shows rows that left the set; import obeys the shared set-view lock (reverses the display part of E23)
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/shared/seven-tv/import-shortcut.ts` · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` · `web/src/app/shared/seven-tv/import-shortcut.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts`
+
+**Reversal.** E23 (2026-09-21) showed rows counted under a non-active set but no longer in it on
+7TV (`membership: 'left'`) with a "Nicht mehr im Set" badge, kept them in the sums and kept them out
+of the delete run and the vote ballot. That display part is withdrawn. The operator found the
+asymmetry with the active set's view misleading: there the backend hides archived emotes
+(`!e.IsArchived`), so only the non-active view showed removed emotes at all. It also led a
+moderator to mark everything in the inactive main set and copy it into the Halloween set, which
+copied about eight emotes that were no longer in the main set.
+
+**Now.** `emotes()` in the usage-stats page drops `left` rows right after `mergeSetView`, so the
+grid, bands, sort, Pareto denominator, distribution strip, sums, the emote count, mark-all and the
+drilldown never see them. Rows that are in the set but carry no counts (E17, the trailing "no
+counts under this set" group) stay. The filter lives in the page, not in `mergeSetView` or the
+backend: the backend cannot know live 7TV membership for non-active sets, and `mergeSetView` keeps
+its documented contract (its other users are tests). The page's `left` badge, void plate and dimmed
+sprite are gone; the vote-detail page keeps its own archived treatment of ballot rows (unchanged).
+Departure is only inferred from a COMPLETE member list: while the list is unavailable
+`mergeSetView` falls back to "all live", and while it is truncated the filter is skipped (a counted
+emote missing from a partial list may still be in the set; the partial list's live-only rows stay,
+they are real members). The lock below covers the actions in those states.
+
+**Defense in depth, kept.** The copy flow still takes `membership === 'live'` rows only
+(`importableSelection`/`importableVisible`; the dialog counts read the same lists), and import now
+obeys `sharedSetViewLockReasonKey` like delete and vote: the header button, the dock shortcut and
+the guard in `openImportTarget` are locked while the view is switching, the status is unreadable,
+or the member list is loading, unavailable or truncated. The reason is shown next to the header
+button and referenced by `aria-describedby` (own `usageStats.setView.importLock.*` wording, because
+the delete/vote texts name only those two actions), and the dock shortcut points at the dock's
+reason paragraph; before, a status-read failure could disable the header button silently on a
+loaded active-set view with nothing selected. An unlocked import in the fallback state
+would have copied archived emotes silently.
+
 ### 2026-10-08 — A 7TV set that really is empty is accepted: set switch at once, same set after repeated spaced zeros, never against v4 (#76)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationTracker.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationOptions.cs` · `src/EmotePurge.Core/Services/IEmptySetConfirmationTracker.cs` · `src/EmotePurge.Core/SevenTv/SevenTvModels.cs` · `src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs` · `src/EmotePurge.Worker/Worker.cs` · `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` · `src/EmotePurge.Worker/appsettings.json` · `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceEmptySetTests.cs`

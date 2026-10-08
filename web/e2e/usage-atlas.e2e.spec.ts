@@ -878,7 +878,7 @@ test.describe('waiting for the first 7TV sync', () => {
 /**
  * The set view (#200, K4, T4.6): the header dropdown that switches which of the channel's sets the
  * page shows, the URL round trip spec 8.1 asks for, and the non-active view's row classes (8.2) —
- * a class-3 "no counts under this set" group, a `'left'` row and a #74 duplicate cell, all unionned
+ * a class-3 "no counts under this set" group, a departed row (hidden) and a #74 duplicate cell, all unionned
  * from `/totals` and the set's live 7TV membership (`mergeSetView`, mocked here via
  * {@link mockTrackedEmoteSetPreview}, the tracked-channel preview route of #220).
  *
@@ -1125,7 +1125,7 @@ test.describe('set view (#200, K4)', () => {
           totalUseCount: 50,
         },
         {
-          // Counted here, but absent from the live list below — 'left' (E23).
+          // Counted here, but absent from the live list below — no longer in the set, so hidden.
           emoteId: 'e-gone',
           emoteName: 'GoneEmote',
           sevenTvEmoteId: '7tv-gone',
@@ -1180,11 +1180,8 @@ test.describe('set view (#200, K4)', () => {
       page.getByRole('button', { name: /^NoCountsTwo · keine Zählungen unter diesem Set/ }),
     ).toBeVisible();
 
-    // 'left' row: badge, still counted (AK 57) — no NG0955 assertion needed here, that is the
-    // console check at the end of this test.
-    await expect(
-      page.getByRole('button', { name: /^GoneEmote ·.*Nicht mehr im Set/ }),
-    ).toBeVisible();
+    // A row that left the set is not shown at all, like in the active view.
+    await expect(page.getByRole('button', { name: /^GoneEmote/ })).toHaveCount(0);
 
     // #74 duplicate: one cell, slot count 2, both aliases (AK 58).
     await expect(
