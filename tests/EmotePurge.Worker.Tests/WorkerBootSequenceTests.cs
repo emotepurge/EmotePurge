@@ -419,16 +419,19 @@ public class WorkerBootSequenceTests
         channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
             .Returns(new List<string> { "alpha", "bravo", "charlie" });
         var logger = new RecordingLogger<WorkerService>();
-        WorkerService? worker = null;
+        // The join stays pending until the test has requested shutdown, so the stop can neither arrive
+        // before ExecuteAsync is registered with the host (StopAsync is a no-op without it, and the
+        // synchronous substitutes would run the whole boot recovery inside StartAsync) nor race the join.
+        var joinEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var joinResult = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var chatManager = Substitute.For<ITwitchChatManager>();
-        chatManager.JoinChannelAsync(Arg.Any<string>()).Returns(call =>
+        chatManager.JoinChannelAsync(Arg.Any<string>()).Returns(_ =>
         {
-            // Shutdown arrives while the first join is in flight; the join then fails with a cancellation.
-            _ = worker!.StopAsync(CancellationToken.None);
-            return Task.FromException(new OperationCanceledException());
+            joinEntered.TrySetResult();
+            return joinResult.Task;
         });
 
-        worker = new WorkerService(
+        var worker = new WorkerService(
             logger,
             chatManager,
             Substitute.For<IRedisSubscriber>(),
@@ -441,8 +444,13 @@ public class WorkerBootSequenceTests
             new ConfigurationBuilder().Build());
 
         await worker.StartAsync(CancellationToken.None);
+        await joinEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Shutdown arrives while the first join is in flight; the join then fails with a cancellation.
+        var stop = worker.StopAsync(CancellationToken.None);
+        joinResult.SetException(new OperationCanceledException());
+        await stop.WaitAsync(TimeSpan.FromSeconds(5));
         await gate.Completed.WaitAsync(TimeSpan.FromSeconds(5));
-        await worker.StopAsync(CancellationToken.None);
 
         await chatManager.Received(1).JoinChannelAsync(Arg.Any<string>());
         Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Warning);
