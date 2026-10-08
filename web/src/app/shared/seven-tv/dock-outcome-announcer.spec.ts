@@ -15,7 +15,11 @@ import {
 } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
-import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
+import {
+  SyncReportReason,
+  SyncReportState,
+  TargetCheckBlockReason,
+} from '../../core/seven-tv/sync-report-outcome';
 import { UndoSkippedRow } from '../../core/seven-tv/undo-plan';
 import {
   DockOutcomeAnnouncer,
@@ -67,6 +71,21 @@ const DE_TRANSLATIONS = {
       failed: 'Synchronisierung fehlgeschlagen.',
       backendTriggered: 'Wird abgeglichen.',
     },
+  },
+  sevenTvRun: {
+    tagReport: {
+      pending: 'Wird beim Tag vermerkt …',
+      succeeded: 'Beim Tag vermerkt.',
+      failed: 'Nicht beim Tag vermerkt.',
+      discardedStale: {
+        one: '{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.',
+        other: '{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt.',
+      },
+    },
+  },
+  syncReportReason: {
+    unavailable: 'Grund: nicht erreichbar.',
+    forbidden: 'Grund: keine Berechtigung.',
   },
   import: {
     startChecking: 'Übertragung wird geprüft.',
@@ -123,6 +142,11 @@ interface FakeOutcomeSource {
   /** Only `SevenTvRestoreService` has this (#280) — the confirm-time check's window. Shared shape,
    *  the import fake's copy is never read. */
   startCheckPending: WritableSignal<boolean>;
+  /** Only `SevenTvImportService` has these three (#201 T-C) — a tag play-in's placement report.
+   *  Shared shape, the restore fake's copies are never read. */
+  tagPlacementReport: WritableSignal<SyncReportState>;
+  tagPlacementReportReason: WritableSignal<SyncReportReason | null>;
+  tagPlacementDiscardedStaleCount: WritableSignal<number>;
 }
 
 function createFakeSource(): FakeOutcomeSource {
@@ -136,6 +160,9 @@ function createFakeSource(): FakeOutcomeSource {
     replaceSkippedDrift: signal(0),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     startCheckPending: signal(false),
+    tagPlacementReport: signal<SyncReportState>('idle'),
+    tagPlacementReportReason: signal<SyncReportReason | null>(null),
+    tagPlacementDiscardedStaleCount: signal(0),
   };
 }
 
@@ -224,8 +251,11 @@ describe('DockOutcomeAnnouncer', () => {
   let restoreService: FakeOutcomeSource;
   let importService: FakeOutcomeSource;
   let undoService: FakeUndoSource;
-  /** `SevenTvDeleteService.startCheckPending` (#280) — the only delete signal the announcer reads. */
+  /** `SevenTvDeleteService.startCheckPending` (#280) and, since #201 T-C, the tag removal report —
+   *  the only delete signals the announcer reads. */
   let deleteStartCheckPending: WritableSignal<boolean>;
+  let deleteTagRemovalReport: WritableSignal<SyncReportState>;
+  let deleteTagRemovalReportReason: WritableSignal<SyncReportReason | null>;
   let fixture: ComponentFixture<HostPage>;
 
   beforeEach(async () => {
@@ -233,6 +263,8 @@ describe('DockOutcomeAnnouncer', () => {
     importService = createFakeSource();
     undoService = createFakeUndoSource();
     deleteStartCheckPending = signal(false);
+    deleteTagRemovalReport = signal<SyncReportState>('idle');
+    deleteTagRemovalReportReason = signal<SyncReportReason | null>(null);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -248,7 +280,11 @@ describe('DockOutcomeAnnouncer', () => {
         { provide: SevenTvUndoService, useValue: undoService },
         {
           provide: SevenTvDeleteService,
-          useValue: { startCheckPending: deleteStartCheckPending },
+          useValue: {
+            startCheckPending: deleteStartCheckPending,
+            tagRemovalReport: deleteTagRemovalReport,
+            tagRemovalReportReason: deleteTagRemovalReportReason,
+          },
         },
       ],
     }).compileComponents();
@@ -402,6 +438,10 @@ describe('DockOutcomeAnnouncer', () => {
       targetOwnerTwitchId: null,
       targetSetName: 'wegwerf',
       targetIsActiveSet: false,
+      tag: null,
+      tagPlacementReport: 'idle',
+      tagPlacementReportReason: null,
+      tagPlacementDiscardedStaleCount: 0,
       origin: { kind: 'channel', channelName: 'quellkanal' },
       plan: { rows: [] },
       settlement: 'settled',
@@ -629,6 +669,49 @@ describe('DockOutcomeAnnouncer', () => {
         'Abgleich des Zielkanals wird angestoßen…',
       ]);
     });
+  });
+
+  // #201 T-C: a tag play-in's placement report — its end state only, never the pending line.
+  it('speaks the end state of a tag placement report, never its pending line', () => {
+    const regionAtRest = regions()[0];
+
+    importService.tagPlacementReport.set('pending');
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+
+    importService.tagPlacementReport.set('succeeded');
+    importService.tagPlacementDiscardedStaleCount.set(2);
+    fixture.detectChanges();
+
+    expect(regions()).toEqual([regionAtRest]);
+    expect(spoken()).toEqual([
+      'Beim Tag vermerkt.',
+      '2 Emotes wurden inzwischen wieder entfernt und nicht vermerkt.',
+    ]);
+  });
+
+  it('speaks a failed tag placement report together with its reason', () => {
+    importService.tagPlacementReport.set('failed');
+    importService.tagPlacementReportReason.set('unavailable');
+    fixture.detectChanges();
+
+    expect(spoken()).toEqual(['Nicht beim Tag vermerkt. Grund: nicht erreichbar.']);
+  });
+
+  // #201 T-C: a tag removal's report belongs to the delete run, which every page mounts.
+  it('speaks the end state of a tag removal report on a page without an import section', () => {
+    fixture.componentInstance.withImport.set(false);
+
+    deleteTagRemovalReport.set('pending');
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+
+    deleteTagRemovalReport.set('failed');
+    deleteTagRemovalReportReason.set('forbidden');
+    fixture.detectChanges();
+
+    expect(spoken()).toHaveLength(1);
+    expect(spoken()[0]).toBe('Nicht beim Tag vermerkt. Grund: keine Berechtigung.');
   });
 
   it('does not speak for an import on a page that shows no import section', () => {

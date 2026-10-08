@@ -61,6 +61,18 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     // set's live 7TV membership (paginated), same provider-budget shape as the ForeignEmoteLookup
     // routes above — its own group otherwise defaults to Bookkeeping (end/delete keep it, unaffected).
     [InlineData("POST", "/api/channels/{channelName}/vote-sessions", RateLimitPolicyNames.ForeignEmoteLookup)]
+    // #201: tag reads are navigation, the five maintenance routes are bookkeeping — no new policy.
+    [InlineData("GET", "/api/channels/{channelName}/tags", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("GET", "/api/channels/{channelName}/tags/{tagId:long}/entries", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("POST", "/api/channels/{channelName}/tags", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("PATCH", "/api/channels/{channelName}/tags/{tagId:long}", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("DELETE", "/api/channels/{channelName}/tags/{tagId:long}", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/entries", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/entries/remove", RateLimitPolicyNames.Bookkeeping)]
+    // #201 T-C: the registration and the two reports of a tag run — bookkeeping about a run already begun.
+    [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/operations", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/placements", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/placements/removed", RateLimitPolicyNames.Bookkeeping)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)
     {
         // Resolving from Services boots the host; the endpoints exist only afterwards (same as

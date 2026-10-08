@@ -1,0 +1,560 @@
+<!-- The page's bottom padding follows the run dock's measured height (dockHeightPx), so the last row
+     of the grid is never under the fixed bar; zero while there is no dock. -->
+<div
+  class="flex flex-col gap-6"
+  [style.paddingBottom.px]="dockHeightPx() > 0 ? dockHeightPx() : null"
+>
+  <!-- Page header (§8.7): only commands that are complete without a selection. "Neuer Tag" is the
+       one in T-B; it needs channel management, so it is absent for everybody else. -->
+  <header class="flex flex-col gap-1">
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <h2 class="text-lg font-semibold">{{ 'tags.page.title' | transloco }}</h2>
+      <div class="ml-auto flex flex-wrap items-center gap-3">
+        <!-- Permanent sr-only region, visible aria-hidden twin (§4.5): a region that mounts with
+             its text announces nothing. Here, not in the detail: the delete and "tag gone"
+             messages report exactly the event that takes the detail away. -->
+        <span role="status" class="sr-only">
+          @if (feedback(); as message) {
+            {{ message.key | transloco: message.params }}
+          }
+        </span>
+        @if (feedback(); as message) {
+          <span aria-hidden="true" class="text-sm text-fg-muted">
+            {{ message.key | transloco: message.params }}
+          </span>
+        }
+        @if (canManage()) {
+          <button type="button" appButton="primary" (click)="openCreate()">
+            {{ 'tags.actions.create' | transloco }}
+          </button>
+        }
+      </div>
+    </div>
+    <!-- What a tag is, and what its two buttons do — the second sentence only where the buttons can
+         exist (`tagRunsShown`, the host's own gate for them), so it never promises a control the
+         page does not show. -->
+    <p class="text-sm text-fg-muted">
+      {{ 'tags.page.intro' | transloco }}
+      @if (tagRunsShown()) {
+        {{ 'tags.page.introRuns' | transloco }}
+      }
+    </p>
+    <!-- Which set the in-set numbers count against (spec 9.3). min-h holds the line while the set's
+         name is still being looked up, so the page below does not move when it arrives. -->
+    <p class="min-h-5 text-sm text-fg-muted">
+      @if (activeSetName(); as setName) {
+        {{ 'tags.page.setLine' | transloco: { set: setName } }}
+      } @else if (noActiveSet()) {
+        {{ 'tags.page.noActiveSet' | transloco }}
+      }
+    </p>
+    <!-- The page's run status region (#201 T-C, plan 3.8): page level, outside the detail, so it
+         survives a change of tag. Two messages that can stand at once — a restore the delete
+         section's entry could not start (`runNotice`, persists until a new start clears it) and
+         the arbiter's transient "nothing started" (`refusedStartNotice`, which clears itself, as
+         on the usage page) — in one permanently mounted sr-only region whose text comes and goes,
+         plus their visible aria-hidden twins (§4.5). A third, in a region of its own: what a tag
+         flow still said after its TagRunActions was torn down (a tag list reloaded with a new
+         set), with its retry when it has one (TagRunNoticeSink). -->
+    <span role="status" class="sr-only">
+      @if (runNotice(); as notice) {
+        {{ notice.leadKey | transloco }}
+        {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
+      }
+      @if (refusedStartNotice(); as notice) {
+        {{ notice.messageKey | transloco: { kind: notice.kind } }}
+      }
+    </span>
+    @if (runNotice(); as notice) {
+      <p aria-hidden="true" class="text-sm text-fg-secondary">
+        {{ notice.leadKey | transloco }}
+        {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
+      </p>
+    }
+    @if (refusedStartNotice(); as notice) {
+      <p aria-hidden="true" class="text-xs text-fg-muted">
+        {{ notice.messageKey | transloco: { kind: notice.kind } }}
+      </p>
+    }
+    <app-tag-run-orphan-notice
+      [channelName]="channelName()"
+      (completed)="onTagRunCompleted()"
+      (feedback)="onTagRunFeedback($event)"
+    />
+  </header>
+
+  @if (actionErrorKey(); as key) {
+    <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
+  }
+
+  @if (tagsErrorKey(); as key) {
+    <app-notice-banner variant="error">
+      {{ key | transloco }}
+      <button notice-action type="button" appButton="neutral" (click)="retryTags()">
+        {{ 'tags.page.retry' | transloco }}
+      </button>
+    </app-notice-banner>
+  } @else if (!tagsLoaded()) {
+    <app-skeleton-rows [count]="3" />
+  } @else if (tags().length === 0) {
+    <!-- The way to a first tag is a selection on the usage grid. That pointer is only shown to whom
+         it leads somewhere: a manager with a mouse (§2.5 — what would point into the void on a
+         coarse pointer is not offered). -->
+    @if (canManage() && !isCoarse()) {
+      <app-empty-state
+        [title]="'tags.page.empty.title' | transloco"
+        [description]="'tags.page.empty.description' | transloco"
+      >
+        <a appButton="neutral" [routerLink]="usageStatsLink()">
+          {{ 'tags.page.empty.cta' | transloco }}
+        </a>
+      </app-empty-state>
+    } @else {
+      <app-empty-state [title]="'tags.page.empty.title' | transloco" />
+    }
+  } @else {
+    <!-- From lg: list and detail side by side. Below: one or the other, by ?tag= (spec 9.4). The
+         columns are the page's own; the shell frame around them never changes per route. -->
+    <div
+      class="grid grid-cols-[minmax(0,1fr)] items-start gap-8 lg:grid-cols-[18rem_minmax(0,1fr)]"
+    >
+      @if (showList()) {
+        <!-- Ruled rows with a stretched link (§2.1/§2.3): the name is the link, the whole row its
+             target. The chosen row is marked as current in the accessibility tree, not by colour
+             alone. -->
+        <ul
+          class="-mx-3 divide-y divide-border border-y border-border"
+          [attr.aria-label]="'tags.page.listLabel' | transloco"
+        >
+          @for (tag of tags(); track tag.id) {
+            <li
+              [class]="
+                'relative flex flex-col gap-0.5 px-3 py-3 transition-colors hover:bg-surface-inset ' +
+                (tag.id === selectedTagId() ? 'bg-surface-inset' : '')
+              "
+            >
+              <a
+                [routerLink]="tagsLink()"
+                [queryParams]="{ tag: tag.id }"
+                [attr.aria-current]="tag.id === selectedTagId() ? 'true' : null"
+                [class]="
+                  'app-card-link min-w-0 truncate font-medium ' +
+                  (tag.id === selectedTagId() ? 'text-accent-fg' : '')
+                "
+              >
+                {{ tag.name }}
+              </a>
+              <span class="flex flex-wrap gap-x-2 text-xs text-fg-muted">
+                <span>{{
+                  plural(tag.entryCount, 'tags.page.micro.entries')
+                    | transloco: { count: formatCount(tag.entryCount) }
+                }}</span>
+                @if (tag.inSetCount !== null) {
+                  <span aria-hidden="true">·</span>
+                  <span>{{
+                    plural(tag.inSetCount, 'tags.page.micro.inSet')
+                      | transloco: { count: formatCount(tag.inSetCount) }
+                  }}</span>
+                  <!-- Only what the tag brought into the set is named, never its absence (operator
+                       feedback 2026-10-05): an active tag with no placements says nothing. It counts
+                       against the active set like the number before it, so it drops out with it when
+                       there is no set to count in. -->
+                  @if (tag.active && tag.placedCount > 0) {
+                    <span aria-hidden="true">·</span>
+                    <span>{{
+                      'tags.page.micro.activePlaced'
+                        | transloco: { placed: formatCount(tag.placedCount) }
+                    }}</span>
+                  }
+                }
+              </span>
+            </li>
+          }
+        </ul>
+      }
+
+      @if (showDetail()) {
+        @if (selectedTag(); as tag) {
+          <section class="flex min-w-0 flex-col gap-4" aria-labelledby="tag-detail-title">
+            <!-- Detail head: the up-link (drilldown only, §8.6 — in one row with the heading), the
+                 name, the actions. -->
+            <div class="flex flex-col gap-1">
+              <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+                @if (isDrilldown()) {
+                  <app-back-link
+                    [link]="tagsLink()"
+                    [label]="'channelWorkspace.tabs.tags' | transloco"
+                  />
+                }
+                <h3
+                  id="tag-detail-title"
+                  tabindex="-1"
+                  class="min-w-0 truncate text-base font-semibold"
+                >
+                  {{ tag.name }}
+                </h3>
+                <!-- Header actions (spec 9.4, plan 3.8): two groups, each naming its target — the set
+                     actions (the tag runs), then after a gap the tag actions (rename, delete; §8.7). The runs exist where they can run — switched on, a fine
+                     pointer, a known active set — and need no management right (E9); rename and
+                     delete need one. TagRunActions is mounted on gates that a live reload does not
+                     move — a reload that tore it down would read as a set switch and abort an open
+                     dialog — and gets the live active set, which its flows' confirm-time guard
+                     compares against. It also gets the grid's marking: a clear-out started with one
+                     proposes the marked emotes, a play-in adds only the marked ones that are missing,
+                     and the marking goes once either went ahead. -->
+                <!-- With the run buttons, the actions always take a line of their own under the
+                     heading (final review O3): their labels gain a count with the first click on
+                     the grid, and sharing the heading's line, that growth wrapped the actions onto a
+                     second line at some name lengths and moved the grid under the pointer. On their
+                     own line the header's height no longer depends on the labels' width. Without
+                     the run buttons the labels never change, and rename/delete stay beside it. -->
+                @if (tagRunsShown() || canManage()) {
+                  <div
+                    [class]="
+                      'flex flex-wrap items-start gap-x-6 gap-y-2 ' +
+                      (tagRunsShown() ? 'basis-full' : 'ml-auto')
+                    "
+                  >
+                    @if (tagRunsShown()) {
+                      <app-tag-run-actions
+                        [channelName]="channelName()"
+                        [tag]="tag"
+                        [activeEmoteSetId]="activeEmoteSetId()"
+                        [setName]="activeSetName()"
+                        [enabled]="true"
+                        [unshownRunKinds]="unshownRunKinds"
+                        [markedIds]="selection.selectedKeys()"
+                        [markedMissingCount]="markedMissingCount()"
+                        [markedLockReasonId]="playInMarkingLockReasonId"
+                        [markedInSetCount]="markedInSetCount()"
+                        [removeMarkedLockReasonId]="removeMarkingLockReasonId"
+                        (started)="onTagRunStarted()"
+                        (completed)="onTagRunCompleted()"
+                        (runCommitted)="clearSelection()"
+                        (feedback)="onTagRunFeedback($event)"
+                        (focusLost)="focusDetailHeading()"
+                      />
+                    }
+                    @if (canManage()) {
+                      <div class="flex flex-wrap items-start gap-2">
+                        <button
+                          type="button"
+                          appButton="neutral"
+                          [disabled]="deletePending()"
+                          (click)="openRename()"
+                        >
+                          {{ 'tags.actions.rename' | transloco }}
+                        </button>
+                        <button
+                          type="button"
+                          appButton="danger"
+                          [disabled]="deletePending()"
+                          (click)="confirmDelete()"
+                        >
+                          {{ 'tags.actions.delete' | transloco }}
+                        </button>
+                      </div>
+                    }
+                  </div>
+                }
+              </div>
+              <!-- The played-in state against the active set (spec 9.4), named only when it holds —
+                   there is no "not played in" line, and none for an active tag without placements, like the list
+                   micro status (operator feedback 2026-10-05). Without a set to
+                   refer to (`inSetCount: null`) there is no state to name either. -->
+              @if (tag.inSetCount !== null && tag.active && tag.placedCount > 0) {
+                <p class="text-sm text-fg-secondary">
+                  @if (tag.activatedAtUtc) {
+                    {{
+                      'tags.page.state.active' | transloco: { date: formatDate(tag.activatedAtUtc) }
+                    }}
+                  } @else {
+                    {{ 'tags.page.state.activeUndated' | transloco }}
+                  }
+                </p>
+              }
+              <p class="flex flex-wrap gap-x-2 text-xs text-fg-muted">
+                <span>{{
+                  plural(tag.entryCount, 'tags.page.micro.entries')
+                    | transloco: { count: formatCount(tag.entryCount) }
+                }}</span>
+                @if (tag.inSetCount !== null) {
+                  <span aria-hidden="true">·</span>
+                  <span>{{
+                    plural(tag.inSetCount, 'tags.page.micro.inSet')
+                      | transloco: { count: formatCount(tag.inSetCount) }
+                  }}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{{
+                    plural(tag.entryCount - tag.inSetCount, 'tags.page.micro.notInSet')
+                      | transloco: { count: formatCount(tag.entryCount - tag.inSetCount) }
+                  }}</span>
+                }
+              </p>
+            </div>
+
+            <!-- The element the column count is measured against (atlasColumns). -->
+            <div #sheet class="min-w-0">
+              @if (entriesErrorKey(); as key) {
+                <app-notice-banner variant="error">
+                  {{ key | transloco }}
+                  <button notice-action type="button" appButton="neutral" (click)="retryEntries()">
+                    {{ 'tags.page.retry' | transloco }}
+                  </button>
+                </app-notice-banner>
+              } @else if (!entriesLoaded()) {
+                <div role="status" [attr.aria-label]="'common.loading' | transloco">
+                  <div class="flex flex-wrap gap-1" aria-hidden="true">
+                    @for (cell of skeletonCells; track cell) {
+                      <div class="app-skeleton h-16 w-16 rounded-none"></div>
+                    }
+                  </div>
+                </div>
+              } @else if (entries().length === 0) {
+                @if (canManage() && !isCoarse()) {
+                  <app-empty-state
+                    [title]="'tags.page.emptyEntries.title' | transloco"
+                    [description]="'tags.page.emptyEntries.description' | transloco"
+                  >
+                    <a appButton="neutral" [routerLink]="usageStatsLink()">
+                      {{ 'tags.page.empty.cta' | transloco }}
+                    </a>
+                  </app-empty-state>
+                } @else {
+                  <app-empty-state [title]="'tags.page.emptyEntries.title' | transloco" />
+                }
+              } @else {
+                @if (selectable()) {
+                  <p id="tag-grid-hint" class="sr-only">
+                    {{ 'tags.page.keyboardHint' | transloco }}
+                  </p>
+                }
+                @if (virtualized()) {
+                  <!-- Window-scrolled like the usage atlas (§8.5): no inner scroll box. -->
+                  <cdk-virtual-scroll-viewport
+                    scrollWindow
+                    [itemSize]="rowHeight"
+                    [minBufferPx]="rowHeight * 4"
+                    [maxBufferPx]="rowHeight * 8"
+                    role="group"
+                    [attr.aria-label]="'tags.page.gridLabel' | transloco: { tag: tag.name }"
+                    [attr.aria-describedby]="selectable() ? 'tag-grid-hint' : null"
+                    (keydown)="onGridKeydown($event)"
+                  >
+                    <div
+                      *cdkVirtualFor="let row of gridRows(); trackBy: trackRow"
+                      [style.height.px]="rowHeight"
+                    >
+                      <ng-container
+                        *ngTemplateOutlet="cellRow; context: { $implicit: row }"
+                      ></ng-container>
+                    </div>
+                  </cdk-virtual-scroll-viewport>
+                } @else {
+                  <div
+                    role="group"
+                    [attr.aria-label]="'tags.page.gridLabel' | transloco: { tag: tag.name }"
+                    [attr.aria-describedby]="selectable() ? 'tag-grid-hint' : null"
+                    (keydown)="onGridKeydown($event)"
+                  >
+                    @for (row of gridRows(); track $index) {
+                      <div [style.height.px]="rowHeight">
+                        <ng-container
+                          *ngTemplateOutlet="cellRow; context: { $implicit: row }"
+                        ></ng-container>
+                      </div>
+                    }
+                  </div>
+                }
+
+                <!-- Meta line (spec 9.4): the hovered or focused cell in words. aria-hidden, because
+                     each cell's own accessible name already says the same; min-h keeps the dock
+                     below from jumping when it fills. -->
+                <p
+                  class="mt-2 flex min-h-5 flex-wrap gap-x-2 text-xs text-fg-muted"
+                  aria-hidden="true"
+                >
+                  @if (inspected(); as entry) {
+                    <span class="font-medium text-fg-body">{{ entry.alias }}</span>
+                    @if (renamedTo(entry); as current) {
+                      <span>·</span>
+                      <span>{{ 'tags.page.currentName' | transloco: { name: current } }}</span>
+                    }
+                    @if (entry.inSet === false) {
+                      <span>·</span>
+                      <span>{{ 'tags.page.notInSetBadge' | transloco }}</span>
+                    }
+                    @if (entry.placedAtUtc; as placedAt) {
+                      <span>·</span>
+                      <span>{{
+                        'tags.page.placedAt' | transloco: { date: formatDate(placedAt) }
+                      }}</span>
+                    }
+                  }
+                </p>
+              }
+            </div>
+
+            <!-- The small dock in the flow (spec 9.4, §8.7 — no .app-dock on this page in T-B).
+                 Only while something is marked. -->
+            @if (dockShown()) {
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="mr-2 text-sm text-fg-secondary">
+                  {{
+                    plural(markedCount(), 'tags.page.marked')
+                      | transloco: { count: formatCount(markedCount()) }
+                  }}
+                </span>
+                <button
+                  type="button"
+                  appButton="neutral"
+                  [disabled]="removalPending()"
+                  [attr.aria-label]="
+                    'tags.actions.unassignNamed'
+                      | transloco: { tag: tag.name, count: formatCount(markedCount()) }
+                  "
+                  [title]="
+                    ('tags.actions.unassignNamed'
+                      | transloco: { tag: tag.name, count: formatCount(markedCount()) }) +
+                    ' — ' +
+                    ('tags.actions.unassignTitle' | transloco)
+                  "
+                  (click)="removeMarked()"
+                >
+                  <!-- The label names its target (the tag) without the tag's own name, which can be
+                       40 characters; the accessible name and the title append it, after the visible
+                       words so the visible label stays contained in the accessible name. -->
+                  {{ 'tags.actions.unassign' | transloco: { count: formatCount(markedCount()) } }}
+                </button>
+                <button type="button" appButton="outline" (click)="clearSelection()">
+                  {{ 'tags.actions.clearSelection' | transloco }}
+                </button>
+                <!-- Why "Ins Set holen" or "Aus dem Set entfernen" in the head is locked by this
+                     marking (§10). Here, beside the marking, and not under the button: the line
+                     exists only with a marking anyway, so the reason coming and going moves neither
+                     the header nor the grid. At most one holds: a marked entry is either in the set
+                     or not. -->
+                @if (playInMarkingLockShown()) {
+                  <span [id]="playInMarkingLockReasonId" class="text-xs text-fg-muted">
+                    {{ 'tags.actions.playInLockReason.allMarkedInSet' | transloco }}
+                  </span>
+                }
+                @if (removeMarkingLockShown()) {
+                  <span [id]="removeMarkingLockReasonId" class="text-xs text-fg-muted">
+                    {{ 'tags.actions.removeLockReason.noneMarkedInSet' | transloco }}
+                  </span>
+                }
+              </div>
+            }
+          </section>
+        } @else if (selectedTagId() === null) {
+          <app-empty-state [title]="'tags.page.emptySelection' | transloco" />
+        }
+      }
+    </div>
+  }
+</div>
+
+<!-- One row of cells. A button where the grid selects, a labelled image where it does not (a coarse
+     pointer or no management right): there a cell opens nothing (spec 9.4). -->
+<ng-template #cellRow let-row>
+  <div
+    class="grid gap-1"
+    [style.grid-template-columns]="'repeat(' + columns() + ', ' + cellPx + 'px)'"
+  >
+    @for (entry of row.items; track entry.sevenTvEmoteId; let i = $index) {
+      @if (selectable()) {
+        <button
+          type="button"
+          [class]="
+            'app-sprite-cell relative block h-16 w-16 scroll-mt-48 transition-shadow ' +
+            (entry.inSet === false ? 'app-sprite-cell-void ' : '') +
+            (selection.isSelected(entry) ? '' : 'hover:inset-ring-1 hover:inset-ring-border-strong')
+          "
+          [attr.data-tag-cell-index]="row.startIndex + i"
+          [attr.tabindex]="activeIndex() === row.startIndex + i ? 0 : -1"
+          [attr.aria-pressed]="selection.isSelected(entry)"
+          [attr.aria-label]="entryLabel(entry)"
+          (click)="onCellClick(entry, row.startIndex + i, $event)"
+          (mousedown)="$event.shiftKey && $event.preventDefault()"
+          (mouseenter)="inspect(entry)"
+          (mouseleave)="onCellLeave(entry)"
+          (focus)="onCellFocus(entry, row.startIndex + i)"
+          (blur)="onCellBlur(entry)"
+        >
+          <ng-container *ngTemplateOutlet="cellSprite; context: { $implicit: entry }" />
+          @if (selection.isSelected(entry)) {
+            <!-- Same marking as the usage atlas: wash and inset ring on one element drawn last,
+                 plus the corner square. -->
+            <span
+              class="pointer-events-none absolute inset-0 bg-accent-wash/70 inset-ring-2 inset-ring-accent-fg"
+              aria-hidden="true"
+            ></span>
+            <span
+              class="pointer-events-none absolute top-0 right-0 h-2.5 w-2.5 bg-accent-fg"
+              aria-hidden="true"
+            ></span>
+          }
+        </button>
+      } @else {
+        <div
+          role="img"
+          [class]="
+            'app-sprite-cell relative block h-16 w-16 ' +
+            (entry.inSet === false ? 'app-sprite-cell-void' : '')
+          "
+          [attr.aria-label]="entryLabel(entry)"
+          (mouseenter)="inspect(entry)"
+          (mouseleave)="onCellLeave(entry)"
+        >
+          <ng-container *ngTemplateOutlet="cellSprite; context: { $implicit: entry }" />
+        </div>
+      }
+    }
+  </div>
+</ng-template>
+
+<!-- Permanently mounted (§4.5): speaks the end states of what the dock shows — a dock that mounts
+     together with its text announces nothing. `withImport`: a tag play-in is an import run; the
+     delete section's tag lines are spoken on every page that can show a tag run, or its
+     aria-hidden report line is never spoken. -->
+<app-dock-outcome-announcer [withImport]="true" />
+
+<!-- The run dock (#201 T-C, spec 9.5, plan 3.8): page level, outside the detail and the list, so a
+     run stays visible whatever is chosen. Mounted through tagRunDockHasContent (no marking half,
+     no set gate) and only on a fine pointer, like every 7TV write surface (§2.5). Three sections:
+     a tag play-in is an import run, a clear-out a delete run, and the delete section's "Restore"
+     starts a restore run, shown by its own section. -->
+@if (dockVisible() && !isCoarse()) {
+  <div class="app-dock" #dock>
+    <div class="mx-auto flex max-h-[70vh] max-w-7xl flex-col gap-2 overflow-y-auto px-4 py-3">
+      <app-import-progress-section />
+      <app-delete-progress-section
+        [hostSelectedSetId]="activeEmoteSetId()"
+        (notice)="runNotice.set($event)"
+      />
+      <app-restore-progress-section />
+    </div>
+  </div>
+}
+
+<!-- The still always draws; the one playing cell lays its animation on top and the still hides once
+     that has painted (the import grid's pattern, §7.3). `dimmed` carries the void plate over. -->
+<ng-template #cellSprite let-entry>
+  <app-emote-sprite
+    [url]="entry.imageUrl"
+    [size]="64"
+    [spriteClass]="stillHidden(entry) ? hiddenSpriteClass : spriteClass"
+    [dimmed]="entry.inSet === false"
+  />
+  @if (playsAnimation(entry)) {
+    <span class="absolute inset-0">
+      <app-emote-sprite-animated
+        [url]="entry.imageUrl"
+        [size]="64"
+        [dimmed]="entry.inSet === false"
+        (animationShown)="revealedKey.set(entry.sevenTvEmoteId)"
+      />
+    </span>
+  }
+</ng-template>

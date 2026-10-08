@@ -253,6 +253,7 @@
     "leaveConfirm": "Channel #{{ channelName }} wirklich verlassen? Der Bot verlässt den Chat und erfasst keine neuen Daten mehr. Bereits erfasste Emotes, Nutzungsstatistiken und Abstimmungen bleiben erhalten und sind nach einem erneuten Beitritt wieder da.",
     "tabs": {
       "usage": "Nutzung",
+      "tags": "Tags",
       "voting": "Votings",
       "activity": "Aktivität"
     },
@@ -594,6 +595,11 @@
       "emotesSyncDeleted": "Emotes als gelöscht markiert",
       "emotesSyncRestored": "Emotes wiederhergestellt",
       "emotesSyncImported": "Emotes importiert",
+      "tagCreate": "Tag angelegt",
+      "tagRename": "Tag umbenannt",
+      "tagDelete": "Tag gelöscht",
+      "tagPlayedIn": "Tag ins Set geholt",
+      "tagRemoved": "Tag aus dem Set entfernt",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
@@ -619,6 +625,10 @@
       "importedFromLeaderboard": {
         "one": "{{count}} Emote aus {{title}}",
         "other": "{{count}} Emotes aus {{title}}"
+      },
+      "importedFromTag": {
+        "one": "{{count}} Emote aus einem Tag",
+        "other": "{{count}} Emotes aus einem Tag"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
@@ -1171,6 +1181,7 @@
   "syncReportReason": {
     "forbidden": "Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.",
     "setNotFound": "Grund: Das Set gibt es bei 7TV nicht mehr.",
+    "tagUnknown": "Grund: EmotePurge kennt diesen Tag oder diesen Vorgang nicht mehr.",
     "unavailable": "Grund: EmotePurge oder 7TV war gerade nicht erreichbar.",
     "channelMismatchNotTracked": "Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.",
     "channelMismatchActiveSetDiffers": "Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.",
@@ -1272,6 +1283,7 @@
         "one": "{{ count }} Emote in Set ‚{{ setName }}' kopieren?",
         "other": "{{ count }} Emotes in Set ‚{{ setName }}' kopieren?"
       },
+      "titleNothing": "Nichts zu kopieren",
       "titleAlign": {
         "one": "{{ count }} Namen im Zielset angleichen?",
         "other": "{{ count }} Namen im Zielset angleichen?"
@@ -1280,6 +1292,11 @@
       "originFile": "Aus Datei {{ fileName }}",
       "originFileDetails": "Export aus {{ channel }}, {{ date }}",
       "originLeaderboard": "Aus 7TVs Bestenliste: {{ sort }}",
+      "originTag": "Aus Tag {{ tag }}",
+      "originTagSkipped": {
+        "one": "{{ count }} ist schon im Set",
+        "other": "{{ count }} sind schon im Set"
+      },
       "dateUnknown": "Datum unbekannt",
       "channelUnknown": "Kanal unbekannt",
       "target": "Ziel: {{ channel }} · Set {{ setName }}",
@@ -1491,6 +1508,7 @@
         "channel": "Die Übertragung kam aus dem Kanal {{ channel }}.",
         "file": "Die Übertragung kam aus der Datei {{ fileName }}.",
         "leaderboard": "Die Übertragung kam aus 7TVs Bestenliste: {{ sort }}.",
+        "tag": "Die Übertragung kam aus dem Tag {{ tag }}.",
         "unknown": "Woher die Übertragung kam, nennt die Datei nicht."
       },
       "setLine": "Im Set „{{ setName }}“.",
@@ -1652,6 +1670,17 @@
       "restore": "die Wiederherstellung",
       "import": "die Übertragung",
       "undo": "die Rücknahme der Ersetzungen"
+    },
+    "tagReport": {
+      "pending": "Wird beim Tag vermerkt …",
+      "succeeded": "Beim Tag vermerkt.",
+      "failed": "EmotePurge konnte beim Tag nicht vermerken, was dieser Lauf bei 7TV geändert hat.",
+      "retry": "Erneut melden",
+      "discardedStale": {
+        "one": "{{ count }} Emote wurde inzwischen wieder entfernt und nicht vermerkt.",
+        "other": "{{ count }} Emotes wurden inzwischen wieder entfernt und nicht vermerkt."
+      },
+      "restoreHint": "Wiederhergestellte Emotes sind danach wieder im Set, aber nicht als über den Tag ins Set geholt vermerkt — wird der Tag später ins Set geholt, gelten sie beim Entfernen aus dem Set als „nicht über diesen Tag ins Set gekommen“."
     }
   },
   "sevenTvToken": {
@@ -1668,6 +1697,199 @@
     "save": "Speichern",
     "dialogTitle": "7TV-Token hinterlegen",
     "required": "7TV-Token eingeben."
+  },
+  "tags": {
+    "page": {
+      "title": "Tags",
+      "listLabel": "Tags",
+      "intro": "Ein Tag merkt sich Emotes, auch wenn sie gerade nicht im Set sind.",
+      "introRuns": "„Ins Set holen“ fügt sie hinzu, „Aus dem Set entfernen“ nimmt sie wieder heraus – der Tag selbst bleibt dabei erhalten.",
+      "setLine": "Die Zahlen beziehen sich auf das aktive Set {{set}}.",
+      "noActiveSet": "Dieser Channel hat kein aktives Set; Zahlen „im Set“ gibt es deshalb nicht.",
+      "empty": {
+        "title": "Noch keine Tags.",
+        "description": "Wähle im Nutzungsraster Emotes aus und weise ihnen einen Tag zu.",
+        "cta": "Zum Nutzungsraster"
+      },
+      "emptySelection": "Wähle links einen Tag.",
+      "emptyEntries": {
+        "title": "Noch keine Emotes.",
+        "description": "Wähle sie auf der Nutzungsseite aus und weise sie diesem Tag zu."
+      },
+      "micro": {
+        "entries": {
+          "one": "{{count}} Eintrag",
+          "other": "{{count}} Einträge"
+        },
+        "inSet": {
+          "one": "{{count}} im Set",
+          "other": "{{count}} im Set"
+        },
+        "notInSet": {
+          "one": "{{count}} nicht im Set",
+          "other": "{{count}} nicht im Set"
+        },
+        "activePlaced": "{{placed}} über den Tag ins Set geholt"
+      },
+      "currentName": "heute: {{name}}",
+      "notInSetBadge": "nicht im Set",
+      "gridLabel": "Emotes in {{tag}}",
+      "keyboardHint": "Pfeiltasten bewegen den Fokus, Leertaste markiert, Shift-Klick markiert einen Bereich.",
+      "marked": {
+        "one": "{{count}} markiert",
+        "other": "{{count}} markiert"
+      },
+      "retry": "Erneut laden",
+      "deleted": "{{tag}} gelöscht.",
+      "tagGone": "Dieser Tag wurde inzwischen gelöscht.",
+      "state": {
+        "active": "über den Tag ins Set geholt am {{date}}",
+        "activeUndated": "über den Tag ins Set geholt"
+      },
+      "placedAt": "am {{date}} ins Set geholt"
+    },
+    "assignDialog": {
+      "title": "Tag zuweisen",
+      "listLabel": "Tags",
+      "newTagLabel": "Neuer Tag",
+      "createButton": "Anlegen",
+      "noTagsHint": "Dieser Channel hat noch keine Tags. Lege unten den ersten an.",
+      "confirm": {
+        "one": "{{count}} Emote zuweisen",
+        "other": "{{count}} Emotes zuweisen"
+      },
+      "lockReason": {
+        "noneChecked": "Wähle mindestens einen Tag aus.",
+        "submitting": "Die Zuweisung läuft."
+      },
+      "partial": "Schon zugewiesen: {{tags}}. Der Rest ist fehlgeschlagen."
+    },
+    "nameDialog": {
+      "createTitle": "Neuer Tag",
+      "renameTitle": "Tag umbenennen",
+      "label": "Name",
+      "confirmCreate": "Anlegen",
+      "confirmRename": "Umbenennen"
+    },
+    "actions": {
+      "create": "Neuer Tag",
+      "rename": "Umbenennen",
+      "delete": "Tag löschen",
+      "clearSelection": "Auswahl aufheben",
+      "assign": "Tag zuweisen…",
+      "unassign": "Aus dem Tag entfernen ({{count}})",
+      "unassignNamed": "Aus dem Tag entfernen ({{count}}) – {{tag}}",
+      "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; der Tag nimmt sie danach auch nicht mehr aus dem Set.",
+      "unassignLockReason": {
+        "noneInTag": "Keins der markierten Emotes gehört zu {{tag}}."
+      },
+      "playIn": "Ins Set holen",
+      "playInCount": "Ins Set holen ({{count}})",
+      "playInLockReason": {
+        "allMarkedInSet": "Alle markierten Emotes sind schon im Set."
+      },
+      "remove": "Aus dem Set entfernen",
+      "removeCount": "Aus dem Set entfernen ({{count}})",
+      "removeLockReason": {
+        "noneMarkedInSet": "Keines der markierten Emotes ist im Set."
+      }
+    },
+    "filter": {
+      "label": "Tag",
+      "all": "Alle Tags"
+    },
+    "feedback": {
+      "assigned": {
+        "one": "{{count}} Emote zu {{tag}} hinzugefügt.",
+        "other": "{{count}} Emotes zu {{tag}} hinzugefügt."
+      },
+      "assignedMany": {
+        "one": "{{count}} Emote zu {{tags}} Tags hinzugefügt.",
+        "other": "{{count}} Emotes zu {{tags}} Tags hinzugefügt."
+      },
+      "skippedNotInSet": {
+        "one": "{{count}} Emote war nicht mehr im Set und wurde übersprungen.",
+        "other": "{{count}} Emotes waren nicht mehr im Set und wurden übersprungen."
+      },
+      "unassigned": {
+        "one": "{{count}} Emote aus {{tag}} entfernt.",
+        "other": "{{count}} Emotes aus {{tag}} entfernt."
+      },
+      "allPresent": {
+        "one": "Das einzige Emote von {{tag}} ist schon im Set — der Tag gilt als ins Set geholt.",
+        "other": "Alle {{count}} Emotes von {{tag}} sind schon im Set — der Tag gilt als ins Set geholt."
+      },
+      "allMarkedPresent": {
+        "one": "Das markierte Emote ist schon im Set — der Tag gilt als ins Set geholt.",
+        "other": "Alle {{count}} markierten Emotes sind schon im Set — der Tag gilt als ins Set geholt."
+      },
+      "removedNothing": "Bei {{tag}} war nichts aus dem Set zu entfernen."
+    },
+    "deleteDialog": {
+      "message": "{{tag}} wird gelöscht; die Emotes bleiben im Set.",
+      "confirm": "Tag löschen",
+      "placedHint": {
+        "one": "{{count}} Emote dieses Tags wurde über ihn ins Set geholt und ist noch dort — vorher aus dem Set entfernen?",
+        "other": "{{count}} Emotes dieses Tags wurden über ihn ins Set geholt und sind noch dort — vorher aus dem Set entfernen?"
+      }
+    },
+    "removalDialog": {
+      "title": "{{tag}} aus dem Set entfernen",
+      "summary": {
+        "remove": {
+          "one": "{{count}} Emote wird entfernt",
+          "other": "{{count}} Emotes werden entfernt"
+        },
+        "keep": {
+          "one": "{{count}} bleibt im Set",
+          "other": "{{count}} bleiben im Set"
+        }
+      },
+      "proposedHeading": "Vorgeschlagen",
+      "notProposedHeading": "Nicht vorgeschlagen",
+      "placedAt": "am {{date}} ins Set geholt",
+      "reason": {
+        "alreadyPresent": "nicht über diesen Tag ins Set gekommen",
+        "heldBy": "wird noch von {{tag}} gebraucht",
+        "notMarked": "nicht markiert"
+      },
+      "notInSet": {
+        "one": "{{count}} weiteres Emote dieses Tags ist nicht im Set.",
+        "other": "{{count}} weitere Emotes dieses Tags sind nicht im Set."
+      },
+      "nothingToDelete": "Es wird nichts bei 7TV gelöscht. Bestätigen deaktiviert nur den Tag: Er ist danach nicht mehr als ins Set geholt vermerkt.",
+      "nothingToDeleteNotPlayedIn": "Es wird nichts bei 7TV gelöscht.",
+      "notPlayedInLead": "Über diesen Tag ist gerade nichts im Set — vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
+      "markedLead": {
+        "one": "Vorgeschlagen ist dein markiertes Emote.",
+        "other": "Vorgeschlagen sind deine {{count}} markierten Emotes."
+      },
+      "markedLeadPartial": {
+        "one": "Vorgeschlagen ist {{proposed}} von {{marked}} markierten Emotes.",
+        "other": "Vorgeschlagen sind {{proposed}} von {{marked}} markierten Emotes."
+      },
+      "markedLeadNone": "Keines deiner markierten Emotes ist vorgeschlagen.",
+      "confirm": "Aus dem Set entfernen"
+    },
+    "errors": {
+      "setChanged": "Das aktive Set hat gewechselt — Seite neu laden.",
+      "entriesUnavailable": "Die Einträge des Tags konnten gerade nicht geladen werden.",
+      "markedGone": "Keines der markierten Emotes gehört noch zum Tag — es wurde nichts geändert.",
+      "changedDuringConfirm": "Der Tag hat sich inzwischen geändert — öffne „Aus dem Set entfernen“ bitte erneut.",
+      "setReadIncomplete": "Die Einträge des Sets konnten nur teilweise von 7TV gelesen werden — es wurde nichts geändert.",
+      "setReadUnavailable": "Die Einträge des Sets konnten nicht von 7TV gelesen werden — es wurde nichts geändert.",
+      "noWriteRight": "Du darfst dieses Set bei 7TV nicht bearbeiten.",
+      "ownershipUnavailable": "Ob du dieses Set bearbeiten darfst, ließ sich gerade nicht prüfen.",
+      "registrationFailed": "Der Lauf konnte bei EmotePurge nicht angemeldet werden — es wurde nichts geändert.",
+      "reportFailed": "EmotePurge konnte den Stand des Tags nicht vermerken.",
+      "retry": "Erneut versuchen",
+      "target": {
+        "notEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+        "notSelectable": "Das Set ist kein normales Emote-Set.",
+        "unavailable": "Das Set konnte gerade nicht geprüft werden."
+      },
+      "otherRunActive": "Gesperrt, solange {{kind}} auf einer anderen Seite läuft."
+    }
   },
   "errors": {
     "generic": "Etwas ist schiefgelaufen. Bitte versuch es erneut.",
@@ -1725,7 +1947,16 @@
       "legal_document_not_found": "Dieses Dokument ist nicht verfügbar.",
       "contact_invalid": "Bitte überprüfe deine Angaben.",
       "contact_captcha_failed": "Die Sicherheitsabfrage konnte nicht bestätigt werden. Bitte versuch es erneut.",
-      "contact_unavailable": "Das Kontaktformular ist gerade nicht erreichbar. Bitte versuch es später erneut."
+      "contact_unavailable": "Das Kontaktformular ist gerade nicht erreichbar. Bitte versuch es später erneut.",
+      "tag_name_invalid": "Der Tag-Name ist ungültig. Er darf nicht leer sein und höchstens 40 Zeichen lang.",
+      "tag_name_taken": "Einen Tag mit diesem Namen gibt es in diesem Channel schon.",
+      "tag_limit_reached": "Dieser Channel hat die maximale Zahl an Tags erreicht.",
+      "tag_not_found": "Dieser Tag existiert nicht mehr.",
+      "tag_entry_limit_reached": "Dieser Tag hat die maximale Zahl an Emotes erreicht. Es wurde nichts hinzugefügt.",
+      "tag_operation_id_invalid": "Der Lauf konnte nicht gemeldet werden: Die Vorgangskennung ist ungültig.",
+      "tag_operation_unknown": "Dieser Vorgang ist dem Server nicht bekannt. Starte den Lauf bitte neu.",
+      "tag_operation_conflict": "Dieser Vorgang gehört zu einem anderen Tag oder Set. Starte den Lauf bitte neu.",
+      "tag_operation_kind_invalid": "Die Art des Vorgangs ist ungültig."
     }
   }
 }

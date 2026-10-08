@@ -343,9 +343,12 @@ stand:
 "Last activity" is the later of a login and the daily "last seen" stamp `OnValidatePrincipal`
 writes at most once per 24 hours — without it, a user who never logs out again (the session
 cookie slides for 14 days) but never re-authenticates either would look inactive by `LastLogin`
-alone. Active channels and their statistics are never touched. These periods are deliberately
-**not configurable** — a privacy policy quotes them (issue #247), and an environment variable
-that could silently change one would turn that text into a lie. What is configurable is only
+alone. Active channels and their statistics are never touched. A channel's emote tags (#201)
+have no period of their own: the six tables behind them (tags, entries, placements, activations,
+operations and the sync's leave observations) go with the channel's purge, through the
+foreign-key cascades. These periods are deliberately **not configurable** — a privacy
+policy quotes them (issue #247), and an environment variable that could silently change one
+would turn that text into a lie. What is configurable is only
 whether the job writes and how often it runs (below).
 
 **Migration backfill.** The migration that introduced `LastSeenAtUtc` and `DeactivatedAtUtc`
@@ -451,6 +454,74 @@ their backfill — so it does no harm against the *old* image still running whil
 The reverse is not true: a *new* image expects those columns to exist. Apply the migration before
 you deploy the new images, not after, the same rule this project follows for every migration
 (`dotnet ef database update`, run by hand — migrations do not run automatically at app start).
+
+## Emote tags: enabling play-in and removal runs
+
+The tag play-in and removal runs (#201 T-C) are switched by `TAGS_RUNS_ENABLED` (`.env`, reaches the
+Api as `Tags:RunsEnabled`, default `false`). The flag rides on `GET /api/channels/{c}/permissions` as
+`tagRunsEnabled` and only decides whether the frontend offers the buttons; the routes exist either
+way. Order:
+
+1. Apply the migrations by hand (`AddEmoteTags`, `AddEmoteTagPlacements`, plus any epic migration
+   prod does not have yet), as in `CLAUDE.md` "Prod-Migration". They are purely additive.
+2. Update the **Api and the Worker image together.** The worker's behaviour changes without a worker
+   source change: the sync now writes leave observations and entry stamps (`DECISIONS.md`, #201 T-C).
+3. Run the readiness check below; leave the flag off until list A is empty.
+4. Set `TAGS_RUNS_ENABLED=true` and update the stack once more.
+
+**Why a check and not a log line:** the sync logs no per-channel resync summary, and the boot
+recovery releases its gate even after errors, so "the worker started" proves nothing. A channel
+whose last completed sync still comes from the old worker has no observations for rows archived since
+the deploy, so a removal could propose placements the new rules would have expired. Only a completed
+sync by the new worker counts.
+
+Read the new worker container's start time (Portainer, or `docker inspect <worker> --format
+'{{.State.StartedAt}}'`) and put it into both queries as `<WORKER_STARTED_AT>`. You run them through the
+SSH tunnel, as for the migration (psql prompts for the password, so it stays out of shell history and the repository):
+
+```
+psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge'
+```
+
+```sql
+-- List A: must be EMPTY. Active, syncable channels whose last completed sync predates the new worker.
+SELECT "ChannelName", "ActiveEmoteSetId", "LastSyncedAtUtc", "LastSyncAttemptAtUtc", "LastSyncFailureReason"
+FROM "Channels"
+WHERE "IsBotActive"
+  AND "TwitchChannelId" IS NOT NULL
+  AND "ActiveEmoteSetId" <> ''
+  AND ("LastSyncFailureReason" IS NULL
+       OR "LastSyncFailureReason" IN ('seventv_unavailable', 'seventv_response_unusable'))
+  AND ("LastSyncedAtUtc" IS NULL OR "LastSyncedAtUtc" < '<WORKER_STARTED_AT>'::timestamptz)
+ORDER BY "ChannelName";
+
+-- List B: for information only. Active channels that cannot sync at all.
+SELECT "ChannelName", "TwitchChannelId", "ActiveEmoteSetId", "LastSyncFailureReason"
+FROM "Channels"
+WHERE "IsBotActive"
+  AND ("TwitchChannelId" IS NULL
+       OR "ActiveEmoteSetId" = ''
+       OR "LastSyncFailureReason" IN ('no_seventv_account', 'no_active_emote_set'))
+ORDER BY "ChannelName";
+```
+
+- **List A** is empty one tick after the start (`SevenTv:ResyncIntervalSeconds`, default 60) on a healthy
+  system. A channel with a transient failure (`seventv_unavailable`, `seventv_response_unusable`) or
+  one held back by the wipe guard (no save, old `LastSyncedAtUtc`) stays listed: wait for the next tick
+  or read that channel's worker log. A channel just added to `Channels:ExcludedChannelIds` stays listed too (the sync refuses it, so its `LastSyncedAtUtc` never advances) until the identity reconcile deactivates it. While A is not empty, the flag stays off.
+- **List B** does not block the release. Those channels cannot carry tag runs (no active set, no
+  Twitch id, or a permanent 7TV reason); check only that it
+  matches the permanent cases you expect.
+
+**Two assumptions.** Clock: Api and Worker stamp with `DateTime.UtcNow` and run on the same host; if
+they ever move apart, keep both on NTP (an offset acts like a shifted credibility window). The window
+itself, 30 minutes, is a constant in `SevenTvSyncService`, not a setting. **Measure once after the
+deploy:** the sync's post-check reads once per channel per tick (one primary-key-indexed read) and the
+first tick writes one observation per archived row. Time that read on the largest channel and watch
+the first tick; the figures go into the PR.
+
+Known follow-up: the loader for tracked sets in the tag flows is not yet on the #220 route, so a
+tag run against a tracked set pays the foreign-permit cost the earlier route has.
 
 ## Database backup and restore
 

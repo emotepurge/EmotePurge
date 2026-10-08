@@ -124,6 +124,12 @@ export interface ImportConfirmDialogData {
    *  reach for yet — a restore reading this file back gets the same hint the flow itself would have
    *  used. */
   targetOwnerTwitchId: string | null;
+  /** Whether the user may confirm a plan with nothing to add (#201 T-C, spec 7.1/6) — `true` only
+   *  for a tag play-in, whose confirmation is what marks the tag as played in even when every row is
+   *  already in the set. Only for that case: when name collisions or other aliases empty the plan,
+   *  the button stays locked as before (fail-safe: no activation for rows that are not there).
+   *  `false` keeps the dialog exactly as it always was. */
+  emptyConfirmAllowed: boolean;
 }
 
 /** What the caller starts a run with — the plan as of the moment the user confirmed. */
@@ -138,6 +144,9 @@ export interface ImportConfirmOutcome {
    *  one `add` row each; a plan with a `replace` row only leaves after a clean live read, and then
    *  carries that read's aliases and default names on each replace target. */
   plan: TransferPlan;
+  /** Set only when the user confirmed with nothing to add (`emptyConfirmAllowed`, every row already
+   *  in the set) — `plan` is then empty and the caller starts no run. */
+  nothingToAdd?: true;
 }
 
 /** Translation key of the reason the executor is locked, or `null` when it is not locked (or when
@@ -231,10 +240,19 @@ const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
           (decide)="onDecide($event)"
         />
       } @else {
-        <!-- Branches on the three computeds below, never on origin.kind: with a fourth origin
+        <!-- Branches on the computeds below, never on origin.kind: with a fourth origin
              "not a channel" and "is a file" stopped being the same question, and a template test is
              exactly where that goes unnoticed (spec F6). -->
-        @if (originChannelName(); as channel) {
+        @if (tagOrigin(); as tag) {
+          <p class="text-sm text-fg-secondary">
+            {{ 'import.confirm.originTag' | transloco: { tag: tag.tagName } }}
+            @if (tag.alreadyInSetCount > 0) {
+              <span class="text-fg-muted">
+                · {{ tag.skippedKey | transloco: { count: tag.alreadyInSetCount } }}</span
+              >
+            }
+          </p>
+        } @else if (originChannelName(); as channel) {
           <p class="text-sm text-fg-secondary">
             {{ 'import.confirm.originChannel' | transloco: { channel } }}
           </p>
@@ -446,7 +464,9 @@ const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
         }
 
         @if (preview(); as preview) {
-          @if (preview.alreadyPresent > 0) {
+          <!-- Not when the nothing-to-add banner below already says every row is in the set: the same
+               fact twice, one sentence apart. A mixed plan (collisions, other aliases) keeps it. -->
+          @if (preview.alreadyPresent > 0 && !(nothingToAdd() && allAlreadyPresent())) {
             <p class="text-sm text-fg-secondary">
               {{ alreadyPresentKey() | transloco: { count: preview.alreadyPresent } }}
             </p>
@@ -670,6 +690,26 @@ export class ImportConfirmDialog {
     importOriginSourceChannelName(this.data.source.origin),
   );
 
+  /**
+   * The tag origin — the only origin that carries a `channelName` which is not a source, which is
+   * why it is asked first in the template and why `originChannelName` answers `null` for it. The
+   * "already in the set" count rides along so the line can say both halves at once.
+   */
+  protected readonly tagOrigin = computed<{
+    tagName: string;
+    alreadyInSetCount: number;
+    skippedKey: string;
+  } | null>(() => {
+    const origin = this.data.source.origin;
+    return origin.kind === 'tag'
+      ? {
+          tagName: origin.tagName,
+          alreadyInSetCount: origin.alreadyInSetCount,
+          skippedKey: pluralKey(origin.alreadyInSetCount, 'import.confirm.originTagSkipped'),
+        }
+      : null;
+  });
+
   /** The file origin itself, or `null` — the one narrowing the file block and `fileDetails` need,
    *  and the reason neither has to ask for a `kind` any more. */
   protected readonly fileOrigin = computed<Extract<ImportOrigin, { kind: 'file' }> | null>(() => {
@@ -679,7 +719,7 @@ export class ImportConfirmDialog {
 
   /**
    * The leaderboard origin's sort, already translated and ready to spread as the transloco params
-   * for `import.confirm.originLeaderboard` — or `null` for the other three origins. A leaderboard
+   * for `import.confirm.originLeaderboard` — or `null` for the other origins. A leaderboard
    * pick has no source channel at all (E2/E8): the sort *is* the origin, and this reads it through
    * the same `audit.details.leaderboardSort.<code>` table the audit view's `renderDetail` uses, so
    * the dialog and a later audit row for the same import say exactly the same thing (E2: "Der
@@ -871,6 +911,13 @@ export class ImportConfirmDialog {
   // down, in the dock). `titleIsRenameOnly` overrides both with a third key that names no channel or
   // set at all, because a rename-only run has no ADD destination to name.
   protected readonly titleKey = computed(() => {
+    // Every offered row is already in the set: "0 Emotes … kopieren?" would read as a question
+    // about a run that does not exist. The title names the empty case instead; the banner below says
+    // why. Not for a plan emptied by name collisions — those rows can still be resolved into the
+    // plan, so the count is a real, changing number there.
+    if (this.nothingToAdd() && this.allAlreadyPresent()) {
+      return 'import.confirm.titleNothing';
+    }
     if (this.titleIsRenameOnly()) {
       return pluralKey(this.adoptCount(), 'import.confirm.titleAlign');
     }
@@ -933,14 +980,20 @@ export class ImportConfirmDialog {
   // instead of inventing a third and fourth wording for "collision-only" and "mixed" (a signal
   // computed on `preview()`, unlike the sibling `*Key` fields below, because the answer depends on
   // the target load that only arrives after the dialog opens).
-  protected readonly nothingToAddKey = computed(() => {
-    const total = this.data.source.rows.length;
+  protected readonly nothingToAddKey = computed(() =>
+    pluralKey(
+      this.data.source.rows.length,
+      this.allAlreadyPresent()
+        ? 'import.confirm.nothingToAdd'
+        : 'import.confirm.nothingToAddBlocked',
+    ),
+  );
+
+  /** Every offered row is already in the target set — the one empty plan a tag play-in may confirm
+   *  (`emptyConfirmAllowed`). */
+  protected readonly allAlreadyPresent = computed(() => {
     const preview = this.preview();
-    const allAlreadyPresent = preview !== null && preview.alreadyPresent === total;
-    return pluralKey(
-      total,
-      allAlreadyPresent ? 'import.confirm.nothingToAdd' : 'import.confirm.nothingToAddBlocked',
-    );
+    return preview !== null && preview.alreadyPresent === this.data.source.rows.length;
   });
 
   protected readonly discardedRowsKey = pluralKey(
@@ -1008,6 +1061,13 @@ export class ImportConfirmDialog {
 
   protected readonly nothingToAdd = computed(() => this.plan()?.rows.length === 0);
 
+  /** An empty plan the user may still confirm: a tag play-in whose rows are all in the set already
+   *  (`ImportConfirmDialogData.emptyConfirmAllowed`). The banner still says so; the button stays
+   *  active with its usual label. */
+  private readonly emptyConfirmable = computed(
+    () => this.data.emptyConfirmAllowed && this.nothingToAdd() && this.allAlreadyPresent(),
+  );
+
   // Stays file-only, deliberately: it warns that a *downloaded list* came from the very channel it
   // is about to be copied back into, which a picker cannot produce — the target list excludes the
   // source's own set wherever it appears (`import-target-choices.ts`'s `isSourceSet` disabling), so
@@ -1062,7 +1122,7 @@ export class ImportConfirmDialog {
       case 'no-set':
         return 'import.confirm.noTargetSet';
       default:
-        if (this.nothingToAdd()) {
+        if (this.nothingToAdd() && !this.emptyConfirmable()) {
           return this.nothingToAddKey();
         }
         return this.isVerifying() ? 'import.confirm.verifying' : null;
@@ -1084,7 +1144,7 @@ export class ImportConfirmDialog {
       case 'no-set':
         return 'import-confirm-no-target-set';
       default:
-        if (this.nothingToAdd()) {
+        if (this.nothingToAdd() && !this.emptyConfirmable()) {
           return 'import-confirm-nothing-to-add';
         }
         return this.isVerifying() ? 'import-confirm-verifying' : null;
@@ -1185,7 +1245,19 @@ export class ImportConfirmDialog {
   protected execute(): void {
     const target = this.ready();
     const plan = this.plan();
-    if (target === null || plan === null || plan.rows.length === 0) {
+    if (target === null || plan === null) {
+      return;
+    }
+    if (plan.rows.length === 0) {
+      // Defensive: the button is already disabled in this state.
+      if (this.emptyConfirmable() && !this.executeDisabled()) {
+        this.dialogRef.close({
+          targetSetId: target.setId,
+          targetSetName: this.targetSetLabel(target),
+          plan,
+          nothingToAdd: true,
+        });
+      }
       return;
     }
     if (this.removeCount() === 0) {

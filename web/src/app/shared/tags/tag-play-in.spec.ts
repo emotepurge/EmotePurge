@@ -1,0 +1,145 @@
+import { describe, expect, it } from 'vitest';
+
+import type { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
+import type { EmoteTagEntry } from '../../core/tags/emote-tag.model';
+import {
+  buildTagImportSource,
+  markedInSetCount,
+  markedMissingCount,
+  partitionTagPlayIn,
+  playInCandidates,
+} from './tag-play-in';
+
+function entry(id: string, patch: Partial<EmoteTagEntry> = {}): EmoteTagEntry {
+  return {
+    sevenTvEmoteId: id,
+    alias: `alias-${id}`,
+    imageUrl: `https://cdn.example/${id}/4x.webp`,
+    inSet: null,
+    currentName: null,
+    placedByThisTag: false,
+    placedAtUtc: null,
+    placementOperationId: null,
+    heldByActiveTags: [],
+    placedByOtherTags: [],
+    ...patch,
+  };
+}
+
+function live(aliased: string[], aliasless: string[] = []): SevenTvSetEntries {
+  return {
+    aliasesById: new Map([
+      ...aliased.map((id): [string, string[]] => [id, [`n-${id}`]]),
+      ...aliasless.map((id): [string, string[]] => [id, []]),
+    ]),
+    aliaslessIds: new Set(aliasless),
+  } as unknown as SevenTvSetEntries;
+}
+
+describe('partitionTagPlayIn', () => {
+  it('splits against aliasesById and aliaslessIds, keeping entry order', () => {
+    const entries = [entry('a'), entry('b'), entry('c'), entry('d'), entry('e')];
+    const p = partitionTagPlayIn(entries, live(['b'], ['d']));
+    expect(p.toAdd.map((r) => r.sevenTvEmoteId)).toEqual(['a', 'c', 'e']);
+    expect(p.alreadyInSetIds).toEqual(['b', 'd']);
+  });
+
+  it('counts an id held only under an aliasless entry (aliaslessIds alone) as in the set', () => {
+    const l = {
+      aliasesById: new Map(),
+      aliaslessIds: new Set(['x']),
+    } as unknown as SevenTvSetEntries;
+    const p = partitionTagPlayIn([entry('x')], l);
+    expect(p.toAdd).toEqual([]);
+    expect(p.alreadyInSetIds).toEqual(['x']);
+  });
+
+  it('maps a row as name = alias and the entry image', () => {
+    const p = partitionTagPlayIn([entry('a')], live([]));
+    expect(p.toAdd).toEqual([
+      { sevenTvEmoteId: 'a', name: 'alias-a', imageUrl: 'https://cdn.example/a/4x.webp' },
+    ]);
+  });
+
+  it('yields an empty toAdd when everything is already in the set', () => {
+    const p = partitionTagPlayIn([entry('a'), entry('b')], live(['a', 'b']));
+    expect(p.toAdd).toEqual([]);
+    expect(p.alreadyInSetIds).toEqual(['a', 'b']);
+  });
+
+  it('adds an entry flagged inSet that the live read does not show (no fallback)', () => {
+    const p = partitionTagPlayIn([entry('a', { inSet: true })], live([]));
+    expect(p.toAdd.map((r) => r.sevenTvEmoteId)).toEqual(['a']);
+    expect(p.alreadyInSetIds).toEqual([]);
+  });
+});
+
+describe('buildTagImportSource', () => {
+  it('builds the tag origin with alreadyInSetCount and nothing collapsed', () => {
+    const p = partitionTagPlayIn([entry('a'), entry('b'), entry('c')], live(['b', 'c']));
+    const source = buildTagImportSource(p, { id: 7, name: 'Stronghold' }, 'somechannel');
+    expect(source.origin).toEqual({
+      kind: 'tag',
+      tagId: 7,
+      tagName: 'Stronghold',
+      channelName: 'somechannel',
+      alreadyInSetCount: 2,
+    });
+    expect(source.rows).toBe(p.toAdd);
+    expect(source.duplicatesCollapsed).toBe(0);
+    expect(source.discardedRows).toBe(0);
+  });
+});
+
+describe('playInCandidates', () => {
+  const entries = [entry('a'), entry('b'), entry('c')];
+
+  it('is every entry without a marking', () => {
+    expect(playInCandidates(entries, undefined)).toBe(entries);
+    expect(playInCandidates(entries, [])).toBe(entries);
+  });
+
+  it('is the marked entries in entry order, dropping marked ids the tag has no entry for', () => {
+    expect(playInCandidates(entries, ['c', 'gone', 'a']).map((e) => e.sevenTvEmoteId)).toEqual([
+      'a',
+      'c',
+    ]);
+  });
+});
+
+describe('markedMissingCount', () => {
+  const entries = [
+    entry('in', { inSet: true }),
+    entry('out', { inSet: false }),
+    entry('unknown', { inSet: null }),
+    entry('unmarked', { inSet: false }),
+  ];
+
+  it('counts the marked entries the page does not show in the set, unknown ones included', () => {
+    expect(markedMissingCount(entries, ['in', 'out', 'unknown', 'gone'])).toBe(2);
+  });
+
+  it('is 0 without a marking and for a marking of entries all in the set', () => {
+    expect(markedMissingCount(entries, [])).toBe(0);
+    expect(markedMissingCount(entries, ['in'])).toBe(0);
+  });
+});
+
+describe('markedInSetCount', () => {
+  const entries = [
+    entry('in', { inSet: true }),
+    entry('in-2', { inSet: true }),
+    entry('out', { inSet: false }),
+    entry('unknown', { inSet: null }),
+  ];
+
+  it('counts the marked entries the page shows in the set — an unknown state is not "in the set"', () => {
+    expect(markedInSetCount(entries, ['in', 'out', 'unknown', 'gone'])).toBe(1);
+    expect(markedInSetCount(entries, ['in', 'in-2'])).toBe(2);
+  });
+
+  it('is 0 without a marking and for a marking of entries none of which is in the set', () => {
+    expect(markedInSetCount(entries, [])).toBe(0);
+    expect(markedInSetCount(entries, ['out', 'unknown'])).toBe(0);
+  });
+});

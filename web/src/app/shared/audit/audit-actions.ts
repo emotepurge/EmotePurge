@@ -23,6 +23,11 @@ export const ACTION_KEYS: Record<string, string> = {
   'emotes.syncDeleted': 'audit.actions.emotesSyncDeleted',
   'emotes.syncRestored': 'audit.actions.emotesSyncRestored',
   'emotes.syncImported': 'audit.actions.emotesSyncImported',
+  'tag.create': 'audit.actions.tagCreate',
+  'tag.rename': 'audit.actions.tagRename',
+  'tag.delete': 'audit.actions.tagDelete',
+  'tag.playedIn': 'audit.actions.tagPlayedIn',
+  'tag.removed': 'audit.actions.tagRemoved',
   'user.revokeSessions': 'audit.actions.userRevokeSessions',
   'user.invalidateRoleCache': 'audit.actions.userInvalidateRoleCache',
   'user.delete': 'audit.actions.userDelete',
@@ -57,6 +62,7 @@ export const DETAIL_KEYS: Record<string, string> = {
   importedFromChannel: 'audit.details.importedFromChannel',
   importedFromFile: 'audit.details.importedFromFile',
   importedFromLeaderboard: 'audit.details.importedFromLeaderboard',
+  importedFromTag: 'audit.details.importedFromTag',
 };
 
 /**

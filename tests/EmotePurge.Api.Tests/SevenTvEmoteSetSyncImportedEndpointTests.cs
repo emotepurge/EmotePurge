@@ -6,6 +6,7 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using NSubstitute;
+using static EmotePurge.Api.Tests.OwnershipLadderArrangements;
 using Xunit;
 
 namespace EmotePurge.Api.Tests;
@@ -74,6 +75,9 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
     [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "channel"}""", ApiErrorCodes.InvalidSourceKind)]
     [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": "somechannel", "sourceKind": "file"}""", ApiErrorCodes.InvalidSourceKind)]
     [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_WEEKLY"}""", ApiErrorCodes.InvalidLeaderboardSort)]
+    // #201 T-C: "tag" names no channel and no sort, like "file".
+    [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": "somechannel", "sourceKind": "tag"}""", ApiErrorCodes.InvalidSourceKind)]
+    [InlineData("""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "tag", "leaderboardSort": "TRENDING_DAILY"}""", ApiErrorCodes.InvalidSourceKind)]
     public async Task VocabularyViolation_Gets400_BeforeTheOwnerCheckRuns(string body, string expectedErrorCode)
     {
         var response = await SendAsync(EmoteSetId, NewUserId(), body: body);
@@ -88,7 +92,7 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
     {
         // In no checked account's list, and 7TV knows no owner for it.
         var userId = NewUserId();
-        ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId));
+        _factory.ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId));
         _factory.SevenTvApi.LookUpEmoteSetOwnerAsync(EmoteSetId, Arg.Any<CancellationToken>())
             .Returns(SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.NotFound));
 
@@ -104,7 +108,7 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
     {
         // Listed in the actor's own list — but owned by an account the actor neither is nor edits.
         var userId = NewUserId();
-        ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId, (EmoteSetId, OwnerSevenTvUserId)));
+        _factory.ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId, (EmoteSetId, OwnerSevenTvUserId)));
 
         var response = await SendAsync(EmoteSetId, userId);
 
@@ -121,7 +125,7 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
     {
         // In no list, and the one direct owner lookup gets no answer from 7TV.
         var userId = NewUserId();
-        ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId));
+        _factory.ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId));
         _factory.SevenTvApi.LookUpEmoteSetOwnerAsync(EmoteSetId, Arg.Any<CancellationToken>())
             .Returns(SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.Unavailable));
 
@@ -167,6 +171,23 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
         // The report reads its grants the guarded way only; the unguarded lookup the authorization
         // path uses is never asked from here (spec section 32, second review round).
         await _factory.EditorService.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TagSourceKind_WithoutAName_Gets204_AndReachesTheServiceAsATagImport()
+    {
+        // #201 T-C: a tag play-in reports sourceKind "tag" — accepted without a channel name, and
+        // forwarded as is (the vocabulary table is the only place that would have refused it).
+        var userId = NewUserId();
+        _factory.ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId, (EmoteSetId, ActorSevenTvUserId)));
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "tag"}""";
+        var response = await SendAsync(EmoteSetId, userId, body: body);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.Emotes.Received(1).MarkImportedToSetAsync(
+            EmoteSetId, ActorSevenTvUserId, "someuser", Arg.Any<IReadOnlyList<string>>(),
+            null, "tag", null, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -240,19 +261,6 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
             null, "file", null, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
         await _factory.EmoteSetList.Received(1).ListByTwitchIdAsync(OtherTwitchId, Arg.Any<CancellationToken>());
         await _factory.EmoteSetList.Received(1).ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>());
-    }
-
-    private static EmoteSetListResult SetList(string accountSevenTvUserId, params (string Id, string OwnerSevenTvUserId)[] sets) =>
-        EmoteSetListResult.Ok(new EmoteSetList(
-            null,
-            [.. sets.Select(set => new EmoteSetSummary(set.Id, "Some Set", 1000, "NORMAL", false, "Some Owner", set.OwnerSevenTvUserId))],
-            accountSevenTvUserId));
-
-    private void ArrangeActorWithoutGrants(string userId, EmoteSetListResult actorList)
-    {
-        _factory.EmoteSetList.ListByTwitchIdAsync(userId, Arg.Any<CancellationToken>()).Returns(actorList);
-        _factory.GuardedEditorGrants.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
-            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(new HashSet<string>(), new HashSet<string>())));
     }
 
     private async Task AssertOwnerCheckDidNotRunAsync()

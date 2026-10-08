@@ -222,7 +222,7 @@ function classifyEditableSet(
 export interface SyncImportedToSetBody {
   sevenTvEmoteIds: string[];
   sourceChannelName: string | null;
-  sourceKind: 'channel' | 'file' | 'seventv-channel' | 'seventv-leaderboard';
+  sourceKind: 'channel' | 'file' | 'seventv-channel' | 'seventv-leaderboard' | 'tag';
   leaderboardSort: LeaderboardSort | null;
   /** Owner-hint design 3.3 — same field and same rule as {@link SyncInSetBody.targetOwnerTwitchId}
    *  (see its doc there): the Twitch id of the set's probable owner, never a login. Required here

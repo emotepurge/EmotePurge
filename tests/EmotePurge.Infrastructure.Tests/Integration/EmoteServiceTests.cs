@@ -1081,6 +1081,64 @@ public class EmoteServiceTests(PostgresFixture fixture)
         Assert.Null(Assert.Single(await AuditEntriesForSetAsync(db, "set-insetres-norow")).ChannelName);
     }
 
+    // T-C (#201) Task 2, spec 5.5 rule 5 (c): our own set-centric delete report is a credible leave.
+    // Set and emote ids here are alphanumeric — the observation upsert drops anything else.
+
+    [Fact]
+    public async Task MarkDeletedInSetAsync_RecordsALeaveObservationPerHitChannel_AnAlreadyArchivedRowIncluded()
+    {
+        await using var db = fixture.CreateDbContext();
+        var active = SeedChannel(db, "insetobs_a", "4441", "insetobsshared01");
+        var archived = SeedChannel(db, "insetobs_b", "4442", "insetobsshared01");
+        SeedEmote(db, active, "obsdel1");
+        SeedEmote(db, archived, "obsdel1", isArchived: true, archivedAt: DateTime.UtcNow.AddDays(-1));
+        await db.SaveChangesAsync();
+        var before = DateTime.UtcNow;
+
+        await CreateService(db).MarkDeletedInSetAsync(
+            "insetobsshared01", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["obsdel1", "obsnorow1"], null, Actor);
+
+        var observations = await db.EmoteSetLeaveObservations.AsNoTracking()
+            .Where(o => o.SevenTvEmoteSetId == "insetobsshared01")
+            .ToListAsync();
+        Assert.Equal(
+            [(active.Id, "obsdel1"), (archived.Id, "obsdel1")],
+            observations.Select(o => (o.ChannelId, o.SevenTvEmoteId)).OrderBy(o => o.ChannelId == active.Id ? 0 : 1));
+        Assert.All(observations, o => Assert.True(o.LastObservedAtUtc >= before.AddMilliseconds(-1)));
+    }
+
+    [Fact]
+    public async Task MarkDeletedInSetAsync_UntrackedSet_RecordsNoObservation()
+    {
+        await using var db = fixture.CreateDbContext();
+
+        await CreateService(db).MarkDeletedInSetAsync(
+            "insetobsuntracked01", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["obsdel1"], null, Actor);
+
+        Assert.False(await db.EmoteSetLeaveObservations.AnyAsync(o => o.SevenTvEmoteSetId == "insetobsuntracked01"));
+    }
+
+    [Fact]
+    public async Task MarkRestoredInSetAsync_StampsTheEntry_AndLeavesAnExistingObservationAlone()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = SeedChannel(db, "insetobs_res", "4443", "insetobsrestore01");
+        var emote = SeedEmote(db, channel, "obsres1", isArchived: true, archivedAt: DateTime.UtcNow.AddDays(-1));
+        await db.SaveChangesAsync();
+        var observedAt = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+        await EmoteSetLeaveObservations.RecordAsync(db, channel.Id, "insetobsrestore01", ["obsres1"], observedAt, CancellationToken.None);
+        var before = DateTime.UtcNow;
+
+        await CreateService(db).MarkRestoredInSetAsync(
+            "insetobsrestore01", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["obsres1"], null, Actor);
+
+        var row = await db.Emotes.AsNoTracking().SingleAsync(e => e.Id == emote.Id);
+        Assert.False(row.IsArchived);
+        Assert.True(row.LastEnteredSetAtUtc >= before.AddMilliseconds(-1));
+        var observation = await db.EmoteSetLeaveObservations.AsNoTracking().SingleAsync(o => o.ChannelId == channel.Id);
+        Assert.Equal(observedAt, observation.LastObservedAtUtc);
+    }
+
     private static EmoteService CreateService(AppDbContext db, ILogger<EmoteService>? logger = null)
     {
         var configuration = new ConfigurationBuilder()

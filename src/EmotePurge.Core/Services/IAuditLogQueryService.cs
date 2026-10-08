@@ -95,6 +95,10 @@ public record AuditLogDetail(
         // carries the language-neutral sort wire code (e.g. "TRENDING_DAILY") instead of a channel
         // name, and the frontend translates it — the same contract as every other Kind here (rule 7).
         public const string ImportedFromLeaderboard = "importedFromLeaderboard";
+        // A play-in of a channel tag (#201 T-C, sourceKind "tag"): carries only Count. Never the
+        // tag's name — it stays out of the audit payload (E30) — so the frontend's label cannot name
+        // one either ("from a tag", not "from tag X"), and it is not ImportedFromFile ("from a file").
+        public const string ImportedFromTag = "importedFromTag";
     }
 }
 

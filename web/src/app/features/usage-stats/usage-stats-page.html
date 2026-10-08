@@ -250,6 +250,28 @@
       >
         {{ 'usageStats.hideObserved' | transloco }}
       </button>
+      <!-- The tag filter (#201, spec 9.2, E18): a filter among filters, so it sits with them, before
+           the reset that clears it too. Not rendered at all until the channel has a tag — no
+           permanent control for channels that never use one. A native select: one choice out of a
+           list of names, no refetch of the rows behind it (the keys narrow what is loaded). Capped
+           in width so a 40-character name cannot push the row apart. The tag's runs and its
+           not-in-the-set numbers are on the tags page, not here (#201 T-C feedback). -->
+      @if (tagFilterShown()) {
+        <select
+          class="app-input-sm max-w-48"
+          [attr.aria-label]="'tags.filter.label' | transloco"
+          (change)="onTagFilterChange($any($event.target).value)"
+        >
+          <option value="" [selected]="usageFilter.tagId() === null">
+            {{ 'tags.filter.all' | transloco }}
+          </option>
+          @for (tag of tags(); track tag.id) {
+            <option [value]="tag.id" [selected]="tag.id === usageFilter.tagId()">
+              {{ tag.name }}
+            </option>
+          }
+        </select>
+      }
       <!-- Only while something is filtered, like the audit log's. Until now the way back existed
            only when the filter emptied the sheet completely — the reset lived in the empty state.
            Narrow the sheet rather than empty it and you had to undo each control by hand, and
@@ -289,6 +311,7 @@
           'ml-auto whitespace-nowrap ' +
           (usageFilter.isAnyActive() ? 'font-medium text-accent-fg' : 'text-fg-muted')
         "
+        [attr.aria-busy]="tagFilterPending() ? 'true' : null"
       >
         {{ emoteCountKey() | transloco: { shown: atlasOrder().length, total: emotes().length } }}
       </p>
@@ -330,6 +353,34 @@
         <span aria-hidden="true" class="w-full text-xs text-fg-muted">
           {{ notice.messageKey | transloco: { kind: notice.kind } }}
         </span>
+      }
+      <!-- The tag acknowledgements (#201, spec 7.0 step 4 and 7.0a, §4.5) — a third region pair,
+           not the selection-pruned one: two messages that can stand at the same time must not
+           overwrite each other. Here and not in the dock for the same reason as that notice: a
+           removal can empty the filtered grid, and the dock is no place a message survives in. -->
+      <span role="status" class="sr-only">
+        @if (tagFeedback(); as sentences) {
+          @for (sentence of sentences; track sentence.key) {
+            {{ sentence.key | transloco: sentence.params }}
+          }
+        }
+      </span>
+      @if (tagFeedback(); as sentences) {
+        <span aria-hidden="true" class="w-full text-xs text-fg-muted">
+          @for (sentence of sentences; track sentence.key) {
+            {{ sentence.key | transloco: sentence.params }}
+          }
+        </span>
+      }
+      <!-- A failed removal from the tag, the tag's entries that could not be loaded (the filter
+           then lets every row through), or the tag list that could not be loaded while a tag is
+           chosen (the select is gone, the grid stays narrowed) — a state, not an
+           acknowledgement, so a banner that stays (§4.5). Gated on the filter's tag id, not on
+           `selectedTag()`: a narrowed grid must never stand without an explanation. -->
+      @if (usageFilter.tagId() !== null && tagErrorKey(); as errorKey) {
+        <app-notice-banner variant="error" class="w-full">{{
+          errorKey | transloco
+        }}</app-notice-banner>
       }
     </div>
 
@@ -569,9 +620,11 @@
     <!-- The element the column count is measured against (see atlasColumns). It wraps every result
        state, so it exists from the first frame and the ResizeObserver never has nothing to watch. -->
     <div #sheet>
-      @if (viewLoading()) {
+      @if (viewLoading() || (tagFilterPending() && !setSwitchFailed())) {
         <!-- Atlas-shaped skeleton (NN/g: skeleton for page loads); one status element carries the
-           accessible loading text, the shimmer blocks are decorative. -->
+           accessible loading text, the shimmer blocks are decorative. Also up while a chosen tag's
+           emotes are still loading (`tagFilterPending`, the view is empty meanwhile) — but a failed
+           set switch outranks that wait: its retry must stay reachable even if the entries hang. -->
         <div role="status" [attr.aria-label]="'usageStats.loading' | transloco">
           <div class="flex flex-wrap gap-1" aria-hidden="true">
             @for (cell of skeletonCells; track cell) {
@@ -1116,7 +1169,7 @@
              aria-hidden here, so it is not read twice. The button is NOT inside that aria-hidden
              span — hiding a focusable control is its own defect (axe aria-hidden-focus); it keeps
              the same label as the filter bar's own reset. -->
-        @if (selection.hiddenSelectedCount(); as hiddenSelectedCount) {
+        @if (shownHiddenSelectedCount(); as hiddenSelectedCount) {
           <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
             <span aria-hidden="true">
               {{ hiddenSelectedFilterKey() | transloco: { count: hiddenSelectedCount } }}
@@ -1166,6 +1219,17 @@
           >
             {{ 'import.dockCopyButton' | transloco: { count: importShortcutSelectionCount() } }}
           </button>
+          <!-- "Tag zuweisen…" (#201, spec 7.0/9.1): constructive, so before the vote button and the
+               gap to the delete (§8.7). Projected like the vote button — an @if block carries no
+               selector attribute of its own. Its gate (`tagAssignShown`) includes a view of the
+               active set: tags are written against it (E3). -->
+          <ng-container ngProjectAs="[selection-actions]">
+            @if (tagAssignShown()) {
+              <button type="button" appButton="neutral" buttonSize="lg" (click)="assignTags()">
+                {{ 'tags.actions.assign' | transloco }}
+              </button>
+            }
+          </ng-container>
           <!-- Second consumer of the grid selection besides mass-delete: puts the picked emotes up
                as a curated vote-session ballot. Count in the label + disabled at zero — both read
                `voteBallotSize()`, the size of the ballot `openCreateVoteSession` would actually
@@ -1197,6 +1261,45 @@
               >
                 {{ 'usageStats.createVoteSession' | transloco: { count: voteBallotSize() } }}
               </button>
+            }
+          </ng-container>
+          <!-- "Aus ‚Tag' entfernen (n)" (#201, spec 7.0a): only with a tag filter set, after the vote
+               button and before the gap to the delete. n counts the marked emotes that are in the
+               tag; at 0 the button is disabled and says why in the text beside it, referenced by
+               `aria-describedby` (§10, the vote button's pattern). The title says what else goes
+               with them (E17). -->
+          <ng-container ngProjectAs="[selection-actions]">
+            @if (tagUnassignShown() && selectedTag(); as tag) {
+              <button
+                type="button"
+                appButton="neutral"
+                buttonSize="lg"
+                class="disabled:cursor-not-allowed"
+                [disabled]="tagUnassignCount() === 0 || tagRemovalPending()"
+                [attr.aria-describedby]="
+                  tagUnassignLockReasonKey() ? tagUnassignLockReasonId : null
+                "
+                [attr.aria-label]="
+                  'tags.actions.unassignNamed'
+                    | transloco: { tag: tag.name, count: tagUnassignCount() }
+                "
+                [title]="
+                  ('tags.actions.unassignNamed'
+                    | transloco: { tag: tag.name, count: tagUnassignCount() }) +
+                  ' — ' +
+                  ('tags.actions.unassignTitle' | transloco)
+                "
+                (click)="removeFromTag()"
+              >
+                <!-- The label names its target without the tag's own name (up to 40 characters, wider
+                     than a 360px dock); the accessible name and the title append it. -->
+                {{ 'tags.actions.unassign' | transloco: { count: tagUnassignCount() } }}
+              </button>
+              @if (tagUnassignLockReasonKey(); as reasonKey) {
+                <span [id]="tagUnassignLockReasonId" class="text-xs text-fg-muted">
+                  {{ reasonKey | transloco: { tag: tag.name } }}
+                </span>
+              }
             }
           </ng-container>
         </app-mass-delete-panel>

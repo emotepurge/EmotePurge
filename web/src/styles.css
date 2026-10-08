@@ -405,6 +405,14 @@
     color: var(--ep-fg);
   }
 
+  /* The open list of a native select is drawn by the browser, which keeps its own light colours
+     for it unless the options carry the field's own. The closed control already follows the
+     tokens through .app-input / .app-input-sm. */
+  option {
+    background-color: var(--ep-field);
+    color: var(--ep-fg);
+  }
+
   /* Single global keyboard-focus indicator (WCAG 2.4.7 / 1.4.11): every interactive element
      gets the same visible ring; individual components must not remove it without replacement. */
   :focus-visible {
@@ -513,11 +521,14 @@
   /* A cell with nothing behind it: an archived emote on a ballot. Flat page colour with a hairline
      outline, so it reads as an empty slot rather than as artwork.
 
-     Ballot only, since 2026-08-06. The atlas used it for "no usage in the range" and that was the
-     same mistake the checker made one layer up: the never-used emotes there sit as a closed block
-     under a heading that already says so, each printing a 0, so a third statement distinguished
-     nothing — it only broke the evenness of the sheet. On a ballot the archived ones are mixed in
-     among live ones with no heading to separate them, which is exactly the case a plate is for. */
+     For mixed grids without a heading: the ballot and the tags page, not the atlas (since
+     2026-08-06). The atlas used it for "no usage in the range" and that was the same mistake the
+     checker made one layer up: the never-used emotes there sit as a closed block under a heading
+     that already says so, each printing a 0, so a third statement distinguished nothing — it only
+     broke the evenness of the sheet. On a ballot the archived ones are mixed in among live ones
+     with no heading to separate them, which is exactly the case a plate is for.
+     The tags page's entries grid (#201) is the same case: entries that left the set stand among
+     those still in it. */
   .app-sprite-cell-void {
     background-color: var(--ep-page);
     box-shadow: inset 0 0 0 1px var(--ep-border);

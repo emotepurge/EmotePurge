@@ -213,6 +213,1244 @@ Naming 2026-10-08 misattributes 9 uses, naming 2026-10-07 would misattribute 42,
 chose 2026-10-08 on 2026-10-08. This deliberately deviates from the spec wording "the day of the
 switch".
 
+---
+
+### 2026-10-05 — Tags grid: emotes animate on hover, following the import grid's pattern
+
+**Betrifft:** `web/src/app/features/tags/tags-page.{ts,html}`, `docs/UI-Designsprache.md` (§2.5)
+
+At the operator's request, the cell under the pointer (or with focus) in the tags grid plays its animation
+after a 200 ms dwell. This is **the same** pattern as in `ForeignEmoteGrid` (§7.3) and the same component
+(`EmoteSpriteAnimated`, `isAnimatedEmoteUrl`): exactly one play key per grid, pointer before focus, the still
+stays mounted and hides only once the animation has painted. The usage page's grid does **not** animate its
+cells (only the sidecar, the drilldown and the ballot); the premise "as there" held only for the import grid.
+Reduced motion is still decided by `EmoteSpriteAnimated` itself. On a coarse pointer nothing plays (no hover,
+and the grid does not select there anyway). The key ends on leave/blur, on a scroll (pointer only —
+subscribed through `viewport.scrollable.elementScrolled()`, because the virtualized grid scrolls with the
+window (`scrollWindow`) and the viewport element itself then never sees a `scroll` event; Codex review
+2026-10-05), and when the cell leaves the virtual list's rendered range or drops out of the entries. Entries
+without `_static` in the stored url (still emotes) mount nothing and request nothing; void plates are no
+different: they animate when their stored url carries `_static`, dimmed like the still. The removal dialog's
+previews (32 px) and the assign dialog stay still: comparable thumbnails animate nowhere else. The same
+latent scroll defect exists in `ForeignEmoteGrid` (`viewport.elementScrolled()` under the usage page's
+`scrollWindow`); it is outside this change and left for a follow-up.
+
+### 2026-10-05 — Tags gain placements: play-in and removal runs, keyed against leave observations (#201 T-C)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Entities/Emote.cs` ·
+`src/EmotePurge.Core/Entities/EmoteSetLeaveObservation.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagActivation.cs` · `src/EmotePurge.Core/Entities/EmoteTagIdList.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagOperation.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagPlacement.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
+`src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTagPlacements*.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/EmoteSetLeaveObservations.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Fixtures/EmoteTagInvariants.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceLeaveObservationTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagIdListTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteTagEndpointsTests.cs`
+
+Tags (T-B) only name emotes. T-C lets a tag be played into a set and cleared out of it again, and
+remembers which emotes a tag put there, so that clearing removes exactly those and nothing a person
+added by hand. The sections below follow the plan's tasks; the last ones state the security model, the overruled spec
+sentences, the residual risks and the rollout.
+
+#### Data model (Task 1)
+
+The purely additive migration `AddEmoteTagPlacements` adds four tables and one nullable column:
+
+- `EmoteTagPlacements(TagId, SevenTvEmoteId, SevenTvEmoteSetId, PlacedAtUtc, OperationId,
+  RegisteredAtUtc)` — "this tag brought this emote into this set". Primary key
+  `(TagId, SevenTvEmoteId, SevenTvEmoteSetId)`, index `(SevenTvEmoteSetId, SevenTvEmoteId)`.
+  `OperationId` is the placement's provenance and revision: the operation that last created or
+  transferred it. `RegisteredAtUtc` is a copy of that operation's registration time — the play-in
+  operation's, or on a transfer the removal operation's of the tag the placement came from — and is
+  the anchor the read-time rule compares against (see Task 3 for why it is not looked up).
+- `EmoteTagActivations(TagId, SevenTvEmoteSetId, ActivatedAtUtc, OperationId)` — "tag T counts as
+  played in to set S"; the row's existence is the state.
+- `EmoteTagOperations(OperationId, TagId, Kind, SevenTvEmoteSetId, RegisteredAtUtc, AppliedAtUtc)` —
+  a run registered by the browser before it touches 7TV; `Kind` is `playIn` or `removal`
+  (`EmoteTagOperationKind`), `RegisteredAtUtc` is the server's clock. Index `(TagId, SevenTvEmoteSetId)`.
+- `EmoteSetLeaveObservations(ChannelId, SevenTvEmoteId, SevenTvEmoteSetId, LastObservedAtUtc)` —
+  "last time we credibly saw this emote leave this set". Primary key is the whole triple.
+- `Emotes.LastEnteredSetAtUtc` (nullable) — when the row last began as a member of the active set.
+  `null` on existing rows means unknown, which reads as "older than any window".
+- Audit actions `tag.playedIn` and `tag.removed` (`AuditActions.TagPlayedIn`, `TagRemoved`).
+
+**Placements have a composite foreign key to the tag entry, with cascade.** `(TagId, SevenTvEmoteId)`
+references `EmoteTagEntries`, next to the plain cascade from the tag. The rule "no placement without an
+entry, and taking an emote out of a tag takes its placements in every set with it" is therefore held by
+the database, not by the locking discipline of whichever caller writes (a report that read the entry
+under the channel lock could otherwise write an orphan after a parallel removal). The two cascade paths
+from a tag (direct, and via the entry) are legal in Postgres. This reverses the spec's earlier
+"no FK to the entry" stance. **There is deliberately no foreign key to the operation:** it would force a
+delete order the sweep does not need. Operations live exactly as long as their tag, which is why a
+placement does not depend on its operation row for its validity.
+
+**Observations are channel-level, not tag-level.** The sync cannot know which tag report is still on
+its way, so it writes an observation for every credible leave whether or not the channel has tags; the
+row has to exist when a late report arrives. It therefore belongs to the channel (cascade, falls with
+both purges) and not to a tag. It is an upsert on a bounded key (emotes times visited sets), so it needs
+no pruning of its own. No FK to `Emote`: the observation outlives the grid row, same stance as the
+entries (rule 8).
+
+**Whether a placement still holds is decided when it is read**, by comparing the observation against
+the placement's own `RegisteredAtUtc` — the sync never deletes a placement. `null` means unknown and
+is never guessed, and the two unknowns err in opposite directions:
+
+- A **missing observation** means "no leave seen", so the placement stays valid. This errs towards
+  offering *more* to remove; the known gap is a remove-and-re-add that no observation has recorded
+  (spec 13.1 R1), where a stale placement keeps being offered.
+- An **unknown `LastEnteredSetAtUtc`** makes a REST-observed leave credible, and the sync's post-check
+  then writes an observation, which expires the placements of that emote and set. This errs towards
+  offering *less* to remove, in line with spec 0a rule 1 (unclear provenance → remove too little).
+
+**All id columns of the four tables are `varchar(32)`** — set ids and emote ids alike, matching
+`SevenTvEmoteIdValidation.MaxLength`. 7TV ids, set ids included, are 26-character ULIDs, so the spec's
+24 would have been a write failure waiting for the first real set; the width follows the earlier
+decision for `EmoteTagEntries.SevenTvEmoteId`.
+
+#### Sync observations (Task 2)
+
+The 7TV sync now writes leave observations and entry stamps. It deletes no placement and takes no
+tag table. This changes the **worker's behaviour** without touching a worker source file: the code
+lives in `EmotePurge.Infrastructure`, so the worker image has to be rebuilt and deployed with the Api.
+
+- **Where a leave is credible.** An EventAPI delta records every id in `PulledIds`. It does so whether
+  the row exists, is archived already or is being archived now, and it does so before the `NoChange`
+  guard, so the outcome stays `NoChange`. Our own set-centric delete report
+  (`EmoteService.MarkInSetAsync`, delete direction) records every found row of every hit channel,
+  archived ones included. The REST full sync records a leave only for a row whose `LastEnteredSetAtUtc`
+  is unknown or older than `TagLeaveCredibilityWindow` (30 min, a constant in `SevenTvSyncService`).
+  7TV's REST cache lags up to 30 min (SevenTV/SevenTV#81), so an earlier "missing" is not believed.
+  A row the REST sync archived inside the window is looked at again by a **post-check**. Once the
+  window is over, an already archived, non-live row gets one observation, but only if no observation
+  from after its last entry exists. It therefore gets one observation, not one per resync. The leave
+  is always recorded against the set it was seen in: the channel's active set (after a set switch,
+  the new one), or the report's set.
+- **Cost of the post-check.** Each REST tick reads, once per channel, the latest observation of the
+  archived non-live rows outside the window (one PK-indexed read). It implies two backfill writes: the
+  first tick after the deploy writes one observation per archived pre-migration row, and every set
+  switch writes one per archived row against the new set. That is accepted: it is bounded by the
+  channel's archived history, idempotent through `GREATEST` (a repeat never moves the value backwards
+  and the entry comparison stops further writes), and its real size is measured during live
+  verification.
+- **Entry stamp.** `LastEnteredSetAtUtc` is set when the sync creates a row, when it un-archives one
+  (rename alone does not count) and on a restore report. The vote-session upsert also stamps the rows
+  it inserts. Those rows are inserted archived for any ballot set, not because the set holds them now.
+  The stamp stops the post-check from writing an observation right after a play-in whose PUSH was
+  missed.
+- **Atomic upsert, not the change tracker.** `EmoteSetLeaveObservations.RecordAsync` is one
+  `INSERT … ON CONFLICT … DO UPDATE SET "LastObservedAtUtc" = GREATEST(…)`. Api and worker write the
+  same rows from separate contexts. A load-then-update upsert could commit an older stamp after a
+  newer one and turn the observation back, and two first inserts would collide on the key. The ids
+  are filtered, deduplicated and sorted first. Filtered means that any id or set id failing the 1–32
+  alphanumeric rule (`SevenTvEmoteIdValidation`) is dropped silently, so a malformed 7TV value can
+  never fail a channel's sync with 22001. Deduplication is needed because a delta can name an id twice.
+  Sorting gives both writers the same lock order.
+- **An explicit transaction per save attempt**, because a raw statement does not join
+  `SaveChangesAsync`'s implicit one, and the observation must commit with the archive. This deviates
+  from the spec's statement in 3.1 that the sync takes no explicit transaction. The transaction adds
+  no lock the writes would not take anyway. Placement:
+  - In the full sync, the transaction opens immediately before `ReconcileAsync`, after
+    `RecordObservedSetAsync`, which commits a set switch in a transaction of its own (EF cannot nest
+    them). The single E10 retry runs with a new transaction.
+  - In the delta path, it opens between the pulled loop and the `NoChange` guard — only for a delta that
+    pulled something; a push- or update-only dispatch has nothing to record and keeps
+    `SaveChangesAsync`'s implicit transaction, so it costs no extra round trips.
+  - In `MarkInSetAsync`, it wraps the save.
+
+  Inside the transaction the order is: observation rows first, then the emote rows and the channel
+  row. A tag report locks the channel row and only *reads* observations, so the sync may wait for a
+  report, but never the other way round.
+- **A vanished channel.** The raw upsert fails on the channel foreign key with a bare
+  `PostgresException` (23503), not a `DbUpdateException`. The full sync treats that like a vanished
+  row and abandons the attempt. The delta path and the Api let it propagate, as they already did for
+  the save's FK failure.
+- **The empty-set guard (#313, merged in on 2026-10-08).** The guard decides before the save, so
+  T-C hooks into neither of its branches. A zero it holds back writes nothing: no archive, no entry
+  stamp, no observation. That covers the first zeros of a streak and a zero that v4 contradicts. So
+  a placement can only lose time while 7TV answers zero, never its validity. An accepted zero runs the
+  normal full sync with an empty live list. On the same set, that is a REST leave like any other: a
+  row is recorded only outside the 30-min window, and the post-check records the rest once the window
+  is over. The confirmation streak does not make the REST answer more credible than E34 says: it
+  proves that the set is empty, not when each emote left it. An empty **new** set records against the
+  new set id, the one now active. The old set's placements get no observation and count again when
+  that set returns (spec 5.5 rule 9). A dispatch that would pull the last active emote stays
+  `ImplausibleSkipped` and records nothing. The leave then reaches the observations through the
+  accepted REST zero, subject to the window. Pinned by three cases in
+  `SevenTvSyncServiceLeaveObservationTests`: held back (streak and v4 veto), accepted on the same set,
+  and accepted as an empty new set with the old set's return.
+
+#### Read-time rule (Task 3)
+
+Both tag reads (`GET …/tags`, `GET …/tags/{tagId}/entries`) now carry the placement and activation
+fields of spec 6.2: `placedCount`, `active`, `activatedAtUtc` per tag; `activationOperationId` on the
+entry read; `placedByThisTag`, `placedAtUtc`, `placementOperationId`, `heldByActiveTags` and
+`placedByOtherTags` per entry. The records grow by trailing positional parameters only, with no
+defaults, so every construction site had to name the new values.
+
+- **The rule, evaluated on every read.** A placement holds unless the channel has a leave observation
+  for the same emote **and the same set** whose `LastObservedAtUtc` is later than the placement's own
+  `RegisteredAtUtc`. An observation at exactly that instant does not expire it. Both stamps are app-clock
+  UTC and are compared after their round trip through Postgres, so at microsecond precision. Every
+  placement field counts valid placements only; an expired row stays in the table until a play-in
+  overwrites it or a sweep removes it. Activations ignore observations.
+- **The anchor lives on the placement, not behind `OperationId`.** The spec's wording joins the
+  placement to its operation and compares against the operation's `RegisteredAtUtc`. That join breaks
+  in a reachable case: a removal run's transfer rewrites another tag T′'s placement to point at T's
+  removal operation, and operations cascade with their tag. Deleting T afterwards would leave T′'s
+  transferred placements without an operation, so they would silently stop holding, drop out of T′'s
+  preview, and be swept as expired by T′'s next deactivation — the opposite of what the transfer was
+  for. The placement therefore carries `RegisteredAtUtc` itself, written by whichever operation last
+  wrote the row (play-in, or transfer), with the same semantics as the join. `OperationId` stays as
+  provenance and as the revision a removal snapshot matches against; a missing operation row no
+  longer affects validity.
+- **Two queries over scalar keys, joined in memory (rule 10).** The placements of the channel's tag
+  ids in the set (narrowed to the entry ids on the entry read), with their anchor; the latest
+  observation of their emote ids in that channel and set (`EmoteSetLeaveObservations.LoadLatestAsync`,
+  the same read as the sync's post-check). No navigation join, no `GroupBy` over one; `placedCount` is
+  counted in memory. Activations and the holders' entries are two further scalar-key queries. The rule
+  lives in one private method of `EmoteTagService` (`LoadPlacementStatesAsync`) plus the static
+  predicate `Holds`, which the play-in report's stale check reuses. The method returns valid and
+  expired rows with a verdict, so the later removal report and its sweep apply the same rule rather
+  than a copy; the holders (`LoadActiveHoldersAsync`) are likewise one helper the removal report's
+  transfer target reuses.
+- **Per set, not per active set.** Placement and activation fields are computed for whatever set the
+  read resolves to, a non-active one included; only `inSet`/`inSetCount` stay `null` there, since
+  "in the set" is a channel-wide status. Without a set parameter and without an active set every
+  set-related field is empty.
+- **`heldByActiveTags`** lists the channel's other tags that have an activation in the set *and* an
+  entry for the emote, whether or not they hold a placement; **`placedByOtherTags`** lists the other
+  tags with a valid placement. Both are ordered oldest tag first (`CreatedAtUtc`, then id — spec 5.5
+  rule 3), the order the removal flow uses to pick an owner.
+
+#### Registration and play-in report (Task 4)
+
+`IEmoteTagService` gains `RegisterOperationAsync` and `ReportPlacementsAsync` (the handlers follow
+in Task 6). Both run in one transaction that takes the channel row `FOR UPDATE` first, writes only tag
+tables (plus the audit row) and reads leave observations — the lock order of spec 5.5 rule 6.
+
+- **Registration before the run (E27).** The browser registers each run's operation id with its kind
+  and frozen set id before it writes to 7TV; the server stamps `RegisteredAtUtc` from its own clock,
+  truncated to the microseconds Postgres keeps, so the first answer and every replay carry the same
+  value. The same id for the same tag, kind and set is `Replayed` with the stored instant; for
+  anything else it is `Conflict` — also when the same id is registered at the same moment in another
+  channel, where the primary key, not the lock, decides. No audit entry: a registration is an intent.
+  An unknown kind is the handler's 400 (`EmoteTagOperationKind.IsKnown`); the service throws.
+- **The play-in report** checks, in this order: unknown operation, then operation of another tag,
+  set or kind (`OperationConflict`, so a replay of a foreign operation is never answered as
+  "replayed"), then already applied (`Replayed`, nothing written, no audit row). Ids without an entry
+  of the tag are `notTaggedIds`. An id with a leave observed in that set **after the operation's
+  registration** is discarded for good (`discardedStaleIds`), using the read-time predicate itself
+  (`Holds`) so the report never keeps a placement every later read would drop. Read causally: an
+  earlier leave precedes the run and says nothing about it; a leave that happened before the
+  registration but was only observed after it is discarded too (fail-safe, a placement too few). The
+  rest is upserted, and **the upsert always overwrites** `OperationId`, `PlacedAtUtc` and the
+  placement's `RegisteredAtUtc` (= the play-in operation's), an existing row included (spec 5.5 rule
+  10): an old row would otherwise keep a revision a late removal report could still match, and an
+  anchor the read-time rule would still call expired. The activation is upserted every time, with an
+  empty list and with everything discarded too (E26). Audit `tag.playedIn` with
+  `{ tagId, emoteSetId, operationId, emoteCount }`, without the tag's name (E30).
+- **A report racing an observation (counterexample 9).** The report reads observations after it has
+  the lock, so it sees every observation committed before. One committed while the report holds the
+  lock — an update of an existing observation row commits in parallel; a first observation waits on
+  the channel lock through its foreign-key check and commits right after — is not seen by the
+  report, which commits the placement; every read after both commits applies the rule against the
+  placement's anchor and does not count it. Both orders end with no valid placement, without an explicit
+  lock in the sync.
+- **One id-list rule, moved to Core (`EmoteTagIdList.Check`).** At most
+  `EmoteTagLimits.MaxIdsPerRequest` raw ids, each in the `SevenTvEmoteIdValidation` format; `Empty` is
+  its own verdict because an empty list is malformed for tagging but legal in a report. The service's
+  entry requests use it unchanged, and the report handlers will apply the same rule before the 7TV
+  ownership check rather than a copy.
+
+#### Removal report (Task 5)
+
+`IEmoteTagService.ReportRemovalAsync` applies what a removal run did (spec 6.4 "Ausräumen"): same
+lock order and same rejection ladder as the play-in report (unknown operation, foreign operation,
+replay), then the steps in the order **4 → 1 → 2 → 3 → 5**, all against P = every placement of the
+tag in the set as it exists at apply time, valid and expired alike.
+
+- **A hit needs id and revision.** A snapshot entry touches a placement only if the row still carries
+  the `OperationId` the preview read. A row a later play-in rewrote (rule 10 gives it that play-in's
+  operation) is not what the person judged and is left alone (counterexample 5). Ids without a hit are
+  no error.
+- **Step 4 is decided first because steps 2 and 5 depend on it.** The activation is removed only if it
+  still carries the `activationOperationId` the preview read; a `null` never matches, nor does a
+  missing activation. Otherwise a newer play-in has re-activated the tag (counterexample 3), and an
+  active tag holds its placements by right: kept hits stay, nothing is swept. Deleting removed hits
+  (step 1) and dropping hits the live read no longer saw (step 3) happen in both cases.
+- **Transfer target = `heldByActiveTags` in its order.** A kept hit (step 2) and every row the sweep
+  reaches (step 5) go to the oldest other tag of the channel that is active in the set **and** has an
+  entry for the emote — the helper the entry read uses (`LoadActiveHoldersAsync`), not a copy. Without
+  the entry the handed-over row would violate the composite FK; without the activation it would violate
+  "inactive ⇒ no placement". A target that already holds the emote keeps its own row (revision and
+  anchor untouched) and the giving row is simply deleted; that still counts as transferred, because
+  the responsibility passed. A target whose own row for the emote has *expired* is treated as not
+  holding it (operator decision, recorded in the spec's 13.5 addendum): that row is rewritten
+  with the transferred values (removal as revision and anchor, the giver's `PlacedAtUtc`) instead of
+  being kept — keeping it would delete the emote's only valid placement. For a kept hit the rewritten
+  row holds: the giving row holds at its anchor, so no leave is observed after it, nor after the later
+  removal anchor. On the sweep path a row that came in with a later own anchor can come out expired,
+  exactly like a fresh transfer (the anchor rule above). An expired giving row never touches the target's row, expired
+  or not — it is only deleted. No target → dropped. Transfer is delete plus insert (`TagId` is part of
+  the primary key), or an in-place update when the target's own row for the emote expired; the new row keeps
+  `PlacedAtUtc`, takes the removal operation as `OperationId` and that
+  operation's `RegisteredAtUtc` as its anchor — so deleting the giving tag afterwards, which
+  cascades its operations away, leaves the transferred placement holding.
+- **An expired placement is never transferred, only deleted** — in the sweep, where the spec says so,
+  and for a kept hit as well, where it does not. The verdict comes from the read-time rule itself
+  (`LoadPlacementStatesAsync`/`Holds`). A kept hit can expire between preview and apply (a leave
+  observed in between); re-anchoring it at the removal's registration would revive a placement of an
+  emote the server has seen leave, as a proposal for the target — spec 0a rule 2 says the server
+  proposes nothing it cannot prove. Such a hit is counted as dropped.
+- **The sweep makes the invariant.** On deactivation every remaining row of P — not hit because it
+  wandered in after the preview, was re-placed, carries another revision or has expired — is
+  transferred or deleted, so afterwards no placement `(T, ·, S)` exists. The test fixture asserts both
+  invariants after every scenario: inactive ⇒ no placement, and (as a left join placement ⟕ entry) no
+  placement without an entry.
+- **Counters:** `deletedCount` (removed hits), `transferredCount` (kept hits handed over),
+  `droppedCount` (kept hits without a target or expired, plus hits neither removed nor kept),
+  `sweptCount` (everything the sweep took, transferred or not), `deactivated`. Audit `tag.removed`
+  with `{ tagId, emoteSetId, operationId, emoteCount }`, no name (E30). `emoteCount` was
+  `deletedCount` until 2026-10-05; it is now the reported removals the tag has an entry for (see
+  "Clearing out a tag that is not played in" below). `DeleteAsync`'s
+  audit now also carries `placementCount`; `RemoveEntriesAsync` keeps its `{ removedCount }` wire (the
+  FK cascade takes the placements; the wire contract stays as T-B shipped it).
+- **Races with entry removal (Codex finding 3)** are ordered by the channel lock and closed by the
+  FK: a play-in report that read the entry before a parallel `RemoveEntriesAsync` commits its
+  placement, and the cascade then takes it with the entry; the other order sees no entry and reports
+  `notTaggedIds`. A removal report's transfer to T′ against a parallel removal of T′'s entry either
+  finds no candidate (dropped) or commits the row and loses it to the cascade. Two overlapping
+  clearings (counterexample 7) serialize on the lock: the first hands X over, the second deactivates
+  and its sweep deletes the handed-over row because no active holder is left.
+- **Counterexamples 5 and 7 under spec 5.5 rule 10** (an older play-in report of the same tag and set landing
+  after a newer one overwrites revision, anchor and the activation's operation with the older values).
+  CE 5: a removal whose preview read the newer revision and activation then hits nothing and does not
+  deactivate — nothing is deleted, the tag stays active with the emote placed under the old revision;
+  the next preview reads that state, the live read no longer shows the emote, and the next clearing
+  drops the row and deactivates (tested) — as long as the run's leave has not been observed yet; once
+  it has, the row is expired, absent from the next snapshot, and that clearing's sweep deletes it
+  instead. Same end state. CE 7: if B's older play-in lands between A's and B's
+  reports, B's report (activation read as the newer operation) does not deactivate and does not sweep
+  — B stays active and keeps the handed-over row, which is consistent, and A's side is unchanged.
+  In every variant the older anchor only expires earlier and the mismatch only withholds a
+  deactivation or a hit; nothing is deleted or transferred that the person did not confirm, so the
+  direction is fail-safe (spec 0a). The visible cost is a tag that reads as still active after a
+  clearing until it is cleared again.
+
+#### Api (Task 6)
+
+Three routes on a third `MapGroup` under `/api/channels/{channelName}/tags/{tagId:long}`, chain
+`RequireAuthorization` → `ChannelNameValidationFilter` → `UsageStatsAccessAuthorizationFilter` →
+`Bookkeeping`: `POST /operations` (register), `POST /placements` (play-in report) and
+`POST /placements/removed` (removal report). The filter is the usage-stats one, not the management one:
+running a tag needs no channel-management right (E9) — the 7TV ownership of the set is the gate, and it
+is checked in the handler because it needs the body's set id.
+
+**One ownership ladder, extracted rather than copied.** The `SetNotFound`/`Forbidden`/`Unavailable`
+translation (404 `emote_set_not_found`, bare 403, 503 `foreign_channel_seventv_unavailable`) and the
+owner-hint builder moved out of `SevenTvEndpoints` into the internal `EmoteSetOwnershipRejection`;
+`sync-imported`, `sync-deleted`/`sync-restored` and the three tag routes all call it, so "exactly the
+ladder of `sync-deleted`" holds by construction. The channel filters stay in front: a caller without
+access to the channel never gets a ladder answer that would reveal whether a set exists.
+
+**Handler order, all three routes:** form step → actor (401) → ladder → service → status mapping.
+The form step runs before the actor and before anything is asked of 7TV: operation id is a UUID
+(`tag_operation_id_invalid`), the registration's `kind` is one of `EmoteTagOperationKind`
+(`tag_operation_kind_invalid`), the set id passes `EmoteSetIdValidation` (`invalid_emote_set_id`), and
+every id list — `sevenTvEmoteIds`, the snapshot's ids, `removedIds`, `keptIds` — passes
+`EmoteTagIdList.Check`. A JSON `null` or missing list, a null snapshot element and a malformed or null
+snapshot id are `emote_ids_invalid`; the null is refused in the handler *before* `Check`, because
+`Check(null)` answers `Empty`, which a report accepts. Empty lists stay legal (a run that added or
+removed nothing is a report). A snapshot revision that is not a UUID is `tag_operation_id_invalid`,
+checked after all ids. The nil UUID counts as "not a UUID" for the operation id, the activation
+operation id and every revision: operation ids are a global key, and a client that sent nil twice
+would otherwise collide with itself. A missing body is a missing operation id. `RegisterOperationAsync` takes no
+`AuditActor`: a registration is intent, not an event, and writes no audit entry.
+
+**Status mapping.** Registration: `Ok` 201 and `Replayed` 200, both `{ registeredAtUtc }`; `Conflict`
+409 `tag_operation_conflict`. Reports: 200 with the counters; `OperationUnknown` 404
+`tag_operation_unknown`; `OperationConflict` 409 `tag_operation_conflict`; `TagNotFound` /
+`ChannelNotFound` 404. **A removal replay is answered by the handler itself**, `replayed: true` with
+every counter 0 and `deactivated: false`, not by forwarding the service result: on a replay those fields
+carry no outcome (the first application's figures are not reconstructed), so the client must not show or
+act on them and re-reads the tag instead. The same holds for the placement replay, which forwards the
+service's empty lists: under `replayed: true` no outcome field of either report carries meaning. The channel name reaches the service normalized (rule 9).
+
+**New error codes** (rule 7; the frontend side is Task 7): `tag_operation_id_invalid`,
+`tag_operation_unknown`, `tag_operation_conflict`, `tag_operation_kind_invalid`.
+
+**`"tag"` joins the `sourceKind` vocabulary** of `ValidateSyncImportedVocabulary`: like `"file"` it
+names no channel and no leaderboard sort — otherwise every play-in would end in a 400 *after* the 7TV
+write. The audit projection gets its own detail kind `ImportedFromTag` (count only, never the tag's name
+— E30), not `ImportedFromFile`, which would read "from a file".
+
+**The flag.** `Tags:RunsEnabled` (default `false`) is bound into `EmoteTagOptions` and delivered as
+`tagRunsEnabled` on `GET /api/channels/{c}/permissions` — a global switch riding on the payload every
+channel page already loads, so no route, no filter-matrix row, no second request. The routes behind the
+runs exist whatever the flag says; it only lets the frontend offer the buttons.
+
+**Betrifft (Task 6):** `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` ·
+`src/EmotePurge.Api/Endpoints/EmoteSetOwnershipRejection.cs` ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` · `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` ·
+`src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Api/appsettings.json` · `src/EmotePurge.Core/Services/IAuditLogQueryService.cs` ·
+`src/EmotePurge.Core/Services/IEmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteTagOptions.cs` ·
+`src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteTagReportLadderTests.cs` ·
+`tests/EmotePurge.Api.Tests/OwnershipLadderArrangements.cs` ·
+`tests/EmotePurge.Api.Tests/SevenTvEmoteSetSyncBookkeepingEndpointTests.cs` ·
+`tests/EmotePurge.Api.Tests/SevenTvEmoteSetSyncImportedEndpointTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagOptionsTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs` · `docs/Architectur.md`
+
+#### Frontend core (Task 7)
+
+`EmoteTagService` gains `registerOperation`, `reportPlacements` and `reportRemoval` (all `POST`, the set
+id in the body and never in the query), the tag models gain the placement/activation fields, and the four
+new codes sit in `api-error.ts` and both locale files (rule 7). The report response types document the replay rule in
+code: when `replayed` is `true`, no other field is an outcome, and nothing in `core/` derives counts or
+messages from a replay. `ChannelPermissions.tagRunsEnabled` is required, so every typed literal had to
+say it. The audit side takes the new actions (`tag.playedIn`, `tag.removed`) and the count-only detail
+kind `importedFromTag`.
+
+`core/seven-tv/tag-run-settlement.ts` holds the two run-context types (`ImportTagContext`,
+`DeleteTagContext`) and the pure `deriveTagKeptIds`. It lives in `core/` because the delete service
+imports it and `core/` may not import from `shared/`. A ticked placement without a `done` row stays kept:
+a removal 7TV did not confirm must not make the server forget an emote that is still in the set.
+
+**Betrifft (Task 7, core):** `web/src/app/core/tags/emote-tag.model.ts` ·
+`web/src/app/core/tags/emote-tag.service.ts` · `web/src/app/core/channels/channel.model.ts` ·
+`web/src/app/core/i18n/api-error.ts` · `web/src/app/core/audit/audit.model.ts` ·
+`web/src/app/core/seven-tv/tag-run-settlement.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
+`web/src/app/shared/audit/audit-row.ts` · `web/src/app/shared/tags/tag-assign-dialog.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+**The `'tag'` import origin reaches every consumer of the union.** `ImportOrigin` gains
+`{ kind: 'tag'; tagId; tagName; channelName; alreadyInSetCount }`. Its `channelName` is the tag's own
+channel, not a source: read as one it would show "from channel X" and send a source name the server
+refuses for this kind. So `importOriginSourceChannelName` and `importOriginLeaderboardSort` answer `null`
+for it (both exhaustive), the confirm dialog asks a `tagOrigin` computed first (line "Aus Tag X", plus
+"N sind schon im Set" when `alreadyInSetCount > 0`), the undo dialog has its own label, the two
+`sourceKind` wire unions gain `'tag'`, and `readImportOrigin` in the transfer-run export validates the
+tag fields and fails closed to `null`. `reportImported` needs no change: `sourceKind: run.origin.kind`
+already sends `"tag"`. The tag name travels inside the origin (dialogs, export file) but never reaches
+the audit log (E30).
+
+**Betrifft (Task 7, origin):** `web/src/app/core/seven-tv/import-source.ts` ·
+`web/src/app/core/emotes/emote-admin.service.ts` · `web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` · `web/src/app/shared/seven-tv/undo-confirm-dialog.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts`
+
+#### Import flow (Task 8)
+
+**A tag play-in pins its set.** `ImportFlowTarget`'s `'chosen'` shape gains `pinSetId?: true`. With it,
+`toTargetSelection` never takes the `'trackedActive'` fast path, even when the chosen set is the active
+one: that path reads whatever set the server holds as active *now* and drops the id, so a set switch
+between the click and the load would land the run in the new set. `'trackedSet'` reads exactly the
+pinned id and answers with it. `isActiveSet` is still derived from the choice, so a pinned active set
+keeps `targetIsActiveSet` and its run still resyncs the channel. Without the flag the flow is
+byte-identical to before.
+
+**The browser set guard is the effective guard.** `startImportFlow` takes an optional fourth argument,
+`ImportFlowTagHook` (`context`, `frozenSetId`, the page's `activeEmoteSetId` signal, `onSetChanged`,
+`onNothingToImport`). In `startAfterCheck`, after `recheckTransferPlan` and after the second arbiter
+check — the last point before `startImport` — the loaded target id, the page's active set and the frozen
+id must be one set; otherwise `onSetChanged()` and no run. An unknown active set (`null`) counts as a
+switch. The server's own check (a report whose set id differs from the registered one is refused) only
+keeps the bookkeeping straight after the fact; the browser check is the one that stops a write into the
+wrong set. Its limit is spec 7.1/6's: a switch the server has not synced yet is invisible to both.
+
+**Nothing left to send is a hand-over, not a start.** `startImport` refuses an empty plan and drops the
+record, so the placement report — the only thing that marks the tag as played in — would never go out.
+Two paths therefore call `onNothingToImport()` instead and leave the empty report to the tag flow:
+(1) the last duplicate check removed every row (another editor added them while the dialog was open),
+checked after the set guard; (2) the confirm dialog's own target load found every row present.
+For (2) `ImportConfirmDialogData` gains `emptyConfirmAllowed` (only the flow with a hook sets it), and
+`ImportConfirmOutcome` an optional `nothingToAdd: true`: the button stays enabled with its usual label
+when every offered row is already in the set, and the flow skips token prompt, re-check and arbiter
+(nothing goes to 7TV), keeping only the set guard. Two empty plans deliberately do **not** count:
+one emptied by name collisions or other aliases (the dialog stays locked as before), and one emptied by
+held-back replace rows (`replaceSkippedDrift > 0` — it falls through to `startImport`, whose drift notice
+names it, and the tag stays unplayed). Neither counts as a play-in, in line with spec 0a: a refused start does not activate the tag, whereas a
+run whose rows all failed does activate it (E26). The nothing-to-add exit decides on the dialog's first
+load, which may come from the preview cache (up to 60 s old). That is accepted because it is not
+destructive: a later removal finds no hits and deactivates the tag, and play-in stays available. The plan
+deliberately skips a re-read there.
+
+**Betrifft (Task 8, flow):** `web/src/app/shared/seven-tv/import-flow.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts`
+
+**The placement report is a third report on the import run, independent of `reportImported`.**
+`startImport`'s target takes the optional `tag` (`ImportTagContext`), and `ImportRunInfo` carries `tag`,
+`tagPlacementReport`, `tagPlacementReportReason` and `tagPlacementDiscardedStaleCount` (all projected as
+`linkedSignal`s, like the undo's two reports). `settleRun` sets the report `pending` for every tag run —
+with an empty list too, after a cancel before the first row: the report is also what marks the tag as
+played in (E26). `sendFollowUp` sends it next to `sync-imported`, not after it and not instead of it.
+Both name the same `done` adds, but they answer different questions (the audit trail of a copy vs. which
+emotes this tag put into this set), they go to different routes with different permission ladders, and
+either can fail without the other; chaining them would let an audit hiccup cost the tag its placements.
+The lifecycle predicate counts the report, so `closed` waits for it; transport is the same as the other
+reports (per-attempt timeout, automatic retries except 401/403, an end state on every path), and
+`retryTagPlacementReport` sends the same body with the same `operationId`, which the server answers as a
+replay. A replayed answer is a success with no outcome (the server had already applied it): its `discardedStaleIds` never reach the
+signal. The dock shows the state line (pending, succeeded, failed plus reason and a retry button, and
+"k emotes were removed meanwhile" after a success) aria-hidden; the page's `DockOutcomeAnnouncer` speaks
+the end states, never the pending line. Keys: `sevenTvRun.tagReport.{pending,succeeded,failed,retry}`,
+`sevenTvRun.tagReport.discardedStale.{one,other}`.
+
+**Betrifft (Task 8, report):** `web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+#### Delete run (Task 9)
+
+**The removal report is a second report on the delete run, independent of `sync-deleted`.**
+`startDelete` takes an optional sixth parameter `tag` (`DeleteTagContext`: operation, activation
+operation, the preview's snapshot, the ticked and unticked own ids, the channel); `DeleteRunInfo` carries
+`tag`, `tagRemovalReport` and `tagRemovalReportReason` (projected as `linkedSignal`s). The three fields are
+optional and absent for a plain delete, so every run record that existed before stays valid byte for byte.
+`settleRun` marks the report `pending` for every tag run — with nothing removed too (a cancel before the
+first row, every row failed): the report is what moves or deletes the own placements the run did not
+remove and deactivates the tag (E26). It goes out next to `reportDeleted`, never chained to it, for the
+reason the import's third report is not chained either: the two answer different questions (what 7TV's set
+holds now vs. which emotes this tag put there), use different routes and permission ladders, and either can
+fail without the other. The lifecycle predicate counts it, so `closed` waits for both; transport is the
+other reports' (per-attempt timeout, automatic retries except 401/403, an end state on every path), and
+`retryTagRemovalReport` re-sends the same body with the same `operationId`, which the server answers as a
+replay. A replayed answer is a plain success (the server had already applied it): no counts are read
+from it.
+
+**`keptIds` is derived from the run result, not taken from the preview.** The body is `removedIds` = the
+run's `doneKeys`, and `keptIds` = `deriveTagKeptIds(tag, result)`: every unticked own placement plus every
+ticked one that has no `done` row. A removal 7TV did not confirm (`failed`, `cancelled`, `unknown`, or a row
+that was never reached) is still in the set; reporting it as removed would make the server forget a
+placement for an emote that is still there. The preview only knows what was ticked, the run result is what
+happened, and only the latter can say which ticked rows did not make it.
+
+**The confirm-time chain is the delete flow's, exported — not a looser re-implementation.** `delete-flow.ts`
+now exports `confirmTimeRefusal(deps)` (the arbiter claim plus the stored-token check, returning the abort
+notice or `undefined`, never calling `noteRefusedStart('delete')`) and `toDeleteQueueEmotes(selection,
+liveEntries)` (the queue rows with the live aliases and the aliasless fallback); the usage page's own chain
+calls both, so there is one copy. Spec 7.2/7 words the confirm-time check as "arbiter claim ->
+`noteRefusedStart('delete')`" and says nothing of the token; the tag removal flow follows the existing
+chain instead, because the engine refuses a start without a token silently (a dock claim over a delete that
+never happened) and `noteRefusedStart` would announce the refusal a second time next to the flow's own
+notice. The dock shows the state line, the failure reason and a retry button, plus — after a tag run only
+— the hint that "Restore" brings emotes back unplaced (13.2: they read as "not played in by this tag"
+at the next clear-out — since 2026-10-05 only once the tag is played in again, see "Clearing out a tag that
+is not played in" below); the announcer speaks the end states on every page, never the pending line. Keys:
+the `sevenTvRun.tagReport.*` family, plus `restoreHint`.
+
+**Betrifft (Task 9):** `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
+`web/src/app/shared/seven-tv/delete-flow.ts` · `web/src/app/shared/seven-tv/delete-progress-section.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+#### Flows and dialog (Tasks 10–12)
+
+Pure helpers first: `tag-play-in.ts` partitions a tag's entries against the complete live read (already in
+the set / to add) and builds the `'tag'` import source; `tag-removal.ts` turns the entry read plus the
+live read into the removal proposal. Only placements the server reports as valid reach the rows (no
+fallback to "in the set" — spec 0a rule 1); an own placement with a missing revision is not own, in
+the row and in the snapshot alike. `tag-play-in-flow.ts`/`tag-removal-flow.ts` run the shared steps
+(`prepareTagRun`: operation registration, ownership ladder via the 403/404/503 answers, set freeze, the
+complete live read) and then hand over to `startImportFlow` or the delete flow; `TagRunActions` hosts
+both buttons (on the tags page only since 2026-10-05, see "Operator feedback after the live test" below;
+it was first hosted on the usage page too). Choices that are not obvious from the code:
+
+- **One dialog, ticks in place.** `TagRemovalConfirmDialog` is preview and confirmation at once (E19). Rows
+  are grouped by the *proposal's* start state — "Vorgeschlagen" above "Nicht vorgeschlagen" — and a tick
+  toggles in place, in both directions. The button is never disabled by the count: n = 0 is a clear-out
+  without a delete run (E26), with its own sentence. Past 50 rows the list is virtual with a roving
+  tabindex. UI-Designsprache §7.5 is the contract.
+- **The browser set guard decides, and a destroyed host authorises nothing.** At confirm time the frozen
+  set and the page's live active set must be one set (play-in additionally: the loaded target); an unknown or destroyed host
+  counts as a switch and aborts. The token half of the confirm-time check is skipped only for n = 0
+  (nothing goes to 7TV). The pre-dialog chain is not under `startCheckPending`, consistent with T-A; the
+  clear-out's confirm-time entry re-read *is* (2026-10-05, Codex review): it is a confirmed delete's last read,
+  so it sets `SevenTvDeleteService.startCheckPending` before the read and releases it in a `finalize`, the
+  shape of `delete-flow.ts` — otherwise the dock's restore entry on the tags page could start a run behind
+  the read and turn the confirmed clear-out into an abort.
+- **A flow reports nothing back to its starter** once it handed over (dismissed dialog, cancelled token
+  prompt, arbiter refusal, pre-check block, drift): `pending` ends at the hand-over. A banner raised
+  after the host moved on to another tag or channel is dropped.
+- **A flow whose host is gone speaks through a page-level sink.** The dialogs, the import hook and a
+  report without a run outlive `TagRunActions`: a tag list reloaded with a new set on the tags page tears it
+  down behind them (a live set switch on the usage page did too, until 2026-10-05). The guard then aborts correctly,
+  but a notice written into the destroyed component is never seen, and a confirmed run that silently
+  does nothing reads as success. So once the host is destroyed (its `DestroyRef`), the flows hand
+  their notices — the import hook's "set changed", the "all present" guard, the clear-out confirm's
+  abort and `confirmTimeRefusal`, a report failure — to the root-provided `TagRunNoticeSink` instead,
+  and their acknowledgement and "completed" become sink events instead of emits on a dead output.
+  The tags page renders the sink through `TagRunOrphanNotice` in its run status region (a permanent
+  sr-only region plus a visible twin, §4.5; the usage page did too until 2026-10-05), for its own channel, the way they render the arbiter's
+  `refusedStart`. It stays until closed or until a new tag run starts. Only a report failure keeps its
+  retry there (resending the same operation needs no host); a retry that would restart the flow goes
+  with the host. A live host on another tag still drops a stale banner (`isCurrent`), as before.
+- **No-tag is `null` on import run info but `undefined` on delete run info.** Consumers test `!== null`
+  for import runs and `!== undefined` for delete runs and never cross them.
+
+**Betrifft (Tasks 10–12):** `web/src/app/shared/tags/tag-play-in.ts` ·
+`web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-removal.ts` ·
+`web/src/app/shared/tags/tag-removal-flow.ts` · `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
+`web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/shared/seven-tv/import-trigger.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` · `web/src/app/shared/tags/tag-run-notice-sink.ts` ·
+`web/src/app/shared/tags/tag-run-orphan-notice.ts` · `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.html`
+
+#### Surfaces (Task 13)
+
+**Superseded by "Operator feedback after the live test" below: the usage page no longer shows a tag summary or any run button.**
+
+**Surfaces (Task 13) — the usage page's filter row: the buttons take the sentence's slot.** With a tag
+chosen, the inline group shows "eingespielt" for a tag active in the active set and then either the
+sentence "Einspielen und Ausräumen wirken auf das aktive Set" or `TagRunActions` — never both. The buttons
+render when a tag is chosen, the rows on screen belong to the *active* set (`shownSetId === activeEmoteSetId`),
+`tagRunsEnabled` is on and the pointer is fine; they are **not** gated on `canManage` (E9: whether the user
+may write the set is the registration's 403 to say, before anything is written). The sentence keeps its T-B
+condition (manager, fine pointer, a view of another set) and additionally needs `tagRunsEnabled` — while
+runs are switched off nothing is missing that it would have to explain. `TagRunActions` receives the page's
+**live active set** from the set status, never the shown set: the flows' confirm-time guard compares
+against exactly that input. It is mounted on the gate itself, and every term of the gate is stable across a
+`channel.synced` reload of the same set (the tag list keeps its value while it reloads; the shown and the
+active set only diverge on a real switch), so a reload never re-creates the component and never aborts a
+dialog its flow has open; a real switch does drop it, which the flows treat as a set change.
+Two additions to `TagRunActions` itself: a `started` output (a click or a retry started a flow — the tags
+page clears its stale run notice on it), and `unshownRunKinds`: a lock held by a run kind whose surface the
+host does not mount is explained beside the buttons (`tags.errors.otherRunActive`, linked by
+`aria-describedby`; plan 3.8, §10), every other lock stays silent as §4.2 says.
+
+**Betrifft (Task 13, filter row):** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/shared/tags/tag-run-actions.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+**Surfaces (Task 13) — the tags page gets a page-level run dock and follows `channel.synced`.** The page
+mounts its own `.app-dock` (§2.5) with the three run sections — import (a tag play-in), delete (a
+clear-out, `hostSelectedSetId` = the active set) and restore (started from the delete section) — plus a
+permanently mounted `DockOutcomeAnnouncer [withImport]` and its own run status region (the delete
+section's restore notice and the arbiter's refused start, §4.5 region pair). All three sit at **page
+level**, outside the list/detail split: a run started from one tag stays visible while another tag, or
+the list alone on a narrow screen, is shown. The dock mounts through the new pure
+`tagRunDockHasContent` (`shared/seven-tv/action-dock.ts`), not `actionDockHasContent`: the page has no
+marking half, so the latter's active-set clause would hide a clear-out entirely (Codex finding 1 on the
+plan); the type carries no `hasActiveSet` and no `deleteConfirmPending` (the confirm window would mount an
+empty bar here), and it counts the import's transient notice so a tag play-in's drift case is visible.
+Gated `&& !isCoarse()` like every 7TV write surface; its measured height feeds the page padding and
+`DockClearanceService`, released on destroy. `tags.routes.ts` registers `sevenTvRunLeaveGuard`.
+**Live reload (closes Codex C2 from T-B):** the page subscribes to `channel.synced` for its channel through
+`liveReload` (the usage page's mechanism, no new event) and reloads set status, set list, tags and
+entries. A status *reload* counts as settled, so the request keys of tags and entries stay put and the
+resources keep their values while they reload: a reload of the same set neither re-creates
+`TagRunActions` nor aborts a dialog its flow has open, and the active set it hands the flow never turns
+`null` in between. A real set switch changes the keys, and the open flow's confirm-time guard sees the new
+active set and stops. A tag run or a restore that closes reloads tags and entries as well, also while
+`TagRunActions` is unmounted. The detail head shows the state line ("eingespielt seit" / "nicht
+eingespielt"), cells with a valid placement carry a small mark (word in the accessible name), the list's
+micro line names "eingespielt (n platziert)", and deleting a tag with placements adds the placement hint to
+the message while the button keeps its "Tag löschen" label.
+
+**Betrifft (Task 13, tags page):** `web/src/app/features/tags/tags-page.ts` ·
+`web/src/app/features/tags/tags-page.html` · `web/src/app/features/tags/tags.routes.ts` ·
+`web/src/app/shared/seven-tv/action-dock.ts` · `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
+`web/e2e/audit/ui-audit.audit.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+#### Security model (spec 0a)
+
+Placements are a well-kept **proposal, not a guarantee**: the 7TV writes happen in the browser (zero-knowledge
+token), so the server learns of them only through reports that can be lost, late or — from someone with
+7TV write rights — false. Three rules follow, and every rule above is one of them: (1) any uncertainty
+(missing report, incomplete set read, foreign holder, unclear provenance) tips towards removing too
+*little*, a row stays unticked; (2) the server actively stops proposing what it can no longer prove — a
+placement whose emote it has seen leave expires when read; (3) the last safeguard is the human: a preview
+with a reason and the play-in date per row, confirmed, with the purge protocol (download, "Restore") as the
+way back. A placement is never authority to delete — it is the tick the person confirms or removes.
+
+#### Overruled spec sentences
+
+The plan overrules five sentences of the spec; each is recorded in the spec's addendum:
+
+- **3.1 "the sync takes no explicit transaction"** — it takes one per save attempt (Task 2).
+- **12.4 "one upsert per archived row, nothing else"** — one upsert per `PulledId` (with the set-centric
+  delete report), one observation read per REST tick for the post-check, one transaction per attempt.
+- **5.3 "no foreign key to the entry"** — the composite FK with cascade exists (Task 1).
+- **12.5 "resync summary in the log"** — replaced by the executable readiness check in docs/Operations.md (Rollout).
+- **5.5 "a kept hit that expired is transferred"** — an expired kept hit is dropped, not transferred (Task 5).
+- **7.2 "Ausräumen only for a played-in tag"** — it exists while an emote of the tag is in the set or the tag is
+  played in, and a tag that is not played in proposes everything of it in the set (operator decision
+  2026-10-05, below).
+
+Also changed, with the reasons in the paragraphs above: all T-C id columns are `varchar(32)` including
+set ids (the spec said 24); a placement carries its own `RegisteredAtUtc` as the validity anchor (5.3/5.5);
+an expired target row is rewritten on transfer (5.5); the tags page reloads on `channel.synced` (9.6); the
+removal confirm chain is the delete flow's (7.2/7); the tags page header order is a named exception in
+UI-Designsprache §8.7 (9.4).
+
+#### Residual risks and the restore gap
+
+- **R1** — a remove-and-re-add between two credible observations stays invisible, so a manually re-added
+  emote may be proposed (the person confirms). Window: seconds
+  with the EventAPI up, otherwise up to the first full sync past REST-cache lag and the 30-minute window;
+  unbounded in non-active sets. **Addendum (spec 13.1):** the post-check compares against the row's *single*
+  `LastEnteredSetAtUtc`, whichever set it entered, so a play-in into a freshly switched set with a missed
+  PUSH and a stale REST cache can lose its placement within one tick — a placement too few, never too many.
+- **R2** — a foreign editor between the live read and the write doubles an emote; the second live read right
+  before the start shrinks the window to seconds.
+- **R3** — someone with 7TV write rights on the set can forge reports and pre-tick rows; they could delete at
+  7TV directly anyway, the ownership check (cached up to 10 minutes) gates the routes, the audit row names the
+  actor, and the human still confirms.
+- **R4** — a preview race between two tags can leave one emote too few in the set (never one too many); a
+  fresh play-in brings it back. **Narrowed on 2026-10-05 (review of the inactive clear-out, I1):** right
+  before a clear-out's deletes start, the flow reads the tag's entries again from our API
+  (`confirmTimeEntriesDrift`). A ticked emote that has gained a holder since the dialog opened (another
+  active tag's entry, another tag's placement), a ticked emote no longer in the tag, another activation or
+  snapshot of the tag, or another set aborts the whole clear-out with nothing deleted ("Der Tag hat sich
+  inzwischen geändert — öffne „Aus dem Set entfernen“ bitte erneut." — "„Ausräumen“" when first written,
+  `tags.errors.changedDuringConfirm` — with a retry that opens it afresh; another set
+  gets the delete's set-switch notice). A failed or stalled read aborts too (fail closed). The window
+  shrinks from "as long as the dialog stays open" to that read plus the run. It matters most for a tag
+  that is not played in, where every emote of it in the set is ticked, not only its own placements. A
+  holder the dialog already showed is no change: a row ticked against "wird noch von X gebraucht" was
+  ticked knowingly. That premise holds
+  on every path since the same day's re-review (N2): for a played-in tag too, an emote another active tag
+  needs through an entry alone (no placement), and an own placement another tag placed as well, list that
+  tag under "wird noch von X gebraucht" (`heldByActiveTags` merged with `placedByOtherTags`, as for a tag
+  that is not played in) — before, such a row read as `alreadyPresent` and the re-read treated its
+  holder as known although the dialog had never named it. A re-read that answers malformed fails closed
+  like a failed one (the comparison runs in a `map`, so a throw reaches the abort path).
+- **13.2** — "Restore" after a clear-out creates no placement: restored emotes are in the set without being
+  recorded as played in by the tag. While the tag is not played in, the next clear-out proposes them like any
+  emote of the tag (since 2026-10-05); once it is played in again they read "nicht über diesen Tag ins Set
+  gekommen" / "not added to the set via this tag" (first worded "not played in by this tag") and can be ticked
+  by hand. The restore button says so after a tag run. The
+  converse, an **undo of a tag play-in** (usage page, #254), sends no tag report: its adds leave 7TV, the
+  undo's own set-centric `sync-deleted` observations expire the placements, and the tag stays active until a
+  clear-out with nothing ticked (n = 0) deactivates it — fail-safe, since an expired placement is never
+  proposed. (Superseded display, same day: it first read "eingespielt" with no placement count at 0; since the
+  operator feedback "an active tag without placements says nothing" it shows no state at all — list and detail
+  head — and only the usable "Aus dem Set entfernen" remains, its dialog explaining the deactivation. With a
+  grid marking that button counts the marked emotes in the set and is locked at 0, see "the clear-out's count
+  mirrors the play-in's".)
+
+#### Rollout (spec 12.5)
+
+Migration by hand → Api and Worker image **together** (the worker's behaviour changes without a source
+change) → the readiness check → `TAGS_RUNS_ENABLED=true` → stack update. The flag is `Tags:RunsEnabled`,
+delivered on `permissions` (13.4/1) and wired in the **api** service of both compose files. The check is an
+executable pair of `psql` lists in docs/Operations.md ("Emote tags: enabling play-in and removal runs")
+instead of the spec's "resync summary in the log", which does not exist: list A (active, syncable channels
+whose `LastSyncedAtUtc` is empty or older than the new worker's start) must be empty; list B (channels that
+cannot sync) is information only. The boot recovery's gate is released even after errors, so only a
+completed sync by the new worker proves that observations exist. Follow-up noted there: the tracked-set
+loader of the tag flows is not yet on the #220 route (foreign-permit cost accepted). Open for live
+verification: the per-tick post-check read on the largest channel and the first-tick backfill. The run-less tag report (an empty play-in, a clear-out with nothing ticked) is bounded by the same 30 s report timeout as the run-backed reports, so a stalled request ends in the `tags.errors.reportFailed` banner with its same-operation-id retry instead of leaving both buttons locked. Tag-report 404s are classified by their error code (`classifyTagReportFailure`): `emote_set_not_found` stays `setNotFound`, while `tag_not_found`, `channel_not_found` and `tag_operation_unknown` become the new reason `tagUnknown` ("EmotePurge no longer knows this tag or operation"), so a deleted tag never reads as a missing 7TV set.
+
+**Betrifft (Tasks 14, 15):** `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
+`docs/Operations.md` · `docs/UI-Designsprache.md` · `docs/Architectur.md` · `.env.example` ·
+`docker-compose.yml` · `docker-compose.prod.yml`
+
+#### Operator feedback after the live test (2026-10-05)
+
+The operator tried the runs in the browser and changed three things; all are frontend-only.
+
+- **Runs start on the tags page only.** The usage page's filter row keeps nothing but the tag dropdown:
+  the name, "eingespielt", the "k in the set / m not in the set" counts, "Einspielen"/"Ausräumen"
+  (`TagRunActions`), the link "Übersicht" and the page's `TagRunOrphanNotice` are gone. Reasoning: the
+  usage page shows what is in the set; what is not in the set is the tags page's subject. The usage page's
+  own dock still locks on `SevenTvRunArbiter.startLocked()` while a tag run (an import or delete run with
+  a tag) holds the start, and its dock sections show that run, so no lock reason had to be carried over.
+  `TagRunNoticeSink` and `TagRunOrphanNotice` stay, now with the tags page as their only host. Codex finding
+  C1 (the usage page going stale after a switch to "all tags" mid-run) is moot with the summary gone. The
+  tags page's `unshownRunKinds` (`undo`) stays: an undo is still started on the usage page and holds the
+  start lock while its dock is not mounted here.
+- **A run notice can now wait for the tags page.** A report without a run (a clear-out with n = 0, an "all
+  present" play-in) that fails after the user went to the usage page is no longer shown there; it stays in
+  `TagRunNoticeSink` and appears when the tags page is opened again — delayed, not lost.
+- **"Einspielen" exists only while the tag has an emote missing from the set** (`entryCount >
+  inSetCount`, read off the summary the host already holds; with `inSetCount: null` — no set to count in —
+  a tag with entries still offers it). Spec 7.2 "missing, not locked", like "Ausräumen" for an inactive
+  tag (that half superseded the same day: "Ausräumen" now exists for an inactive tag with an emote in the
+  set, see "Clearing out a tag that is not played in" below). The flow's "all present" path stays for the race between loading the page and the click. The state
+  "nicht eingespielt" is no longer shown anywhere (list, detail head); only "eingespielt" is, and the
+  list's "(n platziert)" only for n > 0. (Superseded the same day: an active tag without placements shows
+  no state either, see "Every tag action names its target".)
+- **Accepted consequence:** a tag whose emotes are all in the set cannot be played in any more, so it
+  cannot be activated and does not shield its emotes from another tag's clear-out ("wird noch von X
+  gebraucht"). If an emote goes missing later, "Einspielen" returns and the tag can be played in again.
+  As first shipped this also meant such a tag could never be cleared out ("Ausräumen" existed only for
+  an active tag, and even the detour through a play-in proposed nothing — every row read "war schon
+  vorher im Set"); the operator found that live and decided the clear-out below.
+- **Focus survives the disappearing button.** When a play-in leaves nothing missing, "Einspielen" leaves
+  the DOM while it holds the focus CDK gave back after the dialog; focus then moves to "Ausräumen" (the tag
+  is played in now) or, with no button left, to the detail heading (`tabindex="-1"`). The same holds the
+  other way round (review feedback 2, m2): a clear-out that leaves nothing of the tag in the set takes
+  "Ausräumen" away, and focus moves to "Einspielen" or the heading (`runButtonFocusTarget`). The other
+  button takes focus only while it is usable (2026-10-05, Codex review): a reload that removes the clicked
+  button while the run is still settling leaves the other one disabled, a disabled button ignores
+  `focus()`, so focus goes to the heading instead (`otherUsable` = shown and not disabled). Only the
+  button whose click started the flow is followed, and only until that flow ended without a run (m3): a
+  dismissed dialog or token prompt, an abort or a blocked step forgets it, so a later live reload after
+  another tab's run never moves focus. The play-in's hand-over to the import flow cannot tell a
+  dismissed import dialog from a started run; there only an abort with a notice forgets the click. Without a run button
+  on the page (the tag is neither missing an emote nor played in — since the inactive clear-out below:
+  nor has anything in the set), `TagRunActions` also drops its button row
+  and the lock reason, so no text explains a lock on a button that is not there; its error banner stays.
+- **The tags page explains itself.** Under the title: "A tag remembers emotes, even when they are not in
+  the set right now." plus, only where the run buttons exist (`tagRunsShown`: runs on, a fine pointer, a
+  known active set — the buttons' own gate), "Playing in puts them into the set, clearing out takes them
+  out again." (wording at the time; reworded with "Every tag action names its target" below, current copy
+  `tags.page.introRuns`). The set line stays as it was. A tag with no entries replaces its former empty text with
+  "No emotes yet. Select them on the usage page and assign them to this tag." (the existing manager-only
+  button to the usage page stays).
+
+**Betrifft (feedback 1):** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/shared/tags/tag-run-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts` · `docs/UI-Designsprache.md`
+
+#### Every tag action names its target (operator decision 2026-10-05, later that day)
+
+Wording only, no contract changes; code identifiers (`playIn`, `remove`, `active`, `placedCount`) stay.
+The words "Einspielen"/"Ausräumen" (and "eingespielt", "ausgeräumt", "platziert") left the UI because
+they did not say *where* the action lands. Now every tag action names its target, the set or the tag:
+"Ins Set holen"/"Add to set" and "Aus dem Set entfernen"/"Remove from set" act on the set, "Aus dem Tag
+entfernen (n)"/"Remove from tag (n)" and "Tag löschen"/"Delete tag" act on the tag; "Umbenennen" is
+unchanged. The tag status reads "n über den Tag ins Set geholt"/"n added to the set via this tag" (nothing
+at all for an active tag without placements); the same holds for the detail status line ("über den Tag ins Set geholt am …"), which is hidden when the tag is active but holds 0 placements. The tag-dock button names the tag only in its accessible
+name and title, after the visible words ("Aus dem Tag entfernen (2) – Name"), so the visible label stays
+contained in the accessible name. With a grid marking the set-removal button carries a number (first the
+number of marked entries like the dock does; since the same day's final review, the marked entries in the
+set — see "the clear-out's count mirrors the play-in's" below). The detail header is two groups with a visible gap (`gap-x-6`) between them: set
+actions (`TagRunActions`) on the left, tag actions (rename, delete) on the right; each button stays
+conditional, so the header does not shift when one appears. This supersedes the order "Einspielen ·
+Ausräumen · Umbenennen · [gap] · Löschen" quoted in the entries above and in UI-Designsprache §8.7.
+
+UI copy quoted anywhere in this entry — above and below this subsection — is the wording at the time it
+was written ("Einspielen", "Ausräumen", "eingespielt", …); the current copy is in `web/public/i18n/de.json`
+and `web/public/i18n/en.json`. Statements about current *behaviour* that a later paragraph changed are
+marked as superseded where they stand.
+
+**Betrifft (every tag action names its target):** `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/tags/tags-page.ts` · `web/e2e/emote-tags.e2e.spec.ts` · `docs/UI-Designsprache.md`
+(§8.7)
+
+#### Clearing out a tag that is not played in (operator decision 2026-10-05)
+
+Found in the live test after feedback 1: a tag of emotes that were all in the set already (the person
+tagged the Halloween emotes to clear them out later) can never become active, and "Ausräumen" existed only
+for an active tag — so there was no way to clear it out. The operator decided (binding), superseding spec
+7.2's "Ausräumen only for a played-in tag" and the feedback-1 note above:
+
+- **"Ausräumen" exists while there is something to clear out:** an emote of the tag in the active set
+  (`inSetCount > 0`), whether the tag is active or not, **or** the tag being active at all
+  (`TagRunActions.removeShown`). The second half is ours, not the operator's wording: an active tag with
+  nothing in the set (an undo of its play-in — 13.2 — or its entries taken out of it) still has an
+  activation to end, and the clear-out with nothing ticked is the only thing that ends it. Without a count
+  (`inSetCount: null`, no set to count in) an inactive tag shows no "Ausräumen"; the host's gate needs a
+  known active set anyway. Still missing, not locked (spec 7.2).
+- **What the dialog proposes depends on the entry read's activation**, not on the page's summary: the flow
+  passes `activationOperationId !== null` from the same read the snapshot comes from. For an **active**
+  tag nothing changes (own unheld placement → proposed; already there before, or held → not proposed).
+  For a tag that is **not active** (never played in, or cleared out before) there is no placement to tell
+  its own emotes from ones that were there before, and its point is the person's tagging: every emote of
+  it in the set is proposed (new reason `tagged`, no second line under the name, but one quiet sentence
+  above the list — review I2, same day, security model rule 3: "Der Tag ist nicht eingespielt —
+  vorgeschlagen sind alle seine Emotes im Set außer denen, die ein anderer Tag braucht.",
+  `tags.removalDialog.notPlayedInLead`; superseded wording, see "the clear-out dialog's lead sentences say
+  only what the proposal knows" below) except one another active
+  tag still needs — `heldByActiveTags`, merged with `placedByOtherTags` so a read that broke "inactive ⇒ no
+  placement" still withholds the tick — which stays "Nicht vorgeschlagen" with "wird noch von X
+  gebraucht". "Nicht von diesem Tag eingespielt" is a statement about a play-in and never appears for such a tag.
+  With nothing ticked the dialog says only "Es wird nichts bei 7TV gelöscht." — the "gilt danach als nicht
+  mehr eingespielt" half belongs to an active tag (`tags.removalDialog.nothingToDeleteNotPlayedIn`).
+- **The backend needed no new path.** Registration does not look at the activation; the removal report of
+  an inactive tag carries `activationOperationId: null`, an empty snapshot and no kept ids, so it
+  deactivates nothing, hits nothing and sweeps nothing (by "inactive ⇒ no placement" there is nothing to
+  sweep), marks the operation applied and writes the audit row — the invariant holds untouched. If a
+  play-in of the same tag lands between preview and report, the null activation cannot match it: the tag
+  stays active with its fresh placements, which only expire once the leave of the removed emotes is
+  observed (fail-safe, spec 0a). Pinned by
+  `Removal_OfATagThatIsNotPlayedIn_WhenAPlayInOfTheSameTagLandsBeforeTheReport_LeavesThatPlayIn`.
+- **The proposal is checked once more at confirm time** (review I1, same day): with every emote of the tag
+  in the set ticked, a tag played in behind the open dialog could otherwise lose emotes it now needs. The
+  re-read and its abort are described under R4 above; they apply to active and inactive tags alike.
+- **The audit count changed:** `tag.removed`'s `emoteCount` is now the reported removed ids the tag has an
+  entry for, placed by it or not, instead of `deletedCount` (own placements deleted). With the old count
+  every clear-out of an inactive tag would have read "0 Emotes" however many left 7TV, and an active
+  tag's hand-ticked `alreadyPresent` rows were never counted. Ids without an entry are not counted, the
+  same filter the play-in report applies; the response's `deletedCount` keeps its meaning.
+- **The restore hint** (`sevenTvRun.tagReport.restoreHint`) no longer says restored emotes read "war schon
+  vorher im Set" at the next clear-out — while the tag is not played in they are proposed again; the hint
+  now says they are not recorded as played in, and read that way only if the tag is played in later (not
+  "again": the tag may never have been played in — review m9, same day). The
+  tags-page explainer as it then read ("Einspielen holt sie ins Set, Ausräumen nimmt sie wieder heraus.")
+  stayed true. (Superseded the same day: that sentence no longer exists; the intro now reads "Ein Tag merkt
+  sich Emotes, auch wenn sie gerade nicht im Set sind." plus the run sentence `tags.page.introRuns`.)
+- **One article for "Tag" in German copy: "der Tag".** The catalogue mixed both genders; counted over the
+  unambiguous forms in `de.json` (articles and adjective endings, not dative "dem/einem/diesem"), 12 were
+  masculine ("einen Tag", "Dieser Tag", "Neuer Tag", …) and 2 neuter ("das Tag" in
+  `tags.removalDialog.nothingToDelete` and `tags.actions.unassignTitle`). The two now read "der Tag";
+  new copy follows the majority.
+- The e2e mock of the removal report now takes the removed emotes out of the set for the next read
+  (`inSetCount`, the entry's `inSet`), as the real server does after the run's `sync-deleted`; the
+  scenarios that cleared a tag out while another of its emotes stayed in the set now expect "Ausräumen" to
+  remain.
+
+**Betrifft (clear-out of an inactive tag):** `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` ·
+`web/src/app/shared/tags/tag-removal.ts` · `web/src/app/shared/tags/tag-removal-flow.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.ts` · `web/src/app/shared/tags/tag-run-actions.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/e2e/emote-tags.e2e.spec.ts` ·
+`web/e2e/support/mocks.ts` · `docs/UI-Designsprache.md`
+
+#### Operator feedback on the clear-out dialog and the grid marking (2026-10-05)
+
+**Operator feedback: the placement mark is gone.** Spec 9.4's small square at the bottom left of an entry
+tile ("placed by this tag") is removed, together with the word it added to the tile's accessible name
+(`tags.page.placedMark`) and its spec case. The operator found that it looks like a checkbox, which
+invites a click that does nothing. The placement data itself stays: `placedByThisTag`/`placedAtUtc` still
+drive the clear-out dialog (then "eingespielt am ...", now "am <date> ins Set geholt"), so nothing behind
+the surface changed.
+
+**Operator feedback: the not-proposed reason is worded for what the protection does.** The clear-out
+dialog's reason `alreadyPresent` for a row this tag did not place read "war schon vorher im Set" /
+"was already in the set before". That claims a history the app does not know: the row may have been put
+there by a person, by an older tag run, or by a restore (13.2), and the only thing the logic establishes
+is that this tag did not play it in. The line then read "nicht von diesem Tag eingespielt" / "not played
+in by this tag" (`tags.removalDialog.reason.alreadyPresent`, the key keeps its name); since "Every tag
+action names its target" it reads "nicht über diesen Tag ins Set gekommen" / "not added to the set via this
+tag". The protection
+itself is unchanged (only active tags hold); the restore hint and every quote of the old wording in this
+log, UI-Designsprache 7.5 and the code comments follow the new wording.
+
+**Betrifft (feedback, reason wording):** `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/shared/tags/tag-removal.ts` · `web/src/app/shared/tags/tag-removal.spec.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.spec.ts` · `web/e2e/emote-tags.e2e.spec.ts` ·
+`docs/UI-Designsprache.md`
+
+**Betrifft (feedback, placement mark):** `web/src/app/features/tags/tags-page.html` ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags-page.spec.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/e2e/audit/ui-audit.audit.ts`
+
+**Feedback (clear-out dialog, operator).** The clear-out confirm dialog no longer renders the plain
+`NamePreviewList` of the names to be deleted below the "Vorgeschlagen"/"Nicht vorgeschlagen" rows: the
+ticked rows already are that list, so each name appeared twice. The irreversibility sentence, the
+foreign-channels hint and the n = 0 sentence stay. The regular delete dialog keeps its list (it has no
+checkbox rows); the two never shared the component instance, so no variant flag was needed.
+
+**Betrifft (feedback, duplicate name list):** `web/src/app/shared/tags/tag-removal-confirm-dialog.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.spec.ts` · `docs/UI-Designsprache.md` (§7.5)
+
+**Operator feedback: a grid marking is the clear-out's proposal.** With two of a tag's four in-set
+emotes marked on the tags page, "Ausräumen" still pre-ticked all four (the tag was not played in). Now,
+when the grid holds at least one marked entry at the click, the dialog proposes exactly the marked
+emotes that are in the set, own placement or not, played in or not; every unmarked one is "Nicht
+vorgeschlagen" with the new reason "nicht markiert" / "not marked" (`notMarked`, with the placement date
+when the tag placed it). A row another active tag needs stays unticked with "wird noch von X gebraucht"
+whether marked or not: `heldBy` wins over `notMarked`, because the confirm-time re-read (I1) treats every
+holder the dialog showed as known, so a holder must never hide behind another reason. The sentence
+above the list then reads "Vorgeschlagen sind deine {{count}} markierten Emotes." (one: "Vorgeschlagen
+ist dein markiertes Emote."; with none proposed, e.g. all held: "Keines deiner markierten Emotes ist
+vorgeschlagen.") instead of the not-played-in sentence; the count is the proposed rows (since the final
+review, "n von m" when a marked row is held, see "the clear-out dialog's lead sentences" below). Without a marking
+nothing changed. The marking travels as data (`TagRunActions.markedIds` → `TagRunRequest.markedIds`,
+copied at the click, so the open dialog does not follow the grid; a "Try again" replays that copy);
+`shared/` never reads the page. The re-read is unchanged — it judges the ticked rows whatever ticked
+them. The page clears its marking when the confirmed clear-out goes ahead (`onClearOutCommitted` →
+`clearOutCommitted`, since renamed `onRunCommitted` → `runCommitted`, see "a grid marking narrows the
+play-in too": after `startDelete`, or when the report for nothing ticked goes out), only for the
+tag still shown; a cancel or any abort before that keeps it.
+
+**Betrifft (feedback, marking as proposal):** `web/src/app/shared/tags/tag-removal.ts` ·
+`web/src/app/shared/tags/tag-removal-flow.ts` · `web/src/app/shared/tags/tag-play-in-flow.ts` ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.ts` · `web/src/app/shared/tags/tag-run-actions.ts` ·
+`web/src/app/features/tags/tags-page.html` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+the specs of the first four and of the tags page · `web/e2e/emote-tags.e2e.spec.ts` ·
+`docs/UI-Designsprache.md`
+
+**Operator feedback: a grid marking narrows the play-in too.** With two of a tag's four missing emotes
+marked, "Ins Set holen" copied all four. Now it mirrors the clear-out: with a marking at the click the
+play-in considers only the marked entries (`playInCandidates`), and the live read decides as before
+which of them are missing (E28 — never the page's `inSet`); the import dialog's rows, its title count and
+its "n sind schon im Set" all speak of the marked entries. The button reads "Ins Set holen (n)" / "Add to
+set (n)", n = marked entries the page shows as not in the set (`markedMissingCount`, a label, not a
+decision). Its visibility stays tag-level; a marking with nothing missing leaves it standing but locked
+(`playInMarkingLocked`), the reason "Alle markierten Emotes sind schon im Set." / "All marked emotes are
+already in the set." stands in the marking's own line under the grid — not under the button, where it
+would push the grid down under the pointer with every click on it — and is the button's
+`aria-describedby` and title. The marking goes once the play-in went ahead: right after `startImport`
+(new optional `ImportFlowTagHook.onStarted`) or when the report for nothing to add goes out; a dismissed
+dialog, a cancelled token prompt or any abort keeps it. "Went ahead" means the engine started the run:
+`SevenTvImportService.startImport` returns whether it did (its only caller is `import-flow.ts`), and
+`onStarted` fires only on `true` — an engine refusal (a plan emptied by held-back replace rows, a token
+gone during the re-check) keeps the marking (2026-10-05, Codex review). The commit callback is the clear-out's, renamed
+`onRunCommitted` → output `runCommitted` (it now serves both runs). The race paths keep their meaning: an
+"all present" report with a marking says "Alle n markierten Emotes sind schon im Set — der Tag gilt als
+ins Set geholt." (`allMarkedPresent`), and a marking none of whose ids the tag still has an entry for
+stops before any write with `tags.errors.markedGone` instead of reporting the tag as played in on the
+strength of nothing the person chose (the registered operation stays unapplied, spec 5.4). The tag
+becomes active after a partial play-in exactly as after a full one. Server side nothing changed: the
+placement report already places only the reported ids that are entries and audits `emoteCount` as what it
+placed; a new Testcontainers test pins a report of a subset of the missing entries.
+
+**Betrifft (feedback, marking narrows the play-in):** `web/src/app/shared/tags/tag-play-in.ts` ·
+`web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-removal-flow.ts` ·
+`web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/shared/seven-tv/import-flow.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`startImport` returns whether it started) ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags-page.html` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · the specs of the first four and of the tags
+page · `web/e2e/emote-tags.e2e.spec.ts` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` · `docs/UI-Designsprache.md`
+
+**Operator decision: the clear-out's count mirrors the play-in's (2026-10-05, final review M1).** "Aus dem
+Set entfernen (n)" counted every marked emote, so a marking of two missing emotes read "Aus dem Set
+entfernen (2)" on a clear-out that would propose nothing — and for an active tag its n = 0 report would
+deactivate the tag. Now n is the marked entries the page shows as in the set (`markedInSetCount`, the
+mirror of `markedMissingCount`; a label, the live read still decides what is proposed). A marking none of
+whose entries is in the set leaves the button standing but locked (`removeMarkingLocked`), with "Keines der
+markierten Emotes ist im Set." / "None of the marked emotes is in the set." in the marking's dock line,
+as its `aria-describedby` and title — the same mechanism as the play-in's lock. Without a marking nothing
+changes: an active tag with nothing in the set keeps a usable "Aus dem Set entfernen" (13.2). A marked
+entry is either in the set or not, so at most one of the two reasons stands at a time.
+
+**Betrifft (clear-out count mirrors the play-in):** `web/src/app/shared/tags/tag-play-in.ts`
+(`markedInSetCount`) · `web/src/app/shared/tags/tag-run-actions.ts` (`removeMarkingLocked`,
+`tagHasSomethingToClear`) · `web/src/app/features/tags/tags-page.ts` ·
+`web/src/app/features/tags/tags-page.html` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · the
+specs of the first three · `docs/UI-Designsprache.md` (§8.7)
+
+**The clear-out dialog's lead sentences say only what the proposal knows (2026-10-05, final review M6).**
+Two sentences above the list claimed more than the logic knows. With a marking, "Vorgeschlagen ist dein
+markiertes Emote." read as if one emote was marked when a second marked one was held by another tag and so
+not proposed. The proposal now carries `markedInSetCount` (rows whose id is marked, held ones included),
+and the dialog says "Vorgeschlagen sind {{proposed}} von {{marked}} markierten Emotes." / "{{proposed}} of
+{{marked}} marked emotes are proposed." (`markedLeadPartial`, one/other on the proposed count) whenever the
+proposed count differs from it; the "deine n" forms stay for the equal case and "Keines …" for none. The
+not-played-in sentence "Der Tag hat nichts ins Set geholt — …" was false for a tag that once added emotes
+and was later cleared out with nothing ticked — the same "claims a history it does not know" fault the row
+reason had. It now describes the state: "Über diesen Tag ist gerade nichts im Set — vorgeschlagen sind alle
+seine Emotes im Set außer denen, die ein anderer Tag braucht." / "Nothing is in the set via this tag right
+now — all its emotes in the set are proposed except those another tag needs." (an inactive tag has no
+placements). UI-Designsprache §7.5 no longer speaks of "an emote that was in the set before".
+
+**Betrifft (dialog lead sentences):** `web/src/app/shared/tags/tag-removal.ts` (`markedInSetCount`) ·
+`web/src/app/shared/tags/tag-removal-confirm-dialog.ts` · `web/public/i18n/de.json` ·
+`web/public/i18n/en.json` · the specs of the first two · `web/e2e/emote-tags.e2e.spec.ts` ·
+`docs/UI-Designsprache.md` (§7.5)
+
+**The tag header's actions take their own line while the run buttons are shown (2026-10-05, final review
+O3).** The set buttons gained counts with the first click on the grid ("Ins Set holen (0)", "Aus dem Set
+entfernen (1)", about +41 px at one digit). The header row placed the heading and both action groups on one
+line where they fit, so a name whose heading fit before the click but not after it wrapped the actions onto
+a second line and pushed the grid down by one button row under the pointer — the "keine Layout-Sprünge"
+rule. Measured at the lg two-column layout: the header row is 672 px wide at 1024 px, the actions 526 px
+before and 567 px after the click, so headings between about 90 and 130 px (roughly 11–16 characters,
+"Halloween 2026") jumped; at 1280 px (928 px row) the band moves to about 345–386 px. A short name ("Halo")
+stayed put, which is why the first measurement with it was green. Reserving the count's width was the
+alternative; it leaves visibly padded labels without a marking and still grows at three digits. Now, whenever
+`tagRunsShown()`, the actions container takes the full row (`basis-full`) and stands under the heading; its
+height no longer depends on the labels' width as long as the action row itself fits (it does from about
+650 px of detail width with two-digit counts). Without the run buttons (runs off, a coarse pointer) the
+labels never change and rename/delete stay beside the heading (`ml-auto`). The e2e case "emote tag header
+while marking" pins the grid's top across the first marking click at 1024 and 1280 px for a short, a
+middling and a 40-character name.
+
+**Betrifft (header actions on their own line):** `web/src/app/features/tags/tags-page.html` ·
+`web/e2e/emote-tags.e2e.spec.ts` · `docs/UI-Designsprache.md` (§8.7)
+
+### 2026-10-04 — Emote tags are channel-owned and keyed by 7TV emote id (data model)
+
+**Betrifft:** `docs/Architectur.md` · `docs/DECISIONS.md` · `docs/Operations.md` ·
+`docs/UI-Designsprache.md` · `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` ·
+`src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Entities/EmoteTag.cs` ·
+`src/EmotePurge.Core/Entities/EmoteTagEntry.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` ·
+`src/EmotePurge.Core/SevenTv/SevenTvEmoteIdValidation.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/*_AddEmoteTags*.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` ·
+`tests/EmotePurge.Api.Tests/ApiFactory.cs` · `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteTagEndpointsTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagCascadeTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteTagServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/EmoteTagNameTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/SevenTvEmoteIdValidationTests.cs` ·
+`web/e2e/audit/ui-audit.audit.ts` · `web/e2e/emote-tags.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
+`web/e2e/usage-atlas.e2e.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/app.routes.ts` · `web/src/app/core/audit/audit.model.ts` ·
+`web/src/app/core/i18n/api-error.ts` · `web/src/app/core/layout/wide-viewport.service.spec.ts` ·
+`web/src/app/core/layout/wide-viewport.service.ts` · `web/src/app/core/tags/emote-tag.model.ts` ·
+`web/src/app/core/tags/emote-tag.service.spec.ts` · `web/src/app/core/tags/emote-tag.service.ts` ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.spec.ts` ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` ·
+`web/src/app/features/tags/tag-name-dialog.spec.ts` · `web/src/app/features/tags/tag-name-dialog.ts` ·
+`web/src/app/features/tags/tags-page.html` · `web/src/app/features/tags/tags-page.spec.ts` ·
+`web/src/app/features/tags/tags-page.ts` · `web/src/app/features/tags/tags.routes.spec.ts` ·
+`web/src/app/features/tags/tags.routes.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/shared/audit/audit-actions.spec.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
+`web/src/app/shared/audit/audit-row.spec.ts` ·
+`web/src/app/shared/emotes/emote-usage-filter.spec.ts` ·
+`web/src/app/shared/emotes/emote-usage-filter.ts` ·
+`web/src/app/shared/tags/tag-assign-dialog.spec.ts` · `web/src/app/shared/tags/tag-assign-dialog.ts` ·
+`web/src/app/shared/tags/tag-name-field.spec.ts` · `web/src/app/shared/tags/tag-name-field.ts` ·
+`web/src/styles.css`
+
+Emote tags (#201) are two new tables, added by the purely additive migration `AddEmoteTags`
+(no existing table is touched):
+
+- `EmoteTags(Id, ChannelId, Name, NormalizedName, CreatedAtUtc)` — name and normalized name max 40
+  characters; unique `(ChannelId, NormalizedName)` so "Funny" and "funny" are one tag per channel
+  (`EmoteTagName.Normalize` = trim + lowercase, analogous to `ChannelName`); index
+  `(ChannelId, CreatedAtUtc)` for the creation-ordered list; FK to `Channels` with `Cascade`, no
+  inverse collection on `Channel`.
+- `EmoteTagEntries(TagId, SevenTvEmoteId, Alias, ImageUrl, AddedAtUtc)` — primary key
+  `(TagId, SevenTvEmoteId)`; FK to `EmoteTags` with `Cascade`. `SevenTvEmoteId` is capped at 32
+  characters (real 7TV ids are 26-character ULIDs; the cap is headroom, not a format claim).
+
+**No foreign key from an entry to `Emote`.** A tag belongs to the channel and must survive its emote
+leaving the set and coming back; `Emote` rows are archived and recreated by the sync, and
+`Emote.Id` is an internal guid (rule 8). Entries therefore carry a snapshot (`Alias`, `ImageUrl`)
+and are matched to live emotes by 7TV id at read time.
+
+Both channel purges (`PurgeAsync`, `PurgeIfInactiveSinceAsync`) take the tag tables down through the
+cascades; `EmoteTagCascadeTests` pins that. Product limits are constants, not configuration:
+`EmoteTagLimits.MaxTagsPerChannel = 50`, `MaxEntriesPerTag = 1000`. Audit actions `tag.create`,
+`tag.rename`, `tag.delete` carry only ids and counts in their details, never the name.
+
+**Service contract (`IEmoteTagService`).** Every mutation — create, rename, delete, add entries,
+remove entries — runs in one transaction that first locks the channel row
+(`LoadChannelForUpdateAsync`) and then touches only the tag tables; reads take no lock. The lock is
+what enforces both limits: under READ COMMITTED a count before an insert does not (two concurrent
+assignments of one emote each to a tag at 999 entries would both count 999 and commit 1001). It is
+also the ordering contract the later placement reports build on, which is why removing entries takes
+it too although no limit needs it there. Lock order is channel row first, tag tables second; the sync
+writes no tag table, so no cycle (either side can wait for the other, but the report waits only for
+its first lock while holding nothing, and neither does network I/O). Two-contender tests in `EmoteTagServiceTests` pin all of this.
+Assigning is partial success by design: ids without an unarchived row are skipped and reported, ids
+already tagged are counted, the rest is written with alias and image taken from the row, never from
+the client; the 1000-entry limit is checked against what would actually be written, before anything
+is written, and a request that would cross it writes nothing. Assigning and removing are not audited.
+"In the set" means an unarchived `Emote` row of the channel; that status is channel-wide, so
+`inSetCount`/`inSet` are only reported for the channel's active set and are `null` for any other set
+id. Inbound 7TV emote ids go through `SevenTvEmoteIdValidation` in Core — the same 1–32
+`[0-9A-Za-z]` rule as the Api's set-id check, kept in Core because the ids arrive in a body and the
+service, not a filter, owns their status codes.
+
+**HTTP surface (`EmoteTagEndpoints`).** Seven routes under `/api/channels/{channelName}/tags`, in two
+`MapGroup`s on the same prefix. Reads (`GET ""`, `GET "/{tagId:long}/entries"`) sit behind
+`UsageStatsAccessAuthorizationFilter` on the `InteractiveRead` policy, with `EmoteSetIdValidationFilter`
+per route (so a malformed `emoteSetId` is a 400 only after authorization, like the tracked-set
+preview): anyone who may look at the channel's statistics may see its tags. Maintenance (`POST ""`,
+`PATCH`/`DELETE "/{tagId:long}"`, `POST "/{tagId:long}/entries"`, `POST ".../entries/remove"`) sits
+behind `ChannelManagementAuthorizationFilter` on `Bookkeeping`; a caller who may view but not manage
+gets the reads and a 403 on the rest. `ChannelNameValidationFilter` precedes both authorization
+filters. No new rate-limit policy. A non-numeric `{tagId}` is a routing 404 without a body. Status
+mapping: 400 `tag_name_invalid` (a missing body or `name` included), 409 `tag_name_taken`, 409
+`tag_limit_reached`, 409 `tag_entry_limit_reached`, 404 `tag_not_found` (also for a tag of another
+channel), 404 `channel_not_found`, 400 `emote_ids_empty`/`emote_ids_invalid`. The five `tag_*` codes
+are new in `ApiErrorCodes`; the frontend half follows with the tag UI. Input form is checked before
+the channel lock and lookups, so a malformed body is a 400 even for an unknown channel or tag. One
+add/remove request may carry at most `EmoteTagLimits.MaxIdsPerRequest` (= 2 x `MaxEntriesPerTag`)
+raw ids, counted before de-duplication; more is `EmoteIdsInvalid` (400 `emote_ids_invalid`), so an
+unbounded body never reaches the database while a request that could still fill a tag is never
+refused for its size.
+
+**Merge guard (`ChannelIdentityService`).** The Worker's identity reconcile merges an id-less duplicate
+channel row (the loser) into the row that owns the Twitch id. It already refused when the loser still
+had emotes; it now also refuses when the loser owns any tag (`loserHasTags`, a tag with no entries
+included). Tags are keyed by 7TV emote id with no per-channel row to re-point, there is no correct
+rule for fusing two channels' tag sets, and the cascade on the `Channels` FK would otherwise delete
+the loser's tags silently with its row. The refusal behaves exactly like the emote case: nothing is
+written, `MergesRefused` counts once although the pair is met from both ends, both rows are marked
+settled for the pass, and the warning is deduplicated per loser. The (English) log line names both
+reasons separately (`emotes ({HasEmotes})`, `tags ({HasTags})`). A Worker behaviour change, deployed
+with the next Worker image, not earlier.
+
+**Tags page, route and tab (frontend).** The page lives at `channels/:channelName/tags`, loaded lazily
+through `loadChildren` (`TAGS_ROUTES`, the same split as `usage-stats`, #264) with
+`usageStatsAccessGuard` on the parent entry: reading tags is the same right as reading the usage
+stats. The channel workspace gets a fourth tab, "Tags", right after "Nutzung" and under the same
+condition (`canViewUsageStats`); the shell frame and the tab bar's `h-10` contract are unchanged. No
+leave guard on the route yet: the page starts no 7TV run before T-C.
+
+The entries grid marks an entry that is no longer in the set with `.app-sprite-cell-void` plus a
+dimmed sprite (spec 9.4). That is a second use of a plate design doc §2.4 had called ballot-only, and
+§2.4's own reasoning covers it: the tags grid mixes in-set and gone entries with no heading saying
+which is which, the exact case the plate exists for. §2.4 now names both places; the atlas still
+does not use it.
+
+From `lg` up the page shows list and detail side by side; below it, `?tag=` turns the page into a
+drilldown with an up-link to the list. That is a change of *structure* (which part renders, whether
+the up-link exists), which CSS `lg:` variants cannot decide, so it is decided in code by
+`WideViewportService` (`core/layout/`, `(min-width: 64rem)`, Tailwind's `lg`), modelled on
+`PointerModeService`/`ReducedMotionService`. No such service existed because no page had switched
+structure by width before; every earlier width decision was purely visual and stayed in CSS.
+
+On a coarse pointer the tags grid selects nothing, so "Aus Tag entfernen" is fine-pointer-only,
+following spec 9.4 ("auf grobem Zeiger fehlen … die Rasterauswahl"). The operator decided on
+2026-10-05 that removal is mouse-only, and spec 8's row was amended accordingly (no contradiction
+left). Rename and delete of a tag stay available on a coarse pointer. Also decided on 2026-10-05:
+T-B ships together with T-C, never alone, so T-B's strings that already mention Einspielen/Ausräumen
+are fine.
+
+**Usage page: the filter dimension, the assign dialog and the dock (frontend).** The tag is one more
+dimension of `EmoteUsageFilter` (`tagId` plus `tagKeys`, the chosen tag's 7TV ids): a row passes when
+its `sevenTvEmoteId` is in the key set. While the keys are not loaded yet everything passes —
+filtering to empty meanwhile would flash the empty state on every tag switch — and switching channel
+or tag drops the old keys. The select sits in the filter row, before the reset that clears it too, and
+is not rendered at all until the channel has a tag; the chosen tag shows its name, "k in the set · m
+not in the set" and a link to its page. The dock gains two constructive buttons, in this order:
+"Tag zuweisen…" (before the vote button; fine pointer, channel management, the shown set is the
+active set, a selection exists) and "Aus ‚Tag‘ entfernen (n)" (after the vote button, before the gap
+to the delete; only with a tag filter set). n counts only the marked emotes that are actually in the
+tag. At n = 0 the button is disabled and states why beside it (`noneInTag`, referenced by
+`aria-describedby`); while the keys load or a removal is in flight it is disabled without text (a
+loading state, §6.1). The dock label keeps its structure constant, but only the tag-name part is
+truncated (`max-w-40` on an inner span) because a name may have 40 characters and the label was 446 px
+wide at 360 px; the full name stays in the accessible name and `title` (found by the audit harness).
+The assign dialog (`TagAssignDialog`, `shared/tags/`) returns `{ tagNames, emoteCount,
+skippedNotInSetCount }` — emotes counted once across all chosen tags — or `undefined` when nothing was
+assigned; the page turns that into its status sentences. A selection of more than 2000 ids is capped
+by the server (400 `emote_ids_invalid`), which the set capacity makes hard to reach.
+
+The tags page has no sprite-sheet bands: §2.5's bands belong to the usage atlas, where the grid is
+sorted by usage; the tags grid is a plain list of entries. Its multi-select action sits in the flow
+beneath the grid, not in a dock (UI design doc §8.7).
+
+**What T-C adds.** Placement fields on the entries, additively (a migration of its own, no change to
+the two tables' existing columns), and the feature flag the placement work sits behind. The
+delete-tag confirm label stays constant ("Tag löschen"); the "even though placed" wording is carried
+by the hint text (`placedHint`), not by the label.
+
+---
+
 ### 2026-10-04 — The delete run surface and its pre-check chain leave MassDeletePanel (#201 T-A)
 
 **Betrifft:** `web/src/app/shared/seven-tv/delete-flow.ts` ·
@@ -298,7 +1536,6 @@ and `core/` must not depend on `shared/`. T-C registers it on the tags page rout
 itself reload after a finished delete or restore, and render or clear the `notice` output.
 
 ---
-
 
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 

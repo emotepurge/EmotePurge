@@ -34,6 +34,25 @@ describe('toAuditRows', () => {
     expect(row.action).toBe('voteSession.delete');
   });
 
+  it.each([
+    ['tag.create', 'audit.actions.tagCreate'],
+    ['tag.rename', 'audit.actions.tagRename'],
+    ['tag.delete', 'audit.actions.tagDelete'],
+    ['tag.playedIn', 'audit.actions.tagPlayedIn'],
+    ['tag.removed', 'audit.actions.tagRemoved'],
+  ])('labels %s and shows no detail line for its id-only payload', (action, key) => {
+    // The server projects `{ tagId }` / `{ tagId, entryCount }` to no detail (names never reach the
+    // log), so the row keeps just its action, actor and time.
+    const [row] = toAuditRows(
+      [entry({ action, targetType: 'emoteTag', targetId: '7', detail: null })],
+      'de-DE',
+      IDENTITY_TRANSLATE,
+    );
+
+    expect(row.actionKey).toBe(key);
+    expect(row.detail).toBeNull();
+  });
+
   it('leaves an unknown action without a key but keeps it verbatim', () => {
     // An entry written by a newer backend: showing the raw string beats hiding the row.
     const [row] = toAuditRows(
@@ -107,6 +126,16 @@ describe('toAuditRows', () => {
       key: 'audit.details.importedFromFile.other',
       params: { count: 7 },
     });
+  });
+
+  it('renders a tag play-in detail with only its count parameter, never a tag name', () => {
+    const [row] = toAuditRows(
+      [entry({ detail: { kind: 'importedFromTag', count: 1, text: null } })],
+      'de-DE',
+      IDENTITY_TRANSLATE,
+    );
+
+    expect(row.detail).toEqual({ key: 'audit.details.importedFromTag.one', params: { count: 1 } });
   });
 
   it('drops a detail kind this build has no label for', () => {

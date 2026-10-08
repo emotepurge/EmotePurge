@@ -57,6 +57,15 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'contact_invalid',
   'contact_captcha_failed',
   'contact_unavailable',
+  'tag_name_invalid',
+  'tag_name_taken',
+  'tag_limit_reached',
+  'tag_not_found',
+  'tag_entry_limit_reached',
+  'tag_operation_id_invalid',
+  'tag_operation_unknown',
+  'tag_operation_conflict',
+  'tag_operation_kind_invalid',
 ]);
 
 /**

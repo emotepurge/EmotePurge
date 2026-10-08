@@ -105,7 +105,7 @@ export function toAuditRows(
  * below: a missing-key placeholder or the bare code would be worse than the row simply keeping its
  * action and actor.
  *
- * Five of the six `DETAIL_KEYS` carry a `count` (every one but `title`) — routed through
+ * Six of the seven `DETAIL_KEYS` carry a `count` (every one but `title`) — routed through
  * `pluralKey` here rather than baked into `DETAIL_KEYS` itself, because the lookup table stays a
  * plain kind-to-key map and the `.one`/`.other` suffixing is this function's business alone, same
  * as everywhere else in the app that calls `pluralKey`.

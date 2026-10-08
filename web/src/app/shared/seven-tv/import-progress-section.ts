@@ -27,6 +27,9 @@ import {
   importTargetCheckBlockedKey,
   renamedNotActiveNotice,
   resyncNoticeKey,
+  tagPlacementDiscardedStaleNoticeKey,
+  tagPlacementReportNoticeKey,
+  tagPlacementReportReasonKey,
 } from './dock-outcome-announcer';
 import { RunProgressPanel } from './run-progress-panel';
 
@@ -216,6 +219,39 @@ import { RunProgressPanel } from './run-progress-panel';
                   {{ 'import.removalSyncSucceeded' | transloco }}
                 </span>
               }
+              <!-- A tag play-in's placement report (#201 T-C, spec 7.1/8) — only on a tag run, whose
+                   state is never idle once settled. The text lines are aria-hidden: the page's
+                   DockOutcomeAnnouncer speaks them. The retry button is not — it must stay
+                   reachable — and borrows the state line as its description, since its label is
+                   the same constant "report again" as the other two reports'. -->
+              @if (tagReportKey(); as key) {
+                <span id="import-tag-report-state" aria-hidden="true" class="text-xs text-fg-muted">
+                  {{ key | transloco }}
+                </span>
+                @if (tagReportReasonKey(); as reasonKey) {
+                  <span aria-hidden="true" class="text-xs text-fg-muted">
+                    {{ reasonKey | transloco }}
+                  </span>
+                }
+                @if (tagRetryOffered()) {
+                  <button
+                    type="button"
+                    appButton="outline"
+                    aria-describedby="import-tag-report-state"
+                    (click)="importService.retryTagPlacementReport()"
+                  >
+                    {{ 'sevenTvRun.tagReport.retry' | transloco }}
+                  </button>
+                }
+                @if (tagDiscardedStaleKey(); as discardedKey) {
+                  <span aria-hidden="true" class="text-xs text-fg-muted">
+                    {{
+                      discardedKey
+                        | transloco: { count: importService.tagPlacementDiscardedStaleCount() }
+                    }}
+                  </span>
+                }
+              }
               <!-- A tracked *non*-active target never gets the resync notice (onRunComplete skips
                    the resync itself, finding 3, Live-Verifikation K2 2026-09-21) — one of the next
                    two notices takes its place, naming what actually happened instead of claiming a
@@ -337,6 +373,32 @@ export class ImportProgressSection {
    *  the retry button, same rule as `RunProgressPanel.syncRetryOffered`. */
   protected readonly removalReportIsChannelMismatch = computed(() =>
     isChannelMismatch(this.importService.removalReportReason()),
+  );
+
+  /** The placement report's line (#201 T-C) — same key the page's DockOutcomeAnnouncer speaks for
+   *  the end states. */
+  protected readonly tagReportKey = computed(() =>
+    tagPlacementReportNoticeKey(this.importService.tagPlacementReport()),
+  );
+
+  protected readonly tagReportReasonKey = computed(() =>
+    tagPlacementReportReasonKey(
+      this.importService.tagPlacementReport(),
+      this.importService.tagPlacementReportReason(),
+    ),
+  );
+
+  /** A retry only for a report that ended without success — the service's own guard repeats it. */
+  protected readonly tagRetryOffered = computed(() => {
+    const state = this.importService.tagPlacementReport();
+    return state === 'failed' || state === 'partial';
+  });
+
+  protected readonly tagDiscardedStaleKey = computed(() =>
+    tagPlacementDiscardedStaleNoticeKey(
+      this.importService.tagPlacementReport(),
+      this.importService.tagPlacementDiscardedStaleCount(),
+    ),
   );
 
   /** Same key the page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */

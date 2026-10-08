@@ -1469,7 +1469,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
     // the first maxInsertions saves that stage an Emote insert, commits one of those same keys from
     // a second AppDbContext first. The SQL mirrors VoteSessionService.UpsertSetSessionEmotesAsync:
     // an archived row with no archive date, inserted ON CONFLICT DO NOTHING.
-    private sealed class ConcurrentEmoteInsertInterceptor(PostgresFixture fixture, int maxInsertions) : SaveChangesInterceptor
+    internal sealed class ConcurrentEmoteInsertInterceptor(PostgresFixture fixture, int maxInsertions) : SaveChangesInterceptor
     {
         private readonly List<(string Id, string SevenTvEmoteId)> _insertedRows = [];
 

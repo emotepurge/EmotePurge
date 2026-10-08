@@ -13,6 +13,7 @@ import {
   mockTrackedEmoteSetPreview,
   mockLegalAvailability,
   mockMyChannels,
+  mockTags,
   mockUsageChannelSeries,
   mockUsageDaily,
   mockUsageTotals,
@@ -1110,6 +1111,8 @@ test.describe('set view (#200, K4)', () => {
     // The app shell asks for the legal-page availability on every page; unanswered, the dev
     // proxy's 502 lands in the console this test asserts to be clean.
     await mockLegalAvailability(page);
+    // Same for the channel's tag list (#201), which the page asks for once the set status is in.
+    await mockTags(page, CHANNEL);
     await mockSetViewChannel(page);
     await mockUsageTotalsBySet(page, CHANNEL, {
       [ACTIVE_SET_ID]: [],

@@ -105,6 +105,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// </summary>
     public ISevenTvLeaderboardService Leaderboard { get; } = Substitute.For<ISevenTvLeaderboardService>();
 
+    /// <summary>Substituted like <see cref="Emotes"/>: the handlers take it before any filter runs.</summary>
+    public IEmoteTagService EmoteTags { get; } = Substitute.For<IEmoteTagService>();
+
     /// <summary>
     /// Substituted so the sync-imported contract tests can reach the handler at all: every other
     /// case in that group is answered by a filter or a body check short-circuiting before it, but
@@ -261,6 +264,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => Leaderboard);
             services.AddScoped(_ => UsageStats);
             services.AddScoped(_ => Emotes);
+            services.AddScoped(_ => EmoteTags);
             services.AddScoped(_ => EmoteSetList);
             services.AddScoped(_ => EmoteSetObservations);
             services.AddScoped(_ => EmoteSetOwnership);

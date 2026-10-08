@@ -70,6 +70,8 @@ import { TabLink } from '../../shared/ui/tab-link';
       <nav class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 border-b border-border">
         @if (canViewUsageStats()) {
           <app-tab-link link="usage-stats" [label]="'channelWorkspace.tabs.usage' | transloco" />
+          <!-- Same visibility as the usage tab: the tags page has the same route guard (spec 9.3). -->
+          <app-tab-link link="tags" [label]="'channelWorkspace.tabs.tags' | transloco" />
         }
         <app-tab-link link="vote-sessions" [label]="'channelWorkspace.tabs.voting' | transloco" />
         <!-- canManage, not canViewUsageStats: the rows name which moderator did what, and the

@@ -26,7 +26,12 @@ import {
   mockLegalAvailability,
   mockLegalDocument,
   mockSetWarning,
+  mockSevenTvGql,
+  mockSyncDeletedInSet,
+  mockTagEntries,
+  mockTags,
   mockTurnstile,
+  sevenTvGqlRequestKind,
   failLive,
   mockLiveQuota,
   mockUsageChannelSeries,
@@ -66,6 +71,10 @@ const VIEWPORTS = [
   // 480 is only a single sample of that whole sub-768px range, though: an overflow that starts
   // somewhere between 480 and 768 still passes here unnoticed. This viewport narrows the blind
   // spot, it does not close it.
+  // A mouse at 360px: no phone produces it, but a squeezed desktop window does, and the fine-pointer
+  // write surfaces (dock, assign dialog) never mount on `mobile`. Runs only the scenarios that opt
+  // in with `includeMouseAt360` — not the whole matrix.
+  { name: 'mobile-mouse', width: 360, height: 800, pointerCoarse: false },
   { name: 'narrow', width: 480, height: 800, pointerCoarse: false },
   { name: 'tablet', width: 768, height: 1024, pointerCoarse: false },
   // Two desktop cases, because one cannot cover both ends of the lg range.
@@ -367,6 +376,122 @@ interface Scenario {
    * mobile state to begin with, only an artifact of the harness's former pointer bug.
    */
   requiresFinePointer?: boolean;
+  /** Also runs at the `mobile-mouse` viewport (360 px, fine pointer). */
+  includeMouseAt360?: boolean;
+  /**
+   * Fails the case on any horizontal overflow or any interactive element past the right edge.
+   * `horizontalOverflowPx` alone is blind to `position: fixed` surfaces (the action dock), whose
+   * overhang never widens the document — `beyondRightEdge` sees them.
+   */
+  strictRightEdge?: boolean;
+}
+
+const LONG_TAG = 'Fuer-die-Halloween-Wochen-Auswahl-2026-xx';
+
+const TAG_LIST = [
+  { id: 7, name: LONG_TAG, entryCount: 24, inSetCount: 20 },
+  { id: 8, name: 'Leer', entryCount: 0, inSetCount: 0 },
+  { id: 9, name: 'Favoriten', entryCount: 12, inSetCount: 12 },
+];
+
+/** Entries of one tag: every sixth has left the set, the first carries a 40-character alias. */
+function tagEntries(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    sevenTvEmoteId: `7tv-${i + 1}`,
+    alias: i === 0 ? 'xXSuperMegaLangerAliasMitVierzigZeichen' : `Emote${i + 1}PogU`,
+    inSet: i % 6 === 5 ? false : true,
+    currentName: i % 6 === 5 ? `Renamed${i + 1}` : null,
+  }));
+}
+
+/**
+ * The tag routes with T-C's fields (#201 T-C): tag 7 is played in to the active set `set-1` with
+ * 18 valid placements (every in-set entry among the first 20), its entries carry the placement
+ * fields, and the registration/report routes of a clear-out answer — plus a 7TV behind
+ * `7tv.io/v4/gql` that reads the set and accepts every REMOVE, so a clear-out can run to its end
+ * and leave its settled run in the tags page's dock. Registered instead of `mockTags`/
+ * `mockTagEntries` (whose answers predate the T-C fields).
+ */
+async function mockTagRuns(page: Page): Promise<void> {
+  const entries = tagEntries(24).map((entry, i) => {
+    const placed = entry.inSet && i < 20;
+    return {
+      ...entry,
+      imageUrl: `https://cdn.7tv.app/emote/${entry.sevenTvEmoteId}/2x.webp`,
+      placedByThisTag: placed,
+      placedAtUtc: placed ? '2026-10-01T18:00:00Z' : null,
+      placementOperationId: placed ? `rev-${i + 1}` : null,
+      // One entry another active tag still needs: the dialog's "not proposed" block.
+      heldByActiveTags: i === 1 ? [{ id: 9, name: 'Favoriten' }] : [],
+      placedByOtherTags: [],
+    };
+  });
+  const tags = TAG_LIST.map((tag) =>
+    tag.id === 7
+      ? { ...tag, placedCount: 18, active: true, activatedAtUtc: '2026-10-01T18:00:00Z' }
+      : { ...tag, placedCount: 0, active: false, activatedAtUtc: null },
+  );
+  await page.route(
+    (url) => url.pathname === '/api/channels/sensitron/tags',
+    (route) => json(route, 200, { emoteSetId: 'set-1', isActiveSet: true, tags }),
+  );
+  await page.route(
+    (url) => /^\/api\/channels\/sensitron\/tags\/\d+\/entries$/.test(url.pathname),
+    (route) => {
+      const id = Number(new URL(route.request().url()).pathname.split('/')[5]);
+      return json(route, 200, {
+        emoteSetId: 'set-1',
+        isActiveSet: true,
+        activationOperationId: id === 7 ? 'act-7' : null,
+        entries: id === 7 ? entries : [],
+      });
+    },
+  );
+  await page.route(
+    (url) => url.pathname === '/api/channels/sensitron/tags/7/operations',
+    (route) => json(route, 200, { registeredAtUtc: '2026-10-05T10:00:00Z' }),
+  );
+  await page.route(
+    (url) => url.pathname === '/api/channels/sensitron/tags/7/placements/removed',
+    (route) =>
+      json(route, 200, {
+        replayed: false,
+        deletedCount: 17,
+        transferredCount: 1,
+        droppedCount: 0,
+        sweptCount: 0,
+        deactivated: true,
+      }),
+  );
+  await mockEmoteSetTargets(page, [
+    {
+      twitchChannelId: 'tw-sensitron',
+      twitchLogin: 'sensitron',
+      isOwnAccount: true,
+      trackedChannelName: 'sensitron',
+      activeEmoteSetId: 'set-1',
+      sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+    },
+  ]);
+  await mockSyncDeletedInSet(page, 'set-1');
+  const live = entries.filter((entry) => entry.inSet);
+  await mockSevenTvGql(page, (request) => {
+    const kind = sevenTvGqlRequestKind(request);
+    if (kind === 'removeEmote') {
+      return {
+        data: { emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } } },
+      };
+    }
+    const items = live.map((entry) => ({
+      alias: entry.alias,
+      emote: { id: entry.sevenTvEmoteId, defaultName: entry.alias },
+    }));
+    return {
+      data: {
+        emoteSets: { emoteSet: { emotes: { totalCount: items.length, pageCount: 1, items } } },
+      },
+    };
+  });
 }
 
 const SCENARIOS: Scenario[] = [
@@ -706,9 +831,17 @@ const SCENARIOS: Scenario[] = [
         {
           1: Array.from({ length: 25 }, (_, i) => ({
             id: 100 - i,
-            action: ['channel.join', 'channel.leave', 'channel.purge', 'voteSession.create'][i % 4],
+            action: [
+              'channel.join',
+              'channel.leave',
+              'channel.purge',
+              'voteSession.create',
+              'tag.create',
+              'tag.rename',
+              'tag.delete',
+            ][i % 7],
             channelName: i % 3 === 0 ? 'superlangertwitchchannelx' : 'sensitron',
-            targetType: i % 4 === 3 ? 'VoteSession' : 'Channel',
+            targetType: i % 7 === 3 ? 'VoteSession' : i % 7 >= 4 ? 'emoteTag' : 'Channel',
             targetId: String(i + 1),
           })),
         },
@@ -1276,14 +1409,21 @@ const SCENARIOS: Scenario[] = [
       await mockChannelAuditLog(page, 'sensitron', {
         1: Array.from({ length: 25 }, (_, i) => ({
           id: 100 - i,
-          action: ['channel.join', 'channel.resync', 'voteSession.delete', 'emotes.syncDeleted'][
-            i % 4
-          ],
+          // The three tag actions carry id-only details the server projects to no detail line.
+          action: [
+            'channel.join',
+            'channel.resync',
+            'voteSession.delete',
+            'emotes.syncDeleted',
+            'tag.create',
+            'tag.rename',
+            'tag.delete',
+          ][i % 7],
           actorLogin: i % 2 === 0 ? 'sensitron' : 'averylongmoderatorname',
           detail:
-            i % 4 === 2
+            i % 7 === 2
               ? { kind: 'title', count: null, text: 'Sommer-Purge 2026' }
-              : i % 4 === 3
+              : i % 7 === 3
                 ? { kind: 'emoteCount', count: 128, text: null }
                 : null,
         })),
@@ -1398,6 +1538,195 @@ const SCENARIOS: Scenario[] = [
       await authedShell(page);
       await channelWorkspace(page);
       await mockVoteResults(page, 5, false, { voterCount: 3 });
+    },
+  },
+  {
+    // The tags page (#201, spec 9.4): list and detail side by side from lg, drilldown below. Long
+    // names on both sides (a 40-character tag, a 40-character alias), entries that left the set
+    // (void plate + dimmed sprite + "today: ..." line), and the deep link `?tag=` that opens the
+    // detail on narrow viewports as well.
+    slug: 'tags-page-list-detail',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(24));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+  },
+  {
+    // The tags page with one entry marked (#201, spec 7.0a/E17): the small dock in the flow carries
+    // "Remove from '...' (n)" with a 40-character tag name -- appButton is nowrap, so the whole
+    // label used to push the page past a 360px viewport under a fine pointer. Fine pointer only
+    // (the dock's write buttons do not exist on a coarse one).
+    slug: 'tags-page-marked',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(24));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      await page
+        .getByRole('button', { name: /Emote2PogU/ })
+        .first()
+        .click();
+      await page.getByRole('button', { name: /^(Auswahl aufheben|Clear selection)/ }).waitFor();
+    },
+  },
+  {
+    // The list alone on the drilldown viewports (no `?tag=`): every tag row, long name truncating.
+    slug: 'tags-page-list',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(24));
+    },
+  },
+  {
+    // More than VIRTUALIZE_ABOVE (200) entries: the window-scrolled virtual viewport path.
+    slug: 'tags-page-virtualized',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', [{ ...TAG_LIST[0], entryCount: 250, inSetCount: 230 }]);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(250));
+    },
+  },
+  {
+    // A tag without entries: the detail's own empty state beside a populated list.
+    slug: 'tags-page-tag-empty',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags?tag=8',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 8, []);
+    },
+  },
+  {
+    // No tag at all: the page's empty state with its way to the usage grid.
+    slug: 'tags-page-empty',
+    strictRightEdge: true,
+    path: '/channels/sensitron/tags',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockTags(page, 'sensitron', []);
+    },
+  },
+  {
+    // The filter row with the tag select chosen (#201, spec 9.2): the select alone (no summary, no run
+    // buttons) and, with one emote marked, the dock's
+    // "Remove from '...' (n)" carrying a 40-character tag name — the longest label the dock gets.
+    // Fine pointer only: the dock's write buttons do not exist on a coarse one.
+    slug: 'usage-filter-with-tag',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockTags(page, 'sensitron', TAG_LIST);
+      await mockTagEntries(page, 'sensitron', 7, tagEntries(3));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      // The select's name is "Tag" in both locales.
+      await page.getByRole('combobox', { name: /^Tag$/ }).selectOption('7');
+      await page.getByRole('button', { name: /^Emote1PogU ·/ }).click();
+      await page.locator('.app-dock').waitFor();
+    },
+  },
+  {
+    // The assign dialog (#201, spec 7.0) over two marked emotes: the tag checklist with a
+    // 40-character name, the create row and the confirm button. Fine pointer only (the write path).
+    slug: 'tag-assign-dialog',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockTags(page, 'sensitron', TAG_LIST);
+    },
+    afterLoad: async (page) => {
+      await page.getByRole('button', { name: /^Emote1PogU ·/ }).click();
+      await page.getByRole('button', { name: /^Emote3PogU ·/ }).click();
+      await page.getByRole('button', { name: /^(Tag zuweisen|Assign tag)/ }).click();
+      await page.getByRole('dialog').waitFor();
+    },
+  },
+  {
+    // The tags page with a played-in tag (#201 T-C, spec 9.4): state line, the
+    // list's "n über den Tag ins Set geholt", the run buttons in the detail head — and, after a
+    // clear-out has run to its end against the mocked 7TV, the page-level run dock with the
+    // delete section's settled run, tag report line, restore hint and buttons (the fixed dock has
+    // to pass the right-edge gate at 360 px under a mouse). Fine pointer only: no runs on a coarse
+    // one.
+    slug: 'tags-page-active-with-dock',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { tagRunsEnabled: true });
+      await mockTagRuns(page);
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      await page
+        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .click();
+      const dialog = page.getByRole('dialog');
+      await dialog
+        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .click();
+      await page.locator('.app-dock').waitFor();
+      await page
+        .locator('.app-dock')
+        .getByRole('button', { name: /(wiederherstellen|restore)/i })
+        .waitFor();
+    },
+  },
+  {
+    // The clear-out preview (#201 T-C, spec 7.2/6) over a played-in tag: the "proposed" block with
+    // placement dates, the "not proposed" block with a held-by reason and a 40-character alias,
+    // the summary and the set line. Opened against the mocked 7TV set read. Includes the 480 px
+    // fine-pointer case (`narrow`) the Task 11 report left unverified.
+    slug: 'tag-removal-dialog',
+    includeMouseAt360: true,
+    strictRightEdge: true,
+    requiresFinePointer: true,
+    path: '/channels/sensitron/tags?tag=7',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { tagRunsEnabled: true });
+      await mockTagRuns(page);
+    },
+    afterLoad: async (page) => {
+      await page
+        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .click();
+      await page.getByRole('dialog').waitFor();
     },
   },
 ];
@@ -1586,6 +1915,10 @@ for (const theme of THEMES) {
           locale === 'en' && (vp.name === 'tablet' || vp.name === 'narrow'),
           'en only in mobile+desktop-narrow+desktop',
         );
+        test.skip(
+          vp.name === 'mobile-mouse' && !sc.includeMouseAt360,
+          'the 360 px mouse viewport only runs the scenarios that opt in',
+        );
         test.skip(theme === 'light' && vp.name !== 'desktop', 'light only at the widest viewport');
         test.skip(
           Boolean(sc.requiresFinePointer) && vp.pointerCoarse,
@@ -1684,6 +2017,13 @@ for (const theme of THEMES) {
         );
         const metrics = await collectMetrics(page);
         const contrastViolations = await collectContrastViolations(page);
+        if (sc.strictRightEdge) {
+          expect(metrics.horizontalOverflowPx, 'horizontal overflow').toBe(0);
+          expect(
+            metrics.beyondRightEdge.map((t) => `${t.tag} "${t.text}" ends at ${t.x + t.w}`),
+            'interactive elements past the right edge (fixed surfaces included)',
+          ).toEqual([]);
+        }
         fs.writeFileSync(
           path.join(OUT, 'metrics', `${base}.json`),
           JSON.stringify(

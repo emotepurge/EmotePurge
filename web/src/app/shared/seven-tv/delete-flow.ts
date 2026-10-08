@@ -33,9 +33,10 @@ import type { DeletableEmote } from './mass-delete-panel';
  * `startLocked` guards, the token prompt — because they hang off its own button, and calls
  * `startDeleteFlow` once those have passed.
  *
- * `resolveDeleteTarget` and `readLiveSetAliases` are exported on their own, and the chain below uses
- * those very functions rather than a second copy: the tag page's clear-out run (#201 T-C) needs the
- * same two checks in front of a confirmation dialog of its **own**.
+ * `resolveDeleteTarget`, `readLiveSetAliases`, `confirmTimeRefusal` and `toDeleteQueueEmotes` are
+ * exported on their own, and the chain below uses those very functions rather than a second copy:
+ * the tag page's clear-out run (#201 T-C) needs the same checks in front of a confirmation dialog
+ * of its **own**, and the same confirm-time refusal and queue rows behind it.
  */
 
 /** Maps the shared pre-check's block reason (spec 6.2, `TargetCheckBlockReason`) for the delete
@@ -541,33 +542,11 @@ function startDelete(
     });
     return;
   }
-  // Unconditional, on both paths (K5 fix round 2): the live alias read is the *longer* window in
-  // which another run can claim the arbiter, not the only one — the confirmation itself is a
-  // modal the user can leave open for minutes, and a run started from anywhere else on the page
-  // lands just as well behind it. Qualifying this on `liveAliases !== null` left the no-read
-  // branch relying on `deleteService.startDelete`'s own refusal, which is silent, so a confirmed
-  // delete in a non-active view simply evaporated. This abort is visible, and — since #256 T4 —
-  // so is the restore paths' identical re-check in the section: the competing run can be any
-  // 7TV-writing kind, running or settling, started from anywhere on the page, and the panel's own
-  // dock would otherwise show nothing at all to explain why a confirmed delete (or restore) just
-  // vanished.
-  const claim = deps.arbiter.activeClaim();
-  if (claim !== null) {
-    request.notice.set(
-      refusedStartNotice(deps.translocoService, claim, 'massDelete.nothingDeleted'),
-    );
-    return;
-  }
-  // The third way `deleteService.startDelete` can refuse without a word — the other two, a run
-  // already going and an empty list, are caught above. The engine needs the stored 7TV token, and
-  // any 401 from 7TV behind the open confirmation clears it (`SevenTvTokenService.clearToken`);
-  // the dock claim of the commits above would then hold an empty dock over a delete that simply
-  // never happened.
-  if (!deps.tokenService.hasToken()) {
-    request.notice.set({
-      leadKey: 'massDelete.nothingDeleted',
-      reasonKey: 'massDelete.tokenGoneDuringConfirm',
-    });
+  // The arbiter and token checks are `confirmTimeRefusal`, exported so the tag removal flow
+  // (#201 T-C) re-evaluates this very chain instead of a copy of it.
+  const refusal = confirmTimeRefusal(deps);
+  if (refusal !== undefined) {
+    request.notice.set(refusal);
     return;
   }
   const liveEntries = liveAliases?.entries;
@@ -603,7 +582,66 @@ function startDelete(
       return;
     }
   }
-  const emotes: DeleteQueueEmote[] = confirmedSelection.map((emote) => {
+  const emotes = toDeleteQueueEmotes(confirmedSelection, liveEntries);
+  // The page's channel is the expected hit only when the run's set is its active one (spec 4.6
+  // point 21); a non-active set's report is paper only and expects no channel.
+  const expectedChannelName = frozenSetId === request.activeSetId() ? frozenChannelName : null;
+  deps.deleteService.startDelete(
+    frozenSetId,
+    frozenChannelName,
+    emotes,
+    expectedChannelName,
+    frozenOwnerTwitchId,
+  );
+}
+
+/**
+ * The confirm-time refusal every confirmed delete shares: why a confirmed start must not go ahead
+ * because of the arbiter or the token, or `undefined` when neither stops it. The tag removal flow
+ * (#201 T-C) calls it with the same deps, so its confirmed start refuses exactly like the usage
+ * page's — the caller shows the notice and releases its own dock claim. Deliberately does **not**
+ * call `SevenTvRunArbiter.noteRefusedStart()` (see {@link refusedStartNotice}).
+ *
+ * Unconditional on every path (K5 fix round 2): the confirmation is a modal the user can leave open
+ * for minutes, and a run started from anywhere else on the page lands just as well behind it. The
+ * abort is visible, unlike `deleteService.startDelete`'s own refusal, which is silent — a confirmed
+ * delete would otherwise simply evaporate. The token is the third way `startDelete` can refuse
+ * without a word: the engine needs the stored 7TV token, and any 401 from 7TV behind the open
+ * confirmation clears it (`SevenTvTokenService.clearToken`); the caller's dock claim would then
+ * hold an empty dock over a delete that simply never happened.
+ *
+ * `requireToken: false` skips only the token half, for a confirmation that writes nothing to 7TV:
+ * the tag clear-out with nothing ticked (#201 T-C) sends just its own report, which needs no 7TV
+ * token. The arbiter half applies regardless. Every delete caller leaves it at its default.
+ */
+export function confirmTimeRefusal(
+  deps: Pick<DeleteFlowDeps, 'arbiter' | 'tokenService' | 'translocoService'>,
+  options: { requireToken?: boolean } = {},
+): DeleteAbortNotice | undefined {
+  const claim = deps.arbiter.activeClaim();
+  if (claim !== null) {
+    return refusedStartNotice(deps.translocoService, claim, 'massDelete.nothingDeleted');
+  }
+  if ((options.requireToken ?? true) && !deps.tokenService.hasToken()) {
+    return {
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.tokenGoneDuringConfirm',
+    };
+  }
+  return undefined;
+}
+
+/**
+ * The delete queue rows for a confirmed selection, with the aliases the live read knows (spec
+ * #200, §37/§38) — `liveEntries` is `undefined` when no live read was made, and then every row
+ * keeps what the host said. Shared by the usage page's delete chain and the tag removal flow
+ * (#201 T-C).
+ */
+export function toDeleteQueueEmotes(
+  confirmedSelection: readonly DeletableEmote[],
+  liveEntries: SevenTvSetEntries | undefined,
+): DeleteQueueEmote[] {
+  return confirmedSelection.map((emote) => {
     // The live read knows every entry the one `REMOVE` will take; a cell it does not know keeps
     // what the host said.
     const live = liveEntries?.aliasesById.get(emote.sevenTvEmoteId);
@@ -627,16 +665,6 @@ function startDelete(
           : emote.aliases,
     };
   });
-  // The page's channel is the expected hit only when the run's set is its active one (spec 4.6
-  // point 21); a non-active set's report is paper only and expects no channel.
-  const expectedChannelName = frozenSetId === request.activeSetId() ? frozenChannelName : null;
-  deps.deleteService.startDelete(
-    frozenSetId,
-    frozenChannelName,
-    emotes,
-    expectedChannelName,
-    frozenOwnerTwitchId,
-  );
 }
 
 /**

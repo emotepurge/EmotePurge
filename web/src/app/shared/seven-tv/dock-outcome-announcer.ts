@@ -9,7 +9,11 @@ import {
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
-import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
+import {
+  SyncReportReason,
+  SyncReportState,
+  TargetCheckBlockReason,
+} from '../../core/seven-tv/sync-report-outcome';
 import { UNDO_SKIP_REASONS, UndoSkipReason, UndoSkippedRow } from '../../core/seven-tv/undo-plan';
 
 /** Translation key for the shared pre-check's block reason on a replace-carrying start (spec 4.5
@@ -44,6 +48,45 @@ export function resyncNoticeKey(
   family: 'import' | 'restore' | 'undo',
 ): string | null {
   return state === 'idle' ? null : `${family}.resync.${state}`;
+}
+
+/** Translation key for the state of a tag play-in's placement report (#201 T-C, spec 7.1/8), or
+ *  `null` while there is none (`'idle'`: not a tag run, or not settled yet) — shared by this
+ *  announcer and the dock line in `ImportProgressSection`, like {@link resyncNoticeKey}. The report
+ *  never ends `'partial'`; should it, it reads as failed. */
+export function tagPlacementReportNoticeKey(state: SyncReportState): string | null {
+  switch (state) {
+    case 'idle':
+      return null;
+    case 'pending':
+      return 'sevenTvRun.tagReport.pending';
+    case 'succeeded':
+      return 'sevenTvRun.tagReport.succeeded';
+    case 'partial':
+    case 'failed':
+      return 'sevenTvRun.tagReport.failed';
+  }
+}
+
+/** The reason line under a failed placement report, `null` for any other state. */
+export function tagPlacementReportReasonKey(
+  state: SyncReportState,
+  reason: SyncReportReason | null,
+): string | null {
+  return (state === 'failed' || state === 'partial') && reason !== null
+    ? `syncReportReason.${reason}`
+    : null;
+}
+
+/** Translation key for "k emotes were removed meanwhile and not recorded" after a successful
+ *  placement report, or `null` while there is nothing to say. */
+export function tagPlacementDiscardedStaleNoticeKey(
+  state: SyncReportState,
+  count: number,
+): string | null {
+  return state === 'succeeded' && count > 0
+    ? pluralKey(count, 'sevenTvRun.tagReport.discardedStale')
+    : null;
 }
 
 /** How long a confirmed run's last live read has to be out before the announcer
@@ -277,6 +320,17 @@ export function markedCountNoticeKey(count: number): string {
     @if (deleteStartCheckAudible()) {
       <p>{{ 'massDelete.startChecking' | transloco }}</p>
     }
+    <!-- A tag removal's report (#201 T-C), the delete run's own outcome — outside the withImport()
+         gate like the wait above, since the delete section is mounted on every page. Its end state
+         only; the dock also shows the pending line, which would only be noise here. The reason
+         rides in the same sentence (one text node). -->
+    @if (deleteTagReportKey(); as key) {
+      @if (deleteTagReportReasonKey(); as reasonKey) {
+        <p>{{ key | transloco }} {{ reasonKey | transloco }}</p>
+      } @else {
+        <p>{{ key | transloco }}</p>
+      }
+    }
     <!-- #280: a confirmed restore whose last live check is still out — the confirmation has
          closed and nothing in the dock says so yet; the buttons that would start another restore
          are disabled meanwhile, and this is what says why. First in the restore group: it comes
@@ -338,6 +392,21 @@ export function markedCountNoticeKey(count: number): string {
         <p>{{ 'import.summary.renamedNotActive' | transloco: notActive }}</p>
       } @else if (importResyncKey(); as key) {
         <p>{{ key | transloco }}</p>
+      }
+      <!-- A tag play-in's placement report (#201 T-C), after the import's own outcomes as in the
+           dock. Its end state only — the dock also shows the pending line, which would only be
+           noise here. The reason rides in the same sentence (one text node). -->
+      @if (importTagReportKey(); as key) {
+        @if (importTagReportReasonKey(); as reasonKey) {
+          <p>{{ key | transloco }} {{ reasonKey | transloco }}</p>
+        } @else {
+          <p>{{ key | transloco }}</p>
+        }
+      }
+      @if (importTagDiscardedStaleKey(); as key) {
+        <p>
+          {{ key | transloco: { count: importService.tagPlacementDiscardedStaleCount() } }}
+        </p>
       }
       <!-- The undo (#254) after the import, in the dock's own order: its skipped notice, then its
            resync acknowledgement — both aria-hidden in UndoProgressSection. Before them the wait
@@ -410,6 +479,32 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importRenamedNotActive = computed(() =>
     renamedNotActiveNotice(this.importService.run()),
+  );
+  protected readonly deleteTagReportKey = computed(() => {
+    const state = this.deleteService.tagRemovalReport();
+    return state === 'pending' ? null : tagPlacementReportNoticeKey(state);
+  });
+  protected readonly deleteTagReportReasonKey = computed(() =>
+    tagPlacementReportReasonKey(
+      this.deleteService.tagRemovalReport(),
+      this.deleteService.tagRemovalReportReason(),
+    ),
+  );
+  protected readonly importTagReportKey = computed(() => {
+    const state = this.importService.tagPlacementReport();
+    return state === 'pending' ? null : tagPlacementReportNoticeKey(state);
+  });
+  protected readonly importTagReportReasonKey = computed(() =>
+    tagPlacementReportReasonKey(
+      this.importService.tagPlacementReport(),
+      this.importService.tagPlacementReportReason(),
+    ),
+  );
+  protected readonly importTagDiscardedStaleKey = computed(() =>
+    tagPlacementDiscardedStaleNoticeKey(
+      this.importService.tagPlacementReport(),
+      this.importService.tagPlacementDiscardedStaleCount(),
+    ),
   );
   protected readonly undoSkippedNotice = computed(
     () =>

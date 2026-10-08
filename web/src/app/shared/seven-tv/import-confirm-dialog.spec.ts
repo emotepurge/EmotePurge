@@ -60,6 +60,7 @@ const DE_TRANSLATIONS = {
         one: "{{ count }} Emote in Set ‚{{ setName }}' kopieren?",
         other: "{{ count }} Emotes in Set ‚{{ setName }}' kopieren?",
       },
+      titleNothing: 'Nichts zu kopieren',
       titleAlign: {
         one: '{{ count }} Namen im Zielset angleichen?',
         other: '{{ count }} Namen im Zielset angleichen?',
@@ -72,6 +73,11 @@ const DE_TRANSLATIONS = {
       originFile: 'Aus Datei {{ fileName }}',
       originFileDetails: 'Export aus {{ channel }}, {{ date }}',
       originLeaderboard: 'Aus 7TVs Bestenliste: {{ sort }}',
+      originTag: 'Aus Tag {{ tag }}',
+      originTagSkipped: {
+        one: '{{ count }} ist schon im Set',
+        other: '{{ count }} sind schon im Set',
+      },
       dateUnknown: 'Datum unbekannt',
       channelUnknown: 'Kanal unbekannt',
       target: 'Ziel: {{ channel }} · Set {{ setName }}',
@@ -357,6 +363,8 @@ interface RenderOptions {
    *  dedicated coverage for `data.targetOwnerTwitchId` reaching the planned file's meta sets this
    *  explicitly. */
   targetOwnerTwitchId?: string | null;
+  /** Defaults to `false` — only a tag play-in sets it (#201 T-C). */
+  emptyConfirmAllowed?: boolean;
 }
 
 interface Harness {
@@ -455,6 +463,7 @@ describe('ImportConfirmDialog', () => {
       runBlocked,
       httpClient: TestBed.inject(HttpClient),
       targetOwnerTwitchId: options.targetOwnerTwitchId ?? null,
+      emptyConfirmAllowed: options.emptyConfirmAllowed ?? false,
     };
 
     const fixture = TestBed.createComponent(ImportConfirmDialog);
@@ -638,6 +647,100 @@ describe('ImportConfirmDialog', () => {
 
       const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
       expect(banner).toContain('Das einzige Emote ist bereits im Zielset.');
+    });
+
+    // #201 T-C, spec 7.1/6: a tag play-in whose own target load finds every row already there may
+    // still be confirmed — the confirmation is what marks the tag as played in.
+    describe('a tag play-in (emptyConfirmAllowed)', () => {
+      const allPresentTarget = readyTarget({
+        emotes: [
+          {
+            sevenTvEmoteId: 'existing-1',
+            name: 'PogU',
+            imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+          },
+          {
+            sevenTvEmoteId: 'existing-2',
+            name: 'Kappa',
+            imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+          },
+        ],
+      });
+
+      it('keeps the button active and closes with nothingToAdd when every row is already in the set', () => {
+        const dialog = render({
+          source: channelSource([row('existing-1', 'PogU'), row('existing-2', 'Kappa')]),
+          target: allPresentTarget,
+          emptyConfirmAllowed: true,
+        });
+
+        const execute = dialog.button(EXECUTE);
+        expect(execute.disabled).toBe(false);
+        expect(execute.getAttribute('aria-describedby')).toBeNull();
+        // The banner still says why there is nothing to copy.
+        expect(dialog.element('import-confirm-nothing-to-add')?.textContent).toContain(
+          'Alle 2 Emotes sind bereits im Zielset.',
+        );
+        // The empty case is named in the title, and the fact is said once — not also as the
+        // "skipped" line above the banner.
+        expect(dialog.title()).toBe('Nichts zu kopieren');
+        expect(dialog.element('import-confirm-nothing-to-add')?.textContent).toContain(
+          'Alle 2 Emotes sind bereits im Zielset.',
+        );
+        expect(dialog.text()).not.toContain('werden übersprungen');
+
+        execute.click();
+
+        expect(closed).toEqual([
+          { targetSetId: 'set-1', targetSetName: 'set-1', plan: { rows: [] }, nothingToAdd: true },
+        ]);
+      });
+
+      it('stays locked when name collisions, not presence, emptied the plan', () => {
+        const dialog = render({
+          source: channelSource([row('new-1', 'PogU'), row('new-2', 'Kappa')]),
+          target: allPresentTarget,
+          emptyConfirmAllowed: true,
+        });
+
+        const execute = dialog.button(EXECUTE);
+        expect(execute.disabled).toBe(true);
+        execute.click();
+        expect(closed).toEqual([]);
+      });
+
+      it('stays locked while another run holds the start', () => {
+        const dialog = render({
+          source: channelSource([row('existing-1', 'PogU'), row('existing-2', 'Kappa')]),
+          target: allPresentTarget,
+          emptyConfirmAllowed: true,
+          runBlocked: true,
+        });
+
+        const execute = dialog.button(EXECUTE);
+        expect(execute.disabled).toBe(true);
+        execute.click();
+        expect(closed).toEqual([]);
+      });
+    });
+
+    it('does not close on a click when every row is already in the set and the flag is off', () => {
+      const dialog = render({
+        source: channelSource([row('existing-1', 'PogU')]),
+        target: readyTarget({
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
+        }),
+      });
+
+      dialog.button(EXECUTE).click();
+
+      expect(closed).toEqual([]);
     });
 
     it('releases it once the target is ready and something is left to add', () => {
@@ -996,6 +1099,47 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.text()).not.toContain('Aus Datei');
     });
 
+    describe('tag origin', () => {
+      function tagSource(alreadyInSetCount: number): ImportSource {
+        return {
+          origin: {
+            kind: 'tag',
+            tagId: 7,
+            tagName: 'Stronghold',
+            channelName: 'handofblood',
+            alreadyInSetCount,
+          },
+          rows: [row('new-1', 'Kappa')],
+          duplicatesCollapsed: 0,
+          discardedRows: 0,
+        };
+      }
+
+      it('shows the tag line and not the channel line, although the origin carries a channel', () => {
+        const dialog = render({ source: tagSource(0) });
+
+        expect(dialog.text()).toContain('Aus Tag Stronghold');
+        expect(dialog.text()).not.toContain('Aus Kanal');
+        expect(dialog.text()).not.toContain('Aus Datei');
+        expect(dialog.text()).not.toContain('schon im Set');
+      });
+
+      it('adds how many were already in the set, in the singular', () => {
+        const dialog = render({ source: tagSource(1) });
+
+        expect(dialog.text()).toContain('Aus Tag Stronghold');
+        expect(dialog.text()).toContain('1 ist schon im Set');
+      });
+
+      it('says the plural for three', () => {
+        const dialog = render({ source: tagSource(3) });
+
+        expect(dialog.text()).toContain('Aus Tag Stronghold');
+        expect(dialog.text()).toContain('3 sind schon im Set');
+        expect(dialog.text()).not.toContain('Aus Kanal');
+      });
+    });
+
     it('names the other sort for the other leaderboard pick', () => {
       const dialog = render({
         source: leaderboardSource([row('new-1', 'Kappa')], 'TOP_ALL_TIME'),
@@ -1160,8 +1304,8 @@ describe('ImportConfirmDialog', () => {
         }),
       });
 
+      // The "already in the target set" row is absent here: the banner says the same thing.
       const contract = [
-        '1 Emote ist bereits im Zielset',
         '1 doppelte Zeile in der Quelle zusammengefasst.',
         'Das einzige Emote ist bereits im Zielset.',
         'Diese Liste stammt aus diesem Kanal.',

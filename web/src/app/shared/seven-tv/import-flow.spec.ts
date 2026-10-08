@@ -16,7 +16,12 @@ import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportConfirmDialogData, ImportConfirmOutcome } from './import-confirm-dialog';
-import { ImportFlowDeps, recheckTransferPlan, startImportFlow } from './import-flow';
+import {
+  ImportFlowDeps,
+  ImportFlowTagHook,
+  recheckTransferPlan,
+  startImportFlow,
+} from './import-flow';
 import { ImportTargetChoice } from './import-target-dialog';
 import { LIVE_READ_TIMEOUT_MS } from './recovery-file-gate';
 
@@ -1336,6 +1341,269 @@ describe('startImportFlow', () => {
         true,
         0,
       );
+    });
+  });
+
+  // #201 T-C, spec 7.1/6 and E29 rev. 3: a tag play-in pins the set it registered, and the flow
+  // checks it is still the same set right before the run starts.
+  describe('a tag play-in (pinSetId, ImportFlowTagHook)', () => {
+    const KAPPA: ImportRow = { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null };
+    const CONTEXT = { tagId: 7, operationId: 'op-1' };
+
+    /** The tag flow's hook, frozen on the active set `set-active`; `active` is the page's signal. */
+    function tagHook(): {
+      hook: ImportFlowTagHook;
+      active: WritableSignal<string | null>;
+      onSetChanged: ReturnType<typeof vi.fn>;
+      onNothingToImport: ReturnType<typeof vi.fn>;
+      onStarted: ReturnType<typeof vi.fn>;
+    } {
+      const active = signal<string | null>('set-active');
+      const onSetChanged = vi.fn();
+      const onNothingToImport = vi.fn();
+      const onStarted = vi.fn();
+      return {
+        hook: {
+          context: CONTEXT,
+          frozenSetId: 'set-active',
+          activeEmoteSetId: active,
+          onSetChanged,
+          onNothingToImport,
+          onStarted,
+        },
+        active,
+        onSetChanged,
+        onNothingToImport,
+        onStarted,
+      };
+    }
+
+    /** `setup()` with the pinned set's live read answering — the loader's `'trackedSet'` branch. */
+    function setupPinned(): Harness {
+      const harness = setup();
+      harness.loadEmoteSetPreview.mockReturnValue(of(liveTarget({ emoteSetId: 'set-active' })));
+      return harness;
+    }
+
+    /** A pinned choice of the account's own active set — exactly what a tag play-in builds. */
+    function pinnedTarget() {
+      return {
+        kind: 'chosen' as const,
+        choice: choice({ emoteSetId: 'set-active', activeEmoteSetId: 'set-active' }),
+        pinSetId: true as const,
+      };
+    }
+
+    function confirmAdd(dialogOpen: ReturnType<typeof vi.fn>, targetSetId = 'set-active'): void {
+      confirmClosed(dialogOpen).next({
+        targetSetId,
+        targetSetName: 'Active',
+        plan: addPlan([KAPPA]),
+      });
+    }
+
+    it('reads the pinned set live even when it is the active one, never the active-set endpoint', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview, statusSubjects } = setupPinned();
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), tagHook().hook);
+
+      expect(statusSubjects).toHaveLength(0);
+      expect(loadEmoteSetPreview).toHaveBeenCalledExactlyOnceWith('handofblood', 'set-active');
+      expect(confirmData(dialogOpen).target()).toMatchObject({
+        status: 'ready',
+        setId: 'set-active',
+      });
+    });
+
+    it('still treats a pinned active set as the active set, so the run resyncs the channel', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), tagHook().hook);
+
+      expect(confirmData(dialogOpen).targetIsActiveSet).toBe(true);
+      confirmAdd(dialogOpen);
+      expect(startImport.mock.calls[0][0]).toMatchObject({ isActiveSet: true });
+    });
+
+    it('lets only a tag play-in confirm a plan with nothing to add', () => {
+      const withHook = setupPinned();
+      startImportFlow(withHook.deps, source([KAPPA]), pinnedTarget(), tagHook().hook);
+      expect(confirmData(withHook.dialogOpen).emptyConfirmAllowed).toBe(true);
+
+      const withoutHook = setupPinned();
+      startImportFlow(withoutHook.deps, source([KAPPA]), {
+        kind: 'activeSet',
+        channelName: 'target-channel',
+      });
+      expect(confirmData(withoutHook.dialogOpen).emptyConfirmAllowed).toBe(false);
+    });
+
+    it('starts the run on the frozen set with the tag context on its target when nothing changed', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      startImport.mockReturnValue(true);
+      const { hook, onSetChanged, onNothingToImport, onStarted } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmAdd(dialogOpen);
+
+      expect(startImport).toHaveBeenCalledExactlyOnceWith(
+        {
+          setId: 'set-active',
+          channelName: 'handofblood',
+          ownerDisplayName: null,
+          setName: 'Active',
+          isActiveSet: true,
+          targetOwnerTwitchId: null,
+          tag: CONTEXT,
+        },
+        source([KAPPA]).origin,
+        addPlan([KAPPA]),
+        0,
+        true,
+        0,
+      );
+      expect(onSetChanged).not.toHaveBeenCalled();
+      expect(onNothingToImport).not.toHaveBeenCalled();
+      expect(onStarted).toHaveBeenCalledOnce();
+    });
+
+    it('starts nothing and reports the switch when the active set changes during the confirmation', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      const { hook, active, onSetChanged, onNothingToImport } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      active.set('set-other');
+      confirmAdd(dialogOpen);
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onSetChanged).toHaveBeenCalledOnce();
+      expect(onNothingToImport).not.toHaveBeenCalled();
+    });
+
+    it('starts nothing when the page no longer knows the active set', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      const { hook, active, onSetChanged } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      active.set(null);
+      confirmAdd(dialogOpen);
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onSetChanged).toHaveBeenCalledOnce();
+    });
+
+    it('starts nothing when the confirmed target is not the frozen set', () => {
+      const { deps, dialogOpen, startImport } = setupPinned();
+      const { hook, onSetChanged } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmAdd(dialogOpen, 'set-other');
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onSetChanged).toHaveBeenCalledOnce();
+    });
+
+    it('checks the set only after the last read, so a switch during the re-check still stops the run', () => {
+      const { deps, dialogOpen, startImport, httpPost } = setupPinned();
+      const { hook, active, onSetChanged } = tagHook();
+      const read = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValue(read);
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmAdd(dialogOpen);
+      expect(onSetChanged).not.toHaveBeenCalled();
+
+      active.set('set-other');
+      read.next(emoteSetPage());
+      read.complete();
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onSetChanged).toHaveBeenCalledOnce();
+    });
+
+    it('hands over to onNothingToImport when the last re-check finds every row already in the set', () => {
+      const { deps, dialogOpen, startImport, httpPost } = setupPinned();
+      const { hook, onSetChanged, onNothingToImport } = tagHook();
+      // The second live read: another editor added the emote while the dialog was open.
+      httpPost.mockReturnValue(of(emoteSetPage(['7tv-1'])));
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmAdd(dialogOpen);
+
+      expect(startImport).not.toHaveBeenCalled();
+      expect(onNothingToImport).toHaveBeenCalledOnce();
+      expect(onSetChanged).not.toHaveBeenCalled();
+    });
+
+    it('still hands the plan to startImport when held-back replace rows, not presence, emptied it — and calls no onStarted when the engine refuses it', () => {
+      const { deps, dialogOpen, startImport, httpPost } = setupPinned();
+      // The real engine refuses an empty queue (`SevenTvRunEngine.start`).
+      startImport.mockReturnValue(false);
+      const { hook, onNothingToImport, onStarted } = tagHook();
+      const replaceKappa: TransferRow = {
+        action: 'replace',
+        source: KAPPA,
+        alias: 'Kappa',
+        target: {
+          sevenTvEmoteId: 'tgt-k',
+          aliases: ['Kappa'],
+          hasAliaslessEntry: false,
+          defaultName: null,
+        },
+      };
+      // A failed read lets no replace row through: the plan is empty, but nothing is "already there".
+      httpPost.mockReturnValue(throwError(() => new Error('network error')));
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-active',
+        targetSetName: 'Active',
+        plan: { rows: [replaceKappa] },
+      });
+
+      expect(onNothingToImport).not.toHaveBeenCalled();
+      expect(startImport).toHaveBeenCalledOnce();
+      expect(startImport.mock.calls[0][2]).toEqual({ rows: [] });
+      // The drift count reaches the service, whose notice names the held-back rows.
+      expect(startImport.mock.calls[0][5]).toBe(1);
+      // Refused: the play-in did not go ahead, so the marking stays.
+      expect(onStarted).not.toHaveBeenCalled();
+    });
+
+    it('hands a confirmed nothing-to-add straight to onNothingToImport — no token, no re-check, no run', () => {
+      const { deps, dialogOpen, startImport, httpPost, hasToken } = setupPinned();
+      const { hook, onSetChanged, onNothingToImport } = tagHook();
+      hasToken.set(false);
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-active',
+        targetSetName: 'Active',
+        plan: { rows: [] },
+        nothingToAdd: true,
+      });
+
+      expect(onNothingToImport).toHaveBeenCalledOnce();
+      expect(onSetChanged).not.toHaveBeenCalled();
+      expect(httpPost).not.toHaveBeenCalled();
+      expect(startImport).not.toHaveBeenCalled();
+      // Only the confirm dialog ever opened — no token prompt.
+      expect(dialogOpen).toHaveBeenCalledOnce();
+    });
+
+    it('guards a confirmed nothing-to-add against a set switch too', () => {
+      const { deps, dialogOpen } = setupPinned();
+      const { hook, active, onSetChanged, onNothingToImport } = tagHook();
+
+      startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+      active.set('set-other');
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-active',
+        targetSetName: 'Active',
+        plan: { rows: [] },
+        nothingToAdd: true,
+      });
+
+      expect(onSetChanged).toHaveBeenCalledOnce();
+      expect(onNothingToImport).not.toHaveBeenCalled();
     });
   });
 

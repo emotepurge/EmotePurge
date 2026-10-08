@@ -135,6 +135,7 @@ type OriginView =
   | { kind: 'channel'; channel: string }
   | { kind: 'file'; fileName: string }
   | { kind: 'leaderboard'; sortKey: string }
+  | { kind: 'tag'; tag: string }
   | { kind: 'unknown' };
 
 /** The recovery gate as this dialog runs it: no drift type — the undo does not verify on save. */
@@ -196,6 +197,9 @@ const SPRITE_PX = 40;
             }
             @case ('file') {
               {{ 'undo.confirm.origin.file' | transloco: origin() }}
+            }
+            @case ('tag') {
+              {{ 'undo.confirm.origin.tag' | transloco: origin() }}
             }
             @case ('leaderboard') {
               {{
@@ -872,6 +876,8 @@ function originView(origin: ImportOrigin | null): OriginView {
       return { kind: 'file', fileName: origin.fileName };
     case 'seventv-leaderboard':
       return { kind: 'leaderboard', sortKey: LEADERBOARD_SORT_LABEL_KEYS[origin.sortBy] };
+    case 'tag':
+      return { kind: 'tag', tag: origin.tagName };
     default:
       return unreachableOrigin(origin);
   }

@@ -261,6 +261,8 @@ type DeleteServiceFake = Pick<
   | 'run'
   | 'syncReport'
   | 'syncReportReason'
+  | 'tagRemovalReport'
+  | 'tagRemovalReportReason'
   | 'rateLimitPauseSeconds'
   | 'lastRun'
   | 'confirmedRunPending'
@@ -280,6 +282,9 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     run: signal<DeleteRunInfo | null>(null),
     syncReport: signal<SyncReportState>('idle'),
     syncReportReason: signal<SyncReportReason | null>(null),
+    // #201 T-C: the section reads the tag removal report; a plain delete never has one.
+    tagRemovalReport: signal<SyncReportState>('idle'),
+    tagRemovalReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
     lastRun: signal<{
       setId: string;

@@ -5,6 +5,7 @@ using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.SevenTv;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -30,6 +31,16 @@ public class SevenTvSyncService(
     // channel is not a transient hiccup, and the backoff itself keeps the line rare (24 a day at the
     // one-hour ceiling).
     private const int MissesBeforeLogging = 3;
+
+    // How long after a row entered the active set a REST full sync's "it is missing" is NOT taken as a
+    // credible leave (spec E34). 7TV's REST cache lags 10–30 min behind (SevenTV/SevenTV#81), so a
+    // resync regularly archives an emote a dispatch or a tag play-in added moments ago; recorded as a
+    // leave, that would invalidate the fresh placement at once (spec 5.5, counter-example 8). 30 min is
+    // the documented upper end of the lag: shorter costs the feature, longer only delays noticing a
+    // genuine manual removal while the EventAPI is off (spec 13.1 R1). A constant, not configuration
+    // (spec 13.4/4): it encodes a property of 7TV, not of a deployment. Deltas and our own set-centric
+    // delete report are always credible and never consult it.
+    private static readonly TimeSpan TagLeaveCredibilityWindow = TimeSpan.FromMinutes(30);
 
     public async Task WarmChannelAsync(string channelName, CancellationToken cancellationToken = default)
     {
@@ -302,12 +313,34 @@ public class SevenTvSyncService(
             }
         }
 
+        // A dispatch's REMOVE is always a credible leave (spec E34), so every pulled id is recorded —
+        // whether its row exists, is archived already or is being archived just now. Recording only the
+        // rows the loop above flips would lose exactly the case that matters: a REMOVE for a row a stale
+        // REST resync archived minutes earlier without an observation (inside the window). That case
+        // stages no change, so this runs before the NoChange guard, and the outcome stays NoChange (no
+        // match-cache refresh, no live event). One explicit transaction per call that pulled anything, so
+        // the observation and the archive commit together: the raw upsert does not join SaveChangesAsync's
+        // implicit one. A dispatch without pulls has nothing to record and keeps the implicit transaction.
+        // Observation rows first, then the emote rows — the same order as the set-centric delete report
+        // in the Api, and the sync takes no tag table, so no lock cycle (spec 5.5 rule 6). A channel
+        // purged meanwhile fails the upsert with 23503 and propagates, like the save's FK failure always has.
+        await using var transaction = delta.PulledIds.Count > 0
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        if (transaction is not null)
+        {
+            await EmoteSetLeaveObservations.RecordAsync(
+                db, channel.Id, emoteSetId, delta.PulledIds, DateTime.UtcNow, cancellationToken);
+        }
+
         if (!db.ChangeTracker.HasChanges())
         {
+            await CommitIfOpenAsync(transaction, cancellationToken);
             return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.NoChange, currentName);
         }
 
         await db.SaveChangesAsync(cancellationToken);
+        await CommitIfOpenAsync(transaction, cancellationToken);
         await RefreshMatchCacheAsync(channel, cancellationToken);
 
         logger.LogInformation(
@@ -358,11 +391,12 @@ public class SevenTvSyncService(
                 return (channel, await ApplyAndSaveAsync(channel, twitchUserId, emoteSet, cancellationToken));
             }
         }
-        catch (Exception ex) when (IsRowVanishedFor(ex, channel.Id))
+        catch (Exception ex) when (IsRowVanishedFor(ex, channel.Id) || IsLeaveObservationOrphan(ex))
         {
             // The row was purged or merged away while the 7TV call was in flight. The row gate only
             // coordinates sync callers, not those writers (see DECISIONS), so this is an expected
-            // interleaving, not a fault: drop the pending changes and leave nothing behind.
+            // interleaving, not a fault: drop the pending changes and leave nothing behind. The
+            // attempt's transaction has already rolled back on dispose.
             await AbandonVanishedRowAsync(loaded, cancellationToken);
             return null;
         }
@@ -417,8 +451,21 @@ public class SevenTvSyncService(
         channel.LastSyncAttemptAtUtc = syncedAt;
         channel.LastSyncFailureReason = null;
 
-        var inventoryChanged = await ReconcileAsync(channel.Id, emoteSet.Emotes, cancellationToken);
+        // One explicit transaction per save attempt, so the leave observations ReconcileAsync upserts
+        // (raw SQL, outside SaveChangesAsync's implicit transaction) commit together with the archive
+        // and the channel row. Opened only here, after RecordObservedSetAsync: that call commits a set
+        // switch in a transaction of its own, and EF cannot nest them. The assignments above are
+        // in-memory and ride the same save. A failed attempt rolls back on dispose, and the E10 retry
+        // in SaveSyncAsync runs this method again with a new transaction — the upsert is idempotent.
+        // Lock order inside: observation rows, then the save's emote rows and the channel UPDATE. The
+        // sync writes no tag table and a tag report only reads observations with a plain SELECT, so
+        // the report never waits on an observation row. The only wait is the sync's, for the channel
+        // row a report holds; the report holds nothing while it waits for its first lock, and neither
+        // transaction does network I/O: no cycle, millisecond waits (spec 5.5 rule 6).
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var inventoryChanged = await ReconcileAsync(channel.Id, emoteSet.Id, emoteSet.Emotes, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return inventoryChanged;
     }
 
@@ -816,8 +863,23 @@ public class SevenTvSyncService(
         }
     }
 
-    /// <summary>Returns true when at least one emote row was added, archived or altered.</summary>
-    private async Task<bool> ReconcileAsync(string channelId, IReadOnlyList<SevenTvEmote> liveEmotes, CancellationToken cancellationToken)
+    /// <summary>
+    /// Returns true when at least one emote row was added, archived or altered.
+    /// <para>
+    /// Also records the credible leaves from <paramref name="activeEmoteSetId"/> (spec 5.5 rule 5,
+    /// E34) — immediately, as a raw upsert, so the caller must hold a transaction around this call and
+    /// its save. A row missing from the live set is a credible leave only outside
+    /// <see cref="TagLeaveCredibilityWindow"/> after it last entered the set (or when that is unknown).
+    /// Recording is independent of the archive transition, because the archive loop skips rows that are
+    /// archived already: (b1) a row archived now is observed when credible; (b2) a row archived
+    /// earlier — typically inside the window, without an observation — is observed by the post-check
+    /// once the window is over, but only when no observation from after its last entry exists yet, so
+    /// it is written once and not on every resync while the stale cache still shows the row missing
+    /// (counter-example 8). Observations are not inventory changes and never set the return value.
+    /// </para>
+    /// </summary>
+    private async Task<bool> ReconcileAsync(
+        string channelId, string activeEmoteSetId, IReadOnlyList<SevenTvEmote> liveEmotes, CancellationToken cancellationToken)
     {
         var existing = await db.Emotes
             .Where(e => e.ChannelId == channelId)
@@ -825,6 +887,10 @@ public class SevenTvSyncService(
 
         var liveIds = liveEmotes.Select(e => e.Id).ToHashSet();
         var changed = false;
+        var now = DateTime.UtcNow;
+        var credibleIfEnteredBefore = now - TagLeaveCredibilityWindow;
+        var leaves = new List<string>();
+        var postCheck = new List<Emote>();
 
         foreach (var emote in liveEmotes)
         {
@@ -839,7 +905,8 @@ public class SevenTvSyncService(
                 // (SevenTV/SevenTV#81), so a resync may archive an emote a live dispatch added
                 // moments ago — and dispatches never repeat. Logged to quantify how often that
                 // actually happens before deciding whether a guard is worth weakening the
-                // reconciliation for.
+                // reconciliation for. The archive itself stays unguarded; whether the leave is
+                // recorded is decided separately, by TagLeaveCredibilityWindow (b1 below).
                 if (emote.LastSyncedAt > DateTime.UtcNow.AddMinutes(-15))
                 {
                     logger.LogInformation(
@@ -850,9 +917,36 @@ public class SevenTvSyncService(
                 emote.IsArchived = true;
                 emote.ArchivedAt = DateTime.UtcNow;
                 changed = true;
+
+                // (b1)
+                if (IsCredibleRestLeave(emote, credibleIfEnteredBefore))
+                {
+                    leaves.Add(sevenTvEmoteId);
+                }
+            }
+            else if (!liveIds.Contains(sevenTvEmoteId) && IsCredibleRestLeave(emote, credibleIfEnteredBefore))
+            {
+                // (b2) archived before this pass; decided after the loop with one read.
+                postCheck.Add(emote);
             }
         }
 
+        if (postCheck.Count > 0)
+        {
+            var latest = await EmoteSetLeaveObservations.LoadLatestAsync(
+                db, channelId, activeEmoteSetId, postCheck.ConvertAll(e => e.SevenTvEmoteId), cancellationToken);
+            foreach (var emote in postCheck)
+            {
+                var observedSinceEntry = latest.TryGetValue(emote.SevenTvEmoteId, out var observedAt)
+                    && (emote.LastEnteredSetAtUtc is null || observedAt > emote.LastEnteredSetAtUtc);
+                if (!observedSinceEntry)
+                {
+                    leaves.Add(emote.SevenTvEmoteId);
+                }
+            }
+        }
+
+        await EmoteSetLeaveObservations.RecordAsync(db, channelId, activeEmoteSetId, leaves, now, cancellationToken);
         return changed;
     }
 
@@ -894,6 +988,14 @@ public class SevenTvSyncService(
 
             if (emote.Name != live.Name || emote.ImageUrl != imageUrl || emote.IsArchived)
             {
+                if (emote.IsArchived)
+                {
+                    // E34: an un-archive is a fresh entry into the active set, which opens the
+                    // credibility window for the next REST leave. Read before the flag flips below; a
+                    // rename of an active row is no entry and keeps its stamp.
+                    emote.LastEnteredSetAtUtc = DateTime.UtcNow;
+                }
+
                 emote.Name = live.Name;
                 emote.ImageUrl = imageUrl;
                 emote.IsArchived = false;
@@ -914,7 +1016,9 @@ public class SevenTvSyncService(
             SevenTvEmoteId = live.Id,
             Name = live.Name,
             ImageUrl = live.ImageUrl,
-            FirstSeenAt = live.AddedToSetAt
+            FirstSeenAt = live.AddedToSetAt,
+            // E34: a new row is an entry into the active set (see the un-archive branch above).
+            LastEnteredSetAtUtc = DateTime.UtcNow
         };
         db.Emotes.Add(emote);
         existing[live.Id] = emote;
@@ -931,6 +1035,25 @@ public class SevenTvSyncService(
             SqlState: PostgresErrorCodes.UniqueViolation,
             ConstraintName: EmoteKeyIndexName,
         };
+
+    // E34: a REST-observed leave counts only for a row that entered the set before the window, or
+    // whose entry time is unknown (rows from before the column existed are certainly older).
+    private static bool IsCredibleRestLeave(Emote emote, DateTime credibleIfEnteredBefore) =>
+        emote.LastEnteredSetAtUtc is null || emote.LastEnteredSetAtUtc <= credibleIfEnteredBefore;
+
+    // The raw leave-observation upsert's shape of "the row is gone": the channel foreign key, raised
+    // straight from ExecuteSqlRawAsync as a PostgresException, not wrapped in the DbUpdateException
+    // IsRowVanishedFor inspects. The table is the observation table, so the key is always this sync's
+    // own channel id.
+    private static bool IsLeaveObservationOrphan(Exception exception) =>
+        exception is PostgresException
+        {
+            SqlState: PostgresErrorCodes.ForeignKeyViolation,
+            TableName: "EmoteSetLeaveObservations",
+        };
+
+    private static Task CommitIfOpenAsync(IDbContextTransaction? transaction, CancellationToken cancellationToken) =>
+        transaction?.CommitAsync(cancellationToken) ?? Task.CompletedTask;
 
     // Removes the cache entry under the login the row carried when it was loaded — unless another
     // active row carries that login now (login swap, double rename): that row's live entry must

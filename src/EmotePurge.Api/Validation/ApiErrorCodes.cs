@@ -136,4 +136,25 @@ internal static class ApiErrorCodes
     // three, same reasoning as ForeignChannelSevenTvUnavailable — "not now" is the only actionable
     // fact in any of the three cases.
     public const string ContactUnavailable = "contact_unavailable";
+
+    // Channel emote tags (#201). 400: the name is missing, blank, over 40 characters or carries control
+    // characters (a missing request body counts as a missing name).
+    public const string TagNameInvalid = "tag_name_invalid";
+    // 409: another tag of the channel has the same name after trimming and lower-casing.
+    public const string TagNameTaken = "tag_name_taken";
+    // 409: the channel already has EmoteTagLimits.MaxTagsPerChannel tags.
+    public const string TagLimitReached = "tag_limit_reached";
+    // 404: no such tag in this channel (a tag of another channel is the same answer).
+    public const string TagNotFound = "tag_not_found";
+    // 409: adding would push the tag past EmoteTagLimits.MaxEntriesPerTag; nothing was written.
+    public const string TagEntryLimitReached = "tag_entry_limit_reached";
+    // Tag operations and placement reports (#201 T-C). 400: the operation id (or a snapshot revision)
+    // is not a UUID or is the nil UUID.
+    public const string TagOperationIdInvalid = "tag_operation_id_invalid";
+    // 404: a report names an operation that was never registered. A deleted tag answers tag_not_found instead.
+    public const string TagOperationUnknown = "tag_operation_unknown";
+    // 409: the operation id is registered for another tag, kind or set than the request names.
+    public const string TagOperationConflict = "tag_operation_conflict";
+    // 400: the registration's kind is missing or not one of EmoteTagOperationKind.
+    public const string TagOperationKindInvalid = "tag_operation_kind_invalid";
 }

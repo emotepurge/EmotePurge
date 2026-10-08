@@ -1093,6 +1093,47 @@ describe('parseTransferRunForUndo', () => {
     expect(result.sourceFile.origin).toBeNull();
   });
 
+  describe('a tag origin in meta.origin', () => {
+    const TAG_ORIGIN = {
+      kind: 'tag',
+      tagId: 7,
+      tagName: 'Stronghold',
+      channelName: 'handofblood',
+      alreadyInSetCount: 3,
+    } as const;
+
+    function originOf(origin: unknown): unknown {
+      const record = JSON.parse(
+        plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) })),
+      ) as { meta: Record<string, unknown> };
+      const result = parseTransferRunForUndo(
+        JSON.stringify({ ...record, meta: { ...record.meta, origin } }),
+      );
+      expect(result.ok).toBe(true);
+      return result.ok ? result.sourceFile.origin : undefined;
+    }
+
+    it('round-trips through the file unchanged', () => {
+      expect(originOf(TAG_ORIGIN)).toEqual(TAG_ORIGIN);
+    });
+
+    it.each([
+      ['a tag id that is not a number', { ...TAG_ORIGIN, tagId: '7' }],
+      ['a missing tag name', { ...TAG_ORIGIN, tagName: undefined }],
+      ['an empty tag name', { ...TAG_ORIGIN, tagName: '' }],
+      ['a whitespace-only tag name', { ...TAG_ORIGIN, tagName: '   ' }],
+      ['a tag id of zero', { ...TAG_ORIGIN, tagId: 0 }],
+      ['a negative tag id', { ...TAG_ORIGIN, tagId: -3 }],
+      ['a fractional tag id', { ...TAG_ORIGIN, tagId: 1.5 }],
+      ['a channel name that is not a string', { ...TAG_ORIGIN, channelName: 4 }],
+      ['a negative already-in-set count', { ...TAG_ORIGIN, alreadyInSetCount: -1 }],
+      ['a fractional already-in-set count', { ...TAG_ORIGIN, alreadyInSetCount: 1.5 }],
+      ['a missing already-in-set count', { ...TAG_ORIGIN, alreadyInSetCount: undefined }],
+    ])('reads %s as null rather than passing a broken origin on', (_label, broken) => {
+      expect(originOf(broken)).toBeNull();
+    });
+  });
+
   it('reads a candidate defaultName of an empty string the same as a missing one — both become null', () => {
     const replace: TransferRow = {
       action: 'replace',

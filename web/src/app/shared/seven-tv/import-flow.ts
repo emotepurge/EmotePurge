@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { computed, signal } from '@angular/core';
+import { Signal, computed, signal } from '@angular/core';
 import { Observable, catchError, finalize, map, of, timeout } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
@@ -15,6 +15,7 @@ import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.s
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { ImportTagContext } from '../../core/seven-tv/tag-run-settlement';
 import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import { filterAlreadyPresent, verifyReplaceTargets } from './already-present-filter';
 import { ImportConfirmOutcome, openImportConfirmDialog } from './import-confirm-dialog';
@@ -77,7 +78,42 @@ export interface ImportFlowDeps {
  */
 export type ImportFlowTarget =
   | { kind: 'activeSet'; channelName: string }
-  | { kind: 'chosen'; choice: Omit<ImportTargetChoice, 'scope'> };
+  | {
+      kind: 'chosen';
+      choice: Omit<ImportTargetChoice, 'scope'>;
+      /** A tag play-in (#201 T-C, spec E29 rev. 3): read exactly `choice.emoteSetId`, even when it is
+       *  the account's active set — see {@link toTargetSelection}. Absent for every other caller,
+       *  which then resolves byte-identically to before. */
+      pinSetId?: true;
+    };
+
+/**
+ * What a tag play-in (#201 T-C, spec 7.1/6) hands the flow on top of an ordinary import — one object,
+ * so a caller without it gets the flow exactly as before.
+ *
+ * - `context` rides on the run's target into `SevenTvImportService.startImport`, so the run record
+ *   carries the registered operation and its placement report goes out with that id.
+ * - `frozenSetId` is the set id the tag flow froze on the click and registered with the server;
+ *   `activeEmoteSetId` is the host page's live view of the channel's active set. Right before the run
+ *   starts, both must still equal the loaded target's id, or the flow calls `onSetChanged` and starts
+ *   nothing (the set guard, see `startAfterCheck`).
+ * - `onNothingToImport` is called instead of a start when there is nothing left to send: the confirm
+ *   dialog found every row already in the set, or the last duplicate check before the start removed
+ *   the rest. The tag flow then sends its empty play-in report itself — `startImport` would refuse an
+ *   empty plan and drop the record, and the activation would never be reported.
+ * - `onStarted` is called right after `startImport` reported the run as started — the play-in went
+ *   ahead, and the tags page lets go of the grid marking it came from. Never for a dismissed dialog,
+ *   a cancelled token prompt or a refused or blocked start — the engine's own refusal included (an
+ *   empty plan after held-back replace rows, a token gone during the re-check).
+ */
+export interface ImportFlowTagHook {
+  context: ImportTagContext;
+  frozenSetId: string;
+  activeEmoteSetId: Signal<string | null>;
+  onSetChanged(): void;
+  onNothingToImport(): void;
+  onStarted?(): void;
+}
 
 /** `loadImportTarget`'s own input (spec F5) from an `ImportFlowTarget` — the one place this flow
  *  decides *how* to resolve a target, so every caller below shares the same rule.
@@ -151,7 +187,11 @@ function toTargetSelection(target: ImportFlowTarget): ImportTargetSelection {
         'ImportTargetChoice.isTracked without a channelName — picker contract broken',
       );
     }
-    if (choice.emoteSetId === choice.activeEmoteSetId) {
+    // A pinned set (tag play-in, E29 rev. 3) never takes the fast path: `'trackedActive'` reads
+    // whatever set the server holds as active *now* and drops the id the tag flow registered, so a
+    // switch between the click and the load would silently land the run in the new set.
+    // `'trackedSet'` reads exactly this id and answers with it (`import-target-loader.ts`).
+    if (choice.emoteSetId === choice.activeEmoteSetId && target.pinSetId !== true) {
       return { kind: 'trackedActive', channelName: choice.channelName };
     }
     return { kind: 'trackedSet', channelName: choice.channelName, emoteSetId: choice.emoteSetId };
@@ -317,11 +357,16 @@ export function recheckTransferPlan(
  *
  * The target load starts before the dialog opens but the dialog does not wait for it: it renders
  * its skeleton immediately and fills in on the single emission `loadImportTarget` guarantees (R8).
+ *
+ * `tagHook` is a tag play-in's (#201 T-C) — see {@link ImportFlowTagHook}. Without it the flow is
+ * exactly the ordinary import. Nothing here hands back a "done" or "cancelled": a tag caller's own
+ * busy state ends when this function returns.
  */
 export function startImportFlow(
   deps: ImportFlowDeps,
   source: ImportSource,
   target: ImportFlowTarget,
+  tagHook?: ImportFlowTagHook,
 ): void {
   const targetState = signal<ImportTargetLoadState>({ status: 'loading' });
   const targetChannelName = toTargetChannelName(target);
@@ -353,6 +398,8 @@ export function startImportFlow(
   // false for a tracked non-active pick and for every untracked one (findings 1/2/3,
   // Live-Verifikation K2 2026-09-21). Drives the confirm dialog's title wording, the run's own
   // `targetIsActiveSet` flag, and therefore whether `onRunComplete` may resync the channel at all.
+  // Derived from the choice, not from the selection, so a pinned set (tag play-in) that is the
+  // active one still counts as active and its run still resyncs the channel.
   const isActiveSet = target.kind === 'activeSet' || activeSetName !== null;
 
   // The set's own name for the title (finding 1), but only when the title needs to say so — an
@@ -409,6 +456,24 @@ export function startImportFlow(
       return;
     }
     performLoad(toLiveTargetSelection(target, lastReadySetId), { refresh: true });
+  };
+
+  /** The tag play-in's set guard (spec 7.1/6, E29 rev. 3): the loaded target, the host page's
+   *  active set and the id the tag flow froze and registered must still be one and the same set.
+   *  `true` when the run may go on — always for an ordinary import, which has no hook. An unknown
+   *  active set (`null`) counts as changed: nothing may be assumed about it. This is the one
+   *  guard in the browser that actually decides; the server's own (a report with a set id other
+   *  than the registered one is refused) only keeps the bookkeeping straight after the fact. */
+  const tagSetUnchanged = (targetSetId: string): boolean => {
+    if (tagHook === undefined) {
+      return true;
+    }
+    const frozen = tagHook.frozenSetId;
+    if (targetSetId === frozen && tagHook.activeEmoteSetId() === frozen) {
+      return true;
+    }
+    tagHook.onSetChanged();
+    return false;
   };
 
   const start = (outcome: ImportConfirmOutcome): void => {
@@ -508,7 +573,22 @@ export function startImportFlow(
           deps.arbiter.noteRefusedStart('import');
           return;
         }
-        deps.importService.startImport(
+        // Tag play-in only (#201 T-C), both checks as late as anything can be checked: after the
+        // last read and the last arbiter check, right before the one call that starts the run.
+        // First the set guard — a switch while the dialog was open, or during these reads.
+        if (!tagSetUnchanged(outcome.targetSetId)) {
+          return;
+        }
+        // Then the no-op (Codex finding 5): another editor added every remaining row while the
+        // dialog was open. `startImport` would refuse the empty plan and drop the record, so no
+        // placement report would ever say the tag is played in. A plan emptied by held-back
+        // replace rows is not "everything is already there" — it falls through to `startImport`,
+        // whose drift notice names it, and the tag stays unplayed.
+        if (tagHook !== undefined && plan.rows.length === 0 && replaceSkippedDrift === 0) {
+          tagHook.onNothingToImport();
+          return;
+        }
+        const started = deps.importService.startImport(
           // `outcome.targetSetId` is `target.setId` from the *loaded* state — the set the run
           // actually reads/writes against, whichever of the three loader cases produced it (spec
           // F5/AK 44). It is never re-derived from `target` here, on purpose: the load is the one
@@ -532,6 +612,8 @@ export function startImportFlow(
             setName: outcome.targetSetName,
             isActiveSet,
             targetOwnerTwitchId,
+            // Only a tag play-in carries this; every other run's target is exactly as before.
+            ...(tagHook === undefined ? {} : { tag: tagHook.context }),
           },
           source.origin,
           plan,
@@ -539,6 +621,12 @@ export function startImportFlow(
           duplicateCheckAvailable,
           replaceSkippedDrift,
         );
+        // Only a run the engine actually started counts as "went ahead": a refused start (a plan
+        // emptied by held-back replace rows, a token cleared during the re-check) leaves the
+        // marking standing for another attempt.
+        if (started) {
+          tagHook?.onStarted?.();
+        }
       });
   };
 
@@ -556,11 +644,22 @@ export function startImportFlow(
     runBlocked: computed(() => deps.arbiter.startLocked()),
     httpClient: deps.httpClient,
     targetOwnerTwitchId: toOwnerTwitchIdHint(target),
+    // Only a tag play-in may confirm a plan with nothing to add: the confirmation is then what
+    // marks the tag as played in (spec 7.1/5), and the dialog closes with `nothingToAdd`.
+    emptyConfirmAllowed: tagHook !== undefined,
   });
 
   confirmRef.closed.subscribe((outcome) => {
     generation++;
     if (!outcome) {
+      return;
+    }
+    if (outcome.nothingToAdd === true) {
+      // Nothing goes to 7TV, so no token, no arbiter claim and no re-check: only the set guard,
+      // then the tag flow's own empty report. Without a hook the dialog never closes this way.
+      if (tagHook !== undefined && tagSetUnchanged(outcome.targetSetId)) {
+        tagHook.onNothingToImport();
+      }
       return;
     }
     if (deps.tokenService.hasToken()) {

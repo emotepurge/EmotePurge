@@ -5,6 +5,7 @@ import { catchError, map, of, retry, switchMap, throwError, timeout, timer } fro
 
 import { ChannelService } from '../channels/channel.service';
 import { EmoteAdminService } from '../emotes/emote-admin.service';
+import { EmoteTagService } from '../tags/emote-tag.service';
 import {
   ImportOrigin,
   ImportRow,
@@ -38,9 +39,11 @@ import {
   SyncReportState,
   TargetCheckBlockReason,
   classifySyncInSetFailure,
+  classifyTagReportFailure,
   classifySyncInSetResponse,
   isChannelMismatch,
 } from './sync-report-outcome';
+import { ImportTagContext } from './tag-run-settlement';
 import { TransferPlan, TransferRow } from './transfer-plan';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
@@ -201,6 +204,9 @@ export interface ImportRunInfo extends RunRecordBase {
    *  caller omits it, matching every caller that predates this flag (the resync always fired for
    *  them, correctly, since they only ever targeted the active set). */
   targetIsActiveSet: boolean;
+  /** The tag play-in this run executes (#201 T-C, spec 7.1/6) — the registered operation, frozen at
+   *  `startImport` from `target.tag`; `null` for every other import. */
+  tag: ImportTagContext | null;
   origin: ImportOrigin;
   /** The plan this run executes, one queue row per plan row, keyed by the source 7TV id. */
   plan: TransferPlan;
@@ -231,6 +237,17 @@ export interface ImportRunInfo extends RunRecordBase {
   removalReport: SyncReportState;
   /** Projected by `removalReportReason`. */
   removalReportReason: SyncReportReason | null;
+  /** This run's placement report (#201 T-C, spec E14) — `'idle'` for every run without `tag`, and
+   *  then never anything else. A tag run always sends it once settled, with an empty list too: the
+   *  report is also what marks the tag as played in. Projected by `tagPlacementReport`. */
+  tagPlacementReport: SyncReportState;
+  /** Projected by `tagPlacementReportReason`. */
+  tagPlacementReportReason: SyncReportReason | null;
+  /** How many reported ids the server discarded because the emote left the set again meanwhile
+   *  (`discardedStaleIds`). Only ever taken from an answer that is not a replay — a replayed answer
+   *  carries no outcome (docs/DECISIONS.md, #201 T-C) and leaves this as it was. Projected by
+   *  `tagPlacementDiscardedStaleCount`. */
+  tagPlacementDiscardedStaleCount: number;
   /** Projected by `resyncTrigger`. Not a report (#256, Plan-256 Festlegung 4): never holds the run
    *  open. */
   resyncTrigger: ResyncTriggerState;
@@ -284,6 +301,7 @@ export class SevenTvImportService {
   private readonly channelService = inject(ChannelService);
   private readonly emoteAdminService = inject(EmoteAdminService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
+  private readonly emoteTagService = inject(EmoteTagService);
   private readonly httpClient = inject(HttpClient);
   private readonly translocoService = inject(TranslocoService);
 
@@ -297,7 +315,10 @@ export class SevenTvImportService {
   /** Every open run of this service, by id, plus the one the dock shows (#256). */
   private readonly lifecycle = new SevenTvRunLifecycle<ImportRunInfo>(
     'import',
-    (run) => run.syncReport === 'pending' || run.removalReport === 'pending',
+    (run) =>
+      run.syncReport === 'pending' ||
+      run.removalReport === 'pending' ||
+      run.tagPlacementReport === 'pending',
   );
 
   readonly queue = this.engine.queue;
@@ -357,6 +378,23 @@ export class SevenTvImportService {
    *  as its own line under the removal-report notice. */
   readonly removalReportReason = linkedSignal<SyncReportReason | null>(
     () => this.run()?.removalReportReason ?? null,
+  );
+
+  /** State of the shown run's placement report (#201 T-C) — `'idle'` for a run that is not a tag
+   *  play-in. Never `'partial'`: the answer has no per-id shortfall to compare. */
+  readonly tagPlacementReport = linkedSignal<SyncReportState>(
+    () => this.run()?.tagPlacementReport ?? 'idle',
+  );
+
+  /** Why `tagPlacementReport` is `'failed'`, `null` otherwise. */
+  readonly tagPlacementReportReason = linkedSignal<SyncReportReason | null>(
+    () => this.run()?.tagPlacementReportReason ?? null,
+  );
+
+  /** How many of the shown run's reported ids the server discarded as stale — see
+   *  `ImportRunInfo.tagPlacementDiscardedStaleCount`. */
+  readonly tagPlacementDiscardedStaleCount = linkedSignal<number>(
+    () => this.run()?.tagPlacementDiscardedStaleCount ?? 0,
   );
 
   readonly resyncTrigger = linkedSignal<ResyncTriggerState>(
@@ -468,7 +506,11 @@ export class SevenTvImportService {
    *  this call at all.
    *
    *  A run that starts is shown at once; the run shown before it goes on to close on its own record
-   *  (#256). */
+   *  (#256).
+   *
+   *  Returns whether the engine actually started the run — `false` when it refused (already running,
+   *  an empty queue, no token) and the record was taken back. A tag play-in lets go of its grid
+   *  marking only on `true` (`import-flow.ts`, `ImportFlowTagHook.onStarted`). */
   startImport(
     target: {
       setId: string;
@@ -480,13 +522,17 @@ export class SevenTvImportService {
        *  forget to pass it: pass `null` explicitly when nothing resolved an owner (an add-only run
        *  into a channel-bound target, or an untracked choice with no known owner). */
       targetOwnerTwitchId: string | null;
+      /** Only for a tag play-in (`import-flow.ts`'s `ImportFlowTagHook`): the registered operation.
+       *  `target.setId` is then the set that operation was registered for — the flow's set guard
+       *  made sure of that right before this call. */
+      tag?: ImportTagContext;
     },
     origin: ImportOrigin,
     plan: TransferPlan,
     skippedDuplicates = 0,
     duplicateCheckAvailable = true,
     replaceSkippedDrift = 0,
-  ): void {
+  ): boolean {
     const deletes = plan.rows.some((row) => row.action === 'replace');
 
     this.targetCheckBlockReason.set(null);
@@ -521,6 +567,7 @@ export class SevenTvImportService {
       targetOwnerTwitchId: target.targetOwnerTwitchId,
       targetSetName: target.setName ?? target.setId,
       targetIsActiveSet: target.isActiveSet ?? true,
+      tag: target.tag ?? null,
       origin,
       plan,
       settlement: 'pending',
@@ -531,6 +578,9 @@ export class SevenTvImportService {
       syncReport: 'idle',
       removalReport: 'idle',
       removalReportReason: null,
+      tagPlacementReport: 'idle',
+      tagPlacementReportReason: null,
+      tagPlacementDiscardedStaleCount: 0,
       resyncTrigger: 'idle',
       abortedForPrivileges: false,
       protocolSaved: false,
@@ -556,7 +606,9 @@ export class SevenTvImportService {
       // as set: an all-duplicates import is a legitimate "refused" case whose count (and whether it
       // is even trustworthy) the caller still needs to see.
       this.lifecycle.discardUnstarted(started.runId, previousShown);
+      return false;
     }
+    return true;
   }
 
   /** Stops the run. On a plan that deletes (a `replace` row), a step still in flight ends its row
@@ -649,6 +701,24 @@ export class SevenTvImportService {
     }
 
     this.reportRemoved(current.runId);
+  }
+
+  /** Manual retry for the placement report of the shown run (#201 T-C) — sends the same body again,
+   *  the same `operationId` included, so the server answers a report it already applied as a
+   *  replay. Not gated on any imported key: an empty report is what marks the tag as played in.
+   *  Like the other two retries it never reopens a closed run. */
+  retryTagPlacementReport(): void {
+    const current = this.run();
+    if (
+      current === null ||
+      current.tag === null ||
+      current.tagPlacementReport === 'pending' ||
+      current.settlement !== 'settled'
+    ) {
+      return;
+    }
+
+    this.reportTagPlacements(current.runId);
   }
 
   /** The operation for one run. Built per run rather than once per service: every request depends
@@ -782,6 +852,10 @@ export class SevenTvImportService {
       syncReport: reportsImported ? 'pending' : run.syncReport,
       removalReport: reportsRemoved ? 'pending' : run.removalReport,
       removalReportReason: reportsRemoved ? null : run.removalReportReason,
+      // A tag run reports even with nothing imported (spec 7.1/8, E26): a cancel before the first
+      // row, or a run whose every row failed, still marks the tag as played in with no placements.
+      tagPlacementReport: run.tag !== null ? 'pending' : run.tagPlacementReport,
+      tagPlacementReportReason: run.tag !== null ? null : run.tagPlacementReportReason,
     }));
     if (settled !== null) {
       this.sendFollowUp(settled);
@@ -802,6 +876,13 @@ export class SevenTvImportService {
     // set that is.
     if (imported.length > 0) {
       this.reportImported(run.runId);
+    }
+
+    // The third report (#201 T-C, E14): next to `sync-imported`, never instead of it or after it.
+    // Both name the same `done` adds, but they answer different questions — the audit trail of a
+    // copy, and which emotes this tag put into the set — and either can fail without the other.
+    if (run.tag !== null) {
+      this.reportTagPlacements(run.runId);
     }
 
     // The resync is what actually pulls the changed emote rows into the *channel's active* set
@@ -889,6 +970,67 @@ export class SevenTvImportService {
     });
   }
 
+  /**
+   * The placement report of a tag play-in (#201 T-C, spec 7.1/8): `POST …/tags/{tagId}/placements`
+   * with the registered `operationId`, the run's own set (the one the operation was registered for)
+   * and owner, and every `done` row that added an emote — the same keys `sync-imported` names, empty
+   * after a cancel before the first row. Same transport rules as the other reports: one
+   * `timeoutReportAttempt` per attempt, automatic retries for anything but a 401/403, and an end
+   * state on every path.
+   *
+   * A replayed answer (`replayed: true`) is a success that says nothing else (docs/DECISIONS.md,
+   * #201 T-C): the server had already applied this operation, so its counts are not this call's
+   * outcome and the discarded count stays as it was. The reading happens in `map`, ahead of the retries, so a malformed answer
+   * ends like a transient failure instead of throwing inside `next`.
+   */
+  private reportTagPlacements(runId: string): void {
+    const run = this.patchRun(runId, {
+      tagPlacementReport: 'pending',
+      tagPlacementReportReason: null,
+    });
+    if (run === null) {
+      return;
+    }
+    // Both callers guarantee a tag, and a tag play-in always targets its own channel's set, so a
+    // missing tag or channel is a caller bug; ended as a failure rather than left pending, which
+    // would hold the run open forever — as the delete service's tag report does.
+    if (run.tag === null || run.targetChannelName === null) {
+      this.endReport(runId, 'tag-placements', {
+        tagPlacementReport: 'failed',
+        tagPlacementReportReason: 'other',
+      });
+      return;
+    }
+
+    this.emoteTagService
+      .reportPlacements(run.targetChannelName, run.tag.tagId, {
+        operationId: run.tag.operationId,
+        emoteSetId: run.targetSetId,
+        targetOwnerTwitchId: run.targetOwnerTwitchId,
+        sevenTvEmoteIds: importedKeys(run),
+      })
+      .pipe(
+        timeoutReportAttempt(),
+        map((answer) => (answer.replayed ? null : answer.discardedStaleIds.length)),
+        retryTransientSyncFailures(),
+      )
+      .subscribe({
+        next: (discardedStale) =>
+          this.endReport(runId, 'tag-placements', {
+            tagPlacementReport: 'succeeded',
+            tagPlacementReportReason: null,
+            ...(discardedStale === null ? {} : { tagPlacementDiscardedStaleCount: discardedStale }),
+          }),
+        error: (error: HttpErrorResponse) => {
+          const outcome = classifyTagReportFailure(error);
+          this.endReport(runId, 'tag-placements', {
+            tagPlacementReport: outcome.state,
+            tagPlacementReportReason: outcome.reason,
+          });
+        },
+      });
+  }
+
   /** The removal report: the set-centric `sync-deleted` (spec 6.5), the delete run's own
    *  bookkeeping call — addressed to the set the run wrote into, tracked or not, with the target's
    *  channel as the expected hit only when that set is the channel's active one (E18).
@@ -958,11 +1100,19 @@ export class SevenTvImportService {
    *  to-be-rejected run's rows onto the engine's queue for an already-shown run to inherit. */
   private endReport(
     runId: string,
-    report: 'sync-imported' | 'sync-deleted',
-    patch: Pick<Partial<ImportRunInfo>, 'syncReport' | 'removalReport' | 'removalReportReason'>,
+    report: 'sync-imported' | 'sync-deleted' | 'tag-placements',
+    patch: Pick<
+      Partial<ImportRunInfo>,
+      | 'syncReport'
+      | 'removalReport'
+      | 'removalReportReason'
+      | 'tagPlacementReport'
+      | 'tagPlacementReportReason'
+      | 'tagPlacementDiscardedStaleCount'
+    >,
   ): void {
     const run = this.patchRun(runId, patch);
-    const state = report === 'sync-imported' ? run?.syncReport : run?.removalReport;
+    const state = run === null ? undefined : reportState(run, report);
     if (run === null || state === 'succeeded' || this.lifecycle.isShown(runId)) {
       return;
     }
@@ -976,7 +1126,12 @@ export class SevenTvImportService {
       runId,
       report,
       state,
-      reason: report === 'sync-deleted' ? run.removalReportReason : null,
+      reason:
+        report === 'sync-deleted'
+          ? run.removalReportReason
+          : report === 'tag-placements'
+            ? run.tagPlacementReportReason
+            : null,
     });
   }
 
@@ -1010,6 +1165,21 @@ export class SevenTvImportService {
       () => this.duplicateNoticePending.set(false),
       DUPLICATE_NOTICE_MS,
     );
+  }
+}
+
+/** The end state of one of a run's three reports. */
+function reportState(
+  run: ImportRunInfo,
+  report: 'sync-imported' | 'sync-deleted' | 'tag-placements',
+): SyncReportState {
+  switch (report) {
+    case 'sync-imported':
+      return run.syncReport;
+    case 'sync-deleted':
+      return run.removalReport;
+    case 'tag-placements':
+      return run.tagPlacementReport;
   }
 }
 

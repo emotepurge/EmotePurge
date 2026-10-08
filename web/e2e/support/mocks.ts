@@ -652,6 +652,9 @@ export async function mockChannelPermissions(
     isGlobalAdmin: boolean;
     isTracked: boolean;
     isBotActive: boolean;
+    /** #201 T-C: the operator switch for tag runs. On by default (the run buttons are what the
+     *  tag specs exercise); pass `false` for the switched-off case. */
+    tagRunsEnabled: boolean;
   }> = {},
 ): Promise<void> {
   await page.route(`**/api/channels/${channelName}/permissions`, (route) =>
@@ -661,6 +664,7 @@ export async function mockChannelPermissions(
       isGlobalAdmin: false,
       isTracked: true,
       isBotActive: true,
+      tagRunsEnabled: true,
       ...overrides,
     }),
   );
@@ -1310,6 +1314,385 @@ export interface MockVoteSession {
   // The 7TV set a set-session's ballot is scoped to (spec 6.9, K6); null/omitted = a null-session,
   // the behaviour every existing caller of these mocks already gets.
   emoteSetId?: string | null;
+}
+
+/** One tag of {@link mockTags}' list (#201, spec 6.2) — counts default to an empty tag. */
+export interface MockTagSummary {
+  id: number;
+  name: string;
+  entryCount?: number;
+  inSetCount?: number | null;
+  /** T-C: valid placements in the shown set. Defaults to 0. */
+  placedCount?: number;
+  /** T-C: played in to the shown set. Defaults to `false`. */
+  active?: boolean;
+  /** T-C: defaults to `null` (an inactive tag), or a fixed date for an `active` one. */
+  activatedAtUtc?: string | null;
+}
+
+/** One entry of {@link mockTagEntries}' answer (spec 6.2): `inSet` null = no set to measure against. */
+export interface MockTagEntry {
+  sevenTvEmoteId: string;
+  alias: string;
+  imageUrl?: string;
+  inSet?: boolean | null;
+  currentName?: string | null;
+  /** T-C placement fields — default: no valid placement, held/placed by no other tag. */
+  placedByThisTag?: boolean;
+  placedAtUtc?: string | null;
+  placementOperationId?: string | null;
+  heldByActiveTags?: { id: number; name: string }[];
+  placedByOtherTags?: { id: number; name: string }[];
+}
+
+/** One request the {@link mockTagMutations} routes saw. */
+export interface RecordedTagRequest {
+  method: string;
+  /** The path below `/api/channels/{channel}/tags`, e.g. `''`, `'/7'`, `'/7/entries'`. */
+  path: string;
+  body: unknown;
+}
+
+// The tag routes of one channel share a state, so a write the page makes shows up in the next read
+// (create, rename, delete, add/remove entries) the way it does against the real server.
+const MOCK_ACTIVATED_AT = '2026-10-01T18:00:00Z';
+
+interface TagMockState {
+  tags: Required<MockTagSummary>[];
+  entries: Map<number, MockTagEntry[]>;
+  /** T-C: the activation operation id each entry read of a tag answers (absent = `null`). */
+  activationOperationIds: Map<number, string | null>;
+  isActiveSet: boolean;
+  nextId: number;
+}
+
+const tagMockStates = new WeakMap<Page, Map<string, TagMockState>>();
+
+function tagMockState(page: Page, channelName: string): TagMockState {
+  let channels = tagMockStates.get(page);
+  if (!channels) {
+    channels = new Map();
+    tagMockStates.set(page, channels);
+  }
+  let state = channels.get(channelName);
+  if (!state) {
+    state = {
+      tags: [],
+      entries: new Map(),
+      activationOperationIds: new Map(),
+      isActiveSet: true,
+      nextId: 1000,
+    };
+    channels.set(channelName, state);
+  }
+  return state;
+}
+
+/**
+ * GET /api/channels/{channelName}/tags (#201, spec 6.2) — the channel's tag list. Exact pathname,
+ * like {@link mockVoteSessionList}: the request carries `?emoteSetId=…`, and the `/{tagId}/entries`
+ * sub-routes are not this list. Default: no tags — the page then shows no tag select at all. The
+ * list is live state: {@link mockTagMutations} changes what it answers next.
+ */
+export async function mockTags(
+  page: Page,
+  channelName: string,
+  tags: MockTagSummary[] = [],
+): Promise<void> {
+  const state = tagMockState(page, channelName);
+  state.tags = tags.map((tag) => ({
+    id: tag.id,
+    name: tag.name,
+    entryCount: tag.entryCount ?? 0,
+    inSetCount: tag.inSetCount === undefined ? 0 : tag.inSetCount,
+    placedCount: tag.placedCount ?? 0,
+    active: tag.active ?? false,
+    activatedAtUtc: tag.activatedAtUtc ?? (tag.active ? MOCK_ACTIVATED_AT : null),
+  }));
+  const path = `/api/channels/${channelName}/tags`;
+  await page.route(
+    (url) => url.pathname === path,
+    (route) => {
+      if (route.request().method() !== 'GET') {
+        return route.fallback();
+      }
+      const emoteSetId = new URL(route.request().url()).searchParams.get('emoteSetId');
+      return fulfillJson(route, 200, {
+        emoteSetId,
+        isActiveSet: state.isActiveSet,
+        tags: state.tags,
+      });
+    },
+  );
+}
+
+/**
+ * GET /api/channels/{channelName}/tags/{tagId}/entries (spec 6.2) — one tag's entries; a tag this
+ * was not called for answers 404 `tag_not_found`. `isActiveSet` is the response's own flag.
+ */
+export async function mockTagEntries(
+  page: Page,
+  channelName: string,
+  tagId: number,
+  entries: MockTagEntry[],
+  options: { isActiveSet?: boolean; activationOperationId?: string | null } = {},
+): Promise<void> {
+  const state = tagMockState(page, channelName);
+  state.entries.set(tagId, entries);
+  state.activationOperationIds.set(tagId, options.activationOperationId ?? null);
+  const pattern = new RegExp(`^/api/channels/${channelName}/tags/(\\d+)/entries$`);
+  await page.route(
+    (url) => pattern.test(url.pathname),
+    (route) => {
+      if (route.request().method() !== 'GET') {
+        return route.fallback();
+      }
+      const url = new URL(route.request().url());
+      const id = Number(pattern.exec(url.pathname)?.[1]);
+      const found = state.entries.get(id);
+      if (!found) {
+        return fulfillJson(route, 404, { errorCode: 'tag_not_found' });
+      }
+      return fulfillJson(route, 200, {
+        emoteSetId: url.searchParams.get('emoteSetId'),
+        isActiveSet: options.isActiveSet ?? true,
+        activationOperationId: state.activationOperationIds.get(id) ?? null,
+        entries: found.map((entry) => ({
+          sevenTvEmoteId: entry.sevenTvEmoteId,
+          alias: entry.alias,
+          imageUrl: entry.imageUrl ?? `https://cdn.7tv.app/emote/${entry.sevenTvEmoteId}/2x.webp`,
+          inSet: entry.inSet === undefined ? true : entry.inSet,
+          currentName: entry.currentName ?? null,
+          placedByThisTag: entry.placedByThisTag ?? false,
+          placedAtUtc: entry.placedAtUtc ?? null,
+          placementOperationId: entry.placementOperationId ?? null,
+          heldByActiveTags: entry.heldByActiveTags ?? [],
+          placedByOtherTags: entry.placedByOtherTags ?? [],
+        })),
+      });
+    },
+  );
+}
+
+/**
+ * The maintenance routes under /api/channels/{channelName}/tags (spec 6.2): create (201), rename
+ * (200), delete (204), add entries (200 `{addedCount, alreadyTaggedCount, skippedNotInSetIds}`) and
+ * remove entries (200 `{removedCount}`). Every request is recorded with its parsed JSON body, and
+ * the list/entries answers of {@link mockTags}/{@link mockTagEntries} follow the writes.
+ */
+export async function mockTagMutations(
+  page: Page,
+  channelName: string,
+): Promise<{ requests: RecordedTagRequest[] }> {
+  const state = tagMockState(page, channelName);
+  const requests: RecordedTagRequest[] = [];
+  const prefix = `/api/channels/${channelName}/tags`;
+  await page.route(
+    (url) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`),
+    (route) => {
+      const request = route.request();
+      const method = request.method();
+      const path = new URL(request.url()).pathname.slice(prefix.length);
+      // Only the maintenance routes are this mock's; `/operations` and `/placements*` belong to
+      // mockTagOperations/mockTagPlacements/mockTagRemoval (#201 T-C), anything else to the next
+      // route.
+      if (method === 'GET' || !/^(\/\d+(\/entries(\/remove)?)?)?$/.test(path)) {
+        return route.fallback();
+      }
+      const body: { name?: string; sevenTvEmoteIds?: string[] } | null = request.postDataJSON();
+      requests.push({ method, path, body });
+
+      if (method === 'POST' && path === '') {
+        const tag = {
+          id: state.nextId++,
+          name: body?.name ?? '',
+          entryCount: 0,
+          inSetCount: 0,
+          placedCount: 0,
+          active: false,
+          activatedAtUtc: null,
+        };
+        state.tags.push(tag);
+        state.entries.set(tag.id, []);
+        return fulfillJson(route, 201, tag);
+      }
+      const match = /^\/(\d+)(\/entries(?:\/remove)?)?$/.exec(path);
+      const tag = match ? state.tags.find((candidate) => candidate.id === Number(match[1])) : null;
+      if (!match || !tag) {
+        return fulfillJson(route, 404, { errorCode: 'tag_not_found' });
+      }
+      const ids = body?.sevenTvEmoteIds ?? [];
+      const entries = state.entries.get(tag.id) ?? [];
+      if (match[2] === '/entries' && method === 'POST') {
+        const known = new Set(entries.map((entry) => entry.sevenTvEmoteId));
+        const added = ids.filter((id) => !known.has(id));
+        for (const id of added) {
+          entries.push({ sevenTvEmoteId: id, alias: id });
+        }
+        state.entries.set(tag.id, entries);
+        tag.entryCount += added.length;
+        tag.inSetCount += added.length;
+        return fulfillJson(route, 200, {
+          addedCount: added.length,
+          alreadyTaggedCount: ids.length - added.length,
+          skippedNotInSetIds: [],
+        });
+      }
+      if (match[2] === '/entries/remove' && method === 'POST') {
+        const kept = entries.filter((entry) => !ids.includes(entry.sevenTvEmoteId));
+        const removed = entries.length - kept.length;
+        state.entries.set(tag.id, kept);
+        tag.entryCount -= removed;
+        tag.inSetCount = Math.max(0, tag.inSetCount - removed);
+        return fulfillJson(route, 200, { removedCount: removed });
+      }
+      if (method === 'PATCH' && !match[2]) {
+        tag.name = body?.name ?? tag.name;
+        return fulfillJson(route, 200, tag);
+      }
+      if (method === 'DELETE' && !match[2]) {
+        state.tags.splice(state.tags.indexOf(tag), 1);
+        state.entries.delete(tag.id);
+        return route.fulfill({ status: 204 });
+      }
+      return route.fallback();
+    },
+  );
+  return { requests };
+}
+
+/** One report or registration the T-C tag-run mocks saw: the parsed JSON body of the POST. */
+export interface RecordedTagRunRequest {
+  body: unknown;
+}
+
+function tagRunPath(channelName: string, tagId: number, suffix: string): string {
+  return `/api/channels/${channelName}/tags/${tagId}/${suffix}`;
+}
+
+/**
+ * POST /api/channels/{channelName}/tags/{tagId}/operations (#201 T-C, spec 6.4) — the registration
+ * of a play-in or clear-out. Answers `status`, by default 201 with `{registeredAtUtc}`. Any other
+ * status answers `{errorCode}` when `errorCode` is given and an empty object otherwise — a 403 from
+ * the owner check carries no code. Every body is captured.
+ */
+export async function mockTagOperations(
+  page: Page,
+  channelName: string,
+  tagId: number,
+  options: { status?: number; errorCode?: string } = {},
+): Promise<{ requests: RecordedTagRunRequest[] }> {
+  const requests: RecordedTagRunRequest[] = [];
+  const status = options.status ?? 201;
+  await page.route(
+    (url) => url.pathname === tagRunPath(channelName, tagId, 'operations'),
+    (route) => {
+      requests.push({ body: route.request().postDataJSON() });
+      return status < 300
+        ? fulfillJson(route, status, { registeredAtUtc: '2026-10-05T10:00:00Z' })
+        : fulfillJson(route, status, options.errorCode ? { errorCode: options.errorCode } : {});
+    },
+  );
+  return { requests };
+}
+
+/**
+ * POST …/tags/{tagId}/placements (spec 6.2) — the play-in report. Captures every body, answers 200
+ * with counts derived from the reported ids unless `answer` overrides them, and — like the real
+ * server — marks the tag as played in for the page's next read ({@link mockTags} state).
+ */
+export async function mockTagPlacements(
+  page: Page,
+  channelName: string,
+  tagId: number,
+  answer: Partial<{
+    replayed: boolean;
+    recordedCount: number;
+    alreadyRecordedCount: number;
+    notTaggedIds: string[];
+    discardedStaleIds: string[];
+  }> = {},
+): Promise<{ requests: RecordedTagRunRequest[] }> {
+  const state = tagMockState(page, channelName);
+  const requests: RecordedTagRunRequest[] = [];
+  await page.route(
+    (url) => url.pathname === tagRunPath(channelName, tagId, 'placements'),
+    (route) => {
+      const body = route.request().postDataJSON() as { sevenTvEmoteIds?: string[] } | null;
+      requests.push({ body });
+      const ids = body?.sevenTvEmoteIds ?? [];
+      const tag = state.tags.find((candidate) => candidate.id === tagId);
+      if (tag) {
+        tag.active = true;
+        tag.activatedAtUtc = MOCK_ACTIVATED_AT;
+        tag.placedCount += ids.length;
+      }
+      return fulfillJson(route, 200, {
+        replayed: answer.replayed ?? false,
+        recordedCount: answer.recordedCount ?? ids.length,
+        alreadyRecordedCount: answer.alreadyRecordedCount ?? 0,
+        notTaggedIds: answer.notTaggedIds ?? [],
+        discardedStaleIds: answer.discardedStaleIds ?? [],
+      });
+    },
+  );
+  return { requests };
+}
+
+/**
+ * POST …/tags/{tagId}/placements/removed (spec 6.2) — the clear-out report. Captures every body,
+ * answers 200 (counts default to the reported `removedIds`) and, unless `deactivated: false`, marks
+ * the tag as no longer played in for the page's next read. Like the real server after the run's
+ * `sync-deleted`, the removed emotes leave the set for the next reads: the tag's `inSetCount` drops
+ * by each removed entry still in the set, and that entry reads `inSet: false`.
+ */
+export async function mockTagRemoval(
+  page: Page,
+  channelName: string,
+  tagId: number,
+  answer: Partial<{
+    replayed: boolean;
+    deletedCount: number;
+    transferredCount: number;
+    droppedCount: number;
+    sweptCount: number;
+    deactivated: boolean;
+  }> = {},
+): Promise<{ requests: RecordedTagRunRequest[] }> {
+  const state = tagMockState(page, channelName);
+  const requests: RecordedTagRunRequest[] = [];
+  await page.route(
+    (url) => url.pathname === tagRunPath(channelName, tagId, 'placements/removed'),
+    (route) => {
+      const body = route.request().postDataJSON() as { removedIds?: string[] } | null;
+      requests.push({ body });
+      const deactivated = answer.deactivated ?? true;
+      const tag = state.tags.find((candidate) => candidate.id === tagId);
+      if (tag && deactivated) {
+        tag.active = false;
+        tag.activatedAtUtc = null;
+        tag.placedCount = 0;
+      }
+      const removed = new Set(body?.removedIds ?? []);
+      for (const entry of state.entries.get(tagId) ?? []) {
+        if (removed.has(entry.sevenTvEmoteId) && entry.inSet !== false) {
+          entry.inSet = false;
+          if (tag && tag.inSetCount !== null) {
+            tag.inSetCount = Math.max(0, tag.inSetCount - 1);
+          }
+        }
+      }
+      return fulfillJson(route, 200, {
+        replayed: answer.replayed ?? false,
+        deletedCount: answer.deletedCount ?? body?.removedIds?.length ?? 0,
+        transferredCount: answer.transferredCount ?? 0,
+        droppedCount: answer.droppedCount ?? 0,
+        sweptCount: answer.sweptCount ?? 0,
+        deactivated,
+      });
+    },
+  );
+  return { requests };
 }
 
 /**
