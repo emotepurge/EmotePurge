@@ -304,7 +304,10 @@ app.Use(async (context, next) =>
     catch (BadHttpRequestException badRequest) when (!context.Response.HasStarted)
     {
         app.Logger.LogDebug("Rejected unbindable request body on {Path}: {Reason}", context.Request.Path, badRequest.Message);
-        context.Response.Clear();
+        // Deliberately no Response.Clear(): it also drops the headers the middleware below has already
+        // set for this response (Cache-Control: no-store on /api, HSTS, CSP, nosniff, ...), which
+        // would exempt exactly this 400 from the documented policy. Nothing has been written to the
+        // body yet (HasStarted is false), so setting status and content type is enough.
         context.Response.StatusCode = badRequest.StatusCode;
         context.Response.ContentType = "application/json";
         await context.Response.WriteAsJsonAsync(new { errorCode = ApiErrorCodes.InvalidRequestBody });

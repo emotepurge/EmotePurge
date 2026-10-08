@@ -43,6 +43,28 @@ public class UnbindableBodyTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task UnbindableBody_400_CarriesTheSameSecurityAndCacheHeadersAsAnyOtherApiResponse()
+    {
+        using var client = _factory.CreateClient();
+        using var unbindable = await SendAsync(client, VotePath, """{"emoteId":"abc","type":"Keep"}""");
+        using var ordinary = await client.GetAsync("/api/does-not-exist");
+
+        Assert.Equal(HttpStatusCode.BadRequest, unbindable.StatusCode);
+        string[] names =
+        [
+            "Cache-Control", "Content-Security-Policy", "X-Content-Type-Options",
+            "X-Frame-Options", "Referrer-Policy", "Strict-Transport-Security",
+        ];
+        foreach (var name in names)
+        {
+            Assert.True(ordinary.Headers.TryGetValues(name, out var expected), $"reference response lacks {name}");
+            Assert.True(unbindable.Headers.TryGetValues(name, out var actual), $"{name} missing on the unbindable-body 400");
+            Assert.Equal(expected, actual);
+        }
+        Assert.True(unbindable.Headers.CacheControl?.NoStore);
+    }
+
+    [Fact]
     public async Task Contact_Answers400InvalidRequestBody_ForTruncatedJson()
     {
         var response = await PostAsync("/api/contact", """{"name":"Jane","email":""");
