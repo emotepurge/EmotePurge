@@ -129,7 +129,7 @@ There is **no** `Role` column and no role enum. "Role" here means: one of four c
 
 | Role | Where from | Particularity |
 |---|---|---|
-| **Global Admin** | Config `Auth:AdminTwitchLogins` (a comma-separated scalar from env/user secret **beats** the JSON array from `appsettings.json`) | channel-independent |
+| **Global Admin** | Config `Auth:AdminTwitchUserIds`, matched ordinally against `principal.TwitchUserId` (a comma-separated scalar from env/user secret **beats** the JSON array from `appsettings.json`). `Auth:AdminTwitchLogins` is a transitional fallback that applies only while the id list is empty; a non-empty id list decides alone and the login list is ignored with a startup warning | channel-independent |
 | **Broadcaster** | `Channel.TwitchChannelId` against `principal.TwitchUserId` | Login comparison only as a fallback, as long as the ID has never been resolved. If the login matches but the ID does not → **rejected plus a warning in the log**: Twitch releases names again after a rename |
 | **Moderator** | Helix `GetModeratedChannelLogins`, via `IModRoleCache` | cached positively as well as negatively; an `/unmod` takes up to 10 minutes to take effect |
 | **7TV editor** | 7TV's `editor_of` relation | **only** read access to usage stats plus the legacy Guid-keyed `sync-deleted`/`sync-restored` (restore-per-set spec 5.6 — audit and a guarded resync, no row change any more), never channel management |
@@ -213,7 +213,7 @@ mutation RemoveEmote($setId: Id!, $emoteId: Id!) {
 
 ### Module Admin: Global admin area
 
-Not part of the original specification, but in scope a module of its own: a vertical slice from the entity through to the page, reachable under `/admin/*` behind the `adminGuard`. Access is governed exclusively by the allowlist `Auth:AdminTwitchLogins` — channel-independent, no Twitch role.
+Not part of the original specification, but in scope a module of its own: a vertical slice from the entity through to the page, reachable under `/admin/*` behind the `adminGuard`. Access is governed exclusively by the allowlist `Auth:AdminTwitchUserIds` (Twitch user ids; the login list `Auth:AdminTwitchLogins` is only a transitional fallback) — channel-independent, no Twitch role.
 
 **Eight endpoints**, all in the `/api/admin` group behind `GlobalAdminAuthorizationFilter`:
 

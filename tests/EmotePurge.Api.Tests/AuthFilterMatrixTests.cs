@@ -256,6 +256,24 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task GlobalAdminFilter_HandsTheTwitchUserIdToTheAccessService_RegardlessOfTheLogin()
+    {
+        // Admins are allowlisted by immutable Twitch id (#245): the filter must pass the id claim on
+        // untouched and decide solely on IsGlobalAdmin. The substitute answers by id only, so a
+        // foreign login on the admin id still passes and an admin-looking login on a foreign id is
+        // refused — the real id-versus-login precedence is covered by GlobalAdminAllowlistTests.
+        const string adminId = "900001";
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>())
+            .Returns(call => call.Arg<TwitchPrincipalInfo>().TwitchUserId == adminId);
+
+        var asAdmin = await SendAsync("GET", "/api/admin/channels", adminId, login: "renamed-login");
+        var asLookalike = await SendAsync("GET", "/api/admin/channels", NewUserId(), login: "sensitron");
+
+        Assert.NotEqual(HttpStatusCode.Forbidden, asAdmin.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, asLookalike.StatusCode);
+    }
+
+    [Fact]
     public async Task DeleteUser_Answers403_ForANonAdmin()
     {
         _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(false);

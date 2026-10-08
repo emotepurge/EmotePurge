@@ -62,7 +62,7 @@ Then fill in:
   ```bash
   openssl rand -base64 32
   ```
-- **`ADMIN_TWITCH_LOGINS` — your own Twitch login.** Without it, the entire admin area (`/admin/*`) returns a blank 403, with no hint as to why.
+- **`ADMIN_TWITCH_USER_IDS` — your own numeric Twitch user id** (look it up as described in [docs/Operations.md](docs/Operations.md) "Global admins"; `ADMIN_TWITCH_LOGINS` with your login still works as a transitional fallback). Without either, the entire admin area (`/admin/*`) returns a blank 403, with no hint as to why.
 - You can leave the Postgres/Redis passwords as they are for local use.
 
 ### 3. Migrate the database
@@ -101,7 +101,7 @@ npm --prefix web start                         # Terminal 3 → http://localhost
 
 Log in in the browser, then join a Twitch channel. **Only after that is there any data at all** — emotes come from the 7TV sync, usage numbers only from chat that has been read live. There are deliberately no seed data: the application lives on real chat traffic, and a fixture would only fake that.
 
-Anyone who wants to try it as a non-admin can empty `ADMIN_TWITCH_LOGINS` and restart the stack.
+Anyone who wants to try it as a non-admin can empty `ADMIN_TWITCH_USER_IDS` and `ADMIN_TWITCH_LOGINS` and restart the stack.
 
 ---
 

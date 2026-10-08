@@ -7,6 +7,7 @@ using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure;
+using EmotePurge.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
@@ -253,6 +254,11 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+
+// Resolve the admin allowlist once at startup so its migration warning lands in the Api log at boot
+// instead of at the first request. Deliberately no validation throw: a login-only list is the
+// supported transition state, not a misconfiguration.
+_ = app.Services.GetRequiredService<IGlobalAdminAllowlist>();
 
 if (app.Environment.IsDevelopment())
 {

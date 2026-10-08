@@ -49,7 +49,7 @@ selbst, nicht in einem entfernten Menüpunkt.
 
 | Rolle | Herkunft | Darf |
 |---|---|---|
-| Global-Admin | statische Allowlist `Auth:AdminTwitchLogins` | alles, inkl. `/admin/*` |
+| Global-Admin | statische Allowlist `Auth:AdminTwitchUserIds` (unveränderliche Twitch-ID; `Auth:AdminTwitchLogins` nur als Übergang) | alles, inkl. `/admin/*` |
 | Broadcaster | Twitch-User-ID des Kanalinhabers | Kanal verwalten, Usage-Stats, Purge |
 | Live-Moderator | live gegen Twitch geprüft, nicht dauerhaft gecacht | wie Broadcaster |
 | 7TV-Editor | 7TV-Editor-Grant | **nur lesen** — Usage-Stats, kein Management, kein Activity-Feed |

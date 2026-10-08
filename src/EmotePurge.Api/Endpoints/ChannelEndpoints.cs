@@ -150,7 +150,7 @@ public static class ChannelEndpoints
 
             // Built again rather than reused from the authorization filter above: that filter only
             // proves the caller may manage *this* channel, it never hands its principal on to the
-            // handler. IsGlobalAdmin is a pure claims check (Auth:AdminTwitchLogins), so the extra
+            // handler. IsGlobalAdmin is a pure claims check (Auth:AdminTwitchUserIds), so the extra
             // build costs nothing external — no second Helix/7TV round trip.
             var principal = httpContext.User.TryBuildTwitchPrincipal();
             var isGlobalAdmin = principal is not null && channelAccessService.IsGlobalAdmin(principal);

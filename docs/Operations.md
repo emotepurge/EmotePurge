@@ -204,6 +204,42 @@ Then open `http://localhost:8025` to watch submissions arrive while running the 
 (`dotnet run --project src/EmotePurge.Api`) or via `docker compose up -d --build`. Remove the
 container (`docker rm -f emotepurge-mailpit`) when done — it holds no state worth keeping.
 
+## Global admins
+
+The admin area (`/admin/*`) and the rights that go with it (purging a channel, deleting an account,
+and lifting a broadcaster's re-add lock) are reserved to an allowlist, configured by **numeric
+Twitch user id**, not by login: a login can be released after a rename and registered by someone
+else, an id cannot.
+
+| Setting | Env variable | Notes |
+|---|---|---|
+| `Auth:AdminTwitchUserIds` | `ADMIN_TWITCH_USER_IDS` | Comma-separated ids (`1234,5678`). Compared exactly, as text. A JSON array in `appsettings.json` works too; the comma-separated env variable wins over it. |
+| `Auth:AdminTwitchLogins` | `ADMIN_TWITCH_LOGINS` | Transitional fallback, case-insensitive logins. Used **only** while the id list is empty. |
+
+**Transition.** As soon as the id list is non-empty it decides alone and the login list is ignored.
+The Api logs exactly one of these warnings at startup, with counts only, never the values:
+
+- `Auth:AdminTwitchLogins is ignored because Auth:AdminTwitchUserIds is configured (N id(s), M login(s))`
+  — expected after migrating while the old login variable is still set; remove `ADMIN_TWITCH_LOGINS`
+  when convenient. Until then the warning repeats on every start.
+- `The global admin allowlist is login-based (M login(s)); migrate to Auth:AdminTwitchUserIds`
+  — only logins are configured; set `ADMIN_TWITCH_USER_IDS`.
+
+With neither list set nobody is an admin (the area answers a blank 403).
+
+**Finding your id.** `GET https://api.twitch.tv/helix/users?login=<login>` with an App Access Token
+(the same credentials the worker's Helix calls use) returns it in `data[0].id`; a third-party lookup
+tool works as well.
+
+**Local development.** `appsettings.json` ships an empty id list and the login `sensitron`, so a
+plain `dotnet run` shows the login-based warning. To use an id locally, set it as a user secret in
+the Api project: `dotnet user-secrets set "Auth:AdminTwitchUserIds" "<your-id>" --project
+src/EmotePurge.Api`.
+
+**Deploying.** Set `ADMIN_TWITCH_USER_IDS` in the stack's environment (Portainer) **before** updating
+the stack with a build that contains the broadcaster self-purge (#245). The variable is read at
+startup; recreate the `api` container after changing it.
+
 ## Excluding a chatter (GDPR objection)
 
 The worker processes public chat on a legitimate-interest basis (GDPR Art. 6(1)(f)) to count emote
@@ -415,7 +451,7 @@ change what it does, and changing them needs a rebuilt image:
 ### Account deletion on request
 
 For anyone who asks you to delete their account by email (or however you take such requests): an
-admin (one of `Auth:AdminTwitchLogins`) can delete a single account immediately from the admin
+admin (one of `Auth:AdminTwitchUserIds`, see [Global admins](#global-admins)) can delete a single account immediately from the admin
 user list, independent of the retention job's schedule and independent of whether the account is
 inactive. The row's delete action asks for the account's Twitch login typed out before it
 unlocks, the same typed-confirmation dialog the channel list's purge action uses — an accidental

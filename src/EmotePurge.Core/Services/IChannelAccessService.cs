@@ -14,7 +14,7 @@ public interface IChannelAccessService
     // manage vote sessions, or anything else CanManageChannelAsync gates.
     Task<bool> CanViewUsageStatsAsync(TwitchPrincipalInfo principal, string channelName, CancellationToken cancellationToken = default);
 
-    // Channel-independent check for the admin allowlist (Auth:AdminTwitchLogins) — used by
+    // Channel-independent check for the admin allowlist (Auth:AdminTwitchUserIds, login list as transitional fallback) — used by
     // endpoints that aren't scoped to a single channel, e.g. the admin "list all channels" overview.
     bool IsGlobalAdmin(TwitchPrincipalInfo principal);
 }

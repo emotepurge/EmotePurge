@@ -10,6 +10,34 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — Global admins are allowlisted by immutable Twitch id, logins remain a transitional fallback (#245)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/GlobalAdminAllowlist.cs` · `src/EmotePurge.Infrastructure/Services/IGlobalAdminAllowlist.cs` · `src/EmotePurge.Infrastructure/Services/ChannelAccessService.cs` · `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` · `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/appsettings.json` · `docker-compose.yml` · `docker-compose.prod.yml` · `.env.example` · `README.md` · `PRODUCT.md` · `docs/Operations.md` · `docs/Architectur.md` · `tests/EmotePurge.Infrastructure.Tests/Unit/GlobalAdminAllowlistTests.cs` · `Auth:AdminTwitchUserIds` · `ADMIN_TWITCH_USER_IDS`
+
+**Why.** The admin check compared the Twitch login. A login can be released after a rename and
+registered by someone else, and #245 makes the admin the only party who can lift a broadcaster's
+re-add lock: the first right that overrides a streamer's own decision. It must not hang on a
+reassignable string. `Auth:AdminTwitchUserIds` (JSON array or comma-separated scalar, env
+`ADMIN_TWITCH_USER_IDS`, scalar wins, ordinal comparison against `principal.TwitchUserId`) is now the
+source; `IsGlobalAdmin` delegates to the singleton `IGlobalAdminAllowlist`, so every admin path
+(admin group filter, `/auth/me`, `/permissions`, the join handler, the admin account deletion of
+#243) switches at once.
+
+**Transition rule.** A non-empty id list decides alone; `Auth:AdminTwitchLogins` is then ignored.
+With an empty id list the login list still decides, case-insensitively, as before. Both empty: nobody
+is admin. A blank scalar falls back to the array, so an unset compose variable cannot lock admins out.
+
+**Warnings, counts only.** The allowlist logs once at construction, and the Api resolves it right
+after `Build()` so the line stands in the boot log: "Auth:AdminTwitchLogins is ignored because
+Auth:AdminTwitchUserIds is configured ({IdCount} id(s), {LoginCount} login(s))" or "the global admin
+allowlist is login-based ({LoginCount} login(s)); migrate to Auth:AdminTwitchUserIds". Never the
+values. There is deliberately no validation throw: a login-only list is the transition state.
+
+**Operator choices (2026-10-08).** `appsettings.json` ships an empty id list and keeps the login
+`sensitron`; the developer's own id goes in as a user secret, so a local run without it shows the
+login-based warning on purpose. After the deploy the login variable stays configured and produces the
+"ignored" warning on every start until a follow-up removes the login list.
+
 ### 2026-10-08 — Broadcaster self-service purge and a DB re-add lock (#245)
 
 **Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs`

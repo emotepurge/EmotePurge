@@ -65,8 +65,11 @@ services:
       - Auth__Twitch__TokenEncryptionKey=${AUTH_TWITCH_TOKEN_ENCRYPTION_KEY}
       - Auth__Twitch__RedirectUri=http://localhost:8080/api/auth/twitch/callback
       - Auth__Twitch__PostLoginRedirectUrl=/
-      # Comma-separated. Overrides the appsettings.json array — without this the admin area is
-      # reachable only by the login hardcoded there.
+      # Preferred: comma-separated numeric Twitch user ids. When non-empty it decides alone and the
+      # login list on the next line is ignored (with a startup warning). Same scalar-beats-array
+      # rule as the login list.
+      - Auth__AdminTwitchUserIds=${ADMIN_TWITCH_USER_IDS:-}
+      # Transitional fallback, see docs/Operations.md "Global admins".
       - Auth__AdminTwitchLogins=${ADMIN_TWITCH_LOGINS}
       # Parity with docker-compose.prod.yml, so this path is testable locally at all.
       - DataProtection__KeyPath=/keys
