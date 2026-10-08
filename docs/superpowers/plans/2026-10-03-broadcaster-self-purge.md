@@ -8,13 +8,14 @@
 > Code in diesem Plan** — Verträge, Namen, Grenzfälle, Testfälle und Reihenfolge ja, Rümpfe nein.
 >
 > Arbeitsort: Worktree `/home/dev/projects/EmotePurge-245`, Branch `feat/245-broadcaster-self-purge`,
-> Basis `origin/main` (Konzept-Commits `9cf20921`, `72ad9e9a`, `d68f2d42` liegen schon darauf). Kein
-> Push, bis der Orchestrator es sagt. **Kein `docker compose up` aus dem Worktree** (die `.env` liegt
+> seit R3 per **Merge** (nicht Rebase — der Branch ist gepusht) auf `origin/main` @ `f9c534b4`
+> nachgezogen (Merge-Commit `3b2dfd41`). Kein Push, bis der Orchestrator es sagt. **Kein `docker compose up` aus dem Worktree** (die `.env` liegt
 > nur im Haupt-Checkout; Memory „compose aus dem Worktree reißt den Stack ab"), kein Neustart des
 > Dev-Workers vor dem 08.10. (Messfenster #69/#73). `cd` hält nicht zwischen Shell-Aufrufen — immer
 > absolute Pfade.
 >
-> **`web/node_modules` fehlt im Worktree** (verifiziert 2026-10-03). T0 legt es an; jeder spätere
+> **`web/node_modules` fehlt im Worktree** (verifiziert 2026-10-03, nach dem R3-Merge erst recht
+> veraltet). T0 legt es an; jeder spätere
 > Task prüft `ls /home/dev/projects/EmotePurge-245/web/node_modules/.bin/ng`, bevor er Frontend-Gates
 > fährt.
 
@@ -25,6 +26,212 @@
 > die der Plan **nicht** still trifft. Der Branch ist auf `origin/main` @ `eb62a2fd` (PR #318
 > Boot-Recovery mit `WarmChannelAsync`, PR #319 Ghost-Prune) rebased; alle Zeilenangaben gelten
 > für diesen Stand.
+
+> **Revision 3 (2026-10-08):** Drift-Prüfung nach dem Merge von `origin/main` (675 Commits seit
+> `eb62a2fd`: u. a. #59-Nachläufer, #76, #165, Epic #200, #201, #220, #243, #244, #254, #304, #327,
+> #336, #338, #340). Ergebnis und Änderungen stehen im neuen Abschnitt **„R3 — Drift gegen
+> `origin/main`"** direkt unter diesem Kopf; geänderte Stellen in den Tasks sind mit „(R3)" markiert.
+> **Zeilenangaben in Abschnitt 0 gelten weiter für `eb62a2fd`** — die aktuelle Lage steht in der
+> Verschiebungstabelle R3.3; Task-Texte sind in place auf den neuen Stand gezogen. Fünf Befunde
+> berühren eine gefallene Entscheidung (R3.4, zugleich Abschnitt 8, Punkte 10–14) — der Plan trifft
+> sie nicht still, nennt aber je einen Vorschlag; Punkte 15–16 sind reine Planpunkte.
+
+---
+
+## R3 — Drift gegen `origin/main` (2026-10-08)
+
+Geprüft im Worktree nach Merge auf `f9c534b4` (HEAD `3b2dfd41`). Der Merge lief konfliktfrei (der
+Branch enthielt nur Doku). **Korrektur einer Annahme aus dem Auftrag:** #272 (Boot-Recovery
+warm → join → sync, PR #318) und der Ghost-Prune aus #59 (PR #319) lagen schon in `eb62a2fd`; R2
+hatte sie bereits eingearbeitet. Die echte Drift steckt in `SevenTvSyncService.cs` (+515 Zeilen aus
+#165, #76, #200, #201), in `ChannelDeactivation` (Beobachtungsintervalle, #200), im Datenmodell
+(#200/#201) und an drei neuen env-Gate-Stellen aus Epic #200.
+
+### R3.1 Drift je Task
+
+| Task | Urteil | Wesentliches |
+|---|---|---|
+| T0 | gültig | unverändert; nach dem Merge ist `npm ci` erst recht nötig |
+| T1 | gültig, verschoben | jüngste Migration jetzt `20261005085930_AddEmoteTagPlacements`; DI-Registrierung neben `ServiceCollectionExtensions.cs:89` (nicht `:76`) |
+| T2 | gültig, verschoben + ergänzt | keine Kollision: alle Admin-Prüfungen laufen weiter über `IsGlobalAdmin` (neue Admin-Routen wie Rate-Limits und die Admin-Kontolöschung aus #243 erben den `GlobalAdminAuthorizationFilter` der Gruppe). Neue Doku-/Kommentarstellen mit `Auth:AdminTwitchLogins`: `docs/Operations.md:418` (#243), `Architectur.md:132,216`, Kommentare `ChannelEndpoints.cs:153-154`, `AuthEndpoints.cs:140`. `appsettings.json:58`, `ApiFactory.cs:241`. `Operations.md` hat **keinen** Admin-Abschnitt — T2 legt ihn neu an |
+| T3 | **semantisch geändert** | Zielmenge der Kaskade größer (R3.2 a); `ChannelService`-Konstruktor hat `IChannelEmoteSetObservationService` dazubekommen, Konstruktionsstellen jetzt **fünf**; Purge während laufender Sync ist seit #59 abgefangen (R3.2 h) |
+| T4 | **semantisch geändert** | `ChannelDeactivation` schließt jetzt das Beobachtungsintervall (R3.2 b, betrifft P17); Sync-Auflösung seit #165 zweigeteilt (R3.2 d); drei **neue env-Gate-Stellen** ohne Sperr-Zwilling (R3.2 c, Betreiberpunkt); D3/E15 kostet mehr als angenommen (R3.2 e, Betreiberpunkt); Konstruktor-Welle `SevenTvSyncService` 28 Stellen in 6 Dateien, `LiveCoverageService` 6 Stellen; `TwitchStreamDto` fehlte schon in R2 in der Dateiliste |
+| T5 | gültig, verschoben | `ChannelPermissionsDto` trägt inzwischen `TagRunsEnabled` (#201) — `CanPurgeAsBroadcaster` kommt dahinter; `AuditLogFilter` unverändert (jetzt `IAuditLogQueryService.cs:136`, Kanalfilter `AuditLogQueryService.cs:124-130`) — D1/E13 trägt unverändert |
+| T6 | **semantisch geändert** | **vier** Join-Aufrufer statt zwei (Übersicht: `join()` und `reactivate()`); `channel-workspace-layout.spec.ts` existiert schon (erweitern, nicht anlegen); `ChannelPermissions` hat `tagRunsEnabled`; i18n-Namensraum `channels.*` existiert nicht; Button-Stufe `danger-quiet` widerspricht der Designsprache §4.2 (Betreiberpunkt) |
+| T7 | gültig, verschoben + ergänzt | Operations-Gliederung neu (R3.3); „was gelöscht wird" nennt Tags und Set-Beobachtungen |
+| T8 | gültig + ergänzt | DB-Prüfung im Live-Schritt 2 um die neuen Tabellen erweitert; Dev-Worker-Freeze bis 07.10. ist abgelaufen, der bindende #69-Lauf (08.10.) ist **nicht bestanden** und sein Folgeentscheid offen (R3.2 i) |
+
+### R3.2 Befunde
+
+**a) Purge-Zielmenge — alle kanalbezogenen Tabellen (Auftrag a).** `AppDbContext` hat heute 16
+`DbSet`s. Am Kanal hängen per FK mit `ON DELETE CASCADE` (in den Migrationen geprüft) dreizehn Tabellen:
+`Emotes` → `UsageStats`, `VoteSessionEmotes`, `Votes`; `ChannelLiveDays`;
+**`ChannelEmoteSetObservations`** (#200, `AddUsageStatEmoteSetId`); **`EmoteSetLeaveObservations`**
+(#201, `AddEmoteTagPlacements`); **`EmoteTags`** → **`EmoteTagEntries`**, **`EmoteTagPlacements`**
+(zusätzlich über die Entry), **`EmoteTagActivations`**, **`EmoteTagOperations`** (#201,
+`AddEmoteTags`/`AddEmoteTagPlacements`); `VoteSessions` → `Votes`, `VoteSessionEmotes`. Nicht
+kanalgebunden: `Users`, `AuditLogEntries` (Snapshot-String, bleibt 12 Monate — E4). Folge: Der
+Plan-Ablauf `Remove(channel)` erfasst **alle** neuen Tabellen ohne Codeänderung — die Lücke liegt
+nicht im Löschen, sondern in **Test, Dialog und Doku**: T3-Test 1 prüft nur die alten fünf
+Kaskaden, P5/Dialog nennen nur Emotes/Abstimmungen/Live-Tage, Operations „was gelöscht wird"
+kennt Tags nicht. Tags sind die **Arbeit des Mod-Teams** (DECISIONS 2026-10-04: „the name itself is
+the moderator's work"; #201 verweigert deshalb sogar den Merge einer Zeile mit Tags) — ein Purge
+durch den Broadcaster löscht sie mit. Ob der Dialog sie **beziffert**, ist eine Erweiterung von E6
+→ Betreiberpunkt 10. Unabhängig davon: T3-Test 1 und 6 prüfen alle Tabellen, T7 nennt Tags und
+Set-Beobachtungen. Außerhalb der DB, wie bisher per TTL: neu `7tvsets:*`, `7tvforeign:*`
+(Fremdkanal-Caches #147/#220), Worker-RAM zusätzlich `EmptySetConfirmationTracker` (räumt der LEAVE
+seit #76 mit). Audit-Naht 3.7 a ist breiter geworden: außer `emotes.syncImported` nennen jetzt auch
+`emotes.syncDeleted`/`syncRestored` (`unresolvedChannelName`, DECISIONS 2026-09-28) und Importe mit
+Tag-Quelle einen Kanal in **fremden** Einträgen — ein Satz im DECISIONS-Eintrag, keine
+Codeänderung.
+
+**b) `ChannelDeactivation` schließt das Beobachtungsintervall (#200).** `DeactivateAsync` nimmt
+jetzt `IChannelEmoteSetObservationService` und ruft `CloseOpenIntervalAsync(…, Leave)` im selben
+Save. Die Invariante „`IsBotActive = false` ⇒ kein offenes Intervall" trägt
+`ChannelEmoteSetObservationService.RecordObservedSetAsync` (Kommentar `:26`). **P17 ändert sich:**
+`Stage(...)` muss das Schließen enthalten, sonst bricht die Lock-Deaktivierung und die
+`loginUnresolvable`-Deaktivierung (D2) diese Invariante. `ChannelIdentityService` hat den Service
+schon im Konstruktor. Testmuster: `ChannelIdentityServiceTests.cs:564`
+(`…_WhenTheKnownIdIsExcluded_ClosesTheOpenObservationInterval`). Der Purge selbst braucht nichts —
+die Kaskade nimmt das Intervall mit.
+
+**c) Drei neue env-Gate-Stellen ohne Sperr-Zwilling (Epic #200).**
+`Persistence/ChannelQueries.cs:102-113` `LoadActiveChannelByTwitchIdReadOnlyAsync` (Doku: „a blocked
+channel must look exactly like an untracked one"; speist `ChannelService.GetActiveByTwitchChannelIdAsync`
+→ `SevenTvEndpoints.cs:453` Ziel-Picker, `:578` Editierbarkeits-Vorprüfung, und
+`EmoteService.cs:332` Papier-Eintrag), `EmoteService.cs:229` (`MarkInSetAsync` Schritt 2: **schreibt**
+`IsArchived`/`ArchivedAt`/`LastEnteredSetAtUtc` und Leave-Beobachtungen auf jedem aktiven,
+nicht ausgeschlossenen Kanal mit passendem `ActiveEmoteSetId`) und `EmoteService.cs:241` (Schritt 3:
+ein gesperrter erwarteter Kanal muss `notTracked` lesen). Erreichbar nur, solange eine **aktive**
+Zeile eine gesperrte ID trägt (Restore E10, Fenster bis zum Reconcile, Altzeilen) — Verteidigung in
+der Tiefe, aber das Konzept sagt in 3.4 ausdrücklich „an denselben Stellen wie die env-Liste" und
+zählt zugleich „vier Stellen". Main hat die env-Liste inzwischen an sechs Arten von Stellen. →
+Betreiberpunkt 11. **Ausdrücklich ohne Zwilling bleiben** (nur Log-Beruhigung bzw. bereits durch
+die Gegenprüfung unter Zeilensperre abgedeckt): `ChannelService.cs:410,453`,
+`ChannelIdentityService.cs:229,270,412,595` — T4 nennt das im DECISIONS-Absatz, damit die
+Abnahme-Zählung nicht als Lücke gelesen wird. Die Api-Schreiber aus #200/#201 (`EmoteTagService`,
+`VoteSessionService`, `TrackedEmoteSetMembershipService`) sind zeilengebunden und bewusst nicht
+env-gegated — nach dem Purge gibt es keine Zeile, vor einem neuen Join greift das Join-Gate.
+
+**d) Sync-Auflösung seit #165 zweigeteilt.** `ResolveTwitchUserIdAsync` (`:565-610`) hat zwei neue
+stille `null`-Ausgänge vor jedem 7TV-Aufruf (Backoff nicht fällig `:575-581`, Such-Budget verweigert
+`:583-591`); die eigentliche Auflösung samt `RecordFailedAttemptAsync` (`:624`), env-Gate auf die
+aufgelöste ID (`:635-639`, liefert `(null, Excluded: true)`, damit das Miss-Log still bleibt) und
+Duplikat-Prüfung (`:646-655`) liegt in `ResolveWithChargedSearchAsync` (`:616-656`). Der
+Sperr-Zwilling gehört an `:635` und muss **dasselbe Stillschweige-Flag** setzen; der Backoff zählt
+ihn dann als Fehlversuch — gewollt (der Reconcile deaktiviert die Zeile ohnehin). Die vier
+Sync-Gates heute: `:62` (`WarmChannelAsync`), `:101` (gespeicherte ID), `:237`
+(`ApplyEmoteSetUpdateAsync`), `:635` (aufgelöste ID). P12 zitierte noch `:51/:169/:369` — veraltet.
+
+**e) D3/E15 kostet mehr als angenommen (#165).** P16 begründete „`WarmChannelAsync` überspringt
+id-lose Zeilen, die Boot-Recovery synct sie Sekunden später ohnehin". Seit #165 löst eine id-lose
+Zeile nur auf, wenn der In-Process-Backoff fällig ist **und** das geteilte Redis-Such-Budget eine
+Suche gewährt; nach einem Fehlversuch wächst der Backoff bis `SevenTv:SearchBudget:ResolutionBackoffMaxSeconds`
+(Default **3600 s**), ein Budget-Lockout dauert bis `DefaultLockoutSeconds` (Default **3600 s**).
+Unter D3 = A bleibt eine id-lose Zeile also nicht ≤ 60 s, sondern **bis zu rund einer Stunde kalt**
+(zählt nichts) — vorher kam der Retry im nächsten 60-s-Tick. Betroffen sind weiterhin nur Zeilen
+ohne gespeicherte ID (seit 2026-08-29 nur aus Helix-Ausfall beim Join). Außerdem widerspricht ein
+**bestehender** Test D3 = A und kippt: `SevenTvSyncServiceTests.cs:1194`
+`SyncChannel_SevenTvUnavailable_EmptyCache_IsWarmedFromPostgres(false)` (id-lose Zeile wird gewärmt);
+der Kommentar `:631-633` („the warm-up that already ran … is undone") wird obsolet. → Betreiberpunkt
+12 (E15 bestätigen oder auf D3 = B zurückfallen). Umsetzungshinweis für den Fall „bestätigt":
+`RemoveChannel` einmal am `null`-Ausgang von `SyncChannelAsync` (`:110-113`), dann deckt er alle
+fünf `null`-Pfade (Backoff, Budget, 7TV-Fehler, env/Sperre, Duplikat) statt nur „Auflösung
+fehlgeschlagen". `SevenTvSyncServiceSearchBudgetTests.cs:192` (`WarmingAnIdLessChannel_SpendsNoSearch`)
+bleibt verträglich.
+
+**f) Konstruktor-Wellen (P18).** `new ChannelService(`: `ChannelServiceTests.cs:985`,
+`ChannelServiceCapacityTests.cs:133`, `DataRetentionServiceTests.cs:490`,
+`ChannelIdentityServiceTests.cs:641`, **neu** `ChannelEmoteSetObservationServiceTests.cs:366`.
+`new SevenTvSyncService(` (heute 11 Parameter): 28 Stellen in `SevenTvSyncServiceTests.cs` (16),
+`SevenTvSyncServiceEmptySetTests.cs` (7), `SevenTvSyncServiceInFlightWriterTests.cs` (2),
+`SevenTvSyncServiceSearchBudgetTests.cs` (1), `SevenTvSyncServiceRenameHandoverTests.cs` (1),
+`ChannelEmoteSetObservationServiceTests.cs` (1). `new ChannelIdentityService(`:
+`ChannelIdentityServiceTests.cs:1229`, `ChannelRetentionPurgeTests.cs:405`. `new LiveCoverageService(db)`:
+sechs Stellen in `LiveCoverageServiceTests.cs`. Positionale `JoinAsync`-Aufrufe: `ChannelEndpoints.cs:158`,
+`AuthFilterMatrixTests.cs:172,188,203,224,231`. Die Infrastructure-Tests rufen `JoinAsync` nur mit
+benannten oder ohne optionale Argumente — dort bricht nichts.
+
+**g) Admin-Allowlist (Auftrag d).** Keine Kollision. Seit `eb62a2fd` kamen Admin-Routen dazu
+(`AdminRateLimitsEndpointTests`, Admin-Kontolöschung #243 über `/api/admin`), alle über den
+Gruppenfilter → `IsGlobalAdmin`. Die Admin-Kontolöschung (#243) ist ein zweites starkes Recht, das
+heute auf einem wiedervergebbaren Login ruht — stützt E11, ändert ihn nicht.
+
+**h) Retention (#244) und Selbstlöschung (#243) (Auftrag c).** Retention ist in Prod scharf
+(`RETENTION_ENFORCE=true`); Kandidatenfilter jetzt `DataRetentionService.cs:426`
+(`!IsBotActive && DeactivatedAtUtc < cutoff`, zusätzlich `:430` für Zeilen ohne Stempel). Der
+D2-Pfad endet damit tatsächlich nach 180 Tagen in einer Löschung (Kaskade inkl. Tags). Der
+Retention-Purge schreibt weiter keine Sperre (Konzept 3.4) — unverändert. #243 ist live:
+`AccountDeletionService` pseudonymisiert Akteur und Besitzer-Logins in Audit-Details, lässt
+`ChannelName` stehen — für `channel.purge`/`channel.join` mit Sperr-Details heißt das: Akteur wird
+„deleted user", Kanalname bleibt (konsistent mit E4); die Sperrzeile enthält weiter nichts, was #243
+erfassen müsste. E5-Hinweis unverändert anwendbar (`account-menu.ts:345-365`). #59 (2026-10-03):
+Purge während einer laufenden Sync endet dort als „vanished row" (`DbUpdateConcurrencyException`/23503
+→ `null`), der Re-Read nach dem Save räumt den Cache — der Broadcaster-Purge erbt das, T3 nennt es
+als Grenzfall, kein Code.
+
+**i) Zeitschranke E8.** Der bindende #69-Lauf hat am 08.10. stattgefunden und ist **nicht
+bestanden**; der Folgeentscheid (Wiederholung? Störfaktor Archiv) ist offen. E8 band den Deploy von
+Api **und Worker** an „nach dem bindenden Lauf". Ob ein Worker-Deploy jetzt erlaubt ist oder auf
+einen Wiederholungslauf wartet, entscheidet der Betreiber → Punkt 13. Für **Bau und lokale
+Live-Verifikation** gilt die Schranke nicht mehr; T8 darf einen eigenen Worker gegen Wegwerf-DB/-Redis
+starten (war schon so geplant), den geteilten Dev-Worker weiterhin nicht anfassen, solange #69 offen
+ist.
+
+**j) Frontend (T6).** Join-Aufrufer: `channel-workspace-layout.ts:179` (`rejoin()`),
+`admin-channels-page.ts:428` (`join()` via `runAction`), **neu im Blick** `overview-page.ts:144`
+(`join()`, navigiert nach Erfolg) und `:153` (`reactivate()`, patcht die Zeile) — die Übersicht ist
+genau der Ort, an dem ein Mod nach einem Purge den Kanal als „nicht getrackt" sieht und ihn wieder
+hinzufügen will. Beide Übersicht-Aufrufer mappen Fehler nur über `apiErrorTranslationKey`. Die
+108 verschwundenen Zeilen im Workspace-Layout sind der Resync-Knopf (#327, DECISIONS 2026-10-05);
+Verlassen/Reaktivieren stehen weiter im Kopf (`@if (canManage())` `:35-49`). Es gibt **keine**
+`channels.*`-i18n-Wurzel. Designsprache §4.2 (`UI-Designsprache.md:178-179`): `danger` ist der
+**einzelne** auslösende Knopf im Seitenkontext („leave channel"), `danger-quiet` ist an
+**Wiederholung** je Listenzeile gekoppelt — E2 schreibt `danger-quiet` für einen Einzelknopf neben
+„Verlassen" (`appButton="danger"`) → Betreiberpunkt 14 (Widerspruch bestand schon am 03.10., ist
+keine Drift, aber erst jetzt aufgefallen).
+
+### R3.3 Verschiebungstabelle (Abschnitt 0 → HEAD)
+
+| Anker (Stand `eb62a2fd`) | jetzt |
+|---|---|
+| `ChannelService.cs` env-Gates `:63`/`:83`, `ResolveJoinTargetAsync :69` | `:64`/`:84`, `:70` |
+| `HandleUnknownTwitchLoginAsync :272-325`, Lock `:275`, env `:290` | `:283-336`, `:286`, `:301` |
+| `ResolveOrCreateChannelByNameAsync :408-451`, neue Zeile `:419` | `:424-467`, `:435` |
+| `CompleteJoinAsync :459-534`, Audit `:514`, Commit `:516-519` | `:475-550`, `:530`, `:532-535` |
+| `PurgeAsync :124-153`, `PurgeIfInactiveSinceAsync :155-196`, Konstante `:22` | `:127-156`, `:158-199`, `:23` |
+| `ListActiveChannelNamesAsync :203-226` (env in-memory `:223`) | `:214-237` (`:234`); neu daneben `GetActiveByTwitchChannelIdAsync :206-212` |
+| `ChannelQueries` `ForUpdate`-Helfer `:106`/`:120` | `:128`/`:142`; neu `LoadActiveChannelByTwitchIdReadOnlyAsync :102` |
+| `ChannelDeactivation.DeactivateAsync :33-58` | `:33-71`, Signatur + Intervall-Schließen (R3.2 b) |
+| `ChannelIdentityService` env-Pass `:60-80`, Known-ID `:204`, id-los `:313`, `DeactivateExcludedRowAsync :393-491`, `MergeAsync :562-773` | `:61-81`, `:205`, `:314`, `:394-…`, `:569-…` (Commit `:776`); Konstruktor + Observation-Service |
+| `SevenTvSyncService` `WarmChannelAsync :21-45` (env `:38`), `SyncChannelAsync :47` (env `:77`, Warm-up `:83`, Resolve `:85`), `ApplyEmoteSetUpdateAsync :196` (env `:232`), `ResolveTwitchUserIdAsync :408-455` (env `:432`), `RefuseExcludedChannel :329` | `:45-69` (`:62`), `:71` (`:101`, `:107`, `:109`, `null`-Ausgang `:110-113`), `:201` (`:237`), `:565-610` + `ResolveWithChargedSearchAsync :616-656` (`:635`), `:484-488` |
+| `Worker.cs` LEAVE `:58-71`, Boot `:127`, warm `:197`, Sync `:276`, Guard `:245`; `SevenTvPeriodicResyncWorker :59` | `:66-82`, `:125`, `:201`, `:280`, `:249`; `:60` |
+| `DataRetentionService.cs:424` | `:426` (+ `:430`) |
+| `AuditLogQueryService.cs:93-99`, `IAuditLogQueryService.cs:68` | `:124-130`, `:136` |
+| `ServiceCollectionExtensions.cs` `:74`/`:76`/`:81`/`:233` | `:87`/`:89`/`:94`/`:308`; `ILiveCoverageService :111` |
+| `ChannelEndpoints.cs` audit-log `:45-70`, permissions `:78-109`, join `:135-207` (Aufruf `:155`, Switch `:165-200`), `DELETE /{name}` `:265-284`, purge `:292-317`, DTO `:336-341` | `:46-73`, `:79-112`, `:138-210` (`:158`, `:170-203`), `:269-293`, `:296-321`, `:345-352` |
+| `appsettings.json:44`; `ApiFactory.cs:167`; `AuthFilterMatrixTests.cs:151,167,182,203,210`, `:442` | `:58`; `:241`; `:172,188,203,224,231`, Audit-Log-Fälle per Suche |
+| `docs/Architectur.md:130,153,210,227` | `:132,155,216,231` |
+| `docs/Operations.md` Block list `:235`, Retention `:290`, „Deploying" `:414`, Admin „`:382`" | Block list `:268`, Data retention `:323`, Account deletion `:415`, „Deploying this feature" `:450`, Emote tags `:458`, Backup `:526`; **kein** Admin-Abschnitt |
+| Tests: `SevenTvSyncServiceTests :895/:919/:953`, `WarmChannel_* :975-1008`; `ChannelIdentityServiceTests :557/:586/:616` | `:1058/:1082/:1116`, `:1138/:1157/:1173` (+ `:1194`, R3.2 e); `:664/:693/:723` (+ `:564`, R3.2 b) |
+| Web: `channel.model.ts:14-20`, `channel.service.ts` `join :91-93`, `purge :118`, `listMine :123`, Spec `:141/:159`; Layout Kopf `:56-80`, `leave :191`, `rejoin :219`, Hinweis `:88`, Permissions `:279-288`; `app.routes.ts:40`; `api-error.ts` „43 Codes"; Locales `errors.api :1180-1224`; `mocks.ts installLiveStub :1015` | `:14-22` (+ `tagRunsEnabled`), `:91-94`, `:119`, `:124`, `:142/:160`; `:35-49`, `:147`, `:175`, `:56`, `:199-…`; `:43`; **56** Codes; `:1907-…`; `:1809` |
+| Migrationen: jüngste `20260923194321_AddRetentionTimestamps` | `20261005085930_AddEmoteTagPlacements` (in Prod seit dem #201-Deploy am 08.10.) |
+
+### R3.4 Befunde, die eine gefallene Entscheidung berühren (Betreiber)
+
+Der Plan entscheidet keinen davon; je ein Vorschlag steht in Abschnitt 8 (Punkte 10–14; 15 ist ein
+Planpunkt ohne gefallene Entscheidung, der Vollständigkeit halber hier gelistet).
+
+| # | berührt | Frage |
+|---|---|---|
+| 10 | E6 | Nennt der Dialog (und `data-summary`) zusätzlich die **Tags** des Mod-Teams? |
+| 11 | Konzept 3.4 / E1 („vier Stellen") | Sperr-Zwilling auch an den drei neuen env-Stellen aus #200 (R3.2 c)? |
+| 12 | E15 (D3) | Gilt D3 = A weiter, obwohl id-lose Zeilen seit #165 bis ~1 h kalt bleiben können (R3.2 e)? |
+| 13 | E8 | Darf der Worker nach dem **nicht bestandenen** #69-Lauf deployt werden, oder wartet #245 auf den Folgeentscheid (R3.2 i)? |
+| 14 | E2 | `danger-quiet` (E2) oder `danger` (Designsprache §4.2) für den Einzelknopf im Kopf? |
+| 15 | — (Plan) | Lock-Prompt auch in der Übersicht (`join`/`reactivate`) — Vorschlag ja, Folge aus R3.2 j |
+
+---
 
 **Sprache:** Plan deutsch (Denkwerkzeug). Neuer Code, Kommentare, Log-/`throw`-Meldungen,
 Commit-Messages, Issue-Texte und **neue** `docs/DECISIONS.md`-Einträge englisch (CLAUDE.md „Sprache").
@@ -160,7 +367,10 @@ Deshalb: `GET /api/channels/{channelName}/data-summary` hinter demselben Broadca
 `InteractiveRead`, Antwort `{ emoteCount, voteSessionCount, liveDayCount }`, gespeist aus
 `IChannelService.GetDataSummaryAsync(channelName)` (null → 404). **Das ist eine Ergänzung, die das
 Konzept nicht benennt** (Abschnitt 8, Punkt 1); der Betreiber kann sie auf „Kategorien ohne Zahlen"
-zurückfahren, dann entfallen die drei Teilschritte, die unten mit „(P5)" markiert sind.
+zurückfahren, dann entfallen die drei Teilschritte, die unten mit „(P5)" markiert sind. (R3) Seit
+#201 löscht der Purge auch die **Tags des Mod-Teams**; ob die Antwort ein viertes Feld `tagCount`
+trägt und der Dialog es nennt, ist Betreiberpunkt 10 — Vorschlag ja. Unabhängig davon nennt der
+Dialogtext die Kategorie „Tags".
 
 **P6 — Sichtbarkeit `canPurgeAsBroadcaster`.** `true` genau dann, wenn eine Zeile existiert **und**
 (ihre `TwitchChannelId` ordinal gleich `principal.TwitchUserId` ist **oder** sie id-los ist und der
@@ -184,8 +394,9 @@ gemeinsamen Helfer in `core/channels`" für 409 → Dialog → Wiederholung mit 
 `web/src/app/core/channels/broadcaster-lock.ts`; die Dialog-Hälfte
 (`joinWithBroadcasterLockPrompt(...)`: Join → bei Sperre `ConfirmDialog` mit Datum → bei Bestätigung
 Join mit Flag, bei Abbruch nichts) in **`web/src/app/shared/channels/join-with-lock-prompt.ts`**
-(neuer Ordner `shared/channels/`). Beide Join-Aufrufer (`admin-channels-page.ts`,
-`channel-workspace-layout.ts`) nutzen die Dialog-Hälfte.
+(neuer Ordner `shared/channels/`). Alle Join-Aufrufer nutzen die Dialog-Hälfte — (R3) das sind **vier**:
+`admin-channels-page.ts`, `channel-workspace-layout.ts` und `overview-page.ts` (`join()`, `reactivate()`;
+Abschnitt 8, Punkt 15).
 
 **P9 — Admin-Allowlist als Singleton mit Startwarnung aus `Program.cs`.** `ChannelAccessService`
 ist Scoped; eine Warnung „bei jedem Start" braucht einen Ort, der einmal pro Prozess läuft. Neuer
@@ -208,11 +419,16 @@ lockedAtUtc)`; `LockedAtUtc` ist non-null ⇔ Status `LockedByBroadcaster` (Inva
 bestehenden `Channel`-Invariante; `Failed(LockedByBroadcaster)` wirft, damit kein Aufrufer das Datum
 vergisst). `ChannelJoinResultTests` (Unit) wächst mit.
 
-**P12 — Sync-Gate an allen drei env-Stellen, nicht nur an `:369`.** Konzept 3.4 Punkt 2 nennt die
-aufgelöste ID (`ResolveTwitchUserIdAsync`). Die zwei Gates auf die **gespeicherte** ID (`:51`,
-`:169`) kosten je einen indizierten Lookup und schließen die Fälle (a)/(c) aus Konzept 3.4 Punkt 4
-für die Beobachtung ab dem ersten Tick, falls so eine Zeile doch ein JOIN-Kommando bekommt
-(Restore, E10). Dieselbe Wirkung wie `RefuseExcludedChannel`.
+**P12 — Sync-Gate an allen vier env-Stellen, nicht nur an der aufgelösten ID.** Konzept 3.4 Punkt 2 nennt die
+aufgelöste ID. (R3) Die vier Stellen heute: `WarmChannelAsync` `:62`, gespeicherte ID in
+`SyncChannelAsync` `:101`, `ApplyEmoteSetUpdateAsync` `:237`, aufgelöste ID in
+`ResolveWithChargedSearchAsync` `:635` (seit #165 aus `ResolveTwitchUserIdAsync` herausgelöst). Die
+drei Gates auf die **gespeicherte** ID kosten je einen indizierten Lookup und schließen die Fälle
+(a)/(c) aus Konzept 3.4 Punkt 4 für die Beobachtung ab dem ersten Tick, falls so eine Zeile doch ein
+JOIN-Kommando bekommt (Restore, E10). Dieselbe Wirkung wie `RefuseExcludedChannel` (`:484-488`). Der
+Zwilling an `:635` gibt dasselbe Stillschweige-Ergebnis zurück wie der env-Fall
+(`(null, Excluded: true)` o. ä.), damit das Miss-Log still bleibt; dass der #165-Backoff ihn als
+Fehlversuch zählt, ist gewollt (R3.2 d).
 
 **P13 — Reconcile: eigener Pass für gesperrte IDs neben dem env-Pass, unter Zeilensperre.** Der
 unbedingte env-Pass (`:60-80`) bekommt einen Zwilling für die Sperrtabelle (ein Batch-Lookup aller
@@ -242,13 +458,25 @@ dokumentiert — er schreibt nichts Dauerhaftes.
 Entschieden (D3 = A, 2026-10-03): `SyncChannelAsync` wärmt eine Zeile **ohne** gespeicherte ID erst, nachdem
 `ResolveTwitchUserIdAsync` die ID geliefert hat und beide Gates (env, Sperre) passiert sind; schlägt
 die Auflösung fehl, bleibt der Cache für diese Zeile **leer** (`RemoveChannel`, nicht nur „nicht
-wärmen"). `WarmChannelAsync` überspringt id-lose Zeilen (Boot-Recovery synct sie Sekunden später
-ohnehin, `Worker.cs:276`). Zeilen **mit** ID behalten den heutigen Warm-up vor dem 7TV-Aufruf
-(DECISIONS 2026-09-08), geprüft gegen beide Gates auf der gespeicherten ID — die beiden Gates an
-`:77` und `:232` plus `:38` in `WarmChannelAsync`.
+wärmen"). `WarmChannelAsync` überspringt id-lose Zeilen (Boot-Recovery synct sie in der
+Cold-First-Phase, `Worker.cs:154-172`/`:280`). Zeilen **mit** ID behalten den heutigen Warm-up vor dem 7TV-Aufruf
+(DECISIONS 2026-09-08), geprüft gegen beide Gates auf der gespeicherten ID — die Gates an
+`:101` und `:237` plus `:62` in `WarmChannelAsync`.
+**(R3) Vorbehalt — Betreiberpunkt 12:** „synct sie Sekunden später" gilt seit #165 nicht mehr
+verlässlich: die Auflösung wartet auf Backoff und Such-Budget, eine id-lose Zeile bleibt unter D3 = A
+bis zu ~1 h kalt (R3.2 e). Bleibt es bei D3 = A: `RemoveChannel` **einmal am `null`-Ausgang** von
+`SyncChannelAsync` (`:110-113`) statt nur im Fehlschlag-Zweig — so decken alle fünf `null`-Pfade
+(Backoff, Budget, 7TV-Fehler, env/Sperre, Duplikat) dieselbe Garantie ab; der bestehende Test
+`SevenTvSyncServiceTests.cs:1194` (`…_SevenTvUnavailable_EmptyCache_IsWarmedFromPostgres(false)`)
+kippt bewusst und wird umbenannt, der Kommentar `:631-633` angepasst. Fällt der Betreiber auf D3 = B
+zurück, entfallen P16, Test 24 und der Warm-up-Absatz in T4; die Lücke wird im DECISIONS-Eintrag
+mit der #165-Obergrenze benannt.
 
 **P17 (R2, F6) — LEAVE erst nach dem Commit, auch im Reconcile.** `ChannelDeactivation` wird in zwei
-Schritte geteilt: `Stage(db, channel, actor, reason)` (Flags, Stempel, Audit — ohne `SaveChanges`)
+Schritte geteilt: `Stage(db, observationService, channel, actor, reason)` (**(R3)** Beobachtungsintervall
+schließen per `CloseOpenIntervalAsync(…, Leave)` wie heute in `DeactivateAsync`, Flags, Stempel,
+Audit — ohne `SaveChanges`; die Invariante „inaktiv ⇒ kein offenes Intervall" aus #200 hängt daran,
+R3.2 b)
 und ein Publish-Helfer `PublishLeaveAsync(redisPublisher, channelName, ct)`; `DeactivateAsync` bleibt
 als Komposition (Stage → `SaveChanges` → Publish) für `LeaveAsync` und `DeactivateExcludedRowAsync`,
 die keine eigene Transaktion öffnen. Der Lock-Pass des Reconcile (P13) ruft Stage → `SaveChanges` →
@@ -257,9 +485,12 @@ geworfen — dasselbe Muster wie `DeactivateExcludedRowAsync:19-32`.
 
 **P18 (R2, F7) — Jede Signaturänderung wandert mit allen Aufrufern im selben Task.** Der neue
 `JoinAsync`-Parameter wird **als benanntes Argument** an den positionalen Aufrufern nachgezogen
-(`ChannelEndpoints.cs:155`, `AuthFilterMatrixTests.cs:151,167,182,203,210`) — in T4, nicht T5. Der
-neue `ChannelService`-Konstruktorparameter (T3) wird an allen vier Konstruktionsstellen der Tests
-im selben Commit ergänzt (Befund 0.1, letzte Zeile). Die Solution ist nach jedem Task-Commit baubar
+(R3: `ChannelEndpoints.cs:158`, `AuthFilterMatrixTests.cs:172,188,203,224,231`) — in T4, nicht T5. Der
+neue `ChannelService`-Konstruktorparameter (T3) wird an allen **fünf** Konstruktionsstellen der Tests
+im selben Commit ergänzt (R3.2 f, inkl. `ChannelEmoteSetObservationServiceTests.cs:366`); dasselbe
+gilt in T4 für `SevenTvSyncService` (28 Stellen in 6 Dateien), `ChannelIdentityService` (2) und
+`LiveCoverageService` (6) — Liste in R3.2 f. Wer viele Stellen anfasst, darf eine Test-Fabrik je
+Datei einführen, statt 16 Einzeiler zu verlängern; Verhalten der Tests bleibt gleich. Die Solution ist nach jedem Task-Commit baubar
 **und** alle drei Testprojekte kompilieren — das ist Teil der Abnahme jedes Backend-Tasks.
 
 **P19 (R2, F5) — Der Reconcile zählt gesperrte Deaktivierungen getrennt.**
@@ -301,9 +532,14 @@ kennt die Tabelle nicht und ignoriert sie; Prod-Migration **von Hand vor dem Dep
 - `Task<ChannelDataSummary?> GetDataSummaryAsync(string channelName, ct)` (P5) — `record
   ChannelDataSummary(int EmoteCount, int VoteSessionCount, int LiveDayCount)` in Core; `null` ohne
   Zeile; zählt über die drei FK-Beziehungen (Regel 10: drei skalare `COUNT`s über die Kanal-ID,
-  kein Navigations-`GroupBy`).
+  kein Navigations-`GroupBy`). (R3, nur wenn Betreiberpunkt 10 = ja) viertes Feld `TagCount`
+  (`COUNT` über `EmoteTags.ChannelId`).
 - `ListActiveChannelNamesAsync` lässt zusätzlich Zeilen aus, deren `TwitchChannelId` in der
   Sperrtabelle steht (Anti-Join in SQL; die env-Filterung bleibt in-memory wie heute).
+- (R3, nur wenn Betreiberpunkt 11 = ja) `GetActiveByTwitchChannelIdAsync` bzw. der geteilte Helfer
+  `ChannelQueries.LoadActiveChannelByTwitchIdReadOnlyAsync` liefert für eine gesperrte ID `null`
+  (gesperrt sieht aus wie „nicht getrackt", wie bei der env-Liste); die Signatur des Helfers bekommt
+  dafür den Sperr-Service bzw. einen Anti-Join. Kein neuer Vertrag nach außen.
 - (R2, P15) `record TwitchStreamInfo(UserLogin, UserId, StartedAtUtc)` (Core/Twitch);
   `ILiveCoverageService.AddLiveMinutesAsync(IReadOnlyCollection<(string Login, string UserId)>
   liveChannels, DateOnly dateUtc, int minutes, ct)` — Rückgabe wie heute die Zahl der
@@ -324,7 +560,7 @@ kennt die Tabelle nicht und ignoriert sie; Prod-Migration **von Hand vor dem Dep
 | `GET /api/channels/{name}/data-summary` (P5) | Gruppe → `ChannelBroadcasterAuthorizationFilter` | `InteractiveRead` | 200 `{ emoteCount, voteSessionCount, liveDayCount }` · 400 · 401 · 403 · 404 |
 | `POST /api/channels/{name}/join?liftBroadcasterLock=true` (bestehend) | unverändert | unverändert | neu: `LockedByBroadcaster` → **403** `channel_locked_by_broadcaster` für Nicht-Admins; **409** `{ errorCode: channel_locked_by_broadcaster, lockedAtUtc }` für Admins ohne Flag. Mit Flag und Admin-Rolle: gewöhnlicher Join-Ablauf. Das Flag wird als `bool liftBroadcasterLock = false` gebunden (Query) und **nur** als `isGlobalAdmin && liftBroadcasterLock` an den Service gereicht |
 | `GET /api/channels/{name}/audit-log` (bestehend) | Gruppe → **`TrackedChannelFilter`** → `ChannelManagementAuthorizationFilter` | unverändert | neu: 404 `channel_not_found` ohne Zeile, für jeden Principal. (R2, D1 = A) Der Handler reicht `channel.CreatedAt` der **aktuellen** Zeile als `OccurredAfterUtc` an den Filter — Einträge einer früheren Zeile gleichen Namens (Purge → Login-Wiedervergabe → Join des neuen Inhabers) sind nicht mehr lesbar; der `TrackedChannelFilter` legt die geladene Zeile in `HttpContext.Items`, damit der Handler sie nicht erneut lädt |
-| `GET /api/channels/{name}/permissions` (bestehend) | unverändert | unverändert | `ChannelPermissionsDto` + `CanPurgeAsBroadcaster` (P6) |
+| `GET /api/channels/{name}/permissions` (bestehend) | unverändert | unverändert | `ChannelPermissionsDto` + `CanPurgeAsBroadcaster` (P6) — (R3) als letztes Feld **hinter** dem seit #201 vorhandenen `TagRunsEnabled` |
 
 **`ChannelBroadcasterAuthorizationFilter`** (`Api/Auth/`): 400 bei ungültigem Namen → 401 ohne
 Principal → Zeile per `IChannelService.GetByNameAsync` (substituierbar, `ApiFactory`) → 404 ohne
@@ -342,7 +578,8 @@ Der Admin-Dialogtext ist **kein** `errors.api`-Text (eigener Schlüssel, 2.5).
 
 ### 2.5 Frontend
 
-- `ChannelPermissions.canPurgeAsBroadcaster: boolean`.
+- `ChannelPermissions.canPurgeAsBroadcaster: boolean` (R3: neben dem seit #201 vorhandenen
+  `tagRunsEnabled`; jede Fixture, die `ChannelPermissions` von Hand baut, bekommt das Feld).
 - `ChannelService.purgeOwnData(channelName, expectedTwitchUserId): Observable<void>` →
   `DELETE /api/channels/{name}/data?expectedTwitchUserId=…`; invalidiert die Permissions des Kanals.
   `ChannelService.getDataSummary(channelName): Observable<ChannelDataSummary>` (P5).
@@ -351,17 +588,26 @@ Der Admin-Dialogtext ist **kein** `errors.api`-Text (eigener Schlüssel, 2.5).
 - `core/channels/broadcaster-lock.ts`: `readBroadcasterLock(error: unknown): { lockedAtUtc: string } | null`.
 - `shared/channels/join-with-lock-prompt.ts`: `joinWithBroadcasterLockPrompt({ channelService,
   dialog, transloco, lang }, channelName): Observable<ChannelStatus | null>` — `null` = Abbruch
-  (kein zweiter Request); andere Fehler laufen unverändert als Fehler durch. Das Datum wird mit
-  `toLocale(lang)` + `toLocaleString({ dateStyle: 'medium' })` formatiert.
+  (kein zweiter Request); andere Fehler laufen unverändert als Fehler durch — **auch das 403 mit
+  `channel_locked_by_broadcaster`** (ein Mod bekommt eine Meldung, keinen Dialog; nur das 409 des
+  Admins öffnet den Prompt). Das Datum wird mit
+  `toLocale(lang)` + `toLocaleString({ dateStyle: 'medium' })` formatiert. (R3) Aufrufer sind
+  **alle vier** Join-Stellen: `channel-workspace-layout.ts` `rejoin()`, `admin-channels-page.ts`
+  `join()`, `overview-page.ts` `join()` und `reactivate()` (Betreiberpunkt 15; die Übersicht kann den
+  Prompt praktisch nur für Admins zeigen, die dort einen eigenen moderierten Kanal sehen — wichtig ist
+  dort vor allem, dass das 403 seinen Text bekommt, was die Regel-7-Kette ohnehin leistet).
 - i18n-Schlüssel (beide Locales): `channelWorkspace.purgeOwnData` (Knopf), `channelWorkspace.purgeOwnDataDialog.{title,message,inputLabel,confirm}`
-  (Nachricht mit `{{ channelName, emotes, voteSessions, liveDays }}` und den fünf Sätzen aus
+  (Nachricht mit `{{ channelName, emotes, voteSessions, liveDays }}` — (R3) plus `tags`, falls
+  Betreiberpunkt 10 = ja; die Kategorie „Tags des Mod-Teams" steht in jedem Fall im Text — und den fünf Sätzen aus
   Konzept 3.1 Punkt 2 **inklusive der Nachweisgrenze**), `channelWorkspace.errors.purgeOwnDataFailed`,
-  `channels.broadcasterLock.liftConfirm` („Der Streamer hat diesen Kanal am {{ date }} gelöscht und
-  gesperrt. Trotzdem hinzufügen?") + `channels.broadcasterLock.liftConfirmLabel`,
+  `broadcasterLock.liftConfirm` („Der Streamer hat diesen Kanal am {{ date }} gelöscht und
+  gesperrt. Trotzdem hinzufügen?") + `broadcasterLock.liftConfirmLabel` — (R3) eigene Wurzel
+  `broadcasterLock.*`, weil es keine `channels.*`-Wurzel gibt und der Helfer von drei Features
+  (Workspace, Admin, Übersicht) genutzt wird,
   `account.delete.channelHint` („Die Daten deines Kanals *{{ login }}* bleiben erhalten und werden
   weiter gezählt. Wenn du sie löschen willst, tu das zuerst im Workspace deines Kanals.").
 - Nach 204: `channelService.invalidatePermissions(channelName)`, Navigation zur Übersicht
-  (Route `''`, `web/src/app/app.routes.ts:40`).
+  (Route `''`, `web/src/app/app.routes.ts:43`, R3).
 
 ### 2.6 Konfiguration (3.8)
 
@@ -417,10 +663,12 @@ Ausgangslage grün bekannt sein.
 `dotnet ef migrations add AddBroadcasterChannelLocks --project src/EmotePurge.Infrastructure
 --startup-project src/EmotePurge.Api` (erzeugt `.cs`, `.Designer.cs`, aktualisiert
 `AppDbContextModelSnapshot.cs` — **Migration nur generieren, nicht gegen die Dev-DB anwenden**:
-die Testcontainer-Suite migriert ihre eigene DB); neu
+die Testcontainer-Suite migriert ihre eigene DB; (R3) die neue Migration folgt auf
+`20261005085930_AddEmoteTagPlacements` — der Task prüft per `dotnet ef migrations list`, dass sie
+die jüngste ist und der generierte Snapshot-Diff **nur** die neue Tabelle enthält; neu
 `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` und
 `BroadcasterChannelLockService.cs`; `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`
-(Scoped-Registrierung neben `:76`); neu
+(Scoped-Registrierung neben `IChannelService` `:89`, R3); neu
 `tests/EmotePurge.Infrastructure.Tests/Integration/BroadcasterChannelLockServiceTests.cs`
 (`[Collection("Postgres")]`, Muster `ChannelRetentionPurgeTests`); `docs/DECISIONS.md` (neuer
 Eintrag, oben einsortiert).
@@ -463,18 +711,21 @@ Unabhängig von T1 (berührt weder Sperre noch Purge).
 `GlobalAdminAllowlist.cs` (Singleton; liest beide Listen in beiden Formen, Muster
 `ExcludedChannelFilter.ReadExcludedChannelIds`); `ChannelAccessService.cs` (`IsGlobalAdmin`
 delegiert, `IConfiguration` raus, `GetAdminLogins` weg); `ServiceCollectionExtensions.cs`
-(Singleton-Registrierung neben `:74`); `src/EmotePurge.Api/Program.cs` (einmaliges Auflösen nach
-`Build()`, Kommentar warum); `src/EmotePurge.Api/appsettings.json:44` (`"AdminTwitchUserIds": []`
+(Singleton-Registrierung neben `IExcludedChannelFilter` `:87`, R3); `src/EmotePurge.Api/Program.cs` (einmaliges Auflösen nach
+`Build()` `:255`, Kommentar warum); `src/EmotePurge.Api/appsettings.json:58` (`"AdminTwitchUserIds": []`
 dazu); `.env.example` (`ADMIN_TWITCH_USER_IDS=` mit Kommentar „preferred; ADMIN_TWITCH_LOGINS is
 the transitional fallback"); `docker-compose.yml:70` / `docker-compose.prod.yml:71` (zweite Zeile);
-`README.md:65,104`; `docs/Operations.md` (neuer Unterabschnitt „Global admins" nahe `:382`:
+`README.md:65,104`; `docs/Operations.md` (R3: **neuer Abschnitt** „Global admins" — es gibt keinen;
+Vorschlag direkt vor „Excluding a chatter" `:207`:
 Schlüssel, Übergang, Warnungen, wie man die eigene ID findet — `GET helix/users?login=` wie in
-`:247`); `docs/Architectur.md:130` (Rollenquellen-Tabelle: Quelle ist jetzt die ID, Login nur
-Übergang) und `:210`; `PRODUCT.md:52`; Tests
+`:216`/`:283`; außerdem `:418` „one of `Auth:AdminTwitchLogins`" in „Account deletion on request"
+(#243) auf die ID-Liste umstellen); `docs/Architectur.md:132` (Rollenquellen-Tabelle: Quelle ist jetzt die ID, Login nur
+Übergang) und `:216`; `PRODUCT.md:52`; (R3) die Kommentare `ChannelEndpoints.cs:153-154` und
+`AuthEndpoints.cs:140`, die `Auth:AdminTwitchLogins` als Quelle von `IsGlobalAdmin` nennen; Tests
 `tests/EmotePurge.Infrastructure.Tests/Unit/ChannelAccessServiceAdminTests.cs` (umbauen auf den
 Allowlist-Typ; Datei darf in `GlobalAdminAllowlistTests.cs` umbenannt werden),
 `ChannelAccessServiceTests.cs` (`CreateService` baut die Allowlist aus `Auth:AdminTwitchUserIds`,
-Principal-ID `"42"`), `tests/EmotePurge.Api.Tests/ApiFactory.cs:167` und
+Principal-ID `"42"`), `tests/EmotePurge.Api.Tests/ApiFactory.cs:241` (R3) und
 `SessionRejectionTests.cs:151` (zusätzlich `Auth:AdminTwitchUserIds` leer setzen — der Admin wird
 dort über das `IChannelAccessService`-Substitut gestellt, die Settings sind nur Hygiene);
 `docs/DECISIONS.md` (eigener Eintrag).
@@ -523,11 +774,25 @@ Setzt T1 voraus. Regel 11.
 Audit + `Remove`, den `PurgeAsync`, `PurgeIfInactiveSinceAsync` und der neue Pfad teilen —
 Verhalten der beiden bestehenden Pfade bleibt byte-gleich: Admin ohne Details, Retention mit
 `{ reason = "retention" }`); neue Konstante `BroadcasterPurgeReason = "broadcasterRequest"`;
-`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelServiceTests.cs:928` (`CreateService`
-bekommt den Sperr-Service; Default: echte Implementierung auf demselben `db`) **und die drei
-weiteren Konstruktionsstellen (R2, P18):** `ChannelServiceCapacityTests.cs:133`,
-`DataRetentionServiceTests.cs:489`, `ChannelIdentityServiceTests.cs:535`; neu
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelServiceTests.cs:985` (`CreateService`
+bekommt den Sperr-Service; Default: echte Implementierung auf demselben `db`) **und die vier
+weiteren Konstruktionsstellen (R2, P18; R3 Zeilen):** `ChannelServiceCapacityTests.cs:133`,
+`DataRetentionServiceTests.cs:490`, `ChannelIdentityServiceTests.cs:641`, **(R3, neu)**
+`ChannelEmoteSetObservationServiceTests.cs:366`. (R3) Der Konstruktor trägt seit #200 zusätzlich
+`IChannelEmoteSetObservationService` — der neue Parameter kommt dazu, nichts fällt weg; neu
 `ChannelBroadcasterPurgeTests.cs`; `docs/DECISIONS.md` (Absätze im T1-Eintrag).
+
+**(R3) Zielmenge der Kaskade:** `Remove(channel)` löscht über `ON DELETE CASCADE` heute **dreizehn**
+abhängige Tabellen mit (R3.2 a), darunter `ChannelEmoteSetObservations`,
+`EmoteSetLeaveObservations` und die vier Tag-Tabellen aus #201. Kein expliziter Löschcode dafür —
+die Kaskade ist der Vertrag; Test 1 belegt ihn. Ein **offenes** Beobachtungsintervall braucht beim
+Purge kein `CloseOpenIntervalAsync` (es fällt mit der Zeile).
+
+**(R3) Grenzfall Purge während laufender 7TV-Sync (#59, DECISIONS 2026-10-03):** Der Worker hält
+für die Sync keine Zeilensperre; sein Save scheitert nach dem Purge als „vanished row" und liefert
+`null`, der Re-Read räumt den Match-Cache, der Prune räumt Geister ≤ 2 Ticks. Der Purge nimmt
+`ChannelSyncGate` nicht (anderer Prozess) — dieselbe akzeptierte Grenze wie Admin-Purge und Leave.
+Kein Code, ein Satz im DECISIONS-Absatz.
 
 **Vertrag — Ablauf von `PurgeByBroadcasterAsync` (Reihenfolge bindend):**
 1. Normalisieren; Zeile unter dem Routennamen **ungesperrt** lesen. Keine → `NotFound`.
@@ -552,12 +817,17 @@ weiteren Konstruktionsstellen (R2, P18):** `ChannelServiceCapacityTests.cs:133`,
 8. Ergebnis `Purged`.
 
 `GetDataSummaryAsync(name)` (P5): drei `COUNT`s über `ChannelId` (Emotes, VoteSessions,
-ChannelLiveDays), `null` ohne Zeile; keine Autorisierung im Service (der Filter macht sie).
+ChannelLiveDays) — (R3) plus `EmoteTags`, falls Betreiberpunkt 10 = ja —, `null` ohne Zeile; keine
+Autorisierung im Service (der Filter macht sie).
 
 **Tests (Integration, `ChannelBroadcasterPurgeTests`, Muster `ChannelRetentionPurgeTests` mit
 `PostgresLockProbe` für die Rennen):**
-1. Zeile mit eigener ID, mit Emotes/UsageStats/LiveDays/VoteSession/Votes → `Purged`; alle
-   Kaskaden leer; genau ein `channel.purge` mit Name und `broadcasterRequest`; Sperrzeile mit Datum;
+1. Zeile mit eigener ID, mit Emotes/UsageStats/LiveDays/VoteSession/VoteSessionEmotes/Votes und
+   (R3) einem offenen und einem geschlossenen `ChannelEmoteSetObservation`, einer
+   `EmoteSetLeaveObservation` sowie einem Tag mit Entry, Placement, Activation und Operation
+   (Fixture-Hilfe: `Fixtures/EmoteTagInvariants.cs`, Muster `EmoteTagServiceTests`) → `Purged`;
+   **alle dreizehn** abhängigen Tabellen für diesen Kanal leer, die Zeilen eines zweiten Kanals
+   unberührt; genau ein `channel.purge` mit Name und `broadcasterRequest`; Sperrzeile mit Datum;
    genau ein LEAVE **nach** dem Commit (Reihenfolge per `Received.InOrder` oder Zeitstempel-Probe
    gegen einen zweiten Kontext, der die Zeile beim Publish nicht mehr sieht).
 2. Zeile mit fremder ID → `NotBroadcaster`; nichts gelöscht, kein Audit, keine Sperre, kein Helix-Aufruf.
@@ -565,7 +835,9 @@ ChannelLiveDays), `null` ohne Zeile; keine Autorisierung im Service (der Filter 
 4. Id-lose Zeile, `Found` fremde ID → `NotBroadcaster`, nichts geschrieben.
 5. Id-lose Zeile, `Unavailable` bzw. `NotFound` → `IdentityUnresolved`, nichts geschrieben.
 6. Hauptzeile (eigene ID, Name A) + id-loses Duplikat (Name B = Routenname), Lookup(B) → eigene ID
-   → **beide** gelöscht, zwei Audit-Einträge, zwei LEAVEs, eine Sperre.
+   → **beide** gelöscht, zwei Audit-Einträge, zwei LEAVEs, eine Sperre. (R3) Das Duplikat trägt
+   einen Tag — seit #201 verweigert der Reconcile den Merge einer Zeile mit Tags, solche Duplikate
+   leben also länger; der Purge nimmt sie samt Tags mit.
 7. Hauptzeile + id-loses Duplikat unter altem Login, Route = Hauptname → nur die Hauptzeile fällt,
    das Duplikat bleibt (Nachweisgrenze); Route = Duplikatname mit `Found` fremde ID → `NotBroadcaster`.
 8. Unbekannter Name → `NotFound`, kein Helix-Aufruf, nichts geschrieben.
@@ -574,7 +846,7 @@ ChannelLiveDays), `null` ohne Zeile; keine Autorisierung im Service (der Filter 
    testbar, dass der Join eine neue Zeile anlegt; der Sperr-Zweig kommt in T4 dazu; Test in T4
    fertigstellen).
 10. Zweiter Aufruf nach `Purged` → `NotFound`.
-11. `GetDataSummaryAsync`: Zahlen stimmen; ohne Zeile `null`.
+11. `GetDataSummaryAsync`: Zahlen stimmen (R3: inkl. `TagCount`, falls Punkt 10 = ja); ohne Zeile `null`.
 12. Bestehende Purge-Tests (`ChannelRetentionPurgeTests`, Admin-Purge in `ChannelServiceTests`)
     bleiben unverändert grün (Helfer-Refactoring ohne Verhaltensänderung).
 
@@ -600,24 +872,42 @@ meisten Nebenläufigkeitsfallen — deshalb `opus`.
 
 **Dateien:** `IChannelService.cs` (Status, Flag, `ChannelJoinResult`), `ChannelService.cs`
 (`JoinAsync`, `HandleUnknownTwitchLoginAsync`, `CompleteJoinAsync` — Audit-Details —,
-`ListActiveChannelNamesAsync`), `ChannelDeactivation.cs` (Stage/Publish-Teilung + `reason`, P13/P17),
-`ChannelIdentityService.cs` (Lock-Pass neben `:60-80`, id-loser Pass `:313` inkl. D2-Zweig,
-Konstruktor), `IChannelIdentityService.cs` (`ChannelIdentityReconcileSummary` + Zähler, P19) und
-`src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs:84-85` (Summenzeile), `SevenTvSyncService.cs`
-(drei Gates + Warm-up-Reihenfolge P16, Konstruktor), **(R2, P15)** `src/EmotePurge.Core/Twitch/TwitchModels.cs:38`,
+`ListActiveChannelNamesAsync`), `ChannelDeactivation.cs` (Stage/Publish-Teilung + `reason`, P13/P17;
+(R3) `Stage` schließt das Beobachtungsintervall, R3.2 b),
+`ChannelIdentityService.cs` (Lock-Pass neben dem env-Pass `:61-81`, id-loser Pass `:314` inkl. D2-Zweig,
+Konstruktor), `IChannelIdentityService.cs` (`ChannelIdentityReconcileSummary` `:95-102` + Zähler, P19 — (R3) auch
+die vier positionalen Konstruktionen in `ChannelIdentityService.cs` (`:50`, `:93`, `:109`, `:162`) und `EmptySummary` in
+`TwitchIdentityReconcileWorker.cs:17` wachsen mit; die beiden Frühausgänge ohne App-Token `:93` bzw.
+bei Helix-Ausfall `:109` liefern heute nur dann eine Summe, wenn `counters.Deactivated > 0` — da der
+Lock-Pass wie der env-Pass **vor** diesen Ausgängen läuft, muss die Bedingung auch
+`LockedDeactivated > 0` zählen, sonst verschwindet eine Lock-Deaktivierung während eines
+Helix-Ausfalls aus dem Log) und
+`src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs:83-85` (Summenzeile), `SevenTvSyncService.cs`
+(vier Gates `:62/:101/:237/:635` + Warm-up-Reihenfolge P16, Konstruktor `:14-25`), **(R2, P15)** `src/EmotePurge.Core/Twitch/TwitchModels.cs:38`,
+**(R3, fehlte in R2)** `src/EmotePurge.Infrastructure/Twitch/TwitchApiDtos.cs:76-80` (`TwitchStreamDto` hat
+kein `UserId`-Feld — ohne es kann der Client `user_id` nicht durchreichen),
 `src/EmotePurge.Infrastructure/Twitch/TwitchHelixClient.cs:179-180`, `src/EmotePurge.Core/Services/ILiveCoverageService.cs`,
-`src/EmotePurge.Infrastructure/Services/LiveCoverageService.cs`, `src/EmotePurge.Worker/TwitchLivePollWorker.cs:93-97`;
-**(R2, P18) alle positionalen `JoinAsync`-Aufrufer:** `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs:155`
+`src/EmotePurge.Infrastructure/Services/LiveCoverageService.cs`, `src/EmotePurge.Worker/TwitchLivePollWorker.cs:93-97`
+(weitere `TwitchStreamInfo`-Leser: `ITwitchHelixClient.cs:22`, `TwitchLivePollWorker.cs:116`; kein Test baut den Typ);
+**(R3, nur wenn Betreiberpunkt 11 = ja)** `src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs:102-113`
+und `src/EmotePurge.Infrastructure/Services/EmoteService.cs:229,241` (R3.2 c; Testmuster
+`EmoteServiceTests`-Fälle zum env-gesperrten Kanal, `SevenTvEndpoints`-Fälle über das
+`IChannelService`-Substitut bleiben unberührt);
+**(R2, P18) alle positionalen `JoinAsync`-Aufrufer:** `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs:158`
 (benanntes Argument `liftBroadcasterLock: false` — der volle 403/409-Arm kommt in T5, der minimale
-Arm und der Aufruf müssen hier kompilieren) und `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs:151,167,182,203,210`
-(`Arg.Any<bool>()` für das Flag ergänzen). Tests: `Unit/ChannelJoinResultTests.cs`,
+Arm und der Aufruf müssen hier kompilieren) und `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs:172,188,203,224,231`
+(`Arg.Any<bool>()` für das Flag ergänzen); **(R3) Konstruktor-Welle** `SevenTvSyncService` (28 Stellen in
+6 Testdateien), `ChannelIdentityService` (2), `LiveCoverageService` (6) — Liste in R3.2 f. Tests: `Unit/ChannelJoinResultTests.cs`,
 `Integration/ChannelServiceTests.cs`, `ChannelBroadcasterPurgeTests.cs` (Test 9 fertigstellen),
-`ChannelIdentityServiceTests.cs`, `SevenTvSyncServiceTests.cs` (`:895`, `:919`, `:953` Muster;
-`WarmChannel_*` `:975-1008`), `LiveCoverageServiceTests.cs`, neu
+`ChannelIdentityServiceTests.cs` (Muster `:564` Intervall, `:664`/`:693` ohne Token/Helix, `:723`
+werfender Publisher), `SevenTvSyncServiceTests.cs` (R3: `:1058`, `:1082`, `:1116` Muster;
+`WarmChannel_*` `:1138-1190`; `:1194` kippt unter D3 = A), `SevenTvSyncServiceSearchBudgetTests.cs`
+(Sperr-Zwilling an `:635` verbraucht die Suche wie der env-Fall), `LiveCoverageServiceTests.cs`, neu
 `Integration/ChannelServiceBroadcasterLockTests.cs`, `tests/EmotePurge.Infrastructure.Tests/Unit/TwitchHelixClientTests.cs`
-(DTO-Feld); `docs/DECISIONS.md` (Absätze im T1-Eintrag).
+(DTO-Feld — (R3) dort gibt es für Streams nur einen Fehlerfall `:105`; Test 21 braucht einen neuen
+Positiv-Stub); `docs/DECISIONS.md` (Absätze im T1-Eintrag).
 **`ChannelEndpoints.cs` bricht mit CS8509, sobald der Enum-Wert existiert** — T4 ergänzt dort den
-minimalen Arm (403 `channel_locked_by_broadcaster` für alle) und zieht den Aufruf `:155` nach; T5
+minimalen Arm (403 `channel_locked_by_broadcaster` für alle) und zieht den Aufruf `:158` nach; T5
 baut den Arm auf die 403/409-Logik aus. So bleibt die Solution zwischen T4 und T5 baubar.
 
 **Vertrag Join (P3):** nach `ResolveJoinTargetAsync` bzw. nach dem Lock in
@@ -627,22 +917,45 @@ stagen, Audit-Detail `{ broadcasterLockLifted = true }`, weiter; (2) `isGlobalAd
 liftBroadcasterLock` → `UnlockAsync`, Detail `{ broadcasterLockLifted = true, liftedByAdmin = true,
 lockedAtUtc }`, weiter; (3) `isGlobalAdmin` ohne Flag → `Failed`/`LockedByBroadcaster(lockedAt)`;
 (4) sonst → dasselbe. Flag ohne Admin-Rolle ist bedeutungslos (Fall 4). Die Audit-Details landen
-im bestehenden `channel.join`-Eintrag (`:514` bekommt `details`). Eine neue Zeile (Helix
+im bestehenden `channel.join`-Eintrag (R3: `:530` bekommt `details`). Eine neue Zeile (Helix
 `Unavailable`, id-los) kann keine gespeicherte ID haben — der Inhaber-Join im Ausfall legt sie an,
 die Sperre bleibt (Konzept 5 „Twitch nicht erreichbar"; im DECISIONS-Eintrag nennen).
 
 **Vertrag Roster:** `ListActiveChannelNamesAsync` ergänzt die Query um `!Locks.Any(l =>
 l.TwitchChannelId == c.TwitchChannelId)` (SQL-Anti-Join, id-lose Zeilen matchen nie).
 
-**Vertrag Sync-Gate (P12):** an `:51`, `:169` (gespeicherte ID) und `:369` (aufgelöste ID, **vor**
-Duplikat-Suche und Backfill): Sperre → `RefuseExcludedChannel`-Analog (Match-Cache räumen, Debug-Log
+**Vertrag Sync-Gate (P12, R3-Zeilen):** an `:62` (`WarmChannelAsync`), `:101` und `:237`
+(gespeicherte ID) und `:635` (aufgelöste ID in `ResolveWithChargedSearchAsync`, **vor**
+Duplikat-Suche `:646-655` und Backfill): Sperre → `RefuseExcludedChannel`-Analog (`:484-488`; Match-Cache räumen, Debug-Log
 „7TV sync skipped: the channel is locked by its broadcaster." — nicht geheim, aber ohne Namen, aus
-demselben Grund wie `:260-265`), Rückgabe wie beim env-Fall. Reihenfolge: env zuerst, dann Sperre.
+demselben Grund wie beim env-Fall), Rückgabe wie beim env-Fall — an `:635` also dasselbe
+Stillschweige-Flag, damit `ResolveTwitchUserIdAsync` keinen Miss loggt (R3.2 d). Reihenfolge: env
+zuerst, dann Sperre. **(R3)** Ein Sync-Abbruch wegen Sperre öffnet kein Beobachtungsintervall: das
+Gate liegt vor `RecordObservedSetAsync` — der Test zu (13) prüft zusätzlich, dass für die Zeile kein
+offenes `ChannelEmoteSetObservation` entsteht.
+
+**(R3) Vertrag zusätzliche env-Stellen — nur wenn Betreiberpunkt 11 = ja:** (a)
+`ChannelQueries.LoadActiveChannelByTwitchIdReadOnlyAsync` liefert bei gesperrter ID `null` (ein
+Lookup, der Helfer ist der eine Punkt für Ziel-Picker, Editierbarkeits-Vorprüfung und Papier-Eintrag);
+(b) `EmoteService.MarkInSetAsync` Schritt 2 lässt Treffer-Kanäle mit gesperrter ID aus (ein
+Batch-Lookup über die Kandidaten-IDs, nicht je Zeile), Schritt 3 meldet einen gesperrten erwarteten
+Kanal als `notTracked` — „gesperrt sieht aus wie nicht getrackt", wie bei der env-Liste. Tests im
+Muster der vorhandenen env-Fälle in `EmoteServiceTests.cs` (`ExcludedTwitchChannelId` u. a.). Bei
+„nein": der DECISIONS-Absatz nennt die drei Stellen als bewusst ungeprüft und begründet es mit der
+Konvergenz über Roster/Sync/Reconcile (≤ 1 h).
+
+**(R3) Bewusst ohne Sperr-Zwilling** (im DECISIONS-Absatz nennen, damit die Abnahme-Zählung nicht
+als Lücke gelesen wird): `ChannelService.cs:410,453` (Log-Beruhigung bei Rename/Neuanlage),
+`ChannelIdentityService.cs:229` (Known-ID-Verteidigung in der Tiefe — der Lock-Pass davor hat die
+Zeile schon erledigt), `:270` (Log-Beruhigung), `:412` (Nachprüfung im env-Pfad — der Lock-Pass hat
+seine eigene unter Zeilensperre), `:595` (`MergeAsync`-Schutz gegen `IsBotActive |=` — ein
+gesperrter Überlebender wird im selben Tick vom Lock-Pass deaktiviert).
 
 **Vertrag Reconcile (P13, P17, P19):** Lock-Pass vor Token/Helix; je Treffer eigene Transaktion,
 `LoadChannelByTwitchIdForUpdateAsync`, Zeile weg/inaktiv/andere ID → nichts; `GetLockedAtUtcAsync`
 erneut unter der Sperre → `null` (Inhaber-Join war schneller) → nichts, sonst
-`ChannelDeactivation.Stage(…, reason: "locked")` mit Name → `SaveChanges` → **Commit → erst dann
+`ChannelDeactivation.Stage(…, reason: "locked")` mit Name (R3: schließt dabei das offene
+Beobachtungsintervall) → `SaveChanges` → **Commit → erst dann
 LEAVE** (Publish-Fehler: Warnung mit Zählwert, kein Abbruch des Ticks); `settledChannelIds` wie beim
 env-Pass, Zähler **`LockedDeactivated`** (nicht `Deactivated`). Id-loser Pass: aufgelöste ID
 gesperrt → ID schreiben (falls frei) + deaktivieren unter derselben Zeilensperre, gleiche
@@ -659,11 +972,11 @@ jede Helix-ID `IExcludedChannelFilter.IsExcluded` und `IBroadcasterChannelLockSe
 gespeicherter ID gilt.
 
 **Vertrag nicht auflösbare Altzeilen (R2, D2 = A):** im id-losen Pass, Zweig
-`NotFound` (`ChannelIdentityService.cs:320-334`): ist die Zeile aktiv **und** `CreatedAt` älter als
+`NotFound` (R3: `ChannelIdentityService.cs:321-335`, Zähler `:326`): ist die Zeile aktiv **und** `CreatedAt` älter als
 7 Tage **und** (`LastSyncedAtUtc` ist `null` **oder** älter als 7 Tage) → eigene Transaktion,
 `LoadChannelByIdAsync`-Pendant mit `FOR UPDATE` (neuer `ChannelQueries`-Helfer per Primärschlüssel
 oder `LoadChannelForUpdateAsync` per Name mit Id-Nachprüfung), erneut `IsBotActive` prüfen, dann
-`Stage(…, reason: "loginUnresolvable")` **mit** Name → Commit → LEAVE; Zähler
+`Stage(…, reason: "loginUnresolvable")` **mit** Name (R3: inkl. Intervall-Schließen) → Commit → LEAVE; Zähler
 `UnresolvableDeactivated`; die bestehende Einmal-Warnung bleibt. Sieben Tage sind eine Konstante
 neben `RetentionPolicy` (benannt, kommentiert), keine Konfiguration. Die Zeile läuft danach wie
 jedes „Verlassen" in die 180-Tage-Retention — damit stimmt der Satz aus Konzept 3.3 wieder.
@@ -684,16 +997,17 @@ jedes „Verlassen" in die 180-Tage-Retention — damit stimmt der Satz aus Konz
   fertig: Mod-Join wartet an der Sperre und endet auf `LockedByBroadcaster`; Inhaber-Join wartet und
   legt neu an, Sperre weg.
 - `SevenTvSyncServiceTests`: (12) id-lose Zeile, 7TV löst auf gesperrte ID → kein Backfill, kein Set,
-  Match-Cache leer, kein Fehlversuch aufgezeichnet (Muster `:919`); (13) gespeicherte ID gesperrt →
-  weder 7TV-Aufruf noch Cache-Warm-up (Muster `:895`); (14) `ApplyEmoteSetUpdate` mit gesperrter ID
-  → nichts geschrieben (Muster `:953`).
+  Match-Cache leer, kein Fehlversuch aufgezeichnet, kein Miss-Log (R3: Muster `:1082`; der #165-Backoff
+  zählt den Fall — gewollt); (13) gespeicherte ID gesperrt →
+  weder 7TV-Aufruf noch Cache-Warm-up noch offenes Beobachtungsintervall (R3: Muster `:1058`); (14) `ApplyEmoteSetUpdate` mit gesperrter ID
+  → nichts geschrieben, auch keine `EmoteSetLeaveObservation` (R3: Muster `:1116`).
 - `ChannelIdentityServiceTests`: (15) aktive Zeile mit gesperrter ID → deaktiviert, `channel.leave`
   mit Name und `locked`, LEAVE publiziert, Zähler; (16) **deterministisches Rennen** (zwei Kontexte,
   `PostgresLockProbe`): Inhaber-Join hält die Zeilensperre und löscht die Sperrzeile; der
   Reconcile wartet, prüft erneut, schreibt nichts — Zeile bleibt aktiv; (17) Gegenrichtung:
   Reconcile hält die Sperre, Join wartet, findet die Zeile deaktiviert, reaktiviert sie (Inhaber)
   bzw. scheitert (Mod); (18) ohne App-Token/Helix `Unavailable` läuft der Lock-Pass trotzdem
-  (Muster `:557`, `:586`); (19) id-lose Zeile, Helix-Login löst auf gesperrte ID → ID geschrieben +
+  (R3: Muster `:664`, `:693`; die Summe des Frühausgangs nennt `LockedDeactivated`); (19) id-lose Zeile, Helix-Login löst auf gesperrte ID → ID geschrieben +
   deaktiviert.
 - Bestehende `forExclusion`-Aufrufer-Tests bleiben grün (Signaturwechsel ist mechanisch).
 - (R2) Zusätzlich: (20) `LiveCoverageServiceTests`: Stream mit gesperrter Helix-ID auf einer
@@ -702,12 +1016,15 @@ jedes „Verlassen" in die 180-Tage-Retention — damit stimmt der Satz aus Konz
   `TwitchStreamInfo.UserId` gelesen; (22) `ChannelIdentityServiceTests`: der Lock-Pass publiziert
   LEAVE **nach** dem Commit — ein aufzeichnender Publisher liest beim Publish aus einem zweiten
   Kontext `IsBotActive == false`; ein werfender Publisher lässt die Deaktivierung committed und den
-  Tick weiterlaufen (Muster `:616`); (23) Summenzeile enthält `LockedDeactivated` (Worker-Test
+  Tick weiterlaufen (R3: Muster `:723`); (R3) dazu (15a) das offene Beobachtungsintervall der
+  deaktivierten Zeile ist geschlossen (Muster `:564`); (23) Summenzeile enthält `LockedDeactivated` (Worker-Test
   `tests/EmotePurge.Worker.Tests/`, falls dort ein Formatter-Test existiert — sonst nur der
   Summen-Record-Test); (24, D3 = A) `SevenTvSyncServiceTests`: id-lose Zeile mit Emotes in Postgres,
   7TV-Auflösung schlägt fehl → Match-Cache **leer**; 7TV löst auf eine gesperrte ID → leer; 7TV löst
   auf eine freie ID → warm und Backfill; `WarmChannel_*`: id-lose Zeile bleibt kalt, Zeile mit ID
-  wie `:975`; ein Aufzeichnungstest, dass `UsageStatFlushService` für die kalte Zeile nichts
+  wie `:1138` (R3); **(R3)** der bestehende Test `:1194` kippt (id-lose Zeile, 7TV nicht
+  erreichbar → **kalt** statt warm), und je ein Fall für die neuen `null`-Pfade aus #165 (Backoff
+  nicht fällig, Budget verweigert) → kalt — beides nur unter D3 = A (Betreiberpunkt 12); ein Aufzeichnungstest, dass `UsageStatFlushService` für die kalte Zeile nichts
   persistiert, ist nicht nötig — ohne Cache-Einträge entsteht kein Zähler (`EmoteUsageCounter`),
   das deckt `EmoteMatchCacheTests` ab; (25, D2 = A) `ChannelIdentityServiceTests`: aktive id-lose
   Zeile, Helix `NotFound`, `CreatedAt` 8 Tage, `LastSyncedAtUtc` `null` → deaktiviert, Audit
@@ -722,21 +1039,24 @@ jedes „Verlassen" in die 180-Tage-Retention — damit stimmt der Satz aus Konz
 - [ ] Roster, Sync-Gate (+ Warm-up-Reihenfolge, D3), `ChannelDeactivation` (Stage/Publish),
       Reconcile (Lock-Pass, Commit-dann-Publish, Zähler; D2-Zweig).
 - [ ] Live-Abdeckung (DTO, Helix-Client, Service, Worker-Aufruf).
-- [ ] Tests 1–25.
+- [ ] Tests 1–25 (R3: plus 15a und — bei Betreiberpunkt 11 = ja — die `EmoteServiceTests`-Fälle zu
+      `MarkInSetAsync` und ein Fall für `GetActiveByTwitchChannelIdAsync`).
 - [ ] DECISIONS: Absätze „four read points", „who lifts the lock and how it is audited", „Helix
       outage: owner join leaves an id-less row, lock stays, self-healing", „why the reconcile locks
       the row where the exclusion gate does not" im T1-Eintrag; `**Betrifft:**` ergänzen.
 - [ ] Gates Backend (inkl. `tests/EmotePurge.Worker.Tests` — unverändert, aber die Solution-Suite
       läuft ohnehin ganz).
 - [ ] Commits (zwei): `feat(infrastructure): enforce the broadcaster lock on join, sync, roster and
-      reconcile` (alles außer der Live-Abdeckung) und `feat(worker): keep locked and excluded
+      reconcile` (alles außer der Live-Abdeckung; bei Punkt 11 = ja inkl. der #200-Stellen) und `feat(worker): keep locked and excluded
       channels out of the live coverage` (P15 — Core-DTO, Helix-Client, Service, Worker, Tests;
       eigener DECISIONS-Absatz, weil der `TwitchStreamInfo`-Vertrag sich ändert).
 
 **Abnahme:** Tests grün; `grep -n "IsExcluded" ChannelService.cs SevenTvSyncService.cs
 ChannelIdentityService.cs LiveCoverageService.cs` und `grep -n "GetLockedAtUtcAsync"` zeigen an
 jeder env-Stelle ein Sperr-Gegenstück (Join ×3, Sync ×4 inkl. `WarmChannelAsync`, Roster ×1,
-Reconcile ×2, Live-Abdeckung ×1); `grep -n "PublishAsync" ChannelIdentityService.cs` zeigt im
+Reconcile ×2, Live-Abdeckung ×1; (R3) bei Punkt 11 = ja zusätzlich `ChannelQueries` ×1 und
+`EmoteService` ×2) — außer an den in „Bewusst ohne Sperr-Zwilling" genannten Stellen, die der
+DECISIONS-Absatz aufzählt; `grep -n "PublishAsync" ChannelIdentityService.cs` zeigt im
 Lock-Pass den Publish **nach** `CommitAsync`.
 
 ### T5 — Api: Filter, Endpoints, Error-Codes, Join-Mapping, Audit-Log-404 (`sonnet`)
@@ -745,18 +1065,19 @@ Lock-Pass den Publish **nach** `CommitAsync`.
 Filter-Reihenfolge → `AuthFilterMatrixTests`).
 
 **Dateien:** neu `src/EmotePurge.Api/Auth/ChannelBroadcasterAuthorizationFilter.cs`,
-`TrackedChannelFilter.cs`, `BroadcasterOwnership.cs`; (R2, D1 = A) `src/EmotePurge.Core/Services/IAuditLogQueryService.cs:68`
-(`AuditLogFilter.OccurredAfterUtc`), `src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs:93-99`
+`TrackedChannelFilter.cs`, `BroadcasterOwnership.cs`; (R2, D1 = A) `src/EmotePurge.Core/Services/IAuditLogQueryService.cs:136` (R3)
+(`AuditLogFilter.OccurredAfterUtc`), `src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs:124-130` (R3; `ApplyFilter` ab `:112`)
 (Untergrenze), `tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs`
 (Regressionsprobe — der eine Infrastructure-Anteil dieses Tasks); `src/EmotePurge.Api/Validation/ApiErrorCodes.cs`
 (zwei Codes); `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` (zwei neue Routen; Join-Switch mit
 403/409-Verzweigung und `lockedAtUtc`; Query-Bindung `liftBroadcasterLock`; `TrackedChannelFilter`
-am Audit-Log; `ChannelPermissionsDto` + `CanPurgeAsBroadcaster`); `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs`
+am Audit-Log; `ChannelPermissionsDto` + `CanPurgeAsBroadcaster` hinter `TagRunsEnabled` — (R3) der
+`/permissions`-Handler löst inzwischen `EmoteTagOptions` mit auf, das bleibt); `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs`
 (+ ggf. neue Datei `ChannelBroadcasterPurgeEndpointTests.cs`, wenn die Matrix-Datei zu groß wird);
 `tests/EmotePurge.Api.Tests/ApiFactory.cs` (nichts Neues nötig — `Channels` und `ChannelAccess` sind
 substituiert; `GetByNameAsync` je Test konfigurieren); `docs/Architectur.md` B.3 (Filter-Tabelle:
-sechs bzw. sieben Filter; Endpoint-Matrix `:153`: `/data`, `/data-summary`, Audit-Log mit
-`TrackedChannel`; `:227` erwähnt den Broadcaster-Weg neben dem Admin-Purge); `docs/DECISIONS.md`
+sechs bzw. sieben Filter; Endpoint-Matrix `:155` (R3): `/data`, `/data-summary`, Audit-Log mit
+`TrackedChannel`; `:231` (R3) erwähnt den Broadcaster-Weg neben dem Admin-Purge); `docs/DECISIONS.md`
 (Absätze im T1-Eintrag). **Nicht** `web/` — die Regel-7-Kette setzt T6 fort (Codes in
 `api-error.ts` + Locales); bis dahin ist `api-error-locales.spec.ts` unberührt, weil es nur die
 TS-Seite prüft.
@@ -777,7 +1098,7 @@ TS-Seite prüft.
    `false`.
 5. Audit-Log: keine Zeile → 404 `channel_not_found` auch für einen Principal mit gleichem Login
    (`CanManage`-Substitut wird nicht gerufen); mit Zeile → unverändert; ungültiger Name → 400 vor
-   dem 404 (`:442`-Fall bleibt). Bestehende Audit-Log-Fälle bekommen `Channels.GetByNameAsync`
+   dem 404 (der bestehende Namensvalidierungsfall bleibt; R3: Zeile per Suche nach `audit-log`, die Datei ist um ~480 Zeilen gewachsen). Bestehende Audit-Log-Fälle bekommen `Channels.GetByNameAsync`
    → eine Zeile. **(R2, D1 = A)** Der Handler übergibt `OccurredAfterUtc = channel.CreatedAt` an
    `IAuditLogQueryService.ListAsync` (Empfangsprüfung am Substitut `AuditLogQuery`); die
    **Regressionsprobe** liegt in Infrastructure (`AuditLogQueryServiceTests`): Einträge unter Name X
@@ -812,22 +1133,34 @@ Plan, die E2E läuft gegen gemocktes `/api/**`. Berührt keine Backend-Datei.
 (+ Spec), neu `shared/channels/join-with-lock-prompt.ts` (+ Spec: 409 → Dialog → Bestätigung →
 zweiter Aufruf mit Flag; Abbruch → kein zweiter Aufruf, Ergebnis `null`; anderer Fehler →
 durchgereicht; Datum im Dialogtext aus `lockedAtUtc`), `features/channel-workspace/channel-workspace-layout.ts`
-(Knopf „Kanaldaten löschen" `appButton="danger-quiet"` neben Verlassen/Reaktivieren, nur bei
+(Knopf „Kanaldaten löschen" `appButton="danger-quiet"` — (R3) **Stufe offen, Betreiberpunkt 14**: E2
+sagt `danger-quiet`, Designsprache §4.2 verlangt für einen einzelnen Auslöser im Seitenkontext
+`danger` wie „Verlassen" daneben; Vorschlag `danger` — im Kopf `@if (canManage())` `:35-49` neben Verlassen/Reaktivieren
+(R3: es gibt keine eigene Kopf-Komponente; die Platzierung in der Aktionsreihe regelt §8.7), nur bei
 `canPurgeAsBroadcaster`, auch im inaktiven Zustand; `purgeOwnData()`: (P5) erst
 `getDataSummary`, dann `TypedConfirmDialog` mit `requiredText = channelName`; Doppelklickschutz per
 Signal wie `rejoinInProgress`; 204 → Permissions invalidieren, Übersicht; 409 `account_mismatch`
 und `channel_identity_unresolved` über `apiErrorTranslationKey`; `rejoin()` über den
-Lock-Prompt-Helfer) + neuer Spec `channel-workspace-layout.spec.ts` **nur** für: Sichtbarkeit des
+Lock-Prompt-Helfer) + (R3) **bestehenden** Spec `channel-workspace-layout.spec.ts` (314 Zeilen, Tabs und
+übernommener Lauf; der Konstruktor-Effekt läuft seit #256 in `untracked(...)` und setzt den
+`undoService` zurück — beides unangetastet lassen) erweitern, **nur** für: Sichtbarkeit des
 Knopfs aus den Permissions, Dialog-Rückgabe → Request/kein Request, Fehler-Mapping, 409 → Prompt →
 Flag; `features/admin/admin-channels-page.ts` (`join` über den Helfer; `pendingChannel` bleibt) +
-Spec-Fall; `shared/ui/account-menu.ts` (`deleteAccount()`: vor dem Dialog `listMine()`; Treffer
+Spec-Fall; **(R3)** `features/overview/overview-page.ts` (`join()` `:143`, `reactivate()` `:153` über den
+Helfer; Betreiberpunkt 15) + Spec-Fall, falls die Seite einen Spec hat, sonst E2E; `shared/ui/account-menu.ts` (`deleteAccount()`: vor dem Dialog `listMine()`; Treffer
 `isBroadcaster && isTracked` → Hinweisabsatz mit Login im Dialogtext; Fehler/leer → kein Hinweis,
 Dialog öffnet trotzdem — fail-open; der Zustandsautomat aus #243 bleibt) + Spec-Fälle;
 `core/i18n/api-error.ts` (zwei Codes), `web/public/i18n/de.json` + `en.json` (Codes + Schlüssel
-aus 2.5); `web/e2e/support/mocks.ts` (`mockChannelPermissions`-Overrides + `canPurgeAsBroadcaster`,
+aus 2.5; R3: `errors.api` beginnt bei `:1907`, `KNOWN_API_ERROR_CODES` hat heute 56 Codes); `web/e2e/support/mocks.ts` (`mockChannelPermissions` `:646`-Overrides + `canPurgeAsBroadcaster`
+— (R3) das Mock trägt schon `tagRunsEnabled`, Fixtures in `channel-manage.guard.spec.ts`,
+`usage-stats-access.guard.spec.ts`, `channel.service.spec.ts` bauen `ChannelPermissions` von Hand und
+brauchen das neue Feld;
 neu `mockChannelDataSummary`, `mockPurgeOwnData(page, name, { status, body })`,
-`mockJoinLocked(page, name, { status: 403 | 409, lockedAtUtc })`); E2E
-`channel-workspace.e2e.spec.ts`, `admin-channels.e2e.spec.ts`, `account-deletion.e2e.spec.ts`.
+`mockJoinLocked(page, name, { status: 403 | 409, lockedAtUtc })` — (R3) es gibt noch **kein** Join-Mock;
+Vorbild `mockPurge` `:616`); E2E
+`channel-workspace.e2e.spec.ts`, `admin-channels.e2e.spec.ts` (Purge-Dialog `:255`), `account-deletion.e2e.spec.ts`
+(Dialog-Flow `:63`; R3: der Spec mockt `/api/channels/mine` heute nicht — der Fall „mit Hinweis"
+braucht `mockMyChannels` `:217`), (R3) für die Übersicht gibt es keinen eigenen E2E-Spec — der Fall kommt in einen neuen `overview.e2e.spec.ts` oder zu einem Spec, der `mockMyChannels` schon nutzt (`channel-workspace.e2e.spec.ts`, `admin-channels.e2e.spec.ts`); Entscheidung des Tasks.
 
 **Designsprache:** `docs/UI-Designsprache.md` §4.2 (Tiers), §7 (`TypedConfirmDialog`-Vertrag:
 `title` Pflicht, Vergleich getrimmt, case-sensitive). Kein neues UI-Primitiv; `shared/ui/` bleibt.
@@ -838,7 +1171,8 @@ neu `mockChannelDataSummary`, `mockPurgeOwnData(page, name, { status, body })`,
    getippt → `DELETE …/data?expectedTwitchUserId=<AUTH_USER.twitchUserId>` → 204 → Übersicht.
 3. 409 `account_mismatch` und 409 `channel_identity_unresolved` → Meldung, Seite bleibt.
 4. Mod-Join (Admin-Kanalliste mit `isGlobalAdmin: false` ist nicht erreichbar — stattdessen
-   Workspace „Bot reaktivieren") → 403 mit Code → Text „Der Streamer hat …".
+   Workspace „Bot reaktivieren" **und** (R3) Übersicht „hinzufügen" für einen nicht getrackten
+   moderierten Kanal) → 403 mit Code → Text „Der Streamer hat …", **kein** Dialog.
 5. Admin-Join in der Kanalliste → 409 → Dialog nennt das Datum → Bestätigen → zweiter Request
    trägt `liftBroadcasterLock=true`; Abbruch → genau ein Request.
 6. Kontolösch-Dialog mit Hinweis (eigener Kanal getrackt) und ohne (`/mine` leer bzw. 500).
@@ -854,7 +1188,7 @@ neu `mockChannelDataSummary`, `mockPurgeOwnData(page, name, { status, body })`,
       die ganze Suite.
 - [ ] Commits (drei): `feat(web): let a broadcaster delete their channel's data from the workspace`
       (Model, Service, Workspace, Codes, Locales, Mocks, E2E 1–4), `feat(web): confirm before an
-      admin lifts a broadcaster lock` (Helfer, Admin-Liste, Workspace-Rejoin, E2E 5),
+      admin lifts a broadcaster lock` (Helfer, Admin-Liste, Workspace-Rejoin, (R3) Übersicht, E2E 5),
       `feat(web): point at the channel's data in the account deletion dialog` (Konto-Menü, E2E 6).
 
 **Abnahme:** Vitest/Lint/Format grün; E2E 1–7 grün; `grep -n "channel_identity_unresolved\|channel_locked_by_broadcaster"` in
@@ -867,8 +1201,10 @@ Betreiber-Nachläufer beim Prod-Gang). Setzt T5 voraus (Verträge final). Die DE
 in T1–T5 schon geschrieben; T7 liest den fertigen Eintrag einmal ganz und glättet nur Verweise.
 
 **Dateien:** `docs/Operations.md` — neuer Abschnitt „A broadcaster removes their own channel"
-zwischen `:235` (Block list) und `:290` (Retention): Selbstbedienung neben dem E-Mail-Weg; was
-gelöscht wird, was bleibt (Audit 12 Monate, Backups ≤ 60 Tage, Redis-TTLs, Logs bis Rotation);
+zwischen „Blocking a channel from being rejoined" (`:268`) und „Data retention" (`:323`) (R3-Zeilen): Selbstbedienung neben dem E-Mail-Weg; was
+gelöscht wird — (R3) ausdrücklich auch Tags des Mod-Teams samt Zuordnungen, Set-Beobachtungen und
+Leave-Beobachtungen —, was bleibt (Audit 12 Monate, Backups ≤ 60 Tage, Redis-TTLs inkl. der
+Fremdkanal-/Set-Caches, Logs bis Rotation);
 Sperrtabelle und wie sie sich zur env-Liste verhält (env gewinnt, Sperre nicht geheim); die
 Nachweisgrenze (id-lose Altzeile unter altem Login → 180-Tage-Retention); Aufhebung nur per Join
 des Inhabers oder per Admin-Join mit Bestätigung (`liftedByAdmin` im Audit-Log); **ein Satz**
@@ -876,7 +1212,7 @@ Restore-Grenze (E10, Wortlaut aus Konzept 4.2 — die laufende DB **vor** dem Re
 Verweis auf das private Runbook; **ein Satz** Mindest-Image-Version (E12: das erste Image mit
 Migration `AddBroadcasterChannelLocks`; ein Rollback dahinter prüft die Tabelle nicht); der
 Admin-Abschnitt aus T2 bekommt den Deploy-Hinweis `ADMIN_TWITCH_USER_IDS` vor dem Stack-Update;
-„Deploying this feature"-Unterabschnitt im Stil von `:414` — **(R2, D4)** mit der Reihenfolge
+„Deploying this feature"-Unterabschnitt im Stil von `:450` (R3; das ist der von #243/#244 unter „Data retention") — **(R2, D4)** mit der Reihenfolge
 Worker vor Api, dem Revisions-Vergleich beider laufender Container und dem Log-Beleg
 (`LockedDeactivated` in der Reconcile-Summenzeile) als Abnahme. Außerdem (R2, P15/D1/D2): ein Satz je zur
 Live-Abdeckung (gesperrte und ausgeschlossene IDs werden nicht mehr fortgeschrieben), zur
@@ -884,7 +1220,8 @@ Audit-Log-Generation (ein neu angelegter Kanal gleichen Namens sieht die Einträ
 nicht) und zur Deaktivierung nicht auflösbarer Altzeilen nach 7 Tagen. `CLAUDE.md` Statustabelle Zeile E
 („#245 … Nachläufer" → umgesetzt, Deploy-Datum offen) und ggf. der Hosted-Service-Absatz
 (unverändert — keine neuen Hosted Services). `docs/Feature-Ideen-2026-08-01.md`: nur, wenn dort
-eine Idee #245 zugeordnet ist (grep ergab 2026-10-03 keinen Treffer → nichts). Issue-Text für
+eine Idee #245 zugeordnet ist (grep ergab 2026-10-03 keinen Treffer → nichts; R3: vor dem Commit
+erneut greppen). Issue-Text für
 Epic #248 (Zeile D → „implemented on branch, deploy after 2026-10-08") als Vorschlag im
 Abschlussbericht — **das Issue selbst ändert der Orchestrator beim Merge** (Memory: `gh issue edit`
 scheitert an Projects-Classic, REST-PATCH nutzen).
@@ -893,7 +1230,9 @@ scheitert an Projects-Classic, REST-PATCH nutzen).
 - [ ] Operations.md, CLAUDE.md.
 - [ ] DECISIONS-Eintrag einmal ganz lesen; `**Betrifft:**`-Zeile vollständig (alle Dateien aus
       T1–T6), Querverweise auf die 2026-09-24-Einträge (Block list, #252) und 2026-09-23
-      (Join/Purge-Serialisierung); den Epic-#200-Merker (Konzept 3.7 a) als Satz.
+      (Join/Purge-Serialisierung), (R3) 2026-10-03 (#59, Sync-Rennen) und 2026-10-04 (Tags gehören
+      dem Kanal); den Epic-#200-Merker (Konzept 3.7 a, R3: inkl. `syncDeleted`/`syncRestored`
+      `unresolvedChannelName`) als Satz.
 - [ ] Commit: `docs: describe the broadcaster self-purge, its lock and the admin id allowlist`.
 
 **Abnahme:** Operations.md hat die beiden Ein-Satz-Grenzen (E10, E12) und den
@@ -914,7 +1253,9 @@ vor dem PR.
       bei < 80 % die ungedeckten neuen Dateien benennen und nachtesten.
 
 **Live-Verifikation (Regel 16) — lokal, isoliert.** Nicht gegen den geteilten Dev-Stack
-(`emote-purge-dev`, Dev-Worker gehört bis 07.10. der Messung). Aufbau:
+(`emote-purge-dev`, Dev-Worker gehörte bis 07.10. der Messung; (R3) der bindende #69-Lauf ist am 08.10.
+nicht bestanden, sein Folgeentscheid offen — den geteilten Dev-Worker weiter nicht anfassen, bis der
+Betreiber ihn freigibt). Aufbau:
 - [ ] Eigene Postgres/Redis als Wegwerf-Container mit **anderen Ports** (z. B. `docker run --rm -d
       -p 15433:5432 … postgres:17`, `-p 16380:6379 redis`), Connection-Strings per
       `--connection` bzw. Umgebungsvariablen **nur für diesen Prozess** (`ConnectionStrings__DefaultConnection`,
@@ -932,7 +1273,9 @@ vor dem PR.
 `curl`-Aufrufe mit Cookie-Platzhalter vor und wertet Logs/DB aus):**
 1. Als Broadcaster des eigenen Kanals: Join, Daten entstehen (Worker-Log: JOIN, 7TV-Sync).
 2. `DELETE /api/channels/<kanal>/data?expectedTwitchUserId=<id>` → 204; Worker-Log zeigt LEAVE
-   **nach** dem Commit; DB: Zeile, Emotes, UsageStats, LiveDays, VoteSessions weg; Sperrzeile da;
+   **nach** dem Commit; DB: Zeile, Emotes, UsageStats, LiveDays, VoteSessions weg — (R3) ebenso
+   `ChannelEmoteSetObservations`, `EmoteSetLeaveObservations` und, falls vorher ein Tag angelegt wurde
+   (`TAGS`-UI oder SQL), alle vier Tag-Tabellen; Sperrzeile da;
    Audit `channel.purge` mit `broadcasterRequest`.
 3. Dasselbe mit einer von Hand id-los gemachten Zeile (`UPDATE "Channels" SET "TwitchChannelId" =
    NULL`) → 204 über die Live-Auflösung; mit `Found`-Fremd-Simulation ist lokal nur per
@@ -1005,13 +1348,17 @@ gegen die Wegwerf-DB) macht der Agent selbst. Nie gegen `vps`/`nas` (global gere
 
 ## 6. Deploy-Reihenfolge (nach dem bindenden #69-Lauf, nicht vor 2026-10-08)
 
+> (R3) Der Lauf hat am 08.10. stattgefunden und ist **nicht bestanden**; ob der Worker-Deploy auf
+> den Folgeentscheid wartet, ist Betreiberpunkt 13 (R3.2 i).
+
 Bereitgestellt vom Orchestrator als Befehle für den Betreiber (Prod-Handgriffe laufen von Hand;
 Passwörter als Platzhalter):
 
 1. **Migration zuerst**, per SSH-Tunnel wie in CLAUDE.md „Prod-Migration": `ssh -N -L
    15432:127.0.0.1:5433 vps`, dann `dotnet ef migrations list … --connection '…Port=15432…'`
    (erwartet genau `AddBroadcasterChannelLocks` als `(Pending)` — mehr heißt: Prod hängt zurück,
-   erst durchsehen), `dotnet ef database update …`, `list` zur Gegenprobe. Additiv; das laufende
+   erst durchsehen; R3: die Vorgängerin muss `20261005085930_AddEmoteTagPlacements` sein, die mit dem
+   #201-Deploy am 08.10. in Prod kam — fehlt sie, ist der Tag-Rollout nicht durch und #245 wartet), `dotnet ef database update …`, `list` zur Gegenprobe. Additiv; das laufende
    alte Image ignoriert die Tabelle.
 2. **`ADMIN_TWITCH_USER_IDS` in Portainers Stack-Environment** setzen (eigene numerische Twitch-ID;
    `GET https://api.twitch.tv/helix/users?login=<login>`). `ADMIN_TWITCH_LOGINS` bleibt vorerst
@@ -1086,6 +1433,41 @@ Nicht Teil des Repo-Diffs; der Orchestrator legt dem Betreiber die Textvorschlä
 9. **Nach dem Deploy bleibt die Login-Liste konfiguriert** und erzeugt dauerhaft die
    „ignored"-Warnung, bis der notierte Folgeschritt sie entfernt — gewollt laut 3.8, aber als
    Dauerwarnung in der Log-Aggregation sichtbar.
+
+**(R3) Neu aus der Drift-Prüfung 2026-10-08** — 10 bis 14 berühren eine gefallene Entscheidung
+(R3.4) und werden **nicht** vom Plan entschieden; die Vorschläge sind Empfehlungen:
+
+10. **Tags im Dialog beziffern (berührt E6).** Seit #201 löscht der Purge die Tags des Mod-Teams
+    (inkl. Zuordnungen in fremden Sets). Vorschlag: `data-summary` bekommt `tagCount`, der Dialog
+    nennt „N Tags deines Mod-Teams" neben Emotes/Abstimmungen/Live-Tagen. Alternative: nur die
+    Kategorie im Text, keine Zahl (P5 bleibt bei drei Zählern).
+11. **Sperr-Zwilling an den drei neuen env-Stellen aus #200 (berührt Konzept 3.4 „vier Stellen").**
+    `ChannelQueries.LoadActiveChannelByTwitchIdReadOnlyAsync` (Ziel-Picker, Editierbarkeits-Vorprüfung,
+    Papier-Eintrag) und `EmoteService.MarkInSetAsync` Schritte 2/3 (schreiben Archivzustand auf
+    Treffer-Kanäle). Vorschlag: ja — das Konzept begründet die Sperre ausdrücklich mit „an denselben
+    Stellen wie die env-Liste", der Aufwand ist ein Lookup im geteilten Helfer plus ein Batch-Lookup
+    in `EmoteService`, und „gesperrt sieht aus wie nicht getrackt" bleibt eine Regel statt zwei.
+    Alternative: nicht, mit Begründung „nur erreichbar, solange eine aktive Zeile eine gesperrte ID
+    trägt; Roster/Sync/Reconcile beenden das ≤ 1 h" im DECISIONS-Eintrag.
+12. **D3/E15 bestätigen (berührt E15).** Seit #165 bleibt eine id-lose Zeile unter D3 = A bis zu
+    ~1 h kalt statt ≤ 60 s (Backoff/Such-Budget, R3.2 e). Vorschlag: bei A bleiben — betroffen sind
+    weiter nur Zeilen aus einem Helix-Ausfall beim Join, und genau für die ist „zählt erst nach
+    bewiesener Identität" die fail-closed-Haltung, die E15 wollte; der DECISIONS-Eintrag nennt die
+    neue Obergrenze. Alternative: D3 = B (Lücke dokumentieren, Warm-up bleibt wie heute).
+13. **Deploy-Schranke nach dem nicht bestandenen #69-Lauf (berührt E8).** Vorschlag: Bau, T0–T8 und
+    PR jetzt; der Prod-Deploy von Worker und Api erst, wenn der Betreiber den #69-Folgeentscheid
+    getroffen hat (eine Wiederholungsmessung braucht einen unveränderten Worker, und #245 ändert das
+    Worker-Image: Roster, Sync-Gates, Reconcile, Live-Abdeckung). Bis dahin trägt der E-Mail-Weg aus § 9.
+14. **Button-Stufe im Workspace-Kopf (berührt E2).** E2 sagt `danger-quiet`; die Designsprache §4.2
+    bindet `danger-quiet` an Wiederholung je Listenzeile und nennt für den einzelnen Auslöser im
+    Seitenkontext ausdrücklich `danger` („leave channel, open channel purge"). Vorschlag: `danger`,
+    wie „Verlassen" daneben. Alternative: bei `danger-quiet` bleiben und §4.2 um diese Ausnahme ergänzen.
+15. **Lock-Prompt auch in der Übersicht (Plan, keine gefallene Entscheidung).** Die Übersicht hat
+    zwei Join-Aufrufer (`join()`, `reactivate()`), die der Plan bisher nicht kannte. Vorschlag: beide
+    über den Helfer — der Mod bekommt dort den 403-Text (Regel-7-Kette), ein Admin den Prompt.
+16. **Fremdkanal-Preview (Konzept 3.7 b) bleibt außerhalb** — #147/#220 sind seither ausgebaut,
+    die Frage „deckt die Sperre den öffentlichen Set-Preview eines Kanals ohne Zeile" bleibt die
+    offene Betreiberfrage aus DECISIONS 2026-09-24, nicht Teil von #245.
 
 Die Punkte aus dem Plan-Review, die eine Entscheidung brauchen, stehen gesondert in Abschnitt 9.
 
