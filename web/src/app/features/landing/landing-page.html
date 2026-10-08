@@ -36,9 +36,15 @@
           >{{ 'landing.nav.how' | transloco }}</a
         >
         <app-account-menu />
-        <button type="button" appButton="primary" (click)="login()">
-          {{ 'landing.nav.login' | transloco }}
-        </button>
+        @if (loggedIn()) {
+          <a routerLink="/" appButton="primary" class="inline-flex items-center justify-center">{{
+            'landing.cta.app' | transloco
+          }}</a>
+        } @else {
+          <button type="button" appButton="primary" (click)="login()">
+            {{ 'landing.nav.login' | transloco }}
+          </button>
+        }
       </div>
     </nav>
   </header>
@@ -58,9 +64,19 @@
             {{ 'landing.hero.subtitle' | transloco }}
           </p>
           <div class="flex flex-wrap items-center gap-5">
-            <button type="button" appButton="primary" buttonSize="lg" (click)="login()">
-              {{ 'landing.hero.ctaLogin' | transloco }}
-            </button>
+            @if (loggedIn()) {
+              <a
+                routerLink="/"
+                appButton="primary"
+                class="inline-flex items-center justify-center"
+                buttonSize="lg"
+                >{{ 'landing.cta.app' | transloco }}</a
+              >
+            } @else {
+              <button type="button" appButton="primary" buttonSize="lg" (click)="login()">
+                {{ 'landing.hero.ctaLogin' | transloco }}
+              </button>
+            }
             <a
               routerLink="/welcome"
               fragment="how"
@@ -159,10 +175,22 @@
           <h2 class="max-w-md text-2xl font-bold tracking-tight text-balance sm:text-3xl">
             {{ 'landing.close.title' | transloco }}
           </h2>
-          <p class="max-w-md text-fg-muted">{{ 'landing.close.subtitle' | transloco }}</p>
-          <button type="button" appButton="primary" buttonSize="lg" (click)="login()">
-            {{ 'landing.close.button' | transloco }}
-          </button>
+          <p class="max-w-md text-fg-muted">
+            {{ (loggedIn() ? 'landing.close.subtitleApp' : 'landing.close.subtitle') | transloco }}
+          </p>
+          @if (loggedIn()) {
+            <a
+              routerLink="/"
+              appButton="primary"
+              class="inline-flex items-center justify-center"
+              buttonSize="lg"
+              >{{ 'landing.cta.app' | transloco }}</a
+            >
+          } @else {
+            <button type="button" appButton="primary" buttonSize="lg" (click)="login()">
+              {{ 'landing.close.button' | transloco }}
+            </button>
+          }
         </div>
         <dl class="flex flex-col gap-5">
           @for (fact of trust; track fact) {

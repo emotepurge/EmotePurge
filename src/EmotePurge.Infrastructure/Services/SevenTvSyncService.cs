@@ -967,6 +967,14 @@ public class SevenTvSyncService(
             .Where(e => e.ChannelId == channelId)
             .ToDictionaryAsync(e => e.SevenTvEmoteId, cancellationToken);
 
+        // 7TV can list one emote id twice in a set under two alias names, but the unique index
+        // (ChannelId, SevenTvEmoteId) allows one row, so both entries hit it and the second would
+        // rewrite the name back on every pass: the channel would report a change (and fire
+        // channel.synced) on every resync. The LAST entry wins because that is the name the old
+        // per-entry loop left stored and counted, so the deploy renames nothing and no usage series
+        // switches to a different word. The other alias is not countable. Reversing twice keeps
+        // the remaining entries in their original order.
+        liveEmotes = liveEmotes.Reverse().DistinctBy(e => e.Id).Reverse().ToList();
         var liveIds = liveEmotes.Select(e => e.Id).ToHashSet();
         var changed = false;
         var now = DateTime.UtcNow;

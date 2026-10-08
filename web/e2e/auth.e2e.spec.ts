@@ -1,6 +1,6 @@
 import { expect, test } from './support/test';
 
-import { mockAuthMe, mockTwitchLoginRedirect, mockWorkerHealth } from './support/mocks';
+import { AUTH_USER, mockAuthMe, mockTwitchLoginRedirect, mockWorkerHealth } from './support/mocks';
 
 test.describe('unauthenticated visitor', () => {
   test.beforeEach(async ({ page }) => {
@@ -36,5 +36,39 @@ test.describe('unauthenticated visitor', () => {
     await expect(page).toHaveURL(/\/login$/);
     const returnUrl = await page.evaluate(() => sessionStorage.getItem('ep_return_url'));
     expect(returnUrl).toBe('/my-votings');
+  });
+});
+
+test.describe('login page', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockWorkerHealth(page);
+    await mockTwitchLoginRedirect(page);
+  });
+
+  test('offers the Twitch login and no app link to an anonymous visitor', async ({ page }) => {
+    await mockAuthMe(page, null);
+    await page.goto('/login');
+
+    await expect(page.getByRole('button', { name: 'Mit Twitch einloggen' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Zur App' })).toHaveCount(0);
+  });
+
+  test('swaps the login button for a link into the app when logged in, without redirecting', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await page.goto('/login');
+
+    const appLink = page.getByRole('link', { name: 'Zur App' });
+    await expect(appLink).toHaveAttribute('href', '/');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Du bist schon eingeloggt');
+    await expect(page.getByText('Angemeldet als Sensitron')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Mit Twitch einloggen' })).toHaveCount(0);
+    // The scopes stay readable for everyone, and there is no redirect.
+    await expect(page.getByText('user:read:moderated_channels', { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/\/login$/);
+
+    await appLink.click();
+    await expect(page).not.toHaveURL(/\/login/);
   });
 });

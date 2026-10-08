@@ -1,6 +1,6 @@
 import { expect, test } from './support/test';
 
-import { mockAuthMe, mockTwitchLoginRedirect, mockWorkerHealth } from './support/mocks';
+import { AUTH_USER, mockAuthMe, mockTwitchLoginRedirect, mockWorkerHealth } from './support/mocks';
 
 /**
  * The public page makes claims, and claims are the one kind of content that rots silently: nothing
@@ -73,5 +73,34 @@ test.describe('landing', () => {
       await expect(page.getByText(scope, { exact: true })).toBeVisible();
     }
     await expect(page.getByText('Beide sind Leserechte', { exact: false })).toBeVisible();
+  });
+
+  test('offers the Twitch login three times to an anonymous visitor', async ({ page }) => {
+    await page.goto('/welcome');
+
+    // Nav, hero and close. The default must stay the login: anonymous visitors are the audience.
+    await expect(page.getByRole('button', { name: /Login|Mit Twitch einloggen/ })).toHaveCount(3);
+    await expect(page.getByRole('link', { name: 'Zur App' })).toHaveCount(0);
+  });
+
+  test('swaps the login buttons for a link into the app when logged in, without redirecting', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await page.goto('/welcome');
+
+    // Same three places, now links. No automatic redirect: the landing is the one explainer page
+    // and a logged-in visitor may read or show it.
+    const appLinks = page.getByRole('link', { name: 'Zur App' });
+    await expect(appLinks).toHaveCount(3);
+    await expect(page.getByRole('button', { name: /Login|Mit Twitch einloggen/ })).toHaveCount(0);
+    await expect(page.getByText('Du bist bereits eingeloggt.')).toBeVisible();
+    await expect(page).toHaveURL(/\/welcome$/);
+    for (const link of await appLinks.all()) {
+      await expect(link).toHaveAttribute('href', '/');
+    }
+
+    await appLinks.first().click();
+    await expect(page).not.toHaveURL(/\/welcome/);
   });
 });

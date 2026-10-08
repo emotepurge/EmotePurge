@@ -99,14 +99,30 @@ Voraussetzungen und Reibungspunkte, die faktisch zum Ablauf gehören:
   7TV bietet keinen Login-Redirect an (untersucht und dokumentiert, s. `docs/`); dieser Handgriff ist
   auf absehbare Zeit nicht wegzugestalten.
 - Datenmengen: bis ~900 Emotes je Set, Listen entsprechend lang.
-- Löschungen wirken in einem **fremden System** (7TV) und sind von hier aus nicht rückholbar.
+- Löschungen wirken in einem **fremden System** (7TV) und sind dort endgültig. Zurück kommt ein
+  Emote nur als Neuhinzufügen (s. Prinzip 4), nie als Rückgängigmachen.
 
 ## Capabilities and Constraints
 
-**Bestätigte Funktionalität** — neun Flächen unter `web/src/app/features/`: Landing, Login, Overview,
-Usage-Stats-Grid je Kanal, Voting (Liste + Detail), eigene Abstimmungen kanalübergreifend,
-Channel-Workspace mit Aktivitätsfeed, App-Shell, Admin-Bereich (Monitoring, Kanäle, Nutzer,
-Audit-Log).
+**Bestätigte Funktionalität** — zwölf Flächen unter `web/src/app/features/`. Der Kern bleibt
+**Messen → (optional abstimmen) → Löschen**:
+
+- *Kern:* Overview, Usage-Stats-Grid je Kanal (inkl. Emote-Sets des Kanals, die nicht aktiv sind —
+  gezählt wird für das Set, das im Chat gerade aktiv ist), Voting (Liste + Detail), eigene
+  Abstimmungen kanalübergreifend, Channel-Workspace mit Aktivitätsfeed, der Mass-Delete mit
+  Löschprotokoll.
+- *Rückwege dazu (Prinzip 4):* Wiederherstellen aus dem Löschprotokoll; **Tags** als eigene Fläche
+  (Emotes benennen und gruppieren, einen Tag ins Set holen oder aus dem Set nehmen, ohne dass der
+  Tag die Emotes verliert).
+- *Werkzeuge für Eingeloggte:* Import und Übertragen zwischen Sets inkl. 7TV-Bestenliste, Export.
+  Sie stehen **bewusst nicht auf der Landing** (Prinzip 5): die öffentliche Seite bleibt bei Messen,
+  Abstimmen, Löschen und listet keine Funktionen auf.
+- *Rahmen:* Landing, Login, App-Shell, Kontakt, Rechtstexte (Impressum, Datenschutz), Admin-Bereich
+  (Monitoring, Kanäle, Nutzer, Audit-Log).
+
+Das 7TV-Token braucht, was bei 7TV schreibt: Löschen, Wiederherstellen, einen Tag ins Set holen oder
+daraus entfernen, Import und Übertragen. Tags anlegen und zuweisen, Lesen, Export und Bestenliste
+brauchen es nicht.
 
 **Zugang:** offener Twitch-OAuth-Login für jeden, kein Invite-Code, keine Registrierungssperre.
 Session als HttpOnly-Cookie, 14 Tage gleitend, serverseitig sofort invalidierbar. Eine Allowlist
@@ -197,9 +213,16 @@ ein echter Screenshot müsste erst erzeugt werden.
    ausdrücklich ausgenommen — sie bedient den Zweifel einer Einzelperson, nicht ein Team.
 3. **Seltener Besuch, kein Dauerbetrieb.** Wer die Seite öffnet, war lange weg. Sie muss beim
    Wiedereinstieg von selbst erklären, wo man steht — ohne zur Anleitung zu werden.
-4. **Unwiderruflichkeit ist ein Produktversprechen.** Gelöscht wird in einem fremden System, das wir
-   nicht zurückdrehen können. Die Stufung Auslösen → Bestätigen → Vollziehen ist eine Zusage an den
-   Nutzer, keine Stilfrage.
+4. **Ehrlich über das Endgültige, und echte Rückwege daneben.** Das Entfernen bei 7TV ist endgültig,
+   und die Oberfläche behandelt es auch so: Auswählen → Bestätigen → Vollziehen ist eine Zusage an
+   den Nutzer, keine Stilfrage, und es gibt keine Schein-Undo-Taste. Das Versprechen ist deshalb
+   zweierlei: Ehrlichkeit darüber, was endgültig ist, und Rückwege, die EmotePurge selbst bietet —
+   **Wiederherstellen aus dem Löschprotokoll** und **Tags zum Parken statt Löschen**. Beide sind ein
+   Neuhinzufügen, kein Rückgängigmachen, und sie haben Grenzen: Das Emote muss bei 7TV noch
+   existieren, sein Name im Set frei und im Set Platz sein; was schon wieder drin ist, wird
+   übersprungen. Die Nutzungshistorie bleibt dabei erhalten. Das Protokoll gibt es nach dem Lauf
+   zum Speichern, es liegt nicht von selbst irgendwo. Die Landing darf deshalb weder „nicht
+   rückholbar" noch „jederzeit alles rückgängig" sagen.
 5. **Erklären statt verkaufen.** Das Produkt ist offen zugänglich, wird aber nicht beworben; Wachstum
    läuft über Empfehlung. Die öffentliche Fläche schuldet Verständlichkeit und Vertrauen, keine
    Conversion.
