@@ -15,17 +15,19 @@ const STATUS: ChannelStatus = {
   activeEmoteSetId: 's1',
 };
 
-const LOCKED_409 = new HttpErrorResponse({
-  status: 409,
-  error: { errorCode: 'channel_locked_by_broadcaster', lockedAtUtc: '2026-10-01T10:00:00Z' },
-});
+const LOCKED_409 = locked409('2026-10-01T10:00:00Z');
 
-function setup(
-  joinImpl: (options?: { liftBroadcasterLock?: boolean }) => Observable<ChannelStatus>,
-) {
-  const join = vi.fn((_name: string, options?: { liftBroadcasterLock?: boolean }) =>
-    joinImpl(options),
-  );
+type JoinOptions = { liftBroadcasterLock?: { confirmedLockedAtUtc: string } };
+
+function locked409(lockedAtUtc: string): HttpErrorResponse {
+  return new HttpErrorResponse({
+    status: 409,
+    error: { errorCode: 'channel_locked_by_broadcaster', lockedAtUtc },
+  });
+}
+
+function setup(joinImpl: (options?: JoinOptions) => Observable<ChannelStatus>) {
+  const join = vi.fn((_name: string, options?: JoinOptions) => joinImpl(options));
   const closed = new Subject<boolean | undefined>();
   const open = vi.fn(() => ({ closed }));
   const translate = vi.fn((key: string, params?: Record<string, unknown>) =>
@@ -54,7 +56,7 @@ describe('joinWithBroadcasterLockPrompt', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('asks on the 409, names the date, and retries with the flag once confirmed', () => {
+  it('asks on the 409, names the date, and retries with the flag and that date once confirmed', () => {
     const { join, open, closed, translate, results } = setup((options) =>
       options?.liftBroadcasterLock ? of(STATUS) : throwError(() => LOCKED_409),
     );
@@ -67,8 +69,44 @@ describe('joinWithBroadcasterLockPrompt', () => {
 
     closed.next(true);
     expect(join).toHaveBeenCalledTimes(2);
-    expect(join).toHaveBeenLastCalledWith('sensitron', { liftBroadcasterLock: true });
+    expect(join).toHaveBeenLastCalledWith('sensitron', {
+      liftBroadcasterLock: { confirmedLockedAtUtc: '2026-10-01T10:00:00Z' },
+    });
     expect(results).toEqual([STATUS]);
+  });
+
+  it('asks again with the new date when the lock changed before the retry', () => {
+    // The broadcaster locked again after the dialog opened: the server refuses the stale
+    // confirmation with the current date, and only a fresh confirmation may lift that lock.
+    const { join, open, closed, translate, results } = setup((options) => {
+      const confirmed = options?.liftBroadcasterLock?.confirmedLockedAtUtc;
+      if (confirmed === '2026-10-05T08:00:00.5Z') {
+        return of(STATUS);
+      }
+      return throwError(() => (confirmed ? locked409('2026-10-05T08:00:00.5Z') : LOCKED_409));
+    });
+    closed.next(true);
+
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(translate).toHaveBeenCalledWith(
+      'broadcasterLock.liftConfirm',
+      expect.objectContaining({ date: 'Oct 5, 2026' }),
+    );
+    closed.next(true);
+    expect(join).toHaveBeenCalledTimes(3);
+    expect(join).toHaveBeenLastCalledWith('sensitron', {
+      liftBroadcasterLock: { confirmedLockedAtUtc: '2026-10-05T08:00:00.5Z' },
+    });
+    expect(results).toEqual([STATUS]);
+  });
+
+  it('does not ask again when the retry is refused with the date just confirmed', () => {
+    const { join, open, closed, errors } = setup(() => throwError(() => LOCKED_409));
+    closed.next(true);
+
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledTimes(2);
+    expect(errors).toEqual([LOCKED_409]);
   });
 
   it('makes no second request and emits null when the admin declines', () => {

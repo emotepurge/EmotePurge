@@ -95,14 +95,20 @@ export class ChannelService {
 
   /**
    * `liftBroadcasterLock` is only sent after an admin has confirmed the prompt for a channel its
-   * broadcaster deleted and locked; without the option the request is byte-identical to a plain join.
+   * broadcaster deleted and locked, together with the lock date that prompt showed — exactly the
+   * `lockedAtUtc` string of the 409, never re-formatted, because the server lifts only while the lock
+   * still carries that date, compared at full precision. Without the option the request is
+   * byte-identical to a plain join.
    */
   join(
     channelName: string,
-    options?: { liftBroadcasterLock?: boolean },
+    options?: { liftBroadcasterLock?: { confirmedLockedAtUtc: string } },
   ): Observable<ChannelStatus> {
     this.invalidatePermissions(channelName);
-    const params = options?.liftBroadcasterLock ? { liftBroadcasterLock: 'true' } : undefined;
+    const lift = options?.liftBroadcasterLock;
+    const params = lift
+      ? { liftBroadcasterLock: 'true', confirmedLockedAtUtc: lift.confirmedLockedAtUtc }
+      : undefined;
     return this.http.post<ChannelStatus>(`/api/channels/${channelName}/join`, {}, { params });
   }
 

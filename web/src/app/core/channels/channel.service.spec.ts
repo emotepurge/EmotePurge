@@ -167,11 +167,18 @@ describe('ChannelService', () => {
     req.flush({});
   });
 
-  it('join with liftBroadcasterLock sends the flag as a query parameter', () => {
-    service.join('sensitron', { liftBroadcasterLock: true }).subscribe();
+  it('join with liftBroadcasterLock sends the flag and the confirmed lock date verbatim', () => {
+    // Verbatim: the server compares the date tick for tick, so it must not pass through Date.
+    service
+      .join('sensitron', {
+        liftBroadcasterLock: { confirmedLockedAtUtc: '2026-10-01T10:00:00.123456Z' },
+      })
+      .subscribe();
 
-    const req = httpMock.expectOne('/api/channels/sensitron/join?liftBroadcasterLock=true');
+    const req = httpMock.expectOne((r) => r.url === '/api/channels/sensitron/join');
     expect(req.request.method).toBe('POST');
+    expect(req.request.params.get('liftBroadcasterLock')).toBe('true');
+    expect(req.request.params.get('confirmedLockedAtUtc')).toBe('2026-10-01T10:00:00.123456Z');
     req.flush({});
   });
 

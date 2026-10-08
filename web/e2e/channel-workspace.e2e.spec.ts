@@ -454,7 +454,7 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     expect(joinUrls).toHaveLength(1);
   });
 
-  test('an admin adding a locked channel from the overview is asked, and the retry carries the flag', async ({
+  test('an admin adding a locked channel from the overview is asked, and the retry carries the flag and the confirmed date', async ({
     page,
   }) => {
     await mockAuthMe(page, { ...AUTH_USER, isGlobalAdmin: true });
@@ -463,7 +463,7 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     await mockChannelStatus(page, 'sensitron');
     const joinUrls = await mockJoinLocked(page, 'sensitron', {
       status: 409,
-      lockedAtUtc: '2026-10-01T10:00:00Z',
+      lockedAtUtc: '2026-10-01T10:00:00.123456Z',
     });
 
     await page.goto('/');
@@ -475,6 +475,9 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
 
     await expect(page).toHaveURL(/\/channels\/sensitron/);
     expect(joinUrls).toHaveLength(2);
-    expect(joinUrls[1]).toContain('liftBroadcasterLock=true');
+    const retry = new URL(joinUrls[1]).searchParams;
+    expect(retry.get('liftBroadcasterLock')).toBe('true');
+    // Verbatim, at full precision: the server lifts only while the lock still carries this date.
+    expect(retry.get('confirmedLockedAtUtc')).toBe('2026-10-01T10:00:00.123456Z');
   });
 });

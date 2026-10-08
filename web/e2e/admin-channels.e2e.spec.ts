@@ -309,13 +309,13 @@ test.describe('global admin on /admin/channels', () => {
     await expect(page.getByRole('link', { name: '#sensitron' })).toBeVisible();
   });
 
-  test('joining a channel its broadcaster locked asks first and retries with the flag; declining sends nothing more', async ({
+  test('joining a channel its broadcaster locked asks first and retries with the flag and the confirmed date; declining sends nothing more', async ({
     page,
   }) => {
     await mockAdminChannelList(page, [{ channelName: 'sensitron', isBotActive: false }]);
     const joinUrls = await mockJoinLocked(page, 'sensitron', {
       status: 409,
-      lockedAtUtc: '2026-10-01T10:00:00Z',
+      lockedAtUtc: '2026-10-01T10:00:00.123456Z',
     });
 
     await page.goto('/admin/channels');
@@ -330,12 +330,15 @@ test.describe('global admin on /admin/channels', () => {
     expect(joinUrls).toHaveLength(1);
     expect(joinUrls[0]).not.toContain('liftBroadcasterLock');
 
-    // Confirmed: the second request carries the flag.
+    // Confirmed: the second request carries the flag and the date the dialog named.
     await row.getByRole('button', { name: 'Beitreten' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Trotzdem hinzufügen' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     expect(joinUrls).toHaveLength(3);
-    expect(joinUrls[2]).toContain('liftBroadcasterLock=true');
+    const retry = new URL(joinUrls[2]).searchParams;
+    expect(retry.get('liftBroadcasterLock')).toBe('true');
+    // Verbatim, at full precision: the server lifts only while the lock still carries this date.
+    expect(retry.get('confirmedLockedAtUtc')).toBe('2026-10-01T10:00:00.123456Z');
   });
 
   test('the drilldown names why a channel never synced', async ({ page }) => {

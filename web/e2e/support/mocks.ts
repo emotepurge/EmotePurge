@@ -723,7 +723,8 @@ export async function mockPurgeOwnData(
 /**
  * POST /api/channels/{channelName}/join for a channel its broadcaster deleted and locked.
  * `403` is the moderator's final refusal; `409` is the admin's prompt, answered `200` once the
- * retry carries `liftBroadcasterLock=true`. The returned list holds every request URL it saw.
+ * retry carries `liftBroadcasterLock=true` and, like the server, the confirmed lock date exactly as
+ * the 409 sent it (`confirmedLockedAtUtc`). The returned list holds every request URL it saw.
  */
 export async function mockJoinLocked(
   page: Page,
@@ -733,7 +734,12 @@ export async function mockJoinLocked(
   const seen: string[] = [];
   await page.route(`**/api/channels/${channelName}/join*`, (route) => {
     seen.push(route.request().url());
-    if (options.status === 409 && route.request().url().includes('liftBroadcasterLock=true')) {
+    const params = new URL(route.request().url()).searchParams;
+    if (
+      options.status === 409 &&
+      params.get('liftBroadcasterLock') === 'true' &&
+      params.get('confirmedLockedAtUtc') === options.lockedAtUtc
+    ) {
       return fulfillJson(route, 200, {
         channelId: '1',
         channelName,

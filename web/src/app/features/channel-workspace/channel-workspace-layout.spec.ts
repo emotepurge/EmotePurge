@@ -542,7 +542,9 @@ describe('ChannelWorkspaceLayout — broadcaster self-purge and lock prompt', ()
 
     dialogClosed.next(true);
     expect(channelService.join).toHaveBeenCalledTimes(2);
-    expect(channelService.join).toHaveBeenLastCalledWith('a', { liftBroadcasterLock: true });
+    expect(channelService.join).toHaveBeenLastCalledWith('a', {
+      liftBroadcasterLock: { confirmedLockedAtUtc: '2026-10-01T10:00:00Z' },
+    });
   });
 
   it('reactivation: declining the prompt sends no second request and keeps the channel inactive', () => {
