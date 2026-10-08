@@ -55,6 +55,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -105,6 +106,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -124,6 +126,53 @@ public class WorkerBootSequenceTests
         }
 
         await chatManager.DidNotReceive().SimulateServerReconnectAsync();
+    }
+
+    // Issue #76: the zero-emote streak counts consecutive observations of a channel, and a channel
+    // that leaves the roster is no longer observed — so the LEAVE command forgets it, next to the
+    // match-cache entry, and a later rejoin starts from nothing.
+    [Fact]
+    public async Task Worker_LeaveCommand_ResetsTheEmptySetStreakNextToTheMatchCache()
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(new List<string>());
+
+        Func<string, string, Task>? capturedHandler = null;
+        var subscriber = Substitute.For<IRedisSubscriber>();
+        subscriber.When(x => x.SubscribeAsync(Arg.Any<string>(), Arg.Any<Func<string, string, Task>>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo => capturedHandler = callInfo.Arg<Func<string, string, Task>>());
+        var emoteMatchCache = Substitute.For<IEmoteMatchCache>();
+        var emptySetConfirmations = Substitute.For<IEmptySetConfirmationTracker>();
+
+        var worker = new WorkerService(
+            NullLogger<WorkerService>.Instance,
+            Substitute.For<ITwitchChatManager>(),
+            subscriber,
+            Substitute.For<IRedisPublisher>(),
+            emoteMatchCache,
+            emptySetConfirmations,
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<ITwitchLiveStatusReader>(),
+            CreateScopeFactory(channelService),
+            new ConfigurationBuilder().Build());
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.CommandChannelSubscribed.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(capturedHandler);
+            await capturedHandler!(BotCommands.Channel, BotCommands.LeavePrefix + "leftchannel");
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        emoteMatchCache.Received(1).RemoveChannel("leftchannel");
+        emptySetConfirmations.Received(1).Reset("leftchannel");
     }
 
     // Fourth Codex review of the block list: JOIN and RESYNC commands used to be followed blindly, so
@@ -156,6 +205,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -213,6 +263,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -347,6 +398,7 @@ public class WorkerBootSequenceTests
             subscriber,
             Substitute.For<IRedisPublisher>(),
             cache,
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             liveStatusReader,
@@ -392,6 +444,7 @@ public class WorkerBootSequenceTests
             Substitute.For<IRedisSubscriber>(),
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             liveStatusReader,
@@ -437,6 +490,7 @@ public class WorkerBootSequenceTests
             Substitute.For<IRedisSubscriber>(),
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
@@ -476,6 +530,7 @@ public class WorkerBootSequenceTests
             Substitute.For<IRedisSubscriber>(),
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
             gate,
             Substitute.For<ISevenTvEventClient>(),
             liveStatusReader,

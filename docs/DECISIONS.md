@@ -10,6 +10,141 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — A 7TV set that really is empty is accepted: set switch at once, same set after repeated spaced zeros, never against v4 (#76)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationTracker.cs` · `src/EmotePurge.Infrastructure/Services/EmptySetConfirmationOptions.cs` · `src/EmotePurge.Core/Services/IEmptySetConfirmationTracker.cs` · `src/EmotePurge.Core/SevenTv/SevenTvModels.cs` · `src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs` · `src/EmotePurge.Worker/Worker.cs` · `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` · `src/EmotePurge.Worker/appsettings.json` · `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceEmptySetTests.cs`
+
+The guard against a "0 active emotes" answer from 7TV while we know active emotes (a glitch would
+archive the channel and empty the match cache) skipped every sync for as long as both halves stayed
+true. A set that was deleted and recreated, or emptied for good, therefore kept showing the old
+content forever; the comment's "the next tick recovers on its own" was only right for a transient
+zero. The guard stays, but a zero is now believed in two cases, decided by the operator, unless v4
+contradicts it (below):
+
+1. **Zero together with a new set id** (set switch detected) is accepted immediately — a freshly
+   created set is expected to be empty. The set id is written in the same sync, so the UI shows the
+   new (empty) set; a switch with a non-empty set was never guarded.
+2. **Zero for the same set id** is accepted once `SevenTv:EmptySetConfirmations` (default 3)
+   consecutive, spaced syncs each reported it. `1` switches the confirmation off (the v4 veto still
+   applies).
+
+**v4 veto.** Every v3 channel read already asks v4 for the same set id (the `AddedToSetAt` overlay,
+on every sync and also when v3 lists nothing). That read now also returns how many entries v4 lists
+with a resolved emote, summed over its pages, as `SevenTvEmoteSet.RemoteEntryCount` (null when the v4
+read fails: HTTP error, timeout, malformed JSON, `emoteSet: null`). When paging fails part-way after
+at least one resolved entry, that count is kept as a lower bound, since entries already seen are
+positive evidence and dropping them would let a stale v3 zero through; the dates stay all-or-nothing
+and are dropped as before. When v3 says 0 and v4 lists more
+than 0, the zero is rejected: Warning log, nothing written, the held-back result goes back to the
+caller as for any held-back zero (so the EventAPI subscription is still ensured), and the streak is
+reset. The check runs **before** the set-switch acceptance, so a new set id that v4 contradicts is
+held back too. Why:
+
+- v3's REST answer can lag the set by 10–30 min (SevenTV/SevenTV#81, see the 2026-07-30 WebSocket
+  investigation). How fresh v4 is has **not** been measured systematically; there is one
+  observation, on 2026-09-10 during the duplicate-entry investigation, where a v4 read reflected a
+  v4 mutation immediately (77 → 79 entries). A v3 zero next to a filled v4 set is most likely that
+  v3 lag, not an empty set — exactly the false zero the guard exists for, and the one case in which
+  a set switch would otherwise have archived everything at once.
+- The design does not depend on v4 being fresher, because the veto is conservative: it can only
+  hold a zero back, never accept one. If v4 is fresher, it prevents a wipe on a stale v3 zero. If
+  v4 itself lags and still lists entries for a set that really was emptied, convergence is merely
+  delayed until v4 catches up — a liveness cost, not a safety risk; no emote is archived wrongly
+  either way.
+- v4 listing entries is positive evidence, like a live push, so it resets the streak the same way.
+- It is not a failure: 7TV answered, and the next sync will most likely agree. Recording a failure
+  reason would show the operator a misleading "sync failed" hint in the UI, so none is written and
+  `LastSyncedAtUtc`/`LastSyncAttemptAtUtc` stay untouched.
+
+An unknown (null) or zero v4 count does not veto; the zero then counts as before, and while v4 is
+unknown the held-back log line says "v4 cross-check unavailable". The existing rule that a positive
+v3 `emote_count` with no emotes answers `Unavailable` stays.
+
+**Observation-based streak.** "N zeros in a row" means N consecutive *observations* of the channel.
+Every other outcome resets the streak: a non-empty answer, a v4 contradiction, a live push, an
+accepted zero, and also a failed lookup or an unusable response (`RecordFailedAttemptAsync`, i.e.
+every path that records a failure reason). The streak lives **in memory, in a singleton**
+(`EmptySetConfirmationTracker`): the sync service is scoped, so state there would die each call.
+Nothing is persisted, because a restart only delays acceptance by N ticks, whereas a column would
+need a migration for a state whose loss is harmless. It is keyed by the **normalized channel name**
+(rule 9, the key the match cache uses), not the row id, so the two roster-exit seams can forget it
+right next to `emoteMatchCache.RemoveChannel`: the Worker's Redis LEAVE handler and the periodic
+resync's `PruneStaleChannelsAsync`. A channel that leaves the roster is no longer observed, and a
+later rejoin starts from zero; renames and merges reset implicitly, which is fine. All entry points
+(periodic resync, boot recovery, JOIN/RESYNC handlers, EventAPI follow-ups) go through
+`SyncChannelAsync` and so count identically. To stop a burst of event-driven syncs from confirming
+itself within seconds, a zero only counts when at least `SevenTv:EmptySetConfirmationSpacingSeconds`
+(default 45, just under the 60 s periodic resync; 0 counts every zero) have passed since the last
+*counted* zero; the effective delay for a permanently empty same set is thus about N-1 periodic
+ticks. A held-back zero logs at Warning with the streak ("empty answer 1 of 3 needed") only when it
+counted, at Debug otherwise; acceptance logs at Information.
+
+**No maximum age.** An earlier revision of this change restarted a streak whose last counted zero
+was older than a bound derived from the spacing and the resync interval. It was dropped: such a
+bound has to be tuned against two cadences (spacing and resync interval), the duration of a resync
+tick over all channels, and 7TV outages in between, and every mistuning either lets a permanently
+empty set restart its streak forever or does nothing. Its purpose — zeros hours apart must not add
+up while the set was meanwhile seen non-empty — is covered by the observation-based reset (any
+non-zero observation in between resets) and the v4 veto (a set that is not empty in v4 never
+reaches the count). A long gap without any observation is just that, and the zeros on either side
+of it are still in a row.
+
+Further parts of the same change:
+
+- **A live push resets the streak.** An EventAPI dispatch for the active set that pushes or updates
+  at least one emote proves the set is not empty, so `ApplyEmoteSetUpdateAsync` resets the streak —
+  after the active-set check and the plausibility return, regardless of Applied vs NoChange.
+  Pull-only dispatches, skipped-implausible ones, `SetNotActive` and `ChannelUnknown` leave it alone.
+- **Sentinel set ids.** The sync rejects an all-zero set id with the same predicate the API client
+  uses (`SevenTvIds.IsUsable`) as `ResponseUnusable`, before the switch detection — a placeholder id
+  must neither count as "a new set" (which would accept a zero at once) nor be written to
+  `ActiveEmoteSetId`.
+- **Payload consistency, and the real shape of an empty set.** 7TV *omits* `emotes` and
+  `emote_count` for a genuinely empty set (its compat model, `shared/src/old_types/mod.rs` in the
+  SevenTV/SevenTV repository, uses `skip_serializing_if = "Vec::is_empty"` on `emotes` and
+  `is_default` on `emote_count`), so a missing `emotes` stays an empty list and flows into the
+  guard. What is *not* an empty set: an explicit `emotes: null`, and `emote_count > 0` with no
+  emotes — both answer `Unavailable`. The DTO reads `emote_count` for exactly that cross-check; the
+  embedded object and the `emote-sets/{id}` reload share it.
+
+The EventAPI delta path keeps its own guard (a delta that would remove the last active emote is
+skipped as `ImplausibleSkipped`) unchanged: it already answers with a full resync, which runs the
+logic above, so a really emptied set converges through the same confirmed path and a malformed
+delta alone still cannot wipe a channel. Out of scope and unchanged: matching/counting code.
+
+**Rebuilt on main after the multiple-emote-sets epic (#303).** Written on 2026-10-03 against a main
+without the epic, and merged forward on 2026-10-08 (not reimplemented: the guard still sits between
+the sentinel check and the first write, and every write still goes through the one sync path). The
+switch detection now has to be read *before* the guard, so `emoteSetSwitched` moved up; the rest of
+the epic's write path (`SaveSyncAsync` with the E10 retry and the vanished-row exit, the observation
+log, the post-save re-read) runs unchanged after it. How an accepted or held-back zero meets the
+epic's per-set state, each covered in `SevenTvSyncServiceEmptySetTests`:
+
+- **An accepted zero with a new set id is a set switch like any other.** It goes through
+  `ApplyAndSaveAsync`, so `RecordObservedSetAsync` closes the old set's interval with `SetSwitch` and
+  opens one for the new, empty set; the match cache is rebuilt under the new set id, so chat counts
+  from then on are keyed by it (and there is nothing to count). The emote rows are archived exactly as
+  after a switch to a non-empty set. The old set is **not** booked as "all emotes vanished": its view
+  in `UsageStatQueryService` is the historical one and still lists its emotes, archived, with the
+  usage counted against that set id.
+- **An accepted zero for the same set is not a switch.** The open interval stays open, no
+  `SetSwitch` close is written, the cache keeps the set id and loses only its names.
+- **A held-back zero writes nothing at all** — no observation row, no set id, no sync stamp, no
+  failure reason. In particular, a new set id that v4 contradicts opens no interval for that set;
+  the switch is booked by the first sync that is believed, at that sync's time. This is the same
+  behaviour main had for every zero before, so the observation log never contains a switch that was
+  then taken back.
+- **After an accepted switch the channel knows no active emotes**, so the next zero for the same new
+  set bypasses the guard as a plain no-op (no second switch, no held-back line), and the first emote
+  added later fills the same open interval.
+- **The epic's recoveries are not affected.** An empty set inserts no emote row, so the E10
+  unique-violation retry cannot fire on it; if the row vanishes during an accepted zero's save, the
+  sync is abandoned as before and the already-reset streak is irrelevant because the row is gone. The
+  paths main added that return before asking 7TV for the set (Twitch-id resolution backoff or search
+  budget refusal, rename duplicate, excluded channel) are not observations of the set and leave the
+  streak alone; in practice they never meet it, since a channel with known emotes already has its
+  Twitch id.
+
 ### 2026-10-08 — The K7 rollback uses a generated migration script, not `database update <older id>`
 
 **Betrifft:** `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (17, AK 84) ·
