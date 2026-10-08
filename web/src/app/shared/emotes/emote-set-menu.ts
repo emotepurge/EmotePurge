@@ -70,7 +70,7 @@ let nextLockReasonId = 0;
           [attr.aria-expanded]="isOpen()"
           [disabled]="triggerDisabled()"
           [attr.aria-describedby]="lockedReasonKey() !== null ? lockReasonId : null"
-          [title]="unavailable() ? ('emoteSetMenu.unavailable' | transloco) : null"
+          [attr.title]="unavailable() ? ('emoteSetMenu.unavailable' | transloco) : null"
           (click)="toggle()"
         >
           {{ 'emoteSetMenu.label' | transloco }}:
