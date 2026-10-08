@@ -59,6 +59,9 @@
     }
   },
   "landing": {
+    "cta": {
+      "app": "Zur App"
+    },
     "nav": {
       "does": "Was es tut",
       "how": "Ablauf",
@@ -117,6 +120,7 @@
     "close": {
       "title": "Bereit, dein Emote-Set aufzuräumen?",
       "subtitle": "Logg dich mit deinem Twitch-Account ein und leg direkt los.",
+      "subtitleApp": "Du bist bereits eingeloggt. Dein Emote-Set wartet in der App.",
       "button": "Mit Twitch einloggen",
       "trust": {
         "twitch": {

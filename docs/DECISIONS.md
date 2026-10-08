@@ -14,7 +14,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `PRODUCT.md` (principle 4, "Bestätigte Funktionalität", operating context) ·
 `web/public/i18n/de.json` and `en.json` (`landing.does.purge.body`, `landing.how.join.body`,
-`landing.how.purge.note`)
+`landing.how.purge.note`, `landing.cta.app`, `landing.close.subtitleApp`) ·
+`web/src/app/features/landing/landing-page.{ts,html}` (logged-in CTAs)
 
 Since the landing was written (2026-08-06) the product gained restore from the purge protocol, emote
 tags, several emote sets, import/transfer with the 7TV leaderboard, and export. The landing does not
@@ -33,6 +34,15 @@ false for restore; the new one keeps the three-step confirmation and still forbi
 button. The ways back are a re-add, not an undo, and carry their limits (the emote must still exist at
 7TV, the name must be free, the set needs room); the landing may claim neither "not recoverable" nor
 "everything reversible".
+
+A logged-in visitor on `/welcome` gets a link into the app instead of the login buttons: nav, hero and
+close become `<a routerLink="/">` ("Open app"), and the close subtitle changes from "log in and get
+started" to a note that they are already logged in. Anonymous visitors, and everyone while `/me` is
+still pending, keep the login buttons, so the main audience never waits or sees a flicker. There is
+deliberately no redirect from `/welcome` to `/`: the landing is the only explainer page and a logged-in
+user may read it or show it to someone. The page only reads `isResolved()`/`currentUser()`; the
+account menu in the nav already triggers `ensureLoaded()`, which does not de-duplicate in-flight
+requests.
 
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 

@@ -1,5 +1,5 @@
 import { NgOptimizedImage } from '@angular/common';
-import { Component, inject } from '@angular/core';
+import { Component, computed, inject } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 
@@ -65,6 +65,18 @@ const TRUST = ['twitch', 'token', 'source'] as const;
 })
 export class LandingPage {
   private readonly authService = inject(AuthService);
+
+  /**
+   * True only once /api/auth/me has answered AND found a user. Anonymous visitors, and everyone
+   * while the answer is pending, keep the login buttons: they are the main audience and must see
+   * neither a wait nor a flicker; only a logged-in visitor sees the swap, once. The request itself
+   * is not started here — `app-account-menu` in the nav calls `ensureLoaded()` and is always
+   * rendered, and `ensureLoaded()` has no in-flight de-duplication, so a second call from this
+   * page would fire /me twice. This only reads the shared signals.
+   */
+  protected readonly loggedIn = computed(
+    () => this.authService.isResolved() && this.authService.currentUser() !== null,
+  );
 
   protected readonly stages = STAGES;
   protected readonly steps = STEPS;

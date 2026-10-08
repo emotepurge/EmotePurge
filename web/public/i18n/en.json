@@ -59,6 +59,9 @@
     }
   },
   "landing": {
+    "cta": {
+      "app": "Open app"
+    },
     "nav": {
       "does": "What it does",
       "how": "How it works",
@@ -117,6 +120,7 @@
     "close": {
       "title": "Ready to clean up your emote set?",
       "subtitle": "Log in with your Twitch account and get started right away.",
+      "subtitleApp": "You're already logged in. Your emote set is waiting in the app.",
       "button": "Log in with Twitch",
       "trust": {
         "twitch": {
