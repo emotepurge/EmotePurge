@@ -8,6 +8,7 @@ import {
   mockAdminChannelList,
   mockAuthMe,
   mockChannelResync,
+  mockJoinLocked,
   mockMyChannels,
   mockPurge,
   mockWorkerHealth,
@@ -306,6 +307,35 @@ test.describe('global admin on /admin/channels', () => {
     // Row gone = the list actually reloaded rather than only the dialog closing.
     await expect(page.getByRole('link', { name: '#handofblood' })).toHaveCount(0);
     await expect(page.getByRole('link', { name: '#sensitron' })).toBeVisible();
+  });
+
+  test('joining a channel its broadcaster locked asks first and retries with the flag; declining sends nothing more', async ({
+    page,
+  }) => {
+    await mockAdminChannelList(page, [{ channelName: 'sensitron', isBotActive: false }]);
+    const joinUrls = await mockJoinLocked(page, 'sensitron', {
+      status: 409,
+      lockedAtUtc: '2026-10-01T10:00:00Z',
+    });
+
+    await page.goto('/admin/channels');
+    const row = page.getByRole('listitem').filter({ hasText: '#sensitron' });
+
+    // Declined: exactly the one request, no flag.
+    await row.getByRole('button', { name: 'Beitreten' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText(/am 01\.10\.2026 gelöscht und gesperrt/)).toBeVisible();
+    await dialog.getByRole('button', { name: 'Abbrechen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(joinUrls).toHaveLength(1);
+    expect(joinUrls[0]).not.toContain('liftBroadcasterLock');
+
+    // Confirmed: the second request carries the flag.
+    await row.getByRole('button', { name: 'Beitreten' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Trotzdem hinzufügen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(joinUrls).toHaveLength(3);
+    expect(joinUrls[2]).toContain('liftBroadcasterLock=true');
   });
 
   test('the drilldown names why a channel never synced', async ({ page }) => {
