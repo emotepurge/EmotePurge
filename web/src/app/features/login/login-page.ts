@@ -1,5 +1,5 @@
 import { NgOptimizedImage } from '@angular/common';
-import { Component, inject } from '@angular/core';
+import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 
@@ -9,6 +9,7 @@ import { LOGO_SRC } from '../../shared/branding/logo';
 import { AccountMenu } from '../../shared/ui/account-menu';
 import { Button } from '../../shared/ui/button';
 import { LegalFooterLinks } from '../../shared/ui/legal-footer-links';
+import { NoticeBanner } from '../../shared/ui/notice-banner';
 
 /**
  * Exactly what `TwitchOAuthDefaults.RequestedScopes` sends to id.twitch.tv/oauth2/authorize
@@ -60,11 +61,21 @@ const SCOPES = [
             <p class="text-fg-muted">{{ 'login.subtitle' | transloco }}</p>
           </div>
 
+          @if (notice(); as noticeKey) {
+            <div id="login-notice">
+              <app-notice-banner variant="error">
+                {{ 'login.notice.' + noticeKey | transloco }}
+              </app-notice-banner>
+            </div>
+          }
+
           <button
             type="button"
             appButton="primary"
             buttonSize="lg"
-            class="self-start"
+            class="self-start aria-disabled:cursor-not-allowed aria-disabled:border-transparent aria-disabled:bg-surface-inset aria-disabled:text-fg-disabled"
+            [attr.aria-disabled]="deleting() ? 'true' : null"
+            [attr.aria-describedby]="deleting() && notice() ? 'login-notice' : null"
             (click)="login()"
           >
             {{ 'login.loginButton' | transloco }}
@@ -104,15 +115,44 @@ const SCOPES = [
       }
     </div>
   `,
-  imports: [AccountMenu, Button, LegalFooterLinks, NgOptimizedImage, RouterLink, TranslocoPipe],
+  imports: [
+    AccountMenu,
+    Button,
+    LegalFooterLinks,
+    NgOptimizedImage,
+    NoticeBanner,
+    RouterLink,
+    TranslocoPipe,
+  ],
 })
 export class LoginPage {
   private readonly authService = inject(AuthService);
   private readonly legalService = inject(LegalService);
 
+  /** One-shot: read once at creation, so reloading the page or coming back later shows none. */
+  private readonly shownNotice = signal(this.authService.takeLoginNotice());
+  protected readonly notice = this.shownNotice.asReadonly();
+  /**
+   * A deletion that is still running blocks sign-in: its DELETE may already have committed, and an
+   * OAuth login now would recreate the account. `aria-disabled` rather than `disabled`, so the
+   * button stays focusable and its reason (the notice) is read out; the click is refused in
+   * AuthService.login().
+   */
+  protected readonly deleting = computed(
+    () => this.authService.deletionState().status === 'pending',
+  );
   protected readonly scopes = SCOPES;
   protected readonly logoSrc = LOGO_SRC;
   protected readonly hasLegalLinks = this.legalService.hasAnyDocument;
+
+  constructor() {
+    // A deletion that was still running when the session ended can answer after this page exists.
+    effect(() => {
+      if (this.authService.pendingLoginNotice()) {
+        untracked(() => this.shownNotice.set(this.authService.takeLoginNotice()));
+      }
+    });
+  }
 
   protected login(): void {
     this.authService.login();

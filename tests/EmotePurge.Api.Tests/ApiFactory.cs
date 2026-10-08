@@ -3,6 +3,8 @@ using System.Text.Encodings.Web;
 using EmotePurge.Api.Auth;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
+using EmotePurge.Core.Twitch;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -51,6 +53,14 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public IChannelResyncCooldown ResyncCooldown { get; } = Substitute.For<IChannelResyncCooldown>();
 
     /// <summary>
+    /// Substituted so the set-centric sync-deleted/sync-restored tests (restore-per-set spec 5.4,
+    /// AK 14) can read back which <c>channel.synced</c> events the endpoint published. The real
+    /// implementation would only meet the substituted <see cref="IConnectionMultiplexer"/> below and
+    /// fail inside the endpoint's catch-all, which hides whether a publish was attempted at all.
+    /// </summary>
+    public IRedisPublisher RedisPublisher { get; } = Substitute.For<IRedisPublisher>();
+
+    /// <summary>
     /// Substituted so the health tests can put the worker snapshot into any state; the real
     /// implementation reads Redis. Defaults to returning null ("no snapshot"), which is also
     /// what the substituted multiplexer would amount to.
@@ -74,6 +84,21 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public IForeignEmoteSetService ForeignEmoteSet { get; } = Substitute.For<IForeignEmoteSetService>();
 
     /// <summary>
+    /// Substituted because the handler's services are resolved before the filter pipeline runs (see
+    /// <see cref="ForeignEmoteSet"/>): the real membership service would need <c>AppDbContext</c>
+    /// and the 7TV set list, and the tracked-channel set preview's tests only need control over its
+    /// verdict.
+    /// </summary>
+    public ITrackedEmoteSetMembershipService TrackedEmoteSetMembership { get; } = Substitute.For<ITrackedEmoteSetMembershipService>();
+
+    /// <summary>
+    /// Substituted so the <c>/usage-stats/daily</c> wire test can read back which set scope the
+    /// endpoint forwarded; the handler's services are resolved before the filter pipeline runs (see
+    /// <see cref="ForeignEmoteSet"/>), and the real service would go to Postgres.
+    /// </summary>
+    public IUsageStatQueryService UsageStats { get; } = Substitute.For<IUsageStatQueryService>();
+
+    /// <summary>
     /// Substituted for the same reason as <see cref="ForeignEmoteSet"/> above: the leaderboard
     /// endpoint's whole filter-matrix test suite never needs a real 7TV round trip, only control over
     /// what <c>GetLeaderboardAsync</c> answers.
@@ -88,6 +113,53 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// vocabulary and source name the endpoint forwarded (spec F5/AK 12).
     /// </summary>
     public IEmoteService Emotes { get; } = Substitute.For<IEmoteService>();
+
+    /// <summary>
+    /// Substituted so the new set-listing routes (<c>GET /emote-sets</c>, <c>GET
+    /// /me/emote-set-targets</c>, the <c>?emoteSetId=</c> mode of the foreign-channel preview) never
+    /// reach real 7TV — the real implementation sits behind the guard chain (cache, coalescer,
+    /// breaker, budget) this factory otherwise leaves real, none of which resolves without Redis.
+    /// </summary>
+    public ISevenTvEmoteSetListService EmoteSetList { get; } = Substitute.For<ISevenTvEmoteSetListService>();
+
+    /// <summary>
+    /// Substituted so <c>GET /emote-sets</c>' Ok branch never reaches the real Postgres-backed
+    /// implementation. Defaults to an empty map (no channel has observations unless a test
+    /// configures one) rather than leaving the substitute's un-stubbed result — an
+    /// <c>IReadOnlyDictionary</c> — as <c>null</c>, which the handler's <c>TryGetValue</c> call would
+    /// throw on.
+    /// </summary>
+    public IChannelEmoteSetObservationService EmoteSetObservations { get; } = CreateDefaultObservationService();
+
+    /// <summary>
+    /// Substituted for <c>GET /emotes/set-warning</c>'s allow-path tests: the real implementation
+    /// takes <c>AppDbContext</c>, <c>ISevenTvApiClient</c> and <c>IModeratedChannelsProvider</c>, and
+    /// this factory has no real database behind the placeholder connection string below.
+    /// </summary>
+    public IEmoteSetOwnershipService EmoteSetOwnership { get; } = Substitute.For<IEmoteSetOwnershipService>();
+
+    /// <summary>
+    /// Substituted for <c>GET /me/emote-set-targets</c>'s AK 25 cases (the "Grants Failed" case in
+    /// particular): the real implementation goes through <c>IModRoleCache</c>'s Redis-backed
+    /// <see cref="IConnectionMultiplexer"/>, which this factory substitutes but never answers a real
+    /// grants lookup from.
+    /// </summary>
+    public ISevenTvEditorService EditorService { get; } = Substitute.For<ISevenTvEditorService>();
+
+    /// <summary>
+    /// Substituted for the set-centric <c>sync-imported</c>'s owner check, which reads its grants
+    /// through the guarded refresh (spec 2026-09-20, section 32, second review round) rather than
+    /// through <see cref="EditorService"/>. Its real implementation is pinned in the Infrastructure
+    /// tests; here it would only meet the substituted multiplexer.
+    /// </summary>
+    public IGuardedSevenTvEditorGrantsService GuardedEditorGrants { get; } = Substitute.For<IGuardedSevenTvEditorGrantsService>();
+
+    /// <summary>
+    /// Substituted for the set-centric <c>sync-imported</c>'s owner check (spec 2026-09-20, section
+    /// 32), which runs for real here: its one direct owner lookup is the only thing in this factory
+    /// that would otherwise reach 7TV. The check's breaker and budget stay the real singletons.
+    /// </summary>
+    public ISevenTvApiClient SevenTvApi { get; } = Substitute.For<ISevenTvApiClient>();
 
     /// <summary>
     /// Substituted because Program.cs now runs the S3-34 migration guard at startup — the real
@@ -106,16 +178,52 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public ILegalContentService LegalContent { get; } = Substitute.For<ILegalContentService>();
 
     /// <summary>
+    /// Substituted so the contact-form tests (docs/DECISIONS.md 2026-09-24, "contact form") can
+    /// drive <c>GetAvailability</c>/<c>SubmitAsync</c> directly, without a real Turnstile call or an
+    /// SMTP send — the real implementation's collaborators are a typed <c>HttpClient</c> and MailKit,
+    /// neither of which belongs in this filter-matrix-style suite. Defaults to "available" with a
+    /// public site key so the POST route's own tests reach <c>SubmitAsync</c> without every test
+    /// having to arrange availability first; the GET /api/contact/config tests override it.
+    /// </summary>
+    public IContactSubmissionService Contact { get; } = Substitute.For<IContactSubmissionService>();
+
+    /// <summary>
     /// Substituted so the admin account-deletion filter-matrix tests can reach the handler at all
     /// (the real implementation locks a Postgres row) and drive its outcome directly — the same
     /// reasoning as <see cref="Emotes"/>.
     /// </summary>
     public IAccountDeletionService AccountDeletion { get; } = Substitute.For<IAccountDeletionService>();
 
+    /// <summary>
+    /// Substituted for the self-service deletion endpoint: its handler reads the stored Twitch tokens
+    /// (Postgres) before the deletion. Everything else that asks for <c>IUserService</c> only ever
+    /// reaches it past a short-circuiting filter, so the substitute changes no existing case.
+    /// </summary>
+    public IUserService Users { get; } = Substitute.For<IUserService>();
+
+    /// <summary>Substituted so the self-deletion tests can see which tokens get revoked, without a Twitch round trip.</summary>
+    public ITwitchAuthClient TwitchAuth { get; } = Substitute.For<ITwitchAuthClient>();
+
+    /// <summary>
+    /// Substituted so the paging tests can read back the page and page size an endpoint forwarded
+    /// after correcting a missing or out-of-range query value; the real implementation would go to
+    /// Postgres.
+    /// </summary>
+    public IAuditLogQueryService AuditLogQuery { get; } = Substitute.For<IAuditLogQueryService>();
+
+    /// <summary>Substituted for the same reason as <see cref="AuditLogQuery"/>.</summary>
+    public IAdminUserQueryService AdminUserQuery { get; } = Substitute.For<IAdminUserQueryService>();
+
     public ApiFactory()
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
             .Returns(new LegalDocumentAvailability(ImprintAvailable: false, PrivacyAvailable: false));
+
+        Contact.GetAvailability()
+            .Returns(new ContactAvailability(Available: true, TurnstileSiteKey: "test-site-key"));
+        Contact
+            .SubmitAsync(Arg.Any<ContactSubmission>(), Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(ContactSubmissionOutcome.Sent);
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -145,14 +253,28 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => VoteEligibility);
             services.AddScoped(_ => Channels);
             services.AddSingleton(_ => ResyncCooldown);
+            services.AddSingleton(_ => RedisPublisher);
             services.AddSingleton(_ => WorkerHealth);
             services.AddSingleton(_ => LiveEventStream);
             services.AddScoped(_ => ForeignEmoteSet);
+            services.AddScoped(_ => TrackedEmoteSetMembership);
             services.AddScoped(_ => Leaderboard);
+            services.AddScoped(_ => UsageStats);
             services.AddScoped(_ => Emotes);
+            services.AddScoped(_ => EmoteSetList);
+            services.AddScoped(_ => EmoteSetObservations);
+            services.AddScoped(_ => EmoteSetOwnership);
+            services.AddScoped(_ => EditorService);
+            services.AddScoped(_ => GuardedEditorGrants);
+            services.AddScoped(_ => SevenTvApi);
             services.AddScoped(_ => _migrationGuard);
             services.AddSingleton(_ => LegalContent);
             services.AddScoped(_ => AccountDeletion);
+            services.AddScoped(_ => Contact);
+            services.AddScoped(_ => Users);
+            services.AddScoped(_ => TwitchAuth);
+            services.AddScoped(_ => AuditLogQuery);
+            services.AddScoped(_ => AdminUserQuery);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about
@@ -169,6 +291,14 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddAuthentication(TestAuthHandler.SchemeName)
                 .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
         });
+    }
+
+    private static IChannelEmoteSetObservationService CreateDefaultObservationService()
+    {
+        var service = Substitute.For<IChannelEmoteSetObservationService>();
+        service.ListIntervalsByChannelAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<string, IReadOnlyList<ChannelEmoteSetObservationInterval>>());
+        return service;
     }
 }
 

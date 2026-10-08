@@ -10,25 +10,25 @@ import {
 describe('dedupeImportRows', () => {
   it('collapses a duplicate sevenTvEmoteId and keeps the first occurrence', () => {
     const rows: ImportRow[] = [
-      { sevenTvEmoteId: 'a1', name: 'PogU' },
-      { sevenTvEmoteId: 'a2', name: 'Kappa' },
-      { sevenTvEmoteId: 'a1', name: 'PogU-again' },
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
+      { sevenTvEmoteId: 'a1', name: 'PogU-again', imageUrl: null },
     ];
 
     const result = dedupeImportRows(rows);
 
     expect(result.duplicatesCollapsed).toBe(1);
     expect(result.rows).toEqual([
-      { sevenTvEmoteId: 'a1', name: 'PogU' },
-      { sevenTvEmoteId: 'a2', name: 'Kappa' },
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
     ]);
   });
 
   it('reports zero collapsed and preserves order when there are no duplicates', () => {
     const rows: ImportRow[] = [
-      { sevenTvEmoteId: 'a1', name: 'PogU' },
-      { sevenTvEmoteId: 'a2', name: 'Kappa' },
-      { sevenTvEmoteId: 'a3', name: 'monkaS' },
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
+      { sevenTvEmoteId: 'a3', name: 'monkaS', imageUrl: null },
     ];
 
     const result = dedupeImportRows(rows);

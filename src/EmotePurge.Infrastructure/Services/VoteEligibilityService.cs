@@ -92,7 +92,7 @@ public class VoteEligibilityService(
         var cached = await modRoleCache.TryGetIsSubscriberAsync(principal.TwitchUserId, broadcasterTwitchId, cancellationToken);
         // Counted per lookup, not per page view: one channel with ten Subs sessions asks ten times,
         // and the nine hits are exactly the Helix calls this cache exists to remove.
-        telemetry.RecordCacheLookup(RateLimitCacheNames.SubscriberCheck, cached is not null);
+        telemetry.ReportCacheLookup(RateLimitCacheNames.SubscriberCheck, cached is not null);
         if (cached is { } isSubscriberCached)
         {
             return isSubscriberCached;

@@ -33,6 +33,34 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/{channelName}/emotes/sync-restored", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("POST", "/api/channels/{channelName}/emotes/sync-imported", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("GET", "/api/channels/{channelName}/emotes", RateLimitPolicyNames.InteractiveRead)]
+    // AK 46 (spec 2026-09-20, 6.10): the five K2 routes this task adds or extends, each on the policy
+    // its group already carries — none of them needed a new policy.
+    [InlineData("GET", "/api/channels/{channelName}/emote-sets", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("GET", "/api/channels/{channelName}/emotes/set-warning", RateLimitPolicyNames.InteractiveRead)]
+    // #220: a tracked channel's set preview has a bucket of its own, not the ForeignEmoteLookup one
+    // its former route shared with the foreign-channel import.
+    [InlineData("GET", "/api/channels/{channelName}/emote-sets/{emoteSetId}/emotes", RateLimitPolicyNames.TrackedEmoteSetPreview)]
+    [InlineData("GET", "/api/channels/{channelName}/usage-stats/totals", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("GET", "/api/seventv/channels/{channelName}/emotes", RateLimitPolicyNames.ForeignEmoteLookup)]
+    // K3 (spec 6.3/6.10, T3.1): the source-set picker's list route, same policy as its /emotes sibling.
+    [InlineData("GET", "/api/seventv/channels/{channelName}/emote-sets", RateLimitPolicyNames.ForeignEmoteLookup)]
+    [InlineData("GET", "/api/seventv/me/emote-set-targets", RateLimitPolicyNames.ForeignEmoteLookup)]
+    // The editable pre-check for one set (owner-hint design 3.4): a sibling in the same /me group, so
+    // the same ForeignEmoteLookup permit per call as opening the picker — not Bookkeeping, because
+    // this call runs before any 7TV mutation and pulls set-list requests of its own.
+    [InlineData("GET", "/api/seventv/me/emote-set-targets/{emoteSetId}", RateLimitPolicyNames.ForeignEmoteLookup)]
+    // The set-centric import (spec 6.7/6.10, T2.4): the 7TV mutation already happened by the time this
+    // call runs, same reasoning as its channel-scoped sibling two lines up — Bookkeeping, not
+    // ForeignEmoteLookup, so a spent read budget cannot drop the paper trail.
+    [InlineData("POST", "/api/seventv/emote-sets/{emoteSetId}/sync-imported", RateLimitPolicyNames.Bookkeeping)]
+    // The set-centric delete/restore reports (restore-per-set spec 5.1, AK 9): the same reasoning —
+    // the mutation already happened, so a spent read budget must not cost the paper trail.
+    [InlineData("POST", "/api/seventv/emote-sets/{emoteSetId}/sync-deleted", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/seventv/emote-sets/{emoteSetId}/sync-restored", RateLimitPolicyNames.Bookkeeping)]
+    // K6 whole-branch review, Fable A (spec 6.10): a set-session's branch of this route reads the
+    // set's live 7TV membership (paginated), same provider-budget shape as the ForeignEmoteLookup
+    // routes above — its own group otherwise defaults to Bookkeeping (end/delete keep it, unaffected).
+    [InlineData("POST", "/api/channels/{channelName}/vote-sessions", RateLimitPolicyNames.ForeignEmoteLookup)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)
     {
         // Resolving from Services boots the host; the endpoints exist only afterwards (same as

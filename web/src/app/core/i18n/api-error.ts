@@ -29,6 +29,8 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'channel_not_found',
   'channel_not_on_twitch',
   'channel_capacity_reached',
+  'channel_excluded',
+  'account_mismatch',
   'foreign_channel_twitch_unavailable',
   'foreign_channel_no_seventv_account',
   'foreign_channel_no_active_emote_set',
@@ -44,7 +46,17 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'unexpected_error',
   'no_health_data',
   'health_data_unreadable',
+  // Four codes for the emote-set surface (spec 2026-09-20, E13). Added together even though only
+  // the first is wired to a route yet (T2.3) — the other three belong to routes later tasks build,
+  // and adding codes piecemeal per task would leave this mirror and the locale files out of step
+  // for the stretch between tasks (AK 45).
+  'invalid_emote_set_id',
+  'emote_set_not_found',
+  'vote_session_set_ballot_invalid',
   'legal_document_not_found',
+  'contact_invalid',
+  'contact_captcha_failed',
+  'contact_unavailable',
 ]);
 
 /**

@@ -97,7 +97,7 @@ haben kein Modell: sie sind fertige Kommandozeilen mit Platzhaltern, die der Bet
   deploybar, und ein gemergtes K1 auf `main` hieße, dass der nächste Hotfix-Deploy vor dem
   2026-10-08 ein Image mitbrächte, das am `PendingMigrationGuard` (S3-34) abbricht. Der eine PR auf
   `main` ist T7 — nach dem 08.10., mit der Zweitmeinung aus Regel 22 über das Ganze. Die
-  Kind-Issue-PRs bekommen zusätzlich je eine `/codex:review --model gpt-5.6-sol --scope branch
+  Kind-Issue-PRs bekommen zusätzlich je eine `/codex:review --model gpt-6-sol --scope branch
   --base feat/emote-sets-200`, weil ein 100-Stunden-Diff in einem einzigen Review nicht mehr
   lesbar ist. (Planentscheidung, keine Spec-Vorgabe; vom Betreiber am 2026-09-20 bestätigt.)
 - **K1 und K2 laufen parallel in getrennten Worktrees** (`superpowers:using-git-worktrees`); die
@@ -414,6 +414,7 @@ Task ausführt, liest Spec 4.2 als Ganzes, nicht diesen Absatz.
   Eintragstyp und die Liste an; `BoundaryUtc` ist bis zum 01.10. ein deutlich markierter
   Platzhalter, den der Betreiber am Wechseltag nennt und der dann in einem `chore:`-Commit auf dem
   Integrationsbranch seinen echten Wert bekommt — **vor** T1.10.
+  *Stand 2026-10-08: erledigt — `BoundaryUtc` = 2026-10-08 (Wechsel real am 2026-10-07 gegen 19:57 UTC, nicht am 01.10.; s. DECISIONS 2026-10-08).*
 - **Die Migrationstests stellen ihre Fälle über die Datenbank her**, nicht über eine Fixture der
   Liste: sie legen einen Kanal mit der `TwitchChannelId` der Konstante an und geben ihm die Zeilen
   und die `ActiveEmoteSetId`, die den jeweiligen Zweig auslösen (Spec 4.2, „Die Tests bringen ihre
@@ -435,8 +436,8 @@ Nummern; ausgezählt: 3 + 1 + 1 + 1 + 2 + 3 = 11.
 `Integration/PendingMigrationGuardTests.cs` bleibt grün.
 
 **Gate:** BE grün; `dotnet ef migrations list` gegen die lokale Dev-DB zeigt genau eine Pending;
-`dotnet ef database update` lokal läuft durch **und** `dotnet ef database update
-20260907080507_AddUsageStatSharedChatUseCount` rollt sauber zurück (Dev-DB hat keinen
+`dotnet ef database update` lokal läuft durch **und** das Rollback-Skript (`dotnet ef migrations script 20260920191131_AddUsageStatEmoteSetId
+20260907080507_AddUsageStatSharedChatUseCount`, nicht `database update 20260907…`, Spec 17) rollt sauber zurück (Dev-DB hat keinen
 Set-Wechsel — falls doch, ist der Abbruch an Schranke 1 das **erwartete** Ergebnis und kein
 Task-Fehler; dann die `'set-switch'`-Zeile der Dev-DB vorher entfernen). Die Dev-DB trägt seit dem
 Leerräumen am 2026-09-20 keine Nutzungszeilen; Prüfung 2 und Prüfung 3 sind damit leer erfüllt,
@@ -1316,7 +1317,7 @@ names and eligibility` — enthält den DECISIONS-Eintrag 3. K6-PR.
    Frage, ob jede neue Zeile einen der in T1.2/T1.5/T4.2–T4.5 genannten Fälle hat, nicht die Zahl.
    Sonar misst `new_coverage` zeilen- **und** zweiggenau; die **drei** `RAISE`-Zweige der
    Migration haben je einen Test (T1.3b).
-3. `/codex:review --model gpt-5.6-sol --scope branch --base origin/main` über das Ganze — nach den
+3. `/codex:review --model gpt-6-sol --scope branch --base origin/main` über das Ganze — nach den
    Kind-Issue-Reviews (0.4) ein Blick auf die Nähte zwischen den Kind-Issues. Findings sind Input;
    widersprechen sich Opus-Review und Codex bei einem P1/P2, entscheidet Fable (globale Regel).
 4. PR-Text nennt: die Zahl der umgestellten Bestandstests je Datei (aus den Teilaufgaben), die
@@ -1362,8 +1363,10 @@ ist, alte Images starten, Fenster als **Nulllauf** beenden. Ob `Up` noch rechnet
 Nachwirkung aus Spec 17. **Ein** Folge-Issue für **beide** Übergangsfelder wird mit Datum „frühestens +14 Tage"
 angelegt und ins Epic #200 eingetragen (Vertrag: Spec 21, ein Tor für beide).
 
-**Rollback im Fenster:** neuen `worker` **und** `api` stoppen, `dotnet ef database update
-20260907080507_AddUsageStatSharedChatUseCount --connection '…'`, alte Images starten — nur bis
+**Rollback im Fenster:** neuen `worker` **und** `api` stoppen, das vorab per `dotnet ef migrations script
+20260920191131_AddUsageStatEmoteSetId 20260907080507_AddUsageStatSharedChatUseCount` erzeugte
+Rollback-Skript per `psql -v ON_ERROR_STOP=1` einspielen (**nicht** `database update 20260907…`: das
+nähme auch `20260923194321_AddRetentionTimestamps` zurück, Spec 17), alte Images starten — nur bis
 zum ersten beobachteten Set-Wechsel nach Schritt 7 (5). Ein Abbruch **während** Schritt 5 ist kein
 Rollback, sondern ein Nulllauf: es ist nichts geschehen, und es genügt, die alten Images wieder zu
 starten.
@@ -1520,7 +1523,7 @@ Der Merge gehört dem Nutzer; der Deploy ist ein getrenntes Wartungsfenster.
 
 ## 7. Nachtrag: Codex-Review vom 2026-09-20, **erste Runde**
 
-Adversariale Zweitmeinung (`/codex:adversarial-review --model gpt-5.6-sol`) über
+Adversariale Zweitmeinung (`/codex:adversarial-review --model gpt-6-sol`) über
 [die Spec](../superpowers/specs/2026-09-20-emote-sets-200-spec.md) und diesen Plan. Fünf Befunde,
 **alle fünf eingearbeitet** (Befund E am 2026-09-20 nach der Entscheidung des Betreibers), dazu
 **drei** Nachzügler aus der Einarbeitung und ein daraus entstandener neuer Task. Die Verträge sind in

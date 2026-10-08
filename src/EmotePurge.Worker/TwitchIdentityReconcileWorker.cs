@@ -14,7 +14,7 @@ public class TwitchIdentityReconcileWorker(
     IConfiguration configuration,
     IServiceScopeFactory scopeFactory) : BackgroundService
 {
-    private static readonly ChannelIdentityReconcileSummary EmptySummary = new(0, 0, 0, 0, 0, 0);
+    private static readonly ChannelIdentityReconcileSummary EmptySummary = new(0, 0, 0, 0, 0, 0, 0);
 
     // 60 minutes default (Betreiber-Antwort 2): one tick costs one Helix request per 100 channels,
     // and renames are rare enough that hourly is plenty responsive.
@@ -81,8 +81,8 @@ public class TwitchIdentityReconcileWorker(
             // resolves to nothing (case 6). Saying "Logins" alone sends the first production
             // investigation looking for an id-less row that may not exist.
             logger.LogInformation(
-                "Identity-Reconcile: {Checked} geprüft, {IdsBackfilled} IDs nachgetragen, {Renamed} umbenannt, {Merged} zusammengeführt, {MergesRefused} Zusammenführungen abgelehnt, {LoginsMissing} Kanäle bei Twitch nicht mehr auffindbar (Login oder ID unbekannt).",
-                summary.Checked, summary.IdsBackfilled, summary.Renamed, summary.Merged, summary.MergesRefused, summary.LoginsMissing);
+                "Identity-Reconcile: {Checked} geprüft, {IdsBackfilled} IDs nachgetragen, {Renamed} umbenannt, {Merged} zusammengeführt, {MergesRefused} Zusammenführungen abgelehnt, {LoginsMissing} Kanäle bei Twitch nicht mehr auffindbar (Login oder ID unbekannt), {Deactivated} wegen Sperrliste deaktiviert.",
+                summary.Checked, summary.IdsBackfilled, summary.Renamed, summary.Merged, summary.MergesRefused, summary.LoginsMissing, summary.Deactivated);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

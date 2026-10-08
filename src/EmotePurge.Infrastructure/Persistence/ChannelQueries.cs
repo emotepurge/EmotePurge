@@ -1,4 +1,5 @@
 using EmotePurge.Core.Entities;
+using EmotePurge.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace EmotePurge.Infrastructure.Persistence;
@@ -59,6 +60,19 @@ internal static class ChannelQueries
     }
 
     /// <summary>
+    /// Loads a channel by its primary key rather than its (possibly since-changed) name — for a
+    /// caller that already resolved the exact row it means and must not risk a name-based reload
+    /// picking up an unrelated row that took over the same name in between (the identity
+    /// reconcile's own exclusion-gate deactivation, issue #260, third Codex review: a concurrent
+    /// purge of the row this call means, followed by a fresh join under the same login, would
+    /// otherwise hand a name-based reload the wrong row to deactivate). Tracked, like
+    /// <see cref="LoadChannelAsync"/> — the one caller mutates what it loads.
+    /// </summary>
+    public static Task<Channel?> LoadChannelByIdAsync(
+        this AppDbContext db, string channelId, CancellationToken cancellationToken) =>
+        db.Channels.SingleOrDefaultAsync(c => c.Id == channelId, cancellationToken);
+
+    /// <summary>
     /// Loads a channel by its Twitch id: once a caller has a Twitch id in hand, it is looking for
     /// the *channel*, not for whatever name it currently answers to, and a rename can leave a
     /// second row under a new name sharing that same id. Tracked, since the callers that need this
@@ -76,6 +90,27 @@ internal static class ChannelQueries
     public static Task<Channel?> LoadChannelByTwitchIdReadOnlyAsync(
         this AppDbContext db, string twitchChannelId, CancellationToken cancellationToken) =>
         db.Channels.AsNoTracking().SingleOrDefaultAsync(c => c.TwitchChannelId == twitchChannelId, cancellationToken);
+
+    /// <summary>
+    /// Loads the active, unblocked channel for a Twitch id — the rule every caller means by "this
+    /// account's tracked channel": an <see cref="Channel.IsBotActive"/> row whose Twitch id is not on
+    /// <c>Channels:ExcludedChannelIds</c>. <c>null</c> covers untracked, left and blocked alike, on
+    /// purpose — a blocked channel must look exactly like an untracked one to every caller
+    /// (<see cref="ChannelService.GetActiveByTwitchChannelIdAsync"/>, and the set-centric report's
+    /// owner-channel paper entry, addendum N3 5.2 step 3a).
+    /// </summary>
+    public static async Task<Channel?> LoadActiveChannelByTwitchIdReadOnlyAsync(
+        this AppDbContext db, string twitchChannelId, IExcludedChannelFilter excludedChannelFilter, CancellationToken cancellationToken)
+    {
+        var channel = await db.Channels
+            .AsNoTracking()
+            .Where(c => c.TwitchChannelId == twitchChannelId && c.IsBotActive)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return channel is not null && excludedChannelFilter.IsExcluded(channel.TwitchChannelId)
+            ? null
+            : channel;
+    }
 
     /// <summary>
     /// Loads a channel by its (un-normalized) name and locks the row with <c>SELECT … FOR UPDATE</c>

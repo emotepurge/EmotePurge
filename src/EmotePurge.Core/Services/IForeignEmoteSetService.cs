@@ -26,6 +26,110 @@ public interface IForeignEmoteSetService
     /// </param>
     Task<ForeignEmoteSetLookupResult> GetForeignEmoteSetAsync(
         string channelName, bool refresh = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The set-ID read mode (spec 2026-09-20, 6.4/E8): reads an arbitrary 7TV emote set by its own
+    /// id, never by resolving a channel's identity first. <paramref name="channelName"/> is the
+    /// route's channel and is only ever echoed back onto <see cref="ForeignEmoteSet.ChannelName"/> —
+    /// it is never normalized against Twitch, never used to look anything up, and its value has no
+    /// bearing on which set is read. There is deliberately no Helix call and no 7TV identity
+    /// resolution on this path: <see cref="ForeignEmoteSet.SevenTvUserId"/> on the result is always
+    /// <c>null</c>, because our <c>Channel</c> row holds no 7TV user id to report in the first place
+    /// (only the worker's live subscription registry does) — a channel with no role at all for the
+    /// caller has nothing to resolve to.
+    /// </summary>
+    /// <param name="channelName">The route's channel — echoed, not resolved.</param>
+    /// <param name="emoteSetId">The 7TV set id to read, already format-validated at the API edge.</param>
+    /// <param name="refresh">Same meaning as on <see cref="GetForeignEmoteSetAsync"/>.</param>
+    Task<ForeignEmoteSetLookupResult> GetForeignEmoteSetBySetIdAsync(
+        string channelName, string emoteSetId, bool refresh = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The set list of a foreign channel by Twitch login (spec 2026-09-20, 6.3/K3 — the source-set
+    /// picker of the "aus einem Kanal" import branch). Resolution mirrors
+    /// <see cref="GetForeignEmoteSetAsync"/>'s first step exactly (Helix by login, then a Twitch id) —
+    /// but the second half never touches <see cref="ISevenTvApiClient.ResolveSevenTvIdentityAsync"/>
+    /// or the paginated preview at all. Instead it reads the shared
+    /// <see cref="ISevenTvEmoteSetListService"/> — the same list every tracked channel's dropdown
+    /// (6.1) and the target picker's own accounts (6.2) already read — so this method needs no guard
+    /// chain of its own around the 7TV half: that hardening already lives entirely inside the list
+    /// service.
+    /// </summary>
+    /// <param name="channelName">A Twitch login, in any casing — normalized inside.</param>
+    Task<ForeignEmoteSetListLookupResult> GetForeignEmoteSetListAsync(
+        string channelName, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Every way <see cref="IForeignEmoteSetService.GetForeignEmoteSetListAsync"/> can end — the state
+/// table of spec 6.3, which reuses the failure vocabulary of <see cref="ForeignEmoteSetLookupStatus"/>
+/// one-to-one except for <see cref="ForeignEmoteSetLookupStatus.NoActiveEmoteSet"/>: a set *list*
+/// needs no active set to answer with, only a 7TV account to list sets for.
+/// </summary>
+public enum ForeignEmoteSetListLookupStatus
+{
+    Ok,
+    ChannelNotOnTwitch,
+    TwitchUnavailable,
+
+    /// <summary>
+    /// 7TV has no account for this Twitch id. Deliberately **not** the 200-with-an-empty-list answer
+    /// 6.1's tracked-channel route gives the same underlying <c>EmoteSetListStatus.NoSevenTvAccount</c>
+    /// — 6.3's own state table (identical to the singular preview's) answers 404 here, because an
+    /// empty radiogroup is not a usable picker state (spec 6.3, "Zustände wie GET …/emotes").
+    /// </summary>
+    NoSevenTvAccount,
+
+    SevenTvUnavailable,
+
+    /// <summary>Mirrors <see cref="ForeignEmoteSetLookupStatus.SevenTvRateLimited"/> — kept apart from
+    /// <see cref="SevenTvUnavailable"/> only so the underlying guard chain can react differently;
+    /// invisible on the wire (same 503 code as every other 7TV-side failure here).</summary>
+    SevenTvRateLimited,
+
+    /// <summary>Our own provider-wide budget refused a permit — never anything 7TV said.</summary>
+    ProviderBudgetExhausted
+}
+
+/// <summary>
+/// <see cref="List"/> is non-null if and only if <see cref="Status"/> is
+/// <see cref="ForeignEmoteSetListLookupStatus.Ok"/> — the same invariant-by-construction shape as
+/// <see cref="ForeignEmoteSetLookupResult"/> and <see cref="EmoteSetListResult"/>.
+/// </summary>
+public sealed class ForeignEmoteSetListLookupResult
+{
+    private ForeignEmoteSetListLookupResult(ForeignEmoteSetListLookupStatus status, EmoteSetList? list)
+    {
+        Status = status;
+        List = list;
+    }
+
+    public ForeignEmoteSetListLookupStatus Status { get; }
+
+    /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="ForeignEmoteSetListLookupStatus.Ok"/>.</summary>
+    public EmoteSetList? List { get; }
+
+    public static ForeignEmoteSetListLookupResult Ok(EmoteSetList list)
+    {
+        ArgumentNullException.ThrowIfNull(list);
+        return new ForeignEmoteSetListLookupResult(ForeignEmoteSetListLookupStatus.Ok, list);
+    }
+
+    public static ForeignEmoteSetListLookupResult Failed(ForeignEmoteSetListLookupStatus status)
+    {
+        if (status == ForeignEmoteSetListLookupStatus.Ok)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Failed() cannot carry a success status — Ok(list) is for that.");
+        }
+
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown ForeignEmoteSetListLookupStatus.");
+        }
+
+        return new ForeignEmoteSetListLookupResult(status, null);
+    }
 }
 
 /// <summary>
@@ -120,13 +224,31 @@ public sealed class ForeignEmoteSetLookupResult
 /// step the API endpoint needs, the same convention <c>ResyncCooldownState</c> and
 /// <c>SevenTvChannelState</c> already rely on elsewhere in this codebase.
 /// </summary>
+/// <param name="SevenTvUserId">
+/// <c>null</c> in the set-ID read mode (spec E8) — see
+/// <see cref="IForeignEmoteSetService.GetForeignEmoteSetBySetIdAsync"/>. Never <c>null</c> for a
+/// result the login-based <see cref="IForeignEmoteSetService.GetForeignEmoteSetAsync"/> produced.
+/// </param>
+/// <param name="EmoteSetName">
+/// What 7TV reports as the set's own name (spec 6.4, F6); <c>null</c> when 7TV omits it. Trailing
+/// and optional, together with <paramref name="Capacity"/>, purely so every existing positional
+/// construction of this record — none of which knew this field existed — keeps compiling unchanged
+/// (AK 28: the 9 Hardened-decorator tests and this record's other callers must stay untouched).
+/// </param>
+/// <param name="Capacity">
+/// The set's slot limit as 7TV reports it; <c>0</c> is already normalised to <c>null</c> here, the
+/// same idiom <see cref="EmotePurge.Core.SevenTv.SevenTvEmoteSet"/> and
+/// <see cref="EmotePurge.Core.SevenTv.SevenTvEmoteSetListEntry"/> already use.
+/// </param>
 public sealed record ForeignEmoteSet(
     string ChannelName,
-    string SevenTvUserId,
+    string? SevenTvUserId,
     string EmoteSetId,
     int TotalCount,
     bool Truncated,
-    IReadOnlyList<ForeignEmoteRow> Emotes);
+    IReadOnlyList<ForeignEmoteRow> Emotes,
+    string? EmoteSetName = null,
+    int? Capacity = null);
 
 /// <summary>
 /// One emote in a foreign set preview. <see cref="SevenTvEmoteId"/> is 7TV's own ObjectID, never our

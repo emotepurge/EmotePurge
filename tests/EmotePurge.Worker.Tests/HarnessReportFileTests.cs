@@ -69,6 +69,50 @@ public class HarnessReportFileTests : IDisposable
         Assert.Null(header.Identity.SharedChatCutover);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ARecordedRunMode_ReadsBackAsWritten(bool diagnostic)
+    {
+        var identity = Identity();
+        var file = NewFile(identity);
+        file.WriteHeader(new HarnessReportHeader(identity, DateTime.UtcNow, diagnostic));
+
+        Assert.Equal(diagnostic, file.ReadHeader(identity).Diagnostic);
+        Assert.Equal(diagnostic, file.TryReadHeader()!.Diagnostic);
+    }
+
+    [Fact]
+    public void AHeaderWithoutARecordedMode_OmitsTheField_AndReadsBackAsUnknown()
+    {
+        var identity = Identity();
+        var file = NewFile(identity);
+        file.WriteHeader(new HarnessReportHeader(identity, DateTime.UtcNow));
+
+        Assert.DoesNotContain("diagnostic", File.ReadAllLines(file.Path)[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Null(file.ReadHeader(identity).Diagnostic);
+    }
+
+    [Fact]
+    public void TheRunMode_IsNotPartOfTheIdentity_SoTheFileNameAndTheIdentityCheckIgnoreIt()
+    {
+        var identity = Identity();
+        var name = HarnessReportFile.BuildFileName(identity);
+
+        var diagnosticFile = NewFile(identity);
+        diagnosticFile.WriteHeader(new HarnessReportHeader(identity, DateTime.UtcNow, true));
+        Assert.Equal(identity.InputHash, diagnosticFile.ReadHeader(identity).Identity.InputHash);
+        File.Delete(diagnosticFile.Path);
+
+        var legacyFile = NewFile(identity);
+        legacyFile.WriteHeader(new HarnessReportHeader(identity, DateTime.UtcNow));
+        Assert.Equal(identity.InputHash, legacyFile.ReadHeader(identity).Identity.InputHash);
+
+        Assert.Equal(name, HarnessReportFile.BuildFileName(identity));
+        Assert.Equal(name, Path.GetFileName(legacyFile.Path));
+        Assert.Equal(name, Path.GetFileName(diagnosticFile.Path));
+    }
+
     [Fact]
     public void TwoIdentities_DifferingOnlyInTheSharedChatCutover_ProduceDifferentFileNames()
     {

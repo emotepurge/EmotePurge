@@ -108,7 +108,7 @@ rollt eine Entscheidung A–M des Betreibers neu auf.
 | E19 | Set-Liste im Dropdown und stille Reloads | Die Set-Liste (`/emote-sets`) wird **einmal je Kanal-Aufruf** und bei lautem Reload geladen, nie bei `usage.flushed` | Sonst kostete jeder Betrachter einer Nutzungsseite 2 Permits/min für eine Liste, die sich pro Tag einmal ändert. Der 60-s-Cache dämpft, die Regel verhindert |
 | E20 | Duplikat-Zelle (#74) in der **aktiven** Ansicht | **Nur in nicht-aktiven Ansichten.** Die aktive Ansicht holt keine Live-Liste (E16) und kennt je ID einen Alias (`SevenTvSyncService.cs:515-517`); dort bleibt es beim heutigen Bild | Slot-Zahl und beide Aliase kommen allein aus der Live-Liste. Das Duplikat-Banner (Namen, nicht IDs — `EmoteSetStatusService.cs:66-71`) ist ein anderer Fall und bleibt |
 | E21 | Wo `isActive` der Set-Liste herkommt | Für getrackte Kanäle **aus `Channel.ActiveEmoteSetId`** (unser beobachteter Zustand), für ungetrackte Accounts aus **`style.activeEmoteSetId` derselben v4-Antwort** (E7) — kein zweiter Request, kein v3-Aufruf | Die Zahlen der Nutzungsseite hängen am beobachteten Set (Konzept 5.2); ein Dropdown, das 7TVs Sicht als „aktiv" markiert, während der Cache noch die alte Generation zählt, widerspräche der Seite unter ihm. **Seit dem 2026-09-20 ist die Aufteilung eine Wahl, keine Notlage:** v4 trägt die aktive Set-ID an `style.activeEmoteSetId` und liefert für `platformId: 49140130` denselben Wert wie v3 `.emote_set_id` (`01GV88A38G0006FW5TVZVMG507`, am selben Tag gegengeprüft). Für getrackte Kanäle ignorieren wir sie trotzdem, weil dort der beobachtete Zustand zählt; genommen wird sie genau dort, wo es keinen gibt |
-| E22 | `sync-imported`-Papier für ungetrackte Ziele: Besitzer-Prüfung | `GqlEditorOfQuery` liest zusätzlich `user { id }`; `SevenTvEditorGrant`/`SevenTvEditorGrantEntry` bekommen `SevenTvUserId` (nullbar, additiv). Der set-zentrierte Endpunkt vergleicht `GetEmoteSetOwnerIdAsync(setId)` (`SevenTvApiClient.cs:32-33`) mit der 7TV-ID des Akteurs (`ResolveSevenTvIdentityAsync`) und den 7TV-IDs seiner Grants; ein Grant-Eintrag **ohne** 7TV-ID (Cache-Payload von vor dem Deploy, F10) wird live nachgelöst | Die Besitzer-Prüfung ist eine Prüfung auf 7TV-IDs, die Grants tragen heute nur Twitch-IDs (`:355-360`). Additiv im selben Request, kein Zusatzaufruf im Normalfall |
+| E22 | `sync-imported`-Papier für ungetrackte Ziele: Besitzer-Prüfung | *Seit dem 2026-09-21 durch Abschnitt 32 aufgehoben: die Prüfung läuft über die gecachten Set-Listen, `SevenTvUserId` am Grant und das Nachlösen entfallen.* `GqlEditorOfQuery` liest zusätzlich `user { id }`; `SevenTvEditorGrant`/`SevenTvEditorGrantEntry` bekommen `SevenTvUserId` (nullbar, additiv). Der set-zentrierte Endpunkt vergleicht `GetEmoteSetOwnerIdAsync(setId)` (`SevenTvApiClient.cs:32-33`) mit der 7TV-ID des Akteurs (`ResolveSevenTvIdentityAsync`) und den 7TV-IDs seiner Grants; ein Grant-Eintrag **ohne** 7TV-ID (Cache-Payload von vor dem Deploy, F10) wird live nachgelöst | Die Besitzer-Prüfung ist eine Prüfung auf 7TV-IDs, die Grants tragen heute nur Twitch-IDs (`:355-360`). Additiv im selben Request, kein Zusatzaufruf im Normalfall |
 | E23 | Wo die Set-Ansicht das „nicht mehr im Set"-Badge herleitet | Zeile in `/totals?emoteSetId=X`, aber **nicht** in der Live-Liste ⇒ Badge, nicht wählbar zum Löschen, zählt in Summe und Pareto-Nenner | Konzept 6.2, Zeile 3 der Tabelle; das Idiom ist `archivedBadge` (`de.json:781`) |
 | E24 | Namensvetter-Merkmal: Datenquelle | `/totals?emoteSetId=X` liefert je Zeile `nameTwinEmoteSetIds: string[]` — Set-IDs, unter denen eine **andere** `SevenTvEmoteId` **desselben Kanals mit demselben `Emote.Name`** mindestens eine `UsageStat` trägt. Setnamen dazu mappt die Seite aus der Dropdown-Liste | Eine Datenbankfrage (Regel 10: ID-Liste zuerst, dann `UsageStats`), kein 7TV-Request, ordinal wie das Chat-Matching (`EmoteNameMatching.cs:89`, nicht verifiziert — Zeile aus dem Konzept) |
 | E25 | Kind-Issue-Schnitt | **Sechs Code-Issues K1–K6 entlang der Bauschritte 3–8, plus K0 (Sonden, Wechseldatum, Purges — Betreiber, kein Code) und K7 (Wartungsfenster — Runbook, kein Code)** | Kein belegbar besserer Schnitt gefunden: Schritt 6 ist der größte, aber das Konzept begründet, warum Schlüsselwechsel und Vereinigungsliste nicht trennbar sind (NG0955 ab der ersten Guid-losen Zeile). Ein Backend/Frontend-Split innerhalb von Schritt 6 hätte zusätzlich eine Issue-Grenze quer durch die Identität gelegt. **Nachtrag 2026-09-20:** das frühere Zusatzargument „der `/series`-Wire-Bruch läge dann in einem Zwischenzustand, in dem das ausgelieferte Frontend gegen ein umgebautes Backend rennt" ist gegenstandslos — `/series` liefert seit 6.5 (Schritt 1) `sevenTvEmoteId` **additiv** neben `emoteId`, es gibt keinen Bruch mehr, der in einem Zwischenzustand liegen könnte. Der Schnitt steht damit allein auf NG0955, und das genügt. Details in Abschnitt 12 |
@@ -227,7 +227,9 @@ der Coalescer ebenso (`:95-96`). Vorgabe: Abfrage um `capacity` (und `name`) am 
 (`EmoteEndpoints.cs:24-29`), und `MarkImportedAsync` lädt die Kanalzeile und liefert ohne sie
 `false` (`EmoteService.cs:111-115`), was der Endpunkt als 404 durchreicht (`EmoteEndpoints.cs:206`).
 Für ein Set, dessen Account kein getrackter Kanal ist, gibt es keine Zeile — die Papierspur wäre
-weg. Vorgabe: set-zentrierter Endpunkt ohne Kanalzeile (Abschnitt 6.6).
+weg. Vorgabe: set-zentrierter Endpunkt ohne Kanalzeile (Abschnitt 6.7; **Korrektur, Nachtrag 40:**
+der Verweis stand hier fälschlich auf 6.6 — 6.7 ist der Abschnitt, der `sync-imported` und den
+set-zentrierten Endpunkt beschreibt, 6.6 beschreibt `sync-deleted`/`sync-restored`).
 
 ### F8 — Das Voting sperrt archivierte Zeilen beim Anlegen **und** beim Abstimmen, und die Detailseite leitet die Berechtigung aus Daten ab
 
@@ -903,7 +905,7 @@ sie nicht zweimal existiert).
 | 1 Middleware | nicht eingeloggt → 401; Bookkeeping-Budget → 429 |
 | 2 `EmoteSetIdValidationFilter` | ungültige Set-ID → 400 `invalid_emote_set_id` |
 | 3 Body-Vokabeltabelle | wie `:129-195` (400 `emote_ids_empty` / `invalid_source_kind` / `invalid_channel_name` / `invalid_leaderboard_sort`) |
-| 4 Besitzer-Prüfung (E22) | `GetEmoteSetOwnerIdAsync(emoteSetId)` null → 404 `emote_set_not_found`; Besitzer ∉ {7TV-ID des Akteurs} ∪ {7TV-IDs der `editor_of`-Grants} → **403 bare** (`Results.Forbid()`, wie die vier Autorisierungsfilter); 7TV nicht erreichbar → 503 `foreign_channel_seventv_unavailable`, **kein** Eintrag |
+| 4 Besitzer-Prüfung (E22) | *Seit dem 2026-09-21 durch Abschnitt 32 aufgehoben — die Prüfung fragt die gecachten Set-Listen statt 7TV direkt, und bei Teilausfall ohne zulässigen Fund ist die Antwort 503 statt 403.* `GetEmoteSetOwnerIdAsync(emoteSetId)` null → 404 `emote_set_not_found`; Besitzer ∉ {7TV-ID des Akteurs} ∪ {7TV-IDs der `editor_of`-Grants} → **403 bare** (`Results.Forbid()`, wie die vier Autorisierungsfilter); 7TV nicht erreichbar → 503 `foreign_channel_seventv_unavailable`, **kein** Eintrag |
 | 5 Service | `IEmoteService.MarkImportedToSetAsync(emoteSetId, ownerSevenTvUserId, sevenTvEmoteIds, sourceChannelName, sourceKind, leaderboardSort, actor)` → `AuditLogEntry` mit `ChannelName = null`, `TargetType = "emoteSet"`, `TargetId = emoteSetId`, Details `{ emoteCount, sourceKind, sourceChannelName, leaderboardSort, targetEmoteSetId, targetOwnerSevenTvUserId, targetOwnerTwitchLogin }` → 204 |
 
 `targetOwnerTwitchLogin` ist der Login des passenden Grants bzw. des Akteurs; ein 7TV-Name wird
@@ -949,6 +951,7 @@ Name kommt aus der Set-Liste der Seite, wie beim Dropdown).
 |---|---|---|
 | `/api/channels/{c}/emote-sets`, `/usage-stats/*`, `/emotes/set-warning` | `InteractiveRead` (Gruppe) | `EmoteEndpoints.cs:29`, `UsageStatsEndpoints.cs:24` |
 | `/api/seventv/me/emote-set-targets`, `/api/seventv/channels/{c}/emote-sets`, `…/emotes?emoteSetId=` | `ForeignEmoteLookup` (10/min) | `RateLimitingOptions.cs:56`, `Program.cs:188` |
+| `POST /api/channels/{c}/vote-sessions` (K6 whole-branch review, Fable A) | `ForeignEmoteLookup` (10/min), nicht mehr `Bookkeeping` | `VoteSessionEndpoints.cs:~72-79`; ein Set-Session-Zweig liest die Live-Mitgliedschaft des Sets von 7TV (paginiert), also derselbe Budget-Anteil wie die anderen `ForeignEmoteLookup`-Routen — ein Null-Session-Anlegen fasst 7TV gar nicht an und läuft unter derselben Police einfach mit; `end`/`delete` bleiben bei `Bookkeeping` |
 | `…/sync-deleted`, `…/sync-restored`, `…/sync-imported`, `/api/seventv/emote-sets/{id}/sync-imported` | `Bookkeeping` (120/min) | `RateLimitingOptions.cs:41`, `Program.cs:167` |
 
 `RateLimitPolicyNames`, `RateLimitingOptions.Validate()` (`:72-80`) bleiben unverändert;
@@ -1233,6 +1236,13 @@ eine dynamische „alle Emotes"-Set-Session gibt es nicht (400 `vote_session_set
 
 **Anlegen (`VoteSessionService.CreateAsync`, `:14 ff.`), Set-Session:**
 
+0. Kanalzugehörigkeit der Set-ID (Präzedenz 6.8, „ActiveEmoteSetId oder in der Set-Liste des
+   Kanals"): `channel.TwitchChannelId` fehlt ⇒ `EmoteIdsInvalid` (400 `emote_ids_invalid`), noch
+   ohne 7TV-Anfrage; sonst `ISevenTvEmoteSetListService.ListByTwitchIdAsync` nach der Twitch-ID des
+   Kanals — `Ok` und die Set-ID steht darin mit `Kind == "NORMAL"` oder ist
+   `channel.ActiveEmoteSetId` ⇒ weiter zu Schritt 1; `Ok` ohne das, oder `NoSevenTvAccount`, ⇒
+   `EmoteIdsInvalid`; `RateLimited`/`Unavailable`/`BudgetExhausted` ⇒ Ergebnis `SevenTvUnavailable`
+   → 503 `foreign_channel_seventv_unavailable`, keine Session.
 1. Live-Mitgliederliste des Sets über `IForeignEmoteSetService` nach Set-ID (6.4); nicht lesbar ⇒
    Ergebnis `SevenTvUnavailable` → 503 `foreign_channel_seventv_unavailable`, keine Session.
 2. All-or-nothing auf der **7TV-Identität**: jede `sevenTvEmoteIds`-Id muss Live-Mitglied sein,
@@ -1722,8 +1732,10 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
     gespiegelt); 404 `emote_set_not_found` für ein unbekanntes Set; **403 bare** für ein Set, dessen
     Besitzer weder der Akteur noch ein `editor_of`-Account ist; 503 bei 7TV-Fehler ohne Eintrag;
     204 sonst mit `ChannelName = null`.
-31. Ein Grant-Eintrag ohne `SevenTvUserId` (Legacy-Payload) wird live nachgelöst und zählt danach als
-    Editor; er wird nie als „kein Editor" gelesen.
+31. **Entfallen** (2026-09-21, Nachtrag 32). Das Kriterium verlangte, dass ein Grant-Eintrag ohne
+    `SevenTvUserId` (Legacy-Payload) live nachgelöst wird und danach als Editor zählt. Die
+    Besitzer-Prüfung liest keine 7TV-ID am Grant mehr, das Feld ist entfernt — es gibt nichts
+    nachzulösen. Die Nummer bleibt stehen, damit keine andere wandert.
 32. `ProjectDetail` liefert für einen Import-Eintrag mit `targetEmoteSetId` ein `TargetEmoteSet`;
     ohne bleibt es `null`; die 19 `AuditLogQueryServiceTests` bleiben grün.
 33. `set-warning?emoteSetId=X` für ein nicht-aktives X: Tier 1 fragt den Besitzer von X, Tier 2
@@ -1887,7 +1899,8 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
 
 84. Nach dem Fenster: `GET /api/health` 200; eine Set-Ansicht eines nicht-aktiven Sets lädt; eine
     `UsageStats`-Zeile des Tages trägt die aktive `EmoteSetId`; das Worker-Log zeigt den Warmstart
-    mit Set-ID.
+    mit Set-ID. *(Belegt wird das über die Sync-Logzeile `7TV-Set {SetId} … synchronisiert` plus
+    DB-Abfrage der `EmoteSetId`; die Warmstart-Zeile selbst trägt keine Set-ID.)*
 85. Picker am Testkanal: Sets mit Namen; ein nicht-aktives Set gewählt ⇒ der Dialog zeigt dessen
     Belegung und Kapazität, nicht die des aktiven.
 86. `dotnet ef migrations list` zeigt keine Pending; das Fenster hat weniger als 15 Minuten gedauert
@@ -2111,8 +2124,16 @@ und drei Verträge (Zählen, Ziel, Voting), die je einen DECISIONS-Eintrag brauc
 ## 17. Rollback
 
 **Bis zum ersten beobachteten Set-Wechsel nach dem Deploy** ist die Migration umkehrbar: neuen
-Worker **und** neue Api stoppen, `dotnet ef database update 20260907080507_AddUsageStatSharedChatUseCount
---connection '…'`, alte Images starten. `Down` entfernt Spalte, Tabelle und Voting-Spalten und
+Worker **und** neue Api stoppen, das vorab erzeugte Rollback-Skript einspielen, alte Images starten.
+Das Skript entsteht in V3 ohne Datenbank per `dotnet ef migrations script
+20260920191131_AddUsageStatEmoteSetId 20260907080507_AddUsageStatSharedChatUseCount --no-build
+--project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api -o k7-rollback.sql`
+(Gegenprobe: kein Treffer auf `LastSeenAtUtc`, `DeactivatedAtUtc`, `AddRetentionTimestamps`) und läuft
+per `psql -v ON_ERROR_STOP=1 < k7-rollback.sql`. **Nicht** `dotnet ef database update
+20260907080507_…`: Das nähme auch das seit 2026-09-24 auf Prod angewandte
+`20260923194321_AddRetentionTimestamps` zurück (Drop von `Users.LastSeenAtUtc` und
+`Channels.DeactivatedAtUtc`), und das alte Image bräche danach am `PendingMigrationGuard` ab. Das
+Skript nimmt nur `AddUsageStatEmoteSetId` zurück. `Down` entfernt Spalte, Tabelle und Voting-Spalten und
 stellt `(EmoteId, Date) INCLUDE (UseCount)` her.
 
 **Danach bricht `Down` ab, und zwar an zwei voneinander unabhängigen Schranken** (4.2):
@@ -2793,3 +2814,620 @@ Die Summen der fünf Tabellen aus Abschnitt 15, jede nachgezählt:
 
 „Bestand rot" bleibt bei **≥ 88** — keiner der entfallenen Fälle war ein Bestandstest.
 
+---
+
+## 32. Nachtrag: Codex-Review K2 (PR #215) vom 2026-09-21
+
+Zweitmeinung (`/codex:review --model gpt-5.6-sol`) über PR #215 (K2, Ziel-Set-Picker). Zwei Befunde,
+beide eingearbeitet; die Entscheidung zu P1 hat der Betreiber getroffen. Wie in den Nachträgen 24–31
+bleibt der Fließtext oben stehen — dieser Abschnitt hebt die genannten Stellen auf, und an 6.7
+Stufe 4 und E22 steht ein Verweis hierher.
+
+### P1 — Die Besitzer-Prüfung am set-zentrierten `sync-imported` lief am Budget vorbei
+
+**Befund.** Jeder gültige Aufruf von `POST /api/seventv/emote-sets/{id}/sync-imported` löste
+ungecachte 7TV-Requests aus (Set-Besitzer, Identität des Akteurs, dazu das Nachlösen von
+Legacy-Grants) — unter der Policy `Bookkeeping` (120/min je Nutzer, in `Program.cs` als reine
+Datenbankarbeit dokumentiert) und am Provider-Budget und am Breaker vorbei; ein Aufrufer konnte so
+Hunderte 7TV-Requests je Minute erzeugen und den geteilten Eimer leeren.
+
+**Was die Prüfung schützt.** Der Bericht läuft **nach** dem Import; die 7TV-Mutation ist mit dem
+eigenen Token des Nutzers schon passiert. Die Besitzer-Prüfung ist also **keine Zugriffskontrolle**,
+sondern schützt die **Integrität des Audit-Logs**: niemand soll Einträge über Sets schreiben, die er
+nicht bearbeitet. Dafür sind ungeschützte Upstream-Aufrufe unverhältnismäßig.
+
+**Entscheidung (Betreiber).**
+
+- **Stufe 4 prüft über die Set-Listen**, die `ISevenTvEmoteSetListService.ListByTwitchIdAsync`
+  liefert — derselbe Dienst, der den Picker füllt, hinter der vollen Wächterkette aus 6.1. Geprüft
+  werden der Akteur (`principal.TwitchUserId`, **kein** Identitäts-Request) und jedes Konto aus
+  `GetEditorGrantsAsync` (gecacht in `ModRoleCache`).
+- **Die Regel:** X ist zulässig, wenn X in einer dieser Listen steht **und** seine Besitzer-ID zur
+  Menge der 7TV-IDs der geprüften Konten gehört. Damit bleibt die Semantik von E22 („Besitzer ∈
+  {Akteur} ∪ {`editor_of`}") exakt erhalten, auch wenn 7TV unter `emoteSets` ein fremdes Set führt.
+  Verglichen wird nur über IDs.
+- **Kein zusätzlicher Request, keine neue Abfrage.** Die E7-Abfrage holt `userByConnection { id }`
+  und `owner { id }` je Set schon immer; beide werden jetzt additiv durchgereicht
+  (`EmoteSetList.SevenTvUserId`, `EmoteSetSummary.OwnerSevenTvUserId`). Der Abfragetext bleibt
+  zeichengleich — F17 ist nicht berührt.
+- **Fehlerfall — X steht in keiner Liste oder ohne Besitzer-ID:** **einmal** die Besitzerabfrage,
+  aber über das Provider-Budget (ein Permit), einen Nebenläufigkeits-Slot und den Breaker unter der
+  eigenen Operationskennung `emote-set-owner`. Kein Besitzer ⇒ 404 `emote_set_not_found`; Besitzer ∉
+  Kontenmenge ⇒ **403 bare**; Budget verweigert, Breaker offen oder 7TV nicht erreichbar ⇒ 503
+  `foreign_channel_seventv_unavailable`, **kein** Eintrag. Neu gegenüber 6.7: ein 7TV-Ausfall in
+  dieser Abfrage ist 503 — vorher wurde er als „unbekanntes Set" zu 404. Diesen Weg nimmt nur eine
+  Fehlbedienung oder ein manipulierter Request, nie der Normalfall; die einzige legitime Ausnahme ist
+  ein Set, das nach dem Laden der Listen angelegt wurde — sein Besitzer ist ein geprüftes Konto, und
+  die eine Abfrage sagt das.
+- **X steht in einer Liste, aber unter fremdem Besitzer** ⇒ 403 ohne Abfrage: die Liste hat den
+  Besitzer schon genannt.
+- **Teilausfall:** Ist eine Liste (oder die Grant-Abfrage) nicht lesbar, X aber anderswo zulässig
+  gefunden ⇒ 204. Wurde X nirgends zulässig gefunden und war mindestens eine Quelle nicht lesbar ⇒
+  **503, nicht 403** — die unlesbare Liste kann genau die des Besitzers sein.
+- **Akteur ohne 7TV-Konto** (eigene Liste `NoSevenTvAccount`) ⇒ die Grants werden gar nicht erst
+  gefragt: `editor_of` hängt am selben Konto. Das erspart auch den ungecachten Identitäts-Request,
+  den die Grant-Abfrage für einen solchen Akteur bei jedem Aufruf wiederholen würde.
+- **Cache-Kompatibilität:** Ein Listen-Eintrag von vor der Änderung (60 s TTL) hat die neuen Felder
+  nicht. Er wird als **Miss** gelesen, nie als „kein Besitzer".
+- **Die Policy bleibt `Bookkeeping`** (6.10: keine neue Policy). Sie ist damit wieder zutreffend: der
+  Normalfall kostet keinen ungeschützten Upstream-Request mehr.
+
+**Warum nicht die zwei naheliegenden Alternativen.**
+
+1. **Nur die Policy auf `ForeignEmoteLookup` stellen.** Begrenzt je Nutzer (10/min), umgeht aber
+   weiter das Provider-Budget — die Summe über viele Konten bleibt unbegrenzt, und der Eimer der
+   Vorschau bleibt ungeschützt. Dazu verlöre ein Nutzer, der sein Minutenkontingent mit Vorschauen
+   aufgebraucht hat, die Papierspur eines Imports, der längst gelaufen ist.
+2. **Die bestehenden Aufrufe hinter das Budget legen.** Tauscht Missbrauch gegen verlorene
+   Papierspur: ein 503 **nach** der Mutation schreibt keinen Eintrag, und das Frontend wiederholt
+   nicht. Und der Normalfall zöge weiterhin zwei bis drei Permits je Bericht aus dem Eimer, den der
+   Picker gerade gebraucht hat.
+
+**Was dadurch wegfällt.** Die Besitzer-Prüfung braucht keine 7TV-IDs der Grants und kein
+Live-Nachlösen (`ResolveSevenTvIdentityAsync` für Akteur und Legacy-Grants) mehr. `SevenTvUserId` an
+`SevenTvEditorGrant`/`SevenTvEditorGrantEntry` und das `user { id }` in `GqlEditorOfQuery` hatten
+keinen anderen Leser (per `grep` geprüft) und sind entfernt, samt der beiden Tests, die nur das
+Nachlösen prüften, und des Client-Tests für ein fehlendes `id`. `GqlEditorOfQuery` hat damit wieder
+den Text von vor T2.4.
+
+**Überholte Stellen.**
+
+| Stelle | Was jetzt gilt |
+|---|---|
+| **6.7, Stufe 4** | Die Prüfung oben in diesem Abschnitt; die Tabellenzeile bleibt als Stand von T2.4 stehen |
+| **E22** | Keine 7TV-ID am Grant, kein Nachlösen, keine direkte Besitzerabfrage im Normalfall |
+| **F10**, soweit sie das Nachlösen betrifft | Gegenstandslos — das Feld gibt es nicht mehr. Die Falle selbst (ein neues Feld fehlt in jedem vor dem Deploy geschriebenen Eintrag) gilt weiter und trifft jetzt die Listen-Payload: Miss statt „kein Besitzer" |
+| **AK 30** | Die Leiter bleibt als Vertrag geprüft; 503 zusätzlich bei Teilausfall ohne zulässigen Fund, und 404 nur noch, wenn 7TV antwortet und keinen Besitzer nennt |
+| **AK 31** | **Entfallen**, die Nummer bleibt stehen |
+
+**Tests.** `Unit/ImportTargetOwnershipServiceTests.cs` (neu, +14) — darunter der Beleg für den Kern
+des Befunds: mit gecachten Listen und Grants erzeugt der Normalfall **null** HTTP-Requests und
+**null** Permits, gezählt an einem echten `SevenTvApiClient` hinter den echten Listen- und
+Editor-Diensten; der Fehlerfall genau einen Request und ein Permit.
+`Unit/SevenTvApiClientEmoteSetOwnerLookupTests.cs` (neu, +6), `SevenTvApiClientEmoteSetListTests`
++2, `SevenTvEmoteSetListCacheTests` +1 (alte Payload ⇒ Miss). `SevenTvEmoteSetSyncImportedEndpointTests`
+läuft jetzt gegen die echte Prüfung (Zahl unverändert). Entfallen: die zwei AK-31-Fälle in
+`Integration/SevenTvEditorServiceTests.cs` und einer der zwei Fälle in `SevenTvApiClientEditorOfTests`.
+Die Summen aus Nachtrag 31 sind hier nicht neu gerechnet.
+
+### P2 — Legacy-Grant-Payloads wurden als „keine Grants" gelesen
+
+**Befund.** `ModRoleCache` gab einen `7tveditor:`-Eintrag von vor dem Feld `entries` absichtlich
+weiter — Grant-Mengen gefüllt, `Entries` leer. `MyChannelsService` erkannte diese Form
+(`isLegacyGrantPayload`), die beiden neuen Leser nicht: die Besitzer-Prüfung antwortete einem echten
+Editor mit 403 — **nach** der Mutation, der Eintrag war damit verloren —, und
+`/me/emote-set-targets` ließ die Konten still weg.
+
+**Eingearbeitet.** Erkannt wird die Form jetzt dort, wo sie entsteht: `ModRoleCache` liest einen
+Eintrag ohne `entries` als **Miss**. `GetEditorGrantsAsync` löst die Grants dann live auf und
+schreibt die aktuelle Form zurück — der Altbestand verschwindet beim ersten Lesen, nicht erst mit
+der TTL. Das wirkt für alle Leser zugleich; die eigene Erkennung in `MyChannelsService` war damit
+unerreichbar und ist entfernt (samt ihres Tests; zwei Übersichtstests, die Grants ohne `Entries`
+bauten, bauen sie jetzt mit). Preis: fällt 7TV genau in diesem Moment aus, ist die Antwort
+„unbekannt" statt der alten Login-Liste — für eine Form, die höchstens zehn Minuten nach einem
+Deploy existieren kann, und für die Besitzer-Prüfung ohnehin die richtige Antwort (503 statt 403).
+Tests: `ModRoleCacheTests` (Legacy ⇒ Miss, umgestellt), `Integration/SevenTvEditorServiceTests.cs`
++2 — je einer für die Angebotsliste und die Besitzer-Prüfung, gegen echtes Redis.
+
+### P2 — Eine operationslokale Transition verwarf das 429 des anderen Pfads
+
+**Befund.** T2.1 hatte die Generation des Breakers bewusst **providerweit** gelassen (DECISIONS,
+Eintrag vom 2026-09-20, Absatz zum Generationszähler): mit einer Generation je Operation hätte ein
+verspäteter Erfolg auf Pfad A die Rate-Limit-Sperre löschen können, die Pfad B gerade eingefangen
+hat. Die eine Generation machte dafür den umgekehrten Fehler. `OpenOperation` zählte denselben
+Zähler hoch wie das Öffnen der providerweiten Sperre. Öffnet die Liste ihren **eigenen** Breaker
+(fünf `Unavailable`), während eine vorher zugelassene Vorschau-Anfrage noch läuft, passt deren
+Generation danach nicht mehr — ihr bestätigtes 429 wird verworfen, die providerweite Sperre öffnet
+nicht, und 7TVs `Retry-After` geht verloren. Genau diese Aussperrung soll E4 respektieren.
+
+**Eingearbeitet: zwei Epochen.** Die **Provider-Epoche** bewegt sich nur, wenn die providerweite
+Rate-Limit-Sperre öffnet oder schließt. Die **Operations-Epoche** bewegt sich nur, wenn der Breaker
+dieser Operation öffnet oder schließt. Beide sind Stempel einer gemeinsamen, monoton steigenden
+Übergangsuhr. Die Entscheidung trägt deshalb weiter **einen** `long` (den Uhrstand bei der
+Zulassung), und die Frage „hat sich diese Epoche seit meiner Zulassung bewegt?" lautet: „ist ihr
+Stempel jünger als meine Zulassung?". Form der Entscheidung, die vier Methoden und alle Aufrufer
+bleiben unverändert. Eine Rückmeldung wird an der Epoche des Zustands geprüft, den sie ändern will:
+
+- **Rate-Limit-Sperre öffnen oder löschen:** nur die Provider-Epoche muss aktuell sein. Eine
+  operationslokale Transition, gleich auf welchem Pfad, entwertet kein 429 mehr.
+- **Streak, offener Zustand und Probe der Operation:** die eigene Operations-Epoche **und** die
+  Provider-Epoche müssen aktuell sein. Ob ein Aufruf eine Probe war und ob ein gewöhnlicher Fehler
+  zu einem schon behandelten Rate-Limit-Vorfall gehört, hängt am Provider-Zustand der Zulassung.
+  Sonst würde ein Nachzügler-`OtherFailure` aus einem 429-Schwall das Fenster wieder dehnen.
+- **Probe:** Sie bleibt je Operation und gilt als unterwegs, solange sich keine der beiden Epochen,
+  die ihre Operation sieht, seit der Beanspruchung bewegt hat. Jede Transition, die den eigenen
+  Bericht der Probe veraltet, gibt also auch ihren Platz frei — ein Deadlock ist ausgeschlossen. Eine
+  Transition der **anderen** Operation gibt ihn weder frei noch entwertet sie den Bericht.
+
+Der ursprüngliche Grund von T2.1 gilt weiter und wird jetzt von der Provider-Epoche gehalten: ein
+verspäteter Erfolg auf Pfad A löscht keine Sperre, die Pfad B eingefangen hat, weil deren Öffnen
+die Provider-Epoche über die Zulassung von A hinausgeschoben hat.
+
+**Verhältnis zu 6.1.** Die Reichweitentabelle in 6.1 ist damit in ihrer ursprünglichen Absicht
+erfüllt: Half-open-Probe und `OtherFailure`-Zähler je Operation, `RateLimited` samt `Retry-After`
+providerweit. Hinzu kommt die providerweite Epoche, die die Spec nicht vorsah; die Tabellenzeile
+„Half-open-Probe (`_probeInFlight`, `_generation`) je Operation" bleibt als Stand des Entwurfs
+stehen. Eine Operation allein verhält sich in allen Bestandsfällen wie vor K2. Einzige gewollte
+Abweichung: ein 429, das nach einer lokalen Transition **derselben** Operation zurückkommt, öffnet
+die Sperre jetzt ebenfalls, statt verworfen zu werden.
+
+**Tests.** `Unit/ForeignSevenTvBreakerPolicyTests.cs`, neue Klasse
+`ForeignSevenTvBreakerPolicyEpochTests` (+12). Die Fälle decken ab: den Befund in beiden Richtungen
+(lokales Öffnen und lokales Schließen der Liste, vor der Änderung rot), den T2.1-Fall, das
+Streak- und Probe-Übergreifen, vier Folgen, in denen eine Epoche die andere überholt, eine
+geseedete Zufallsfolge (2000 Folgen, nach Abschluss aller Berichte bekommt jede Operation eine
+Probe) und AK 94 mit mehr als `FailureThreshold` Listenfehlern. Die 12 Bestandsfälle und die
+Klasse `ForeignSevenTvBreakerPolicyOperationScopeTests` sind unverändert.
+
+### Zweite Codex-Runde auf K2 (2026-09-21)
+
+Zweite Zweitmeinung (`/codex:review --model gpt-5.6-sol`) über PR #215 nach Einarbeitung der ersten
+Runde. Zwei Befunde, beide eingearbeitet; die Entscheidung zu P1 hat der Betreiber getroffen. Die
+Unterabschnitte oben bleiben unverändert stehen, dieser hier ergänzt sie.
+
+#### P1 — Die Grant-Auffrischung der Besitzer-Prüfung lief weiter am Budget vorbei
+
+**Befund.** Die erste Runde hat die Besitzer-Prüfung auf die gecachten Set-Listen umgestellt, die
+Konten aus `editor_of` aber weiter über `SevenTvEditorService.GetEditorGrantsAsync` geholt. Ist der
+Grant-Cache leer, nicht erreichbar oder hält er eine Legacy-Payload, macht dieser Aufruf ein bis zwei
+rohe 7TV-Requests (Identität, dann `editor_of`) — ohne Provider-Budget, ohne Breaker, und ein Fehler
+wird nicht gehalten. Wiederholte gefälschte Berichte während eines Redis- oder 7TV-Ausfalls konnten
+so über die Policy `Bookkeeping` (120/min je Nutzer) den geteilten Eimer leeren. Gemessen vor der
+Änderung: 20 Berichte bei leerem Cache und ausgefallenem 7TV ⇒ 20 Requests, 0 Permits.
+
+**Entscheidung (Betreiber): geschützter Grant-Weg, nicht „nur Cache".**
+
+- **Cache-Treffer:** kein Upstream-Request, wie bisher. Das ist der Normalfall, weil der Picker
+  (`/me/emote-set-targets`) den Grant-Cache Minuten vor dem Bericht füllt.
+- **Cache-Miss:** Die Grant-Auflösung läuft auf dem Weg der Besitzer-Prüfung durch die
+  Provider-Wächter, in der Reihenfolge des Listen-Dienstes: Breaker unter der eigenen
+  Operationskennung `editor-grants`, Nebenläufigkeits-Slot, und **je Upstream-Request ein Permit**
+  — Identität und `editor_of` ziehen jeder ihr eigenes. Dafür gibt es im Client eine budgetierte
+  Zwillingsmethode (`LookUpEditorGrantsAsync`), die zusätzlich beide 429-Gestalten erkennt: ein
+  bestätigtes 429 auf diesem Weg sperrt wie überall den ganzen Provider, mit 7TVs `Retry-After`.
+- **Erfolg** wird in denselben Grant-Cache geschrieben (`7tveditor:`, dieselbe Form, dieselbe TTL
+  aus `Auth:ModCheckCacheTtlMinutes`); der nächste Leser jeden Wegs profitiert davon.
+- **Fehler werden gehalten**, in einem eigenen Schlüsselraum (`7tveditorhold:{twitchId}`), fail-open
+  bei Redis-Ausfall: Unavailable 60 s, RateLimited ≥ 60 s bzw. `Retry-After` (höchstens 1 h), Budget
+  oder Slot verweigert und Breaker offen 30 s. `NoSevenTvAccount` ist eine Antwort und wird 60 s
+  gehalten. Ein zweiter Bericht in dieser Frist erzeugt keinen Request. Nach dem Erwerb des Slots
+  werden beide Caches ein zweites Mal gefragt; damit ist auch ein gleichzeitiger Schwall von
+  Berichten auf die zwei Slots begrenzt, nicht nur eine Folge von Berichten auf den Halt.
+- **Wächter verweigert oder Fehler gehalten** ⇒ die Grants gelten als unlesbar. Ohne zulässigen Fund
+  anderswo antwortet die Besitzer-Prüfung mit **503 ohne Eintrag** — das ist die Teilausfall-Regel der
+  ersten Runde, keine neue.
+
+**Warum nicht „nur Cache".** Der Grant-Cache hält zehn Minuten. Nur aus dem Cache zu lesen hieße,
+einen Bericht nach einem langen Import oder bei einem Redis-Aussetzer mit 503 abzulehnen. Die
+7TV-Mutation ist dann aber schon passiert, und das Frontend wiederholt nicht: der Audit-Eintrag wäre
+für immer verloren. Der geschützte Weg kostet im Normalfall nichts und im Fehlerfall höchstens, was
+Budget, Breaker und Halt zulassen.
+
+**Warum der Autorisierungspfad bewusst ungeschützt bleibt.** Der geschützte Weg gilt nur für diesen
+einen Aufrufer (`IGuardedSevenTvEditorGrantsService`, nur von `ImportTargetOwnershipService`
+aufgelöst). `GetEditorGrantsAsync` bleibt für `ChannelAccessService` und die übrigen
+Autorisierungsleser, für `/me/emote-set-targets` (hinter `ForeignEmoteLookup`, 10/min) und für
+`MyChannelsService` unverändert. Hinge der Autorisierungspfad an einem geteilten Budget, wären bei
+erschöpftem Budget die Rollen unbekannt, und Kanalseiten antworteten mit 403 — eine weit größere
+Wirkung als der Befund, und keine, die hier zur Entscheidung stand. Den Halt liest ebenfalls nur der
+geschützte Weg: ein gehaltener Fehler erreicht nie einen Leser, der auf ihm geschlossen scheitert.
+
+**Tests.** `Unit/GuardedSevenTvEditorGrantsServiceTests.cs` (neu, 16 Fälle, echter
+`SevenTvApiClient` über zählenden Handler und zählendes Budget): Cache-Treffer ⇒ 0 Requests,
+0 Permits; Miss ⇒ 2 Requests, 2 Permits und Rückschreiben in den Grant-Cache; Permit verweigert
+(auch nur für den zweiten Request); Breaker offen; 429 sperrt den Provider; die Haltbarkeiten als
+Theorie über sieben Ausgänge, jeweils ohne Request beim zweiten Aufruf; Redis-Ausfall ⇒ fail-open, der
+Breaker begrenzt 20 Berichte auf `FailureThreshold` Requests; ein gleichzeitiger Schwall von zehn
+Berichten ⇒ zwei Requests; und der Beleg, dass `SevenTvEditorService` weder Permit noch Breaker kennt.
+`Unit/ImportTargetOwnershipServiceTests.cs` +3, darunter der Missbrauchsfall (20 Berichte ⇒ 1 Request,
+1 Permit; vor der Änderung 20 Requests, und mit Breaker, aber ohne Halt, 5).
+`Unit/SevenTvApiClientEditorGrantsLookupTests.cs` (neu, 8 Fälle). Umgestellt: die Besitzer-Prüfung
+in `Integration/SevenTvEditorServiceTests.cs` und `SevenTvEmoteSetSyncImportedEndpointTests` auf den
+geschützten Weg; letzterer prüft zusätzlich, dass der Bericht den ungeschützten Dienst nie fragt.
+
+#### P2 — Eine Besitzer-Antwort nur mit Fehlern wurde als „unbekanntes Set" gelesen
+
+Nur die lesbare Form `data.emote_set: null` bedeutet „Set unbekannt" (404); HTTP 200 mit
+`data: null` oder ohne `emote_set`-Feld ist bei `LookUpEmoteSetOwnerAsync` jetzt `Unavailable`
+(503, Breaker-Fehler statt Breaker-Erfolg). Der alte Weg `GetEmoteSetOwnerIdAsync` (E9,
+`set-warning`) hat dieselbe Verwechslung und bleibt bewusst unverändert.
+
+## 33. Nachtrag: Live-Verifikation K2 vom 2026-09-21
+
+K2 (der Ziel-Set-Picker aus Abschnitt 32) live gegen einen laufenden Dev-Stack geprüft, nicht nur
+gegen die eigene Testsuite — Ziel: Kanal `sensitron`, Set `wegwerf` (nicht das aktive Set, das ist
+`test2`); Ziel: Konto `olaf_olaf_son`, Set `test` (untracked). Sechs Befunde, alle behoben; der
+Fließtext oben bleibt unverändert stehen, dieser Abschnitt hebt die betroffenen Stellen auf.
+
+**1. Vorschau-Titel nannte das Set nicht, auch wenn er nicht das aktive Set traf (8.6).** Der Titel
+las sich für *jedes* getrackte Ziel als „N Emotes nach {Kanal} kopieren?" — für ein nicht-aktives Set
+irreführend, weil genau das der Grund für Befund 3 unten ist: die Kanalseite zeigt dieses Set nicht.
+Jetzt nennt der Titel das Set ausdrücklich („N Emotes in Set ‚{Set}' kopieren?"), sobald das Ziel
+*nicht* das aktive Set des getrackten Kanals ist — nicht-aktiv getrackt und jedes untrackte Ziel
+gleichermaßen. Der Ein-Klick-Weg auf das aktive Set (die 6.2-Vorauswahl) bleibt bei der alten
+Formulierung, unverändert.
+
+**2. Die Dock-Zielzeile nannte das Set gar nicht oder nur über seine rohe ID (8.10).** Für ein
+nicht-aktives getracktes Ziel fehlte das Set in der Zeile ganz; für ein untracktes Ziel stand dort
+die rohe 7TV-Set-ID statt eines Namens. Beide Fälle lesen das Set jetzt über seinen aufgelösten Namen
+(Id-Fallback nur, wenn wirklich kein Name bekannt ist) — die nicht-aktive Zeile spiegelt jetzt exakt
+die Formulierung der Vorschau („Ziel: {Kanal} · Set {Set}"). Das aktive Ziel bleibt bei der schlichten
+„Ziel: {Kanal}"-Zeile.
+
+**3. Ein Lauf in ein nicht-aktives, getracktes Set löste trotzdem den kanalweiten Abgleich aus (8.6).**
+Der Abgleich synchronisiert das *aktive* Set des Kanals — bei einem nicht-aktiven Ziel las er also das
+falsche Set, meldete trotzdem Erfolg, und das Dock behauptete „der Zielkanal zeigt die Emotes gleich"
+samt „Zielkanal öffnen"-Link, obwohl die Kanalseite die kopierten Emotes nie zeigt. Der Abgleich läuft
+jetzt nur noch, wenn das Ziel tatsächlich das aktive Set des getrackten Kanals ist; für ein
+nicht-aktives Ziel bleibt er aus, ebenso der „Zielkanal öffnen"-Link, und das Dock zeigt stattdessen
+eine eigene, zutreffende Meldung. Der `sync-imported`-Bericht selbst — das Audit-Log für den Kopiervorgang
+— läuft in beiden Fällen unverändert. Die Verhaltensänderung steht zusätzlich in `docs/DECISIONS.md`
+(Eintrag 2026-09-21).
+
+**4. Die Vorauswahl beim Öffnen des Pickers fiel auf einen fremden Kanal durch (8.6, Konzept 7.5
+Baustein 2).** War das eigene aktive Set des Nutzers gesperrt, weil es die Quelle des Laufs selbst
+ist, fiel die Vorauswahl auf den *nächsten* getrackten Account in der Antwortliste durch — beobachtet
+live als Vorauswahl eines fremden, nur moderierten Kanals. Die Vorauswahl sucht jetzt gezielt nach dem
+eigenen Account (`isOwnAccount`, aus 6.2 schon vorhanden, aber im Picker bislang verworfen) und wählt
+dessen aktives Set nur, wenn es selbst auswählbar ist; sonst bleibt nichts vorausgewählt und „Weiter"
+gesperrt, bis der Nutzer selbst wählt. Das gilt unabhängig davon, von welcher Kanalseite aus der
+Picker geöffnet wurde — die Vorauswahl fragt nie nach `data.currentChannelName`.
+
+**5. Die Vorschau zeigte für ein untracktes Ziel die Lösch-Warnung des Mass-Delete-Flows (8.6).**
+`ownershipCheckUnavailable` ist für ein untracktes Ziel laut Vertrag *immer* wahr (es gibt keinen
+Kanal, gegen den `EmoteSetOwnershipService` prüfen könnte) — die Vorschau zeigte dafür bislang
+unverändert `massDelete.ownershipCheckUnavailable`, Lösch-Wortlaut und Alarm-Optik inklusive. Ein
+untracktes Ziel bekommt jetzt einen kurzen, neutralen Hinweis in eigenem Wortlaut (der Besitzer wurde
+im Picker bereits bestätigt); ein getracktes Ziel, dessen Prüfung tatsächlich fehlschlug, bekommt
+ebenfalls eigenen, kopier- statt löschbezogenen Wortlaut (`import.confirm.*`, nie mehr
+`massDelete.*`).
+
+**6. Die Picker-eigene Bestätigung für ein untracktes Set las sich als Kopier-Aktion, obwohl sie
+nichts kopiert (8.6, AK 35).** Frage „In das Set ‚…' von ‚…' kopieren?" mit Knopf „Kopieren" neben dem
+gesperrten „Weiter" der Picker-Hülle — zwei verschieden benannte Kopier-Knöpfe nebeneinander, obwohl
+der Klick nur das Ziel bestätigt und den Picker schließt, ohne dass die eigentliche Kopie schon läuft.
+Umformuliert als Zielbestätigung („Ziel ist das Set ‚…' von ‚…' — dieses Konto trackt EmotePurge
+nicht.") mit den Knöpfen „Ja, dieses Set" (bestätigt, schließt den Picker — exakt das bisherige
+Verhalten von „Kopieren") und „Anderes Set wählen" (verwirft die Auswahl, stellt den vorherigen Stand
+wieder her — exakt das bisherige Verhalten des inneren „Abbrechen", AK 35 bleibt unverändert
+verpflichtend).
+
+## 34. Nachtrag: Einheitliches Radiogruppen-Layout und PERSONAL-Ausblendung für Quell- und Ziel-Set-Picker (#217, 2026-09-21)
+
+Issue #217 wurde am 2026-09-21 während der Live-Nachprüfung der K2-Fixes (Abschnitt 33) für den
+*Ziel*-Picker aufgemacht. Der Betreiber hat entschieden, dass beide Punkte darin gleichermaßen für den
+*Quell*-Picker (K3, dieser Abschnitt) gelten — umgesetzt hier für die Quelle; die Umsetzung für das
+Ziel folgt als eigener Nachläufer zu K2, ohne eigene Ticketnummer an dieser Stelle.
+
+**1. Ein Layout für jede Kontogröße.** Die Radiogruppe des Quell-Pickers rendert jetzt **immer**,
+sobald mindestens ein anbietbares Set existiert — auch bei genau einem Set: ein Radio, angehakt,
+mit „(aktiv)" beschriftet. Vorher zeigte ein Konto mit nur einem Set gar keine Radiogruppe
+(`ready.sets.length > 1`-Schranke), und der Name des aktiven Sets stand nur in der Kanal-/Neu-laden-
+Zeile darüber. Spec 8.7 verlangte diese Einheitlichkeit bereits; §8.6 tat es an dieser Stelle nicht.
+
+**2. PERSONAL-Sets werden ganz ausgeblendet, nicht deaktiviert gezeigt.** Das dreht §8.6 („sichtbar,
+aber deaktiviert und beschriftet — nie kommentarlos wählbar, nie ausgeblendet") für `PERSONAL` um:
+ein persönliches 7TV-Set trägt höchstens eine Handvoll Emotes und ist als Importquelle nicht plausibel,
+also bringt eine deaktivierte Zeile daneben nichts. `GLOBAL`/`SPECIAL` bleiben bei §8.6s ursprünglicher
+Behandlung — sichtbar, deaktiviert, beschriftet. Der jetzt ungenutzte Schlüssel
+`import.foreignChannel.kindPersonal` ist entfernt; der gleichnamige `import.target.kindPersonal` des
+Ziel-Pickers bleibt unangetastet, bis dessen eigener Nachläufer läuft. Ein gemeldetes aktives Set, das
+`PERSONAL` ist, zählt seitdem wie „kein aktives Set" (Reviewbefund P2-2 der K3-Umsetzung).
+
+**Geltungsbereich dieses Nachtrags.** Beide Entscheidungen sind hier **nur** für den Quell-Picker
+(`foreign-channel-step.ts`) umgesetzt. Der Ziel-Picker (`import-target-dialog.ts`) zeigt PERSONAL
+weiterhin deaktiviert und variiert sein Layout weiterhin nach Set-Zahl — Issue #217 beschreibt genau
+diesen Ist-Zustand als das, was der Nachläufer dort noch ändern muss.
+
+Details (betroffene Dateien, die begleitenden Reviewfixes P2-1/P2-2/P3-4/P3-5 an derselben Stelle) im
+Entscheidungslog, Eintrag 2026-09-21 „Source-set picker: one radio per set even for a single set, and
+PERSONAL sets hidden entirely (#217)".
+
+## 35. Nachtrag: Set-Dropdown der Nutzungsseite blendet `kind != NORMAL` ganz aus (T4.2, Betreiber-Entscheidung 2026-09-21)
+
+Während der Umsetzung von T4.2 (K4, #208 — Set-Dropdown der Nutzungsseite, spec 8.1) hat der
+Betreiber entschieden, dass das Dropdown auf `usage-stats-page.ts` Sets mit `kind != NORMAL`
+**vollständig ausblendet**, statt sie sichtbar, aber deaktiviert mit Beschriftung zu zeigen. Das
+dreht 8.1s eigenen Wortlaut („Sets mit `kind != NORMAL` deaktiviert mit Beschriftung … dasselbe
+Idiom wie ungetrackte Kanäle heute") sowie AK 50 in genau diesem einen Punkt um und ist derselbe
+Schnitt, den §34 bereits für den Quell- und (als Auflage) den Ziel-Picker gezogen hat: ein Set, das
+nicht `NORMAL` ist, trägt für diesen Kanal ohnehin nur eine Handvoll Emotes oder ist gar keins, das
+der Kanalbetreiber sinnvoll beobachten will — eine deaktivierte Zeile daneben lehrt nichts, was das
+Weglassen nicht auch sagt. Anders als bei §34 wird hier nicht nur `PERSONAL` behandelt, sondern
+jeder Wert außer `NORMAL` gleich (also auch `GLOBAL`/`SPECIAL`), weil die Nutzungsseite ohnehin nur
+Zahlen zu einem beobachteten Kanal-Set zeigt und kein Grund ersichtlich ist, warum ein `GLOBAL`- oder
+`SPECIAL`-Set hier anders behandelt gehörte als ein `PERSONAL`-Set.
+
+**Konsequenz für die URL.** Eine `emoteSetId` in der URL, die ein solches verstecktes Set nennt,
+zählt exakt wie eine unbekannte ID (8.1s eigene Fallback-Regel): das Dropdown fällt still auf das
+aktive Set zurück, und bei lesbarer Set-Liste wird der Parameter aus der URL entfernt (`setParams`,
+`replaceUrl`) — dieselbe Behandlung, die eine ID bekäme, die in der Set-Liste gar nicht vorkommt.
+
+**Geltungsbereich.** Diese Entscheidung gilt **nur** für das Set-Dropdown der Nutzungsseite
+(`shared/emotes/emote-set-menu.ts`). Quell- und Ziel-Picker bleiben bei §34s eigener Regelung
+(`PERSONAL` versteckt, `GLOBAL`/`SPECIAL` weiterhin sichtbar-deaktiviert dort, bis der Ziel-Picker-
+Nachläufer läuft). Der DECISIONS-Eintrag dazu (Regel 3) folgt mit T4.3, zusammen mit dem
+Schlüsselwechsel-Commit — dort steht auch die vollständige Begründung neben den übrigen drei fälligen
+Einträgen.
+
+## 36. Nachtrag: Die Anheftung an das aktive Set, verfeinert (K4-Nachbesserung, Betreiber-Entscheidungen 2026-09-22)
+
+8.1 und die Entscheidung #3 vom 2026-09-21 hefteten die Nutzungsseite an das aktive Set, sobald die
+Set-Liste (6.1) für den Kanal **einmal** nicht lesbar war — und zwar für den Rest der Sitzung dieses
+Kanals, auch nach einem späteren erfolgreichen Lesen. Die unabhängigen Reviews des K4-Zweigs haben
+zwei Folgen davon gefunden, die niemand gewollt hat: Ein **fehlgeschlagener Hintergrund-Reload** (der
+laute `channel.synced`-Reload, typischerweise ein 503/429 von 7TV) warf eine bereits bestätigte
+Ansicht eines nicht-aktiven Sets still auf das aktive zurück — samt #94-Bereinigung der Auswahl und
+Neuladen der Zahlen, ausgelöst von einer Anfrage, die niemand gestellt hat. Und eine **bewusste Wahl
+im Dropdown** blieb wirkungslos, solange die Anheftung stand, obwohl die Liste in diesem Moment
+lesbar war.
+
+Der Betreiber hat am 2026-09-22 entschieden:
+
+1. **Angeheftet wird nur, wenn die Set-Liste für diesen Kanal noch nie lesbar war** (Fehler beim
+   ersten Laden). Wurde sie einmal erfolgreich gelesen, hält die Seite diese Antwort je Kanal fest
+   und bedient sie weiter, wenn ein späterer Reload scheitert — keine Anheftung, kein stiller
+   Rückfall auf das aktive Set, keine #94-Bereinigung, kein Neuladen der Zahlen. Ein Kanalwechsel
+   verwirft das Festgehaltene.
+2. **Eine ausdrückliche Wahl im Dropdown hebt die Anheftung für diesen Kanal auf** und lädt das
+   gewählte Set; die Liste ist in diesem Moment lesbar (sonst ließe sich das Dropdown nicht öffnen),
+   die Wahl wird wie jede andere geprüft. Das gilt auch dann, wenn sie genau die ID nennt, die noch
+   in der URL steht. Die Anheftung bewegt die Ansicht also nie ungefragt — aber sie übergeht auch nie
+   eine bewusste Wahl.
+
+**Im selben Zug festgelegt (Reviewbefunde, keine eigene Betreiber-Entscheidung):** Solange das
+gewählte Set nicht das gezeigte ist (Wechsel unterwegs oder gescheitert), sind Löschen und Abstimmen
+mit sichtbarem Grund gesperrt, und beide Bestätigungsdialoge prüfen die Sperre beim Bestätigen
+erneut; ein gescheiterter Wechsel zeigt einen Fehlerzustand mit Wiederholen statt eines endlosen
+Skeletts; ein unbekanntes aktives Set gilt nie als das gewählte (Import über den expliziten
+Set-Pfad, Wiederherstellen gesperrt); das Dropdown ist gesperrt, solange ein Löschlauf schreibt.
+Begründung und Einzelheiten im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is
+identified by its 7TV id …", Abschnitt „Fix round 2026-09-22".
+
+## 37. Nachtrag: Löschen aus der aktiven Ansicht kennt alle Aliase einer Duplikat-Zelle (K5, Betreiber-Entscheidung 2026-09-22)
+
+E20 ließ die #74-Duplikat-Zelle in der **aktiven** Ansicht beim heutigen Bild: die Zeilen kommen aus
+unserer Datenbank, die je 7TV-ID einen Namen kennt (`slotCount: 1`, `aliases: [emoteName]`). Für die
+Anzeige ist das harmlos, für das Löschen nicht: ein `REMOVE` nimmt **alle** Einträge der ID (Sonde 5,
+Zweig A), das Protokoll hielt aber nur einen Alias fest, und ein Restore daraus legte still nur einen
+wieder an — ein Protokoll, das vollständig aussieht und es nicht ist (F3).
+
+Der Betreiber hat am 2026-09-22 entschieden: **Ein Löschlauf aus der aktiven Ansicht liest die
+Einträge des aktiven Sets einmal live und schreibt je gewählter ID alle Aliase in Queue und
+Protokoll.** Scheitert das Lesen (503/429/jeder Fehler) oder bleibt es unvollständig, wird **nichts**
+gelöscht, und der Grund aus 8.3 steht sichtbar da („eine Liste, die nur die Hälfte kennt, darf nicht
+löschen"). E20 gilt damit nur noch für die **Anzeige**; E16 bleibt unberührt, weil das Lesen an einem
+bestätigten Löschen hängt, nie an einem Reload. Die nicht-aktive Ansicht liest nicht ein zweites Mal —
+ihre Zeilen tragen die Aliase schon aus der Mitgliederliste. Die Vote-Session-Detailseite bleibt bis
+K6 bei `[name]`. Quelle (7TV direkt statt Vorschau-Route), Zeitpunkt (beim Bestätigen, nicht beim
+Öffnen) und Begründung im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is identified
+by its 7TV id …", K5-Nachtrag vom 2026-09-22. **Abgelöst durch #227 (2026-09-22):** Der Löschlauf der
+Vote-Session-Detailseite liest seitdem ebenfalls live, unabhängig davon, ob ihr Set gerade aktiv ist —
+`MassDeletePanel.readLiveAliasesFromSet`, siehe Entscheidungslog-Eintrag „Vote-page deletes read the
+session's set live" desselben Tages.
+
+## 38. Nachtrag: Die Vorprüfung des Restore vergleicht je Alias — die „mittlere Regel" (K5, Betreiber-Entscheidung 2026-09-22)
+
+7.2 verlangte für die Vorprüfung des Restore den Vergleich über `(sevenTvEmoteId, alias)`. Wörtlich
+genommen ließe das ein Emote, das im Ziel-Set unter einem **anderen** Alias liegt, ein zweites Mal
+anlegen — genau das #149-Loch, gegen das die Prüfung da ist. Der Betreiber hat am 2026-09-22 je
+Protokollzeile entschieden:
+
+1. Liegt die 7TV-ID nicht im Ziel-Set, wird die Zeile unverändert wiederhergestellt.
+2. Liegt die ID dort unter einem Alias, den die Zeile **nicht** nennt, fällt die ganze Zeile weg (wie
+   bisher).
+3. Sonst fallen die Aliase der Zeile weg, die unter dieser ID schon im Set liegen; die übrigen werden
+   angelegt. Eine Zeile `[A, B]`, deren `A` schon zurück ist, legt also nur `B` an.
+
+Nur der Restore-Lauf ändert sich; Import und Löschen bleiben bei der ID-Achse. Der Hinweis „schon im
+Ziel-Set" zählt übersprungene Aliase (`ADD`s), nicht Zeilen — wie die Bestätigung, die `ADD`s nennt.
+Begründung im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is identified by its 7TV
+id …", K5-Nachtrag „middle rule".
+
+## 39. Nachtrag: Ziel-Picker — ein Layout je Konto, PERSONAL ausgeblendet (#217, 2026-09-22)
+
+§34 hat die beiden Entscheidungen aus Issue #217 nur für den *Quell*-Picker umgesetzt und den
+Ziel-Picker (`import-target-dialog.ts`) ausdrücklich offen gelassen — dessen eigener Nachläufer, so
+der Text dort, würde beide Entscheidungen dort nachziehen. Das ist hier passiert, am 2026-09-22,
+während der Live-Nachprüfung der K2-Fixes: drei Änderungen, alle am Ziel-Picker.
+
+**1. Ein Layout für jedes Konto, unabhängig von der Set-Zahl.** Der Ziel-Picker mischte bisher drei
+Formen: ein Konto mit mehreren Sets zeigte eine Überschrift plus Radios darunter; ein getracktes
+Konto mit genau einem auswählbaren, aktiven Set zeigte stattdessen den Kanalnamen selbst als Radio
+(„#brudivoeller_tv (aktiv: …)“, der 8.6-Ein-Klick-Weg „in Kanal X“); ein Konto mit einem aktiven und
+weiteren Sets zeigte beides gleichzeitig — Kanal-Radio **und** zusätzliche Set-Radios darunter. Jetzt
+ist jedes Konto eine reine, nicht interaktive Überschrift (`<p>`, nie ein Radio, nie ein Stopp in der
+nativen Tab-Reihenfolge der Radiogruppe), und jedes Set — auch ein einzelnes — bekommt sein eigenes
+Radio darunter, aktives Set mit „(aktiv)“ beschriftet. Der gemergte Kanal-Radio-Kurzweg
+(`headerSet()`/`remainingSets()` in `import-target-dialog.ts`) ist ersatzlos entfernt; ein Klick auf
+das einzige oder aktive Set eines Kontos kostet weiterhin genau einen Klick, nur auf dessen eigenem
+Radio statt auf der Kontozeile. Die Radiogruppe selbst rendert wie bisher nur, wenn mindestens ein
+Radio existiert (ARIA-Vorgabe); Vorauswahl bleibt unverändert das aktive Set des **eigenen** Kontos
+(`isOwnAccount`, Finding 4 vom 2026-09-21) — `firstPreselectableTarget()` liest diese Menge jetzt
+direkt aus der (bereits PERSONAL-gefilterten) Set-Liste des eigenen Kontos, statt über die
+weggefallene Kurzweg-Funktion.
+
+**2. PERSONAL-Sets werden ganz ausgeblendet, nicht deaktiviert gezeigt.** Dieselbe Umkehr von 8.6
+(„sichtbar, aber deaktiviert und beschriftet — nie kommentarlos wählbar, nie ausgeblendet“), die §34
+für den Quell-Picker bereits vorgenommen hat, jetzt auch hier: `importTargetChoices` filtert
+PERSONAL-Sets vor jeder Verarbeitung aus `account.sets` heraus (`toAccountGroup`), damit sie nie zu
+einer `ImportTargetSetChoice`-Zeile werden. `isPersonal` ist damit aus `ImportTargetSetChoice`
+entfernt — der einzige verbleibende `disabledReason: 'notNormalKind'`-Fall ist `GLOBAL`/`SPECIAL`,
+und die gemeinsame Beschriftung `import.target.kindUnavailable` reicht dafür allein; der
+Übersetzungsschlüssel `import.target.kindPersonal` ist aus beiden Locale-Dateien entfernt.
+**Betreiber-Entscheidung 2026-09-22: `GLOBAL`/`SPECIAL` bleiben bei 8.6s ursprünglicher Behandlung**
+— sichtbar, deaktiviert, beschriftet — unverändert, nur `PERSONAL` ist betroffen.
+
+Ein gemeldetes aktives Set, das selbst `PERSONAL` ist, zählt seitdem wie „kein aktives Set“ (P2-2s
+Muster aus dem Quell-Picker, hier auf `ImportTargetAccountGroup.activeEmoteSetId` übertragen):
+`toAccountGroup` nullt dieses Feld, sobald das gemeldete `account.activeEmoteSetId` auf ein
+PERSONAL-Set zeigt, statt die rohe ID unverändert durchzureichen. Das ist eine defensive
+Konsistenzmaßnahme, kein Fix für einen erreichbaren Fehler: Die Vorauswahl liest ohnehin das
+`isActive`-Flag jedes Sets über der bereits gefilterten `sets`-Liste, nie diese rohe ID, und
+`import-flow.ts`s `toTargetSelection` (die den „getracktes Ziel und `emoteSetId ===
+activeEmoteSetId`“-Kurzweg genau über dieses Feld entscheidet) vergleicht es nur gegen eine
+`emoteSetId`, die ohnehin aus einer gerenderten, wählbaren Zeile stammt — eine rohe PERSONAL-ID hätte
+hier also nie zufällig getroffen. Die Invariante, die das Nullen sicherstellt, ist schlicht: Dieses
+Feld zeigt nie auf ein Set, für das die Gruppe keine Zeile anbietet.
+
+**3. Ein Konto ohne nutzbares Set nach dem Filtern bekommt eine eigene, ruhige Notiz.**
+**Betreiber-Entscheidung 2026-09-22:** Bleibt einem Konto nach dem PERSONAL-Filter kein Set mehr
+übrig — sei es, weil es nur PERSONAL-Sets hatte, sei es, weil es von vornherein leer war —, bleibt
+seine Überschrift stehen, und darunter erscheint „Kein nutzbares Set“ (`import.target.noUsableSets`,
+neuer Schlüssel in beiden Locale-Dateien) statt stillschweigend nichts zu zeigen. Bewusst **nicht**
+dieselbe Meldung wie `setsUnavailable` („Sets nicht lesbar“): Letztere bedeutet, die Liste konnte gar
+nicht gelesen werden, Ersteres, sie wurde gelesen und war (nach dem Filtern) leer — zwei
+unterschiedliche Tatsachen, zwei unterschiedliche Texte. Das Transformmodell macht den Unterschied
+explizit über ein neues `ImportTargetAccountGroup.noUsableSets: boolean`
+(`sets.length === 0 && !setsUnavailable`), statt ihn nur in der Vorlage abzuleiten.
+**Nachtrag zur selben Review-Runde (2026-09-22): diese Notiz war zunächst unerreichbar.** Die
+gesamte Kontoschleife — Überschriften, `setsUnavailable`/`noUsableSets`-Notizen, Set-Radios,
+getrackt wie ungetrackt — steckte vollständig in `@if (hasAnySet())`. Eine Kontenliste aus genau
+einem Konto ohne anbietbares Set (ein reines PERSONAL-Konto, oder eines mit `setsUnavailable` —
+derselbe Fehler traf beide) renderte dadurch weder seine Überschrift noch seine Notiz: `hasAnySet()`
+war `false`, also fiel die Vorlage direkt auf den unabhängigen, listenweiten Platzhalter
+`import.target.none` durch — genau der Fall, für den die Notiz oben gedacht ist. Die Kontoschleife
+rendert jetzt, sobald die Kontenliste selbst nicht leer ist (`ImportTargetDialog.hasAnyAccount()`,
+ein neues, bewusst schwächeres Computed als `hasAnySet()`); die Hülle wird nur dann zu einem
+`role="radiogroup"` mit dem „Ziel“-`aria-label`, wenn `hasAnySet()` tatsächlich `true` ist (ARIA
+verlangt weiterhin mindestens ein Radio in einer Radiogruppe) — sonst bleibt sie ein schlichter,
+unbeschrifteter Container. `import.target.none` ist jetzt für den einen Fall reserviert, in dem hier
+wirklich nichts rendert: die Kontenliste selbst ist leer. `ImportTargetDialog.hasAnySet()` selbst ist
+unverändert in seiner Bedeutung — sie fragt weiterhin, ob irgendein Konto irgendwo mindestens ein Set
+hat —, nur wofür sie gilt, hat sich verschoben: Ob die Schleife überhaupt rendert, entscheidet jetzt
+`hasAnyAccount()`; `hasAnySet()` entscheidet nur noch über Radiogroup-Rolle und -Label.
+
+**Layout-Korrektur an der ungetrackten Bestätigung (kein Vertragswechsel, aber derselbe Anlass):**
+Die Bestätigungsbox für ein ungetracktes Ziel (8.6, AK 35) legte ihren Text und ihre zwei Buttons
+bisher nebeneinander in `NoticeBanner`s `[notice-action]`-Slot — bei zwei Buttons in einer
+rechtsbündigen Aktionsspalte lief das auf ein bis zwei Wörter pro Zeile hinaus. Die Buttons stehen
+jetzt in einer eigenen Zeile **unter** dem Text, beide im normalen Inhalts-Slot des Banners statt im
+Aktions-Slot — reine Darstellung, der Vertrag (Bestätigung Pflicht, Abbruch stellt den vorherigen
+Radio-Zustand wieder her) ist unverändert.
+
+**Geltungsbereich von §34 damit geschlossen.** §34s eigener Vorbehalt („Der Ziel-Picker
+… zeigt PERSONAL weiterhin deaktiviert und variiert sein Layout weiterhin nach Set-Zahl — Issue #217
+beschreibt genau diesen Ist-Zustand als das, was der Nachläufer dort noch ändern muss“) ist mit
+diesem Abschnitt erledigt: Quell- und Ziel-Picker behandeln PERSONAL und die Layout-Einheitlichkeit
+jetzt gleich.
+
+Details (betroffene Dateien) im Entscheidungslog, Eintrag 2026-09-22 „Target-set picker: one heading
+per account, one radio per set, PERSONAL sets hidden“.
+
+## 40. Nachtrag: Restore pro Set, 2026-09-24
+
+Ab hier übernimmt die eigene Spec
+[2026-09-24-restore-pro-set-253-design.md](2026-09-24-restore-pro-set-253-design.md) (#253) die
+Weiterentwicklung zweier hier beschriebener Verträge. Diese Spec bleibt für beide der Ausgangspunkt
+— nur die **Fortschreibung** liegt jetzt dort, wie es die Nachträge 32–39 für frühere Runden schon
+mit dieser Spec selbst getan haben.
+
+**6.2 `GET /api/seventv/me/emote-set-targets` — erweitert um `editable` und beide 7TV-IDs.** Die
+Antwort trägt seit #253 zusätzlich `sevenTvUserId` je `EmoteSetTargetAccount` und
+`ownerSevenTvUserId` sowie `editable` je `EmoteSetTargetSummaryDto` (253-Spec 5.8, AK 29). `editable`
+ist wahr genau dann, wenn `ownerSevenTvUserId` gesetzt ist und die 7TV-ID eines Accounts **dieser
+Antwort** mit lesbarer Liste trifft — dieselbe Regel, die die set-zentrierte Meldung (6.7, Abschnitt
+32 dieser Spec) für die Besitzprüfung anwendet, jetzt in einer gemeinsamen reinen Funktion
+(`EmoteSetEditability`, `EmotePurge.Core.Services`) statt zweimal geschrieben (253-Spec AK 30). Die
+eine bewusste Asymmetrie — ein Set ohne `owner.id` ist auf der Liste immer `editable: false`, auch wo
+die Besitzprüfung per Direktabfrage vielleicht zugelassen hätte — steht in der 253-Spec als F16.
+Additiv: der bestehende Ziel-Picker (§34, §39) liest die drei neuen Felder nicht und bleibt
+unverändert, bis ein späterer Task sie nutzt.
+
+**6.6 `sync-deleted`/`sync-restored` — Fortschreibung in der #253-Spec.** Der hier beschriebene neue
+Body (`emoteSetId`/`sevenTvEmoteIds` neben der Altform `emoteIds`) und die Zwei-Routen-Leiter waren
+der erste Schritt; #253 baut ihn zu einem eigenen set-zentrierten Endpunktpaar aus
+(`SyncInSetRequest`, `SyncDeletedInSetResponse`/`SyncRestoredInSetResponse`, `UnresolvedChannelResponse`
+— 253-Spec Abschnitt 5, insbesondere 5.1–5.3) und regelt dort auch den Resync-Cooldown je Kanal (253-
+Spec 5.2, F12/F13) und das Ende der kanalgebundenen set-scoped Form. Für den aktuellen Vertrag dieser
+beiden Routen gilt ab #253 jene Spec, nicht mehr dieser Abschnitt.
+
+**F7-Korrektur.** Der Verweis in F7 oben zeigte fälschlich auf Abschnitt 6.6 (der die
+`sync-deleted`/`sync-restored`-Bodyform beschreibt) statt auf 6.7 (der set-zentrierte
+`sync-imported`-Endpunkt, um den es in F7 tatsächlich geht) — die in einem früheren Plan-230-Task
+vorgesehene Korrektur war nie gelandet. Korrigiert direkt an der Stelle.
+
+## 41. Nachtrag: Besitzer-Hinweis und die wahre Kostenformel der Besitzer-Prüfung (#216, 2026-09-28)
+
+Dieser Nachtrag hebt die Behauptung auf, die Besitzer-Prüfung koste „im Normalfall null Requests",
+und hält fest, was mit dem Besitzer-Hinweis gilt. Der Fließtext von §32 bleibt stehen, wie er ist;
+die folgenden Stellen gelten ab hier in der korrigierten Form. Plan:
+`docs/plans/Plan-216-Besitzer-Hinweis.md`; Entscheidungslog-Eintrag 2026-09-28 „The owner check
+reads the hinted owner's list beside the actor's own …".
+
+**Was an der Null-Behauptung falsch war.** Die Listen sind 60 s gecacht (E12), die Grants zehn
+Minuten. Liegt zwischen Picker und Bericht mehr als eine Minute, liest die Prüfung die Listen neu —
+ohne Hinweis die eigene und dann die jedes `editor_of`-Kontos, seriell bis zum Treffer, also bis zu
+`1 + k` Requests (#216: 6 gemessen). „Null" galt nur innerhalb der 60 s.
+
+| Stelle | Was jetzt gilt |
+|---|---|
+| **§32 P1, Absatz „Tests"** („erzeugt der Normalfall **null** HTTP-Requests") | Richtig für den gemessenen Fall — Listen **und** Grants gecacht. Als Aussage über „den Normalfall" gilt stattdessen die Kostenformel unten |
+| **§32 zweite Runde, „Cache-Treffer … Das ist der Normalfall, weil der Picker den Grant-Cache Minuten vor dem Bericht füllt"** | Für den **Grant**-Cache (zehn Minuten) weiterhin richtig; die Verallgemeinerung auf die ganze Prüfung entfällt — die Listen halten nur 60 s |
+| **§32 zweite Runde, „Der geschützte Weg kostet im Normalfall nichts"** | Er kostet bei warmem Grant-Cache nichts, bei kaltem zwei budgetierte Requests (Identität, `editor_of`), bei gehaltenem Fehler nichts |
+| **§32 zweite Runde, „`IGuardedSevenTvEditorGrantsService`, nur von `ImportTargetOwnershipService` aufgelöst"** | Wörtlich weiter wahr — aber `ImportTargetOwnershipService` bedient jetzt **zwei** Aufrufer: die set-zentrierten Berichte (`CheckAsync`) und die Bearbeitbarkeits-Vorprüfung (`ResolveEditableAsync`). Die Vorprüfung liest die Grants damit bewusst geschützt; eine gehaltene Grant-Störung macht sie „nicht prüfbar", wo die ungeschützte Zielliste noch Konten gezeigt hätte — strenger, nie lockerer. Der Ziel-Picker (`/me/emote-set-targets`) bleibt ungeschützt |
+
+**Die Kostenformel.**
+
+| Fall | Listen-Requests | dazu |
+|---|---|---|
+| Warm (Listen ≤ 60 s alt) | 0 | 0 |
+| Kalt, Besitzer ist der Akteur, ohne Hinweis oder mit Hinweis auf den Akteur | 1 (die eigene Liste) | 0 — die Grants werden nicht gelesen |
+| Kalt, Besitzer ist der Akteur, Hinweis auf ein fremdes Konto (wird verworfen) | 1 (die eigene Liste) | +2 (Identität, `editor_of`), wenn der Grant-Cache kalt ist — der Hinweis wird zuerst gegen die Grants aufgelöst |
+| Kalt, gültiger Hinweis auf einen Grant | 2 (eigene Liste und Hinweis-Liste **parallel**, ein Round-Trip) | +2 (Identität, `editor_of`), wenn der Grant-Cache kalt ist |
+| Kalt, ohne oder mit ungültigem Hinweis | bis zu `1 + k` (Akteur + k Grants, seriell) | +1 Owner-Lookup des Berichts, wenn das Set in keiner Liste steht; +2 wie oben |
+
+Alles budgetiert, hinter Breaker und Coalescer. Ein offener Listen-Breaker ergibt mit und ohne
+Hinweis „nicht verfügbar", ohne Listen-Request.
+
+**Der Hinweis.** Ein Hinweis nennt das Konto, das das Set wahrscheinlich besitzt (Twitch-ID, sonst
+Login). Er ist eine **Reihenfolge, nie eine Erlaubnis**: Er wird nur gegen `{Akteur} ∪ Grants` der
+Session aufgelöst, bevor eine Liste gelesen wird; die ID gewinnt, ein Login zählt nur ohne ID und
+wird beidseitig über `ChannelName.Normalize` verglichen; alles andere wird verworfen (kein 400, keine
+Spiegelung). Ein verworfener Hinweis löst keinen Listen-Request aus; ihn aufzulösen kann aber die
+Grant-Abfrage (Identität + `editor_of`) kosten, wenn der Grant-Cache kalt ist — vor der eigenen Liste,
+also auch, wenn der Akteur das Set besitzt, und bei einem Akteur ohne 7TV-Konto einmal je 60-s-Haltefrist,
+wo der Aufruf ohne Hinweis die Grants überspringt. Begrenzt, geschützt und budgetiert wie jede
+Grant-Abfrage. Ob das Set zulässig ist, entscheidet weiter allein `EmoteSetEditability.IsEditable` über
+die Listen der verifizierten Konten.
+
+**Die eigene Liste wird immer gelesen.** Ein Hinweis auf einen Grant G liest die Grants (meist aus
+dem Cache), dann die eigene Liste und die Liste von G **parallel**, danach die übrigen Grants wie
+bisher seriell. Die Evidenz aus G's Liste zählt erst, wenn die eigene Liste **nicht**
+`NoSevenTvAccount` gemeldet hat — der Grant-Cache kann die 7TV-Verbindung des Akteurs um bis zu zehn
+Minuten überleben, und ein veralteter positiver Grant darf die Annahme nie erweitern. In diesem Fall
+wird G's Liste verworfen, das Ergebnis ist das ohne Hinweis; einziger Mehraufwand ist der schon
+laufende Request auf G's Liste. Eine unlesbare eigene Liste bleibt der Teilausfall aus §32 (Fund
+anderswo ⇒ zulässig, sonst „nicht verfügbar"); eine unlesbare Hinweis-Liste beendet den Gang nicht.
+Das frühe 403 „nur unter fremdem Besitzer gelistet" fällt wie bisher erst nach dem vollständigen Gang.
+
+**Immer das Besitzer-Konto.** Ein Treffer nennt das Konto, dessen 7TV-ID die Besitzer-ID des Sets
+ist — nie das Konto, das das Set nur listet. Stammt der Treffer aus einer Liste, trägt das Ergebnis
+zusätzlich das Set, wie die Liste es nennt (Name, Art, Anzeigename des Besitzers), und das aktive Set
+der **Besitzer**-Liste (leer, wenn das Set dort nicht stand). Der Owner-Lookup-Fallback des Berichts
+trägt beides nicht.
+
+**Die Vorprüfung nimmt keinen Owner-Lookup.** `ResolveEditableAsync` fährt denselben Gang ohne
+Fallback: in keiner lesbaren Liste ⇒ „nicht gefunden"; nur unter fremdem Besitzer oder ohne
+Besitzer-ID gelistet ⇒ „nicht erlaubt" (F16 der Restore-pro-Set-Spec: nie lockerer als der Bericht);
+eine Quelle unlesbar ohne zulässigen Fund ⇒ „nicht verfügbar".

@@ -66,12 +66,36 @@ internal sealed class RateLimitingOptions
     public FixedWindowPolicy ForeignEmoteLookup { get; set; } = new() { PermitLimit = 10 };
 
     /// <summary>
+    /// Set preview of a tracked channel (#220): one cached preview call per set switch, with the
+    /// client's 60-second cache in front and a membership proof behind the route. 30/min per user
+    /// covers a user opening a different set every other second plus the <c>refresh=true</c>
+    /// reloads after a sync; it is an abuse bound, not a stand-in for the provider budget.
+    /// </summary>
+    public FixedWindowPolicy TrackedEmoteSetPreview { get; set; } = new() { PermitLimit = 30 };
+
+    /// <summary>
     /// 7TV leaderboard (spec 2026-09-13, E16): unlike <see cref="ForeignEmoteLookup"/> this endpoint
     /// never costs 7TV anything directly — it reads an in-process stock — but its response is up to
     /// ~30 KB, so it is not as cheap as <see cref="Bookkeeping"/> either. 20/min per user comfortably
     /// covers every sort switch and re-open of the import dialog.
     /// </summary>
     public FixedWindowPolicy SevenTvLeaderboard { get; set; } = new() { PermitLimit = 20 };
+
+    /// <summary>
+    /// <c>POST /api/contact</c> (docs/DECISIONS.md 2026-09-24, "contact form"), per remote IP: a
+    /// token bucket rather than a fixed window because the shared 60-second <see
+    /// cref="RateLimitRejection.Window"/> every fixed-window policy runs on cannot express an hourly
+    /// figure — three tokens, refilling one every 20 minutes, approximate "up to three per hour" with
+    /// a burst allowance for a visitor who mistypes and resubmits right away. The provider-wide
+    /// ceiling this does not cover lives in <c>ContactSendBudget</c> (Infrastructure), not here — see
+    /// <see cref="RateLimitPolicyNames.Contact"/>.
+    /// </summary>
+    public TokenBucketPolicy Contact { get; set; } = new()
+    {
+        TokenLimit = 3,
+        TokensPerPeriod = 1,
+        ReplenishmentPeriodSeconds = 1200,
+    };
 
     /// <summary>
     /// Throws unless every budget is usable. Called during startup, so a typo in an environment
@@ -88,7 +112,9 @@ internal sealed class RateLimitingOptions
         PublicHealth.Validate(nameof(PublicHealth));
         PublicLegal.Validate(nameof(PublicLegal));
         ForeignEmoteLookup.Validate(nameof(ForeignEmoteLookup));
+        TrackedEmoteSetPreview.Validate(nameof(TrackedEmoteSetPreview));
         SevenTvLeaderboard.Validate(nameof(SevenTvLeaderboard));
+        Contact.Validate(nameof(Contact));
     }
 
     private static void RequirePositive(string policyName, string valueName, int value)

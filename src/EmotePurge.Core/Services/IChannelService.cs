@@ -40,6 +40,13 @@ public enum ChannelJoinStatus
     // reached, and the caller is not a global admin. Never returned for a channel that is already
     // active — see ChannelService.JoinAsync's idempotency comment.
     CapacityReached,
+
+    // The broadcaster behind this Twitch id objected to processing (GDPR Art. 21, issue #252)
+    // and is on the configured block list (Channels:ExcludedChannelIds). Unlike CapacityReached,
+    // global admins are NOT exempt — the only way to undo this is for the operator to remove the id
+    // from the list. Matched on the immutable Twitch id, resolved before any row is written; never
+    // returned for a login Twitch could not resolve at all (that stays ChannelNotOnTwitch).
+    ChannelExcluded,
 }
 
 /// <summary>
@@ -146,11 +153,26 @@ public interface IChannelService
 
     Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default);
 
+    // Spec 2026-09-20, 6.2: the target picker's "is this account one of our tracked channels?"
+    // question, asked by Twitch id rather than by name — a 7TV editor grant and the picker's own
+    // account both carry an id, never a channel name to look up by. IsBotActive = true only: a
+    // channel we once tracked and then left is, for this endpoint's purpose, exactly as untracked as
+    // one we never joined — its ActiveEmoteSetId is stale, not a live observed state (E21).
+    Task<Channel?> GetActiveByTwitchChannelIdAsync(string twitchChannelId, CancellationToken cancellationToken = default);
+
     // The normalized names of every channel the bot is currently meant to be in — the worker's
     // boot recovery and its periodic 7TV resync both start from this list. Exists as a service
     // method rather than as the identical inline query both hosted services used to carry, because
     // "which channels are active?" is a domain question and because the direct AppDbContext access
     // it replaced was the one place in the repo that stepped around the layering rule.
+    //
+    // "Meant to be in" excludes a row whose stored Twitch id is on the excluded-channel list
+    // (Channels:ExcludedChannelIds), even while the row itself is still active: this list is the
+    // worker's whole roster source (boot recovery, periodic resync and its roster prune, the live
+    // poll, the JOIN/RESYNC command guard), so leaving such a row out is what stops the worker from
+    // observing it the moment it restarts with the id configured, before the identity reconcile has
+    // deactivated the row itself. Admin views that must still show the row read their own query
+    // (IAdminChannelQueryService), not this one.
     Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default);
 
     // Publishes a RESYNC command for an active channel, making the worker re-resolve the full 7TV

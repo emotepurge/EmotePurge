@@ -24,6 +24,35 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     private const string SourceChannelNameProperty = "sourceChannelName";
     private const string LeaderboardSortProperty = "leaderboardSort";
 
+    // The import ladder's target (spec 6.7): written by MarkImportedAsync when a set was reported
+    // (E5) and always by MarkImportedToSetAsync. Not part of AuditLogDetail.Kinds — they never pick
+    // a Kind, they annotate whichever import Kind was already chosen above with AuditLogTargetEmoteSet.
+    private const string TargetEmoteSetIdProperty = "targetEmoteSetId";
+    private const string TargetIsActiveSetOfChannelProperty = "targetIsActiveSetOfChannel";
+    private const string TargetOwnerTwitchLoginProperty = "targetOwnerTwitchLogin";
+
+    // The set-centric sync-deleted/sync-restored target (restore-per-set spec 5.5): EmoteService's
+    // MarkDeletedInSetAsync/MarkRestoredInSetAsync write "emoteSetId", not "targetEmoteSetId" — a
+    // different property name than the import ladder above, because the two write paths shipped
+    // independently and each already had its own name before this projection read both.
+    // TargetIsActiveSetOfChannelProperty is shared as-is: both paths spell it the same. The legacy
+    // Guid-keyed form (spec 5.6, E4) writes neither property — it has no set to name.
+    private const string EmoteSetIdProperty = "emoteSetId";
+
+    // The set-scoped report's unresolved-expected-channel trio (restore-per-set spec 5.5, addendum
+    // N3): written together by EmoteService.BuildOwnerPaperDetails/BuildOwnerChannelPaperDetails
+    // whenever expectedChannelName (spec E18) named a channel the report did not hit. Never written
+    // by the import ladder, so these simply stay absent on that shape's payloads — read generically
+    // here, same as the two properties above.
+    private const string UnresolvedChannelNameProperty = "unresolvedChannelName";
+    private const string UnresolvedReasonProperty = "unresolvedReason";
+    private const string UnresolvedSevenTvEmoteIdsProperty = "unresolvedSevenTvEmoteIds";
+
+    // The legacy Guid-keyed form's own marker (restore-per-set spec 5.6, E4): written by
+    // EmoteService.MarkDeletedAsync/MarkRestoredAsync alongside a bare emoteCount, never alongside
+    // "emoteSetId" — that form has no set to name. Missing on every row written before #273.
+    private const string LegacyBodyFormProperty = "legacyBodyForm";
+
     // The closed vocabulary the endpoint accepts for that discriminator (EmoteEndpoints, F5.1/F1).
     // Both channel-shaped kinds render as ImportedFromChannel: what the row has to preserve is that
     // the emotes came from a channel and which one, not through which of the two read paths we saw
@@ -140,7 +169,17 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
 
         if (TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var emoteCount))
         {
-            return new AuditLogDetail(AuditLogDetail.Kinds.EmoteCount, emoteCount, null);
+            // Restore-per-set spec 5.5: a set-centric sync-deleted/sync-restored call annotates this
+            // same bare-count shape with its target set under "emoteSetId" — read generically here,
+            // same as the import ladder above, so a legacy-body row (no such property, spec 5.6) or an
+            // unrelated action that also happens to carry a bare emoteCount projects with
+            // TargetEmoteSet null, exactly as before.
+            return new AuditLogDetail(
+                AuditLogDetail.Kinds.EmoteCount,
+                emoteCount,
+                null,
+                ReadTargetEmoteSet(root, EmoteSetIdProperty),
+                ReadBoolFlag(root, LegacyBodyFormProperty));
         }
 
         if (TryReadCount(root, AuditLogDetail.Kinds.RemovedEntries, out var removedEntries))
@@ -188,8 +227,110 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
         }
 
         var sourceKind = sourceKindElement.GetString();
-        return TryProjectLeaderboardDetail(root, sourceKind, out detail)
-            || TryProjectChannelOrFileDetail(root, sourceKind, out detail);
+        if (!(TryProjectLeaderboardDetail(root, sourceKind, out detail)
+            || TryProjectChannelOrFileDetail(root, sourceKind, out detail)))
+        {
+            return false;
+        }
+
+        // AK 32/spec 6.7: annotates whichever import Kind was just chosen with the target set, if the
+        // payload names one. A row written before targetEmoteSetId existed, or one from a client that
+        // omitted it (E5), simply has no property here — ReadTargetEmoteSet returns null and the
+        // detail stays exactly as the two methods above built it.
+        var targetEmoteSet = ReadTargetEmoteSet(root, TargetEmoteSetIdProperty);
+        if (targetEmoteSet is not null)
+        {
+            detail = detail! with { TargetEmoteSet = targetEmoteSet };
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Reads a target set off an already-parsed details payload, under <paramref name="idPropertyName"/>
+    /// — the import ladder's <c>targetEmoteSetId</c> (spec 6.7) or the set-centric
+    /// sync-deleted/sync-restored's <c>emoteSetId</c> (restore-per-set spec 5.5); the two write paths
+    /// shipped independently and never agreed on a name. Returns null — not a throw — whenever that
+    /// property is missing, not a non-empty string, or simply absent (a legacy Guid-keyed row, spec
+    /// 5.6, or a valid, complete import row with no set reported at all, E5).
+    /// </summary>
+    private static AuditLogTargetEmoteSet? ReadTargetEmoteSet(JsonElement root, string idPropertyName)
+    {
+        if (!root.TryGetProperty(idPropertyName, out var idElement)
+            || idElement.ValueKind != JsonValueKind.String
+            || idElement.GetString() is not { Length: > 0 } id)
+        {
+            return null;
+        }
+
+        // Three-valued (E5): missing or non-boolean reads as null ("not applicable"/"not reported"),
+        // never coerced to false — the set-centric endpoint never writes this property at all, since
+        // its target set has no channel of ours to compare against.
+        bool? isActiveSetOfChannel = root.TryGetProperty(TargetIsActiveSetOfChannelProperty, out var activeElement)
+            ? activeElement.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => null,
+            }
+            : null;
+
+        string? ownerLogin = root.TryGetProperty(TargetOwnerTwitchLoginProperty, out var ownerElement)
+            && ownerElement.ValueKind == JsonValueKind.String
+                ? ownerElement.GetString()
+                : null;
+
+        // Addendum N3 (restore-per-set spec 5.5): the unresolved-expected-channel trio, absent on
+        // every shape but the set-scoped report's paper entry — TryGetProperty simply misses on an
+        // import-ladder row, same as ownerLogin above.
+        string? unresolvedChannelName = root.TryGetProperty(UnresolvedChannelNameProperty, out var unresolvedChannelNameElement)
+            && unresolvedChannelNameElement.ValueKind == JsonValueKind.String
+                ? unresolvedChannelNameElement.GetString()
+                : null;
+
+        string? unresolvedReason = root.TryGetProperty(UnresolvedReasonProperty, out var unresolvedReasonElement)
+            && unresolvedReasonElement.ValueKind == JsonValueKind.String
+                ? unresolvedReasonElement.GetString()
+                : null;
+
+        var unresolvedSevenTvEmoteIds = ReadStringArray(root, UnresolvedSevenTvEmoteIdsProperty);
+
+        return new AuditLogTargetEmoteSet(
+            id,
+            isActiveSetOfChannel,
+            ownerLogin,
+            unresolvedChannelName,
+            unresolvedReason,
+            unresolvedSevenTvEmoteIds);
+    }
+
+    /// <summary>Reads a JSON boolean flag, degrading to <c>false</c> — not a throw — on anything but
+    /// a literal <c>true</c>: a missing property (every row written before this flag existed) and an
+    /// unexpectedly-typed one read the same way.</summary>
+    private static bool ReadBoolFlag(JsonElement root, string propertyName) =>
+        root.TryGetProperty(propertyName, out var element) && element.ValueKind == JsonValueKind.True;
+
+    /// <summary>Reads a JSON array of strings, degrading to <c>null</c> — not a throw — on a missing
+    /// property, a non-array value, or an array holding anything but strings.</summary>
+    private static IReadOnlyList<string>? ReadStringArray(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var element) || element.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var values = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String || item.GetString() is not { } value)
+            {
+                return null;
+            }
+
+            values.Add(value);
+        }
+
+        return values;
     }
 
     /// <summary>

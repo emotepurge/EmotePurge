@@ -63,7 +63,7 @@ public sealed class ProviderRequestTelemetryHandler(
 
         // Fire-and-forget by contract (RateLimitTelemetryExtensions): a counter must not add a Redis
         // round trip to every provider call, and must never be able to fail one.
-        telemetry.RecordProviderResponse(new ProviderResponseObservation(
+        telemetry.ReportProviderResponse(new ProviderResponseObservation(
             providerName,
             callSource,
             (int)response.StatusCode,

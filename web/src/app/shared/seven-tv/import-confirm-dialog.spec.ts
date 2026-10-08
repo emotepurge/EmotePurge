@@ -1,14 +1,18 @@
 import { DIALOG_DATA, DialogRef } from '@angular/cdk/dialog';
+import { HttpClient, provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteSetWarning } from '../../core/emotes/emote-admin.service';
 import { ImportTargetLoadState } from '../../core/emotes/import-target-loader';
 import { LanguageService } from '../../core/i18n/language.service';
+import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
+import { TransferPlan } from '../../core/seven-tv/transfer-plan';
 import {
   ImportConfirmDialog,
   ImportConfirmDialogData,
@@ -52,13 +56,26 @@ const DE_TRANSLATIONS = {
         one: '{{ count }} Emote nach {{ channel }} kopieren?',
         other: '{{ count }} Emotes nach {{ channel }} kopieren?',
       },
+      titleSet: {
+        one: "{{ count }} Emote in Set ‚{{ setName }}' kopieren?",
+        other: "{{ count }} Emotes in Set ‚{{ setName }}' kopieren?",
+      },
+      titleAlign: {
+        one: '{{ count }} Namen im Zielset angleichen?',
+        other: '{{ count }} Namen im Zielset angleichen?',
+      },
+      untrackedTarget:
+        'EmotePurge trackt diesen Account nicht — 7TV lässt das Kopieren nur zu, wenn du dort Editor bist.',
+      ownershipCheckUnavailable:
+        'Wir konnten gerade nicht prüfen, ob dieses Set wirklich diesem Channel gehört — bitte vor dem Kopieren selbst kontrollieren.',
       originChannel: 'Aus Kanal {{ channel }}',
       originFile: 'Aus Datei {{ fileName }}',
       originFileDetails: 'Export aus {{ channel }}, {{ date }}',
       originLeaderboard: 'Aus 7TVs Bestenliste: {{ sort }}',
       dateUnknown: 'Datum unbekannt',
       channelUnknown: 'Kanal unbekannt',
-      target: 'Ziel: {{ channel }} · Set {{ setId }}',
+      target: 'Ziel: {{ channel }} · Set {{ setName }}',
+      targetUntracked: 'Ziel: Set {{ setName }} von {{ owner }}',
       loadingHint: 'Zieldaten werden geladen…',
       noTargetSet: 'Der Zielkanal hat noch kein aktives 7TV-Set.',
       loadFailed: 'Die Daten des Zielkanals konnten nicht geladen werden.',
@@ -69,9 +86,14 @@ const DE_TRANSLATIONS = {
         other: '{{ count }} Emotes sind bereits im Zielset und werden übersprungen.',
       },
       nameCollisions: {
-        one: '{{ count }} Name ist im Zielset schon vergeben:',
-        other: '{{ count }} Namen sind im Zielset schon vergeben:',
+        one: '{{ count }} Name ist im Zielset schon vergeben, wird nicht übertragen:',
+        other: '{{ count }} Namen sind im Zielset schon vergeben, werden nicht übertragen:',
       },
+      aliasMismatches: {
+        one: '{{ count }} ist vorhanden, heißt dort aber anders:',
+        other: '{{ count }} sind vorhanden, heißen dort aber anders:',
+      },
+      aliasMismatchRow: '{{ source }} → {{ target }}',
       invalidNames: {
         one: '{{ count }} Name enthält Zeichen, die 7TV nicht anlegen kann:',
         other: '{{ count }} Namen enthalten Zeichen, die 7TV nicht anlegen kann:',
@@ -88,9 +110,103 @@ const DE_TRANSLATIONS = {
         one: 'Das einzige Emote ist bereits im Zielset.',
         other: 'Alle {{ count }} Emotes sind bereits im Zielset.',
       },
+      nothingToAddBlocked: {
+        one: 'Das einzige Emote kann nicht hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+        other:
+          'Keines der {{ count }} Emotes kann hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+      },
       sameChannelFile: 'Diese Liste stammt aus diesem Kanal.',
       runNotice: 'Das Hinzufügen läuft danach automatisch nacheinander.',
+      runNoticeRenameOnly: 'Das Umbenennen läuft danach automatisch nacheinander.',
       execute: 'Kopieren',
+      executeRenameOnly: 'Angleichen',
+      removals: {
+        one: '{{ count }} Emote wird aus dem Zielset entfernt.',
+        other: '{{ count }} Emotes werden aus dem Zielset entfernt.',
+      },
+      renames: {
+        one: '{{ count }} Eintrag im Zielset wird umbenannt.',
+        other: '{{ count }} Einträge im Zielset werden umbenannt.',
+      },
+      saveRecovery: 'Rückweg sichern',
+      start: 'Starten',
+      verifying: 'Das Zielset wird gerade live geprüft…',
+      targetDrifted: 'Das Zielset hat sich seit der Vorschau geändert: {{ rows }}.',
+      targetReadFailed: 'Das Zielset ließ sich gerade nicht vollständig lesen.',
+      saveRecoveryFailed: 'Der Browser hat den Download der Rückweg-Datei verweigert.',
+      reloadTarget: 'Ziel neu laden',
+      decisionsDropped:
+        'Nach dem Neuladen passt die Entscheidung für diese Zeilen nicht mehr: {{ rows }}.',
+    },
+    resolve: {
+      open: 'Auflösen',
+      openCollisions: 'Namenskollisionen auflösen',
+      openMismatches: 'Abweichende Namen auflösen',
+      resolvedCount: 'Davon aufgelöst: {{ count }}',
+      titleCollisions: {
+        one: '{{ count }} Namenskollision auflösen',
+        other: '{{ count }} Namenskollisionen auflösen',
+      },
+      titleMismatches: {
+        one: '{{ count }} abweichenden Namen auflösen',
+        other: '{{ count }} abweichende Namen auflösen',
+      },
+      hintCollisions: 'Der Name ist im Zielset schon vergeben.',
+      hintMismatches: 'Das Emote ist im Zielset schon vorhanden, heißt dort aber anders.',
+      listLabelCollisions: 'Namenskollisionen',
+      listLabelMismatches: 'Abweichende Namen',
+      rowLabel: '{{ source }}, im Ziel: {{ target }}',
+      targetGone: 'nicht mehr im Zielset',
+      aliaslessEntry: '+ ein Eintrag ohne Namen',
+      actionGroupLabel: 'Aktion für {{ sourceName }}',
+      action: {
+        skip: 'Überspringen',
+        renameSource: 'Umbenennen',
+        replaceTarget: 'Ziel ersetzen',
+        adoptSourceName: 'Namen übernehmen',
+      },
+      reloadTargetFirst: 'Ziel hat sich geändert — erst neu laden',
+      adoptBlocked: {
+        nameTaken: 'Name im Zielset vergeben',
+        duplicateTarget: 'im Ziel doppelt vorhanden',
+      },
+      renameLabel: 'Neuer Name',
+      fieldError: {
+        invalid: 'Diesen Namen nimmt 7TV nicht an.',
+        taken: 'Dieser Name ist im Zielset schon vergeben.',
+        duplicate: 'Diesen Namen erzeugt auch eine andere Zeile.',
+      },
+      violation: {
+        duplicateGeneratedAlias: 'Mehrere Zeilen erzeugen denselben Namen: {{ rows }}.',
+        aliasHeldByTarget: 'Name im Zielset schon vergeben: {{ rows }}.',
+        invalidTypedAlias: 'Name, den 7TV nicht annimmt: {{ rows }}.',
+        duplicateReplaceTarget: 'Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.',
+        targetTouchedByReplaceAndAdopt: 'Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.',
+        adoptBlocked: 'Namen übernehmen ist hier nicht möglich: {{ rows }}.',
+      },
+      back: 'Zurück',
+      apply: 'Übernehmen',
+    },
+  },
+};
+
+/** The few English texts the language-switch case reads — enough to see the open step re-translate. */
+const EN_TRANSLATIONS = {
+  import: {
+    resolve: {
+      titleCollisions: {
+        one: 'Resolve {{ count }} name collision',
+        other: 'Resolve {{ count }} name collisions',
+      },
+      actionGroupLabel: 'Action for {{ sourceName }}',
+      action: {
+        skip: 'Skip',
+        renameSource: 'Rename',
+        replaceTarget: 'Replace target',
+        adoptSourceName: 'Adopt name',
+      },
+      back: 'Back',
+      apply: 'Apply',
     },
   },
 };
@@ -118,8 +234,26 @@ const UNAVAILABLE_WARNING: EmoteSetWarning = {
 
 type ReadyTarget = Extract<ImportTargetLoadState, { status: 'ready' }>;
 
+/** jsdom has no ResizeObserver, and the resolution step's CDK viewport reads it during init. */
+class FakeResizeObserver {
+  observe(): void {
+    /* no-op */
+  }
+  unobserve(): void {
+    /* no-op */
+  }
+  disconnect(): void {
+    /* no-op */
+  }
+}
+
 function row(sevenTvEmoteId: string, name: string): ImportRow {
-  return { sevenTvEmoteId, name };
+  return { sevenTvEmoteId, name, imageUrl: null };
+}
+
+/** The plan of a dialog nobody resolved anything in: one `add` row per row, under its own name. */
+function addPlan(rows: ImportRow[]): TransferPlan {
+  return { rows: rows.map((each) => ({ action: 'add', source: each, alias: each.name })) };
 }
 
 function channelSource(rows: ImportRow[], overrides: Partial<ImportSource> = {}): ImportSource {
@@ -182,6 +316,9 @@ function readyTarget(overrides: Partial<ReadyTarget> = {}): ImportTargetLoadStat
   return {
     status: 'ready',
     setId: 'set-1',
+    // `null` by default, matching the "today" (active-set) path, which never has one — a test
+    // about the header's setName sets this explicitly (spec 8.6, AK 39).
+    setName: null,
     occupiedSlots: 10,
     capacity: 1000,
     syncFailureReason: null,
@@ -206,9 +343,20 @@ function inRenderedOrder(text: string, markers: readonly string[]): string[] {
 
 interface RenderOptions {
   source?: ImportSource;
-  targetChannelName?: string;
+  targetChannelName?: string | null;
+  targetOwnerDisplayName?: string | null;
+  /** Defaults to `true` — every existing test in this file predates findings 1/3 and exercises the
+   *  active-set target, whose title/dock behaviour must stay exactly as it was. */
+  targetIsActiveSet?: boolean;
+  /** Only meaningful together with `targetIsActiveSet: false` — defaults to `null`, matching an
+   *  active target's title, which never names the set. */
+  titleSetName?: string | null;
   target?: ImportTargetLoadState;
   runBlocked?: boolean;
+  /** Defaults to `null` — most tests here are indifferent to the owner-hint design (#216); the
+   *  dedicated coverage for `data.targetOwnerTwitchId` reaching the planned file's meta sets this
+   *  explicitly. */
+  targetOwnerTwitchId?: string | null;
 }
 
 interface Harness {
@@ -228,32 +376,56 @@ describe('ImportConfirmDialog', () => {
   let dialogData: ImportConfirmDialogData;
   let closed: (ImportConfirmOutcome | undefined)[];
   let retryCalls: number;
+  let reloadLiveCalls: number;
+  let panelClasses: Set<string>;
 
   beforeEach(async () => {
     closed = [];
     retryCalls = 0;
+    reloadLiveCalls = 0;
+    panelClasses = new Set();
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
 
     await TestBed.configureTestingModule({
       imports: [
         ImportConfirmDialog,
         TranslocoTestingModule.forRoot({
-          langs: { de: DE_TRANSLATIONS },
-          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+          langs: { de: DE_TRANSLATIONS, en: EN_TRANSLATIONS },
+          // As in app.config.ts: a language switch re-renders what is already on screen.
+          translocoConfig: {
+            availableLangs: ['de', 'en'],
+            defaultLang: 'de',
+            reRenderOnLangChange: true,
+          },
         }),
       ],
       providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
         // Resolved when the component is created, so a test may shape the data first.
         { provide: DIALOG_DATA, useFactory: () => dialogData },
         {
           provide: DialogRef,
           useValue: {
             close: (result?: ImportConfirmOutcome) => closed.push(result),
+            // The pane the dialog widens for its second step.
+            overlayRef: {
+              addPanelClass: (name: string) => panelClasses.add(name),
+              removePanelClass: (name: string) => panelClasses.delete(name),
+            },
           },
         },
       ],
     }).compileComponents();
 
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
+  });
+
+  afterEach(() => {
+    // No test may leave a live read of the target set unanswered — or fire one it did not expect.
+    TestBed.inject(HttpTestingController).verify();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   /**
@@ -268,12 +440,21 @@ describe('ImportConfirmDialog', () => {
 
     dialogData = {
       source: options.source ?? channelSource([row('new-1', 'Kappa')]),
-      targetChannelName: options.targetChannelName ?? 'targetchannel',
+      targetChannelName:
+        options.targetChannelName === undefined ? 'targetchannel' : options.targetChannelName,
+      targetOwnerDisplayName: options.targetOwnerDisplayName ?? null,
+      targetIsActiveSet: options.targetIsActiveSet ?? true,
+      titleSetName: options.titleSetName ?? null,
       target,
       retry: () => {
         retryCalls += 1;
       },
+      reloadLive: () => {
+        reloadLiveCalls += 1;
+      },
       runBlocked,
+      httpClient: TestBed.inject(HttpClient),
+      targetOwnerTwitchId: options.targetOwnerTwitchId ?? null,
     };
 
     const fixture = TestBed.createComponent(ImportConfirmDialog);
@@ -353,8 +534,16 @@ describe('ImportConfirmDialog', () => {
         source: channelSource([row('existing-1', 'PogU'), row('existing-2', 'Kappa')]),
         target: readyTarget({
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'PogU' },
-            { sevenTvEmoteId: 'existing-2', name: 'Kappa' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'Kappa',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
         }),
       });
@@ -366,6 +555,89 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.element('import-confirm-nothing-to-add')?.textContent).toContain(
         'Alle 2 Emotes sind bereits im Zielset.',
       );
+    });
+
+    it('says why nothing is left to add when name collisions took every row — not the "already present" wording', () => {
+      // Codex Sol P2: before the fix this banner always used the `nothingToAdd` key regardless of
+      // reason, so a run blocked entirely by collisions still claimed every emote was "already in
+      // the target set" — false, and contradicting the collision group shown just above it.
+      const dialog = render({
+        source: channelSource([row('new-1', 'Collides'), row('new-2', 'AlsoCollides')]),
+        target: readyTarget({
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'AlsoCollides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
+        }),
+      });
+
+      const execute = dialog.button(EXECUTE);
+      expect(execute.disabled).toBe(true);
+      expect(execute.getAttribute('aria-describedby')).toBe('import-confirm-nothing-to-add');
+      const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
+      expect(banner).toContain(
+        'Keines der 2 Emotes kann hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+      );
+      expect(banner).not.toContain('Alle 2 Emotes sind bereits im Zielset.');
+
+      dialog.button(EXECUTE).click();
+      expect(closed).toEqual([]);
+    });
+
+    it('says why nothing is left to add on a mixed reason — some present, some collided', () => {
+      const dialog = render({
+        source: channelSource([row('existing-1', 'PogU'), row('new-1', 'Collides')]),
+        target: readyTarget({
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
+        }),
+      });
+
+      const execute = dialog.button(EXECUTE);
+      expect(execute.disabled).toBe(true);
+      const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
+      expect(banner).toContain(
+        'Keines der 2 Emotes kann hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+      );
+      expect(banner).not.toContain('Alle 2 Emotes sind bereits im Zielset.');
+    });
+
+    it('keeps the plain "already present" wording when that is the only reason', () => {
+      // Regression: the mixed/collision wording above must not swallow the existing, more specific
+      // case — every row present under the same alias still gets the original sentence.
+      const dialog = render({
+        source: channelSource([row('existing-1', 'PogU')]),
+        target: readyTarget({
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
+        }),
+      });
+
+      const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
+      expect(banner).toContain('Das einzige Emote ist bereits im Zielset.');
     });
 
     it('releases it once the target is ready and something is left to add', () => {
@@ -410,14 +682,24 @@ describe('ImportConfirmDialog', () => {
         source: channelSource([
           row('existing-1', 'PogU'),
           row('new-1', 'Kappa'),
-          // A name collision is informational — 7TV decides, so the row stays in the run.
+          // A name collision is excluded outright since spec 2026-09-20 — 7TV would reject it
+          // every time, so it never even reaches the run (AK 40: the run's own `failed` count for
+          // this row is 0, not "1 rejected").
           row('new-2', 'Collides'),
         ]),
         target: readyTarget({
           setId: 'set-42',
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'PogU' },
-            { sevenTvEmoteId: 'existing-9', name: 'Collides' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-9',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
         }),
       });
@@ -427,7 +709,8 @@ describe('ImportConfirmDialog', () => {
       expect(closed).toEqual([
         {
           targetSetId: 'set-42',
-          rows: [row('new-1', 'Kappa'), row('new-2', 'Collides')],
+          targetSetName: 'set-42',
+          plan: addPlan([row('new-1', 'Kappa')]),
         },
       ]);
     });
@@ -460,14 +743,52 @@ describe('ImportConfirmDialog', () => {
       dialog.target.set(
         readyTarget({
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'PogU' },
-            { sevenTvEmoteId: 'existing-2', name: 'Kappa' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'Kappa',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
         }),
       );
       dialog.detect();
 
       // Settles to the rest list, and picks the singular sibling key for it.
+      expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
+    });
+
+    // Finding 1 (Live-Verifikation K2 2026-09-21): "nach {channel}" claims the channel's active
+    // set — wrong whenever the target is not that active set (a non-active tracked pick, or any
+    // untracked one), since finding 3 is the direct consequence of that claim being false.
+    it('names the set instead of the channel for a non-active tracked target', () => {
+      const dialog = render({
+        targetChannelName: 'targetchannel',
+        targetIsActiveSet: false,
+        titleSetName: 'Wegwerf',
+      });
+
+      expect(dialog.title()).toBe("1 Emote in Set ‚Wegwerf' kopieren?");
+    });
+
+    it('names the set instead of the owner for an untracked target', () => {
+      const dialog = render({
+        targetChannelName: null,
+        targetOwnerDisplayName: 'Stranger',
+        targetIsActiveSet: false,
+        titleSetName: 'Wegwerf',
+      });
+
+      expect(dialog.title()).toBe("1 Emote in Set ‚Wegwerf' kopieren?");
+    });
+
+    it('keeps the "nach {channel}" wording for the active-set target — the one-click path stays', () => {
+      const dialog = render({ targetChannelName: 'targetchannel', targetIsActiveSet: true });
+
       expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
     });
   });
@@ -507,15 +828,38 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.text()).not.toContain('Das aktive Set gehört nicht dem eigenen 7TV-Account');
     });
 
-    it('downgrades to "could not check" when the check itself failed — not a confirmed finding', () => {
-      const dialog = render({ target: readyTarget({ warning: UNAVAILABLE_WARNING }) });
+    it('downgrades to "could not check" for a TRACKED target whose check itself failed — not a confirmed finding', () => {
+      const dialog = render({
+        targetChannelName: 'targetchannel',
+        target: readyTarget({ warning: UNAVAILABLE_WARNING }),
+      });
 
       // `isOwnSet: false` is part of the fallback shape and must not be read as evidence: an
       // unavailable check is amber ("unknown"), never the red "this set is foreign".
       expect(dialog.text()).toContain('Wir konnten gerade nicht prüfen');
       expect(dialog.text()).not.toContain('Achtung: Das aktive Emote-Set');
       expect(dialog.text()).not.toContain('Das aktive Set gehört nicht dem eigenen 7TV-Account');
+      // Finding 5: this branch keeps the delete flow's amber warning styling, worded for a copy
+      // rather than a deletion — never the untracked branch's neutral hint below.
+      expect(dialog.text()).not.toContain('EmotePurge trackt diesen Account nicht');
       // And it blocks nothing.
+      expect(dialog.button(EXECUTE).disabled).toBe(false);
+    });
+
+    // Finding 5: an UNTRACKED target's warning is `UNAVAILABLE_WARNING` by contract, always — there
+    // is no channel for `EmoteSetOwnershipService` to check at all (spec 8.6), so this is never a
+    // check that "failed"; the delete flow's alarm text (`massDelete.ownershipCheckUnavailable`)
+    // misdescribed it as one. A short, neutral hint instead, and no warning-styled banner.
+    it('shows a neutral hint instead of an alarm for an UNTRACKED target — the ownership check never applies there', () => {
+      const dialog = render({
+        targetChannelName: null,
+        targetOwnerDisplayName: 'SomeEditor',
+        target: readyTarget({ warning: UNAVAILABLE_WARNING }),
+      });
+
+      expect(dialog.text()).toContain('EmotePurge trackt diesen Account nicht');
+      expect(dialog.text()).not.toContain('Wir konnten gerade nicht prüfen');
+      expect(dialog.text()).not.toContain('Achtung: Das aktive Emote-Set');
       expect(dialog.button(EXECUTE).disabled).toBe(false);
     });
   });
@@ -688,20 +1032,29 @@ describe('ImportConfirmDialog', () => {
   });
 
   describe('name collisions for the foreign source (spec E7/AK 17)', () => {
-    it('warns about a colliding alias and still keeps the row in the run', () => {
-      // Nothing new was built for this — `buildImportPreview` has produced `nameCollisions` since
-      // #72. What is pinned here is that it keeps working for the third source, whose rows carry the
-      // *alias* of the foreign set and therefore collide more readily than a base name would. Warn,
-      // never block: the row stays in `toAdd` and 7TV decides.
+    it('warns about a colliding alias and keeps it out of the run', () => {
+      // Nothing new was built for the detection itself — `buildImportPreview` has produced
+      // `nameCollisions` since #72. What is pinned here is that it keeps working for the third
+      // source, whose rows carry the *alias* of the foreign set and therefore collide more readily
+      // than a base name would — and that, since spec 2026-09-20, the row is excluded from the run
+      // rather than merely flagged (AK 37/40).
       const dialog = render({
         source: foreignChannelSource([row('new-1', 'Kappa'), row('new-2', 'Collides')]),
         target: readyTarget({
           setId: 'set-42',
-          emotes: [{ sevenTvEmoteId: 'existing-9', name: 'Collides' }],
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-9',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
         }),
       });
 
-      expect(dialog.text()).toContain('1 Name ist im Zielset schon vergeben:');
+      expect(dialog.text()).toContain(
+        '1 Name ist im Zielset schon vergeben, wird nicht übertragen:',
+      );
       expect(dialog.text()).toContain('Collides');
       expect(dialog.button(EXECUTE).disabled).toBe(false);
 
@@ -710,7 +1063,8 @@ describe('ImportConfirmDialog', () => {
       expect(closed).toEqual([
         {
           targetSetId: 'set-42',
-          rows: [row('new-1', 'Kappa'), row('new-2', 'Collides')],
+          targetSetName: 'set-42',
+          plan: addPlan([row('new-1', 'Kappa')]),
         },
       ]);
     });
@@ -735,8 +1089,16 @@ describe('ImportConfirmDialog', () => {
           capacity: 1000,
           syncFailureReason: 'seventv_unavailable',
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'AlreadyThere' },
-            { sevenTvEmoteId: 'existing-2', name: 'Collides' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'AlreadyThere',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
           warning: {
             available: true,
@@ -750,17 +1112,18 @@ describe('ImportConfirmDialog', () => {
       // The contract from docs/UI-Designsprache.md §7.2 — the sequence of statements, not the
       // markup carrying them. Note the two source findings: discarded rows (data actually lost)
       // stand before collapsed duplicates (merely folded), because the heavier finding reads first.
+      // The title counts only `new-2` now: `new-1`/'Collides' is a name collision and, since spec
+      // 2026-09-20, no longer part of `toAdd` at all (AK 37).
       const contract = [
-        '2 Emotes nach handofblood kopieren?',
+        '1 Emote nach handofblood kopieren?',
         'Aus Datei emotes.json',
         'Export aus HandOfBlood,',
         'Ziel: handofblood · Set set-7',
         'Achtung: Das aktive Emote-Set',
-        'Das Set hätte danach 1001 von 1000 Slots belegt.',
-        'Das überschreitet die Kapazität',
+        'Das Set hätte danach 1000 von 1000 Slots belegt.',
         'Der letzte Abgleich des Zielkanals ist fehlgeschlagen.',
         '1 Emote ist bereits im Zielset',
-        '1 Name ist im Zielset schon vergeben:',
+        '1 Name ist im Zielset schon vergeben, wird nicht übertragen:',
         '1 Name enthält Zeichen, die 7TV nicht anlegen kann:',
         '2 ungültige Zeilen in der Quelle verworfen.',
         '3 doppelte Zeilen in der Quelle zusammengefasst.',
@@ -786,7 +1149,15 @@ describe('ImportConfirmDialog', () => {
           { duplicatesCollapsed: 1 },
         ),
         targetChannelName: 'targetchannel',
-        target: readyTarget({ emotes: [{ sevenTvEmoteId: 'existing-1', name: 'PogU' }] }),
+        target: readyTarget({
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
+        }),
       });
 
       const contract = [
@@ -798,6 +1169,1068 @@ describe('ImportConfirmDialog', () => {
       ];
 
       expect(inRenderedOrder(dialog.text(), contract)).toEqual(contract);
+    });
+  });
+
+  describe('target label and grouping (spec 8.6, AK 38/39/40)', () => {
+    it('names the channel and the set in the header when both are known', () => {
+      const dialog = render({
+        targetChannelName: 'handofblood',
+        target: readyTarget({ setName: 'Halloween' }),
+      });
+
+      expect(dialog.text()).toContain('Ziel: handofblood · Set Halloween');
+    });
+
+    it('falls back to the raw set id when the loader has no set name (the "today" path)', () => {
+      const dialog = render({
+        targetChannelName: 'handofblood',
+        target: readyTarget({ setId: 'set-9', setName: null }),
+      });
+
+      expect(dialog.text()).toContain('Ziel: handofblood · Set set-9');
+    });
+
+    it('names the owner and the set for an untracked target, not a channel', () => {
+      const dialog = render({
+        targetChannelName: null,
+        targetOwnerDisplayName: 'SomeEditor',
+        target: readyTarget({ setName: 'Wegwerf-Set' }),
+      });
+
+      expect(dialog.text()).toContain('Ziel: Set Wegwerf-Set von SomeEditor');
+      expect(dialog.text()).not.toContain('Ziel: handofblood');
+    });
+
+    it('reproduces the Halloween-set import proportions and the projection without an overflow banner (AK 38)', () => {
+      const ALREADY_PRESENT_COUNT = 328;
+      const ALIAS_MISMATCH_COUNT = 10;
+      const NAME_COLLISION_COUNT = 192;
+      const TO_ADD_COUNT = 232;
+
+      const targetEmotes: EmoteListItem[] = [];
+      const sourceRows: ReturnType<typeof row>[] = [];
+
+      for (let index = 0; index < ALREADY_PRESENT_COUNT; index++) {
+        const id = `present-${index}`;
+        targetEmotes.push({
+          sevenTvEmoteId: id,
+          name: `Present${index}`,
+          imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+        });
+        sourceRows.push(row(id, `Present${index}`));
+      }
+      for (let index = 0; index < ALIAS_MISMATCH_COUNT; index++) {
+        const id = `mismatch-${index}`;
+        targetEmotes.push({
+          sevenTvEmoteId: id,
+          name: `TargetAlias${index}`,
+          imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+        });
+        sourceRows.push(row(id, `SourceAlias${index}`));
+      }
+      for (let index = 0; index < NAME_COLLISION_COUNT; index++) {
+        targetEmotes.push({
+          sevenTvEmoteId: `collision-target-${index}`,
+          name: `Collide${index}`,
+          imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+        });
+        sourceRows.push(row(`collision-source-${index}`, `Collide${index}`));
+      }
+      for (let index = 0; index < TO_ADD_COUNT; index++) {
+        sourceRows.push(row(`new-${index}`, `New${index}`));
+      }
+
+      expect(sourceRows.length).toBe(762);
+
+      const dialog = render({
+        source: channelSource(sourceRows),
+        target: readyTarget({
+          setId: 'set-halloween',
+          setName: 'Halloween',
+          occupiedSlots: 687,
+          capacity: 1000,
+          emotes: targetEmotes,
+        }),
+      });
+
+      expect(dialog.title()).toBe(`${TO_ADD_COUNT} Emotes nach targetchannel kopieren?`);
+      expect(dialog.text()).toContain(
+        `${ALREADY_PRESENT_COUNT} Emotes sind bereits im Zielset und werden übersprungen.`,
+      );
+      expect(dialog.text()).toContain(
+        `${ALIAS_MISMATCH_COUNT} sind vorhanden, heißen dort aber anders:`,
+      );
+      expect(dialog.text()).toContain(
+        `${NAME_COLLISION_COUNT} Namen sind im Zielset schon vergeben, werden nicht übertragen:`,
+      );
+      // 687 occupied + 232 toAdd = 919, comfortably under the capacity of 1000 — no overflow line.
+      expect(dialog.text()).toContain('Das Set hätte danach 919 von 1000 Slots belegt.');
+      expect(dialog.text()).not.toContain('Das überschreitet die Kapazität');
+
+      // AK 40: none of the excluded rows (collisions or alias mismatches) reach the run at all —
+      // the eventual `failed` count downstream is 0 for them, because they were never attempted.
+      dialog.button(EXECUTE).click();
+      expect(closed[0]?.plan.rows.length).toBe(TO_ADD_COUNT);
+      expect(closed[0]?.plan.rows.some((r) => r.source.name.startsWith('Collide'))).toBe(false);
+      expect(closed[0]?.plan.rows.some((r) => r.source.name.startsWith('SourceAlias'))).toBe(false);
+    });
+  });
+
+  describe('resolving conflicts per row (#230)', () => {
+    const IMG = 'https://cdn.7tv.app/placeholder/1x.webp';
+    const GQL = 'https://7tv.io/v4/gql';
+
+    function emote(sevenTvEmoteId: string, name: string): EmoteListItem {
+      return { sevenTvEmoteId, name, imageUrl: IMG };
+    }
+
+    /** One plain add, two name collisions (the second onto a #74 duplicate with two aliases) and
+     *  one alias mismatch. */
+    function conflictSource(): ImportSource {
+      return channelSource([
+        row('new-1', 'Kappa'),
+        row('src-a', 'Collides'),
+        row('src-b', 'Dup'),
+        row('src-m', 'Pog'),
+      ]);
+    }
+
+    function conflictTarget(): ImportTargetLoadState {
+      return readyTarget({
+        setId: 'set-9',
+        occupiedSlots: 10,
+        capacity: 1000,
+        emotes: [
+          emote('tgt-a', 'Collides'),
+          emote('tgt-b', 'Dup'),
+          emote('tgt-b', 'Dup2'),
+          emote('src-m', 'PogOld'),
+        ],
+      });
+    }
+
+    interface LiveEntry {
+      id: string;
+      alias: string | null;
+      defaultName?: string;
+    }
+
+    /** The target set as 7TV's live read reports it — unchanged since the preview by default. */
+    const LIVE_UNCHANGED: LiveEntry[] = [
+      { id: 'tgt-a', alias: 'Collides', defaultName: 'CollidesDefault' },
+      { id: 'tgt-b', alias: 'Dup', defaultName: 'DupDefault' },
+      { id: 'tgt-b', alias: 'Dup2', defaultName: 'DupDefault' },
+      { id: 'src-m', alias: 'PogOld', defaultName: 'Pog' },
+    ];
+
+    function setRead(entries: LiveEntry[], totalCount = entries.length) {
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount,
+                pageCount: 1,
+                items: entries.map((entry) => ({
+                  alias: entry.alias,
+                  emote: { id: entry.id, defaultName: entry.defaultName ?? entry.alias },
+                })),
+              },
+            },
+          },
+        },
+      };
+    }
+
+    interface CapturedDownload {
+      filename: string;
+      blob: Blob;
+    }
+
+    /** Spies on the two seams `downloadFile` touches — same approach as `usage-stats-page.spec.ts`,
+     *  since the unit-test builder refuses `vi.mock` for relative imports. */
+    function captureDownloads(): CapturedDownload[] {
+      const downloads: CapturedDownload[] = [];
+      if (!('createObjectURL' in URL)) {
+        Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
+      }
+      vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
+        downloads.push({ filename: '', blob: blob as Blob });
+        return 'blob:test';
+      });
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+      const originalCreateElement = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+        const element = originalCreateElement(tag);
+        if (tag === 'a') {
+          vi.spyOn(element as HTMLAnchorElement, 'click').mockImplementation(() => {
+            const pending = downloads[downloads.length - 1];
+            if (pending) {
+              pending.filename = (element as HTMLAnchorElement).download;
+            }
+          });
+        }
+        return element;
+      });
+      return downloads;
+    }
+
+    /** jsdom has no layout — the step's viewport renders its rows on an animation frame. */
+    async function waitFor(dialog: Harness, done: () => boolean): Promise<void> {
+      for (let attempt = 0; attempt < 50; attempt++) {
+        dialog.detect();
+        if (done()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await dialog.fixture.whenStable();
+      }
+      throw new Error('condition not reached');
+    }
+
+    function host(dialog: Harness): HTMLElement {
+      return dialog.fixture.nativeElement;
+    }
+
+    async function openStep(
+      dialog: Harness,
+      group: 'nameCollision' | 'aliasMismatch',
+    ): Promise<void> {
+      const trigger = dialog.element(`import-confirm-resolve-${group}`);
+      if (!trigger) {
+        throw new Error(`no resolve control for ${group}`);
+      }
+      trigger.click();
+      await waitFor(dialog, () => host(dialog).querySelector('[data-resolve-index]') !== null);
+    }
+
+    function option(dialog: Harness, sourceName: string, kind: string): HTMLInputElement {
+      const found = host(dialog).querySelector<HTMLInputElement>(
+        `[role="radiogroup"][aria-label="Aktion für ${sourceName}"] input[value="${kind}"],` +
+          `[role="radiogroup"][aria-label="Action for ${sourceName}"] input[value="${kind}"]`,
+      );
+      if (!found) {
+        throw new Error(`no ${kind} option for ${sourceName}`);
+      }
+      return found;
+    }
+
+    function choose(dialog: Harness, sourceName: string, kind: string): void {
+      option(dialog, sourceName, kind).click();
+      dialog.detect();
+    }
+
+    function typeAlias(dialog: Harness, key: string, value: string): void {
+      const field = host(dialog).querySelector<HTMLInputElement>(`#resolve-alias-${key}`);
+      if (!field) {
+        throw new Error(`no rename field for ${key}`);
+      }
+      field.value = value;
+      field.dispatchEvent(new Event('input'));
+      dialog.detect();
+    }
+
+    function apply(dialog: Harness): void {
+      dialog.button('Übernehmen').click();
+      dialog.detect();
+    }
+
+    function answerRead(dialog: Harness, body: object): void {
+      TestBed.inject(HttpTestingController).expectOne(GQL).flush(body);
+      dialog.detect();
+    }
+
+    /** Resolves `Collides` by replacing its target and saves the recovery file from a clean read. */
+    async function replaceAndSave(dialog: Harness, live: LiveEntry[] = LIVE_UNCHANGED) {
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(live));
+    }
+
+    it('shows no resolve control and today’s action row when nothing conflicts (AK 2)', () => {
+      const dialog = render({
+        source: channelSource([row('new-1', 'Kappa')]),
+        target: readyTarget({ emotes: [emote('other', 'Other')] }),
+      });
+
+      expect(dialog.hasButton('Auflösen')).toBe(false);
+      expect(dialog.hasButton('Rückweg sichern')).toBe(false);
+      // The §7.2 sequence is untouched by the new rows, which only exist with a conflict.
+      const contract = [
+        '1 Emote nach targetchannel kopieren?',
+        'Aus Kanal sourcechannel',
+        'Ziel: targetchannel · Set set-1',
+        'Das Set hätte danach 11 von 1000 Slots belegt.',
+        'Das Hinzufügen läuft danach automatisch nacheinander.',
+      ];
+      expect(inRenderedOrder(dialog.text(), contract)).toEqual(contract);
+      expect(dialog.text()).not.toContain('aus dem Zielset entfernt');
+
+      dialog.button(EXECUTE).click();
+      expect(closed).toEqual([
+        { targetSetId: 'set-1', targetSetName: 'set-1', plan: addPlan([row('new-1', 'Kappa')]) },
+      ]);
+    });
+
+    it('offers one resolve control per conflict group, each described by its own finding (AK 3)', () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      const collisions = dialog.element('import-confirm-resolve-nameCollision');
+      const mismatches = dialog.element('import-confirm-resolve-aliasMismatch');
+      expect(collisions?.textContent?.trim()).toBe('Auflösen');
+      expect(mismatches?.textContent?.trim()).toBe('Auflösen');
+      expect(
+        dialog.element(collisions?.getAttribute('aria-describedby') ?? '')?.textContent,
+      ).toContain('2 Namen sind im Zielset schon vergeben');
+      expect(
+        dialog.element(mismatches?.getAttribute('aria-describedby') ?? '')?.textContent,
+      ).toContain('1 ist vorhanden, heißt dort aber anders');
+      // Two buttons with the same visible text: the accessible name says which group each opens.
+      expect(collisions?.getAttribute('aria-label')).toBe('Namenskollisionen auflösen');
+      expect(mismatches?.getAttribute('aria-label')).toBe('Abweichende Namen auflösen');
+    });
+
+    it('re-translates the open step on a language switch', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      expect(option(dialog, 'Collides', 'skip').parentElement?.textContent).toContain(
+        'Überspringen',
+      );
+
+      const transloco = TestBed.inject(TranslocoService);
+      await firstValueFrom(transloco.load('en'));
+      transloco.setActiveLang('en');
+      await waitFor(dialog, () => dialog.title() === 'Resolve 2 name collisions');
+
+      // The row's action group is found by its English name now.
+      expect(option(dialog, 'Collides', 'skip').parentElement?.textContent).toContain('Skip');
+      expect(dialog.hasButton('Apply')).toBe(true);
+      expect(dialog.hasButton('Back')).toBe(true);
+    });
+
+    it('locks Übernehmen when a replace here meets an adopt of the same target in the other group', async () => {
+      // `PogOld` collides with the target entry `src-m`, which is also the emote the mismatch row
+      // `Pog` would rename — replacing it and adopting it at once contradict each other.
+      const dialog = render({
+        source: channelSource([row('src-m', 'Pog'), row('src-z', 'PogOld')]),
+        target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+      });
+      await openStep(dialog, 'aliasMismatch');
+      choose(dialog, 'Pog', 'adoptSourceName');
+      apply(dialog);
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'PogOld', 'replaceTarget');
+
+      const applyButton = dialog.button('Übernehmen');
+      expect(applyButton.disabled).toBe(true);
+      expect(
+        dialog.element(applyButton.getAttribute('aria-describedby') ?? '')?.textContent,
+      ).toContain('Dasselbe Ziel wird ersetzt und umbenannt: PogOld, Pog.');
+    });
+
+    it('widens the pane only while the resolution step is up', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      expect(panelClasses.has('app-dialog-panel-wide')).toBe(false);
+
+      await openStep(dialog, 'nameCollision');
+      expect(panelClasses.has('app-dialog-panel-wide')).toBe(true);
+      expect(dialog.title()).toBe('2 Namenskollisionen auflösen');
+
+      dialog.button('Zurück').click();
+      dialog.detect();
+      expect(panelClasses.has('app-dialog-panel-wide')).toBe(false);
+      expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
+    });
+
+    it('closes a dialog nobody resolved anything in with the plan of toAdd, without reading the set (AK 5)', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      await openStep(dialog, 'nameCollision');
+      dialog.button('Zurück').click();
+      dialog.detect();
+      await openStep(dialog, 'aliasMismatch');
+      dialog.button('Zurück').click();
+      dialog.detect();
+      dialog.button(EXECUTE).click();
+
+      expect(closed).toEqual([
+        { targetSetId: 'set-9', targetSetName: 'set-9', plan: addPlan([row('new-1', 'Kappa')]) },
+      ]);
+    });
+
+    // #253, spec 4.5 point 15/18: the replace lock for an untracked target is gone — the dialog
+    // offers "Ziel ersetzen" for an untracked target exactly as for a tracked one (AK 16), still
+    // requires the recovery file before it starts (AK 17), and the file's name falls back to the
+    // set id where a tracked run would have named the channel (spec 4.5 point 18).
+    it('offers replace for an untracked target too, requires the recovery file, and names it by set id (R5, AK 16, 17)', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({
+        source: conflictSource(),
+        target: conflictTarget(),
+        targetChannelName: null,
+        targetOwnerDisplayName: 'SomeEditor',
+      });
+
+      await openStep(dialog, 'nameCollision');
+      for (const name of ['Collides', 'Dup']) {
+        expect(option(dialog, name, 'replaceTarget').disabled).toBe(false);
+        expect(option(dialog, name, 'renameSource').disabled).toBe(false);
+      }
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      expect(dialog.element('import-confirm-removals')?.textContent).toContain(
+        '1 Emote wird aus dem Zielset entfernt.',
+      );
+      // The safeguard is still a file, not a typed confirmation — a plan with a replace row never
+      // gets the plain "Kopieren" button, untracked target included.
+      expect(dialog.hasButton(EXECUTE)).toBe(false);
+      expect(downloads).toEqual([]);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(LIVE_UNCHANGED));
+
+      // conflictTarget()'s own setId ('set-9') stands in for the channel name the tracked case
+      // uses (`emotepurge_targetchannel_transfer-plan_…`, the sibling AK 16/17 test above).
+      expect(downloads).toHaveLength(1);
+      expect(downloads[0].filename).toMatch(/^emotepurge_set-9_transfer-plan_.*\.json$/);
+      expect(dialog.hasButton('Starten')).toBe(true);
+    });
+
+    it('shows the removal line only once a replace is applied, and swaps Kopieren for Rückweg sichern (AK 20)', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      expect(dialog.element('import-confirm-removals')).toBeNull();
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      expect(dialog.element('import-confirm-removals')?.textContent).toContain(
+        '1 Emote wird aus dem Zielset entfernt.',
+      );
+      expect(dialog.hasButton(EXECUTE)).toBe(false);
+      expect(dialog.button('Rückweg sichern').disabled).toBe(false);
+      // Replacing still adds: the title counts every ADD of the plan.
+      expect(dialog.title()).toBe('2 Emotes nach targetchannel kopieren?');
+    });
+
+    describe('target renames', () => {
+      it('titles a rename-only plan "align names" and shows the rename line, with no add at all', async () => {
+        const dialog = render({
+          source: channelSource([row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.title()).toBe('1 Namen im Zielset angleichen?');
+        expect(dialog.text()).toContain('1 Eintrag im Zielset wird umbenannt.');
+        // Neutral hint, not a warning: nothing here is lost.
+        expect(dialog.element('import-confirm-removals')).toBeNull();
+      });
+
+      // Spec #255: a rename-only plan adds nothing, so the ordinary "Kopieren" button and its
+      // "Hinzufügen läuft danach…" notice would both misdescribe the run — the button matches the
+      // title's own word ("Angleichen", import.confirm.titleAlign) instead of a fourth word for a
+      // run that, unlike every other plan here, does not add a thing. Review finding #255 P2-1: an
+      // earlier version of this fix reused "Übertragen" here, but DECISIONS 2026-09-07 ("Ein Verb
+      // für die Übertragung", #92) reserves that verb for the entry point that opens the whole
+      // import flow, not for a button inside the confirmation it leads to.
+      it('shows the "Angleichen" button and a matching run notice for a rename-only plan', async () => {
+        const dialog = render({
+          source: channelSource([row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.hasButton('Angleichen')).toBe(true);
+        expect(dialog.hasButton('Kopieren')).toBe(false);
+        expect(dialog.text()).toContain('Das Umbenennen läuft danach automatisch nacheinander.');
+        expect(dialog.text()).not.toContain(
+          'Das Hinzufügen läuft danach automatisch nacheinander.',
+        );
+      });
+
+      // The same plan, but with an ordinary add row beside the adopt (titleIsRenameOnly is false
+      // once addCount > 0) — the button and the notice both stay exactly as they were before #255.
+      it('keeps the "Kopieren" button and the "Hinzufügen" notice when the plan also adds', async () => {
+        const dialog = render({
+          source: channelSource([row('new-1', 'Kappa'), row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.hasButton(EXECUTE)).toBe(true);
+        expect(dialog.hasButton('Angleichen')).toBe(false);
+        expect(dialog.text()).toContain('Das Hinzufügen läuft danach automatisch nacheinander.');
+        expect(dialog.text()).not.toContain(
+          'Das Umbenennen läuft danach automatisch nacheinander.',
+        );
+      });
+
+      it('keeps the add-counting title when the plan also adds, but still shows the rename line', async () => {
+        const dialog = render({
+          source: channelSource([row('new-1', 'Kappa'), row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
+        expect(dialog.text()).toContain('1 Eintrag im Zielset wird umbenannt.');
+      });
+
+      it('shows no rename line and the ordinary title while the mismatch row is left on skip', () => {
+        const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+        expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
+        expect(dialog.text()).not.toContain('wird umbenannt');
+        expect(dialog.text()).not.toContain('werden umbenannt');
+      });
+    });
+
+    it('projects the slots from the net change: rename +1, replace 0, replace on a duplicate −1 (AK 21)', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      const projected = () => /danach (\d+) von 1000/.exec(dialog.text())?.[1];
+      expect(projected()).toBe('11');
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'renameSource');
+      typeAlias(dialog, 'src-a', 'CollidesNew');
+      apply(dialog);
+      expect(projected()).toBe('12');
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      expect(projected()).toBe('11');
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Dup', 'replaceTarget');
+      apply(dialog);
+      // Dup's target holds two entries (Dup, Dup2); the REMOVE takes both, the ADD puts one back.
+      expect(projected()).toBe('10');
+      expect(dialog.element('import-confirm-removals')?.textContent).toContain(
+        '2 Emotes werden aus dem Zielset entfernt.',
+      );
+    });
+
+    it('locks Übernehmen while a rename is invalid, naming the row next to the button (AK 10)', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+
+      choose(dialog, 'Collides', 'renameSource');
+      typeAlias(dialog, 'src-a', 'Collides neu');
+
+      const applyButton = dialog.button('Übernehmen');
+      expect(applyButton.disabled).toBe(true);
+      const reason = dialog.element(applyButton.getAttribute('aria-describedby') ?? '');
+      expect(reason?.textContent).toContain('Name, den 7TV nicht annimmt: Collides.');
+
+      typeAlias(dialog, 'src-a', 'CollidesNeu');
+      expect(dialog.button('Übernehmen').disabled).toBe(false);
+    });
+
+    it('starts a plan without replace straight away — no read, no download, still Kopieren', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'renameSource');
+      typeAlias(dialog, 'src-a', 'CollidesNew');
+      apply(dialog);
+      await openStep(dialog, 'aliasMismatch');
+      choose(dialog, 'Pog', 'adoptSourceName');
+      apply(dialog);
+
+      dialog.button(EXECUTE).click();
+
+      expect(downloads).toEqual([]);
+      expect(closed[0]?.plan.rows.map((each) => [each.action, each.alias])).toEqual([
+        ['adoptSourceName', 'Pog'],
+        ['add', 'Kappa'],
+        ['renameSource', 'CollidesNew'],
+      ]);
+    });
+
+    it('with a replace, reads the set live, saves the recovery file and only then offers Starten (AK 16, 17)', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+
+      // While the read runs: locked, with its reason beside it, and no way to start yet.
+      const pending = dialog.button('Rückweg sichern');
+      expect(pending.disabled).toBe(true);
+      expect(pending.getAttribute('aria-describedby')).toBe('import-confirm-verifying');
+      expect(dialog.element('import-confirm-verifying')?.textContent).toContain(
+        'Das Zielset wird gerade live geprüft…',
+      );
+      expect(dialog.hasButton('Starten')).toBe(false);
+      expect(downloads).toEqual([]);
+
+      answerRead(dialog, setRead(LIVE_UNCHANGED));
+
+      expect(downloads).toHaveLength(1);
+      expect(downloads[0].filename).toMatch(/^emotepurge_targetchannel_transfer-plan_.*\.json$/);
+      const record = JSON.parse(await downloads[0].blob.text());
+      expect(record.kind).toBe('transfer-run');
+      expect(record.meta.stage).toBe('planned');
+      expect(record.meta.counts).toEqual({ planned: 2, removals: 1 });
+      expect(closed).toEqual([]);
+
+      // A run elsewhere still locks the start silently, like "Kopieren" (§4.2).
+      dialog.runBlocked.set(true);
+      dialog.detect();
+      expect(dialog.button('Starten').disabled).toBe(true);
+      dialog.runBlocked.set(false);
+      dialog.detect();
+
+      dialog.button('Starten').click();
+      expect(closed[0]?.plan.rows.map((each) => each.action)).toEqual(['replace', 'add']);
+    });
+
+    // Owner-hint design 3.6/3.7: the planned transfer-run file's meta carries whatever owner id the
+    // flow already knew when this dialog opened — this save runs before the shared pre-check
+    // (`resolveEditableSet`) ever does, so `data.targetOwnerTwitchId` is the only answer there is yet.
+    it('writes data.targetOwnerTwitchId onto the planned file, and null when the flow had none (owner-hint design 3.7)', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({
+        source: conflictSource(),
+        target: conflictTarget(),
+        targetOwnerTwitchId: 'owner-tw-9',
+      });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(LIVE_UNCHANGED));
+
+      expect(downloads).toHaveLength(1);
+      const record = JSON.parse(await downloads[0].blob.text());
+      expect(record.meta.targetOwnerTwitchId).toBe('owner-tw-9');
+    });
+
+    it('writes null onto the planned file when the flow resolved no owner id', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(LIVE_UNCHANGED));
+
+      expect(downloads).toHaveLength(1);
+      const record = JSON.parse(await downloads[0].blob.text());
+      expect(record.meta.targetOwnerTwitchId).toBeNull();
+    });
+
+    it('carries the live-read aliases and default name on each replace target of the closed plan (AK 17)', async () => {
+      captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Dup', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      // Same entries as the preview, listed in another order by 7TV.
+      answerRead(
+        dialog,
+        setRead([
+          { id: 'tgt-b', alias: 'Dup2', defaultName: 'DupDefault' },
+          { id: 'tgt-b', alias: 'Dup', defaultName: 'DupDefault' },
+          { id: 'tgt-a', alias: 'Collides' },
+          { id: 'src-m', alias: 'PogOld' },
+        ]),
+      );
+
+      dialog.button('Starten').click();
+
+      const replace = closed[0]?.plan.rows.find((each) => each.action === 'replace');
+      expect(replace?.action === 'replace' ? replace.target : null).toEqual({
+        sevenTvEmoteId: 'tgt-b',
+        aliases: ['Dup2', 'Dup'],
+        hasAliaslessEntry: false,
+        defaultName: 'DupDefault',
+      });
+    });
+
+    it('on a drifted target: no download, the banner names the row, and the row is back on skip showing its live counterpart', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      await replaceAndSave(dialog, [
+        { id: 'tgt-a', alias: 'Collides' },
+        { id: 'tgt-a', alias: 'CollidesToo' },
+        ...LIVE_UNCHANGED.slice(1),
+      ]);
+
+      expect(downloads).toEqual([]);
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset hat sich seit der Vorschau geändert: Collides.',
+      );
+      expect(dialog.element('import-confirm-removals')).toBeNull();
+      expect(dialog.hasButton(EXECUTE)).toBe(true);
+      expect(dialog.hasButton('Starten')).toBe(false);
+
+      // Issue #256 point 2: a drifted target's own reload forces a live re-read (`reloadLive`),
+      // never the ordinary `retry` — the ordinary load is the Postgres-backed "today" read for a
+      // tracked active set, which can already be a drift round behind 7TV.
+      dialog.button('Ziel neu laden').click();
+      expect(reloadLiveCalls).toBe(1);
+      expect(retryCalls).toBe(0);
+
+      await openStep(dialog, 'nameCollision');
+      expect(option(dialog, 'Collides', 'skip').checked).toBe(true);
+      // The user now confirms against the target as it is: both of its live aliases.
+      const collidesRow = host(dialog).querySelector('[data-resolve-index="0"]');
+      expect(collidesRow?.getAttribute('aria-label')).toBe(
+        'Collides, im Ziel: Collides, CollidesToo',
+      );
+    });
+
+    // Issue #256 point 2, differentiated from the drift case above: a failed or incomplete live
+    // read never got far enough to vouch for anything, so there is nothing for a forced live
+    // re-read to be fresher than — its own reload button stays the ordinary load.
+    it("still calls the ordinary retry, not reloadLive, from the readFailed notice's own button", async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      TestBed.inject(HttpTestingController).expectOne(GQL).error(new ProgressEvent('network'));
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset ließ sich gerade nicht vollständig lesen.',
+      );
+
+      dialog.button('Ziel neu laden').click();
+
+      expect(retryCalls).toBe(1);
+      expect(reloadLiveCalls).toBe(0);
+    });
+
+    // Issue #256 point 2 / plan §T6: a live reload after a drift replaces the target with a fresh
+    // `ready()` state exactly like any other target reload — the `linkedSignal` projections keyed
+    // on `preview` (`targetOverlays`, `targetCheckNotice`, `liveOccupiedSlots`) reset on that new
+    // reference regardless of which button asked for it (retry or reloadLive). This pins that the
+    // occupied-slot count shown after a live reload is the freshly loaded target's own count, not a
+    // number left over from the live read that found the drift in the first place.
+    it('clears the live-occupied-slot count from the drift check once a live reload replaces the target', async () => {
+      captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      // Same drift as "on a drifted target" above (tgt-a gained a second alias) — the live read's
+      // item count must equal its own totalCount for `verifyReplaceTargets` to see a *complete* read
+      // at all (`seven-tv-set-entries.ts`'s `collected === totalCount`), so this keeps the default,
+      // matching count rather than picking an arbitrary occupied-slot number.
+      await replaceAndSave(dialog, [
+        { id: 'tgt-a', alias: 'Collides' },
+        { id: 'tgt-a', alias: 'CollidesToo' },
+        ...LIVE_UNCHANGED.slice(1),
+      ]);
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset hat sich seit der Vorschau geändert: Collides.',
+      );
+      // The live check itself already adopted the read's own occupancy (5 live entries) before it
+      // found the drift — the unrelated Kappa add (the only other row in the plan) turns that into 6
+      // "danach" (net change +1, `onTargetRead`'s doc: every successful read updates
+      // `liveOccupiedSlots`, whichever branch follows).
+      expect(dialog.text()).toContain('Das Set hätte danach 6 von 1000 Slots belegt.');
+
+      dialog.button('Ziel neu laden').click();
+      expect(reloadLiveCalls).toBe(1);
+      expect(retryCalls).toBe(0);
+
+      // The flow's own `reloadLive` answers with a fresh live read (a new `ready()` object, the
+      // drifted target back at the shape it was confirmed against) — the same reset any other
+      // target reload already gets from the `linkedSignal`s keyed on `preview`, not a special case
+      // this task has to add: the drift notice clears, and the projection adopts the fresh load's
+      // own occupancy rather than the number the drift check left behind.
+      dialog.target.set(
+        readyTarget({
+          setId: 'set-9',
+          occupiedSlots: 20,
+          capacity: 1000,
+          emotes: [
+            emote('tgt-a', 'Collides'),
+            emote('tgt-b', 'Dup'),
+            emote('tgt-b', 'Dup2'),
+            emote('src-m', 'PogOld'),
+          ],
+        }),
+      );
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+      // 21, not a value left over from the drift check's own 6 (20 + the same net +1) — proof the
+      // reload's fresh target, not the stale live read, is what the projection now follows.
+      expect(dialog.text()).toContain('Das Set hätte danach 21 von 1000 Slots belegt.');
+    });
+
+    // Spec #255: the slot projection follows the last successful live read, not just the picker's
+    // own load — it stays current after "Rückweg sichern"'s own re-read, and only a reload of the
+    // target (never merely a decision change) puts it back.
+    it('uses the live occupied-slot count from the last successful live read, and a target reload resets it back', async () => {
+      captureDownloads();
+      const source = channelSource([row('src-a', 'Collides')]);
+      const freshTarget = () =>
+        readyTarget({
+          setId: 'set-slots',
+          occupiedSlots: 15,
+          capacity: 1000,
+          emotes: [emote('tgt-a', 'Collides')],
+        });
+      const dialog = render({ source, target: freshTarget() });
+
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      // The replace's own ADD cancels its own REMOVE (net delta 0) — the only thing that can move
+      // the projected number below is the live read's own occupancy, not the plan.
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead([{ id: 'tgt-a', alias: 'Collides' }], 16));
+
+      expect(dialog.text()).toContain('Das Set hätte danach 16 von 1000 Slots belegt.');
+
+      // A reload of the target (a fresh ready()/preview()) resets the live number — the same reset
+      // targetOverlays already gets, and for the same reason: it shows a fresh count of its own.
+      dialog.target.set(freshTarget());
+      dialog.detect();
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+    });
+
+    // #255 P3.2 (review finding): onTargetRead used to adopt a live read's occupancy number before
+    // checking whether the plan it was requested for was still current — a target reload while the
+    // read was still out reset the projection back to the picker-time count, and the stale answer
+    // then arriving overwrote that reset with its own, already-outdated number. The guard now runs
+    // first, so an answer for a plan that is already gone changes nothing.
+    it('ignores a live read answer for a plan the target has already reloaded past', async () => {
+      captureDownloads();
+      const source = channelSource([row('src-a', 'Collides')]);
+      const freshTarget = () =>
+        readyTarget({
+          setId: 'set-slots',
+          occupiedSlots: 15,
+          capacity: 1000,
+          emotes: [emote('tgt-a', 'Collides')],
+        });
+      const dialog = render({ source, target: freshTarget() });
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+
+      // The target reloads while the read above is still out — a fresh preview means a fresh
+      // `plan()`, so the read's own captured plan is now stale, and the reset already shows the
+      // picker-time count again.
+      dialog.target.set(freshTarget());
+      dialog.detect();
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+
+      // The old read's answer, carrying a number for the plan that is now gone, must not resurrect
+      // it.
+      answerRead(dialog, setRead([{ id: 'tgt-a', alias: 'Collides' }], 999));
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+    });
+
+    it('releases nothing on a failed or incomplete read, keeping the decision for another try', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      TestBed.inject(HttpTestingController).expectOne(GQL).error(new ProgressEvent('network'));
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset ließ sich gerade nicht vollständig lesen.',
+      );
+      expect(dialog.element('import-confirm-removals')).not.toBeNull();
+      expect(dialog.button('Rückweg sichern').disabled).toBe(false);
+
+      // A read whose count does not add up is treated the same — it cannot vouch for a removal.
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(LIVE_UNCHANGED, LIVE_UNCHANGED.length + 1));
+
+      expect(dialog.element('import-confirm-target-check')).not.toBeNull();
+      expect(dialog.hasButton('Starten')).toBe(false);
+      expect(downloads).toEqual([]);
+    });
+
+    it('discards a failed read that lands after the target already reloaded past it', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const pending = TestBed.inject(HttpTestingController).expectOne(GQL);
+
+      // The target reloads while this read is still in flight — a new plan, without cancelling
+      // the subscription (only a fresh click does that).
+      dialog.target.set(conflictTarget());
+      dialog.detect();
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+
+      pending.error(new ProgressEvent('network'));
+      dialog.detect();
+
+      // The error answers a plan that is gone: it names nothing for the plan that replaced it.
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+    });
+
+    it('starts one read per click, locks the resolve triggers while it runs, and lets only the newest read answer', async () => {
+      const downloads = captureDownloads();
+      const http = TestBed.inject(HttpTestingController);
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      // A double click reads once.
+      dialog.button('Rückweg sichern').click();
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const [first] = http.match(GQL);
+      expect(http.match(GQL)).toEqual([]);
+      // No plan change from the dialog itself while the read runs.
+      expect(
+        (dialog.element('import-confirm-resolve-nameCollision') as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect(
+        (dialog.element('import-confirm-resolve-aliasMismatch') as HTMLButtonElement).disabled,
+      ).toBe(true);
+
+      // The target reloads mid-read: a new plan, so the executor offers a fresh read.
+      dialog.target.set(conflictTarget());
+      dialog.detect();
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const second = http.expectOne(GQL);
+
+      // The older read is cancelled — its answer can no longer land on the newer state.
+      expect(first.cancelled).toBe(true);
+      expect(() => first.flush(setRead(LIVE_UNCHANGED))).toThrow();
+      expect(dialog.button('Rückweg sichern').disabled).toBe(true);
+      expect(dialog.element('import-confirm-verifying')).not.toBeNull();
+
+      second.flush(setRead(LIVE_UNCHANGED));
+      dialog.detect();
+      expect(downloads).toHaveLength(1);
+      expect(dialog.hasButton('Starten')).toBe(true);
+    });
+
+    it('lets a failing older read change nothing once a newer read is running', async () => {
+      captureDownloads();
+      const http = TestBed.inject(HttpTestingController);
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const first = http.expectOne(GQL);
+
+      dialog.target.set(conflictTarget());
+      dialog.detect();
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const second = http.expectOne(GQL);
+
+      expect(first.cancelled).toBe(true);
+      expect(() => first.error(new ProgressEvent('network'))).toThrow();
+      dialog.detect();
+      // No failure banner for the newer read, which is still running.
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+      expect(dialog.element('import-confirm-verifying')).not.toBeNull();
+
+      second.flush(setRead(LIVE_UNCHANGED));
+      dialog.detect();
+      expect(dialog.hasButton('Starten')).toBe(true);
+    });
+
+    it('names committed decisions a reload of the target no longer fits', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      choose(dialog, 'Dup', 'replaceTarget');
+      apply(dialog);
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+
+      // After the reload both names belong to one target entry: two replaces of the same target.
+      dialog.target.set(
+        readyTarget({
+          setId: 'set-9',
+          emotes: [emote('tgt-x', 'Collides'), emote('tgt-x', 'Dup'), emote('src-m', 'PogOld')],
+        }),
+      );
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Nach dem Neuladen passt die Entscheidung für diese Zeilen nicht mehr: Collides, Dup.',
+      );
+      expect(dialog.element('import-confirm-removals')).toBeNull();
+      // Nothing to reload again, the user just did.
+      expect(dialog.hasButton('Ziel neu laden')).toBe(false);
+
+      // The next commit settles it.
+      await openStep(dialog, 'nameCollision');
+      apply(dialog);
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+    });
+
+    it('asks for a new recovery file after a change, but not after an unchanged apply', async () => {
+      captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await replaceAndSave(dialog);
+      expect(dialog.hasButton('Starten')).toBe(true);
+
+      await openStep(dialog, 'nameCollision');
+      apply(dialog);
+      expect(dialog.hasButton('Starten')).toBe(true);
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Dup', 'renameSource');
+      typeAlias(dialog, 'src-b', 'DupNew');
+      apply(dialog);
+      // The file on disk describes the old plan.
+      expect(dialog.hasButton('Starten')).toBe(false);
+      expect(dialog.hasButton('Rückweg sichern')).toBe(true);
     });
   });
 });

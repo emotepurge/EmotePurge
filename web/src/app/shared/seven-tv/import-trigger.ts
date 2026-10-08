@@ -1,24 +1,85 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, DestroyRef, computed, inject, input, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
 import { Button } from '../ui/button';
 import { startForeignChannelImportFlow, startLeaderboardImportFlow } from './foreign-import-flow';
 import { importTriggerDisabled } from './import-trigger-gate';
 import { openImportSourceDialog } from './import-source-dialog';
-import { startImportFlow } from './import-flow';
+import { ImportFlowTarget, startImportFlow } from './import-flow';
 import { startRestoreFlow } from './restore-flow';
+import { startUndoFlow } from './undo-flow';
+
+/**
+ * The channel's active set as far as this trigger may assume it: an *omitted* input (`undefined` —
+ * a caller with no "selected vs. active" distinction to offer, i.e. every caller that predates
+ * T4.5) folds onto `setId` itself, which keeps that caller byte-identical to before. A *known
+ * unknown* (`null` — the host knows the distinction but has no active id: the set status failed,
+ * e.g. 429, or the channel has no active set) stays `null`: then nothing may be assumed to be the
+ * active set.
+ */
+function resolveActiveSetId(setId: string, activeSetId: string | null | undefined): string | null {
+  return activeSetId === undefined ? setId : activeSetId;
+}
+
+/**
+ * The file/foreign-channel/leaderboard doors' target (spec 8.6, T4.5) — a `'chosen'`
+ * `ImportFlowTarget` built from what this trigger's own inputs already carry, without ever opening
+ * a picker. With `activeSetId === setId` (or folded onto it, see `resolveActiveSetId`),
+ * `toTargetSelection` (`import-flow.ts`) takes the exact same `'trackedActive'` fast path it always
+ * took. With a different or an unknown (`null`) active set it takes the explicit `'trackedSet'`
+ * path, which reads the selected set live by its id — the safe choice when the active id is unknown:
+ * the write still lands exactly in the set on screen, and no step assumes it is the channel's active
+ * one (no active-set request, no post-run resync of the channel). Disabling the doors instead would
+ * have been just as safe but would take the import away for as long as a status request keeps
+ * failing, for no gain in correctness.
+ *
+ * `ownerDisplayName`/`twitchLogin` are placeholders that `toTargetSelection` never reads for a
+ * tracked choice with a `channelName` (every choice this builds has one) — see that function's own
+ * doc for why. `setName` falls back to the id, the same convention `targetSetLabel`
+ * (`import-confirm-dialog.ts`) already uses for every other unnamed set.
+ *
+ * `ownerTwitchChannelId` is explicitly `null` (owner-hint design 3.6, Codex finding 4) — this
+ * fabricated choice never asked a picker, so it never learned the set's owner id the way
+ * `import-target-choices.ts`'s `resolveOwnerTwitchChannelId` does. `import-flow.ts` falls back to a
+ * *login* hint (`channelName`, this trigger's own tracked channel) whenever a choice's id is `null`,
+ * so the owner check still gets an order to follow — just not one carrying a Twitch id.
+ */
+function toImportTarget(
+  channelName: string,
+  setId: string,
+  activeSetId: string | null | undefined,
+  setName: string | null,
+): ImportFlowTarget {
+  return {
+    kind: 'chosen',
+    choice: {
+      emoteSetId: setId,
+      channelName,
+      ownerDisplayName: channelName,
+      ownerTwitchChannelId: null,
+      setName: setName ?? setId,
+      isTracked: true,
+      twitchLogin: channelName,
+      activeEmoteSetId: resolveActiveSetId(setId, activeSetId),
+    },
+  };
+}
 
 /**
  * The header button that opens the import path — **all of it** (#91, #147). It freezes
  * `channelName`/`setId` at the moment of the click, opens `ImportSourceDialog`, and hands whatever
- * comes back to the chain that fits: `startRestoreFlow` for a purge-run protocol,
+ * comes back to the chain that fits: `startRestoreFlow` for a restore file (purge-run protocol,
+ * transfer-undo file, or a transfer-run file the user chose to close the gaps of),
+ * `startUndoFlow` for a transfer-run file whose replacements the user chose to undo (#254),
  * `startImportFlow` for an emote list or usage export read from a file, and
  * `startForeignChannelImportFlow` for emotes picked out of another channel's 7TV set.
  *
@@ -38,9 +99,25 @@ import { startRestoreFlow } from './restore-flow';
  * `importScopeCurrent` is an input rather than something computed here from page state, so the
  * lock this button carries stays a pure function of two booleans (`importTriggerDisabled`,
  * testable without a TestBed) — the page computes the boolean itself, the same way it already does
- * for the neighbouring "Übertragen" button (`importScopeIsCurrent`). `atlasOrder().length === 0`
- * and `!isCoarse()` deliberately do NOT appear here: both are already enforced by the `@if` block
- * this trigger is placed inside on the page, alongside "Übertragen" (plan §1.2 point 3).
+ * for the neighbouring "Übertragen" button (`importScopeIsCurrent`). `!isCoarse()` deliberately
+ * does NOT appear here: it is already enforced by the `@if` block this trigger is placed inside on
+ * the page (plan §1.2 point 3). Unlike "Übertragen", that block is `this` trigger's own since
+ * #253/T9 (E22) — it no longer shares the page's set gate, so `atlasOrder().length === 0` does not
+ * apply here either; the trigger stays visible without a set.
+ *
+ * **The three copy doors target `setId` itself (spec 8.6, T4.5)** — the page's *selected* set,
+ * active or not (`toImportTarget` above); `null` when the page has none (spec #253, E22), in which
+ * case `ImportSourceDialog` disables all three doors with a reason and only a `'restore'` or a
+ * `'transfer-undo'` result can ever come back. **A restore file targets whatever set it names**
+ * (spec #253, E1), and so does an undo (#254, E4): `FileImportStep` reads the set from the file,
+ * clears it through the shared pre-check (`resolveEditableSet`, E19) and hands back a
+ * `ResolvedRestoreTarget` that this trigger passes to `startRestoreFlow` or `startUndoFlow`
+ * unchanged — it neither builds nor adjusts that target itself, and a
+ * blocked check never reaches it (the step keeps the dialog open with its own banner). The page's
+ * frozen `setId` only goes along as the step's `hostSelectedSetId` — `null` included — for the
+ * confirmation's "not the set on screen" hint (E21). Restore books its un-archive through the
+ * set-centric `SevenTvEmoteSetService.reportRestoredInSet(setId, …)` call (`SevenTvRestoreService`,
+ * spec 6.4).
  */
 @Component({
   selector: 'app-import-trigger',
@@ -59,8 +136,23 @@ import { startRestoreFlow } from './restore-flow';
 })
 export class ImportTrigger {
   readonly channelName = input.required<string>();
-  /** The channel's *current* active set — a purge-run protocol is validated against it. */
-  readonly setId = input.required<string>();
+  /** The set this trigger's three copy doors target — the page's *selected* set (spec #200, T4.5),
+   *  active or not; `null` when the page has none (spec #253, E22) — the copy doors are then
+   *  disabled inside `ImportSourceDialog`, and no `'foreign'`/`'leaderboard'`/`'import'` result can
+   *  come back from a dialog opened with a `null` target (`ImportSourceDialogData.setId`). A
+   *  restore file does not target it either way (it names its own set); it only travels to the file
+   *  step as `hostSelectedSetId`. Named `setId`, not `selectedSetId`: the only place "selected vs.
+   *  active" matters is the comparison against {@link activeSetId} below. */
+  readonly setId = input.required<string | null>();
+  /** The channel's actual active set; `null` when the host knows it has none to offer (unknown —
+   *  status failed — or no active set at all); omitted (`undefined`) by a caller with no such
+   *  distinction (every caller that predates T4.5, and any test that never sets it), which folds
+   *  back onto `setId` (`resolveActiveSetId`) and keeps that caller byte-identical to before. Only
+   *  the copy doors read it; a restore file's target says for itself whether it is an active set. */
+  readonly activeSetId = input<string | null | undefined>(undefined);
+  /** The selected set's display name, for the import confirm dialog's title when it is not the
+   *  active one (spec 8.6) — `null` falls back to the id, same as every other unnamed set there. */
+  readonly setName = input<string | null>(null);
   /** See `importScopeIsCurrent` on the page; defaults to true so a caller that has no such window
    *  to guard against (there is currently only one, the usage-stats page) need not pass it. */
   readonly importScopeCurrent = input(true);
@@ -68,68 +160,150 @@ export class ImportTrigger {
   private readonly arbiter = inject(SevenTvRunArbiter);
   private readonly dialog = inject(Dialog);
   private readonly emoteAdminService = inject(EmoteAdminService);
+  /** `loadImportTarget`'s live-list collaborator for a non-active/untracked target (spec F5) —
+   *  reached from here whenever `setId` names a set other than `activeSetId` (T4.5) — and the
+   *  restore flow's slot preview for a target that is not a tracked channel's active set. */
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix) — every other read
    *  reached from here goes through `emoteAdminService`. */
   private readonly httpClient = inject(HttpClient);
   private readonly tokenService = inject(SevenTvTokenService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly importService = inject(SevenTvImportService);
+  /** The undo's run service (#254) — injecting it anywhere is what registers it with the arbiter.
+   *  Not only here any more: also injected in the usage-stats page's own lazy chunk
+   *  (`usage-stats-page.ts`, `usage-stats-leave.guard.ts`, `dock-outcome-announcer.ts`,
+   *  `undo-progress-section.ts`) and in `channel-workspace-layout.ts` — never from an eagerly
+   *  loaded file (F9). */
+  private readonly undoService = inject(SevenTvUndoService);
+  /** Handed to `startRestoreFlow` as `RestoreFlowDeps.destroyRef` (#255 P2a) — the flow has no
+   *  injection context of its own to pull one from. */
+  private readonly destroyRef = inject(DestroyRef);
 
-  protected readonly disabled = computed(() =>
-    importTriggerDisabled({
-      hasActiveRun: this.arbiter.activeRun() !== null,
-      importScopeCurrent: this.importScopeCurrent(),
-    }),
+  /** `startRestoreFlow`'s own `RestoreFlowDeps.previewPending` (#255 P2a): `true` while its
+   *  open-time duplicate check is out, right up until the confirmation opens (or the flow takes
+   *  its "everything already there" shortcut, or opens anyway on a failed/timed-out check) — see
+   *  that field's own doc. Folded into `disabled` below so a second click on this trigger cannot
+   *  start a second restore-flow read while the first is still out.
+   *
+   *  Aliases `SevenTvRestoreService.restorePreCheckPending` rather than holding a signal of its
+   *  own (#255 P2, Codex review): this trigger's restore-file door and `MassDeletePanel`'s restore
+   *  button mount together on the usage-stats page, and a component-local flag here only ever
+   *  guarded *this* button against itself — the other one stayed enabled for the whole read, and
+   *  could open a second confirmation stacked on the first. Reading the shared signal here means
+   *  `disabled` now also reflects a pre-check the *other* entry started. */
+  private readonly restorePreviewPending = this.restoreService.restorePreCheckPending;
+
+  /** `startUndoFlow`'s `UndoFlowDeps.firstReadPending`: `true` while the undo's first read of its
+   *  target is out, so a second click cannot start a second undo flow whose confirmation would
+   *  stack on the first. The undo has no second entry point, so a signal of this trigger's own
+   *  covers it (unlike `restorePreviewPending` above). */
+  private readonly undoReadPending = signal(false);
+
+  /** `startLocked`, not `activeRun` alone (#280): it also covers the window after a confirmation
+   *  in which a confirmed run's last live read still decides whether its run starts. Without
+   *  it this button looked free again for up to that read's timeout, from the confirmation closing
+   *  to the run appearing — and a click there only ever led to a refused start. */
+  protected readonly disabled = computed(
+    () =>
+      importTriggerDisabled({
+        hasActiveRun: this.arbiter.startLocked(),
+        importScopeCurrent: this.importScopeCurrent(),
+      }) ||
+      this.restorePreviewPending() ||
+      this.undoReadPending(),
   );
 
   protected openDialog(): void {
+    // Same shape, same reason as `MassDeletePanel.openConfirm`'s guard: the button is disabled while
+    // `startLocked` holds (a run running or settling, or a confirmed start of any run still being
+    // checked before its start, #280), and this catches the click that outraces that lock — CDK
+    // hands focus back to this very button when a confirmation opened from it closes. Silent:
+    // nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2).
+    if (this.arbiter.startLocked()) {
+      return;
+    }
     // Frozen here, at the click — never read again from the live inputs below, so a channel switch
-    // while a dialog further down either chain is still open cannot retarget what gets read,
-    // validated or restored/imported (plan §1.5).
+    // (or a set switch, T4.5) while a dialog further down either chain is still open cannot
+    // retarget what gets read, validated or restored/imported (plan §1.5).
     const channelName = this.channelName();
     const setId = this.setId();
+    const activeSetId = this.activeSetId();
+    const setName = this.setName();
 
-    openImportSourceDialog(this.dialog, { channelName, setId }).closed.subscribe((result) => {
+    openImportSourceDialog(this.dialog, {
+      channelName,
+      setId,
+    }).closed.subscribe((result) => {
       if (!result) {
         return;
       }
       if (result.kind === 'restore') {
+        // The target is the file's, already resolved and cleared by the file step (spec 6.1,
+        // 4.2) — passed on as it came, host fields included.
         startRestoreFlow(
           {
             dialog: this.dialog,
             emoteAdminService: this.emoteAdminService,
+            emoteSetService: this.emoteSetService,
             httpClient: this.httpClient,
             tokenService: this.tokenService,
             restoreService: this.restoreService,
             arbiter: this.arbiter,
+            previewPending: this.restorePreviewPending,
+            destroyRef: this.destroyRef,
           },
-          channelName,
-          setId,
+          result.target,
           result.rows,
         );
+        return;
+      }
+      if (result.kind === 'transfer-undo') {
+        // Same as a restore file: the target is the file's, already resolved and cleared by the
+        // file step before its switch (spec 4.1, 6.1) — passed on as it came.
+        startUndoFlow(
+          {
+            dialog: this.dialog,
+            httpClient: this.httpClient,
+            tokenService: this.tokenService,
+            undoService: this.undoService,
+            arbiter: this.arbiter,
+            firstReadPending: this.undoReadPending,
+            destroyRef: this.destroyRef,
+          },
+          result,
+        );
+        return;
+      }
+      // The three copy doors are disabled without a target set (`ImportSourceDialogData.setId:
+      // null`, spec #253, E22) — a dialog opened with one can therefore never close with anything
+      // but a `'restore'` or `'transfer-undo'` result, both already handled above. This narrows `setId` for `toImportTarget`
+      // below rather than asserting it, so a dialog defect that somehow returned a copy result
+      // anyway is refused here instead of silently building a target around `null`.
+      if (setId === null) {
         return;
       }
       const importDeps = {
         dialog: this.dialog,
         emoteAdminService: this.emoteAdminService,
+        emoteSetService: this.emoteSetService,
         httpClient: this.httpClient,
         tokenService: this.tokenService,
         importService: this.importService,
         arbiter: this.arbiter,
       };
+      const target = toImportTarget(channelName, setId, activeSetId, setName);
       if (result.kind === 'foreign') {
-        // The target is this page's channel, exactly as it is for the file path — no target picker
-        // in between any more (#147).
-        startForeignChannelImportFlow(importDeps, result.picked, channelName);
+        startForeignChannelImportFlow(importDeps, result.picked, target);
         return;
       }
       if (result.kind === 'leaderboard') {
         // Same target rule, and even less to ask for: a leaderboard row belongs to no channel at
         // all. Foreign is the source, never the target.
-        startLeaderboardImportFlow(importDeps, result.picked, channelName);
+        startLeaderboardImportFlow(importDeps, result.picked, target);
         return;
       }
-      startImportFlow(importDeps, result.source, channelName);
+      startImportFlow(importDeps, result.source, target);
     });
   }
 }

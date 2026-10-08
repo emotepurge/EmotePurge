@@ -16,6 +16,13 @@ export default defineConfig({
     // (see LanguageService.resolveInitialLang) — without pinning this, a CI runner's default
     // Chromium locale (en-US) would render English text and break those assertions.
     locale: 'de-DE',
+    // No run may reach the 7TV CDN: Chromium resolves cdn.7tv.app to nothing, so a request that
+    // gets past the suite-wide stub in e2e/support/test.ts fails at DNS instead of going out — and
+    // that fixture fails the test for it. Routing happens before DNS, so the stub itself still
+    // answers. Both projects inherit this (neither device descriptor brings launchOptions of its
+    // own); a project that sets its own launchOptions must carry the argument along. The measure
+    // and audit configs deliberately do not have it.
+    launchOptions: { args: ['--host-resolver-rules=MAP cdn.7tv.app ~NOTFOUND'] },
   },
   webServer: {
     command: 'npx ng serve --port 4300 --proxy-config proxy.conf.json',

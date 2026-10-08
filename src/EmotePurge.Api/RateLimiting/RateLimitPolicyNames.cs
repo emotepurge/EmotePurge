@@ -43,12 +43,23 @@ internal static class RateLimitPolicyNames
     internal const string PublicLegal = "PublicLegal";
 
     /// <summary>
-    /// <c>GET /api/seventv/channels/{channelName}/emotes</c> (foreign-channel-import spec, E5a).
+    /// <c>GET /api/seventv/channels/{channelName}/emotes</c> (foreign-channel-import spec, E5a) and
+    /// every other read that can cost 7TV a paginated set lookup without a tracked-channel proof in
+    /// front of it (the import-target loader, the restore-slot preview, the #216 pre-check, K2/K3).
+    /// A tracked channel's own set preview is <see cref="TrackedEmoteSetPreview"/>, not this.
     /// Per-user only — the provider-wide budget across all users (E5b) is a separate, in-process
     /// concern the hardening decorator around <c>IForeignEmoteSetService</c> owns, not an ASP.NET
     /// Core rate-limit policy.
     /// </summary>
     internal const string ForeignEmoteLookup = "ForeignEmoteLookup";
+
+    /// <summary>
+    /// <c>GET /api/channels/{channelName}/emote-sets/{emoteSetId}/emotes</c> (#220): the set preview
+    /// of a tracked channel, after membership of the set in that channel is proven. Per-user only,
+    /// like <see cref="ForeignEmoteLookup"/> — the provider-wide half stays with the hardening
+    /// decorator around <c>IForeignEmoteSetService</c>, not an ASP.NET Core policy.
+    /// </summary>
+    internal const string TrackedEmoteSetPreview = "TrackedEmoteSetPreview";
 
     /// <summary>
     /// <c>GET /api/seventv/leaderboard</c> (7TV-leaderboard-as-import-source spec 2026-09-13, E16).
@@ -57,4 +68,17 @@ internal static class RateLimitPolicyNames
     /// an ASP.NET Core rate-limit policy, exactly like <see cref="ForeignEmoteLookup"/>'s split.
     /// </summary>
     internal const string SevenTvLeaderboard = "SevenTvLeaderboard";
+
+    /// <summary>
+    /// <c>POST /api/contact</c> (docs/DECISIONS.md 2026-09-24, "contact form"): reachable anonymously,
+    /// but not exclusively so — nothing stops an already-authenticated visitor from submitting the
+    /// form too. Partitioned by remote IP alone through its own
+    /// <c>RateLimitRejection.PartitionPerIpTokenBucket</c> (revised 2026-09-24, Codex P2), never
+    /// through <see cref="PublicLegal"/>'s/<c>PartitionPerUser</c>'s claim-first fallback — that would
+    /// hand each signed-in visitor behind one shared IP their own budget instead of the one shared
+    /// bucket this policy exists to enforce. This is only the per-IP half — the provider-wide ceiling
+    /// across all visitors combined is <c>ContactSendBudget</c>, an in-process concern in
+    /// Infrastructure, not an ASP.NET Core policy, same split as <see cref="ForeignEmoteLookup"/>.
+    /// </summary>
+    internal const string Contact = "Contact";
 }

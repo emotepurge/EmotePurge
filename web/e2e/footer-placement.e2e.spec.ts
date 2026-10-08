@@ -1,4 +1,4 @@
-import { Page, expect, test } from '@playwright/test';
+import { Page, expect, test } from './support/test';
 
 import {
   AUTH_USER,
@@ -8,6 +8,7 @@ import {
   mockAuthMe,
   mockChannelPermissions,
   mockChannelStatus,
+  mockEmoteSetTargets,
   mockLegalAvailability,
   mockMyChannels,
   mockSetWarning,
@@ -260,15 +261,48 @@ test.describe('footer placement above the usage-stats action dock', () => {
     await mockChannelPermissions(page, 'sensitron');
     await mockChannelStatus(page, 'sensitron');
     await mockActiveEmoteSet(page, 'sensitron');
+    // #253 AK 31: the delete confirmation runs the shared pre-check before it opens
+    // (resolveEditableSet) — without this, the request has nothing to answer it and the
+    // confirmation never opens.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'sensitron-1',
+        twitchLogin: 'sensitron',
+        isOwnAccount: true,
+        trackedChannelName: 'sensitron',
+        activeEmoteSetId: 'set-1',
+        sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      },
+    ]);
     await mockUsageTotals(page, 'sensitron', emotes);
     await mockSetWarning(page, 'sensitron');
     // A plain rejection with no `extensions.code` fails every row without aborting the run
     // (see emote-import.e2e.spec.ts's identical case for the same engine) — the whole selection
     // queues up as failed, and RunProgressPanel's failedItems() list is exactly what used to grow
-    // `.app-dock` past the fixed 160px DockClearanceService reservation used to assume.
-    await mockSevenTvGql(page, () => ({
-      errors: [{ message: '7TV had an internal error' }],
-    }));
+    // `.app-dock` past the fixed 160px DockClearanceService reservation used to assume. Only the
+    // RemoveEmote mutation fails: the delete run reads the target set's live entries first and
+    // aborts outright when that read fails, which would leave no per-row failure list at all.
+    await mockSevenTvGql(page, (request) => {
+      if (request.query.includes('mutation RemoveEmote')) {
+        return { errors: [{ message: '7TV had an internal error' }] };
+      }
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: emotes.length,
+                pageCount: 1,
+                items: emotes.map((emote) => ({
+                  alias: emote.emoteName,
+                  emote: { id: emote.sevenTvEmoteId },
+                })),
+              },
+            },
+          },
+        },
+      };
+    });
     await page.clock.install();
 
     await page.goto('/channels/sensitron/usage-stats');

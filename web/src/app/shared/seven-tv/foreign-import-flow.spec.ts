@@ -8,6 +8,7 @@ import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { ForeignEmoteRow } from '../../core/seven-tv/foreign-emote-set.model';
 import { LeaderboardImportResult } from '../../core/seven-tv/leaderboard.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
@@ -94,10 +95,19 @@ function setup(): Harness {
     deps: {
       dialog: { open: dialogOpen } as unknown as Dialog,
       emoteAdminService,
+      // Never called: this flow always builds a `'trackedActive'` selection (see
+      // `import-flow.ts`'s `load()`), which never reaches `SevenTvEmoteSetService`.
+      emoteSetService: { loadEmoteSetPreview: vi.fn() } as unknown as SevenTvEmoteSetService,
       httpClient,
       tokenService: { hasToken: signal(true) } as unknown as SevenTvTokenService,
-      importService: { startImport } as unknown as SevenTvImportService,
-      arbiter: { activeRun: signal<SevenTvRunKind | null>(null) } as unknown as SevenTvRunArbiter,
+      importService: {
+        startImport,
+        startCheckPending: signal(false),
+      } as unknown as SevenTvImportService,
+      arbiter: {
+        activeRun: signal<SevenTvRunKind | null>(null),
+        startLocked: signal(false),
+      } as unknown as SevenTvRunArbiter,
     },
     dialogOpen,
     startImport,
@@ -108,6 +118,18 @@ function closedSubject<T>(dialogOpen: ReturnType<typeof vi.fn>, call: number): S
   return dialogOpen.mock.results[call].value.closed as Subject<T>;
 }
 
+it('carries the imageUrl through both the channel and the leaderboard mapping', () => {
+  // Both toImportRow()/toLeaderboardImportRow() in foreign-import-flow.ts read row.imageUrl
+  // straight off the ForeignEmoteRow — never derived from sevenTvEmoteId (Issue "Images").
+  const channelSource = buildForeignImportSource(picked([foreignRow('e1', 'HandLuL')]));
+  const leaderboardSource = buildLeaderboardImportSource(
+    pickedFromLeaderboard([foreignRow('e1', 'catJAM', 'catJAMGlobal')]),
+  );
+
+  expect(channelSource.rows[0]?.imageUrl).toBe('https://cdn.7tv.app/emote/e1/2x.webp');
+  expect(leaderboardSource.rows[0]?.imageUrl).toBe('https://cdn.7tv.app/emote/e1/2x.webp');
+});
+
 describe('buildForeignImportSource', () => {
   it('takes over the source alias, not the global default name', () => {
     // The decision from the design doc, and the reason the collision hint matters for this source:
@@ -115,7 +137,9 @@ describe('buildForeignImportSource', () => {
     // global base name would be.
     const source = buildForeignImportSource(picked([foreignRow('e1', 'HandLuL', 'LuL')]));
 
-    expect(source.rows).toEqual([{ sevenTvEmoteId: 'e1', name: 'HandLuL' }]);
+    expect(source.rows).toEqual([
+      { sevenTvEmoteId: 'e1', name: 'HandLuL', imageUrl: 'https://cdn.7tv.app/emote/e1/2x.webp' },
+    ]);
   });
 
   it('marks the origin as the foreign 7TV channel it came from', () => {
@@ -132,8 +156,8 @@ describe('buildForeignImportSource', () => {
     );
 
     expect(source.rows).toEqual([
-      { sevenTvEmoteId: 'e1', name: 'Kappa' },
-      { sevenTvEmoteId: 'e2', name: 'PogU' },
+      { sevenTvEmoteId: 'e1', name: 'Kappa', imageUrl: 'https://cdn.7tv.app/emote/e1/2x.webp' },
+      { sevenTvEmoteId: 'e2', name: 'PogU', imageUrl: 'https://cdn.7tv.app/emote/e2/2x.webp' },
     ]);
     expect(source.duplicatesCollapsed).toBe(1);
     expect(source.discardedRows).toBe(0);
@@ -144,7 +168,10 @@ describe('startForeignChannelImportFlow', () => {
   it('opens the import confirmation directly — no target picker in between (#147)', () => {
     const { deps, dialogOpen } = setup();
 
-    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), 'my_channel');
+    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), {
+      kind: 'activeSet',
+      channelName: 'my_channel',
+    });
 
     // Exactly one dialog, and it is the confirmation: where the emotes go was decided by the page
     // the flow was started from, exactly as it is for the file path.
@@ -154,31 +181,86 @@ describe('startForeignChannelImportFlow', () => {
   it('hands the picked rows and the foreign origin to the ordinary import run', () => {
     const { deps, dialogOpen, startImport } = setup();
 
-    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), 'my_channel');
+    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), {
+      kind: 'activeSet',
+      channelName: 'my_channel',
+    });
     closedSubject<unknown>(dialogOpen, 0).next({
       targetSetId: 'set-target',
-      rows: [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
+      targetSetName: 'set-target',
+      plan: {
+        rows: [{ action: 'add', source: { sevenTvEmoteId: 'e1', name: 'Kappa' }, alias: 'Kappa' }],
+      },
     });
 
     // Fourth argument is the #149/T5 fresh duplicate-check skip count — 0 because the fresh 7TV
     // read (`httpClient.post`) defaults to an empty target set. Fifth is whether that check
     // actually ran — true, since the fetch succeeded (#149).
     expect(startImport).toHaveBeenCalledWith(
-      { setId: 'set-target', channelName: 'my_channel' },
+      {
+        setId: 'set-target',
+        channelName: 'my_channel',
+        ownerDisplayName: null,
+        setName: 'set-target',
+        isActiveSet: true,
+        targetOwnerTwitchId: null,
+      },
       { kind: 'seventv-channel', channelName: 'handofblood' },
-      [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
+      {
+        rows: [{ action: 'add', source: { sevenTvEmoteId: 'e1', name: 'Kappa' }, alias: 'Kappa' }],
+      },
       0,
       true,
+      0,
     );
   });
 
   it('starts no run when the confirmation is dismissed', () => {
     const { deps, dialogOpen, startImport } = setup();
 
-    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), 'my_channel');
+    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), {
+      kind: 'activeSet',
+      channelName: 'my_channel',
+    });
     closedSubject<unknown>(dialogOpen, 0).next(undefined);
 
     expect(startImport).not.toHaveBeenCalled();
+  });
+
+  it('targets a specific, non-active set when the caller names one (T4.5) — the live preview path, not the "today" one', () => {
+    const { deps, dialogOpen } = setup();
+    const loadEmoteSetPreview = vi.fn(() =>
+      of({
+        channelName: 'my_channel',
+        sevenTvUserId: null,
+        emoteSetId: 'set-halloween',
+        emoteSetName: 'Halloween',
+        capacity: 1000,
+        totalCount: 0,
+        truncated: false,
+        emotes: [],
+      }),
+    );
+    deps.emoteSetService = { loadEmoteSetPreview } as unknown as SevenTvEmoteSetService;
+
+    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), {
+      kind: 'chosen',
+      choice: {
+        emoteSetId: 'set-halloween',
+        channelName: 'my_channel',
+        ownerDisplayName: 'my_channel',
+        ownerTwitchChannelId: null,
+        setName: 'Halloween',
+        isTracked: true,
+        twitchLogin: 'my_channel',
+        activeEmoteSetId: 'set-active',
+      },
+    });
+
+    // Not the "today" path — the target is a specific, non-active set, so the loader reads it live
+    // instead of assuming the channel's active one (spec F5).
+    expect(loadEmoteSetPreview).toHaveBeenCalledWith('my_channel', 'set-halloween');
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -190,7 +272,13 @@ describe('buildLeaderboardImportSource', () => {
       pickedFromLeaderboard([foreignRow('e1', 'catJAM', 'catJAMGlobal')]),
     );
 
-    expect(source.rows).toEqual([{ sevenTvEmoteId: 'e1', name: 'catJAMGlobal' }]);
+    expect(source.rows).toEqual([
+      {
+        sevenTvEmoteId: 'e1',
+        name: 'catJAMGlobal',
+        imageUrl: 'https://cdn.7tv.app/emote/e1/2x.webp',
+      },
+    ]);
   });
 
   it('marks the origin as the list it was picked off, since there is no source channel', () => {
@@ -212,8 +300,8 @@ describe('buildLeaderboardImportSource', () => {
     );
 
     expect(source.rows).toEqual([
-      { sevenTvEmoteId: 'e1', name: 'Kappa' },
-      { sevenTvEmoteId: 'e2', name: 'PogU' },
+      { sevenTvEmoteId: 'e1', name: 'Kappa', imageUrl: 'https://cdn.7tv.app/emote/e1/2x.webp' },
+      { sevenTvEmoteId: 'e2', name: 'PogU', imageUrl: 'https://cdn.7tv.app/emote/e2/2x.webp' },
     ]);
     expect(source.duplicatesCollapsed).toBe(1);
     expect(source.discardedRows).toBe(0);
@@ -223,7 +311,13 @@ describe('buildLeaderboardImportSource', () => {
     // Regression, not a new feature: the hint lives in `buildImportPreview` and has done since #72.
     // A leaderboard row must reach it the same way the other sources do — and, like them, be
     // reported rather than removed: 7TV decides, not this preview.
-    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'other-id', name: 'Kappa' }];
+    const target: EmoteListItem[] = [
+      {
+        sevenTvEmoteId: 'other-id',
+        name: 'Kappa',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+    ];
     const source = buildLeaderboardImportSource(
       pickedFromLeaderboard([foreignRow('e1', 'Kappa', 'Kappa'), foreignRow('e2', 'PogU', 'PogU')]),
     );
@@ -231,9 +325,10 @@ describe('buildLeaderboardImportSource', () => {
     const preview = buildImportPreview(source, target);
 
     expect(preview.nameCollisions).toEqual(['Kappa']);
+    // Since spec 2026-09-20 a name collision is excluded from toAdd rather than merely reported
+    // (revises the pre-#72 reading pinned here before this task).
     expect(preview.toAdd).toEqual([
-      { sevenTvEmoteId: 'e1', name: 'Kappa' },
-      { sevenTvEmoteId: 'e2', name: 'PogU' },
+      { sevenTvEmoteId: 'e2', name: 'PogU', imageUrl: 'https://cdn.7tv.app/emote/e2/2x.webp' },
     ]);
   });
 });
@@ -242,11 +337,10 @@ describe('startLeaderboardImportFlow', () => {
   it('opens the import confirmation directly \u2014 there is even less to ask than for a channel', () => {
     const { deps, dialogOpen } = setup();
 
-    startLeaderboardImportFlow(
-      deps,
-      pickedFromLeaderboard([foreignRow('e1', 'Kappa')]),
-      'my_channel',
-    );
+    startLeaderboardImportFlow(deps, pickedFromLeaderboard([foreignRow('e1', 'Kappa')]), {
+      kind: 'activeSet',
+      channelName: 'my_channel',
+    });
 
     expect(dialogOpen).toHaveBeenCalledTimes(1);
   });
@@ -257,19 +351,32 @@ describe('startLeaderboardImportFlow', () => {
     startLeaderboardImportFlow(
       deps,
       pickedFromLeaderboard([foreignRow('e1', 'Kappa', 'Kappa')], 'TOP_ALL_TIME'),
-      'my_channel',
+      { kind: 'activeSet', channelName: 'my_channel' },
     );
     closedSubject<unknown>(dialogOpen, 0).next({
       targetSetId: 'set-target',
-      rows: [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
+      targetSetName: 'set-target',
+      plan: {
+        rows: [{ action: 'add', source: { sevenTvEmoteId: 'e1', name: 'Kappa' }, alias: 'Kappa' }],
+      },
     });
 
     expect(startImport).toHaveBeenCalledWith(
-      { setId: 'set-target', channelName: 'my_channel' },
+      {
+        setId: 'set-target',
+        channelName: 'my_channel',
+        ownerDisplayName: null,
+        setName: 'set-target',
+        isActiveSet: true,
+        targetOwnerTwitchId: null,
+      },
       { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
-      [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
+      {
+        rows: [{ action: 'add', source: { sevenTvEmoteId: 'e1', name: 'Kappa' }, alias: 'Kappa' }],
+      },
       0,
       true,
+      0,
     );
   });
 });

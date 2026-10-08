@@ -35,6 +35,12 @@ namespace EmotePurge.Worker;
 /// must survive, only the payload of these two specific calls is replaced.
 /// </para>
 /// <para>
+/// A third call, <c>LogLeavingChannel</c> ("Leaving channel: {channel}", Information), is handled
+/// too, for a different reason: it carries no chat content, but it names the channel the worker
+/// parts, and for a channel on the excluded-channel list that part follows the identity reconcile's
+/// deactivation directly. Its login is withheld; the event stays.
+/// </para>
+/// <para>
 /// Deliberately not solved by raising this category's minimum level: <c>TwitchLib.Client.TwitchClient</c>
 /// also logs connection-relevant events (e.g. <c>LogReconnecting</c>) that must keep reaching the
 /// sink at their own level.
@@ -43,6 +49,10 @@ namespace EmotePurge.Worker;
 public sealed class RedactingTwitchClientLoggerFactory(ILoggerFactory inner) : ILoggerFactory
 {
     private const string TwitchClientCategory = "TwitchLib.Client.TwitchClient";
+
+    // TwitchLib.Client 4.0.1, LogExtensions: [LoggerMessage(LogLevel.Information, "Leaving channel: {channel}")]
+    // public static void LogLeavingChannel(this ILogger<TwitchClient> logger, string channel);
+    private const string LeavingChannelEventName = "LogLeavingChannel";
 
     public void AddProvider(ILoggerProvider provider) => inner.AddProvider(provider);
 
@@ -79,6 +89,18 @@ public sealed class RedactingTwitchClientLoggerFactory(ILoggerFactory inner) : I
 
         private static bool TryRedact<TState>(EventId eventId, TState state, out string redactedMessage)
         {
+            if (eventId.Name == LeavingChannelEventName)
+            {
+                // Not a raw line — the payload is only the channel login — but withheld all the same
+                // (fourth Codex review of the block list): the worker parts a channel whose Twitch id
+                // is on the excluded-channel list right after the identity reconcile deactivates it,
+                // and a line naming that channel next to the reconcile's own (anonymous) deactivation
+                // line would tie the block to it. Every leave originates from an audited write, so the
+                // event keeps its level and its place in the log; only the login goes.
+                redactedMessage = $"TwitchLib.{eventId.Name} (redacted): Leaving channel: [withheld]";
+                return true;
+            }
+
             var rawLineParameterName = eventId.Name switch
             {
                 "LogParsingError" => "message",

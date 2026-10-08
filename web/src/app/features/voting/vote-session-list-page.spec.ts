@@ -53,6 +53,7 @@ function oneSession(): VoteSessionSummary {
     endedAt: null,
     emoteCount: null,
     hideResultsUntilEnd: false,
+    emoteSetId: null,
   };
 }
 

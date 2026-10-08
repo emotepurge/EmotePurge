@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { WritableSignal, signal } from '@angular/core';
+import { WritableSignal, computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom, of, Subject } from 'rxjs';
@@ -8,15 +8,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
-import { ImportSource } from '../../core/seven-tv/import-source';
+import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
+import { TransferPlan } from '../../core/seven-tv/transfer-plan';
+import { UndoCandidate } from '../../core/seven-tv/undo-candidate';
 import { PurgeRunRow } from '../export/purge-run-export';
 import { FileImportResult } from './file-import-step';
 import { ImportSourceDialogResult } from './import-source-dialog';
 import { ImportTrigger } from './import-trigger';
+import { ResolvedRestoreTarget } from './restore-flow';
+import { UndoConfirmDialogData, UndoConfirmOutcome } from './undo-confirm-dialog';
+import { undoRunTarget } from './undo-flow';
 
 /**
  * `ImportTrigger` opens every dialog through the plain `Dialog` it injects, same as
@@ -35,8 +42,39 @@ const CURRENT_SET = 'set-current';
 
 function rows(): PurgeRunRow[] {
   return [
-    { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done', errorMessage: null },
+    {
+      emoteId: 'e1',
+      sevenTvEmoteId: '7tv-1',
+      name: 'PogU',
+      aliases: ['PogU'],
+      status: 'done',
+      errorMessage: null,
+    },
   ];
+}
+
+/**
+ * What `ImportSourceDialog` closes with for a restore file: the rows plus the target the file step
+ * already resolved and cleared (spec #253, 6.1). Defaults to this page's own active set, as the
+ * target list would describe it; a test overrides whatever its case is about.
+ */
+function restoreResult(target: Partial<ResolvedRestoreTarget> = {}): FileImportResult {
+  return {
+    kind: 'restore',
+    rows: rows(),
+    target: {
+      emoteSetId: CURRENT_SET,
+      setName: 'Hauptset',
+      ownerDisplayName: CURRENT_CHANNEL,
+      twitchLogin: CURRENT_CHANNEL,
+      trackedChannelName: CURRENT_CHANNEL,
+      isActiveSet: true,
+      ownerTwitchChannelId: 'tw-currentchannel',
+      hostChannelName: CURRENT_CHANNEL,
+      hostSelectedSetId: CURRENT_SET,
+      ...target,
+    },
+  };
 }
 
 function importSource(overrides: Partial<ImportSource> = {}): ImportSource {
@@ -48,7 +86,7 @@ function importSource(overrides: Partial<ImportSource> = {}): ImportSource {
       channelName: null,
       envelopeKind: 'emote-list',
     },
-    rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+    rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
     duplicatesCollapsed: 0,
     discardedRows: 0,
     ...overrides,
@@ -95,6 +133,11 @@ interface Harness {
   click(): void;
 }
 
+/** The plan a confirmation that resolved nothing hands to the run: one `add` row per row. */
+function addPlan(rows: ImportRow[]): TransferPlan {
+  return { rows: rows.map((row) => ({ action: 'add', source: row, alias: row.name })) };
+}
+
 describe('ImportTrigger', () => {
   let getSetStatus: ReturnType<typeof vi.fn>;
   let listEmotes: ReturnType<typeof vi.fn>;
@@ -106,9 +149,19 @@ describe('ImportTrigger', () => {
   let httpPost: ReturnType<typeof vi.fn>;
   let startRestore: ReturnType<typeof vi.fn>;
   let startImport: ReturnType<typeof vi.fn>;
+  let startUndo: ReturnType<typeof vi.fn>;
+  let loadEmoteSetPreview: ReturnType<typeof vi.fn>;
+  /** The shared pre-check (spec 4.2, 6.2, E19) a replace-carrying plan runs before `startImport` —
+   *  only exercised by the owner-hint design 3.6 tests below (Codex finding 4); every other test in
+   *  this file confirms an add-only plan, which never reaches it. */
+  let resolveEditableSet: ReturnType<typeof vi.fn>;
   let hasToken: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
   let dialogOpen: ReturnType<typeof vi.fn>;
+  /** `SevenTvRestoreService.startCheckPending` / `SevenTvUndoService.startCheckPending` (#280). */
+  let restoreStartCheckPending: WritableSignal<boolean>;
+  let undoStartCheckPending: WritableSignal<boolean>;
+  let importStartCheckPending: WritableSignal<boolean>;
 
   beforeEach(async () => {
     getSetStatus = vi.fn(() => of(readyStatus()));
@@ -124,9 +177,31 @@ describe('ImportTrigger', () => {
     httpPost = vi.fn(() => of(emoteSetPage()));
     startRestore = vi.fn();
     startImport = vi.fn();
+    startUndo = vi.fn();
+    // Never reached by any test that leaves `activeSetId` omitted (`undefined`) — those always take
+    // the 'trackedActive' fast path (see `resolveActiveSetId`). Only the non-active-set and the
+    // unknown-active-set describe blocks below override this.
+    loadEmoteSetPreview = vi.fn();
+    resolveEditableSet = vi.fn(() =>
+      of({
+        status: 'editable',
+        target: {
+          emoteSetId: CURRENT_SET,
+          setName: CURRENT_SET,
+          ownerDisplayName: CURRENT_CHANNEL,
+          twitchLogin: CURRENT_CHANNEL,
+          trackedChannelName: CURRENT_CHANNEL,
+          isActiveSet: true,
+          ownerTwitchChannelId: 'tw-currentchannel',
+        },
+      }),
+    );
     hasToken = signal(true);
     activeRun = signal<SevenTvRunKind | null>(null);
     dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
+    restoreStartCheckPending = signal(false);
+    undoStartCheckPending = signal(false);
+    importStartCheckPending = signal(false);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -144,14 +219,47 @@ describe('ImportTrigger', () => {
         { provide: HttpClient, useValue: { post: httpPost } as unknown as HttpClient },
         {
           provide: SevenTvRestoreService,
-          useValue: { startRestore } as unknown as SevenTvRestoreService,
+          // restorePreCheckPending (#255 P2, Codex review): the shared cross-entry pre-check gate
+          // this trigger's own `restorePreviewPending` now aliases — needed here because it is
+          // read as soon as the component is constructed (folded into `disabled`), not just once a
+          // restore actually starts.
+          useValue: {
+            startRestore,
+            restorePreCheckPending: signal(false),
+            startCheckPending: restoreStartCheckPending,
+          } as unknown as SevenTvRestoreService,
         },
         {
           provide: SevenTvImportService,
-          useValue: { startImport } as unknown as SevenTvImportService,
+          useValue: {
+            startImport,
+            startCheckPending: importStartCheckPending,
+          } as unknown as SevenTvImportService,
+        },
+        // A stub, not the real service: the real one registers itself with the arbiter on
+        // construction (#256), and the arbiter here is a stub without `register`.
+        {
+          provide: SevenTvUndoService,
+          useValue: {
+            startUndo,
+            startCheckPending: undoStartCheckPending,
+          } as unknown as SevenTvUndoService,
+        },
+        {
+          provide: SevenTvEmoteSetService,
+          useValue: {
+            loadEmoteSetPreview,
+            resolveEditableSet,
+          } as unknown as SevenTvEmoteSetService,
         },
         { provide: SevenTvTokenService, useValue: { hasToken } as unknown as SevenTvTokenService },
-        { provide: SevenTvRunArbiter, useValue: { activeRun } as unknown as SevenTvRunArbiter },
+        {
+          provide: SevenTvRunArbiter,
+          // `startPending`/`startLocked` derived the way the real arbiter derives them from the two
+          // services that register a start check (#280), so a flow setting its service's flag
+          // reaches this trigger the same way it does in the app.
+          useValue: fakeArbiter(),
+        },
         { provide: Dialog, useValue: { open: dialogOpen } as unknown as Dialog },
       ],
     }).compileComponents();
@@ -159,10 +267,31 @@ describe('ImportTrigger', () => {
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
   });
 
-  function render(channelName = CURRENT_CHANNEL, setId = CURRENT_SET): Harness {
+  function fakeArbiter(): SevenTvRunArbiter {
+    const startPending = computed(
+      () => restoreStartCheckPending() || undoStartCheckPending() || importStartCheckPending(),
+    );
+    return {
+      activeRun,
+      startPending,
+      startLocked: computed(() => activeRun() !== null || startPending()),
+    } as unknown as SevenTvRunArbiter;
+  }
+
+  function render(
+    channelName = CURRENT_CHANNEL,
+    setId: string | null = CURRENT_SET,
+    options: { activeSetId?: string | null; setName?: string | null } = {},
+  ): Harness {
     const fixture = TestBed.createComponent(ImportTrigger);
     fixture.componentRef.setInput('channelName', channelName);
     fixture.componentRef.setInput('setId', setId);
+    if (options.activeSetId !== undefined) {
+      fixture.componentRef.setInput('activeSetId', options.activeSetId);
+    }
+    if (options.setName !== undefined) {
+      fixture.componentRef.setInput('setName', options.setName);
+    }
     fixture.detectChanges();
     const host: HTMLElement = fixture.nativeElement;
 
@@ -204,7 +333,46 @@ describe('ImportTrigger', () => {
       dialog.click();
 
       expect(dialogOpen).toHaveBeenCalledTimes(1);
-      expect(dataAt(0)).toEqual({ channelName: 'achannel', setId: 'aset' });
+      expect(dataAt(0)).toEqual({
+        channelName: 'achannel',
+        setId: 'aset',
+      });
+    });
+
+    // Spec #253, E22: a channel page without a selected set (before its first sync, or after a
+    // replace into the untracked) still has a way in — the trigger opens the dialog with a `null`
+    // target, which `ImportSourceDialog` uses to disable its two copy doors (own spec).
+    it('opens the dialog with setId: null when the page has no selected set', () => {
+      const dialog = render(CURRENT_CHANNEL, null);
+      dialog.click();
+
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+      expect(dataAt(0)).toEqual({
+        channelName: CURRENT_CHANNEL,
+        setId: null,
+      });
+    });
+
+    // A restore file names and clears its own target regardless of the page's set (spec 6.1) — the
+    // one result a dialog opened with `setId: null` can actually close with, since its two copy
+    // doors are disabled. `hostSelectedSetId` carries the `null` through unchanged, for the
+    // confirmation's "not the set on screen" hint (E21).
+    it('still starts a restore flow through a dialog opened with setId: null', () => {
+      const dialog = render(CURRENT_CHANNEL, null);
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({ hostChannelName: CURRENT_CHANNEL, hostSelectedSetId: null }),
+      );
+      closedAt<boolean>(1).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: CURRENT_SET, hostChannelName: CURRENT_CHANNEL }),
+        expect.any(Array),
+        expect.any(Number),
+        expect.any(Boolean),
+        expect.any(Number),
+      );
     });
 
     it('does nothing further when the import dialog closes with no result (cancel/Escape/backdrop)', () => {
@@ -227,19 +395,223 @@ describe('ImportTrigger', () => {
       dialog.fixture.componentRef.setInput('setId', 'set-b');
       dialog.detect();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      // The dialog was handed the values of the click, not the ones switched to since.
+      expect(dataAt(0)).toEqual({ channelName: 'channel-a', setId: 'set-a' });
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({
+          emoteSetId: 'set-a',
+          trackedChannelName: 'channel-a',
+          hostChannelName: 'channel-a',
+          hostSelectedSetId: 'set-a',
+        }),
+      );
       closedAt<boolean>(1).next(true);
 
       // Fourth argument is the #149/T5 duplicate-check skip count — 0 because the fresh 7TV read
       // (`httpPost`) defaults to an empty target set. Fifth is whether that check actually ran
-      // (#149).
+      // (#149), sixth its name-taken count.
       expect(startRestore).toHaveBeenCalledWith(
-        'set-a',
-        'channel-a',
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        expect.objectContaining({ setId: 'set-a', hostChannelName: 'channel-a' }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
       );
+    });
+  });
+
+  describe("a restore file: the file step's resolved target goes to the flow unchanged (spec #253, 6.1)", () => {
+    it("restores into the set the file named, as the step resolved it — not into this page's set", () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: 'besitzerin',
+          sevenTvUserId: null,
+          emoteSetId: 'set-foreign',
+          emoteSetName: 'Fremdes Set',
+          capacity: 1000,
+          totalCount: 10,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      const dialog = render();
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({
+          emoteSetId: 'set-foreign',
+          setName: 'Fremdes Set',
+          ownerDisplayName: 'Besitzerin',
+          twitchLogin: 'besitzerin',
+          trackedChannelName: null,
+          isActiveSet: false,
+        }),
+      );
+
+      // An untracked target: the slot preview reads the account's own set, never this page's
+      // channel status — proof the page's frozen values built no part of the target.
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('besitzerin', 'set-foreign');
+      expect(getSetStatus).not.toHaveBeenCalled();
+
+      closedAt<boolean>(1).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          setId: 'set-foreign',
+          expectedChannelName: null,
+          resyncChannelName: null,
+          hostChannelName: CURRENT_CHANNEL,
+          setName: 'Fremdes Set',
+          ownerOrChannelLabel: 'Besitzerin',
+        }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+        0,
+        true,
+        0,
+      );
+    });
+  });
+
+  describe('an undo of a transfer-run file (#254, spec 4.1 point 4)', () => {
+    const candidate: UndoCandidate = {
+      sourceSevenTvEmoteId: 'src-1',
+      sourceName: 'Kappa',
+      alias: 'Kappa',
+      fileStatus: 'done',
+      target: { sevenTvEmoteId: 'tgt-1', entries: [{ alias: 'Kappa' }], defaultName: null },
+      provenance: 'confirmed',
+    };
+    const sourceFile = {
+      stage: 'finished' as const,
+      exportedAt: '2026-09-25T10:00:00.000Z',
+      verifiedAt: null,
+      finishedAt: '2026-09-25T10:00:00.000Z',
+      origin: null,
+    };
+
+    function undoResult(): Extract<FileImportResult, { kind: 'transfer-undo' }> {
+      const restore = restoreResult({ trackedChannelName: null, isActiveSet: false });
+      if (restore.kind !== 'restore') {
+        throw new Error('unreachable');
+      }
+      return { kind: 'transfer-undo', candidates: [candidate], target: restore.target, sourceFile };
+    }
+
+    /** The undo flow's set read (`loadSevenTvSetEntries`): `src-1` under `Kappa` when `removable`,
+     *  else the target already back — nothing left to undo. */
+    function setRead(removable: boolean) {
+      const item = removable
+        ? { alias: 'Kappa', emote: { id: 'src-1' } }
+        : { alias: 'Kappa', emote: { id: 'tgt-1' } };
+      return {
+        data: {
+          emoteSets: { emoteSet: { emotes: { totalCount: 1, pageCount: 1, items: [item] } } },
+        },
+      };
+    }
+
+    it('starts the undo flow with the step’s result as it came — confirmation, freshness read, then the undo service, never a restore or an import', () => {
+      httpPost.mockReturnValue(of(setRead(true)));
+      const dialog = render();
+      dialog.click();
+      const result = undoResult();
+
+      closedAt<FileImportResult | undefined>(0).next(result);
+
+      expect(httpPost).toHaveBeenCalledTimes(1);
+      const data = dataAt(1) as UndoConfirmDialogData;
+      expect(data.candidates).toEqual([candidate]);
+      expect(data.target).toEqual(result.target);
+      expect(data.initialRead?.aliasesById.get('src-1')).toEqual(['Kappa']);
+
+      const outcome: UndoConfirmOutcome = {
+        runnable: [
+          {
+            candidate,
+            mode: 'full',
+            adds: [{ alias: 'Kappa' }],
+            stepCount: 2,
+            provenance: 'confirmed',
+            omittedEntries: [],
+            notes: [],
+          },
+        ],
+        skipped: [],
+        acknowledgedUnproven: false,
+        read: data.initialRead!,
+      };
+      closedAt<UndoConfirmOutcome>(1).next(outcome);
+
+      expect(httpPost).toHaveBeenCalledTimes(2);
+      expect(startUndo).toHaveBeenCalledWith(
+        undoRunTarget(result.target, sourceFile),
+        outcome.runnable,
+        [],
+        false,
+      );
+      expect(startRestore).not.toHaveBeenCalled();
+      expect(startImport).not.toHaveBeenCalled();
+    });
+
+    it('stays disabled while the undo’s first read is out, and hands a file with nothing left to undo to the undo service’s notice without a dialog', () => {
+      const read = new Subject<unknown>();
+      httpPost.mockReturnValue(read);
+      const dialog = render();
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next(undoResult());
+      dialog.detect();
+      expect(dialog.triggerDisabled()).toBe(true);
+
+      read.next(setRead(false));
+      read.complete();
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(false);
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+      expect(startUndo).toHaveBeenCalledTimes(1);
+      expect(startUndo.mock.calls[0][1]).toEqual([]);
+    });
+
+    // #280: the confirmation is closed while the freshness read is out, and nothing runs yet — the
+    // trigger must not look free again in that window.
+    it('stays disabled after the confirmation while the freshness read is out, and frees up once it has answered', () => {
+      const fresh = new Subject<unknown>();
+      httpPost.mockReturnValueOnce(of(setRead(true))).mockReturnValueOnce(fresh);
+      const dialog = render();
+      dialog.click();
+      closedAt<FileImportResult | undefined>(0).next(undoResult());
+      const data = dataAt(1) as UndoConfirmDialogData;
+      dialog.detect();
+      expect(dialog.triggerDisabled()).toBe(false);
+
+      closedAt<UndoConfirmOutcome>(1).next({
+        runnable: [
+          {
+            candidate,
+            mode: 'full',
+            adds: [{ alias: 'Kappa' }],
+            stepCount: 2,
+            provenance: 'confirmed',
+            omittedEntries: [],
+            notes: [],
+          },
+        ],
+        skipped: [],
+        acknowledgedUnproven: false,
+        read: data.initialRead!,
+      });
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(true);
+      expect(startUndo).not.toHaveBeenCalled();
+
+      fresh.next(setRead(true));
+      fresh.complete();
+      dialog.detect();
+
+      expect(startUndo).toHaveBeenCalledTimes(1);
+      expect(dialog.triggerDisabled()).toBe(false);
     });
   });
 
@@ -249,7 +621,7 @@ describe('ImportTrigger', () => {
       const dialog = render();
       dialog.click();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       // Only the token prompt has opened so far — the restore-specific work (the slot preview
       // read) has not started, proof the confirmation is not up yet.
@@ -266,11 +638,11 @@ describe('ImportTrigger', () => {
       closedAt<boolean>(2).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        CURRENT_SET,
-        CURRENT_CHANNEL,
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        expect.objectContaining({ setId: CURRENT_SET, hostChannelName: CURRENT_CHANNEL }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
       );
     });
 
@@ -279,7 +651,7 @@ describe('ImportTrigger', () => {
       const dialog = render();
       dialog.click();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       // One dialog beyond the source dialog, and it is already the confirmation.
       expect(dialogOpen).toHaveBeenCalledTimes(2);
@@ -294,7 +666,7 @@ describe('ImportTrigger', () => {
       hasToken.set(false);
       const dialog = render();
       dialog.click();
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       closedAt<boolean>(1).next(false);
 
@@ -305,11 +677,59 @@ describe('ImportTrigger', () => {
     it('never restores when the confirmation is cancelled', () => {
       const dialog = render();
       dialog.click();
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       closedAt<boolean>(1).next(false);
 
       expect(startRestore).not.toHaveBeenCalled();
+    });
+
+    // #255 P2a: `startRestoreFlow`'s own open-time duplicate check reports back through
+    // `previewPending`, folded into this trigger's `disabled` — a second click on the same button
+    // while the read is out must not start a second restore-flow read.
+    it('disables the trigger while the open-time duplicate check is out, and re-enables once the confirmation opens', () => {
+      const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(fetch);
+
+      const dialog = render();
+      dialog.click();
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(true);
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+
+      fetch.next(emoteSetPage());
+      fetch.complete();
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(false);
+      expect(dialogOpen).toHaveBeenCalledTimes(2);
+    });
+
+    // #280: the same after the confirmation — its confirm-time duplicate check still decides what
+    // starts, with the dialog already gone.
+    it('stays disabled after the confirmation while the confirm-time duplicate check is out, and frees up once it has answered', () => {
+      const confirmCheck = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(of(emoteSetPage())).mockReturnValueOnce(confirmCheck);
+      const dialog = render();
+      dialog.click();
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
+      dialog.detect();
+      expect(dialog.triggerDisabled()).toBe(false);
+
+      closedAt<boolean>(1).next(true);
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(true);
+      expect(startRestore).not.toHaveBeenCalled();
+
+      confirmCheck.next(emoteSetPage());
+      confirmCheck.complete();
+      dialog.detect();
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      expect(dialog.triggerDisabled()).toBe(false);
     });
   });
 
@@ -330,9 +750,10 @@ describe('ImportTrigger', () => {
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
       expect(startImport).not.toHaveBeenCalled();
 
-      closedAt<{ targetSetId: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        targetSetName: CURRENT_SET,
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       // Only now, after the confirmation, does the missing-token case appear.
@@ -343,11 +764,21 @@ describe('ImportTrigger', () => {
 
       // The target is always the frozen (current) channel, never the file's own origin.
       expect(startImport).toHaveBeenCalledWith(
-        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL },
+        {
+          setId: CURRENT_SET,
+          channelName: CURRENT_CHANNEL,
+          ownerDisplayName: null,
+          setName: CURRENT_SET,
+          isActiveSet: true,
+          // import-trigger.ts's fabricated choice always has ownerTwitchChannelId: null (Codex
+          // finding 4) — this tracked target reports channel-bound and needs no hint at all.
+          targetOwnerTwitchId: null,
+        },
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
 
@@ -362,9 +793,10 @@ describe('ImportTrigger', () => {
       });
       expect(dialogOpen).toHaveBeenCalledTimes(2);
 
-      closedAt<{ targetSetId: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        targetSetName: CURRENT_SET,
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       // No third dialog: the flow's own (already-satisfied) token check does not prompt twice.
@@ -384,6 +816,46 @@ describe('ImportTrigger', () => {
 
       expect(startImport).not.toHaveBeenCalled();
       expect(dialogOpen).toHaveBeenCalledTimes(2);
+    });
+
+    // Owner-hint design 3.6, Codex finding 4: this trigger's fabricated choice carries no owner id
+    // (`toImportTarget`'s `ownerTwitchChannelId: null`), so a replace-carrying plan — the one case
+    // that actually asks the shared pre-check — must fall back to a *login* hint (this trigger's own
+    // frozen channel), not go hintless.
+    it('hints the shared pre-check with this trigger’s own channel login for a replace-carrying plan', () => {
+      hasToken.set(true);
+      const dialog = render();
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next({
+        kind: 'import',
+        source: importSource(),
+      });
+
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
+        targetSetId: CURRENT_SET,
+        targetSetName: CURRENT_SET,
+        plan: {
+          rows: [
+            {
+              action: 'replace',
+              source: { sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null },
+              alias: 'Kappa',
+              target: {
+                sevenTvEmoteId: 'tgt-1',
+                aliases: ['Kappa'],
+                hasAliaslessEntry: false,
+                defaultName: null,
+              },
+            },
+          ],
+        },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith(CURRENT_SET, {
+        twitchChannelId: null,
+        twitchLogin: CURRENT_CHANNEL,
+      });
     });
   });
 
@@ -417,17 +889,28 @@ describe('ImportTrigger', () => {
       expect(dialogOpen).toHaveBeenCalledTimes(2);
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
 
-      closedAt<{ targetSetId: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        targetSetName: CURRENT_SET,
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL },
+        {
+          setId: CURRENT_SET,
+          channelName: CURRENT_CHANNEL,
+          ownerDisplayName: null,
+          setName: CURRENT_SET,
+          isActiveSet: true,
+          // import-trigger.ts's fabricated choice always has ownerTwitchChannelId: null (Codex
+          // finding 4) — this tracked target reports channel-bound and needs no hint at all.
+          targetOwnerTwitchId: null,
+        },
         { kind: 'seventv-channel', channelName: 'handofblood' },
-        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
   });
@@ -460,17 +943,276 @@ describe('ImportTrigger', () => {
       expect(dialogOpen).toHaveBeenCalledTimes(2);
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
 
-      closedAt<{ targetSetId: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        targetSetName: CURRENT_SET,
+        plan: addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL },
+        {
+          setId: CURRENT_SET,
+          channelName: CURRENT_CHANNEL,
+          ownerDisplayName: null,
+          setName: CURRENT_SET,
+          isActiveSet: true,
+          // import-trigger.ts's fabricated choice always has ownerTwitchChannelId: null (Codex
+          // finding 4) — this tracked target reports channel-bound and needs no hint at all.
+          targetOwnerTwitchId: null,
+        },
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
-        [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
         0,
         true,
+        0,
+      );
+    });
+  });
+
+  describe('a non-active set on screen (#200, T4.5): all four doors follow it, restore included since K5', () => {
+    // K5/T5.3: restore's own slot preview follows the same active/non-active fork the other three
+    // doors already had (spec 8.3) — since #253 decided by the resolved target's own `isActiveSet`,
+    // not by the page's inputs.
+    it('restores into the non-active set, reading its slot preview live instead of EmoteSetStatus', () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: CURRENT_CHANNEL,
+          sevenTvUserId: null,
+          emoteSetId: 'set-halloween',
+          emoteSetName: 'Halloween',
+          capacity: 1000,
+          totalCount: 900,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', {
+        activeSetId: CURRENT_SET,
+        setName: 'Halloween',
+      });
+      dialog.click();
+
+      // The file names the Halloween set, and the target list says it is not the active one.
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({
+          emoteSetId: 'set-halloween',
+          setName: 'Halloween',
+          isActiveSet: false,
+          hostSelectedSetId: 'set-halloween',
+        }),
+      );
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+      expect(getSetStatus).not.toHaveBeenCalled();
+
+      closedAt<boolean>(1).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: 'set-halloween', hostChannelName: CURRENT_CHANNEL }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+        0,
+        true,
+        0,
+      );
+    });
+
+    it('reads the non-active set live instead of assuming it is the channel’s active one — the file/import door', () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: CURRENT_CHANNEL,
+          sevenTvUserId: null,
+          emoteSetId: 'set-halloween',
+          emoteSetName: 'Halloween',
+          capacity: 1000,
+          totalCount: 0,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      hasToken.set(true);
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', {
+        activeSetId: CURRENT_SET,
+        setName: 'Halloween',
+      });
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next({ kind: 'import', source: importSource() });
+
+      // Not the "today" path: a non-active target reads the live preview instead of
+      // EmoteSetStatus/listEmotes/getSetWarning (spec F5).
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+      expect(getSetStatus).not.toHaveBeenCalled();
+
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
+      });
+
+      expect(startImport).toHaveBeenCalledWith(
+        {
+          setId: 'set-halloween',
+          channelName: CURRENT_CHANNEL,
+          ownerDisplayName: null,
+          setName: 'Halloween',
+          isActiveSet: false,
+          targetOwnerTwitchId: null,
+        },
+        expect.objectContaining({ kind: 'file' }),
+        addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
+        0,
+        true,
+        0,
+      );
+    });
+
+    it('targets the non-active set for a foreign-channel pick too', () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: CURRENT_CHANNEL,
+          sevenTvUserId: null,
+          emoteSetId: 'set-halloween',
+          emoteSetName: 'Halloween',
+          capacity: 1000,
+          totalCount: 0,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: CURRENT_SET });
+      dialog.click();
+
+      closedAt<ImportSourceDialogResult | undefined>(0).next({
+        kind: 'foreign',
+        picked: {
+          channelName: 'handofblood',
+          sevenTvUserId: 'user-1',
+          emoteSetId: 'set-source',
+          rows: [
+            {
+              sevenTvEmoteId: '7tv-1',
+              name: 'HandLuL',
+              defaultName: 'LuL',
+              imageUrl: 'https://cdn.7tv.app/7tv-1/2x.webp',
+              topAllTime: null,
+              trending: null,
+            },
+          ],
+        },
+      });
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
+      });
+
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
+        { kind: 'seventv-channel', channelName: 'handofblood' },
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
+        0,
+        true,
+        0,
+      );
+    });
+
+    it('targets the non-active set for a leaderboard pick too', () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: CURRENT_CHANNEL,
+          sevenTvUserId: null,
+          emoteSetId: 'set-halloween',
+          emoteSetName: 'Halloween',
+          capacity: 1000,
+          totalCount: 0,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: CURRENT_SET });
+      dialog.click();
+
+      closedAt<ImportSourceDialogResult | undefined>(0).next({
+        kind: 'leaderboard',
+        picked: {
+          sortBy: 'TOP_ALL_TIME',
+          rows: [
+            {
+              sevenTvEmoteId: '7tv-2',
+              name: 'Dance',
+              defaultName: 'Dance',
+              imageUrl: 'https://cdn.7tv.app/7tv-2/2x.webp',
+              topAllTime: 99,
+              trending: 12,
+            },
+          ],
+        },
+      });
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
+      });
+
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
+        { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
+        addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
+        0,
+        true,
+        0,
+      );
+    });
+  });
+
+  describe('an unknown active set (#200, K4 fix round): nothing may assume the set on screen is the active one', () => {
+    function preview() {
+      return of({
+        channelName: CURRENT_CHANNEL,
+        sevenTvUserId: null,
+        emoteSetId: 'set-halloween',
+        emoteSetName: 'Halloween',
+        capacity: 1000,
+        totalCount: 0,
+        truncated: false,
+        emotes: [],
+      });
+    }
+
+    it("takes the explicit 'trackedSet' path for the selected set instead of the active-set fast path", () => {
+      loadEmoteSetPreview.mockReturnValue(preview());
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', {
+        activeSetId: null,
+        setName: 'Halloween',
+      });
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next({ kind: 'import', source: importSource() });
+
+      // Read live by its id — never EmoteSetStatus, which would describe whatever the active set is.
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+      expect(getSetStatus).not.toHaveBeenCalled();
+
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
+      });
+
+      // Not the active set: no post-run resync of the channel is implied either.
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
+        expect.objectContaining({ kind: 'file' }),
+        addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
+        0,
+        true,
+        0,
       );
     });
   });
@@ -501,6 +1243,53 @@ describe('ImportTrigger', () => {
       }
 
       expect(button.disabled).toBe(true);
+    });
+
+    it.each([
+      ['a restore', () => restoreStartCheckPending],
+      ['an undo', () => undoStartCheckPending],
+      ['an import', () => importStartCheckPending],
+    ])(
+      'disables while %s is checked before its start, after its confirmation closed (#280)',
+      (_kind, flag) => {
+        const dialog = render();
+        expect(dialog.triggerDisabled()).toBe(false);
+
+        flag().set(true);
+        dialog.detect();
+        expect(dialog.triggerDisabled()).toBe(true);
+
+        flag().set(false);
+        dialog.detect();
+        expect(dialog.triggerDisabled()).toBe(false);
+      },
+    );
+
+    // #280, Festlegung Nr. 8: a click outracing the lock (CDK hands focus back to this button when a
+    // confirmation opened from it closes) opens nothing and says nothing.
+    it.each([
+      ['a restore', () => restoreStartCheckPending],
+      ['an undo', () => undoStartCheckPending],
+      ['an import', () => importStartCheckPending],
+    ])(
+      'opens no dialog for a click that outraces the lock while %s is checked before its start',
+      (_kind, flag) => {
+        const dialog = render();
+        flag().set(true);
+
+        (dialog.fixture.componentInstance as unknown as { openDialog(): void }).openDialog();
+
+        expect(dialogOpen).not.toHaveBeenCalled();
+      },
+    );
+
+    it('opens no dialog for a click that outraces the lock while a run holds the arbiter', () => {
+      const dialog = render();
+      activeRun.set('delete');
+
+      (dialog.fixture.componentInstance as unknown as { openDialog(): void }).openDialog();
+
+      expect(dialogOpen).not.toHaveBeenCalled();
     });
 
     it('defaults importScopeCurrent to true when the caller does not pass it', () => {

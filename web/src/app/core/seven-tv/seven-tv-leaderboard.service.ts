@@ -8,9 +8,9 @@ import { LeaderboardSort, SevenTvLeaderboardResponse } from './leaderboard.model
  * The one client for `GET /api/seventv/leaderboard` (spec §4) — 7TV's network-wide ranking as the
  * third import source.
  *
- * Thinner than `ForeignEmoteSetService` on purpose, and the difference is the point: that
- * endpoint takes a `refresh=true` that bypasses the server's 60 s cache, and this one has **no**
- * such escape hatch. The leaderboard's whole safety argument rests on the server calling 7TV at
+ * Thinner than `SevenTvEmoteSetService.loadEmoteSetPreview` on purpose, and the difference is the
+ * point: that method takes a `refresh=true` that bypasses the server's 60 s cache, and this one has
+ * **no** such escape hatch. The leaderboard's whole safety argument rests on the server calling 7TV at
  * most ten times an hour no matter how often anyone clicks (spec §1/§6); a client-triggerable cache
  * bypass would hand every logged-in browser one upstream request per click and take the ceiling
  * with it. So `sortBy` is the only thing that goes on the wire — no `page`, no `perPage`, no

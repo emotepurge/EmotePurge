@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import {
+  PURGE_RUN_FORMAT_VERSION,
   buildPurgeRunProtocol,
   parsePurgeRunProtocol,
   purgeRunCsv,
@@ -9,28 +10,45 @@ import {
   purgeRunJson,
 } from './purge-run-export';
 
-// Narrowed like the production call site: a protocollable run always carries an internal emoteId
-// (see buildPurgeRunProtocol's signature).
-const ITEMS: (RunQueueItem & { emoteId: string })[] = [
-  { key: 'i1', emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+const ITEMS: RunQueueItem[] = [
+  {
+    key: 'i1',
+    emoteId: 'i1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'PogU',
+    status: 'done',
+    completedSteps: 1,
+    failedStep: null,
+  },
   {
     key: 'i2',
     emoteId: 'i2',
     sevenTvEmoteId: '7tv-2',
     name: 'KEKW',
     status: 'failed',
+    completedSteps: 0,
+    failedStep: 0,
     errorMessage: 'boom',
   },
-  { key: 'i3', emoteId: 'i3', sevenTvEmoteId: '7tv-3', name: 'catJAM', status: 'cancelled' },
+  {
+    key: 'i3',
+    emoteId: 'i3',
+    sevenTvEmoteId: '7tv-3',
+    name: 'catJAM',
+    status: 'cancelled',
+    completedSteps: 0,
+    failedStep: null,
+  },
 ];
 
-function protocol() {
+function protocol(targetOwnerTwitchId: string | null = null) {
   return buildPurgeRunProtocol({
     channelName: 'sensitron',
     emoteSetId: 'set-1',
     startedAt: Date.parse('2026-08-02T10:00:00Z'),
     finishedAt: Date.parse('2026-08-02T10:05:00Z'),
     items: ITEMS,
+    targetOwnerTwitchId,
   });
 }
 
@@ -41,13 +59,95 @@ describe('buildPurgeRunProtocol', () => {
     expect(proto.kind).toBe('purge-run');
     expect(proto.channelName).toBe('sensitron');
     expect(proto.meta.emoteSetId).toBe('set-1');
-    expect(proto.meta.counts).toEqual({ requested: 3, succeeded: 1, failed: 1, cancelled: 1 });
+    expect(proto.meta.counts).toEqual({
+      requested: 3,
+      succeeded: 1,
+      failed: 1,
+      cancelled: 1,
+      unknown: 0,
+    });
     expect(proto.rows).toHaveLength(3);
     expect(proto.rows[1].errorMessage).toBe('boom');
   });
 
   it('contains no token anywhere', () => {
     expect(purgeRunJson(protocol())).not.toMatch(/token|authorization|bearer/i);
+  });
+
+  // #200 K5 finding C, then #275: the row shape changed with K5 (nullable emoteId, aliases) and
+  // again with #275 (status can be 'unknown'), so this kind stamps its own version rather than the
+  // shared envelope default — a reader that predates a change must refuse a file in the new shape,
+  // not parse it silently short.
+  it('stamps its own formatVersion, independent of the shared envelope default', () => {
+    expect(protocol().formatVersion).toBe(PURGE_RUN_FORMAT_VERSION);
+    expect(PURGE_RUN_FORMAT_VERSION).toBe(3);
+  });
+
+  // #275: an `unknown` row (a delete/restore the settling re-read never confirmed) is counted
+  // alongside the other terminal statuses, and the sum still equals `requested`.
+  it('counts unknown rows, summing to requested', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      targetOwnerTwitchId: null,
+      items: [ITEMS[0], { ...ITEMS[1], status: 'unknown' }, { ...ITEMS[2], status: 'unknown' }],
+    });
+    expect(proto.meta.counts).toEqual({
+      requested: 3,
+      succeeded: 1,
+      failed: 0,
+      cancelled: 0,
+      unknown: 2,
+    });
+  });
+
+  // Spec #200, F3/AK 68: a row without a local emote is written, never dropped — a missing row
+  // would be a deletion with no way back.
+  it('writes a row without an emoteId with emoteId null and counts it', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      targetOwnerTwitchId: null,
+      items: [
+        ITEMS[0],
+        {
+          key: '7tv-live',
+          sevenTvEmoteId: '7tv-live',
+          name: 'LiveOnly',
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
+      ],
+    });
+    expect(proto.rows.map((row) => row.emoteId)).toEqual(['i1', null]);
+    expect(proto.meta.counts.succeeded).toBe(2);
+  });
+
+  it('writes every alias of a duplicate cell, and the name alone for a single entry', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      targetOwnerTwitchId: null,
+      items: [
+        { ...ITEMS[0], aliases: ['PogU', 'PogU2'] },
+        {
+          key: '7tv-4',
+          sevenTvEmoteId: '7tv-4',
+          name: 'Solo',
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
+      ],
+    });
+    expect(proto.rows.map((row) => row.aliases)).toEqual([['PogU', 'PogU2'], ['Solo']]);
   });
 });
 
@@ -69,10 +169,8 @@ describe('purgeRunFilename', () => {
 });
 
 describe('parsePurgeRunProtocol', () => {
-  const EXPECTED = { channelName: 'sensitron', emoteSetId: 'set-1' };
-
-  it('accepts a matching protocol and returns only the done rows', () => {
-    const result = parsePurgeRunProtocol(purgeRunJson(protocol()), EXPECTED);
+  it('accepts a well-formed protocol and returns only the done rows', () => {
+    const result = parsePurgeRunProtocol(purgeRunJson(protocol()));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.rows.map((row) => row.emoteId)).toEqual(['i1']);
@@ -80,8 +178,75 @@ describe('parsePurgeRunProtocol', () => {
     }
   });
 
+  // #275: a v3 file's `done` and `unknown` rows both come back restorable — `failed` and
+  // `cancelled` stay out exactly as before. Only the `unknown` row carries the `uncertain` marker.
+  it('returns done and unknown rows, marking only the unknown ones uncertain', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      targetOwnerTwitchId: null,
+      items: [
+        ITEMS[0], // done
+        ITEMS[1], // failed
+        ITEMS[2], // cancelled
+        {
+          key: 'i4',
+          emoteId: 'i4',
+          sevenTvEmoteId: '7tv-4',
+          name: 'Clap',
+          status: 'unknown',
+          completedSteps: 1,
+          failedStep: 0,
+        },
+      ],
+    });
+    const result = parsePurgeRunProtocol(purgeRunJson(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // toStrictEqual, not toEqual: the done row must have no `uncertain` key at all, not merely an
+      // undefined one — toEqual would let either past.
+      expect(result.rows).toStrictEqual([
+        { emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+        {
+          emoteId: 'i4',
+          sevenTvEmoteId: '7tv-4',
+          name: 'Clap',
+          aliases: ['Clap'],
+          uncertain: true,
+        },
+      ]);
+    }
+  });
+
+  // #275: a run that settled with nothing but unknown rows still produces a restorable file.
+  it('accepts a protocol whose only restorable rows are unknown', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      targetOwnerTwitchId: null,
+      items: [{ ...ITEMS[0], status: 'unknown' }],
+    });
+    const result = parsePurgeRunProtocol(purgeRunJson(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
+        {
+          emoteId: 'i1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'PogU',
+          aliases: ['PogU'],
+          uncertain: true,
+        },
+      ]);
+    }
+  });
+
   it('rejects non-JSON', () => {
-    expect(parsePurgeRunProtocol('nope{', EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol('nope{')).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.notJson',
     });
@@ -89,7 +254,7 @@ describe('parsePurgeRunProtocol', () => {
 
   it('names a voting export instead of calling it "not a protocol"', () => {
     const envelope = (kind: string) => JSON.stringify({ source: 'emotepurge', kind });
-    expect(parsePurgeRunProtocol(envelope('voting'), EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(envelope('voting'))).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.votingExport',
     });
@@ -97,45 +262,181 @@ describe('parsePurgeRunProtocol', () => {
 
   it('falls back to wrongKind for a foreign file or an unknown kind', () => {
     const unknown = JSON.stringify({ source: 'emotepurge', kind: 'from-the-future' });
-    expect(parsePurgeRunProtocol(unknown, EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(unknown)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
-    expect(parsePurgeRunProtocol(JSON.stringify({ hello: 'world' }), EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(JSON.stringify({ hello: 'world' }))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
+    });
+  });
+
+  // #230: this parser runs only for `purge-run` files — a `transfer-run` file reaching it at all
+  // means the dispatch was bypassed, and it is answered the same generic way as any other kind this
+  // parser does not know by name (FOREIGN_KIND_ERROR_KEYS carries no entry for it; the named
+  // rejection lives in `import-source-parser.ts` instead).
+  it('falls back to wrongKind for a transfer-run file rather than naming it', () => {
+    const transferRun = JSON.stringify({ source: 'emotepurge', kind: 'transfer-run' });
+    expect(parsePurgeRunProtocol(transferRun)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
   });
 
   it('tells the CSV version of an export apart from a corrupt file', () => {
-    expect(parsePurgeRunProtocol(purgeRunCsv(protocol()), EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(purgeRunCsv(protocol()))).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.csvInsteadOfJson',
     });
   });
 
-  it('rejects an unknown format version', () => {
-    const future = purgeRunJson(protocol()).replace('"formatVersion": 1', '"formatVersion": 99');
-    expect(parsePurgeRunProtocol(future, EXPECTED)).toEqual({
+  it.each([99, PURGE_RUN_FORMAT_VERSION + 1])(
+    'rejects an unknown format version (%i)',
+    (version) => {
+      const future = purgeRunJson(protocol()).replace(
+        `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+        `"formatVersion": ${version}`,
+      );
+      expect(parsePurgeRunProtocol(future)).toEqual({
+        ok: false,
+        errorKey: 'restore.import.errors.wrongVersion',
+      });
+    },
+  );
+
+  // #200 K5 finding C: a file written before K5 carried formatVersion 1 in today's row shape's
+  // absence (a Guid emoteId, no aliases) — it must keep reading, not just the current version.
+  it('accepts formatVersion 1, the version every protocol before K5 wrote', () => {
+    const legacy = purgeRunJson(protocol()).replace(
+      `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+      '"formatVersion": 1',
+    );
+    const result = parsePurgeRunProtocol(legacy);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts formatVersion 2, K5's row shape (before #275), and reads its rows back exactly", () => {
+    const v2 = purgeRunJson(protocol()).replace(
+      `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+      '"formatVersion": 2',
+    );
+    const result = parsePurgeRunProtocol(v2);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
+        { emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      ]);
+    }
+  });
+
+  // #253 (spec 6.1, E1/E15): the file names its own target — the parser no longer holds it against
+  // any page, so a protocol of another channel or another set is read, not refused.
+  it.each([1, PURGE_RUN_FORMAT_VERSION])(
+    "returns the file's own meta.emoteSetId as the target, whatever page reads it (formatVersion %i)",
+    (version) => {
+      const text = purgeRunJson(protocol()).replace(
+        `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+        `"formatVersion": ${version}`,
+      );
+      const result = parsePurgeRunProtocol(text);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        // No hint on this file (`protocol()`'s default): the login fallback still carries the
+        // envelope's own channel, spec #216 3.7.
+        expect(result.target).toEqual({
+          emoteSetId: 'set-1',
+          ownerTwitchId: null,
+          ownerLogin: 'sensitron',
+        });
+        expect(result.channelName).toBe('sensitron');
+      }
+    },
+  );
+
+  // Plan #216, 3.7: the owner hint the run started with round-trips through the file, and the
+  // login fallback still stands ready behind it — the file step only ever falls back to it when
+  // `ownerTwitchId` is `null`.
+  it('round-trips a run that started with an owner hint', () => {
+    const result = parsePurgeRunProtocol(purgeRunJson(protocol('twitch-42')));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.target).toEqual({
+        emoteSetId: 'set-1',
+        ownerTwitchId: 'twitch-42',
+        ownerLogin: 'sensitron',
+      });
+    }
+  });
+
+  // A file written before this field existed (#216) has no `targetOwnerTwitchId` in `meta` at
+  // all — it must read exactly like one that explicitly carries `null`, falling back to the
+  // envelope's own channel login.
+  it('reads a file without targetOwnerTwitchId as no id hint, falling back to the channel login', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    delete proto.meta.targetOwnerTwitchId;
+    const result = parsePurgeRunProtocol(JSON.stringify(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.target).toEqual({
+        emoteSetId: 'set-1',
+        ownerTwitchId: null,
+        ownerLogin: 'sensitron',
+      });
+    }
+  });
+
+  // Untrusted input (rule: file content is untrusted) — a non-string or blank value is exactly as
+  // absent as a missing field, never an empty-string placeholder.
+  it.each([42, '', '   '])('reads a malformed targetOwnerTwitchId (%j) as no hint', (malformed) => {
+    const proto = JSON.parse(purgeRunJson(protocol('twitch-42')));
+    proto.meta.targetOwnerTwitchId = malformed;
+    const result = parsePurgeRunProtocol(JSON.stringify(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.target.ownerTwitchId).toBeNull();
+    }
+  });
+
+  // An untracked run's channel is written as '' on the envelope (spec 8.6's own convention,
+  // mirrored here) — blank still counts as no login hint, not an empty placeholder.
+  it('reads a blank envelope channelName as no login fallback', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    proto.channelName = '';
+    const result = parsePurgeRunProtocol(JSON.stringify(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.target.ownerLogin).toBeNull();
+    }
+  });
+
+  // F1: every purge-run file ever written carries meta.emoteSetId — one without it is not a
+  // protocol of ours, and there is no fallback that would guess a set for it.
+  it('refuses a protocol without meta.emoteSetId as wrongKind, with no fallback target (F1)', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    delete proto.meta.emoteSetId;
+    expect(parsePurgeRunProtocol(JSON.stringify(proto))).toEqual({
       ok: false,
-      errorKey: 'restore.import.errors.wrongVersion',
+      errorKey: 'restore.import.errors.wrongKind',
     });
   });
 
-  it('rejects a protocol from another channel', () => {
-    const result = parsePurgeRunProtocol(purgeRunJson(protocol()), {
-      channelName: 'handofblood',
-      emoteSetId: 'set-1',
+  it('refuses a protocol whose meta.emoteSetId is an empty string as wrongKind', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    proto.meta.emoteSetId = '';
+    expect(parsePurgeRunProtocol(JSON.stringify(proto))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
     });
-    expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.wrongChannel' });
   });
 
-  it('rejects a protocol against a different active set', () => {
-    const result = parsePurgeRunProtocol(purgeRunJson(protocol()), {
-      channelName: 'sensitron',
-      emoteSetId: 'other-set',
+  it('rejects a protocol whose channelName is not a string as wrongKind', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    proto.channelName = 42;
+    expect(parsePurgeRunProtocol(JSON.stringify(proto))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
     });
-    expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.wrongSet' });
   });
 
   it('rejects a protocol without rows array', () => {
@@ -146,10 +447,98 @@ describe('parsePurgeRunProtocol', () => {
       channelName: 'sensitron',
       meta: { emoteSetId: 'set-1' },
     });
-    expect(parsePurgeRunProtocol(broken, EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(broken)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
+  });
+
+  // AK 69: today's protocol — a row without a local emote and a duplicate's two aliases — reads
+  // back restorable, aliases intact.
+  it('reads a row with emoteId null and its aliases back as restorable', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      targetOwnerTwitchId: null,
+      items: [
+        {
+          key: '7tv-live',
+          sevenTvEmoteId: '7tv-live',
+          name: 'LiveOnly',
+          aliases: ['LiveOnly', 'LiveTwo'],
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
+      ],
+    });
+    const result = parsePurgeRunProtocol(purgeRunJson(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
+        {
+          emoteId: null,
+          sevenTvEmoteId: '7tv-live',
+          name: 'LiveOnly',
+          aliases: ['LiveOnly', 'LiveTwo'],
+        },
+      ]);
+    }
+  });
+
+  // AK 69: a protocol written before K5 carries a Guid and no `aliases` — it stays restorable, its
+  // one alias being the row's `name`.
+  it('reads an old protocol with a Guid and without aliases as restorable under its name', () => {
+    const old = JSON.parse(purgeRunJson(protocol()));
+    for (const row of old.rows) {
+      delete row.aliases;
+    }
+    const result = parsePurgeRunProtocol(JSON.stringify(old));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
+        {
+          emoteId: 'i1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'PogU',
+          aliases: ['PogU'],
+        },
+      ]);
+    }
+  });
+
+  // #200 K5 finding C, combined: a genuine v1 file has formatVersion 1 *and* the v1 row shape
+  // (Guid emoteId, no aliases field) together — the two tests above each vary only one of them.
+  it('accepts formatVersion 1 combined with the v1 row shape (Guid emoteId, no aliases)', () => {
+    const v1 = JSON.parse(purgeRunJson(protocol()));
+    v1.formatVersion = 1;
+    for (const row of v1.rows) {
+      delete row.aliases;
+    }
+    const result = parsePurgeRunProtocol(JSON.stringify(v1));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toStrictEqual([
+        {
+          emoteId: 'i1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'PogU',
+          aliases: ['PogU'],
+        },
+      ]);
+    }
+  });
+
+  it('keeps a row whose aliases field is malformed, restoring it under its name', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    proto.rows[0].aliases = ['PogU', 42];
+    const result = parsePurgeRunProtocol(JSON.stringify(proto));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows.map((row) => row.aliases)).toEqual([['PogU']]);
+    }
   });
 
   it('drops malformed rows and rejects when nothing restorable remains', () => {
@@ -158,7 +547,7 @@ describe('parsePurgeRunProtocol', () => {
       { ...proto.rows[1] }, // failed — never left the set
       { ...proto.rows[0], sevenTvEmoteId: '' }, // malformed
     ];
-    expect(parsePurgeRunProtocol(purgeRunJson(proto), EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(purgeRunJson(proto))).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.noRestorableRows',
     });

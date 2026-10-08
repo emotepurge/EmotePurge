@@ -38,6 +38,16 @@ internal static class ApiErrorCodes
     // reached and the caller is not a global admin. Never returned for a join that would not itself
     // activate a channel — an already-active channel stays idempotent regardless of the cap.
     public const string ChannelCapacityReached = "channel_capacity_reached";
+    // 403 from the join endpoint: the channel's immutable Twitch id is on the configured block list
+    // (Channels:ExcludedChannelIds, GDPR Art. 21 objection — issue #252). Unlike
+    // ChannelCapacityReached above, global admins are NOT exempt from this one. Deliberately
+    // language-neutral and free of any mention of a legal objection — the frontend text says only
+    // that the channel cannot be added.
+    public const string ChannelExcluded = "channel_excluded";
+    // 409 from DELETE /api/auth/me: the account the client asked to delete (expectedTwitchUserId)
+    // is not the one the session cookie belongs to — another tab signed in as someone else. Nothing
+    // was deleted, the session is untouched.
+    public const string AccountMismatch = "account_mismatch";
     // Four codes for GET /api/seventv/channels/{channelName}/emotes (foreign-channel-import spec,
     // section 5) — ChannelNotOnTwitch above covers the fifth state that row shares with the join
     // endpoint. All four carry a 503/404 body with no further detail: the caller cannot act on more
@@ -83,6 +93,26 @@ internal static class ApiErrorCodes
     public const string NoHealthData = "no_health_data";
     public const string HealthDataUnreadable = "health_data_unreadable";
 
+    // Three codes for the emote-set surface (spec 2026-09-20, E13). All three land in this one
+    // task even though only the first is wired to a route yet: the other two belong to routes
+    // later tasks build (the set-centric import endpoint, the vote-session ballot rule), and
+    // adding codes piecemeal per task would leave this file, api-error.ts and the locale files out
+    // of step for the stretch between tasks — exactly the drift Regel 7 exists to prevent (AK 45).
+    // A fourth code originally landed here too, for sync-deleted/sync-restored's set-scoped body
+    // form — EmoteSetIdEmpty, retired along with that body shape (restore-per-set spec 5.6/E4, T3:
+    // "Delete, restore and a replace's removals report per emote set", DECISIONS 2026-09-25).
+    // EmoteSetIdValidationFilter's format check (E14) — the one code this task's routes return.
+    public const string InvalidEmoteSetId = "invalid_emote_set_id";
+    // The set-centric import endpoint (6.7, T2.4) and the tracked-channel set preview (#220, where it
+    // means "this set does not belong to the channel") — 7TV does not know the given set id. Distinct
+    // from ForeignChannelNoActiveEmoteSet above, which the query-parameter preview path (6.4) reuses
+    // for the very same underlying "unknown set" answer: that path already had a code whose text
+    // fits, this one has no existing endpoint to borrow from.
+    public const string EmoteSetNotFound = "emote_set_not_found";
+    // CreateVoteSessionRequest's exclusion rule (6.9, K6): emoteSetId and sevenTvEmoteIds/emoteIds
+    // disagree about which of the two session shapes this is.
+    public const string VoteSessionSetBallotInvalid = "vote_session_set_ballot_invalid";
+
     // 404 from GET /api/legal/{kind}/{language} (issue #247): the operator has not configured this
     // document (no ContentPath, or no German file for it — German is authoritative, see
     // ILegalContentService), or the route carried a kind/language outside the closed vocabulary
@@ -90,4 +120,20 @@ internal static class ApiErrorCodes
     // differently — the availability endpoint is what tells the frontend which links to show at all,
     // so a caller only ever reaches this by an unconfigured deep link or a route typo.
     public const string LegalDocumentNotFound = "legal_document_not_found";
+
+    // POST /api/contact (docs/DECISIONS.md 2026-09-24, "contact form"). One code for every shape
+    // failure (email syntax/length, message length, name length, control characters in name/email) —
+    // the caller cannot act on which specific check failed any more than it can for the other
+    // grouped codes above, and the form re-validates client-side before submitting anyway.
+    public const string ContactInvalid = "contact_invalid";
+    // 400: the Turnstile token itself was rejected by Cloudflare (a real answer, not a timeout — see
+    // TurnstileVerificationResult.Failed). Distinct from ContactUnavailable below, which covers both
+    // "Turnstile could not be reached at all" and "the feature is not configured" — a caller can act
+    // on a rejected token (get a fresh one and retry) in a way it cannot act on either of those.
+    public const string ContactCaptchaFailed = "contact_captcha_failed";
+    // 503: the feature is not fully configured (GET /api/contact/config already said so), Turnstile
+    // could not be reached to verify the token, or the SMTP send itself failed. One code for all
+    // three, same reasoning as ForeignChannelSevenTvUnavailable — "not now" is the only actionable
+    // fact in any of the three cases.
+    public const string ContactUnavailable = "contact_unavailable";
 }

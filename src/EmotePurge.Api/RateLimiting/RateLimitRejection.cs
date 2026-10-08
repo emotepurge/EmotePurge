@@ -162,6 +162,28 @@ internal static class RateLimitRejection
     }
 
     /// <summary>
+    /// Partitions by the remote IP alone, never by the authenticated user — for the one policy that
+    /// must not let a signed-in visitor fall back onto a per-user budget (<see
+    /// cref="RateLimitPolicyNames.Contact"/>). <see cref="PartitionPerUser"/>/
+    /// <see cref="PartitionPerUserTokenBucket"/> prefer <see cref="ResolveUserKey"/>'s authenticated
+    /// claim over the IP, which is right for every route that requires a login but wrong here: nothing
+    /// stops an already-authenticated visitor from also submitting <c>POST /api/contact</c>, and
+    /// partitioning that route by user id would hand each signed-in visitor behind one shared IP (an
+    /// office, a household NAT) their own budget instead of the one shared bucket the route is meant
+    /// to enforce (Codex P2, docs/DECISIONS.md 2026-09-24 revision).
+    /// </summary>
+    public static RateLimitPartition<string> PartitionPerIpTokenBucket(
+        HttpContext httpContext,
+        string policyName,
+        RateLimitingOptions.TokenBucketPolicy policy)
+    {
+        var partitionKey = ResolveIpKey(httpContext);
+        Record(httpContext, policyName, partitionKey, FallbackSecondsFor(policy));
+
+        return RateLimitPartition.GetTokenBucketLimiter(partitionKey, _ => TokenBucketOptions(policy));
+    }
+
+    /// <summary>
     /// Answers a rejected request: one warning in the log, a Retry-After header, and a body carrying
     /// a translatable error code.
     /// </summary>
@@ -256,6 +278,15 @@ internal static class RateLimitRejection
         => httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier)
             ?? httpContext.Connection.RemoteIpAddress?.ToString()
             ?? Unknown;
+
+    /// <summary>
+    /// The remote IP alone — never the authenticated user, unlike <see cref="ResolveUserKey"/>'s own
+    /// fallback. Correct only behind the same <c>ForwardedHeadersMiddleware</c> trust configuration in
+    /// <c>Program.cs</c> that makes every other IP-partitioned policy correct, and reads the same
+    /// property <c>ContactEndpoints</c> already reads for <c>TurnstileVerifier</c>.
+    /// </summary>
+    private static string ResolveIpKey(HttpContext httpContext)
+        => httpContext.Connection.RemoteIpAddress?.ToString() ?? Unknown;
 
     /// <summary>
     /// Leaves behind everything <see cref="OnRejectedAsync"/> cannot derive on its own: the

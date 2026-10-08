@@ -44,8 +44,8 @@ public static class ChannelEndpoints
         // (SevenTV/Extension#267), so the audience is the mod team itself.
         group.MapGet("/{channelName}/audit-log", async (
             string channelName,
-            int page,
-            int pageSize,
+            string? page,
+            string? pageSize,
             string? action,
             string? actor,
             IAuditLogQueryService auditLogQueryService,
@@ -178,6 +178,13 @@ public static class ChannelEndpoints
                 // active or for a global admin — see ChannelService.JoinAsync.
                 ChannelJoinStatus.CapacityReached =>
                     Results.Conflict(new { errorCode = ApiErrorCodes.ChannelCapacityReached }),
+
+                // 403: the request is well-formed and the channel exists, but its Twitch id is on the
+                // configured block list (Channels:ExcludedChannelIds, GDPR Art. 21 objection) and
+                // stays refused no matter who asks — unlike CapacityReached, no caller is exempt.
+                ChannelJoinStatus.ChannelExcluded =>
+                    Results.Json(
+                        new { errorCode = ApiErrorCodes.ChannelExcluded }, statusCode: StatusCodes.Status403Forbidden),
 
                 // The stored login, which is always the one that was asked for: LookupByLoginAsync
                 // only reports Found on a normalized name match, so even in the rename case the
