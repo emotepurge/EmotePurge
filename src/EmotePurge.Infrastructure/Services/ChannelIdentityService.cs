@@ -730,12 +730,6 @@ public class ChannelIdentityService(
         }
     }
 
-    private static bool IsPastUnresolvableLoginGracePeriod(ChannelIdentityRow row)
-    {
-        var cutoff = DateTime.UtcNow - UnresolvableLoginGracePeriod;
-        return row.CreatedAt < cutoff && (row.LastSyncedAtUtc is null || row.LastSyncedAtUtc < cutoff);
-    }
-
     private async Task BackfillIdAsync(
         ChannelIdentityRow row, string twitchChannelId, ReconcileCounters counters, CancellationToken ct)
     {
@@ -1072,6 +1066,12 @@ public class ChannelIdentityService(
                 "Kanal {ChannelName} ist auf {NewChannelName} nachgeführt, aber LEAVE/JOIN konnten nicht veröffentlicht werden — der Worker holt das über den periodischen 7TV-Resync (Konvergenznetz, Issue #41) innerhalb weniger Minuten von selbst nach, statt bis zu einem Neustart im alten Kanal zu bleiben.",
                 oldLogin, newLogin);
         }
+    }
+
+    private static bool IsPastUnresolvableLoginGracePeriod(ChannelIdentityRow row)
+    {
+        var cutoff = DateTime.UtcNow - UnresolvableLoginGracePeriod;
+        return row.CreatedAt < cutoff && (row.LastSyncedAtUtc is null || row.LastSyncedAtUtc < cutoff);
     }
 
     // The snapshot one pass works from. A record rather than a tuple so the projection reads as

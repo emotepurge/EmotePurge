@@ -374,7 +374,6 @@ public class EmoteService(
         return new InSetOutcome(dedupedIds.Count, channels, unresolved);
     }
 
-    // The paper entry without an owner channel: the owner identity names the target.
     // The subset of these Twitch ids its broadcaster has locked (#245), in one query.
     private async Task<HashSet<string>> LoadLockedIdsAsync(IEnumerable<string?> twitchChannelIds, CancellationToken cancellationToken)
     {
@@ -391,6 +390,7 @@ public class EmoteService(
         return locked.ToHashSet(StringComparer.Ordinal);
     }
 
+    // The paper entry without an owner channel: the owner identity names the target.
     private static object BuildOwnerPaperDetails(
         IReadOnlyList<string> dedupedIds, string emoteSetId, InSetOwner owner, UnresolvedChannelDto? unresolved) =>
         unresolved is null

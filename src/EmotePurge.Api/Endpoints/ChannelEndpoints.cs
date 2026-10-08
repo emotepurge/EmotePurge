@@ -462,10 +462,10 @@ public static class ChannelEndpoints
 /// not a per-channel permission.
 /// </para>
 /// <para>
-/// <para>
 /// <c>CanPurgeAsBroadcaster</c> (#245) is visibility for the purge button: the caller's id equals the
 /// row's stored Twitch id, or the row has none yet and the login matches. The login branch never
-/// authorizes anything; the service proves ownership live.
+/// authorizes the purge itself (the service proves ownership live); it is, by the same rule, who may
+/// read the data summary.
 /// </para>
 /// <para>
 /// No <c>IsSevenTvEditor</c> field, despite the review's sketch: nothing consumes it today, and

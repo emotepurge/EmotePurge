@@ -84,7 +84,7 @@ public class TwitchIdentityReconcileWorker(
             // LockedDeactivated is named on every line, zero included (#245, D4): its presence in the
             // production log is the evidence that the running worker image knows the broadcaster lock.
             logger.LogInformation(
-                "Identity-Reconcile: {Checked} geprüft, {IdsBackfilled} IDs nachgetragen, {Renamed} umbenannt, {Merged} zusammengeführt, {MergesRefused} Zusammenführungen abgelehnt, {LoginsMissing} Kanäle bei Twitch nicht mehr auffindbar (Login oder ID unbekannt), {Deactivated} wegen Sperrliste deaktiviert, LockedDeactivated {LockedDeactivated} (broadcaster lock), UnresolvableDeactivated {UnresolvableDeactivated} (login unknown to Twitch).",
+                "Identity-Reconcile: {Checked} checked, {IdsBackfilled} ids backfilled, {Renamed} renamed, {Merged} merged, {MergesRefused} merges refused, {LoginsMissing} channels no longer found on Twitch (login or id unknown), {Deactivated} deactivated for the excluded-channel list, LockedDeactivated {LockedDeactivated} (broadcaster lock), UnresolvableDeactivated {UnresolvableDeactivated} (login unknown to Twitch).",
                 summary.Checked, summary.IdsBackfilled, summary.Renamed, summary.Merged, summary.MergesRefused, summary.LoginsMissing, summary.Deactivated,
                 summary.LockedDeactivated, summary.UnresolvableDeactivated);
         }
