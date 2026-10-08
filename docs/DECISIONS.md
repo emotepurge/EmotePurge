@@ -178,6 +178,93 @@ Naming 2026-10-08 misattributes 9 uses, naming 2026-10-07 would misattribute 42,
 chose 2026-10-08 on 2026-10-08. This deliberately deviates from the spec wording "the day of the
 switch".
 
+### 2026-10-04 — The delete run surface and its pre-check chain leave MassDeletePanel (#201 T-A)
+
+**Betrifft:** `web/src/app/shared/seven-tv/delete-flow.ts` ·
+`web/src/app/shared/seven-tv/delete-progress-section.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
+`web/src/app/shared/seven-tv/delete-progress-section.spec.ts` ·
+`web/src/app/shared/seven-tv/delete-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/seven-tv-run-leave.guard.ts` ·
+`web/src/app/shared/seven-tv/seven-tv-run-leave.guard.spec.ts` ·
+`web/src/app/features/usage-stats/usage-stats-leave.guard.ts` (deleted) ·
+`web/src/app/features/usage-stats/usage-stats-leave.guard.spec.ts` (deleted) ·
+`web/src/app/features/usage-stats/usage-stats.routes.ts` ·
+`web/src/app/features/usage-stats/usage-stats.routes.spec.ts` ·
+`web/src/app/shared/seven-tv/import-trigger.ts` (comment) ·
+`web/e2e/emote-import.e2e.spec.ts` (comment only) ·
+`web/src/app/shared/seven-tv/action-dock.ts` (comment only) ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` (comment only) ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` (comment only) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (comment only) ·
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (comment only) ·
+`web/src/app/shared/seven-tv/restore-slot-preview.ts` (comment only) ·
+`web/src/app/shared/seven-tv/delete-confirm-dialog.ts` (comment only) ·
+`web/src/app/shared/seven-tv/recovery-file-gate.ts` (comment only) ·
+`web/src/app/shared/ui/name-preview-list.ts` (comment only) ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (comment only) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (comment only) ·
+`web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (comment only) ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` (comment only) ·
+`web/src/app/core/emotes/import-target-loader.ts` (comment only) ·
+`web/src/app/features/voting/vote-session-detail-page.ts` (comment only) ·
+`docs/UI-Designsprache.md` (§8.7)
+
+The delete run lived inside `MassDeletePanel`: a dock that only exists with the selection panel, and
+a delete run whose confirmation chain was welded to the panel's own dialog call. The tag page
+(#201 T-C) needs the delete engine without the selection panel around it, so neither was reusable.
+#201 T-A splits `MassDeletePanel` in two steps, with no behaviour change:
+
+- **`delete-flow.ts`**: the delete confirmation's pre-check chain (shared set check, confirmation,
+  live alias read, start) as plain functions over `DeleteFlowDeps`/`DeleteFlowRequest`, following
+  `restore-flow.ts`. `resolveDeleteTarget` and `readLiveSetAliases` are exported for T-C, and the
+  chain itself uses them. The panel keeps the steps that belong to its button: clearing the notice,
+  the host and `startLocked` guards, and the token prompt.
+- **`DeleteProgressSection`** (`app-delete-progress-section`): progress, protocol download, unclear
+  rows, and the restore entry with its whole chain. It has one input, `hostSelectedSetId` (the set
+  the host shows, which drives the confirmation's `foreignToView`), and one output, `notice`. The
+  output exists because the status region that announces a notice belongs to the host. The section
+  never emits `null`, since clearing stays with the panel's next delete attempt.
+
+**Mount.** The panel mounts the section in its own template where the progress block was, not as a
+sibling on the host pages. That keeps the DOM nesting, the vote page's `@if` gate around the panel,
+and every E2E locator scoped to `app-mass-delete-panel`. Only T-C mounts the section on its own.
+The host is `display: contents` (`host: { class: 'contents' }`). Otherwise the empty host would be a
+flex item of the panel's column and add a gap under the buttons. The audit harness confirms that
+dock and panel heights are unchanged in all 48 dock/panel states, none of which has a delete run on
+screen; the in-run state rests on `display: contents` plus the unchanged e2e suite.
+
+**Restore entry moved verbatim, not unified with `startRestoreFlow`.** It hangs off the last delete
+run, not the selection, so it belongs to the section. `restore-flow.ts` documents that this entry
+runs its own chain on purpose, and merging the two would be a behaviour question of its own, left
+as a follow-up outside T-A. The two run latches (`deleted`/`reloadRequested`) stay in the panel
+because both host pages bind those outputs. Only the `protocolSaved` reset moved, as an effect of the
+section's own on the same `isRunning()` edge.
+
+**Known behaviour delta (benign).** `setWarning`/`warningLoading`, the delete confirmation's
+shared-set warning, used to be panel fields and are now created per dialog open inside the flow.
+This closes a reachable race: cancel dialog A while its `getSetWarning` is still pending, reopen as
+dialog B, and A's late answer used to overwrite B's warning state. Nothing else outside the chain
+ever read the two fields.
+
+**Follow-ups, outside T-A.** (a) Unify the section's restore entry onto `startRestoreFlow`. (b) Put
+delete and restore runs into the leave guard; today it covers only import and undo, which is the
+unchanged status quo and recorded here as such, not as a decision that they need no guard.
+
+**The leave guard is page-neutral.** `usageStatsLeaveGuard` moved to `shared/seven-tv/` as
+`sevenTvRunLeaveGuard`, with no behaviour change: it still reads `SevenTvImportService.isRunning()`
+and `SevenTvUndoService.isRunning()`, keeps the route-identity exemption for a pure channel switch,
+and does not read the arbiter or ask about delete/restore runs (the arbiter's unload guard covers
+the tab). It lives in `shared/`, not `core/`, because it opens a confirm dialog from `shared/ui`
+and `core/` must not depend on `shared/`. T-C registers it on the tags page route.
+
+**For T-C.** A standalone `DeleteProgressSection` (tags page) has no panel latches: the host must
+itself reload after a finished delete or restore, and render or clear the `notice` output.
+
+---
+
+
 ### 2026-10-03 — A 7TV set read is only `complete` when its pages agree with each other, including a verification re-read
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-set-entries.ts` ·

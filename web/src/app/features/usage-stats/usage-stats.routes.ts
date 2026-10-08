@@ -1,6 +1,6 @@
 import { Routes } from '@angular/router';
 
-import { usageStatsLeaveGuard } from './usage-stats-leave.guard';
+import { sevenTvRunLeaveGuard } from '../../shared/seven-tv/seven-tv-run-leave.guard';
 import { UsageStatsPage } from './usage-stats-page';
 
 /**
@@ -12,7 +12,7 @@ import { UsageStatsPage } from './usage-stats-page';
  * UsageStatsPage into a second chunk for no size benefit. `canActivate` stays on the parent route;
  * only `canDeactivate` needed to move.
  *
- * `usageStatsLeaveGuard`'s `leadsToSameRoute` depends on this route's `routeConfig` keeping the
+ * `sevenTvRunLeaveGuard`'s `leadsToSameRoute` depends on this route's `routeConfig` keeping the
  * same object identity across navigations — verified by usage-stats.routes.spec.ts. Measurements
  * and the rejected alternative are in docs/DECISIONS.md, 2026-09-25.
  */
@@ -20,6 +20,6 @@ export const USAGE_STATS_ROUTES: Routes = [
   {
     path: '',
     component: UsageStatsPage,
-    canDeactivate: [usageStatsLeaveGuard],
+    canDeactivate: [sevenTvRunLeaveGuard],
   },
 ];

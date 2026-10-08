@@ -219,18 +219,19 @@ export const SEVEN_TV_RUN_KIND_LABEL_KEY: Record<SevenTvRunKind, string> = {
   undo: 'sevenTvRun.kind.undo',
 };
 
-/** The transient status message for a refused start (contract P2, `docs/UI-Designsprache.md`
- *  §4.5) — the message key (by phase) plus the blocking kind's noun, already translated:
- *  transloco's own interpolation only substitutes a param's literal text, never a second, nested
- *  key, so the noun has to be resolved before it becomes a param. `translate` is the caller's own
+/** The transient status message for a refused start (contract P2, `docs/UI-Designsprache.md` §4.5)
+ *  — the message key (by phase) plus the blocking kind's noun, already translated: transloco's own
+ *  interpolation only substitutes a param's literal text, never a second, nested key, so the noun
+ *  has to be resolved before it becomes a param. `translate` is the caller's own
  *  `TranslocoService.translate`, taken as a parameter rather than injected — this file otherwise
  *  imports nothing beyond `@angular/core` (contract P4's DI-edge doc above) — and both renderers
- *  that show this message (`usage-stats-page.ts`'s own transient region, `mass-delete-panel.ts`'s
- *  `abortNotice`) share it, so the sentence and the kind noun cannot drift between them. Takes the
- *  claim directly rather than a `SevenTvRefusedStart`: `mass-delete-panel.ts` reads `activeClaim()`
- *  for its own, panel-local notice and never calls `noteRefusedStart` itself (its `abortNotice` is
- *  already the visible, persistent explanation — routing the same refusal through the arbiter's
- *  4-second transient notice too would announce it twice on a page that mounts both). */
+ *  that show this message (`usage-stats-page.ts`'s own transient region, `delete-flow.ts`'s
+ *  refused-start notice, shown through the panel's `abortNotice`) share it, so the sentence and the
+ *  kind noun cannot drift between them. Takes the claim directly rather than a
+ *  `SevenTvRefusedStart`: `delete-flow.ts` reads `activeClaim()` for its own, panel-local notice
+ *  (and the section only forwards it) and never calls `noteRefusedStart` itself (the panel's
+ *  `abortNotice` is already the visible, persistent explanation — routing the same refusal through
+ *  the arbiter's 4-second transient notice too would announce it twice on a page that mounts both). */
 export function refusedStartMessage(
   claim: SevenTvRunClaim,
   translate: (key: string) => string,

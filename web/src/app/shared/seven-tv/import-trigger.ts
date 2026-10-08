@@ -172,7 +172,7 @@ export class ImportTrigger {
   private readonly importService = inject(SevenTvImportService);
   /** The undo's run service (#254) — injecting it anywhere is what registers it with the arbiter.
    *  Not only here any more: also injected in the usage-stats page's own lazy chunk
-   *  (`usage-stats-page.ts`, `usage-stats-leave.guard.ts`, `dock-outcome-announcer.ts`,
+   *  (`usage-stats-page.ts`, `seven-tv-run-leave.guard.ts`, `dock-outcome-announcer.ts`,
    *  `undo-progress-section.ts`) and in `channel-workspace-layout.ts` — never from an eagerly
    *  loaded file (F9). */
   private readonly undoService = inject(SevenTvUndoService);
@@ -187,7 +187,7 @@ export class ImportTrigger {
    *  start a second restore-flow read while the first is still out.
    *
    *  Aliases `SevenTvRestoreService.restorePreCheckPending` rather than holding a signal of its
-   *  own (#255 P2, Codex review): this trigger's restore-file door and `MassDeletePanel`'s restore
+   *  own (#255 P2, Codex review): this trigger's restore-file door and `DeleteProgressSection`'s restore
    *  button mount together on the usage-stats page, and a component-local flag here only ever
    *  guarded *this* button against itself — the other one stayed enabled for the whole read, and
    *  could open a second confirmation stacked on the first. Reading the shared signal here means

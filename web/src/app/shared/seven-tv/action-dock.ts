@@ -55,7 +55,7 @@ export interface ActionDockState {
    *  outcome the notice exists to report. */
   readonly importNoticePending: boolean;
   /** Same as `importNoticePending`, for the restore side (`SevenTvRestoreService.duplicateNoticePending`)
-   *  — covers both restore entry points (`MassDeletePanel`'s own confirm, and a file-based restore
+   *  — covers both restore entry points (`DeleteProgressSection`'s own confirm, and a file-based restore
    *  reached via `ImportTrigger`, which need not have anything marked in this channel's grid at
    *  all). */
   readonly restoreNoticePending: boolean;

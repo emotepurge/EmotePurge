@@ -36,7 +36,7 @@ export interface ImportAlreadyPresentFilterResult<T> extends AlreadyPresentFilte
  * validator lets umlaut aliases through where `v3` used to reject them before the push ever ran.
  *
  * Used at the last moment before a run actually starts — import (`import-flow.ts`) calls this, and
- * both restore entry points (`restore-flow.ts`, `mass-delete-panel.ts`) call its restore variant
+ * both restore entry points (`restore-flow.ts`, `delete-progress-section.ts`) call its restore variant
  * `filterAlreadyPresentForRestore` below, right in the confirm-dialog-closed handler, immediately
  * before handing rows to `startRestore`/`startImport` — so the fetch it does is always fresh, never
  * a dialog-open-time snapshot reused later. This one compares the 7TV id alone (spec #200, 7.2: the
@@ -192,16 +192,16 @@ export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilt
  *
  * `complete: false` from the read (the 10-page runaway guard, or a `totalCount` mismatch — K5 fix
  * round, see `seven-tv-set-entries.ts`) is deliberately **not** treated as a reason to fail open
- * here, unlike the delete run's own live alias read (`mass-delete-panel.ts`, spec 8.3's "a list
- * that only knows half must not delete"): failing open would return every row completely
- * unfiltered, while the per-alias comparison below, even against a partial read, still catches
- * every duplicate and every taken name genuinely inside the pages it did see — strictly fewer wrong
- * re-adds than discarding that signal outright would produce. This only widens the existing,
- * already-accepted gap (a window remains, always has, between any read — complete or not — and each
- * individual `addEmote` call); it does not create a new one. Restore only ever fails open
- * (available: false, nothing filtered) on an actual fetch/GraphQL error. The one exception, in both
- * directions, is an `uncertain` row: an incomplete read drops it (above) rather than filtering it
- * against what it saw — a partial read that does not list its id proves nothing about it — and a
+ * here, unlike the delete run's own live alias read (`readLiveSetAliases` in `delete-flow.ts`, spec
+ * 8.3's "a list that only knows half must not delete"): failing open would return every row
+ * completely unfiltered, while the per-alias comparison below, even against a partial read, still
+ * catches every duplicate and every taken name genuinely inside the pages it did see — strictly
+ * fewer wrong re-adds than discarding that signal outright would produce. This only widens the
+ * existing, already-accepted gap (a window remains, always has, between any read — complete or not
+ * — and each individual `addEmote` call); it does not create a new one. Restore only ever fails
+ * open (available: false, nothing filtered) on an actual fetch/GraphQL error. The one exception, in
+ * both directions, is an `uncertain` row: an incomplete read drops it (above) rather than filtering
+ * it against what it saw — a partial read that does not list its id proves nothing about it — and a
  * failed read drops it rather than passing it through.
  *
  * The read's own `complete` flag is still passed through on the result (#255 P2, Codex review),
@@ -314,8 +314,8 @@ function clipAliasSet(row: RestoreFilterRow): ReadonlySet<string | null> {
 
 /** `loadRestoreConfirmPreview`'s result: `filterAlreadyPresentForRestore`'s own outcome, plus the
  *  two numbers the restore confirmation dialog actually renders — derived here, once, so its two
- *  call sites (`restore-flow.ts`, `mass-delete-panel.ts`) compute them identically rather than each
- *  reimplementing the same reduction over `rows`. */
+ *  call sites (`restore-flow.ts`, `delete-progress-section.ts`) compute them identically rather
+ *  than each reimplementing the same reduction over `rows`. */
 export interface RestoreConfirmPreview<
   T extends RestoreFilterRow,
 > extends RestoreAlreadyPresentFilterResult<T> {
@@ -341,7 +341,7 @@ export interface RestoreConfirmPreview<
 /**
  * `filterAlreadyPresentForRestore` plus the confirmation dialog's own derived numbers (operator
  * decision 2026-09-25, #255, "Slot-Zahl nach dem Skip-Filter"): before this, both restore
- * confirmations (`restore-flow.ts`'s `startRestoreFlow`, `mass-delete-panel.ts`'s
+ * confirmations (`restore-flow.ts`'s `startRestoreFlow`, `delete-progress-section.ts`'s
  * `openRestoreConfirmDialog`) ran the duplicate/name-taken check only once the user actually
  * confirmed, so the dialog's title and its slot-capacity projection counted every row the source
  * named — including ones that were about to be silently skipped as already present. Now both call
@@ -373,13 +373,13 @@ export function loadRestoreConfirmPreview<T extends RestoreFilterRow>(
 }
 
 /** Total time budget for the open-time duplicate check both restore entry points
- *  (`restore-flow.ts`'s `startRestoreFlow`, `mass-delete-panel.ts`'s `openRestoreConfirmDialog`)
- *  run right before their confirmation opens (#255 P2a) — same value and reasoning as
- *  `mass-delete-panel.ts`'s own `LIVE_ALIAS_READ_TIMEOUT_MS`: generous for a same-origin-adjacent
- *  GraphQL read of at most 10 pages of up to 500 entries each, against a hung request (7TV accepts
- *  the connection but never answers). Exported rather than duplicated as a private constant in both
- *  callers, or imported from `mass-delete-panel.ts` itself, which would make `restore-flow.ts`
- *  depend on a component file for a plain number. */
+ *  (`restore-flow.ts`'s `startRestoreFlow`, `delete-progress-section.ts`'s
+ *  `openRestoreConfirmDialog`) run right before their confirmation opens (#255 P2a) — same value
+ *  and reasoning as `delete-flow.ts`'s own `LIVE_ALIAS_READ_TIMEOUT_MS`: generous for a
+ *  same-origin-adjacent GraphQL read of at most 10 pages of up to 500 entries each, against a hung
+ *  request (7TV accepts the connection but never answers). Exported rather than duplicated as a
+ *  private constant in both callers, or imported from `delete-flow.ts` itself, which would make
+ *  `restore-flow.ts` depend on a component file for a plain number. */
 export const RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS = 20_000;
 
 /** The same "could not verify" shape `loadRestoreConfirmPreview`'s own failed fetch produces
