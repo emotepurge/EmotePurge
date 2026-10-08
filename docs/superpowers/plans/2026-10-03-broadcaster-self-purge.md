@@ -57,6 +57,11 @@
 >    nur Dokumentation, kein neues Verhalten (D3 bleibt A); der tag-blockierte Duplikatfall ist eine
 >    bestehende, von #245 unabhängige Grenze mit manuellem Eingriff (T4, DECISIONS).
 
+> **Stand 2026-10-08:** T1–T7 umgesetzt auf `feat/245-broadcaster-self-purge` (T7: Operations.md „A broadcaster
+> removes their own channel" samt „Deploying this feature", DECISIONS-Verweise, CLAUDE.md-Statuszeile).
+> Offen: T8 (Gates, Coverage, Live-Verifikation, Codex-Zweitmeinung), danach Merge durch den Nutzer;
+> die Nachläufer aus Abschnitt 7 sind Betreiberarbeit außerhalb des Repos.
+
 ---
 
 ## R3 — Drift gegen `origin/main` (2026-10-08)

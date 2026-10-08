@@ -40,7 +40,7 @@ login-based warning on purpose. After the deploy the login variable stays config
 
 ### 2026-10-08 — Broadcaster self-service purge and a DB re-add lock (#245)
 
-**Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs` · `src/EmotePurge.Core/Services/IChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` · `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` · `src/EmotePurge.Core/Services/IChannelIdentityService.cs` · `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmoteService.cs` · `src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` · `src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` · `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `src/EmotePurge.Core/Twitch/TwitchModels.cs` · `src/EmotePurge.Infrastructure/Twitch/TwitchApiDtos.cs` · `src/EmotePurge.Infrastructure/Twitch/TwitchHelixClient.cs` · `src/EmotePurge.Core/Services/ILiveCoverageService.cs` · `src/EmotePurge.Infrastructure/Services/LiveCoverageService.cs` · `src/EmotePurge.Worker/TwitchLivePollWorker.cs`
+**Betrifft:** `src/EmotePurge.Core/Entities/BroadcasterChannelLock.cs` · `src/EmotePurge.Infrastructure/Services/BroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Services/IBroadcasterChannelLockService.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/20261008171918_AddBroadcasterChannelLocks.cs` · `src/EmotePurge.Core/Services/IChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelService.cs` · `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` · `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` · `src/EmotePurge.Core/Services/IChannelIdentityService.cs` · `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `src/EmotePurge.Infrastructure/Services/EmoteService.cs` · `src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` · `src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` · `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `src/EmotePurge.Core/Twitch/TwitchModels.cs` · `src/EmotePurge.Infrastructure/Twitch/TwitchApiDtos.cs` · `src/EmotePurge.Infrastructure/Twitch/TwitchHelixClient.cs` · `src/EmotePurge.Core/Services/ILiveCoverageService.cs` · `src/EmotePurge.Infrastructure/Services/LiveCoverageService.cs` · `src/EmotePurge.Worker/TwitchLivePollWorker.cs` · `src/EmotePurge.Api/Auth/ChannelBroadcasterAuthorizationFilter.cs` · `src/EmotePurge.Api/Auth/TrackedChannelFilter.cs` · `src/EmotePurge.Api/Auth/BroadcasterOwnership.cs` · `web/src/app/core/channels/broadcaster-lock.ts` · `web/src/app/core/channels/channel.service.ts` · `web/src/app/shared/channels/join-with-lock-prompt.ts` · `web/src/app/features/channel-workspace/channel-workspace-layout.ts` · `web/src/app/features/admin/admin-channels-page.ts` · `web/src/app/features/overview/overview-page.ts` · `web/src/app/features/login/login-page.ts` · `web/src/app/features/landing/landing-page.ts` · `web/src/app/shared/ui/account-menu.ts` · `docs/Operations.md` ("A broadcaster removes their own channel") · `docs/Architectur.md` (B.3)
 
 **Table, not a flag.** A broadcaster who purges their own channel's data must not be re-added by
 anyone but a global admin. The lock lives in its own table `BroadcasterChannelLocks`
@@ -143,8 +143,8 @@ else, a global admin without the flag included → `ChannelJoinStatus.LockedByBr
 the date), and nothing is written — the transaction is disposed without a commit. A broadcaster who is
 also an admin lifts as the owner, without the dialog. The flag means nothing without the admin role.
 The lift is staged only after the active-channel cap has let the join through, in the join's own
-transaction, so a join refused by the cap leaves the lock exactly as it was. Until the API task of
-#245's API task the endpoint maps it as described under "API contract" below.
+transaction, so a join refused by the cap leaves the lock exactly as it was. The endpoint maps it as
+described under "API contract" below.
 
 **Helix outage: the owner's join leaves an id-less row, the lock stays, self-healing.** Lifting needs
 the resolved identity. A join while Helix is unreachable (the owner's or a moderator's with a cached
@@ -241,6 +241,21 @@ channel-scoped sibling), and the handler passes the current row's `CreatedAt` as
 admin route sets no bound. **Follow-up, not part of #245:** binding audit entries to the Twitch id by a
 new column would make the boundary exact; until then a re-join of the same owner starts with an empty
 channel log by design.
+
+**Neighbours and limits.** Builds on the block list of 2026-09-24 (#252: `IExcludedChannelFilter`,
+"no caller is exempt" stays true for that list; the lock is the one a global admin may lift, with
+confirmation) and on 2026-09-23 (join and retention purge serialise on the channel row — the purge
+and the lock pass take the same row lock). The sync race of 2026-10-03 (#59) is why the purge's
+"row vanished" ending needs no special case, apart from the deadlock retry above, and 2026-10-04
+(emote tags are channel-owned) is why the tags go with the channel. **Epic #200 seam:**
+`emotes.syncImported` audit entries (including `syncDeleted`/`syncRestored` entries with
+`unresolvedChannelName`) of *other* channels keep naming the purged channel and its owner's login
+as the source; that is other channels' history, kept for 12 months and covered by the privacy
+policy (operator note in `privacy-notes.md`). **Not covered, by decision:** a restore of a backup
+(documented limit, one runbook sentence, E10) and a rollback to an image without the table (E12) —
+both are described in `docs/Operations.md`. Deploy: migration by hand before the images,
+`ADMIN_TWITCH_USER_IDS` set, worker before api; independent of the #69 follow-up decision (operator
+decision 2026-10-08).
 
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 
