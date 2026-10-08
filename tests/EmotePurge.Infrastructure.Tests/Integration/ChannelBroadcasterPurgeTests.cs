@@ -358,7 +358,7 @@ public class ChannelBroadcasterPurgeTests(PostgresFixture fixture)
         }
 
         await using var read = fixture.CreateDbContext();
-        var summary = await CreateService(read).GetDataSummaryAsync("BpSummary");
+        var summary = await CreateService(read).GetDataSummaryAsync("BpSummary", "bp-130001");
 
         Assert.Equal(new ChannelDataSummary(EmoteCount: 2, VoteSessionCount: 1, LiveDayCount: 2, TagCount: 2), summary);
     }
@@ -368,7 +368,34 @@ public class ChannelBroadcasterPurgeTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
 
-        Assert.Null(await CreateService(db).GetDataSummaryAsync("bpsummarymissing"));
+        Assert.Null(await CreateService(db).GetDataSummaryAsync("bpsummarymissing", "bp-130009"));
+    }
+
+    [Fact]
+    public async Task GetDataSummary_OfAnIdLessDuplicate_CountsTheRowHoldingTheCallersIdToo()
+    {
+        // The two rows PurgeByBroadcaster_IdLessDuplicateUnderTheRoutedLogin_TakesTheIdRowWithIt
+        // deletes together: the dialog must name what the purge would delete, not only the routed row.
+        await SeedChannelWithFullHistoryAsync("bpsumdupold", "bp-130101");
+        await SeedChannelWithFullHistoryAsync("bpsumdupnew", twitchChannelId: null);
+
+        await using var db = fixture.CreateDbContext();
+        var summary = await CreateService(db).GetDataSummaryAsync("bpsumdupnew", "bp-130101");
+
+        Assert.Equal(new ChannelDataSummary(EmoteCount: 2, VoteSessionCount: 2, LiveDayCount: 2, TagCount: 2), summary);
+    }
+
+    [Fact]
+    public async Task GetDataSummary_OfARowWithAForeignId_IsNull_EvenWhenTheCallerHasARowOfTheirOwn()
+    {
+        // The purge would refuse this name (NotBroadcaster), so there is nothing to summarise; the
+        // endpoint filter answers 403 before it ever gets here, this is the race behind it.
+        await SeedChannelWithFullHistoryAsync("bpsumforeign", "bp-130201");
+        await SeedChannelWithFullHistoryAsync("bpsumforeignown", "bp-130202");
+
+        await using var db = fixture.CreateDbContext();
+
+        Assert.Null(await CreateService(db).GetDataSummaryAsync("bpsumforeign", "bp-130202"));
     }
 
     [Fact]

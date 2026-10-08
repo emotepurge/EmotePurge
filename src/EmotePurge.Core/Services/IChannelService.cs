@@ -249,9 +249,14 @@ public interface IChannelService
     Task<ChannelBroadcasterPurgeResult> PurgeByBroadcasterAsync(
         string channelName, AuditActor actor, CancellationToken cancellationToken = default);
 
-    // What PurgeByBroadcasterAsync would delete, counted for the confirmation dialog (#245, plan P5);
-    // null when no row holds this name. No authorization here — the endpoint filter decides who asks.
-    Task<ChannelDataSummary?> GetDataSummaryAsync(string channelName, CancellationToken cancellationToken = default);
+    // What PurgeByBroadcasterAsync would delete for this caller, counted for the confirmation dialog
+    // (#245, plan P5): the row under this name plus the row holding actorTwitchUserId, counted once when
+    // they are the same row — the purge's own target set, so a rename leftover under the current login
+    // and the old-login row that holds the id are summed. Null when no row holds this name, or when it
+    // stores a Twitch id other than actorTwitchUserId (the purge would refuse it). Proves nothing about
+    // an id-less row: the endpoint filter decides who may ask (the caller's current login is its name).
+    Task<ChannelDataSummary?> GetDataSummaryAsync(
+        string channelName, string actorTwitchUserId, CancellationToken cancellationToken = default);
 
     Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default);
 

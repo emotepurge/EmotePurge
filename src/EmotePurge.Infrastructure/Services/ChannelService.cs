@@ -321,26 +321,43 @@ public class ChannelService(
         return ChannelBroadcasterPurgeResult.Purged;
     }
 
-    public async Task<ChannelDataSummary?> GetDataSummaryAsync(string channelName, CancellationToken cancellationToken = default)
+    public async Task<ChannelDataSummary?> GetDataSummaryAsync(
+        string channelName, string actorTwitchUserId, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(actorTwitchUserId);
         var normalized = ChannelName.Normalize(channelName);
-        var channelId = await db.Channels
+        var routed = await db.Channels
             .AsNoTracking()
             .Where(c => c.ChannelName == normalized)
-            .Select(c => c.Id)
+            .Select(c => new { c.Id, c.TwitchChannelId })
             .SingleOrDefaultAsync(cancellationToken);
-        if (channelId is null)
+
+        // A stored id other than the caller's: the purge would answer NotBroadcaster and delete nothing.
+        // Twitch ids are opaque digit strings, compared ordinally.
+        if (routed is null
+            || (routed.TwitchChannelId is not null
+                && !string.Equals(routed.TwitchChannelId, actorTwitchUserId, StringComparison.Ordinal)))
         {
             return null;
         }
 
-        // Four scalar COUNTs over the channel id (Regel 10: no navigation GroupBy). Not one snapshot —
+        // The purge's target set (PurgeProvenRowsAsync): besides the routed row, the row holding the
+        // caller's id — the old-login row when the routed one is an id-less rename leftover. Unlocked
+        // and unproven on purpose: these numbers feed a dialog, the purge re-checks everything itself.
+        var idRowId = await db.Channels
+            .AsNoTracking()
+            .Where(c => c.TwitchChannelId == actorTwitchUserId)
+            .Select(c => c.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+        List<string> channelIds = idRowId is null || idRowId == routed.Id ? [routed.Id] : [routed.Id, idRowId];
+
+        // Four scalar COUNTs over the channel ids (Regel 10: no navigation GroupBy). Not one snapshot —
         // the numbers feed a confirmation dialog, not a ledger.
         return new ChannelDataSummary(
-            EmoteCount: await db.Emotes.CountAsync(e => e.ChannelId == channelId, cancellationToken),
-            VoteSessionCount: await db.VoteSessions.CountAsync(s => s.ChannelId == channelId, cancellationToken),
-            LiveDayCount: await db.ChannelLiveDays.CountAsync(d => d.ChannelId == channelId, cancellationToken),
-            TagCount: await db.EmoteTags.CountAsync(t => t.ChannelId == channelId, cancellationToken));
+            EmoteCount: await db.Emotes.CountAsync(e => channelIds.Contains(e.ChannelId), cancellationToken),
+            VoteSessionCount: await db.VoteSessions.CountAsync(s => channelIds.Contains(s.ChannelId), cancellationToken),
+            LiveDayCount: await db.ChannelLiveDays.CountAsync(d => channelIds.Contains(d.ChannelId), cancellationToken),
+            TagCount: await db.EmoteTags.CountAsync(t => channelIds.Contains(t.ChannelId), cancellationToken));
     }
 
     public async Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default)

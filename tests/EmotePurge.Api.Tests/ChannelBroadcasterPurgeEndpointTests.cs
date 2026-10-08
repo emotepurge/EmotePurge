@@ -166,7 +166,7 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
         var response = await SendAsync("GET", $"/api/channels/{Channel}/data-summary", OwnerId);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        await _factory.Channels.DidNotReceive().GetDataSummaryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _factory.Channels.DidNotReceive().GetDataSummaryAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -180,7 +180,7 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
         var response = await SendAsync("GET", $"/api/channels/{Channel}/data-summary", OwnerId, login: "someoneelse");
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        await _factory.Channels.DidNotReceive().GetDataSummaryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _factory.Channels.DidNotReceive().GetDataSummaryAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -188,7 +188,7 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
     {
         // Compared on the normalized login, like canPurgeAsBroadcaster.
         ArrangeRow(new Channel { ChannelName = Channel });
-        _factory.Channels.GetDataSummaryAsync(Channel, Arg.Any<CancellationToken>())
+        _factory.Channels.GetDataSummaryAsync(Channel, OwnerId, Arg.Any<CancellationToken>())
             .Returns(new ChannelDataSummary(EmoteCount: 1, VoteSessionCount: 0, LiveDayCount: 0, TagCount: 0));
 
         var response = await SendAsync("GET", $"/api/channels/{Channel}/data-summary", OwnerId, login: "TestChannel");
@@ -200,7 +200,7 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
     public async Task DataSummary_Answers200_WithAllFourCounts()
     {
         ArrangeRow(RowWithId(OwnerId));
-        _factory.Channels.GetDataSummaryAsync(Channel, Arg.Any<CancellationToken>())
+        _factory.Channels.GetDataSummaryAsync(Channel, OwnerId, Arg.Any<CancellationToken>())
             .Returns(new ChannelDataSummary(EmoteCount: 12, VoteSessionCount: 3, LiveDayCount: 40, TagCount: 5));
 
         var response = await SendAsync("GET", $"/api/channels/{Channel}/data-summary", OwnerId);
@@ -219,7 +219,7 @@ public class ChannelBroadcasterPurgeEndpointTests : IClassFixture<ApiFactory>
     {
         // The row vanished between the filter and the service.
         ArrangeRow(RowWithId(OwnerId));
-        _factory.Channels.GetDataSummaryAsync(Channel, Arg.Any<CancellationToken>())
+        _factory.Channels.GetDataSummaryAsync(Channel, OwnerId, Arg.Any<CancellationToken>())
             .Returns((ChannelDataSummary?)null);
 
         var response = await SendAsync("GET", $"/api/channels/{Channel}/data-summary", OwnerId);

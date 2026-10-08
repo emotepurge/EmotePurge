@@ -361,10 +361,18 @@ public static class ChannelEndpoints
         // which must not carry four COUNTs.
         group.MapGet("/{channelName}/data-summary", async (
             string channelName,
+            HttpContext httpContext,
             IChannelService channelService,
             CancellationToken ct) =>
         {
-            var summary = await channelService.GetDataSummaryAsync(channelName, ct);
+            var actor = httpContext.User.TryBuildAuditActor();
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            // The caller's id, because the purge deletes the row holding it as well as the routed one.
+            var summary = await channelService.GetDataSummaryAsync(channelName, actor.TwitchUserId, ct);
             return summary is null
                 ? Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound })
                 : Results.Ok(new

@@ -364,8 +364,10 @@ danger button **Delete channel data**. It opens a dialog that states what will b
 count, vote sessions, live days and the mod team's tags — and unlocks after the channel name is typed
 out. The data summary behind that dialog is `GET /api/channels/{name}/data-summary`; the deletion is
 `DELETE /api/channels/{name}/data`. Both answer only to the account that owns the channel, proven by
-the stored Twitch id (or, for a row without one, by asking Helix whether the login belongs to the
-caller).
+the stored Twitch id. For a row without one, the deletion asks Helix whether the login belongs to the
+caller; the summary does not call Twitch and answers only when the row's name is the caller's current
+login. If the broadcaster renamed and an old row under the previous login still holds their Twitch id,
+the deletion removes that row too, and the summary counts both.
 
 **What is deleted.** The channel row and everything bound to it: emotes, usage statistics, live
 days, vote sessions with their ballots and votes, set observations and leave observations, and the

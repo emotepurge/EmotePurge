@@ -106,9 +106,16 @@ that holds no observation lock still ends the sync as "row vanished", as for the
 purge does not take `ChannelSyncGate` (different process) — the same accepted limit as admin purge
 and leave.
 
-**Data summary.** `GetDataSummaryAsync` counts what the purge would delete for the confirmation
-dialog — emotes, vote sessions, live days and the mod team's tags — as four scalar counts over the
-channel id; `null` without a row. It authorizes nothing itself.
+**Data summary.** `GetDataSummaryAsync(channelName, actorTwitchUserId)` counts what the purge would
+delete for the confirmation dialog — emotes, vote sessions, live days and the mod team's tags — as
+four scalar counts over the purge's own target set: the row under the routed name plus the row
+holding the caller's Twitch id, deduplicated (pre-merge review, 2026-10-08: counting only the routed
+row understated the rename case, where the purge also deletes the old-login row that holds the id).
+`null` without a row under the name, or when that row stores another account's id (the purge would
+refuse it). Unlocked and unproven: it does not ask Twitch, so for an id-less routed row it may count
+a row the purge then refuses after Twitch disagrees — the dialog shows numbers, the purge decides.
+Who may ask is the endpoint filter's call (see "API contract"). The dialog no longer says only the
+row "under this name" goes; it names the previous-name row and says the numbers count both.
 
 **Seven read points.** The lock is read wherever the excluded-channel list is read, the env list
 always first (it wins), and it reads the same way: a locked channel looks untracked. Four points come

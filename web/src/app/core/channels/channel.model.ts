@@ -25,7 +25,8 @@ export interface ChannelPermissions {
 
 /**
  * What a broadcaster self-purge would remove, from GET /api/channels/{c}/data-summary. Shown in the
- * confirmation dialog so the number is the actual one, not a guess.
+ * confirmation dialog so the number is the actual one, not a guess. Covers every row the purge would
+ * delete — after a rename also the old row that still holds the caller's Twitch id.
  */
 export interface ChannelDataSummary {
   emoteCount: number;
