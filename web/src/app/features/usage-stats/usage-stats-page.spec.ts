@@ -3625,6 +3625,21 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-fresh']);
   });
 
+  it('keeps a counted row visible when the member list is truncated — departure is only inferred from a complete list', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('maybe', 'MaybeStillIn', 30), emote('a', 'Alpha', 70)],
+      members: memberList([member('7tv-a', 'Alpha')], { truncated: true, totalCount: 900 }),
+    });
+
+    const ids = component['emotes']().map((row) => row.sevenTvEmoteId);
+    expect(ids).toContain('7tv-maybe');
+    expect(ids).toContain('7tv-a');
+    expect(component['totalUsage']()).toBe(100);
+    // The actions stay off while the list is partial.
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.truncated');
+  });
+
   it("counts a #74 duplicate cell as two slots of the shown set's own budget (AK 58)", async () => {
     await openView({
       emoteSetId: 'set-b',
@@ -6281,5 +6296,90 @@ describe('UsageStatsPage — channel.synced reads the set status before the rows
     loud[0].flush([emote('a', 'PeepoA')]);
     await settle();
     expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+});
+
+/**
+ * The header's "Übertragen" button and the set-view lock (review of #336, P2): the lock can disable
+ * it on a loaded active-set view with nothing selected, where the dock that carries the delete/vote
+ * reason is not mounted — so the button must explain itself next to it. Real template.
+ */
+describe('UsageStatsPage — the locked header transfer button explains itself', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    // A real imageUrl: the actual template renders the sprite (NgOptimizedImage rejects '').
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'PeepoA'), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function transferButton(): HTMLButtonElement | undefined {
+    return Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'import.copyButton',
+    );
+  }
+
+  it('is enabled and carries no description while nothing locks it', () => {
+    const button = transferButton()!;
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('is disabled and described by the reason text once a failed status read locks the view', () => {
+    component['setStatusUnavailableFor'].set('a');
+    fixture.detectChanges();
+
+    const button = transferButton()!;
+    expect(button.disabled).toBe(true);
+    const reasonId = button.getAttribute('aria-describedby');
+    expect(reasonId).not.toBeNull();
+    const reason = (fixture.nativeElement as HTMLElement).querySelector(`#${reasonId}`);
+    expect(reason?.textContent?.trim()).toBe('usageStats.setView.importLock.statusUnavailable');
   });
 });

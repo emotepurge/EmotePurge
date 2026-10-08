@@ -29,14 +29,20 @@ counts under this set" group) stay. The filter lives in the page, not in `mergeS
 backend: the backend cannot know live 7TV membership for non-active sets, and `mergeSetView` keeps
 its documented contract (its other users are tests). The page's `left` badge, void plate and dimmed
 sprite are gone; the vote-detail page keeps its own archived treatment of ballot rows (unchanged).
-While the member list is loading, unavailable or truncated, `mergeSetView` still falls back to
-"all live" because nothing can be compared; the lock below covers the actions in that state.
+Departure is only inferred from a COMPLETE member list: while the list is unavailable
+`mergeSetView` falls back to "all live", and while it is truncated the filter is skipped (a counted
+emote missing from a partial list may still be in the set; the partial list's live-only rows stay,
+they are real members). The lock below covers the actions in those states.
 
 **Defense in depth, kept.** The copy flow still takes `membership === 'live'` rows only
 (`importableSelection`/`importableVisible`; the dialog counts read the same lists), and import now
 obeys `sharedSetViewLockReasonKey` like delete and vote: the header button, the dock shortcut and
 the guard in `openImportTarget` are locked while the view is switching, the status is unreadable,
-or the member list is loading, unavailable or truncated. An unlocked import in the fallback state
+or the member list is loading, unavailable or truncated. The reason is shown next to the header
+button and referenced by `aria-describedby` (own `usageStats.setView.importLock.*` wording, because
+the delete/vote texts name only those two actions), and the dock shortcut points at the dock's
+reason paragraph; before, a status-read failure could disable the header button silently on a
+loaded active-set view with nothing selected. An unlocked import in the fallback state
 would have copied archived emotes silently.
 
 ### 2026-10-08 — A 7TV set that really is empty is accepted: set switch at once, same set after repeated spaced zeros, never against v4 (#76)

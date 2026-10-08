@@ -480,9 +480,13 @@ export class UsageStatsPage {
     // the count, mark-all and the drilldown never see them. Rows that ARE in the set but carry no
     // counts (E17) stay. Without a readable member list `mergeSetView` marks everything `'live'`;
     // the shared set-view lock covers the actions in that state.
-    return mergeSetView(rows, this.liveMembers()?.emotes ?? null, false).filter(
-      (row) => row.membership === 'live',
-    );
+    const members = this.liveMembers();
+    const merged = mergeSetView(rows, members?.emotes ?? null, false);
+    // Departure may only be inferred from a COMPLETE list: with a truncated one, a counted emote
+    // missing from the partial list may well still be in the set, so nothing is hidden (the shared
+    // lock keeps every action off in that state, and the caption says the list is incomplete).
+    // The partial list's extra live-only rows stay visible — they are real members.
+    return members?.truncated ? merged : merged.filter((row) => row.membership === 'live');
   });
   protected readonly setStatus = signal<EmoteSetStatus | null>(null);
   /**
@@ -894,6 +898,20 @@ export class UsageStatsPage {
       default:
         return null;
     }
+  });
+
+  /**
+   * The shared set-view lock's reason as the *copy* wording (`usageStats.setView.importLock.*`),
+   * or `null` when import is not locked by it. The delete/vote texts name only those two actions,
+   * so the header's transfer button and the dock shortcut get their own sentence for the same
+   * four reasons. Shown next to the header button because on a loaded active-set view the dock —
+   * the only other place the reason appears — is not mounted without a selection.
+   */
+  protected readonly importLockReasonKey = computed<string | null>(() => {
+    const key = this.sharedSetViewLockReasonKey();
+    return key === null
+      ? null
+      : key.replace('usageStats.setView.lock.', 'usageStats.setView.importLock.');
   });
 
   /**

@@ -130,10 +130,19 @@
           appButton="neutral"
           class="disabled:cursor-not-allowed"
           [disabled]="transferButtonDisabled()"
+          [attr.aria-describedby]="importLockReasonKey() ? 'transfer-lock-reason' : null"
           (click)="openImportTarget()"
         >
           {{ 'import.copyButton' | transloco }}
         </button>
+        @if (importLockReasonKey(); as lockKey) {
+          <!-- Why the button above is disabled (UI-Designsprache §10, "Disabled explains itself"):
+               the set-view lock can lock it on a loaded view with nothing selected, where the dock
+               that carries the delete/vote reason is not mounted. -->
+          <span id="transfer-lock-reason" class="text-xs text-fg-muted">
+            {{ lockKey | transloco }}
+          </span>
+        }
       }
       @if (!isCoarse()) {
         <app-import-trigger
@@ -1150,6 +1159,9 @@
             buttonSize="lg"
             class="disabled:cursor-not-allowed"
             [disabled]="importShortcutLocked()"
+            [attr.aria-describedby]="
+              importLockReasonKey() ? massDeletePanel.deleteLockReasonId : null
+            "
             (click)="openImportTarget('selection')"
           >
             {{ 'import.dockCopyButton' | transloco: { count: importShortcutSelectionCount() } }}
