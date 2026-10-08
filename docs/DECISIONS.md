@@ -10,6 +10,40 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — The landing stays at measure, vote, delete; only its irreversibility claim is corrected, and product principle 4 gets its new meaning
+
+**Betrifft:** `PRODUCT.md` (principle 4, "Bestätigte Funktionalität", operating context) ·
+`web/public/i18n/de.json` and `en.json` (`landing.does.purge.body`, `landing.how.join.body`,
+`landing.how.purge.note`, `landing.cta.app`, `landing.close.subtitleApp`) ·
+`web/src/app/features/landing/landing-page.{ts,html}` (logged-in CTAs)
+
+Since the landing was written (2026-08-06) the product gained restore from the purge protocol, emote
+tags, several emote sets, import/transfer with the 7TV leaderboard, and export. The landing does not
+grow with them: no new sections, no feature list (principle 5, "explain, don't sell"). Import,
+leaderboard and export are tools for logged-in users and stay off the public page on purpose.
+
+Three statements were no longer true and are corrected, nothing else. "Not recoverable from here" is
+gone: the removal at 7TV is still final (the "endgültig" label and the red line stay), but a protocol
+run can add emotes back as a fresh add, and a tag parks emotes instead of deleting them. The join
+text no longer says the bot "syncs the active set" as if there were only one; it counts for whichever
+set is active. The token note now covers everything that writes to 7TV, not only deleting.
+
+Principle 4 changes from "irreversibility is a promise" to honesty about what is final plus real ways
+back. The old wording would have forced the landing to keep claiming "cannot be undone", which is
+false for restore; the new one keeps the three-step confirmation and still forbids a fake undo
+button. The ways back are a re-add, not an undo, and carry their limits (the emote must still exist at
+7TV, the name must be free, the set needs room); the landing may claim neither "not recoverable" nor
+"everything reversible".
+
+A logged-in visitor on `/welcome` gets a link into the app instead of the login buttons: nav, hero and
+close become `<a routerLink="/">` ("Open app"), and the close subtitle changes from "log in and get
+started" to a note that they are already logged in. Anonymous visitors, and everyone while `/me` is
+still pending, keep the login buttons, so the main audience never waits or sees a flicker. There is
+deliberately no redirect from `/welcome` to `/`: the landing is the only explainer page and a logged-in
+user may read it or show it to someone. The page only reads `isResolved()`/`currentUser()`; the
+account menu in the nav already triggers `ensureLoaded()`, which does not de-duplicate in-flight
+requests.
+
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteSetIdValidation.cs` · `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `web/src/app/core/i18n/api-error.ts`

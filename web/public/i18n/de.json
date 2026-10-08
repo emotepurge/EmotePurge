@@ -59,6 +59,9 @@
     }
   },
   "landing": {
+    "cta": {
+      "app": "Zur App"
+    },
     "nav": {
       "does": "Was es tut",
       "how": "Ablauf",
@@ -89,7 +92,7 @@
       "purge": {
         "label": "endgültig",
         "title": "Gebündelt aus 7TV entfernen",
-        "body": "Markierte Emotes verlassen dein Set in einem Rutsch. Das passiert direkt bei 7TV und ist von hier aus nicht rückholbar — deshalb erst auswählen, dann bestätigen, dann vollziehen."
+        "body": "Markierte Emotes verlassen dein Set in einem Rutsch. Das passiert direkt bei 7TV und ist dort endgültig — deshalb erst auswählen, dann bestätigen, dann vollziehen. Aus dem Protokoll des Laufs kannst du Emotes wieder hinzufügen, solange es sie bei 7TV noch gibt. Saisonales parkst du besser in einem Tag."
       }
     },
     "how": {
@@ -101,7 +104,7 @@
       },
       "join": {
         "title": "Channel beitreten",
-        "body": "Der Bot betritt deinen Chat und synchronisiert dein aktives 7TV-Set.",
+        "body": "Der Bot betritt deinen Chat und synchronisiert dein gerade aktives 7TV-Set. Wechselst du das Set, zählt er für das neue weiter.",
         "note": "Gezählt wird ab dem Beitritt. Die ersten Tage sind deshalb leer — das ist kein Fehler, sondern der Anfang der Messung."
       },
       "measure": {
@@ -111,12 +114,13 @@
       "purge": {
         "title": "Aufräumen",
         "body": "Emotes anhand der gemessenen Nutzung auswählen und gebündelt aus 7TV entfernen.",
-        "note": "Für das Löschen brauchst du ein 7TV-Token, das du einmalig aus den Entwicklertools deines Browsers kopierst. 7TV bietet dafür keinen Login an. Das Token bleibt in deinem Browser."
+        "note": "Für alles, was bei 7TV schreibt — Löschen, Wiederhinzufügen, Tags ins Set holen —, brauchst du ein 7TV-Token, das du einmalig aus den Entwicklertools deines Browsers kopierst. 7TV bietet dafür keinen Login an. Das Token bleibt in deinem Browser."
       }
     },
     "close": {
       "title": "Bereit, dein Emote-Set aufzuräumen?",
       "subtitle": "Logg dich mit deinem Twitch-Account ein und leg direkt los.",
+      "subtitleApp": "Du bist bereits eingeloggt. Dein Emote-Set wartet in der App.",
       "button": "Mit Twitch einloggen",
       "trust": {
         "twitch": {
@@ -125,7 +129,7 @@
         },
         "token": {
           "term": "7TV-Token",
-          "body": "Das Token, mit dem gelöscht wird, bleibt in deinem Browser und wird nie an unseren Server geschickt."
+          "body": "Das Token, mit dem bei 7TV geschrieben wird, bleibt in deinem Browser und wird nie an unseren Server geschickt."
         },
         "source": {
           "term": "Quelltext",
