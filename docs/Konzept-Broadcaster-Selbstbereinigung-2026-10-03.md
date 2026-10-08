@@ -207,7 +207,7 @@ speicherresident — ein Cache davor hätte genau die Lücke, die die Sperre sch
 Ausnahme, auch nicht für Admins; (c) geheim. Die Broadcaster-Sperre ist (a) ein indizierter
 Lookup auf Pfaden, die ohnehin die DB berühren, (b) aufhebbar, (c) nicht geheim. **Zwei
 Mechanismen nebeneinander**, env gewinnt immer (wird zuerst geprüft, kein Aufheben per Join).
-**Aber: die Sperre wird an denselben vier Stellen durchgesetzt wie die env-Liste** (Review F2) —
+**Aber: die Sperre wird an denselben vier Stellen durchgesetzt wie die env-Liste** (Review F2; Nachtrag 2026-10-08: seit Epic #200 sieben Stellen, s. 4.3 E1) —
 die erste Fassung hatte sie auf Join und Reconcile beschränkt und damit die Beobachtung bis zum
 stündlichen Reconcile offen gelassen.
 
@@ -390,6 +390,35 @@ laufende DB nicht mehr lesbar (der eigentliche Katastrophenfall), sind diese Pur
 das ist die dokumentierte Grenze, die § 13 dann auch so nennt: *„Nach der Wiederherstellung eines
 Backups kann ein nach dem Backup-Zeitpunkt gelöschter Kanal wieder beobachtet werden; der Betreiber
 wiederholt die Löschung, sobald sie ihm bekannt wird."*
+
+### 4.3 Nachtrag 2026-10-08 — Betreiberentscheidungen aus der Drift-Prüfung (Plan R3/R4)
+
+Die Entscheidungen oben bleiben als Verlauf stehen; die Zeilen darunter ergänzen sie. Quelle: die
+Punkte 10–15 in Abschnitt 8 des Plans, vom Betreiber am 2026-10-08 entschieden.
+
+- **E1 — Nachtrag 2026-10-08:** Die Sperre gilt nicht mehr an „vier", sondern an **sieben** Lesestellen.
+  Zu Join, Sync-Gate (inkl. Warm-up), Roster und Reconcile kommen die drei env-Gate-Stellen aus Epic #200:
+  `ChannelQueries.LoadActiveChannelByTwitchIdReadOnlyAsync` (Ziel-Picker, Editierbarkeits-Vorprüfung,
+  Papier-Eintrag) und `EmoteService.MarkInSetAsync` Schritt 2 und 3. Ein gesperrter Kanal sieht dort
+  aus wie ein nicht getrackter — dieselbe Regel wie bei der env-Liste. Plan T4 wächst entsprechend.
+- **E2 — Nachtrag 2026-10-08:** Der Auslöser-Knopf im Workspace-Kopf nutzt `danger`, nicht
+  `danger-quiet`. UI-Designsprache §4.2 bindet `danger-quiet` an Wiederholung je Listenzeile und nennt
+  für den einzelnen Auslöser im Seitenkontext `danger`; in 3.1 Punkt 1 gilt damit `danger`. Zusätzlich
+  fragt die Übersicht (`join()`, `reactivate()`) beim Lock-Prompt wie Workspace und Admin-Liste: ein Mod
+  bekommt den 403-Text, ein Admin den Bestätigungsdialog.
+- **E6 — Nachtrag 2026-10-08:** Der Bestätigungsdialog beziffert zusätzlich die **Tags des Mod-Teams**
+  (seit #201 löscht der Purge sie samt Zuordnungen in fremden Sets). `data-summary` trägt dafür ein
+  viertes Feld `tagCount`; der Text in 3.1 Punkt 2 nennt neben Emotes, Abstimmungen und Live-Tagen auch
+  die Tags.
+- **E8 — Nachtrag 2026-10-08:** Der Deploy von Api und Worker ist **unabhängig vom #69-Folgeentscheid**
+  (der bindende Lauf am 08.10. war nicht bestanden). Nach dem Merge darf es nach Prod; Deployen bleibt der
+  manuelle Schritt des Betreibers — Migration von Hand vor den Images, neue Umgebungsvariable
+  `ADMIN_TWITCH_USER_IDS`, Worker vor Api.
+- **E15 — Nachtrag 2026-10-08:** D3 bleibt **A**, obwohl die Obergrenze seit #165 höher liegt: eine
+  id-lose Zeile bleibt bis zu rund einer Stunde ohne Zählung (Backoff `ResolutionBackoffMaxSeconds` plus
+  Such-Budget-Lockout, Defaults je 3600 s) statt bis zum nächsten 60-s-Tick. Betroffen sind weiter nur
+  Zeilen aus einem Helix-Ausfall beim Join. Die Obergrenze steht im DECISIONS-Eintrag; der bestehende
+  Test `SevenTvSyncServiceTests.cs:~1194` wird in Plan T4 angepasst.
 
 ---
 
