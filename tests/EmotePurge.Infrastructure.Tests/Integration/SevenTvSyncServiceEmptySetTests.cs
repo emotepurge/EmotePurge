@@ -21,20 +21,31 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
     private const string OldSetId = "64c9e0f0aa1234567890abcd";
     private const string NewSetId = "01M1V5HDNEWSET00000000000";
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(60);
+    private static readonly DateOnly Today = DateOnly.FromDateTime(DateTime.UtcNow);
 
     private readonly HandWoundTimeProvider _clock = new();
 
     private async Task<(Channel Channel, EmoteMatchCache Cache, EmptySetConfirmationTracker Tracker)> SeedAsync(AppDbContext db, string name, int confirmations = 3)
     {
+        // The state the epic (#200) leaves behind for a synced channel: an open observation interval
+        // for the active set, and usage counted against that set.
         var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = OldSetId, IsBotActive = true };
         db.Channels.Add(channel);
-        db.Emotes.Add(new Emote
+        var emote = new Emote
         {
             ChannelId = channel.Id,
             SevenTvEmoteId = "e1",
             Name = "stable",
             ImageUrl = "https://cdn.7tv.app/emote/e1/2x.webp"
+        };
+        db.Emotes.Add(emote);
+        db.ChannelEmoteSetObservations.Add(new ChannelEmoteSetObservation
+        {
+            ChannelId = channel.Id,
+            SevenTvEmoteSetId = OldSetId,
+            ObservedFromUtc = DateTime.UtcNow.AddDays(-3),
         });
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = Today, UseCount = 7, EmoteSetId = OldSetId });
         await db.SaveChangesAsync();
 
         var tracker = new EmptySetConfirmationTracker(new EmptySetConfirmationOptions { EmptySetConfirmations = confirmations }, _clock);
@@ -68,6 +79,9 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
             tracker, logger ?? new RecordingLogger<SevenTvSyncService>());
         return service.SyncChannelAsync(channel.ChannelName);
     }
+
+    private static Task<List<ChannelEmoteSetObservation>> ObservationsAsync(AppDbContext db, Channel channel) =>
+        db.ChannelEmoteSetObservations.AsNoTracking().Where(o => o.ChannelId == channel.Id).OrderBy(o => o.Id).ToListAsync();
 
     private static Task<bool> IsArchivedAsync(AppDbContext db, Channel channel) =>
         db.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).Select(e => e.IsArchived).SingleAsync();
@@ -421,6 +435,112 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         var row = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
         Assert.Equal(NewSetId, row.ActiveEmoteSetId);
         Assert.Equal(750, row.ActiveEmoteSetCapacity);
+    }
+
+    // Interactions with the multiple-emote-sets epic (#200). An accepted zero runs the ordinary
+    // write path, so the observation log, the match cache's set id and the per-set usage history
+    // must read exactly as for any other sync — a switch to an empty set is a switch, a really
+    // emptied set is not, and a held-back zero leaves no trace at all.
+
+    [Fact]
+    public async Task AcceptedEmptySwitch_IsBookedAsASetSwitch_AndTheOldSetKeepsItsHistory()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_epic_switch");
+
+        await SyncAsync(db, channel, cache, tracker, NewSetId);
+
+        var observations = await ObservationsAsync(db, channel);
+        Assert.Equal(2, observations.Count);
+        Assert.Equal(OldSetId, observations[0].SevenTvEmoteSetId);
+        Assert.NotNull(observations[0].ObservedToUtc);
+        Assert.Equal(ChannelEmoteSetObservationClosedBy.SetSwitch, observations[0].ClosedBy);
+        Assert.Equal(NewSetId, observations[1].SevenTvEmoteSetId);
+        Assert.Null(observations[1].ObservedToUtc);
+
+        // Chat counts from here on are keyed by the new, empty set — and there is nothing to count.
+        var snapshot = cache.GetChannelSnapshot(channel.ChannelName);
+        Assert.Equal(NewSetId, snapshot.EmoteSetId);
+        Assert.Empty(snapshot.NameToEmoteId);
+
+        // The active-set view is empty; the old set's view is historical and still shows its
+        // emote with the usage counted against it, archived like after any switch.
+        var usage = new UsageStatQueryService(db);
+        Assert.Empty(await usage.GetUsageContextAsync(channel.ChannelName, Today.AddDays(-6), Today));
+        var oldSet = Assert.Single(await usage.GetUsageContextAsync(channel.ChannelName, Today.AddDays(-6), Today, OldSetId));
+        Assert.Equal("stable", oldSet.EmoteName);
+        Assert.Equal(7, oldSet.TotalUseCount);
+        Assert.True(oldSet.IsArchived);
+    }
+
+    [Fact]
+    public async Task ConfirmedEmptySameSet_IsNotBookedAsASetSwitch()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_epic_same");
+
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+        _clock.Advance(Tick);
+        await SyncAsync(db, channel, cache, tracker, OldSetId);
+        _clock.Advance(Tick);
+        var third = await SyncAsync(db, channel, cache, tracker, OldSetId);
+
+        Assert.True(third!.HasChanges);
+        var observation = Assert.Single(await ObservationsAsync(db, channel));
+        Assert.Equal(OldSetId, observation.SevenTvEmoteSetId);
+        Assert.Null(observation.ObservedToUtc);
+        Assert.Null(observation.ClosedBy);
+        var snapshot = cache.GetChannelSnapshot(channel.ChannelName);
+        Assert.Equal(OldSetId, snapshot.EmoteSetId);
+        Assert.Empty(snapshot.NameToEmoteId);
+    }
+
+    [Theory]
+    [InlineData(OldSetId, null)]
+    [InlineData(NewSetId, 3)]
+    public async Task HeldBackZero_WritesNeitherAnObservationNorTheSyncStamp(string setId, int? remoteEntryCount)
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, $"emptyset_epic_held_{setId[..4].ToLowerInvariant()}");
+        var before = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
+
+        var result = await SyncZeroAsync(db, channel, cache, tracker, setId, remoteEntryCount);
+
+        Assert.False(result!.HasChanges);
+        var observation = Assert.Single(await ObservationsAsync(db, channel));
+        Assert.Equal(OldSetId, observation.SevenTvEmoteSetId);
+        Assert.Null(observation.ObservedToUtc);
+        var after = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
+        Assert.Equal(OldSetId, after.ActiveEmoteSetId);
+        Assert.Equal(before.LastSyncedAtUtc, after.LastSyncedAtUtc);
+        Assert.Equal(before.LastSyncAttemptAtUtc, after.LastSyncAttemptAtUtc);
+    }
+
+    [Fact]
+    public async Task SyncAfterAnAcceptedEmptySwitch_IsAPlainNoOp_AndTheFirstEmoteFillsTheSameInterval()
+    {
+        await using var db = fixture.CreateDbContext();
+        var (channel, cache, tracker) = await SeedAsync(db, "emptyset_epic_after");
+        await SyncAsync(db, channel, cache, tracker, NewSetId);
+        var logger = new RecordingLogger<SevenTvSyncService>();
+
+        _clock.Advance(Tick);
+        var again = await SyncZeroAsync(db, channel, cache, tracker, NewSetId, remoteEntryCount: 0, logger);
+
+        // Nothing active is known any more, so the guard is not involved: no held-back line, no
+        // second switch, no change.
+        Assert.False(again!.HasChanges);
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("sync skipped"));
+        Assert.Equal(2, (await ObservationsAsync(db, channel)).Count);
+
+        _clock.Advance(Tick);
+        var filled = await SyncAsync(db, channel, cache, tracker, NewSetId, new SevenTvEmote("e9", "fresh", "https://cdn.7tv.app/emote/e9/2x.webp"));
+
+        Assert.True(filled!.HasChanges);
+        var observations = await ObservationsAsync(db, channel);
+        Assert.Equal(2, observations.Count);
+        Assert.Null(observations[1].ObservedToUtc);
+        Assert.Equal(["fresh"], cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Keys);
     }
 
     private static Task<SevenTvDeltaResult> ApplyAsync(
