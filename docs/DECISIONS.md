@@ -47,6 +47,28 @@ requests. The login page follows the same pattern: logged in, its button becomes
 `/` with an "already logged in as …" heading, the scopes section stays, and nothing changes while
 anonymous or pending; login notices are independent of this state and still shown.
 
+### 2026-10-08 — REST reconcile deduplicates live entries on the 7TV emote id, last entry wins (#74)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceDuplicateEmoteIdTests.cs`
+
+7TV can list one emote id twice in a set under two alias names. The unique index
+`(ChannelId, SevenTvEmoteId)` (rule 8) keeps one row, so `ReconcileAsync` upserted that row twice per
+pass: the second entry rewrote the name and stamped `LastSyncedAt`, the channel counted as changed on
+every resync, and `channel.synced` fired once a minute (measured 2026-09-20 on 3 of 4 dev channels).
+`ReconcileAsync` now reduces the live list to one entry per id before the upsert loop, and the
+**last** entry wins: that is exactly the name the old per-entry loop left stored (and chat matching
+counted), so the deploy renames no row, stamps nothing and fires no `channel.synced` burst, and no
+usage series silently switches to a different word. First-wins was tried and dropped for that reason.
+
+Deliberately unchanged: the second alias is still not countable. Chat matching resolves names from
+the stored row, so exactly one alias per id can ever be counted; making both countable would change
+the counting rule and the `AlgorithmVersion`. This is not `EmoteNameMatching.Coalesce` (two different
+ids sharing one name, first loaded wins); it is the inverse case, and both agree only in that the
+stored one is what is counted. The EventAPI delta path upserts per pushed entry and has no
+loop over a full set, so it needs no dedup. Earlier entries that mention the "#74 duplicate cell"
+(delete/replace paths, set views with `slotCount` 2) describe the live 7TV set, which still carries
+both entries; they stay valid, since the dedup applies to the local row only.
+
 ### 2026-10-08 — Emote tags can be assigned from a non-active set of the channel (amends the 2026-10-04 tag data-model entry; #338)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/EmoteTagService.cs` · `src/EmotePurge.Core/Services/IEmoteTagService.cs` · `src/EmotePurge.Core/SevenTv/SevenTvEmoteSetIdValidation.cs` · `src/EmotePurge.Api/Endpoints/EmoteTagEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `web/src/app/core/i18n/api-error.ts`
