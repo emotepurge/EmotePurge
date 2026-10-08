@@ -343,6 +343,20 @@ lives in `EmotePurge.Infrastructure`, so the worker image has to be rebuilt and 
   `PostgresException` (23503), not a `DbUpdateException`. The full sync treats that like a vanished
   row and abandons the attempt. The delta path and the Api let it propagate, as they already did for
   the save's FK failure.
+- **The empty-set guard (#313, merged in on 2026-10-08).** The guard decides before the save, so
+  T-C hooks into neither of its branches. A zero it holds back writes nothing: no archive, no entry
+  stamp, no observation. That covers the first zeros of a streak and a zero that v4 contradicts. So
+  a placement can only lose time while 7TV answers zero, never its validity. An accepted zero runs the
+  normal full sync with an empty live list. On the same set, that is a REST leave like any other: a
+  row is recorded only outside the 30-min window, and the post-check records the rest once the window
+  is over. The confirmation streak does not make the REST answer more credible than E34 says: it
+  proves that the set is empty, not when each emote left it. An empty **new** set records against the
+  new set id, the one now active. The old set's placements get no observation and count again when
+  that set returns (spec 5.5 rule 9). A dispatch that would pull the last active emote stays
+  `ImplausibleSkipped` and records nothing. The leave then reaches the observations through the
+  accepted REST zero, subject to the window. Pinned by three cases in
+  `SevenTvSyncServiceLeaveObservationTests`: held back (streak and v4 veto), accepted on the same set,
+  and accepted as an empty new set with the old set's return.
 
 #### Read-time rule (Task 3)
 

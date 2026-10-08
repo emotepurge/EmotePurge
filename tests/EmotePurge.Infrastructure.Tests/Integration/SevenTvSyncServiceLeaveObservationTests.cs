@@ -548,6 +548,115 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         await fixture.AssertInactiveTagsHoldNoPlacementAsync(channel.Id);
     }
 
+    // The empty-set guard (#313) × the leave observations. A zero the guard holds back — the first
+    // counted zero of a streak, or a zero for a new set id that v4 contradicts — returns before the
+    // save: nothing is archived, no entry is stamped, no leave is recorded, and the placement reads
+    // exactly as before. Holding back is only ever a delay, so it must not cost a placement either.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncChannel_ZeroHeldBackByTheEmptySetGuard_RecordsNothing_AndThePlacementStillCounts(bool newSetVetoedByV4)
+    {
+        var channel = await SeedChannelAsync($"leaveobs_zero_held_{(newSetVetoedByV4 ? "veto" : "streak")}",
+            ("lokeep1", false, null),
+            ("loplaced1", false, null));
+        var (tagId, operationId) = await SeedPlacementAsync(channel, "loplaced1", SetId, DateTime.UtcNow.AddHours(-1));
+        var tracker = new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), new HandWoundTimeProvider());
+
+        var result = await SyncZeroAsync(
+            channel, newSetVetoedByV4 ? SwitchedSetId : SetId, tracker, remoteEntryCount: newSetVetoedByV4 ? 2 : null);
+
+        Assert.False(Assert.IsType<SevenTvSyncResult>(result).HasChanges);
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal(SetId, (await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id)).ActiveEmoteSetId);
+        var rows = await verify.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).ToListAsync();
+        Assert.All(rows, e => Assert.Equal((false, (DateTime?)null), (e.IsArchived, e.LastEnteredSetAtUtc)));
+        Assert.False(await verify.EmoteSetLeaveObservations.AnyAsync(o => o.ChannelId == channel.Id));
+        var (entry, placedCount) = await ReadTagAsync(channel, tagId);
+        Assert.Equal((true, true, (Guid?)operationId, 1),
+            (entry.InSet, entry.PlacedByThisTag, entry.PlacementOperationId, placedCount));
+    }
+
+    // An accepted zero for the same set (the streak reached) is a REST full sync like any other: it
+    // archives every row, but records a leave only where E34 calls a REST leave credible — outside
+    // the window after the row's last entry. The placement on the old row stops counting at once;
+    // the row that entered minutes ago is archived without an observation (the post-check records it
+    // once the window is over, as for any stale REST archive).
+    [Fact]
+    public async Task SyncChannel_AcceptedZeroOfTheSameSet_RecordsOnlyTheCredibleLeaves_AndThePlacementStopsCounting()
+    {
+        var channel = await SeedChannelAsync("leaveobs_zero_accepted",
+            ("loplaced1", false, null),
+            ("lofresh1", false, DateTime.UtcNow.AddMinutes(-5)));
+        var (tagId, operationId) = await SeedPlacementAsync(channel, "loplaced1", SetId, DateTime.UtcNow.AddHours(-1));
+        var clock = new HandWoundTimeProvider();
+        var tracker = new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), clock);
+        var required = new EmptySetConfirmationOptions().EmptySetConfirmations;
+
+        SevenTvSyncResult? result = null;
+        for (var zero = 1; zero <= required; zero++)
+        {
+            if (zero < required)
+            {
+                Assert.False((await SyncZeroAsync(channel, SetId, tracker))!.HasChanges);
+                Assert.False(await AnyObservationAsync(channel));
+            }
+            else
+            {
+                result = await SyncZeroAsync(channel, SetId, tracker);
+            }
+
+            clock.Advance(TimeSpan.FromSeconds(60));
+        }
+
+        Assert.True(Assert.IsType<SevenTvSyncResult>(result).HasChanges);
+        await using var verify = fixture.CreateDbContext();
+        Assert.All(await verify.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).ToListAsync(),
+            e => Assert.True(e.IsArchived));
+        var observation = Assert.Single(await verify.EmoteSetLeaveObservations.AsNoTracking()
+            .Where(o => o.ChannelId == channel.Id).ToListAsync());
+        Assert.Equal(("loplaced1", SetId), (observation.SevenTvEmoteId, observation.SevenTvEmoteSetId));
+        var (entry, placedCount) = await ReadTagAsync(channel, tagId);
+        Assert.Equal((false, false, 0), (entry.InSet, entry.PlacedByThisTag, placedCount));
+        Assert.True(await verify.EmoteTagPlacements.AnyAsync(p => p.TagId == tagId && p.OperationId == operationId));
+    }
+
+    // An empty NEW set is accepted at once (#313). The leaves are recorded against the new set id —
+    // the set the sync just observed as active (spec 5.5 rule 5) — and never against the old one, so
+    // the old set's placement rests untouched (rule 9, E6) and counts again when that set returns.
+    [Fact]
+    public async Task SyncChannel_EmptyNewSetAccepted_RecordsAgainstTheNewSet_AndTheOldSetsPlacementCountsAgainOnItsReturn()
+    {
+        var channel = await SeedChannelAsync("leaveobs_zero_switch",
+            ("loplaced1", false, null),
+            ("lofresh1", false, DateTime.UtcNow.AddMinutes(-5)));
+        // The first sync opens the observation interval for the old set.
+        await SyncAsync(channel, SetId, Live("loplaced1"), Live("lofresh1"));
+        var (tagId, operationId) = await SeedPlacementAsync(channel, "loplaced1", SetId, DateTime.UtcNow.AddHours(-1));
+        var tracker = new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), new HandWoundTimeProvider());
+
+        var result = await SyncZeroAsync(channel, SwitchedSetId, tracker);
+
+        Assert.True(Assert.IsType<SevenTvSyncResult>(result).HasChanges);
+        await using (var verify = fixture.CreateDbContext())
+        {
+            Assert.Equal(SwitchedSetId, (await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id)).ActiveEmoteSetId);
+            Assert.All(await verify.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).ToListAsync(),
+                e => Assert.True(e.IsArchived));
+            var observation = Assert.Single(await verify.EmoteSetLeaveObservations.AsNoTracking()
+                .Where(o => o.ChannelId == channel.Id).ToListAsync());
+            Assert.Equal(("loplaced1", SwitchedSetId), (observation.SevenTvEmoteId, observation.SevenTvEmoteSetId));
+            var placement = await verify.EmoteTagPlacements.AsNoTracking().SingleAsync(p => p.TagId == tagId);
+            Assert.Equal((SetId, operationId), (placement.SevenTvEmoteSetId, placement.OperationId));
+        }
+
+        await SyncAsync(channel, SetId, Live("loplaced1"), Live("lofresh1"));
+
+        var (entry, placedCount) = await ReadTagAsync(channel, tagId);
+        Assert.Equal((true, true, (Guid?)operationId, 1),
+            (entry.InSet, entry.PlacedByThisTag, entry.PlacementOperationId, placedCount));
+    }
+
     // Two contexts, (i): two first inserts of the same key. B blocks on A's uncommitted row, then
     // takes the ON CONFLICT branch once A commits — both commits succeed, one row.
     [Fact]
@@ -666,6 +775,19 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
             .SyncChannelAsync(channel.ChannelName);
     }
 
+    // A v3 answer with an empty set, through the given empty-set tracker, optionally with what v4
+    // lists for the same set (RemoteEntryCount) — the zero the #313 guard decides on.
+    private async Task<SevenTvSyncResult?> SyncZeroAsync(
+        Channel channel, string emoteSetId, IEmptySetConfirmationTracker tracker, int? remoteEntryCount = null)
+    {
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
+            .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState(
+                "7tv-user", new SevenTvEmoteSet(emoteSetId, [], RemoteEntryCount: remoteEntryCount))));
+        await using var db = fixture.CreateDbContext();
+        return await CreateService(db, new EmoteMatchCache(), apiClient, tracker).SyncChannelAsync(channel.ChannelName);
+    }
+
     private async Task<SevenTvDeltaResult> ApplyAsync(
         Channel channel, SevenTvEmoteSetDelta delta, EmoteMatchCache? cache = null, string emoteSetId = SetId)
     {
@@ -688,6 +810,12 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var latest = await EmoteSetLeaveObservations.LoadLatestAsync(db, channel.Id, emoteSetId, [sevenTvEmoteId], CancellationToken.None);
         return latest.TryGetValue(sevenTvEmoteId, out var observedAt) ? observedAt : null;
+    }
+
+    private async Task<bool> AnyObservationAsync(Channel channel)
+    {
+        await using var db = fixture.CreateDbContext();
+        return await db.EmoteSetLeaveObservations.AnyAsync(o => o.ChannelId == channel.Id);
     }
 
     private static Task<Emote> LoadEmoteAsync(AppDbContext db, Channel channel, string sevenTvEmoteId) =>
