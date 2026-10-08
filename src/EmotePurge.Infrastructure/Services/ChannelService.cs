@@ -13,6 +13,7 @@ public class ChannelService(
     AppDbContext db,
     IRedisPublisher redisPublisher,
     IChannelIdentityService channelIdentityService,
+    IChannelEmoteSetObservationService emoteSetObservationService,
     ChannelCapacityOptions channelCapacityOptions,
     IExcludedChannelFilter excludedChannelFilter,
     ILogger<ChannelService> logger) : IChannelService
@@ -116,7 +117,9 @@ public class ChannelService(
         // a prerequisite. Same is true for JoinAsync below and TriggerResyncAsync via the periodic
         // sync loop itself; only this method needed a new convergence net, since JOIN/RESYNC already
         // had one.
-        await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, actor, forExclusion: false, cancellationToken);
+        // The helper also closes the open observation interval (spec 4.3) in the same save.
+        await ChannelDeactivation.DeactivateAsync(
+            db, redisPublisher, emoteSetObservationService, channel, actor, forExclusion: false, cancellationToken);
 
         return true;
     }
@@ -199,6 +202,14 @@ public class ChannelService(
     {
         return await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
     }
+
+    public Task<Channel?> GetActiveByTwitchChannelIdAsync(string twitchChannelId, CancellationToken cancellationToken = default) =>
+        // The objection gate (an active row whose stored Twitch id is excluded reads as
+        // untracked, same rule as ListActiveChannelNamesAsync) now lives in the shared query, next to
+        // EmoteService's step 3a, which means the exact same thing by "this account's tracked
+        // channel". Without it, the target picker (GET /api/seventv/me/emote-set-targets) surfaced a
+        // channel the operator had blocked as a valid transfer target.
+        db.LoadActiveChannelByTwitchIdReadOnlyAsync(twitchChannelId, excludedChannelFilter, cancellationToken);
 
     public async Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default)
     {
@@ -374,6 +385,11 @@ public class ChannelService(
             // The rename is its own tracking gap — the IRC join pointed at a name that no longer
             // answered — independent of whether the row was also inactive.
             rowWithId.TrackingResumedAt = DateTime.UtcNow;
+            // Closes the open observation interval (spec 4.3) — tracked only, riding
+            // CompleteJoinAsync's SaveChangesAsync together with this rename's audit entry. The next
+            // successful sync opens a fresh interval; this method never does.
+            await emoteSetObservationService.CloseOpenIntervalAsync(
+                rowWithId.Id, ChannelEmoteSetObservationClosedBy.Rename, cancellationToken);
             db.AddAuditEntry(
                 actor,
                 AuditActions.ChannelRename,

@@ -147,7 +147,7 @@ public class Worker(
             // Phase 2 starts with the channels that still count nothing (never-synced rows, a warm-up
             // that found nothing or failed): only their sync makes them count, so they must not wait
             // behind channels that are already counting from the warm start.
-            var cold = channels.Where(name => emoteMatchCache.GetChannelEmotes(name).Count == 0).ToHashSet(StringComparer.Ordinal);
+            var cold = channels.Where(name => emoteMatchCache.GetChannelSnapshot(name).NameToEmoteId.Count == 0).ToHashSet(StringComparer.Ordinal);
             foreach (var channelName in BootRecoveryOrderPolicy.ColdFirst(channels, cold))
             {
                 stoppingToken.ThrowIfCancellationRequested();

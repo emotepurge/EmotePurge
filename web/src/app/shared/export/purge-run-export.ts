@@ -11,12 +11,78 @@ import { readEnvelope } from './read-envelope';
  * them instead of trusted. Deliberately contains no token of any kind, only emote ids and names.
  */
 
+/**
+ * The purge-run protocol's own row-shape version — deliberately **not** a bump of
+ * `EXPORT_FORMAT_VERSION` (`export-envelope.ts`), which every envelope `kind` shares and
+ * `import-source-parser.ts` pins its own, unrelated reads to `1` for; bumping it would have
+ * version-gated exports this row-shape change never touched.
+ *
+ * Bumped twice now, both times for the same reason: a reader written for an older row shape must
+ * refuse a file in a newer shape rather than parse it silently short.
+ *
+ * `1 → 2` (spec #200, K5 finding C, 2026-09-22): the *row* shape changed — `emoteId` went from
+ * always a Guid to `string | null`, and every row gained `aliases: string[]` — and a reader that
+ * predates that change must refuse the new shape: unaware of either field, it would drop every
+ * `emoteId: null` row outright and, for a restored duplicate cell, only re-add one of its two
+ * aliases — no error, just fewer restores than the file actually recorded, discovered only by
+ * whoever later expected the rest to still be there.
+ *
+ * `2 → 3` (#275, 2026-09-27, s. `docs/DECISIONS.md`): a row can now carry `status: 'unknown'` — a
+ * delete whose request was still in flight when the user cancelled it, or whose answer was lost in
+ * transport, settles to `unknown` rather than `cancelled`/`failed` unless one re-read afterwards
+ * positively confirms it. A v2 reader's `parsePurgeRunProtocol` only ever looked for
+ * `status === 'done'`; fed a v3 file, it would silently drop every `unknown` row instead of
+ * offering it for restore — the exact silent-short failure this version field exists to prevent.
+ * `parsePurgeRunProtocol` keeps accepting `1` and `2` alongside this version, so no file already on
+ * someone's disk from before either change stops being readable.
+ */
+export const PURGE_RUN_FORMAT_VERSION = 3;
+
 export interface PurgeRunRow {
-  emoteId: string;
+  /** Local `Emote.Id`, or `null` for a set-view row that never had one (spec #200, 7.2). Kept for
+   *  the paper trail only — restoring reads the 7TV id. */
+  emoteId: string | null;
   sevenTvEmoteId: string;
   name: string;
+  /** Every alias the emote sat under in the set when it was removed — two for a #74 duplicate
+   *  cell, whose one `REMOVE` took both entries. The restore sends one `ADD` per alias. A protocol
+   *  written before this field existed is read as `[name]`. */
+  aliases: string[];
   status: RunItemStatus;
   errorMessage: string | null;
+}
+
+/**
+ * One row a restore run re-adds, whatever file it came from — the restore flow's input
+ * (`startRestoreFlow`). A `PurgeRunRow` is one as it stands (every alias a non-empty string); a
+ * transfer-run file's removed target (`parseTransferRunForRestore` in `transfer-run-export.ts`) is
+ * the only source of a `null` alias, which stands for an entry without an alias: its `ADD` sends no
+ * alias and 7TV names the entry by the emote's default name. The purge-run file itself never holds
+ * a `null` — this type widens only the in-memory row.
+ */
+export interface RestoreRow {
+  emoteId: string | null;
+  sevenTvEmoteId: string;
+  /** What the confirmation lists this row under: its first named alias, else its default name,
+   *  else its 7TV id. */
+  name: string;
+  /** One `ADD` per entry — a string restores under that alias, `null` restores without one. */
+  aliases: readonly (string | null)[];
+  /** The emote's 7TV default name when the source file knows it (only a transfer-run file does),
+   *  shown for the queue row of an entry without an alias. */
+  defaultName?: string | null;
+  /**
+   * Set (to `true`) when this row's own outcome was never positively confirmed — a purge-run row
+   * whose delete ended `unknown` after #275's one settling re-read (source file only; absent, not
+   * `false`, on every `done` row). Never set on a row a transfer-run/transfer-undo file produces —
+   * not because those predate `unknown` outcomes, but because their own restore parsers already
+   * select what they offer through a per-step `confirmed` flag
+   * (`TransferRunRemovedTarget.confirmed`/`removedSource.confirmed`), independent of a row's final
+   * status, so they have no use for this coarser, row-level marker. A restoring caller must treat
+   * `uncertain` fail-closed: offered alongside `done` rows, but dropped unless the live check that
+   * precedes the actual `ADD` can vouch for it fully (`already-present-filter.ts`).
+   */
+  uncertain?: true;
 }
 
 export interface PurgeRunMeta {
@@ -24,7 +90,22 @@ export interface PurgeRunMeta {
   /** ISO timestamps of the run itself. */
   startedAt: string;
   finishedAt: string;
-  counts: { requested: number; succeeded: number; failed: number; cancelled: number };
+  /** Always sums to `requested`. `unknown` since #275 (format version 3): rows a delete left unable
+   *  to confirm, even after its one settling re-read — s. `docs/DECISIONS.md`. */
+  counts: {
+    requested: number;
+    succeeded: number;
+    failed: number;
+    cancelled: number;
+    unknown: number;
+  };
+  /** The set owner's Twitch id at run time, from the pre-check that started this run — an owner
+   *  *hint* for a later restore's own target check (plan #216, 3.1 Nr. 2/Nr. 8), never a permission by
+   *  itself: a hint outside `{actor} ∪ grants` is discarded there before any request, same as every
+   *  other carrier of this hint. `null` when the run started without one. Additive to format version 3
+   *  (no bump) — a file written before this field existed reads exactly like one that explicitly
+   *  carries `null` (`parsePurgeRunProtocol` below). */
+  targetOwnerTwitchId: string | null;
 }
 
 export type PurgeRunProtocol = ExportEnvelope<PurgeRunRow, PurgeRunMeta>;
@@ -34,15 +115,18 @@ export function buildPurgeRunProtocol(input: {
   emoteSetId: string;
   startedAt: number;
   finishedAt: number;
-  // Narrowed rather than plain RunQueueItem: since #70 a queue row's emoteId is optional (an
-  // import run has no internal guid for the target channel), but PurgeRunRow.emoteId is required.
-  // Demanding it here makes an unprotocollable run a compile error at the call site instead of a
-  // silently short download — and keeps `counts` below, which is derived from every item, in step
-  // with `rows`.
-  items: readonly (RunQueueItem & { emoteId: string })[];
+  // Every row of the run, unfiltered (spec #200, F3): a row without a local `emoteId` is written
+  // with `emoteId: null`, never dropped — the protocol is the only way back from a deletion, and a
+  // missing row would make that emote's removal irreversible without anyone noticing. `counts`
+  // below is derived from the same list, so it cannot drift from `rows`.
+  items: readonly RunQueueItem[];
+  /** The owner hint the run started with, or `null` when there was none — required so no caller
+   *  forgets it; plan #216's callers other than the pre-check itself pass `null` until they carry a
+   *  hint of their own. */
+  targetOwnerTwitchId: string | null;
 }): PurgeRunProtocol {
   const statuses = input.items.map((item) => item.status);
-  return buildEnvelope({
+  const envelope = buildEnvelope({
     kind: 'purge-run',
     channelName: input.channelName,
     withheld: [],
@@ -55,16 +139,22 @@ export function buildPurgeRunProtocol(input: {
         succeeded: statuses.filter((status) => status === 'done').length,
         failed: statuses.filter((status) => status === 'failed').length,
         cancelled: statuses.filter((status) => status === 'cancelled').length,
+        unknown: statuses.filter((status) => status === 'unknown').length,
       },
+      targetOwnerTwitchId: input.targetOwnerTwitchId,
     },
     rows: input.items.map((item) => ({
-      emoteId: item.emoteId,
+      emoteId: item.emoteId ?? null,
       sevenTvEmoteId: item.sevenTvEmoteId,
       name: item.name,
+      aliases: item.aliases && item.aliases.length > 0 ? [...item.aliases] : [item.name],
       status: item.status,
       errorMessage: item.errorMessage ?? null,
     })),
   });
+  // Overrides the shared envelope's own EXPORT_FORMAT_VERSION (still 1) — see
+  // PURGE_RUN_FORMAT_VERSION's doc above for why this kind versions independently.
+  return { ...envelope, formatVersion: PURGE_RUN_FORMAT_VERSION };
 }
 
 export function purgeRunJson(protocol: PurgeRunProtocol): string {
@@ -103,22 +193,76 @@ const FOREIGN_KIND_ERROR_KEYS: Partial<Record<ExportKind, string>> = {
   voting: 'restore.import.errors.votingExport',
 };
 
+/** A value from untrusted JSON, kept only when it is a non-blank string — a wrong-typed or
+ *  whitespace-only value counts as no hint at all, never an empty placeholder. Shared by all three
+ *  run-protocol parsers (`purge-run` here; `transfer-run-export.ts`/`transfer-undo-export.ts` import
+ *  it) for both halves of the owner hint they carry: the file's own `targetOwnerTwitchId`, and the
+ *  channel-login fallback each derives differently (plan #216, 3.7). */
+export function readNonBlankStringHint(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+/** The set a restore file names as its target — read from the file's `meta` and nothing else
+ *  (spec #253, 6.1/E1). Untrusted until `resolveEditableSet` has found it in the target list; the
+ *  file step never hands it on unchecked.
+ *
+ *  `ownerTwitchId`/`ownerLogin` are the owner hint plan #216 adds: an *order* hint for that check,
+ *  never a permission by themselves — a hint outside `{actor} ∪ grants` is discarded there before any
+ *  request, exactly like every other carrier of this hint. `ownerTwitchId` is the file's own
+ *  `targetOwnerTwitchId` when it reads as a non-blank string, else `null` — an old file, a malformed
+ *  value and an untracked target all read the same way. `ownerLogin` is the operator-approved
+ *  fallback the file step tries only when `ownerTwitchId` is `null`: `readNonBlankStringHint`'s
+ *  input differs per format (this parser's own `envelope.channelName`; the transfer parsers'
+ *  `meta.targetChannelName`, `null` for an untracked target) but the read itself is the same. */
+export interface RestoreFileTarget {
+  emoteSetId: string;
+  ownerTwitchId: string | null;
+  ownerLogin: string | null;
+}
+
 export type ProtocolParseResult =
-  | { ok: true; rows: PurgeRunRow[]; meta: PurgeRunMeta; channelName: string }
+  | {
+      ok: true;
+      rows: RestoreRow[];
+      meta: PurgeRunMeta;
+      channelName: string;
+      target: RestoreFileTarget;
+    }
   /** `errorKey` is a Transloco key (restore.import.errors.*), never finished prose. */
   | { ok: false; errorKey: string };
 
 /**
- * Validates an uploaded protocol against the *current* channel and active set — the file can be
- * days old and the channel can have switched sets since; restoring against the wrong set must be
- * a refusal, not a surprise. Returns only rows with `status: 'done'`: a failed delete means the
- * emote never left the set, and re-adding it would at best be a no-op, at worst an alias
- * collision.
+ * Reads an uploaded protocol and returns the set it names (`meta.emoteSetId`) as its `target` —
+ * the file decides where a restore goes, never the page it is read on (spec #253, E1/E15). There
+ * is no comparison against a channel or a set here any more: a protocol of a set that has since
+ * stopped being active (after a set switch) is the normal case, not a mistake. Whether the caller
+ * may write to that set is the file step's own target check (`resolveEditableSet`), not this
+ * parser's. A protocol without `meta.emoteSetId` is `wrongKind` — every protocol this app wrote
+ * carries one, and there is deliberately no fallback that would guess a set (F1). Returns rows with
+ * `status: 'done'` **or**, since format version 3 (#275), `status: 'unknown'` — a failed or
+ * cancelled delete means the emote never left the set, and re-adding it would at best have 7TV
+ * refuse the colliding alias (a burnt ticket, a red row), at worst — if the emote sits under a
+ * different alias by the time the file is used — add a second entry of the same id that no rollback
+ * removes, so those stay out. An `unknown` row is never *itself* proof the restore would land
+ * cleanly (the settling re-read that produced it only ever confirms positively, never clears an
+ * emote as gone) — it comes back as a plain `RestoreRow` marked `uncertain: true`; a
+ * `done` row comes back without the marker. Whether an `uncertain` row actually gets offered, and
+ * fail-closed if the live check at restore time cannot vouch for it, is the restore entry points'
+ * job (`already-present-filter.ts`), not this parser's — it only carries the marker through.
+ *
+ * Reads every protocol this app has ever written (spec #200, AK 69): `emoteId` as a Guid (before
+ * K5), `null` (a row without a local emote), or missing; `aliases` present, or missing — an older
+ * file, whose one alias is its `name`. The returned rows are normalised to today's shape. Accepts
+ * `formatVersion` `1` (every file written before K5), `2` (K5's row shape, before #275) and
+ * `PURGE_RUN_FORMAT_VERSION` (today's row shape, `unknown` rows included) — anything else is
+ * refused rather than parsed short (see that constant's doc).
+ *
+ * `meta` (and with it `meta.counts`) is passed through unvalidated beyond `emoteSetId` above — a
+ * v1 or v2 file has no `counts.unknown` at all, so it comes back `undefined` at runtime despite the
+ * field's non-optional type; nothing here reads it, and every file this app itself has ever written
+ * carries every other `counts` field, which is why only this one is affected.
  */
-export function parsePurgeRunProtocol(
-  text: string,
-  expected: { channelName: string; emoteSetId: string },
-): ProtocolParseResult {
+export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
   const read = readEnvelope(text);
   if (!read.ok) {
     return read;
@@ -134,35 +278,96 @@ export function parsePurgeRunProtocol(
     const foreign = envelope.kind ? FOREIGN_KIND_ERROR_KEYS[envelope.kind] : undefined;
     return { ok: false, errorKey: foreign ?? 'restore.import.errors.wrongKind' };
   }
-  if (envelope.formatVersion !== 1) {
+  if (
+    envelope.formatVersion !== 1 &&
+    envelope.formatVersion !== 2 &&
+    envelope.formatVersion !== PURGE_RUN_FORMAT_VERSION
+  ) {
     return { ok: false, errorKey: 'restore.import.errors.wrongVersion' };
   }
-  if (envelope.channelName !== expected.channelName) {
-    return { ok: false, errorKey: 'restore.import.errors.wrongChannel' };
-  }
-  const meta = envelope.meta;
-  if (!meta || typeof meta.emoteSetId !== 'string') {
+  // The envelope's channel is carried through for the caller's own use, never compared — but it
+  // still has to be a string for the result type to be honest about it.
+  if (typeof envelope.channelName !== 'string') {
     return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
   }
-  if (meta.emoteSetId !== expected.emoteSetId) {
-    return { ok: false, errorKey: 'restore.import.errors.wrongSet' };
+  const meta = envelope.meta;
+  if (!meta || typeof meta.emoteSetId !== 'string' || meta.emoteSetId.length === 0) {
+    return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
   }
   if (!Array.isArray(envelope.rows)) {
     return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
   }
 
-  const restorable = envelope.rows.filter(
-    (row): row is PurgeRunRow =>
-      !!row &&
-      typeof row.emoteId === 'string' &&
-      typeof row.sevenTvEmoteId === 'string' &&
-      row.sevenTvEmoteId.length > 0 &&
-      typeof row.name === 'string' &&
-      row.status === 'done',
-  );
+  // Reads the row in its full on-disk shape first (status included) so the `done`/`unknown` check
+  // below has something to check, then narrows to the RestoreRow shape a restore actually needs —
+  // `status`/`errorMessage` are the paper trail's business, not the restore flow's.
+  const restorable = (envelope.rows as unknown[]).flatMap((row): RestoreRow[] => {
+    const parsed = readProtocolRow(row);
+    if (!parsed || (parsed.status !== 'done' && parsed.status !== 'unknown')) {
+      return [];
+    }
+    const restoreRow: RestoreRow = {
+      emoteId: parsed.emoteId,
+      sevenTvEmoteId: parsed.sevenTvEmoteId,
+      name: parsed.name,
+      aliases: parsed.aliases,
+    };
+    return [parsed.status === 'unknown' ? { ...restoreRow, uncertain: true } : restoreRow];
+  });
   if (restorable.length === 0) {
     return { ok: false, errorKey: 'restore.import.errors.noRestorableRows' };
   }
 
-  return { ok: true, rows: restorable, meta, channelName: envelope.channelName };
+  return {
+    ok: true,
+    rows: restorable,
+    meta,
+    channelName: envelope.channelName,
+    target: {
+      emoteSetId: meta.emoteSetId,
+      // `meta.targetOwnerTwitchId` comes back `undefined` at runtime for a file older than this
+      // field, despite the field's non-optional type — same situation the `meta`/`counts` doc above
+      // already calls out; `readNonBlankStringHint` treats that the same as an explicit `null`.
+      ownerTwitchId: readNonBlankStringHint(meta.targetOwnerTwitchId),
+      // The login fallback: the page whose account owns every set it shows, already validated as a
+      // string above — blank still counts as no hint.
+      ownerLogin: readNonBlankStringHint(envelope.channelName),
+    },
+  };
+}
+
+/** One row of an untrusted protocol file, or `null` when it cannot be restored from. The 7TV id
+ *  and the name are required; `emoteId` may be a string, `null` or absent (all read as today's
+ *  `string | null`); `aliases` falls back to `[name]` when absent or not a non-empty list of
+ *  non-empty strings — a restore under the row's own name beats dropping the row, which would
+ *  leave its deletion without a way back. */
+function readProtocolRow(value: unknown): PurgeRunRow | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const row = value as Record<string, unknown>;
+  const { emoteId, sevenTvEmoteId, name, aliases, status, errorMessage } = row;
+  if (typeof sevenTvEmoteId !== 'string' || sevenTvEmoteId.length === 0) {
+    return null;
+  }
+  if (typeof name !== 'string') {
+    return null;
+  }
+  if (emoteId !== undefined && emoteId !== null && typeof emoteId !== 'string') {
+    return null;
+  }
+  const readAliases =
+    Array.isArray(aliases) &&
+    aliases.length > 0 &&
+    aliases.every((alias) => typeof alias === 'string' && alias.length > 0)
+      ? [...new Set(aliases as string[])]
+      : [name];
+  return {
+    emoteId: typeof emoteId === 'string' ? emoteId : null,
+    sevenTvEmoteId,
+    name,
+    aliases: readAliases,
+    status: status as RunItemStatus,
+    errorMessage: typeof errorMessage === 'string' ? errorMessage : null,
+  };
 }

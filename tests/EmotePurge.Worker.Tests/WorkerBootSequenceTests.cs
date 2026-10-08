@@ -334,8 +334,11 @@ public class WorkerBootSequenceTests
         // alpha and delta have a warm cache after phase 1; charlie (warm-up failed) and bravo stay cold.
         var cache = Substitute.For<IEmoteMatchCache>();
         var warm = new Dictionary<string, string> { ["x"] = "id" };
-        cache.GetChannelEmotes("alpha").Returns(warm);
-        cache.GetChannelEmotes("delta").Returns(warm);
+        // The real cache answers an unknown channel with an empty snapshot, never default(struct).
+        cache.GetChannelSnapshot(Arg.Any<string>())
+            .Returns(new EmoteMatchSnapshot(new Dictionary<string, string>(), string.Empty, DateTimeOffset.UnixEpoch));
+        cache.GetChannelSnapshot("alpha").Returns(new EmoteMatchSnapshot(warm, "set-alpha", DateTimeOffset.UnixEpoch));
+        cache.GetChannelSnapshot("delta").Returns(new EmoteMatchSnapshot(warm, "set-delta", DateTimeOffset.UnixEpoch));
 
         var subscriber = Substitute.For<IRedisSubscriber>();
         var worker = new WorkerService(

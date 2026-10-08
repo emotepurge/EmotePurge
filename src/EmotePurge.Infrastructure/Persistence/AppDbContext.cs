@@ -9,6 +9,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Emote> Emotes => Set<Emote>();
     public DbSet<UsageStat> UsageStats => Set<UsageStat>();
     public DbSet<ChannelLiveDay> ChannelLiveDays => Set<ChannelLiveDay>();
+    public DbSet<ChannelEmoteSetObservation> ChannelEmoteSetObservations => Set<ChannelEmoteSetObservation>();
     public DbSet<User> Users => Set<User>();
     public DbSet<VoteSession> VoteSessions => Set<VoteSession>();
     public DbSet<VoteSessionEmote> VoteSessionEmotes => Set<VoteSessionEmote>();
@@ -37,9 +38,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<UsageStat>(entity =>
         {
-            // One aggregated row per emote per UTC day. Covering index (UseCount included)
-            // so range-sum queries over (EmoteId, Date) can be answered as an index-only scan.
-            entity.HasIndex(u => new { u.EmoteId, u.Date })
+            // One aggregated row per emote per emote set per UTC day (#200, spec section 4.1): the
+            // same emote can be counted under two set ids on the same day (a mid-day set switch), so
+            // the old (EmoteId, Date) key stopped being able to hold one row per real count. Covering
+            // index (UseCount included) so range-sum queries over (EmoteId, EmoteSetId, Date) — and,
+            // with the EmoteId-only prefix, over (EmoteId, Date) for set-agnostic reads — can still
+            // be answered as an index-only scan. Replaces the former
+            // IX_UsageStats_EmoteId_Date, which the AddUsageStatEmoteSetId migration (T1.3b) drops.
+            entity.HasIndex(u => new { u.EmoteId, u.EmoteSetId, u.Date })
                 .IsUnique()
                 .IncludeProperties(u => u.UseCount);
 
@@ -62,6 +68,28 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasOne(d => d.Channel)
                 .WithMany()
                 .HasForeignKey(d => d.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ChannelEmoteSetObservation>(entity =>
+        {
+            // Access pattern is "this channel's intervals, newest first" (open-interval lookup,
+            // history for the "observed during this set" preset in spec 8.5).
+            entity.HasIndex(o => new { o.ChannelId, o.ObservedFromUtc });
+
+            // Invariant of the observation log (spec section 4.3): at most one open interval per
+            // channel at a time. A partial index — rather than application-level locking — makes a
+            // second concurrent "open" a unique-violation instead of a race two writers could both
+            // win.
+            entity.HasIndex(o => o.ChannelId)
+                .IsUnique()
+                .HasFilter("\"ObservedToUtc\" IS NULL");
+
+            // No inverse collection on Channel, same as ChannelLiveDay above — nothing navigates
+            // from a channel to its observations; every reader queries this table directly.
+            entity.HasOne(o => o.Channel)
+                .WithMany()
+                .HasForeignKey(o => o.ChannelId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

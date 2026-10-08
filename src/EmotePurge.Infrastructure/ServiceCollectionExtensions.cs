@@ -59,6 +59,13 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IRedisSubscriber>(),
             sp.GetRequiredService<ILogger<RedisLiveEventStream>>()));
 
+        // Owns every write to ChannelEmoteSetObservation (spec 4.3); ChannelService,
+        // ChannelIdentityService and SevenTvSyncService all depend on it instead of touching the
+        // table directly. Scoped like them, so all four share one AppDbContext/change tracker per
+        // request or worker tick — the point of the "tracked only, rides the caller's SaveChangesAsync"
+        // contract on most of its methods.
+        services.AddScoped<IChannelEmoteSetObservationService, ChannelEmoteSetObservationService>();
+
         // Bound and validated eagerly (fail-fast, same reasoning as RateLimitingOptions.Validate() in
         // the Api's Program.cs) rather than behind IOptions: ChannelService reads it on every join,
         // and there is no reload hook that would ever make a live snapshot indirection pay for itself.
@@ -86,6 +93,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAuditLogQueryService, AuditLogQueryService>();
         services.AddScoped<IEmoteService, EmoteService>();
         services.AddScoped<IEmoteSetOwnershipService, EmoteSetOwnershipService>();
+        services.AddScoped<ITrackedEmoteSetMembershipService, TrackedEmoteSetMembershipService>();
         services.AddScoped<IEmoteSetStatusService, EmoteSetStatusService>();
         services.AddScoped<IEmoteListQueryService, EmoteListQueryService>();
 
@@ -104,6 +112,13 @@ public static class ServiceCollectionExtensions
         .AddHttpMessageHandler(sp => ProviderTelemetry(sp, RateLimitProviders.SevenTv, RateLimitCallSources.SevenTvRest));
         services.AddSingleton<ChannelSyncGate>();
         services.AddScoped<ISevenTvSyncService, SevenTvSyncService>();
+
+        // The K3 source-set list's own Helix login resolution (spec 2026-09-20 K3 review, P3-1): a
+        // short-lived cache so a picker reopened for the same channel does not pay a fresh Helix
+        // request and a budget permit on every call, on top of everything ISevenTvEmoteSetListService
+        // already caches downstream of the resolved Twitch id. Singleton, same reasoning as every
+        // other cache on this path — a scoped instance would cache nothing across requests.
+        services.AddSingleton<IForeignChannelIdentityCache, ForeignChannelIdentityCache>();
 
         // 7TV's search bucket (design note docs/Konzept-7TV-Such-Budget-2026-10-03.md): one budget
         // in Redis shared by the Api's leaderboard and the Worker's Twitch-id resolution, plus the
@@ -156,6 +171,28 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ForeignEmoteSetProviderBudget>(),
             sp.GetRequiredService<IRateLimitTelemetry>(),
             sp.GetRequiredService<ILogger<HardenedForeignEmoteSetService>>()));
+
+        // The emote-set list of a 7TV account (spec 2026-09-20, 6.1/E6): one service behind three
+        // routes, and therefore one cache and one guard chain. It shares the preview's budget (the
+        // same object above, in both of its faces) and the preview's breaker instance — under its
+        // own operation name, which is what keeps a broken list query out of the preview's failure
+        // streak. Its coalescer is its own closed type: sharing one in-flight table across two
+        // result types is not a thing that can be made to typecheck, and would be wrong if it were.
+        services.AddSingleton<ISevenTvEmoteSetListCache, SevenTvEmoteSetListCache>();
+        services.AddSingleton<ForeignEmoteSetRequestCoalescer<EmoteSetListResult>>();
+        services.AddScoped<ISevenTvEmoteSetListService, SevenTvEmoteSetListService>();
+
+        // The set-centric import's owner check (spec 2026-09-20, section 32): answers from the lists
+        // above and only falls back to one direct owner lookup — under the same budget and breaker
+        // instance, with an operation name of its own.
+        services.AddScoped<IImportTargetOwnershipService, ImportTargetOwnershipService>();
+
+        // Its grants, when the grant cache has none, come through a guarded refresh of their own
+        // (section 32, second review round): same budget and breaker instance, operation name
+        // editor-grants, failures held in a key space only it reads. Nothing else resolves this
+        // interface — authorization, the picker and the overview keep ISevenTvEditorService.
+        services.AddSingleton<ISevenTvEditorGrantsHoldCache, SevenTvEditorGrantsHoldCache>();
+        services.AddScoped<IGuardedSevenTvEditorGrantsService, GuardedSevenTvEditorGrantsService>();
 
         // Leaderboard import source (spec 2026-09-13, section 6, T3). Purely additive: the typed
         // ForeignSevenTvBreakerPolicy registration above is untouched, and the HardenedForeignEmoteSetService

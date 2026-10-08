@@ -34,13 +34,35 @@ export interface CreateVoteSessionDialogData {
   // The LIVE selection, not a snapshot (#132) — the host page keeps reloading while this dialog is
   // open (a silent usage.flushed/channel.synced reload can prune an emote that got archived from
   // outside the tab), and a frozen array would keep offering ids the backend's all-or-nothing check
-  // (VoteSessionService.CreateAsync) would reject with emote_ids_invalid. Passed as the page's own
-  // `selection.selectedKeys` signal, so a shrink is visible to the dialog the instant it happens.
+  // would reject. Passed as a signal the page derives from its selection, so a shrink is visible to
+  // the dialog the instant it happens.
+  //
+  // The id space depends on `setSession` below: absent (null-session, the active set's view), these
+  // are `Emote.Id` Guids — the page's grid is keyed by 7TV id since spec #200 (7.2), and it resolves
+  // those keys into Guids whenever this signal is read, which, for `create()`, is the moment of
+  // submitting (E4: a null session keeps speaking Guids). Present (set-session, a non-active view),
+  // these are 7TV emote ids instead — resolved live the same way, just against the viewed set's own
+  // member list rather than the active set's Guids (spec 6.9, section 9).
   emoteIds: Signal<readonly string[]>;
   // ISO date (YYYY-MM-DD): the from-date of the range filter active when the dialog was opened.
   // Prefills the "count usage from" picker so the session's usage figures cover the same window
   // as the numbers that informed the selection.
   usageFromDate: string;
+  /**
+   * Why the host page no longer allows creating a session from this selection, as a translation
+   * key, or `null` while it does — LIVE, like `emoteIds`, because the dialog outlives the moment its
+   * button was enabled: a set switch started behind it (the usage page's `voteLockReasonKey`) must
+   * block the submit, with the reason shown next to it, rather than create a session over the active
+   * set while another set is chosen. Optional: a host without such a lock simply omits it.
+   */
+  lockReasonKey?: Signal<string | null>;
+  /**
+   * Present ⇒ submitting creates a set-session (spec 6.9) over this 7TV set instead of a
+   * null-session: the request body carries `emoteSetId` and `sevenTvEmoteIds` (the current value of
+   * `emoteIds` above) instead of `emoteIds`. Absent ⇒ today's null-session body, unchanged (E4) — a
+   * host without a non-active view (the usage page's active-set view) never sets it.
+   */
+  setSession?: { readonly emoteSetId: string };
 }
 
 /**
@@ -152,13 +174,13 @@ export interface CreateVoteSessionDialogData {
       <!-- The reason submit is blocked, in text next to it (docs/UI-Designsprache.md §7) — same
            pattern as TypedConfirmDialog's mr-auto hint, connected to the button via
            aria-describedby instead of leaving the greyed-out state as the only signal. -->
-      @if (currentCount() === 0) {
+      @if (blockedReasonKey(); as reasonKey) {
         <p
           dialog-actions
           id="create-vote-session-blocked-hint"
           class="mr-auto text-xs text-fg-muted"
         >
-          {{ 'voting.create.selectionEmpty' | transloco }}
+          {{ reasonKey | transloco }}
         </p>
       }
       <button
@@ -175,8 +197,10 @@ export interface CreateVoteSessionDialogData {
         type="button"
         appButton="primary"
         buttonSize="lg"
-        [disabled]="isSubmitting() || currentCount() === 0"
-        [attr.aria-describedby]="currentCount() === 0 ? 'create-vote-session-blocked-hint' : null"
+        [disabled]="isSubmitting() || blockedReasonKey() !== null"
+        [attr.aria-describedby]="
+          blockedReasonKey() !== null ? 'create-vote-session-blocked-hint' : null
+        "
         (click)="create()"
       >
         {{ 'voting.create.submit' | transloco }}
@@ -227,7 +251,22 @@ export class CreateVoteSessionDialog {
       : pluralKey(this.removedCount(), 'voting.create.selectionShrunk');
   });
 
+  /** Why submit is blocked right now, or `null`: the host's own lock first (it names the bigger
+   *  problem — the whole view moved), then an emptied ballot. */
+  protected readonly blockedReasonKey = computed(() => {
+    const hostLock = this.data.lockReasonKey?.() ?? null;
+    if (hostLock !== null) {
+      return hostLock;
+    }
+    return this.currentCount() === 0 ? 'voting.create.selectionEmpty' : null;
+  });
+
   protected create(): void {
+    // Re-checked here, not only through the disabled button: this is the last moment before the
+    // session is created, and the host's lock can arrive between render and click.
+    if (this.blockedReasonKey() !== null) {
+      return;
+    }
     if (this.titleControl.invalid) {
       this.titleControl.markAsTouched();
       return;
@@ -255,13 +294,18 @@ export class CreateVoteSessionDialog {
 
     this.errorMessage.set(null);
     this.isSubmitting.set(true);
+    // Set-session (data.setSession present): the same live ids, but as sevenTvEmoteIds alongside
+    // the set they belong to — emoteIds stays omitted (E4). Null-session: today's body, unchanged.
+    const setSession = this.data.setSession;
     this.voteSessionService
       .create(this.data.channelName, {
         title: this.titleControl.value.trim(),
         allowedVoterRoles: roles,
         startedAt,
-        emoteIds: [...emoteIds],
         hideResultsUntilEnd: this.hideResultsUntilEnd(),
+        ...(setSession
+          ? { emoteSetId: setSession.emoteSetId, sevenTvEmoteIds: [...emoteIds] }
+          : { emoteIds: [...emoteIds] }),
       })
       .subscribe({
         next: (session) => this.dialogRef.close(session),

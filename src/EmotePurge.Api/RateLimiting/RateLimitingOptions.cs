@@ -66,6 +66,14 @@ internal sealed class RateLimitingOptions
     public FixedWindowPolicy ForeignEmoteLookup { get; set; } = new() { PermitLimit = 10 };
 
     /// <summary>
+    /// Set preview of a tracked channel (#220): one cached preview call per set switch, with the
+    /// client's 60-second cache in front and a membership proof behind the route. 30/min per user
+    /// covers a user opening a different set every other second plus the <c>refresh=true</c>
+    /// reloads after a sync; it is an abuse bound, not a stand-in for the provider budget.
+    /// </summary>
+    public FixedWindowPolicy TrackedEmoteSetPreview { get; set; } = new() { PermitLimit = 30 };
+
+    /// <summary>
     /// 7TV leaderboard (spec 2026-09-13, E16): unlike <see cref="ForeignEmoteLookup"/> this endpoint
     /// never costs 7TV anything directly — it reads an in-process stock — but its response is up to
     /// ~30 KB, so it is not as cheap as <see cref="Bookkeeping"/> either. 20/min per user comfortably
@@ -104,6 +112,7 @@ internal sealed class RateLimitingOptions
         PublicHealth.Validate(nameof(PublicHealth));
         PublicLegal.Validate(nameof(PublicLegal));
         ForeignEmoteLookup.Validate(nameof(ForeignEmoteLookup));
+        TrackedEmoteSetPreview.Validate(nameof(TrackedEmoteSetPreview));
         SevenTvLeaderboard.Validate(nameof(SevenTvLeaderboard));
         Contact.Validate(nameof(Contact));
     }

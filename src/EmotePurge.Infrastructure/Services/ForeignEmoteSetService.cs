@@ -18,6 +18,8 @@ public class ForeignEmoteSetService(
     IChannelIdentityService channelIdentityService,
     ISevenTvApiClient sevenTvApiClient,
     IForeignUpstreamRequestBudget requestBudget,
+    ISevenTvEmoteSetListService emoteSetListService,
+    IForeignChannelIdentityCache identityCache,
     ILogger<ForeignEmoteSetService> logger) : IForeignEmoteSetService
 {
     // refresh (T2, spec E3) is meaningless here: this implementation never caches anything, so there
@@ -112,6 +114,14 @@ public class ForeignEmoteSetService(
                 logger.LogInformation(
                     "Fremdkanal-Vorschau für {ChannelName}: 7TV-Set-Abruf fehlgeschlagen.", normalized);
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable);
+            // Only reachable on a race — identity.ActiveEmoteSetId was just resolved as this
+            // account's active set, so 7TV reporting it unknown moments later means the set was
+            // deleted or switched in between. Same answer as NoActiveEmoteSet either way (Vorentscheidung
+            // 4): the caller cannot act on "unknown" versus "none configured" any differently.
+            case SevenTvPreviewLookupStatus.NotFound:
+                logger.LogInformation(
+                    "Foreign-channel preview for {ChannelName}: 7TV no longer knows the previously resolved set.", normalized);
+                return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.NoActiveEmoteSet);
             case SevenTvPreviewLookupStatus.BudgetExhausted:
                 // Our own throttle, not 7TV's — kept apart all the way up so the circuit breaker never
                 // counts it as evidence about the provider.
@@ -132,6 +142,127 @@ public class ForeignEmoteSetService(
             .ToList();
 
         return ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(
-            normalized, identity.SevenTvUserId, identity.ActiveEmoteSetId, preview.TotalCount, preview.Truncated, emotes));
+            normalized, identity.SevenTvUserId, identity.ActiveEmoteSetId, preview.TotalCount, preview.Truncated, emotes,
+            preview.Name, preview.Capacity));
+    }
+
+    // Set-ID mode (spec 2026-09-20, 6.4/E8): no identity resolution at all — neither Helix nor the
+    // 7TV userByConnection lookup runs, so unlike GetForeignEmoteSetAsync above this charges no
+    // request budget of its own. The paginated preview read (F1 step 3/F3) still charges its own
+    // pages inside the client, exactly as it does for the login-based path.
+    public async Task<ForeignEmoteSetLookupResult> GetForeignEmoteSetBySetIdAsync(
+        string channelName, string emoteSetId, bool refresh = false, CancellationToken cancellationToken = default)
+    {
+        var normalized = ChannelName.Normalize(channelName);
+
+        var previewResult = await sevenTvApiClient.GetEmoteSetPreviewAsync(emoteSetId, cancellationToken);
+        switch (previewResult.Status)
+        {
+            case SevenTvPreviewLookupStatus.RateLimited:
+                logger.LogWarning(
+                    "Set preview for {SetId} (channel {ChannelName}): 7TV reports overload (429).", emoteSetId, normalized);
+                return ForeignEmoteSetLookupResult.Failed(
+                    ForeignEmoteSetLookupStatus.SevenTvRateLimited, previewResult.RetryAfter);
+            case SevenTvPreviewLookupStatus.Unavailable:
+                logger.LogInformation(
+                    "Set preview for {SetId} (channel {ChannelName}): 7TV set fetch failed.", emoteSetId, normalized);
+                return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable);
+            // Vorentscheidung 4 (spec 6.4): 7TV answered, the set simply does not exist. Reuses the
+            // existing NoActiveEmoteSet status/404 code rather than minting a fifth one — the caller
+            // cannot act on "unknown set id" any differently than "this channel has none active", and
+            // a query with a manipulated emoteSetId is the only way to reach this branch at all.
+            case SevenTvPreviewLookupStatus.NotFound:
+                logger.LogInformation(
+                    "Set preview for {SetId} (channel {ChannelName}): 7TV does not know this set.", emoteSetId, normalized);
+                return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.NoActiveEmoteSet);
+            case SevenTvPreviewLookupStatus.BudgetExhausted:
+                // Our own throttle, not 7TV's — kept apart all the way up so the circuit breaker never
+                // counts it as evidence about the provider.
+                logger.LogWarning(
+                    "Set preview for {SetId} (channel {ChannelName}): provider-wide request budget exhausted during the page fetch.",
+                    emoteSetId, normalized);
+                return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.ProviderBudgetExhausted);
+            case SevenTvPreviewLookupStatus.Ok:
+                break;
+            default:
+                throw new UnreachableException(
+                    $"Unexpected {nameof(SevenTvPreviewLookupStatus)} value: {previewResult.Status}.");
+        }
+
+        var preview = previewResult.Preview!;
+        var emotes = preview.Items
+            .Select(item => new ForeignEmoteRow(
+                item.SevenTvEmoteId, item.Alias, item.DefaultName, item.ImageUrl, item.TopAllTime, item.Trending))
+            .ToList();
+
+        // channelName is the route's channel, echoed — never resolved (E8). SevenTvUserId is always
+        // null here: our Channel row holds no 7TV user id to report for a channel the caller may have
+        // no role in at all.
+        return ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(
+            normalized, null, emoteSetId, preview.TotalCount, preview.Truncated, emotes,
+            preview.Name, preview.Capacity));
+    }
+
+    // The K3 source-set list (spec 2026-09-20, 6.3): step 1 is a byte-for-byte repeat of
+    // GetForeignEmoteSetAsync's own step 1 above (Helix by login, one budget permit) — deliberately
+    // not factored into a shared private helper, matching how the set-ID mode above stays its own
+    // method rather than partially sharing GetForeignEmoteSetAsync's body. Step 2 never resolves a
+    // 7TV identity or reads a preview at all: it hands the resolved Twitch id straight to the shared
+    // list service, which charges and guards its own upstream request end to end (cache, coalescing,
+    // breaker, budget — spec 6.1's "Härtung des Listen-Dienstes"), so this method charges no permit
+    // of its own beyond the Helix call — and, since the K3 review (P3-1), not even that once
+    // identityCache already knows this channel's Twitch id.
+    public async Task<ForeignEmoteSetListLookupResult> GetForeignEmoteSetListAsync(
+        string channelName, CancellationToken cancellationToken = default)
+    {
+        var normalized = ChannelName.Normalize(channelName);
+
+        var twitchUserId = await identityCache.TryGetTwitchUserIdAsync(normalized, cancellationToken);
+        if (twitchUserId is null)
+        {
+            if (!await requestBudget.TryChargeRequestAsync(cancellationToken))
+            {
+                logger.LogWarning(
+                    "Foreign-channel set list for {ChannelName}: provider-wide request budget exhausted, Helix was not asked.", normalized);
+                return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted);
+            }
+
+            var twitchLookup = await channelIdentityService.LookupByLoginAsync(normalized, cancellationToken);
+            if (twitchLookup.Status == TwitchUserLookupStatus.NotFound)
+            {
+                logger.LogInformation(
+                    "Foreign-channel set list for {ChannelName}: Twitch does not know this login.", normalized);
+                return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ChannelNotOnTwitch);
+            }
+
+            if (twitchLookup.Status == TwitchUserLookupStatus.Unavailable)
+            {
+                logger.LogInformation(
+                    "Foreign-channel set list for {ChannelName}: Twitch/Helix unreachable.", normalized);
+                return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.TwitchUnavailable);
+            }
+
+            twitchUserId = twitchLookup.User!.Id;
+            await identityCache.SetTwitchUserIdAsync(normalized, twitchUserId, cancellationToken);
+        }
+
+        var listResult = await emoteSetListService.ListByTwitchIdAsync(twitchUserId, cancellationToken);
+        return listResult.Status switch
+        {
+            EmoteSetListStatus.Ok => ForeignEmoteSetListLookupResult.Ok(listResult.List!),
+            // An answer, not a failure, at the list service's own level — but 6.3's state table
+            // (shared with the singular preview) answers 404 here, not 200 with an empty list (see
+            // the status enum's own doc for why).
+            EmoteSetListStatus.NoSevenTvAccount =>
+                ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.NoSevenTvAccount),
+            EmoteSetListStatus.RateLimited =>
+                ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.SevenTvRateLimited),
+            EmoteSetListStatus.Unavailable =>
+                ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.SevenTvUnavailable),
+            EmoteSetListStatus.BudgetExhausted =>
+                ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted),
+            _ => throw new UnreachableException(
+                $"Unexpected {nameof(EmoteSetListStatus)} value: {listResult.Status}.")
+        };
     }
 }

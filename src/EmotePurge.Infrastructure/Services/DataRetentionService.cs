@@ -384,7 +384,8 @@ public class DataRetentionService(
             cascade.UsageRows,
             cascade.LiveDays,
             cascade.VoteSessions,
-            cascade.Votes);
+            cascade.Votes,
+            cascade.Observations);
     }
 
     /// <summary>
@@ -408,7 +409,8 @@ public class DataRetentionService(
             VoteSessions: await remainingSessionIds.CountAsync(cancellationToken),
             Votes: await db.Votes.CountAsync(
                 v => remainingSessionIds.Contains(v.VoteSessionId) && !removedAccountIds.Contains(v.UserId),
-                cancellationToken));
+                cancellationToken),
+            Observations: await db.ChannelEmoteSetObservations.CountAsync(o => o.ChannelId == channelId, cancellationToken));
     }
 
     /// <summary>
@@ -457,7 +459,7 @@ public class DataRetentionService(
     private static bool IsCancellation(Exception exception, CancellationToken cancellationToken) =>
         exception is OperationCanceledException && cancellationToken.IsCancellationRequested;
 
-    private readonly record struct ChannelCascade(int Emotes, int UsageRows, int LiveDays, int VoteSessions, int Votes)
+    private readonly record struct ChannelCascade(int Emotes, int UsageRows, int LiveDays, int VoteSessions, int Votes, int Observations)
     {
         public static ChannelCascade None => default;
 
@@ -466,6 +468,7 @@ public class DataRetentionService(
             a.UsageRows + b.UsageRows,
             a.LiveDays + b.LiveDays,
             a.VoteSessions + b.VoteSessions,
-            a.Votes + b.Votes);
+            a.Votes + b.Votes,
+            a.Observations + b.Observations);
     }
 }
