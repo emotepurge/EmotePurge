@@ -9,6 +9,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Emote> Emotes => Set<Emote>();
     public DbSet<UsageStat> UsageStats => Set<UsageStat>();
     public DbSet<ChannelLiveDay> ChannelLiveDays => Set<ChannelLiveDay>();
+    public DbSet<BroadcasterChannelLock> BroadcasterChannelLocks => Set<BroadcasterChannelLock>();
     public DbSet<ChannelEmoteSetObservation> ChannelEmoteSetObservations => Set<ChannelEmoteSetObservation>();
     public DbSet<EmoteTag> EmoteTags => Set<EmoteTag>();
     public DbSet<EmoteTagEntry> EmoteTagEntries => Set<EmoteTagEntry>();
@@ -75,6 +76,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .WithMany()
                 .HasForeignKey(d => d.ChannelId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<BroadcasterChannelLock>(entity =>
+        {
+            // Keyed by the immutable Twitch broadcaster id; no FK to Channel, because the purge that
+            // writes the lock deletes the channel row.
+            entity.HasKey(l => l.TwitchChannelId);
         });
 
         modelBuilder.Entity<ChannelEmoteSetObservation>(entity =>
