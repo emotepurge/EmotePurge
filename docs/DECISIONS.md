@@ -10,6 +10,27 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-08 — Unbindable request input answers 400 `invalid_request_body` in every environment (#245 live run)
+
+**Betrifft:** `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `web/src/app/core/i18n/api-error.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · `tests/EmotePurge.Api.Tests/UnbindableBodyTests.cs`
+
+**Observed.** `POST .../vote-sessions/{id}/votes` with `{"type":"Keep"}` answered 500
+`unexpected_error`. `VoteType` has no string converter, so the member name does not bind.
+
+**Root cause.** `RouteHandlerOptions.ThrowOnBadRequest` defaults to "true in Development only". There
+the binder throws `BadHttpRequestException` (status 400), which the global `UseExceptionHandler`
+flattened into a 500. In every other environment the option is off and the framework answers a
+body-less 400, so production had no `errorCode` for these cases either.
+
+**Decision.** The option is now on everywhere and the exception handler maps `BadHttpRequestException`
+to the exception's own 4xx status plus the new language-neutral code `invalid_request_body` (Rule 7
+chain complete: `ApiErrorCodes`, `api-error.ts`, both locale files). Any other exception still
+answers 500 `unexpected_error`; no exception text reaches the body. Consequence: binding still runs
+before endpoint filters, so a malformed body is a 400 even for a caller a filter would have
+rejected with 401/403 - unchanged from before, only the body differs.
+
+---
+
 ### 2026-10-08 — A convergence JOIN built on a roster read older than a processed LEAVE is dropped (leave ledger, #245 live run)
 
 **Betrifft:** `src/EmotePurge.Worker/ChannelLeaveLedger.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` · `src/EmotePurge.Worker/ITwitchChatManager.cs` · `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` · `src/EmotePurge.Worker/Worker.cs` · `tests/EmotePurge.Worker.Tests/ChannelLeaveLedgerTests.cs` · `tests/EmotePurge.Worker.Tests/TwitchChatManagerLeaveRaceTests.cs` · `tests/EmotePurge.Worker.Tests/SevenTvPeriodicResyncWorkerTests.cs`

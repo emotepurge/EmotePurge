@@ -11,6 +11,7 @@ using EmotePurge.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.StaticFiles;
@@ -253,6 +254,10 @@ builder.Services.AddRateLimiter(options =>
         RateLimitRejection.PartitionPerIpTokenBucket(httpContext, RateLimitPolicyNames.Contact, rateLimits.Contact));
 });
 
+// See the exception handler below: unbindable input must reach it in every environment, not only
+// in Development (the framework default), so the 400 carries an errorCode everywhere.
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
+
 var app = builder.Build();
 
 // Resolve the admin allowlist once at startup so its migration warning lands in the Api log at boot
@@ -269,8 +274,26 @@ if (app.Environment.IsDevelopment())
 // crash apart from a network failure and shows its generic message. Concretely reachable: two
 // concurrent votes racing the (VoteSessionId, EmoteId, UserId) unique index. Deliberately no
 // exception detail in the body — only a stable errorCode the frontend can translate.
+//
+// Minimal API reports a request it could not bind (unparseable JSON, an enum member that does not
+// exist, a missing body, a wrong content type) in one of two ways, chosen by
+// RouteHandlerOptions.ThrowOnBadRequest, whose default is "true in Development only": either it
+// throws BadHttpRequestException out of the request delegate, or it logs and answers a body-less
+// 400. Development therefore flattened the throw into a 500 unexpected_error here (found in the
+// #245 live run: "type":"Keep" on POST .../votes), while every other environment answered a 400
+// with no errorCode. The option is now on everywhere and this handler turns the exception into the
+// 4xx the framework chose plus a language-neutral code - one behaviour in every environment.
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 {
+    var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+    if (exception is BadHttpRequestException badRequest)
+    {
+        context.Response.StatusCode = badRequest.StatusCode;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new { errorCode = ApiErrorCodes.InvalidRequestBody });
+        return;
+    }
+
     context.Response.StatusCode = StatusCodes.Status500InternalServerError;
     context.Response.ContentType = "application/json";
     await context.Response.WriteAsJsonAsync(new { errorCode = ApiErrorCodes.UnexpectedError });

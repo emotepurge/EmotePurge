@@ -1957,6 +1957,7 @@
       "live_stream_unavailable": "Live updates are not available right now. Reload the page if needed.",
       "live_stream_quota_exhausted": "Too many open live connections. Close a few tabs and try again.",
       "unexpected_error": "An unexpected error occurred on the server. Please try again.",
+      "invalid_request_body": "The request could not be read. Please reload the page and try again.",
       "no_health_data": "No worker data is available right now.",
       "health_data_unreadable": "The worker data could not be read.",
       "invalid_emote_set_id": "Invalid emote set id.",

@@ -97,6 +97,11 @@ internal static class ApiErrorCodes
 
     // Returned by the global exception handler — deliberately opaque, no exception detail.
     public const string UnexpectedError = "unexpected_error";
+
+    // Returned by the same handler for a request body (or other input) Minimal API could not bind:
+    // unparseable JSON, an unknown enum member, a missing body. Status stays the 4xx the framework
+    // chose (400 for all of these), never a 500.
+    public const string InvalidRequestBody = "invalid_request_body";
     public const string NoHealthData = "no_health_data";
     public const string HealthDataUnreadable = "health_data_unreadable";
 
