@@ -409,7 +409,7 @@ Body `{ "emoteSetId": "01HQ…", "months": 6 }`. Policy `TrackedEmoteSetPreview`
 
 | Status | `errorCode` | When |
 |---|---|---|
-| 400 | `backfill_months_invalid` | body missing, `months ∉ {1,3,6}` |
+| 400 | `backfill_months_invalid` | `months` absent or `null`, or `months ∉ {1,3,6}`; a JSON body that is empty (content type set, no content) counts as absent — *clarified 2026-10-09 during child 5: a request with no content type at all never reaches the handler (routing rejects the JSON-only endpoint and the `/api` fallback answers a bare 404, `Program.cs`), like every other JSON route; a `months` that is not a number is the global handler's 400 `invalid_request_body`*. Checked before `invalid_emote_set_id`, after the flag |
 | 400 | `invalid_emote_set_id` | `emoteSetId` missing or not a 7TV ObjectID (`EmoteSetIdValidation.IsValid`, `src/EmotePurge.Api/Validation/EmoteSetIdValidation.cs:15`; reuse `ApiErrorCodes.InvalidEmoteSetId`, `:105`) |
 | 404 | `channel_not_found` | no row |
 | 404 | `backfill_disabled` | flag off |
