@@ -55,6 +55,14 @@ public enum ChatLogDayStatus
     MalformedResponse,
 
     /// <summary>
+    /// A single line of a range read exceeded <c>MaxLineBytes</c> before its terminator arrived — a
+    /// delimiter-free or otherwise hostile body. The body is discarded without being read further, so
+    /// no line (and no memory) beyond the limit is ever held. Only <c>ReadRangeAsync</c> produces
+    /// this; <c>ReadDayAsync</c> keeps its <c>StreamReader</c> path and never returns it.
+    /// </summary>
+    LineTooLong,
+
+    /// <summary>
     /// The caller's token was cancelled while the body was being read (a <c>docker stop</c> or
     /// Ctrl-C mid-transfer). Returned rather than thrown so <see cref="ChatLogDayResult.BytesReceived"/>
     /// can carry the bytes that had already arrived — they left the archive and count against the
@@ -78,3 +86,19 @@ public record ChatLogDayResult(
     int NonPrivmsgLines,
     int MalformedLines,
     int? HttpStatusCode);
+
+/// <summary>
+/// Result of reading one UTC range. Same status vocabulary as <see cref="ChatLogDayResult"/>, but no
+/// body digest — a range is identified by its request parameters alone. <paramref name="RetryAfter"/>
+/// is only set for <see cref="ChatLogDayStatus.RateLimited"/> and only when the 429 carried a
+/// parseable <c>Retry-After</c> header (delta-seconds or HTTP-date); otherwise it is null.
+/// <paramref name="BytesReceived"/> counts decompressed bytes, which is what the line parser sees.
+/// </summary>
+public record ChatLogRangeResult(
+    ChatLogDayStatus Status,
+    long BytesReceived,
+    int MessageCount,
+    int NonPrivmsgLines,
+    int MalformedLines,
+    int? HttpStatusCode,
+    TimeSpan? RetryAfter);

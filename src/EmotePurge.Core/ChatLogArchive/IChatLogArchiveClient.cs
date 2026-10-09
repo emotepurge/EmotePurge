@@ -28,4 +28,22 @@ public interface IChatLogArchiveClient
         long maxBytes,
         Func<ChatLogMessage, ValueTask> onMessage,
         CancellationToken ct);
+
+    /// <summary>
+    /// Fetches the UTC range <c>[fromUtc, toUtcExclusive)</c> of one channel in a single request and
+    /// invokes <paramref name="onMessage"/> once per PRIVMSG line, in archive order. Same contract as
+    /// <see cref="ReadDayAsync"/> for the byte cap, cancellation and the sequential pacing, with
+    /// three differences: no body digest is computed, a line longer than the configured maximum ends
+    /// the read with <see cref="ChatLogDayStatus.LineTooLong"/> (memory per call is bounded by one
+    /// line, not by the body), and a 429 carries the parsed <c>Retry-After</c> in
+    /// <see cref="ChatLogRangeResult.RetryAfter"/>. Both bounds are taken as UTC instants and sent
+    /// with second precision.
+    /// </summary>
+    Task<ChatLogRangeResult> ReadRangeAsync(
+        string twitchChannelId,
+        DateTime fromUtc,
+        DateTime toUtcExclusive,
+        long maxBytes,
+        Func<ChatLogMessage, ValueTask> onMessage,
+        CancellationToken ct);
 }

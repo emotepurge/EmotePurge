@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using EmotePurge.Core.ChatLogArchive;
@@ -288,10 +289,352 @@ public class ChatLogArchiveClientTests
         Assert.Null(result.HttpStatusCode);
     }
 
-    private static ChatLogArchiveClient CreateClient(HttpMessageHandler handler, ChatLogArchiveOptions options)
+    // ---- ReadRangeAsync (#346) ------------------------------------------------------------------
+
+    private static readonly DateTime RangeFrom = new(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime RangeTo = new(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public async Task ReadRangeAsync_RequestsTheSecondPrecisionRangePath_AndCountsTheFixtureBody()
+    {
+        var fixtureBytes = await File.ReadAllBytesAsync(FixturePath);
+        var handler = new CapturingStreamHandler(() => new LineChunkedStream(fixtureBytes));
+        var client = CreateClient(handler, new ChatLogArchiveOptions());
+
+        var received = new List<ChatLogMessage>();
+        var result = await client.ReadRangeAsync(
+            "900000001", RangeFrom, RangeTo, maxBytes: 10_000_000,
+            msg => { received.Add(msg); return ValueTask.CompletedTask; }, CancellationToken.None);
+
+        Assert.Equal("/channelid/900000001?from=2026-04-09T00:00:00Z&to=2026-04-16T00:00:00Z&raw", handler.LastRequestPathAndQuery);
+        Assert.Equal(ChatLogDayStatus.Complete, result.Status);
+        Assert.Equal(fixtureBytes.Length, result.BytesReceived);
+        Assert.Equal(6, result.MessageCount);
+        Assert.Equal(2, result.NonPrivmsgLines);
+        Assert.Equal(0, result.MalformedLines);
+        Assert.Equal((int)HttpStatusCode.OK, result.HttpStatusCode);
+        Assert.Null(result.RetryAfter);
+        Assert.Equal("hey everyone", received[0].Text);
+        Assert.Equal("waves hello", received[2].Text);
+        Assert.Equal("gg", received[^1].Text);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_FormatsNonUtcInstantsAndMillisecondsAsPlainSecondPrecisionUtc()
+    {
+        var handler = new CapturingStreamHandler(() => new MemoryStream());
+        var client = CreateClient(handler, new ChatLogArchiveOptions());
+
+        await client.ReadRangeAsync(
+            "1", new DateTime(2026, 4, 9, 23, 59, 59, 999, DateTimeKind.Utc), new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc),
+            1000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal("/channelid/1?from=2026-04-09T23:59:59Z&to=2026-04-10T00:00:00Z&raw", handler.LastRequestPathAndQuery);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_With404_ReturnsNoLogDay_WithoutInvokingCallback()
+    {
+        var client = CreateClient(new FixedStatusStubHandler(HttpStatusCode.NotFound), new ChatLogArchiveOptions());
+        var callbackInvoked = false;
+
+        var result = await client.ReadRangeAsync(
+            "1", RangeFrom, RangeTo, 1000, _ => { callbackInvoked = true; return ValueTask.CompletedTask; }, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.NoLogDay, result.Status);
+        Assert.False(callbackInvoked);
+        Assert.Equal((int)HttpStatusCode.NotFound, result.HttpStatusCode);
+        Assert.Equal(0, result.BytesReceived);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_With429AndDeltaSecondsRetryAfter_ReturnsRateLimitedWithTheDelay()
+    {
+        var client = CreateClient(new RetryAfterHandler(r => r.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(120))), new ChatLogArchiveOptions());
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 1000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.RateLimited, result.Status);
+        Assert.Equal(TimeSpan.FromSeconds(120), result.RetryAfter);
+        Assert.Equal((int)HttpStatusCode.TooManyRequests, result.HttpStatusCode);
+        Assert.Equal(0, result.BytesReceived);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_With429WithoutRetryAfter_ReturnsRateLimitedWithNullDelay()
+    {
+        var client = CreateClient(new RetryAfterHandler(_ => { }), new ChatLogArchiveOptions());
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 1000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.RateLimited, result.Status);
+        Assert.Null(result.RetryAfter);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_With429AndHttpDateRetryAfter_ReturnsTheRemainingTime_AndZeroForAPastDate()
+    {
+        var clock = new HandWoundTimeProvider(new DateTimeOffset(2026, 10, 9, 12, 0, 0, TimeSpan.Zero));
+        var future = new DateTimeOffset(2026, 10, 9, 12, 5, 0, TimeSpan.Zero);
+        var past = new DateTimeOffset(2026, 10, 9, 11, 0, 0, TimeSpan.Zero);
+
+        var futureClient = CreateClient(
+            new RetryAfterHandler(r => r.Headers.RetryAfter = new RetryConditionHeaderValue(future)), new ChatLogArchiveOptions(), clock);
+        var pastClient = CreateClient(
+            new RetryAfterHandler(r => r.Headers.RetryAfter = new RetryConditionHeaderValue(past)), new ChatLogArchiveOptions(), clock);
+
+        var futureResult = await futureClient.ReadRangeAsync("1", RangeFrom, RangeTo, 1000, _ => ValueTask.CompletedTask, CancellationToken.None);
+        var pastResult = await pastClient.ReadRangeAsync("1", RangeFrom, RangeTo, 1000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(TimeSpan.FromMinutes(5), futureResult.RetryAfter);
+        Assert.Equal(TimeSpan.Zero, pastResult.RetryAfter);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WithBodyThatStalls_ReturnsBodyTimeoutAfterRangeBodyTimeout()
+    {
+        var handler = new CapturingStreamHandler(() => new StallingStream(Encoding.UTF8.GetBytes("@partial"), stallAfterBytes: 4));
+        // BodyTimeout (the day deadline) is long on purpose: only RangeBodyTimeout may end this.
+        var options = new ChatLogArchiveOptions { BodyTimeout = TimeSpan.FromMinutes(5), RangeBodyTimeout = TimeSpan.FromMilliseconds(300) };
+        var client = CreateClient(handler, options);
+
+        var sw = Stopwatch.StartNew();
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 10_000_000, _ => ValueTask.CompletedTask, CancellationToken.None);
+        sw.Stop();
+
+        Assert.Equal(ChatLogDayStatus.BodyTimeout, result.Status);
+        Assert.Equal(4, result.BytesReceived);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"expected the range body timeout to fire quickly, took {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WithCallerCancellationMidBody_ReturnsCancelledWithTheBytesSoFar()
+    {
+        var handler = new CapturingStreamHandler(() => new StallingStream(Encoding.UTF8.GetBytes("@partial"), stallAfterBytes: 4));
+        var client = CreateClient(handler, new ChatLogArchiveOptions());
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(TimeSpan.FromMilliseconds(200));
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 10_000_000, _ => ValueTask.CompletedTask, cts.Token);
+
+        Assert.Equal(ChatLogDayStatus.Cancelled, result.Status);
+        Assert.Equal(4, result.BytesReceived);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WithCallerCancellationBeforeTheHeaders_StillThrows()
+    {
+        var client = CreateClient(new HangingHandler(), new ChatLogArchiveOptions());
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(TimeSpan.FromMilliseconds(200));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.ReadRangeAsync("1", RangeFrom, RangeTo, 1000, _ => ValueTask.CompletedTask, cts.Token));
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_EnforcesMaxBytes_WithinOneBufferOfTheCap()
+    {
+        const long maxBytes = 64 * 1024;
+        var source = new NewlineFreeStream(8 * 1024 * 1024);
+        var client = CreateClient(new CapturingStreamHandler(() => source), new ChatLogArchiveOptions { MaxLineBytes = 1024 * 1024 });
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, maxBytes, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.ByteCapExceeded, result.Status);
+        Assert.Equal(source.BytesServed, result.BytesReceived);
+        Assert.True(result.BytesReceived > maxBytes);
+        Assert.True(result.BytesReceived <= maxBytes + 1024, $"expected at most one buffer beyond the cap, got {result.BytesReceived}");
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WithABodyExactlyAsLargeAsTheCap_IsComplete_AndOneByteLessIsNot()
+    {
+        var fixtureBytes = await File.ReadAllBytesAsync(FixturePath);
+        var client = CreateClient(new CapturingStreamHandler(() => new LineChunkedStream(fixtureBytes)), new ChatLogArchiveOptions());
+
+        var exact = await client.ReadRangeAsync("1", RangeFrom, RangeTo, fixtureBytes.Length, _ => ValueTask.CompletedTask, CancellationToken.None);
+        var tooSmall = await client.ReadRangeAsync("1", RangeFrom, RangeTo, fixtureBytes.Length - 1, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.Complete, exact.Status);
+        Assert.Equal(ChatLogDayStatus.ByteCapExceeded, tooSmall.Status);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WithA50MbNewlineFreeBody_EndsLineTooLong_AfterReadingAtMostOneLineAndOneBuffer()
+    {
+        // EPIC AC 24, unit part: the body is generated, never materialised, and the client must stop
+        // at the line limit instead of buffering it.
+        var options = new ChatLogArchiveOptions();
+        var source = new NewlineFreeStream(50L * 1024 * 1024);
+        var client = CreateClient(new CapturingStreamHandler(() => source), options);
+        var callbackInvoked = false;
+
+        var result = await client.ReadRangeAsync(
+            "1", RangeFrom, RangeTo, maxBytes: 256L * 1024 * 1024,
+            _ => { callbackInvoked = true; return ValueTask.CompletedTask; }, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.LineTooLong, result.Status);
+        Assert.False(callbackInvoked);
+        Assert.Equal(source.BytesServed, result.BytesReceived);
+        Assert.True(
+            result.BytesReceived <= options.MaxLineBytes + BoundedLineScanner.ReadBufferBytes,
+            $"expected to stop within the line limit plus one buffer, read {result.BytesReceived}");
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WithMostlyUnparsableLines_ReturnsMalformedResponse()
+    {
+        var body = string.Join('\n', Enumerable.Repeat("this is not an irc line at all", 6)) + "\n";
+        var client = CreateClient(new CapturingStreamHandler(() => new MemoryStream(Encoding.UTF8.GetBytes(body))), new ChatLogArchiveOptions());
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 10_000_000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.MalformedResponse, result.Status);
+        Assert.Equal(6, result.MalformedLines);
+        Assert.Equal(0, result.MessageCount);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WithTransportErrorMidBody_ReturnsTransportFailureWithTheBytesSoFar()
+    {
+        var handler = new CapturingStreamHandler(() => new ThrowingAfterBytesStream(Encoding.UTF8.GetBytes("@partial-line-before-drop"), throwAfterBytes: 5));
+        var client = CreateClient(handler, new ChatLogArchiveOptions());
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 10_000_000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.TransportFailure, result.Status);
+        Assert.Equal(5, result.BytesReceived);
+        Assert.Equal((int)HttpStatusCode.OK, result.HttpStatusCode);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WhenCallbackThrows_PropagatesTheException()
+    {
+        var fixtureBytes = await File.ReadAllBytesAsync(FixturePath);
+        var client = CreateClient(new CapturingStreamHandler(() => new LineChunkedStream(fixtureBytes)), new ChatLogArchiveOptions());
+
+        var thrown = await Assert.ThrowsAsync<IOException>(() =>
+            client.ReadRangeAsync("1", RangeFrom, RangeTo, 10_000_000, _ => throw new IOException("storage full"), CancellationToken.None));
+
+        Assert.Equal("storage full", thrown.Message);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WithUnexpectedNon2xxStatus_ReturnsTransportFailureWithStatusCode()
+    {
+        var client = CreateClient(new FixedStatusStubHandler(HttpStatusCode.InternalServerError), new ChatLogArchiveOptions());
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 1000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.TransportFailure, result.Status);
+        Assert.Equal((int)HttpStatusCode.InternalServerError, result.HttpStatusCode);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WithHeaderPhaseTransportError_ReturnsTransportFailureWithNullStatus()
+    {
+        var client = CreateClient(new ThrowingHandler(), new ChatLogArchiveOptions());
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 1000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.TransportFailure, result.Status);
+        Assert.Null(result.HttpStatusCode);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_AndReadDayAsync_ShareOnePacingClock()
+    {
+        var options = new ChatLogArchiveOptions { RequestDelay = TimeSpan.FromMilliseconds(300) };
+        var client = CreateClient(new FixedStatusStubHandler(HttpStatusCode.NotFound), options);
+
+        var sw = Stopwatch.StartNew();
+        await client.ReadRangeAsync("1", RangeFrom, RangeTo, 1000, _ => ValueTask.CompletedTask, CancellationToken.None);
+        await client.ReadDayAsync("1", new DateOnly(2026, 1, 2), 1000, _ => ValueTask.CompletedTask, CancellationToken.None);
+        sw.Stop();
+
+        Assert.True(sw.Elapsed >= options.RequestDelay - TimeSpan.FromMilliseconds(50), $"only waited {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_DecodesABrotliBody_WithThePrimaryHandlerTheRegistrationUses()
+    {
+        // The registration's decompression is real transport behaviour, so this goes over a loopback
+        // socket: a stub handler would hand the client the already-decoded stream and prove nothing.
+        var plain = await File.ReadAllBytesAsync(FixturePath);
+        byte[] compressed;
+        using (var buffer = new MemoryStream())
+        {
+            await using (var brotli = new System.IO.Compression.BrotliStream(buffer, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+            {
+                await brotli.WriteAsync(plain);
+            }
+
+            compressed = buffer.ToArray();
+        }
+
+        Assert.True(compressed.Length < plain.Length);
+
+        var port = GetFreeTcpPort();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        var serve = Task.Run(async () =>
+        {
+            var context = await listener.GetContextAsync();
+            context.Response.AddHeader("Content-Encoding", "br");
+            context.Response.ContentLength64 = compressed.Length;
+            await context.Response.OutputStream.WriteAsync(compressed);
+            context.Response.Close();
+        });
+
+        using var http = new HttpClient(ChatLogArchiveClient.CreatePrimaryHandler()) { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+        var client = new ChatLogArchiveClient(http, new ChatLogArchiveOptions(), new RecordingLogger<ChatLogArchiveClient>());
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 10_000_000, _ => ValueTask.CompletedTask, CancellationToken.None);
+        await serve;
+
+        Assert.Equal(ChatLogDayStatus.Complete, result.Status);
+        // BytesReceived counts the decompressed bytes the parser saw, not the smaller wire size.
+        Assert.Equal(plain.Length, result.BytesReceived);
+        Assert.Equal(6, result.MessageCount);
+    }
+
+    private static int GetFreeTcpPort()
+    {
+        var probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
+    }
+
+    private static ChatLogArchiveClient CreateClient(HttpMessageHandler handler, ChatLogArchiveOptions options, TimeProvider? timeProvider = null)
     {
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://logs.example.test/") };
-        return new ChatLogArchiveClient(httpClient, options, new RecordingLogger<ChatLogArchiveClient>());
+        return new ChatLogArchiveClient(httpClient, options, new RecordingLogger<ChatLogArchiveClient>(), timeProvider);
+    }
+
+    // Records the request the client built, then serves the stream.
+    private sealed class CapturingStreamHandler(Func<Stream> streamFactory) : HttpMessageHandler
+    {
+        public string? LastRequestPathAndQuery { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            LastRequestPathAndQuery = request.RequestUri!.PathAndQuery;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(streamFactory()) });
+        }
+    }
+
+    private sealed class RetryAfterHandler(Action<HttpResponseMessage> configure) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            configure(response);
+            return Task.FromResult(response);
+        }
     }
 
     private sealed class FixedStatusStubHandler(HttpStatusCode statusCode) : HttpMessageHandler

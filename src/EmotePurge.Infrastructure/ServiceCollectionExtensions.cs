@@ -282,8 +282,11 @@ public static class ServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(chatLogArchiveOptions.BaseUrl);
             client.Timeout = TimeSpan.FromSeconds(30); // header phase only — see ChatLogArchiveClient's body-timeout CTS
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("EmotePurge/1.0");
-        });
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("EmotePurge (+https://emotepurge.app)");
+        })
+        // Brotli/gzip are accepted; the byte cap and BytesReceived count decompressed bytes, which is
+        // what the line parser sees. Applies to ReadDayAsync too (transport only).
+        .ConfigurePrimaryHttpMessageHandler(ChatLogArchiveClient.CreatePrimaryHandler);
 
         // Singleton cache over the transient typed client — see the class comment for why it
         // resolves ITwitchAuthClient through a scope instead of injecting it.

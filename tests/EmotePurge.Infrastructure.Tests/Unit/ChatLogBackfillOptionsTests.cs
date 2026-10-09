@@ -1,5 +1,11 @@
+using EmotePurge.Core.ChatLogArchive;
+using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.ChatLogArchive;
 using EmotePurge.Infrastructure.Services;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
+using StackExchange.Redis;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Unit;
@@ -45,5 +51,56 @@ public class ChatLogBackfillOptionsTests
         Assert.Equal("https://logs.cyex.app/", options.BaseUrl);
         Assert.Equal(TimeSpan.FromMinutes(5), options.RangeBodyTimeout);
         Assert.Equal(16384, options.MaxLineBytes);
+    }
+
+    [Fact]
+    public void TheBackfillRetentionPeriod_Is365Days() =>
+        Assert.Equal(TimeSpan.FromDays(365), RetentionPolicy.ChatLogBackfillRun);
+
+    [Fact]
+    public void Registration_BindsTheSection_AndFailsFastOnAnInvalidValue()
+    {
+        using var provider = BuildProvider(new Dictionary<string, string?>
+        {
+            ["ChatLogBackfill:Enabled"] = "true",
+            ["ChatLogBackfill:MaxBlockMegabytes"] = "64"
+        });
+
+        var options = provider.GetRequiredService<ChatLogBackfillOptions>();
+        Assert.True(options.Enabled);
+        Assert.Equal(64, options.MaxBlockMegabytes);
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BuildProvider(new Dictionary<string, string?> { ["ChatLogBackfill:TransportRetries"] = "0" }));
+        Assert.Contains("ChatLogBackfill:TransportRetries", ex.Message);
+    }
+
+    [Fact]
+    public void Registration_ConfiguresTheArchiveClientWithTheProjectUserAgentAndTheConfiguredBaseUrl()
+    {
+        using var provider = BuildProvider(new Dictionary<string, string?> { ["ChatLogArchive:BaseUrl"] = "https://archive.example.test/" });
+
+        var http = provider.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(IChatLogArchiveClient));
+
+        Assert.Equal(new Uri("https://archive.example.test/"), http.BaseAddress);
+        Assert.Equal("EmotePurge (+https://emotepurge.app)", http.DefaultRequestHeaders.UserAgent.ToString());
+        Assert.IsType<ChatLogArchiveClient>(provider.GetRequiredService<IChatLogArchiveClient>());
+    }
+
+    private static ServiceProvider BuildProvider(Dictionary<string, string?> settings)
+    {
+        var all = new Dictionary<string, string?>(settings)
+        {
+            ["ConnectionStrings:DefaultConnection"] = "Host=localhost;Database=unused",
+            ["Redis:ConnectionString"] = "localhost:6379"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(all).Build();
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IConfiguration>(configuration);
+        services.AddEmotePurgeInfrastructure(configuration);
+        services.AddSingleton(Substitute.For<IConnectionMultiplexer>());
+        return services.BuildServiceProvider();
     }
 }
