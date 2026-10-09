@@ -683,10 +683,18 @@ public sealed class ChatLogBackfillService(
         try
         {
             // A session lock lives exactly as long as its connection; asking pg_locks on that very
-            // connection proves both at once.
+            // connection proves both at once. Only our key counts: pg_try_advisory_lock(bigint) shows up
+            // with objsubid 1, the key's high half in classid and its low half in objid (both oids, so
+            // unsigned; the shift restores a negative hashtext as well).
             await using var probe = new NpgsqlCommand(
-                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted)",
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_locks
+                    WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted AND objsubid = 1
+                      AND ((classid::bigint << 32) | objid::bigint) = hashtext(@key)::bigint)
+                """,
                 loopLockConnection);
+            probe.Parameters.AddWithValue("key", LoopLockKey);
             if (await probe.ExecuteScalarAsync(cancellationToken) is true)
             {
                 return true;

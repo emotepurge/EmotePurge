@@ -5,6 +5,7 @@ using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
@@ -626,6 +627,21 @@ public partial class ChatLogBackfillServiceTests
 
         Assert.True(await holderA.TryAcquireLoopLockAsync());
         Assert.True(await holderA.HoldsLoopLockAsync());
+        Assert.True(await holderA.HoldsLoopLockAsync());
+
+        // Only the loop's own key counts (its hashtext is negative, so this also pins the sign handling):
+        // the same session holding a different advisory lock instead is not the loop lock.
+        var lockConnection = (NpgsqlConnection)typeof(ChatLogBackfillService)
+            .GetField("loopLockConnection", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(holderA)!;
+        await using (var swap = new NpgsqlCommand(
+            "SELECT pg_advisory_unlock(hashtext('emotepurge:chatlog-backfill')) AND pg_try_advisory_lock(hashtext('another-key'))", lockConnection))
+        {
+            Assert.Equal(true, await swap.ExecuteScalarAsync());
+        }
+
+        Assert.False(await holderA.HoldsLoopLockAsync());
+        Assert.True(await holderA.TryAcquireLoopLockAsync());
         Assert.True(await holderA.HoldsLoopLockAsync());
 
         await TerminateAdvisoryLockHoldersAsync();
