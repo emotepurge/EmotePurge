@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { BackfillCoverageInterval } from './backfill.model';
-import { backfillSetLabel, lastDayOf, replacedIntervals } from './backfill-window';
+import { backfillSetLabel, formatIsoDay, lastDayOf, replacedIntervals } from './backfill-window';
 
 function interval(
   from: string,
@@ -17,6 +17,13 @@ describe('lastDayOf', () => {
     expect(lastDayOf('2026-10-08')).toBe('2026-10-07');
     expect(lastDayOf('2026-10-01')).toBe('2026-09-30');
     expect(lastDayOf('2027-01-01')).toBe('2026-12-31');
+  });
+});
+
+describe('formatIsoDay', () => {
+  it('reads the calendar day as given, whatever the time zone of the process', () => {
+    expect(formatIsoDay('2026-10-07', 'de')).toBe('07.10.2026');
+    expect(formatIsoDay('2026-01-01', 'en')).toBe('01/01/2026');
   });
 });
 
@@ -60,6 +67,24 @@ describe('replacedIntervals', () => {
     expect(result.map((r) => [r.from, r.to])).toEqual([
       ['2026-07-08', '2026-08-01'],
       ['2026-09-20', '2026-10-08'],
+    ]);
+  });
+
+  it('merges back-to-back stretches of one set (the server splits by archive host too)', () => {
+    const result = replacedIntervals(
+      [
+        interval('2026-08-01', '2026-08-15', 'b', null),
+        { ...interval('2026-08-15', '2026-09-01', 'b', 'Halloween'), archiveHost: 'other.host' },
+        interval('2026-09-05', '2026-09-10', 'b'),
+      ],
+      FROM,
+      TO,
+      'a',
+    );
+
+    expect(result.map((r) => [r.from, r.to, r.emoteSetName])).toEqual([
+      ['2026-08-01', '2026-09-01', 'Halloween'],
+      ['2026-09-05', '2026-09-10', null],
     ]);
   });
 

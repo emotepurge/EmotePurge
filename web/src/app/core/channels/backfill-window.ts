@@ -41,9 +41,10 @@ export interface ReplacedInterval {
 
 /**
  * The coverage a run for `setId` over `[windowFrom, windowTo)` would replace: the intervals held by
- * any other set, clipped to the window (OD-A). Intervals of the chosen set are re-imported in place,
- * not replaced from the reader's point of view; ones that only touch the window (`to === windowFrom`)
- * or lie outside it are not part of it. ISO days compare correctly as strings.
+ * any other set, clipped to the window (OD-A) and merged where one set's stretches meet. Intervals
+ * of the chosen set are re-imported in place, not replaced from the reader's point of view; ones
+ * that only touch the window (`to === windowFrom`) or lie outside it are not part of it. ISO days
+ * compare correctly as strings.
  */
 export function replacedIntervals(
   coverage: readonly BackfillCoverageInterval[],
@@ -51,7 +52,7 @@ export function replacedIntervals(
   windowTo: string,
   setId: string,
 ): ReplacedInterval[] {
-  return coverage
+  const clipped = coverage
     .filter((interval) => interval.emoteSetId !== setId)
     .map((interval) => ({
       from: interval.from > windowFrom ? interval.from : windowFrom,
@@ -61,4 +62,17 @@ export function replacedIntervals(
     }))
     .filter((interval) => interval.from < interval.to)
     .sort((a, b) => a.from.localeCompare(b.from));
+  // The server splits coverage by set and by archive host; the host is irrelevant here, so
+  // back-to-back stretches of one set read as one sentence.
+  const merged: ReplacedInterval[] = [];
+  for (const interval of clipped) {
+    const last = merged.at(-1);
+    if (last && last.emoteSetId === interval.emoteSetId && last.to === interval.from) {
+      last.to = interval.to;
+      last.emoteSetName = last.emoteSetName ?? interval.emoteSetName;
+    } else {
+      merged.push({ ...interval });
+    }
+  }
+  return merged;
 }
