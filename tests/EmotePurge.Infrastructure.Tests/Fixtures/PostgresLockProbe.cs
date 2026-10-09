@@ -17,12 +17,21 @@ public static class PostgresLockProbe
     /// A context whose connections carry <paramref name="applicationName"/>, so
     /// <see cref="WaitUntilBlockedOnLockAsync"/> can find exactly this contender in pg_stat_activity.
     /// </summary>
-    public static AppDbContext CreateTaggedDbContext(this PostgresFixture fixture, string applicationName)
+    public static AppDbContext CreateTaggedDbContext(this PostgresFixture fixture, string applicationName) =>
+        fixture.CreateTaggedDbContext(applicationName, databaseName: null);
+
+    /// <summary>
+    /// <see cref="CreateTaggedDbContext(PostgresFixture, string)"/> against another database of the same
+    /// container (a suite with its own database), or the collection's database when
+    /// <paramref name="databaseName"/> is null.
+    /// </summary>
+    public static AppDbContext CreateTaggedDbContext(this PostgresFixture fixture, string applicationName, string? databaseName)
     {
         using var probe = fixture.CreateDbContext();
         var connectionString = new NpgsqlConnectionStringBuilder(probe.Database.GetConnectionString())
         {
             ApplicationName = applicationName,
+            Database = databaseName ?? probe.Database.GetDbConnection().Database,
             // Every distinct application_name is its own connection pool; unpooled, the connection
             // closes with the context instead of idling until the container's connection limit is hit.
             Pooling = false

@@ -53,7 +53,8 @@ internal enum ChannelDeactivationReason
 /// <b>Lock order:</b> the channel row (<c>FOR NO KEY UPDATE</c>) first, then any <c>ChatLogBackfillRuns</c> row. <see cref="DeactivateAsync"/>
 /// takes the channel lock itself before <see cref="StageAsync"/> cancels the run; a caller using
 /// <see cref="StageAsync"/> directly must already hold the channel row <c>FOR UPDATE</c> (or <c>FOR NO KEY UPDATE</c>) in its
-/// transaction.
+/// transaction — <see cref="ChannelService.LeaveAsync"/> does, by loading the row with
+/// <see cref="ChannelQueries.LoadChannelForNoKeyUpdateAsync"/>.
 /// </para>
 /// <para>
 /// A plain static helper, not a shared service, and deliberately not <c>IChannelService</c> injected
@@ -72,8 +73,8 @@ internal static class ChannelDeactivation
     public const string BackfillChannelLeftErrorCode = "channel_left";
 
     /// <summary>
-    /// Stage, save, publish — for a caller that opens no transaction of its own (the manager's leave,
-    /// the objection gate's deactivation). Committed before published: the row is already the source
+    /// Stage, save, publish — for a caller that opens no transaction of its own (the objection gate's
+    /// deactivation; the manager's leave locks and stages itself since #349). Committed before published: the row is already the source
     /// of truth, and a Redis outage would only cost this acceleration — SevenTvPeriodicResyncWorker's
     /// prune step converges on its own. A failed publish is thrown, not swallowed; a caller that must
     /// not fail on it catches it itself.

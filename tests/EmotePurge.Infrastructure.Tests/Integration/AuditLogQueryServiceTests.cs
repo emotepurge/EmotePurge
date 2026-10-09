@@ -135,10 +135,12 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
     }
 
     [Theory]
-    // The three recognized shapes, one row each.
+    // The recognized shapes, one row each.
     [InlineData("""{"emoteCount": 12}""", AuditLogDetail.Kinds.EmoteCount, 12L, null)]
     [InlineData("""{"removedEntries": 3}""", AuditLogDetail.Kinds.RemovedEntries, 3L, null)]
     [InlineData("""{"title": "Sommer-Purge"}""", AuditLogDetail.Kinds.Title, null, "Sommer-Purge")]
+    // backfill.request (#349): the requested months.
+    [InlineData("""{"backfillMonths": 6}""", AuditLogDetail.Kinds.BackfillMonths, 6L, null)]
     // Fixed precedence when a payload carries more than one known key.
     [InlineData("""{"title": "x", "emoteCount": 7}""", AuditLogDetail.Kinds.EmoteCount, 7L, null)]
     // Everything unrecognized degrades to "no detail" instead of leaking or throwing. `login` is

@@ -345,8 +345,13 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
             .Select(e => e.Id)
             .ToListAsync(cancellationToken);
 
+        // Live rows only (#349): the date says since when *our counting* separates bots
+        // (IEmoteSetStatusService.BotsExcludedSince), and a chat-log import counts bots with
+        // today's rules for days we never counted. Letting an imported row move the date back would
+        // claim a separation we did not perform; the caption errs toward naming a date rather than
+        // reading as clean, so the live start is the honest one.
         return await db.UsageStats
-            .Where(u => emoteIds.Contains(u.EmoteId) && u.BotUseCount > 0)
+            .Where(u => emoteIds.Contains(u.EmoteId) && u.Source == UsageStatSource.Live && u.BotUseCount > 0)
             .Select(u => (DateOnly?)u.Date)
             .MinAsync(cancellationToken);
     }
@@ -364,8 +369,9 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
             .Select(e => e.Id)
             .ToListAsync(cancellationToken);
 
+        // Live rows only, like the bot date above and for the same reason (#349).
         return await db.UsageStats
-            .Where(u => emoteIds.Contains(u.EmoteId) && u.SharedChatUseCount > 0)
+            .Where(u => emoteIds.Contains(u.EmoteId) && u.Source == UsageStatSource.Live && u.SharedChatUseCount > 0)
             .Select(u => (DateOnly?)u.Date)
             .MinAsync(cancellationToken);
     }

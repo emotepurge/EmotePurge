@@ -193,6 +193,12 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
             return new AuditLogDetail(AuditLogDetail.Kinds.RemovedEntries, removedEntries, null);
         }
 
+        // backfill.request: the requested months; the chosen set rides on the entry's target fields.
+        if (TryReadCount(root, AuditLogDetail.Kinds.BackfillMonths, out var backfillMonths))
+        {
+            return new AuditLogDetail(AuditLogDetail.Kinds.BackfillMonths, backfillMonths, null);
+        }
+
         return TryProjectTitleDetail(root, out var titleDetail) ? titleDetail : null;
     }
 

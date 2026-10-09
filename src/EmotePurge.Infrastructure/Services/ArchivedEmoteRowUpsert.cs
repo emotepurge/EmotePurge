@@ -30,11 +30,18 @@ namespace EmotePurge.Infrastructure.Services;
 /// </summary>
 internal static class ArchivedEmoteRowUpsert
 {
+    // Inserted in key order (ORDER BY): two callers upserting overlapping sets of new keys at the same
+    // time (a ballot and a backfill enqueue of the same channel) then take the keys' index locks in the
+    // same order, so one waits for the other instead of each holding a key the other needs (40P01).
+    // RETURNING reports exactly the rows this statement created — a key a concurrent writer inserted
+    // first is a DO NOTHING and is not reported.
     private const string InsertSql = """
         INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "ArchivedAt", "FirstSeenAt", "LastSyncedAt", "LastEnteredSetAtUtc", "IsPlaceholder")
         SELECT input."Id", input."SevenTvEmoteId", @channelId, input."Name", input."ImageUrl", true, NULL, input."FirstSeenAt", @now, @now, true
         FROM UNNEST(@ids, @sevenTvEmoteIds, @names, @imageUrls, @firstSeenAts) AS input("Id", "SevenTvEmoteId", "Name", "ImageUrl", "FirstSeenAt")
-        ON CONFLICT ("ChannelId", "SevenTvEmoteId") DO NOTHING;
+        ORDER BY input."SevenTvEmoteId"
+        ON CONFLICT ("ChannelId", "SevenTvEmoteId") DO NOTHING
+        RETURNING "SevenTvEmoteId" AS "Value"
         """;
 
     /// <summary>
@@ -49,14 +56,29 @@ internal static class ArchivedEmoteRowUpsert
         string channelId,
         IReadOnlyList<ArchivedEmoteRow> rows,
         DateTime now,
+        CancellationToken cancellationToken) =>
+        (await EnsureRowsReportingCreatedAsync(db, channelId, rows, now, cancellationToken)).Count;
+
+    /// <summary>
+    /// <see cref="EnsureRowsAsync"/>, returning the 7TV ids of exactly the rows this call created — the
+    /// chat-log backfill's creation provenance (spec D41, <c>ChatLogBackfillRunEmote.CreatedRow</c>).
+    /// A row a concurrent writer inserted first is not among them, even when it was absent a moment
+    /// before.
+    /// </summary>
+    public static async Task<IReadOnlySet<string>> EnsureRowsReportingCreatedAsync(
+        AppDbContext db,
+        string channelId,
+        IReadOnlyList<ArchivedEmoteRow> rows,
+        DateTime now,
         CancellationToken cancellationToken)
     {
         if (rows.Count == 0)
         {
-            return 0;
+            return new HashSet<string>(StringComparer.Ordinal);
         }
 
-        return await db.Database.ExecuteSqlRawAsync(
+        // Not composed with any LINQ operator, so EF sends the statement as it is (no subquery wrap).
+        var created = await db.Database.SqlQueryRaw<string>(
             InsertSql,
             [
                 new NpgsqlParameter("channelId", NpgsqlDbType.Text) { Value = channelId },
@@ -81,8 +103,8 @@ internal static class ArchivedEmoteRowUpsert
                 {
                     Value = rows.Select(r => r.FirstSeenAt is { } firstSeenAt ? ToUtc(firstSeenAt) : (DateTime?)null).ToArray(),
                 },
-            ],
-            cancellationToken);
+            ]).ToListAsync(cancellationToken);
+        return created.ToHashSet(StringComparer.Ordinal);
     }
 
     // Npgsql refuses a DateTime whose Kind is not Utc for a timestamptz parameter, and the dates come
