@@ -99,6 +99,8 @@ public record AuditLogDetail(
         // tag's name — it stays out of the audit payload (E30) — so the frontend's label cannot name
         // one either ("from a tag", not "from tag X"), and it is not ImportedFromFile ("from a file").
         public const string ImportedFromTag = "importedFromTag";
+        // backfill.request: Count only (the requested months); the chosen set rides on the target fields.
+        public const string BackfillMonths = "backfillMonths";
     }
 }
 

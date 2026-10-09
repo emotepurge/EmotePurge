@@ -22,6 +22,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<VoteSessionEmote> VoteSessionEmotes => Set<VoteSessionEmote>();
     public DbSet<Vote> Votes => Set<Vote>();
     public DbSet<AuditLogEntry> AuditLogEntries => Set<AuditLogEntry>();
+    public DbSet<ChatLogBackfillRun> ChatLogBackfillRuns => Set<ChatLogBackfillRun>();
+    public DbSet<ChatLogBackfillRunEmote> ChatLogBackfillRunEmotes => Set<ChatLogBackfillRunEmote>();
+    public DbSet<ChatLogBackfillCoverageDay> ChatLogBackfillCoverage => Set<ChatLogBackfillCoverageDay>();
+    public DbSet<ChatLogBackfillProviderState> ChatLogBackfillProviderState => Set<ChatLogBackfillProviderState>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -60,6 +64,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasIndex(u => new { u.EmoteId, u.EmoteSetId, u.Date })
                 .IsUnique()
                 .IncludeProperties(u => u.UseCount);
+
+            // Provenance of the row (#346). The default is what the live flush gets without naming
+            // the column; the backfill writes ChatLogArchive explicitly.
+            entity.Property(u => u.Source).HasDefaultValue(UsageStatSource.Live);
 
             entity.HasOne(u => u.Emote)
                 .WithMany(e => e.UsageStats)
@@ -295,6 +303,85 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // action and actor filters deliberately have no index: action has a handful of distinct
             // values, and the actor filter is a substring match no btree could serve anyway.
             entity.HasIndex(e => new { e.ChannelName, e.OccurredAtUtc }).IsDescending(false, true);
+        });
+
+        modelBuilder.Entity<ChatLogBackfillRun>(entity =>
+        {
+            // Stored as the lowercase name; the CHECK keeps a typo from ever becoming a state.
+            entity.Property(r => r.Status).HasConversion(
+                status => status.ToString().ToLowerInvariant(),
+                text => Enum.Parse<ChatLogBackfillRunStatus>(text, true));
+
+            entity.ToTable(t =>
+            {
+                t.HasCheckConstraint(
+                    "CK_ChatLogBackfillRuns_Status",
+                    "\"Status\" IN ('queued', 'running', 'paused', 'completed', 'failed', 'cancelled')");
+                t.HasCheckConstraint("CK_ChatLogBackfillRuns_RequestedMonths", "\"RequestedMonths\" IN (1, 3, 6)");
+                t.HasCheckConstraint("CK_ChatLogBackfillRuns_Window", "\"WindowFrom\" < \"WindowTo\"");
+            });
+
+            // The counters start at 0 in the database as well as in C# (spec section 1).
+            entity.Property(r => r.WeeksDone).HasDefaultValue(0);
+            entity.Property(r => r.PauseCount).HasDefaultValue(0);
+            entity.Property(r => r.BlockAttempts).HasDefaultValue(0);
+            entity.Property(r => r.BytesReceived).HasDefaultValue(0L);
+            entity.Property(r => r.MessagesRead).HasDefaultValue(0L);
+
+            // At most one active run per channel, enforced by the database rather than only by the
+            // Api's pre-check (the index is the last word in a race).
+            entity.HasIndex(r => r.ChannelId)
+                .IsUnique()
+                .HasDatabaseName("IX_ChatLogBackfillRuns_ChannelId_Active")
+                .HasFilter("\"Status\" IN ('queued', 'running', 'paused')");
+
+            // The worker's "next queued" and "paused whose timer passed" scans.
+            entity.HasIndex(r => new { r.Status, r.Id });
+
+            // Account-deletion pseudonymisation looks runs up by requester.
+            entity.HasIndex(r => r.RequestedByTwitchUserId);
+
+            entity.HasOne(r => r.Channel)
+                .WithMany()
+                .HasForeignKey(r => r.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ChatLogBackfillRunEmote>(entity =>
+        {
+            entity.HasKey(e => new { e.RunId, e.EmoteId });
+            entity.Property(e => e.CreatedRow).HasDefaultValue(false);
+            entity.HasIndex(e => new { e.RunId, e.SevenTvEmoteId });
+
+            // No FK to Emotes on purpose (see the entity's remarks); only the run owns these rows.
+            entity.HasOne(e => e.Run)
+                .WithMany(r => r.Emotes)
+                .HasForeignKey(e => e.RunId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ChatLogBackfillCoverageDay>(entity =>
+        {
+            entity.ToTable("ChatLogBackfillCoverage");
+            entity.HasKey(d => new { d.ChannelId, d.Day });
+
+            entity.HasOne(d => d.Channel)
+                .WithMany()
+                .HasForeignKey(d => d.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // The coverage outlives the run row's retention deletion.
+            entity.HasOne<ChatLogBackfillRun>()
+                .WithMany()
+                .HasForeignKey(d => d.RunId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<ChatLogBackfillProviderState>(entity =>
+        {
+            // Exactly one row; the migration seeds it. Never generated: the id is the constant 1.
+            entity.Property(s => s.Id).ValueGeneratedNever();
+            entity.ToTable(t => t.HasCheckConstraint("CK_ChatLogBackfillProviderState_SingleRow", "\"Id\" = 1"));
         });
     }
 }

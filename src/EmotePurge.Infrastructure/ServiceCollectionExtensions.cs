@@ -264,6 +264,7 @@ public static class ServiceCollectionExtensions
 
         var chatLogArchiveOptions = new ChatLogArchiveOptions();
         configuration.GetSection("ChatLogArchive").Bind(chatLogArchiveOptions);
+        chatLogArchiveOptions.Validate();
         services.AddSingleton(chatLogArchiveOptions);
 
         // T3 (#69): read-only, sequential-by-contract client for the third-party chat-log archive
@@ -282,8 +283,11 @@ public static class ServiceCollectionExtensions
         {
             client.BaseAddress = new Uri(chatLogArchiveOptions.BaseUrl);
             client.Timeout = TimeSpan.FromSeconds(30); // header phase only — see ChatLogArchiveClient's body-timeout CTS
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("EmotePurge/1.0");
-        });
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("EmotePurge (+https://emotepurge.app)");
+        })
+        // Brotli/gzip are accepted; the byte cap and BytesReceived count decompressed bytes, which is
+        // what the line parser sees. Applies to ReadDayAsync too (transport only).
+        .ConfigurePrimaryHttpMessageHandler(ChatLogArchiveClient.CreatePrimaryHandler);
 
         // Singleton cache over the transient typed client — see the class comment for why it
         // resolves ITwitchAuthClient through a scope instead of injecting it.
@@ -303,6 +307,13 @@ public static class ServiceCollectionExtensions
         configuration.GetSection(RetentionOptions.SectionName).Bind(retentionOptions);
         retentionOptions.Validate();
         services.AddSingleton(retentionOptions);
+
+        // Chat-log backfill (#346): the flag and the worker's pacing. Bound and validated eagerly like
+        // the retention options; read by Api (flag) and Worker (everything).
+        var chatLogBackfillOptions = new ChatLogBackfillOptions();
+        configuration.GetSection(ChatLogBackfillOptions.SectionName).Bind(chatLogBackfillOptions);
+        chatLogBackfillOptions.Validate();
+        services.AddSingleton(chatLogBackfillOptions);
         services.TryAddSingleton(TimeProvider.System);
         services.AddScoped<IDataRetentionService, DataRetentionService>();
         services.AddScoped<ITwitchUserTokenService, TwitchUserTokenService>();

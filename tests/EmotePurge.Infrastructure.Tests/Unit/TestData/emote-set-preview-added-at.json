@@ -1,0 +1,97 @@
+{
+  "data": {
+    "emote_sets": {
+      "emote_set": {
+        "name": "Halloween Set",
+        "capacity": 1000,
+        "emotes": {
+          "total_count": 845,
+          "page_count": 43,
+          "items": [
+            {
+              "alias": "hellowo",
+              "added_at": "2024-10-01T18:48:45.244+00:00",
+              "emote": {
+                "id": "01HBV3GPNR0006PBX22QNNXJ7X",
+                "default_name": "Alowoween",
+                "flags": {
+                  "animated": true
+                },
+                "scores": {
+                  "top_all_time": 1569,
+                  "trending_day": 188854
+                }
+              }
+            },
+            {
+              "alias": "pepeLaugh",
+              "added_at": "2024-10-01T19:03:40.197+00:00",
+              "emote": {
+                "id": "01FSNM69NG0000JPZ36BHMFR18",
+                "default_name": "PepeLaugh",
+                "flags": {
+                  "animated": true
+                },
+                "scores": {
+                  "top_all_time": 2569,
+                  "trending_day": 208705
+                }
+              }
+            },
+            {
+              "alias": "OMEGALUL",
+              "added_at": "2024-10-01T19:03:46.853+00:00",
+              "emote": {
+                "id": "01GDR51Q1R0006171NHFCC48HX",
+                "default_name": "OMEGALUL",
+                "flags": {
+                  "animated": false
+                },
+                "scores": {
+                  "top_all_time": 2278,
+                  "trending_day": 205549
+                }
+              }
+            },
+            {
+              "alias": ":3",
+              "added_at": "2024-10-01T19:03:51.045+00:00",
+              "emote": {
+                "id": "01GDT7Z0H80002EH47C1YMSD3D",
+                "default_name": ":3",
+                "flags": {
+                  "animated": true
+                },
+                "scores": {
+                  "top_all_time": 2635,
+                  "trending_day": 215277
+                }
+              }
+            },
+            {
+              "alias": "NODDERS",
+              "added_at": "2024-10-01T19:04:46.162+00:00",
+              "emote": {
+                "id": "01FBFK4RHR0007YENC5DT5DS8K",
+                "default_name": "DNODDERS",
+                "flags": {
+                  "animated": true
+                },
+                "scores": {
+                  "top_all_time": 1840,
+                  "trending_day": 251192
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "extensions": {
+    "analyzer": {
+      "complexity": 18,
+      "depth": 7
+    }
+  }
+}

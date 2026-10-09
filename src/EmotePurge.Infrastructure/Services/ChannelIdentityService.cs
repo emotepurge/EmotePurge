@@ -5,6 +5,7 @@ using EmotePurge.Core.Twitch;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 
 namespace EmotePurge.Infrastructure.Services;
 
@@ -480,8 +481,12 @@ public class ChannelIdentityService(
             await ChannelDeactivation.DeactivateAsync(
                 db, redisPublisher, emoteSetObservationService, channel, AuditActor.System, ChannelDeactivationReason.Excluded, ct);
         }
-        catch (DbUpdateException ex)
+        catch (Exception ex) when (ex is DbUpdateException or NpgsqlException)
         {
+            // (NpgsqlException covers PostgresException too: the backfill-run cancellation inside
+            // DeactivateAsync is an ExecuteUpdate, and the commit is a raw Npgsql call - neither
+            // surfaces as a DbUpdateException, and both happen before anything is committed.)
+            //
             // Caught here rather than by the per-row catch every other write in this pass relies on
             // (fourth Codex review of the block list): that catch names the row's login and id, and
             // on this path the row is one whose Twitch id is on the excluded-channel list — naming it

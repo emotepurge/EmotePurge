@@ -34,6 +34,12 @@ public static class LiveEvents
     /// </summary>
     public const string LiveChanged = "live.changed";
 
+    /// <summary>
+    /// A chat-log backfill run of this channel changed state (queued, progressed, paused, finished,
+    /// cancelled). Thin like every event here: clients refetch <c>GET .../backfill</c>.
+    /// </summary>
+    public const string BackfillProgress = "backfill.progress";
+
     /// <summary>The worker published a fresh health snapshot. No channel scope.</summary>
     public const string WorkerHealth = "worker.health";
 
@@ -56,7 +62,7 @@ public static class LiveEvents
 
     /// <summary>Types the channel stream (<c>GET /api/channels/{channelName}/live</c>) forwards.</summary>
     public static readonly IReadOnlySet<string> ChannelTypes =
-        new HashSet<string>(StringComparer.Ordinal) { UsageFlushed, VoteChanged, ChannelSynced, LiveChanged };
+        new HashSet<string>(StringComparer.Ordinal) { UsageFlushed, VoteChanged, ChannelSynced, LiveChanged, BackfillProgress };
 }
 
 /// <summary>

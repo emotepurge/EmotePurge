@@ -153,7 +153,7 @@ public sealed class HardenedForeignEmoteSetService(
 
     /// <summary>
     /// Set-ID cache entries and coalesced executions are shared across every channel that happens to
-    /// ask about the same set (cache key <c>7tvforeign:set:{setId}</c>, coalescing key
+    /// ask about the same set (cache key <c>7tvforeign:v2:set:{setId}</c>, coalescing key
     /// <c>set:{setId}</c> — both deliberately channel-free, spec E12) — so a reused entry carries
     /// whichever caller's <see cref="ForeignEmoteSet.ChannelName"/> happened to populate it, not this
     /// caller's route channel. <see cref="IForeignEmoteSetService.GetForeignEmoteSetBySetIdAsync"/>'s

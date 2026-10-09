@@ -1,8 +1,9 @@
 namespace EmotePurge.Core.Services;
 
 /// <summary>
-/// One retention pass over the five categories of <see cref="RetentionPolicy"/>, in a fixed order:
-/// Twitch tokens, inactive accounts, ended vote sessions, audit log entries, deactivated channels.
+/// One retention pass over the six categories of <see cref="RetentionPolicy"/>, in a fixed order:
+/// Twitch tokens, inactive accounts, ended vote sessions, audit log entries, finished chat-log backfill
+/// runs, deactivated channels.
 /// Called by the worker's retention job once per tick.
 /// </summary>
 /// <remarks>
@@ -44,6 +45,10 @@ public interface IDataRetentionService
 /// <param name="VoteSessions">Ended vote sessions and what went with them.</param>
 /// <param name="AuditEntriesDeleted">Audit log entries older than the period.</param>
 /// <param name="Channels">Deactivated channels and what went with them.</param>
+/// <param name="ChatLogBackfillRunsDeleted">
+/// Finished chat-log backfill runs older than their period, with their snapshot rows (#346). Trailing
+/// and optional so every existing construction keeps compiling; the step runs after the audit-log one.
+/// </param>
 public sealed record RetentionRunSummary(
     bool Enforced,
     DateTime ReferenceTimeUtc,
@@ -51,7 +56,8 @@ public sealed record RetentionRunSummary(
     AccountRetentionCounts Accounts,
     VoteSessionRetentionCounts VoteSessions,
     int AuditEntriesDeleted,
-    ChannelRetentionCounts Channels);
+    ChannelRetentionCounts Channels,
+    int ChatLogBackfillRunsDeleted = 0);
 
 /// <summary>The inactive-account category of a <see cref="RetentionRunSummary"/>.</summary>
 /// <param name="Deleted">Accounts deleted through <see cref="IAccountDeletionService"/>.</param>

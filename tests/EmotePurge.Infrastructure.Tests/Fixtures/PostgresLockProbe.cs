@@ -22,7 +22,10 @@ public static class PostgresLockProbe
         using var probe = fixture.CreateDbContext();
         var connectionString = new NpgsqlConnectionStringBuilder(probe.Database.GetConnectionString())
         {
-            ApplicationName = applicationName
+            ApplicationName = applicationName,
+            // Every distinct application_name is its own connection pool; unpooled, the connection
+            // closes with the context instead of idling until the container's connection limit is hit.
+            Pooling = false
         }.ConnectionString;
 
         return new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString).Options);

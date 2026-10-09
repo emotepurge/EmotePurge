@@ -29,5 +29,10 @@ public class UsageStat
     // becomes NOT NULL, so no code path ever sees an empty value here.
     public string EmoteSetId { get; set; } = string.Empty;
 
+    // Provenance (#346): Live for everything the flush wrote, ChatLogArchive for rows the chat-log
+    // backfill imported. The unique (EmoteId, EmoteSetId, Date) index stays as it is, so one cell is
+    // either live or imported, never both; the flush never names this column and gets the default 0.
+    public UsageStatSource Source { get; set; }
+
     public Emote Emote { get; set; } = null!;
 }

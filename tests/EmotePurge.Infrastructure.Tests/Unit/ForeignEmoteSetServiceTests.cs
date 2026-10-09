@@ -184,6 +184,30 @@ public class ForeignEmoteSetServiceTests
     }
 
 
+    [Fact]
+    public async Task AddedAt_IsThreadedFromThePreviewItemsToTheRows_InBothReadModes()
+    {
+        var addedAt = new DateTime(2026, 3, 14, 18, 22, 5, DateTimeKind.Utc);
+        var preview = new SevenTvEmoteSetPreview(2, false,
+        [
+            new SevenTvEmoteSetPreviewItem("emote-1", "PogU", "PogChamp", "https://cdn.example/1.webp", 500, 12, addedAt),
+            new SevenTvEmoteSetPreviewItem("emote-2", "Kappa", "Kappa", "https://cdn.example/2.webp", null, null)
+        ]);
+        var sevenTv = SevenTvClientReturning(SevenTvIdentityResult.Ok(new SevenTvIdentity(SevenTvUserId, EmoteSetId)));
+        sevenTv.GetEmoteSetPreviewAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(SevenTvEmoteSetPreviewResult.Ok(preview));
+        var service = CreateService(FoundIdentityService(), sevenTv);
+
+        var byLogin = await service.GetForeignEmoteSetAsync(Channel);
+        var bySetId = await service.GetForeignEmoteSetBySetIdAsync(Channel, "other-set");
+
+        foreach (var result in new[] { byLogin, bySetId })
+        {
+            Assert.Equal(ForeignEmoteSetLookupStatus.Ok, result.Status);
+            Assert.Equal(addedAt, result.EmoteSet!.Emotes[0].AddedAt);
+            Assert.Null(result.EmoteSet.Emotes[1].AddedAt);
+        }
+    }
+
     /// <summary>
     /// E5b, at this layer: the two upstream calls this class makes itself each cost their own permit.
     /// The pages of the set read cost theirs inside the client, where their number is known

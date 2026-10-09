@@ -2,6 +2,7 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 namespace EmotePurge.Infrastructure.Services;
 
@@ -49,6 +50,12 @@ internal enum ChannelDeactivationReason
 /// <see cref="DeactivateAsync"/> composes them for the callers that open no transaction.
 /// </para>
 /// <para>
+/// <b>Lock order:</b> the channel row (<c>FOR NO KEY UPDATE</c>) first, then any <c>ChatLogBackfillRuns</c> row. <see cref="DeactivateAsync"/>
+/// takes the channel lock itself before <see cref="StageAsync"/> cancels the run; a caller using
+/// <see cref="StageAsync"/> directly must already hold the channel row <c>FOR UPDATE</c> (or <c>FOR NO KEY UPDATE</c>) in its
+/// transaction.
+/// </para>
+/// <para>
 /// A plain static helper, not a shared service, and deliberately not <c>IChannelService</c> injected
 /// into <see cref="ChannelIdentityService"/>: <see cref="ChannelService"/> already depends on
 /// <see cref="IChannelIdentityService"/> for <c>LookupByLoginAsync</c>, so the reverse dependency
@@ -60,6 +67,9 @@ internal static class ChannelDeactivation
     private const string ExcludedReason = "excluded";
     private const string LockedReason = "locked";
     private const string LoginUnresolvableReason = "loginUnresolvable";
+
+    /// <summary>The <c>ErrorCode</c> a deactivation leaves on the chat-log backfill run it cancels (D16).</summary>
+    public const string BackfillChannelLeftErrorCode = "channel_left";
 
     /// <summary>
     /// Stage, save, publish — for a caller that opens no transaction of its own (the manager's leave,
@@ -77,8 +87,41 @@ internal static class ChannelDeactivation
         ChannelDeactivationReason reason,
         CancellationToken cancellationToken)
     {
-        await StageAsync(db, emoteSetObservationService, channel, actor, reason, cancellationToken);
-        await db.SaveChangesAsync(cancellationToken);
+        // The backfill cancellation inside StageAsync is a conditional UPDATE that runs at once, while
+        // the rest is only staged for the save below, so both happen in one transaction opened here:
+        // the run is never cancelled for a deactivation that then fails to save. A caller that already
+        // holds a transaction must not come through here - it would publish LEAVE before its own
+        // commit - and uses StageAsync + PublishLeaveAsync instead.
+        if (db.Database.CurrentTransaction is not null)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(DeactivateAsync)} opens its own transaction; a caller with one must use {nameof(StageAsync)} and publish after its commit.");
+        }
+
+        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+        {
+            // Lock order: the channel row before any backfill run row. This is the order every other
+            // deactivation path (the identity reconcile's locked/unresolvable passes lock the channel
+            // FOR UPDATE and then cancel the run) and the backfill's block commit (FK inserts lock the
+            // channel before the run update) already follow; cancelling the run first here would invert
+            // it and could deadlock (40P01).
+            //
+            // FOR NO KEY UPDATE, not FOR UPDATE: it is the strength the leave's own UPDATE of the
+            // channel takes anyway (no key column changes), it still conflicts with the FOR UPDATE of
+            // the reconcile, join, merge and purge paths (so the order is enforced), but it does not
+            // conflict with the FOR KEY SHARE that FK inserts take on the channel. That matters for the
+            // set switch (RecordObservedSetAsync): it closes the old observation row and then inserts
+            // the new one; a FOR UPDATE here would sit on the channel while this transaction waits for
+            // the observation row, and the insert would wait for the channel - a deadlock whose victim
+            // can be the leave. A raw statement rather than ChannelQueries.LockAsync, because the entity
+            // may already be changed by the caller, which LockAsync refuses.
+            await db.Database.ExecuteSqlAsync(
+                $"""SELECT 1 FROM "Channels" WHERE "Id" = {channel.Id} FOR NO KEY UPDATE""", cancellationToken);
+            await StageAsync(db, emoteSetObservationService, channel, actor, reason, cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+
         await PublishLeaveAsync(redisPublisher, channel.ChannelName, cancellationToken);
     }
 
@@ -107,6 +150,13 @@ internal static class ChannelDeactivation
 
         channel.IsBotActive = false;
         channel.DeactivatedAtUtc = DateTime.UtcNow;
+
+        // A chat-log backfill run of a channel that is no longer observed cannot continue (the worker
+        // would fail it as channel_not_active at the next claim), so it is cancelled here, with the
+        // same commit as the deactivation (D16). Conditional on the run still being active: a run the
+        // worker finished a moment ago stays what it is. A rejoin does not resume anything.
+        await CancelActiveBackfillRunAsync(db, channel.Id, cancellationToken);
+
         switch (reason)
         {
             case ChannelDeactivationReason.Excluded:
@@ -126,6 +176,21 @@ internal static class ChannelDeactivation
             default:
                 throw new ArgumentOutOfRangeException(nameof(reason), reason, "Unknown deactivation reason.");
         }
+    }
+
+    private static async Task CancelActiveBackfillRunAsync(AppDbContext db, string channelId, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        ChatLogBackfillRunStatus[] active = [ChatLogBackfillRunStatus.Queued, ChatLogBackfillRunStatus.Running, ChatLogBackfillRunStatus.Paused];
+        await db.ChatLogBackfillRuns
+            .Where(r => r.ChannelId == channelId && active.Contains(r.Status))
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(r => r.Status, ChatLogBackfillRunStatus.Cancelled)
+                    .SetProperty(r => r.FinishedAtUtc, (DateTime?)now)
+                    .SetProperty(r => r.PausedUntilUtc, (DateTime?)null)
+                    .SetProperty(r => r.ErrorCode, BackfillChannelLeftErrorCode),
+                cancellationToken);
     }
 
     /// <summary>The LEAVE command for a deactivation that is already committed.</summary>

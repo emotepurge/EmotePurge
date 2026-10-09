@@ -340,6 +340,94 @@ public class SevenTvApiClientEmoteSetPreviewTests
         return root.ToJsonString();
     }
 
+    /// <summary>
+    /// #346: the preview query selects the set entry's date, aliased like every other v4 field here.
+    /// Pinned on the query text because a regression that dropped it would leave every parser
+    /// assertion green (the stubs hand the field over regardless) while production lost the gate.
+    /// </summary>
+    [Fact]
+    public async Task PreviewQuery_AsksForTheSetEntryDate()
+    {
+        var handler = new PagedStubHandler(_ => Page(totalCount: 0, pageCount: 1));
+        var client = CreateClient(handler);
+
+        await client.GetEmoteSetPreviewAsync(SetId);
+
+        var query = Assert.Single(handler.SentQueries);
+        Assert.Contains("items { alias added_at: addedAt emote {", query, StringComparison.Ordinal);
+    }
+
+    // The recorded answer still says page_count 43 (a 845-emote set); the stub would be asked for 42
+    // more pages that the five-item cut does not have, so the test sees it as the single page it is.
+    private static JsonNode LiveAddedAtFixture()
+    {
+        var payload = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Unit", "TestData", "emote-set-preview-added-at.json")))!;
+        payload["data"]!["emote_sets"]!["emote_set"]!["emotes"]!["page_count"] = 1;
+        return payload;
+    }
+
+    /// <summary>
+    /// #346, AC 3, against the recorded live answer: <c>emote-set-preview-added-at.json</c> is the
+    /// unchanged response 7TV gave on 2026-10-09 to exactly this client's preview query (set
+    /// 01J94NYQR0000D15QN0BDGN85E, page 1), cut to its first five items. Every item carries
+    /// <c>added_at</c> as an ISO timestamp with milliseconds and a <c>+00:00</c> offset.
+    /// </summary>
+    [Fact]
+    public async Task AddedAt_OfTheRecordedLiveAnswer_IsMappedToTheUtcInstant()
+    {
+        var client = CreateClient(new PagedStubHandler(_ => LiveAddedAtFixture().ToJsonString()));
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(SevenTvPreviewLookupStatus.Ok, result.Status);
+        Assert.Equal("Halloween Set", result.Preview!.Name);
+        Assert.Equal(5, result.Preview.Items.Count);
+        // "2024-10-01T18:48:45.244+00:00"
+        var first = result.Preview.Items[0];
+        Assert.Equal("hellowo", first.Alias);
+        Assert.Equal(new DateTime(2024, 10, 1, 18, 48, 45, 244, DateTimeKind.Utc), first.AddedAt);
+        Assert.Equal(DateTimeKind.Utc, first.AddedAt!.Value.Kind);
+        Assert.Equal(new DateTime(2024, 10, 1, 19, 4, 46, 162, DateTimeKind.Utc), result.Preview.Items[4].AddedAt);
+        Assert.All(result.Preview.Items, item => Assert.NotNull(item.AddedAt));
+    }
+
+    /// <summary>
+    /// CONSTRUCTED, not recorded: the live sample showed no item with <c>added_at: null</c> and none
+    /// without the field. Both are still mapped to <c>null</c> ("7TV reported none", no gate), which
+    /// the spec requires, so they are derived here from the recorded fixture.
+    /// </summary>
+    [Fact]
+    public async Task AddedAt_NullAndAbsentField_AreMappedToNull_ConstructedFromTheRecordedAnswer()
+    {
+        var payload = LiveAddedAtFixture();
+        var items = payload["data"]!["emote_sets"]!["emote_set"]!["emotes"]!["items"]!.AsArray();
+        items[1]!["added_at"] = null;
+        items[2]!.AsObject().Remove("added_at");
+        var client = CreateClient(new PagedStubHandler(_ => payload.ToJsonString()));
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.NotNull(result.Preview!.Items[0].AddedAt);
+        Assert.Null(result.Preview.Items[1].AddedAt);
+        Assert.Null(result.Preview.Items[2].AddedAt);
+        Assert.NotNull(result.Preview.Items[3].AddedAt);
+    }
+
+    [Fact]
+    public async Task AddedAt_WithAnOffsetTimestamp_IsNormalisedToUtc_AndImplausibleDatesAreNotRejected()
+    {
+        var payload = JsonNode.Parse(Page(totalCount: 2, pageCount: 1, ("e1", "A", "A", null, null, true), ("e2", "B", "B", null, null, true)))!;
+        var items = payload["data"]!["emote_sets"]!["emote_set"]!["emotes"]!["items"]!;
+        items[0]!["added_at"] = "2026-03-14T20:00:00+02:00";
+        items[1]!["added_at"] = "1970-01-01T00:00:00Z";
+        var client = CreateClient(new PagedStubHandler(_ => payload.ToJsonString()));
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(new DateTime(2026, 3, 14, 18, 0, 0, DateTimeKind.Utc), result.Preview!.Items[0].AddedAt);
+        Assert.Equal(new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc), result.Preview.Items[1].AddedAt);
+    }
+
     /// <summary>F6/AK 28: name and a non-zero capacity are read off the set object and land on the
     /// assembled preview alongside the paginated entries.</summary>
     [Fact]

@@ -68,8 +68,13 @@ public class SevenTvApiClient(
     // name/capacity added spec 2026-09-20 (F6/6.4) — read at the emoteSet level, alongside the
     // paginated entries, so the assembled ForeignEmoteSet can carry the set's own name and slot
     // count without a second request.
+    // added_at added 2026-10-09 (#346): the set entry's own date, the chat-log backfill's per-emote
+    // gate — the same `addedAt` field GqlSetEntriesQuery reads from the same v4 type. Run live by hand with
+    // curl on 2026-10-09 (no errors block, every item of the sample carried added_at as an ISO
+    // timestamp with milliseconds and a +00:00 offset); the recorded answer is the fixture
+    // Unit/TestData/emote-set-preview-added-at.json, per the rule on GqlEmoteSetListQuery below.
     private const string GqlEmoteSetPreviewQuery =
-        "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { name capacity emotes(page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { alias emote { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } } } }";
+        "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { name capacity emotes(page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { alias added_at: addedAt emote { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } } } }";
 
     // v4 schema, the emote-set list of one account (spec 2026-09-20, E7/6.1) — the source behind
     // all three set-list routes. This string is the query that was run live against
@@ -1353,7 +1358,8 @@ public class SevenTvApiClient(
             dto.Emote?.DefaultName ?? string.Empty,
             BuildForeignImageUrl(emoteId, dto.Emote?.Flags?.Animated ?? false),
             dto.Emote?.Scores?.TopAllTime,
-            dto.Emote?.Scores?.TrendingDay);
+            dto.Emote?.Scores?.TrendingDay,
+            dto.AddedAt?.UtcDateTime);
     }
 
     // 7TV's emote CDN url is fixed and keyed only by the emote id — every variant sits under

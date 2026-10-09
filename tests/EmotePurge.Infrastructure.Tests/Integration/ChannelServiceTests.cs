@@ -8,6 +8,7 @@ using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -159,6 +160,176 @@ public class ChannelServiceTests(PostgresFixture fixture)
         var channel = await service.GetByNameAsync("channelserviceretention1");
         Assert.NotNull(channel!.DeactivatedAtUtc);
         Assert.InRange(channel.DeactivatedAtUtc.Value, before.AddMilliseconds(-1), DateTime.UtcNow.AddMilliseconds(1));
+    }
+
+    [Theory]
+    [InlineData(ChatLogBackfillRunStatus.Queued)]
+    [InlineData(ChatLogBackfillRunStatus.Running)]
+    [InlineData(ChatLogBackfillRunStatus.Paused)]
+    public async Task LeaveAsync_CancelsTheActiveBackfillRun_WithChannelLeft(ChatLogBackfillRunStatus activeStatus)
+    {
+        // D16: a leave takes the channel's active chat-log backfill run with it, in the same commit.
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var joined = await JoinChannelAsync(service, $"bfleave{activeStatus}".ToLowerInvariant());
+        var run = await BackfillRunSeed.AddRunAsync(db, joined.Id, activeStatus);
+        var before = DateTime.UtcNow.AddSeconds(-1);
+
+        await service.LeaveAsync(joined.ChannelName, Actor);
+
+        await using var verify = fixture.CreateDbContext();
+        var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Cancelled, after.Status);
+        Assert.Equal("channel_left", after.ErrorCode);
+        Assert.NotNull(after.FinishedAtUtc);
+        Assert.True(after.FinishedAtUtc >= before);
+        Assert.Null(after.PausedUntilUtc);
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
+    }
+
+    [Fact]
+    public async Task LeaveAsync_LeavesFinishedRunsAndOtherChannelsRunsAlone()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var leaving = await JoinChannelAsync(service, "bfleaving");
+        var staying = await JoinChannelAsync(service, "bfstaying");
+        var finished = await BackfillRunSeed.AddRunAsync(db, leaving.Id, ChatLogBackfillRunStatus.Completed, finishedAtUtc: DateTime.UtcNow.AddDays(-1));
+        var otherChannelsRun = await BackfillRunSeed.AddRunAsync(db, staying.Id, ChatLogBackfillRunStatus.Running);
+
+        await service.LeaveAsync(leaving.ChannelName, Actor);
+
+        await using var verify = fixture.CreateDbContext();
+        var completed = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == finished.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Completed, completed.Status);
+        Assert.Null(completed.ErrorCode);
+        var untouched = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == otherChannelsRun.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Running, untouched.Status);
+    }
+
+    [Fact]
+    public async Task LeaveAsync_WhenTheSaveFails_DoesNotCancelTheBackfillRun()
+    {
+        // The cancellation is a conditional UPDATE that runs before the deactivation is saved; the
+        // transaction around both is what keeps a failed leave from cancelling a run that goes on.
+        await using var seedDb = fixture.CreateDbContext();
+        var joined = await JoinChannelAsync(CreateService(seedDb), "bfrollback");
+        var run = await BackfillRunSeed.AddRunAsync(seedDb, joined.Id, ChatLogBackfillRunStatus.Running);
+
+        await using var failingDb = fixture.CreateDbContext([new FailEverySaveInterceptor()]);
+        var service = CreateService(failingDb);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.LeaveAsync(joined.ChannelName, Actor));
+
+        await using var verify = fixture.CreateDbContext();
+        var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Running, after.Status);
+        Assert.Null(after.ErrorCode);
+        Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
+    }
+
+    [Fact]
+    public async Task DeactivateAsync_WithACallerTransaction_Throws_InsteadOfPublishingLeaveBeforeTheCallersCommit()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var joined = await JoinChannelAsync(service, "bftxguard");
+        var redis = Substitute.For<IRedisPublisher>();
+        await using var callerTransaction = await db.Database.BeginTransactionAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ChannelDeactivation.DeactivateAsync(
+            db, redis, Substitute.For<IChannelEmoteSetObservationService>(), joined, Actor, ChannelDeactivationReason.Leave, CancellationToken.None));
+
+        await redis.DidNotReceiveWithAnyArgs().PublishAsync(default!, default!, default);
+        Assert.True(joined.IsBotActive);
+    }
+
+    [Fact]
+    public async Task LeaveAsync_AgainstAnotherTransactionHoldingTheChannelRow_TakesTheChannelLockBeforeTheRunLock()
+    {
+        // Lock order channel -> run. A holds the channel row FOR UPDATE (as the identity reconcile's
+        // passes do) and then cancels the run through StageAsync; B is a manager's leave. If B cancelled
+        // the run before locking the channel it would hold the run row while waiting for the channel
+        // row, A would wait for the run row, and Postgres would abort one side with 40P01.
+        await using var seedDb = fixture.CreateDbContext();
+        var joined = await JoinChannelAsync(CreateService(seedDb), "bflockorder");
+        var run = await BackfillRunSeed.AddRunAsync(seedDb, joined.Id, ChatLogBackfillRunStatus.Running);
+
+        await using var dbA = fixture.CreateDbContext();
+        await using var txA = await dbA.Database.BeginTransactionAsync();
+        await dbA.Database.ExecuteSqlAsync($"""SELECT 1 FROM "Channels" WHERE "Id" = {joined.Id} FOR UPDATE""");
+        var channelA = await dbA.Channels.SingleAsync(c => c.Id == joined.Id);
+
+        await using var dbB = fixture.CreateTaggedDbContext("bflockorder-b");
+        var leaveB = Task.Run(() => CreateService(dbB).LeaveAsync(joined.ChannelName, Actor));
+        await fixture.WaitUntilBlockedOnLockAsync("bflockorder-b", leaveB);
+
+        await ChannelDeactivation.StageAsync(
+            dbA, Substitute.For<IChannelEmoteSetObservationService>(), channelA, Actor, ChannelDeactivationReason.Locked, CancellationToken.None);
+        await dbA.SaveChangesAsync();
+        await txA.CommitAsync();
+        await leaveB;
+
+        await using var verify = fixture.CreateDbContext();
+        var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Cancelled, after.Status);
+        Assert.Equal("channel_left", after.ErrorCode);
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
+    }
+
+    [Fact]
+    public async Task LeaveAsync_DuringASetSwitch_DoesNotDeadlockWithTheObservationInsert()
+    {
+        // RecordObservedSetAsync closes the old observation row (holding its row lock) and then inserts
+        // the new one, which takes FOR KEY SHARE on the channel. A leave that locked the channel FOR
+        // UPDATE first would wait for the observation row while the insert waited for the channel:
+        // 40P01, and the leave could be the victim. FOR NO KEY UPDATE does not conflict with KEY SHARE.
+        await using var seedDb = fixture.CreateDbContext();
+        var joined = await JoinChannelAsync(CreateService(seedDb), "bfswitchleave");
+        seedDb.ChannelEmoteSetObservations.Add(new ChannelEmoteSetObservation
+        {
+            ChannelId = joined.Id,
+            SevenTvEmoteSetId = "set-old",
+            ObservedFromUtc = DateTime.UtcNow.AddHours(-1)
+        });
+        await seedDb.SaveChangesAsync();
+
+        // A: the switch, paused between its close and its insert.
+        await using var dbA = fixture.CreateDbContext();
+        await using var txA = await dbA.Database.BeginTransactionAsync();
+        var open = await dbA.ChannelEmoteSetObservations.SingleAsync(o => o.ChannelId == joined.Id && o.ObservedToUtc == null);
+        open.ObservedToUtc = DateTime.UtcNow;
+        open.ClosedBy = ChannelEmoteSetObservationClosedBy.SetSwitch;
+        await dbA.SaveChangesAsync();
+
+        // B: the manager's leave, with the real observation service so it really touches that row.
+        await using var dbB = fixture.CreateTaggedDbContext("bfswitchleave-b");
+        var leaveB = Task.Run(() => CreateService(dbB, emoteSetObservationService: new ChannelEmoteSetObservationService(dbB))
+            .LeaveAsync(joined.ChannelName, Actor));
+        await fixture.WaitUntilBlockedOnLockAsync("bfswitchleave-b", leaveB);
+
+        dbA.ChannelEmoteSetObservations.Add(new ChannelEmoteSetObservation
+        {
+            ChannelId = joined.Id,
+            SevenTvEmoteSetId = "set-new",
+            ObservedFromUtc = DateTime.UtcNow
+        });
+        await dbA.SaveChangesAsync();
+        await txA.CommitAsync();
+        await leaveB;
+
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
+        var rows = await verify.ChannelEmoteSetObservations.AsNoTracking().Where(o => o.ChannelId == joined.Id).ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows.Where(o => o.SevenTvEmoteSetId == "set-old"), o => Assert.NotNull(o.ObservedToUtc));
+    }
+
+    private sealed class FailEverySaveInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("injected save failure");
     }
 
     [Fact]

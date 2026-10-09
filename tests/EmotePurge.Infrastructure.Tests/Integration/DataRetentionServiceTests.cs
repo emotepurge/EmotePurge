@@ -455,6 +455,78 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Category 4b: chat-log backfill runs
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task BackfillRuns_FinishedMoreThan365DaysAgo_AreDeleted_WithTheirSnapshot_AndTheCoverageStays()
+    {
+        var channel = await SeedChannelAsync("backfill-retention", isBotActive: true, deactivatedAtUtc: null);
+        var dueDays = RetentionPolicy.ChatLogBackfillRun.TotalDays;
+        long dueId, atCutoffId, keptId, unfinishedId, staleActiveId;
+        await using (var seed = CreateDbContext())
+        {
+            // 366 days old (due), exactly 365 (not due yet: every period is exclusive), 364 (kept) - one
+            // each for completed, failed and cancelled - plus a run that never finished.
+            dueId = (await BackfillRunSeed.AddRunAsync(seed, channel.Id, ChatLogBackfillRunStatus.Completed, finishedAtUtc: _now.AddDays(-dueDays - 1), withSnapshot: true)).Id;
+            await BackfillRunSeed.AddRunAsync(seed, channel.Id, ChatLogBackfillRunStatus.Failed, finishedAtUtc: _now.AddDays(-dueDays - 1));
+            await BackfillRunSeed.AddRunAsync(seed, channel.Id, ChatLogBackfillRunStatus.Cancelled, finishedAtUtc: _now.AddDays(-dueDays - 1));
+            atCutoffId = (await BackfillRunSeed.AddRunAsync(seed, channel.Id, ChatLogBackfillRunStatus.Completed, finishedAtUtc: _now.AddDays(-dueDays))).Id;
+            keptId = (await BackfillRunSeed.AddRunAsync(seed, channel.Id, ChatLogBackfillRunStatus.Completed, finishedAtUtc: _now.AddDays(-dueDays + 1), withSnapshot: true)).Id;
+            unfinishedId = (await BackfillRunSeed.AddRunAsync(seed, channel.Id, ChatLogBackfillRunStatus.Running)).Id;
+            // A non-terminal run with a stale FinishedAtUtc (never written by the code, but the filter on
+            // the terminal status is what keeps an anomaly like it from deleting a live run).
+            staleActiveId = (await BackfillRunSeed.AddRunAsync(seed, (await SeedChannelAsync("backfill-retention-2", true, null)).Id, ChatLogBackfillRunStatus.Queued, finishedAtUtc: _now.AddDays(-dueDays - 5))).Id;
+            await BackfillRunSeed.AddCoverageDayAsync(seed, channel.Id, new DateOnly(2026, 8, 1), dueId);
+        }
+
+        var (dry, enforced) = await RunDryThenEnforcedAsync();
+
+        Assert.Equal(3, dry.ChatLogBackfillRunsDeleted);
+        Assert.Equal(3, enforced.ChatLogBackfillRunsDeleted);
+        await using var db = CreateDbContext();
+        Assert.Equal([atCutoffId, keptId, unfinishedId, staleActiveId], await db.ChatLogBackfillRuns.OrderBy(r => r.Id).Select(r => r.Id).ToListAsync());
+        // The due run's snapshot went with it; the kept run's stays.
+        Assert.Equal(1, await db.ChatLogBackfillRunEmotes.CountAsync());
+        Assert.False(await db.ChatLogBackfillRunEmotes.AnyAsync(e => e.RunId == dueId));
+        // The coverage day survives its run, detached from it.
+        var coverage = await db.ChatLogBackfillCoverage.SingleAsync();
+        Assert.Null(coverage.RunId);
+    }
+
+    [Fact]
+    public async Task BackfillRuns_AreDeletedInBatches_AndADryRunWritesNone()
+    {
+        var channel = await SeedChannelAsync("backfill-batches", isBotActive: true, deactivatedAtUtc: null);
+        await using (var seed = CreateDbContext())
+        {
+            // More than one batch of 500; terminal runs are not limited by the one-active-run index.
+            await seed.Database.ExecuteSqlAsync(
+                $"""
+                INSERT INTO "ChatLogBackfillRuns"
+                    ("ChannelId", "Status", "RequestedMonths", "WindowFrom", "WindowTo", "WeeksTotal", "EmoteSetId", "ArchiveBaseUrl",
+                     "RequestedByTwitchUserId", "RequestedByLogin", "RequestedAtUtc", "FinishedAtUtc")
+                SELECT {channel.Id}, 'completed', 1, DATE '2026-01-01', DATE '2026-02-01', 5, 'set', 'https://logs.cyex.app/',
+                       'u', 'u', {_now.AddDays(-400)}, {_now.AddDays(-400)}
+                FROM generate_series(1, 501)
+                """);
+        }
+
+        var dry = await RunAsync(enforce: false);
+        await using (var afterDry = CreateDbContext())
+        {
+            Assert.Equal(501, await afterDry.ChatLogBackfillRuns.CountAsync());
+        }
+
+        var enforced = await RunAsync(enforce: true);
+
+        Assert.Equal(501, dry.ChatLogBackfillRunsDeleted);
+        Assert.Equal(501, enforced.ChatLogBackfillRunsDeleted);
+        await using var db = CreateDbContext();
+        Assert.Equal(0, await db.ChatLogBackfillRuns.CountAsync());
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Harness
     // ---------------------------------------------------------------------------------------------
 
