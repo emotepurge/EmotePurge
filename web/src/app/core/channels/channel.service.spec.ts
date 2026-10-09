@@ -14,6 +14,7 @@ const PERMISSIONS: ChannelPermissions = {
   isBotActive: false,
   tagRunsEnabled: false,
   canPurgeAsBroadcaster: false,
+  chatLogBackfillEnabled: false,
 };
 
 describe('ChannelService', () => {

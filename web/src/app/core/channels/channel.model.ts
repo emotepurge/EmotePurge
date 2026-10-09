@@ -21,6 +21,8 @@ export interface ChannelPermissions {
   tagRunsEnabled: boolean;
   /** True only for the channel's own broadcaster (matched by Twitch id) on an existing row. */
   canPurgeAsBroadcaster: boolean;
+  /** Server flag `ChatLogBackfill:Enabled` (#346): the settings tab and the backfill routes exist. */
+  chatLogBackfillEnabled: boolean;
 }
 
 /**

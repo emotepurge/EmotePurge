@@ -61,6 +61,7 @@ const PERMISSIONS: ChannelPermissions = {
   isBotActive: true,
   tagRunsEnabled: false,
   canPurgeAsBroadcaster: false,
+  chatLogBackfillEnabled: false,
 };
 
 const DONE_RESULT: RunResult = {

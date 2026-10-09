@@ -90,6 +90,7 @@ const MANAGER: ChannelPermissions = {
   isBotActive: true,
   tagRunsEnabled: false,
   canPurgeAsBroadcaster: false,
+  chatLogBackfillEnabled: false,
 };
 
 function setStatus(activeEmoteSetId: string): EmoteSetStatus {

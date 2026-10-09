@@ -108,6 +108,7 @@ const PERMISSIONS: ChannelPermissions = {
   isBotActive: true,
   tagRunsEnabled: false,
   canPurgeAsBroadcaster: false,
+  chatLogBackfillEnabled: false,
 };
 
 const DE_TRANSLATIONS = {
