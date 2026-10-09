@@ -277,6 +277,54 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
     }
 
+    [Fact]
+    public async Task LeaveAsync_DuringASetSwitch_DoesNotDeadlockWithTheObservationInsert()
+    {
+        // RecordObservedSetAsync closes the old observation row (holding its row lock) and then inserts
+        // the new one, which takes FOR KEY SHARE on the channel. A leave that locked the channel FOR
+        // UPDATE first would wait for the observation row while the insert waited for the channel:
+        // 40P01, and the leave could be the victim. FOR NO KEY UPDATE does not conflict with KEY SHARE.
+        await using var seedDb = fixture.CreateDbContext();
+        var joined = await JoinChannelAsync(CreateService(seedDb), "bfswitchleave");
+        seedDb.ChannelEmoteSetObservations.Add(new ChannelEmoteSetObservation
+        {
+            ChannelId = joined.Id,
+            SevenTvEmoteSetId = "set-old",
+            ObservedFromUtc = DateTime.UtcNow.AddHours(-1)
+        });
+        await seedDb.SaveChangesAsync();
+
+        // A: the switch, paused between its close and its insert.
+        await using var dbA = fixture.CreateDbContext();
+        await using var txA = await dbA.Database.BeginTransactionAsync();
+        var open = await dbA.ChannelEmoteSetObservations.SingleAsync(o => o.ChannelId == joined.Id && o.ObservedToUtc == null);
+        open.ObservedToUtc = DateTime.UtcNow;
+        open.ClosedBy = ChannelEmoteSetObservationClosedBy.SetSwitch;
+        await dbA.SaveChangesAsync();
+
+        // B: the manager's leave, with the real observation service so it really touches that row.
+        await using var dbB = fixture.CreateTaggedDbContext("bfswitchleave-b");
+        var leaveB = Task.Run(() => CreateService(dbB, emoteSetObservationService: new ChannelEmoteSetObservationService(dbB))
+            .LeaveAsync(joined.ChannelName, Actor));
+        await fixture.WaitUntilBlockedOnLockAsync("bfswitchleave-b", leaveB);
+
+        dbA.ChannelEmoteSetObservations.Add(new ChannelEmoteSetObservation
+        {
+            ChannelId = joined.Id,
+            SevenTvEmoteSetId = "set-new",
+            ObservedFromUtc = DateTime.UtcNow
+        });
+        await dbA.SaveChangesAsync();
+        await txA.CommitAsync();
+        await leaveB;
+
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
+        var rows = await verify.ChannelEmoteSetObservations.AsNoTracking().Where(o => o.ChannelId == joined.Id).ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows.Where(o => o.SevenTvEmoteSetId == "set-old"), o => Assert.NotNull(o.ObservedToUtc));
+    }
+
     private sealed class FailEverySaveInterceptor : SaveChangesInterceptor
     {
         public override ValueTask<InterceptionResult<int>> SavingChangesAsync(

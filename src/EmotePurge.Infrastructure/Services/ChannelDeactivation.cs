@@ -50,9 +50,9 @@ internal enum ChannelDeactivationReason
 /// <see cref="DeactivateAsync"/> composes them for the callers that open no transaction.
 /// </para>
 /// <para>
-/// <b>Lock order:</b> the channel row first, then any <c>ChatLogBackfillRuns</c> row. <see cref="DeactivateAsync"/>
+/// <b>Lock order:</b> the channel row (<c>FOR NO KEY UPDATE</c>) first, then any <c>ChatLogBackfillRuns</c> row. <see cref="DeactivateAsync"/>
 /// takes the channel lock itself before <see cref="StageAsync"/> cancels the run; a caller using
-/// <see cref="StageAsync"/> directly must already hold the channel row <c>FOR UPDATE</c> in its
+/// <see cref="StageAsync"/> directly must already hold the channel row <c>FOR UPDATE</c> (or <c>FOR NO KEY UPDATE</c>) in its
 /// transaction.
 /// </para>
 /// <para>
@@ -104,10 +104,19 @@ internal static class ChannelDeactivation
             // deactivation path (the identity reconcile's locked/unresolvable passes lock the channel
             // FOR UPDATE and then cancel the run) and the backfill's block commit (FK inserts lock the
             // channel before the run update) already follow; cancelling the run first here would invert
-            // it and could deadlock (40P01). A raw statement rather than ChannelQueries.LockAsync,
-            // because the entity may already be changed by the caller, which LockAsync refuses.
+            // it and could deadlock (40P01).
+            //
+            // FOR NO KEY UPDATE, not FOR UPDATE: it is the strength the leave's own UPDATE of the
+            // channel takes anyway (no key column changes), it still conflicts with the FOR UPDATE of
+            // the reconcile, join, merge and purge paths (so the order is enforced), but it does not
+            // conflict with the FOR KEY SHARE that FK inserts take on the channel. That matters for the
+            // set switch (RecordObservedSetAsync): it closes the old observation row and then inserts
+            // the new one; a FOR UPDATE here would sit on the channel while this transaction waits for
+            // the observation row, and the insert would wait for the channel - a deadlock whose victim
+            // can be the leave. A raw statement rather than ChannelQueries.LockAsync, because the entity
+            // may already be changed by the caller, which LockAsync refuses.
             await db.Database.ExecuteSqlAsync(
-                $"""SELECT 1 FROM "Channels" WHERE "Id" = {channel.Id} FOR UPDATE""", cancellationToken);
+                $"""SELECT 1 FROM "Channels" WHERE "Id" = {channel.Id} FOR NO KEY UPDATE""", cancellationToken);
             await StageAsync(db, emoteSetObservationService, channel, actor, reason, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
