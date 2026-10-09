@@ -2041,7 +2041,51 @@
     "statusRefreshFailed": "The status could not be refreshed. This is the last known state.",
     "start": "Start backfill",
     "errors": {
-      "channel_excluded": "This channel is excluded from tracking, so no backfill can run for it."
+      "channel_excluded": "This channel is excluded from tracking, so no backfill can run for it.",
+      "transport_failure": "The archive could not be reached or kept failing, so the run stopped. Weeks already imported stay.",
+      "rate_limited": "The archive kept asking us to slow down, so the run gave up. Weeks already imported stay.",
+      "malformed_response": "The archive sent data we could not read, so the run stopped.",
+      "block_too_large": "A week of the archive was larger than we can process, so the run stopped.",
+      "snapshot_missing": "The names of the chosen set were not available to the run, so it stopped.",
+      "channel_not_active": "This channel is no longer tracked, so the run stopped.",
+      "archive_mismatch": "The archive configured on the server changed after the run was requested, so it stopped.",
+      "twitch_id_unknown": "The Twitch ID of this channel is not known yet, so the archive could not be asked.",
+      "live_row_conflict": "Live counting had already recorded numbers for a day of this run, so it stopped rather than overwrite them.",
+      "channel_left": "The run was cancelled because the bot left this channel.",
+      "worker_error": "The run stopped because of an internal error. Weeks already imported stay.",
+      "unknown": "The run ended with an error that is not described here."
+    },
+    "status": {
+      "queued": "Queued",
+      "running": "Running",
+      "paused": "Paused",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "unknown": "Unknown"
+    },
+    "activeRun": "Current run",
+    "lastRun": "Last run",
+    "progress": "{{ done }} of {{ total }} weeks",
+    "progressLabel": "Backfill progress",
+    "queuePosition": "Position {{ position }} in the queue",
+    "waitUntil": "The archive asked us to wait until {{ time }}.",
+    "runWindow": "Range: {{ from }} – {{ to }}",
+    "runSet": {
+      "one": "Set: {{ set }} ({{ count }} emote)",
+      "other": "Set: {{ set }} ({{ count }} emotes)"
+    },
+    "requestedBy": "Requested by {{ login }}",
+    "finishedAt": "Finished {{ time }}",
+    "cancel": "Cancel backfill",
+    "cancelConfirm": "Cancel this backfill? Weeks already imported stay; the week in progress is discarded.",
+    "replaceWarning": "This run replaces the imported days {{ from }} – {{ to }}, currently counted against {{ set }}.",
+    "startConfirm": "Start the backfill?",
+    "announce": {
+      "active": "Backfill {{ status }}: {{ done }} of {{ total }} weeks.",
+      "completed": "Backfill completed.",
+      "failed": "Backfill failed.",
+      "cancelled": "Backfill cancelled."
     }
   }
 }

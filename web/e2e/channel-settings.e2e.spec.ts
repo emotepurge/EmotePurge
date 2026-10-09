@@ -2,10 +2,12 @@ import { expect, test } from './support/test';
 
 import {
   AUTH_USER,
+  backfillCoverageBody,
   backfillRunBody,
   emitLive,
   installLiveStub,
   mockAuthMe,
+  mockBackfillCancel,
   mockBackfillStart,
   mockBackfillStatus,
   mockChannelEmoteSetList,
@@ -191,5 +193,164 @@ test.describe('channel settings tab (chat-log backfill, start half)', () => {
 
     await expect(page.getByRole('alert')).toContainText('von der Erfassung ausgenommen');
     await expect(page.getByText('kann nicht hinzugefügt werden')).toHaveCount(0);
+  });
+
+  test("a run that would replace another set's days says so, and the start dialog repeats it", async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    await mockBackfillStatus(page, 'sensitron', { coverage: [backfillCoverageBody()] });
+    await mockChannelEmoteSetList(page, 'sensitron', SETS);
+    const start = await mockBackfillStart(page, 'sensitron');
+    const sentence =
+      'Dieser Lauf ersetzt die nachgetragenen Tage 01.08.2026 – 31.08.2026, die derzeit für Halloween gezählt werden.';
+
+    await page.goto('/channels/sensitron/settings');
+    // The 1-month window (from 08.09.) does not reach the imported days; the 3-month one does.
+    await expect(page.getByText(sentence)).toHaveCount(0);
+    await page.getByRole('radio', { name: /3 Monate/ }).check();
+    await expect(page.getByText(sentence)).toHaveCount(1);
+
+    await page.getByRole('button', { name: 'Backfill starten' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText(sentence);
+    expect(start.bodies()).toHaveLength(0);
+
+    await dialog.getByRole('button', { name: 'Backfill starten' }).click();
+    await expect.poll(() => start.bodies().length).toBe(1);
+  });
+
+  test('without anything to replace, start sends at once and opens no dialog', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    await mockBackfillStatus(page, 'sensitron', {
+      coverage: [backfillCoverageBody({ emoteSetId: 'set-active', emoteSetName: 'Normal' })],
+    });
+    await mockChannelEmoteSetList(page, 'sensitron', SETS);
+    const start = await mockBackfillStart(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/settings');
+    await page.getByRole('radio', { name: /3 Monate/ }).check();
+    await page.getByRole('button', { name: 'Backfill starten' }).click();
+
+    await expect.poll(() => start.bodies().length).toBe(1);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
+
+  test('progress follows a backfill.progress event without a reload', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    const running = (weeksDone: number) =>
+      backfillRunBody({ status: 'running', weeksDone, queuePosition: null });
+    const status = await mockBackfillStatus(page, 'sensitron', { activeRun: running(3) });
+    await mockChannelEmoteSetList(page, 'sensitron', SETS);
+
+    await page.goto('/channels/sensitron/settings');
+    await expect(page.getByRole('status').filter({ hasText: '3 von 14 Wochen' })).toBeVisible();
+    await expect(page.getByRole('progressbar')).toHaveJSProperty('position', 3 / 14);
+
+    status.set({ activeRun: running(5) });
+    await emitLive(page, { type: 'backfill.progress', channel: 'sensitron' });
+
+    await expect(page.getByRole('status').filter({ hasText: '5 von 14 Wochen' })).toBeVisible();
+    await expect(page.getByRole('progressbar')).toHaveJSProperty('position', 5 / 14);
+  });
+
+  test('a queued run under the archive cooldown shows the wait sentence and its position', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    await mockBackfillStatus(page, 'sensitron', {
+      activeRun: backfillRunBody({ queuePosition: 2 }),
+      cooldownUntilUtc: '2026-10-09T20:00:00Z',
+    });
+    await mockChannelEmoteSetList(page, 'sensitron', SETS);
+
+    await page.goto('/channels/sensitron/settings');
+
+    await expect(page.getByText('Position 2 in der Warteschlange')).toBeVisible();
+    await expect(page.getByText('Das Archiv hat uns gebeten, bis')).toBeVisible();
+  });
+
+  test('cancel asks first, then sends DELETE, and the cancelled run moves to "last run"', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    const status = await mockBackfillStatus(page, 'sensitron', {
+      activeRun: backfillRunBody({ status: 'running', queuePosition: null, weeksDone: 2 }),
+    });
+    await mockChannelEmoteSetList(page, 'sensitron', SETS);
+    const cancel = await mockBackfillCancel(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/settings');
+    await page.getByRole('button', { name: 'Backfill abbrechen' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('Bereits nachgetragene Wochen bleiben bestehen');
+    expect(cancel.requests()).toBe(0);
+
+    // Declining sends nothing.
+    await dialog.getByRole('button', { name: 'Abbrechen', exact: true }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(cancel.requests()).toBe(0);
+
+    status.set({
+      lastRun: backfillRunBody({ status: 'cancelled', finishedAtUtc: '2026-10-09T19:00:00Z' }),
+    });
+    await page.getByRole('button', { name: 'Backfill abbrechen' }).click();
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: 'Backfill abbrechen', exact: true })
+      .click();
+
+    await expect.poll(() => cancel.requests()).toBe(1);
+    await expect(page.getByRole('button', { name: 'Backfill abbrechen' })).toHaveCount(0);
+    await expect(page.getByText('Letzter Lauf')).toBeVisible();
+  });
+
+  test('a cancel that finds no active run is silent', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    const status = await mockBackfillStatus(page, 'sensitron', {
+      activeRun: backfillRunBody({ status: 'running', queuePosition: null }),
+    });
+    await mockChannelEmoteSetList(page, 'sensitron', SETS);
+    await mockBackfillCancel(page, 'sensitron', {
+      status: 404,
+      errorCode: 'backfill_no_active_run',
+    });
+
+    await page.goto('/channels/sensitron/settings');
+    // The run must be on screen before the mock stops reporting it, or the page may load without it.
+    await expect(page.getByRole('button', { name: 'Backfill abbrechen' })).toBeVisible();
+    status.set({ lastRun: backfillRunBody({ status: 'completed', weeksDone: 14 }) });
+    await page.getByRole('button', { name: 'Backfill abbrechen' }).click();
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: 'Backfill abbrechen', exact: true })
+      .click();
+
+    await expect(page.getByRole('button', { name: 'Backfill abbrechen' })).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  });
+
+  test('a finished run offers no cancel and shows its outcome, set and translated error', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    await mockBackfillStatus(page, 'sensitron', {
+      lastRun: backfillRunBody({
+        status: 'failed',
+        queuePosition: null,
+        weeksDone: 4,
+        finishedAtUtc: '2026-10-09T19:00:00Z',
+        errorCode: 'transport_failure',
+      }),
+    });
+    await mockChannelEmoteSetList(page, 'sensitron', SETS);
+
+    await page.goto('/channels/sensitron/settings');
+
+    await expect(page.getByText('Fehlgeschlagen')).toBeVisible();
+    await expect(page.getByText('Das Archiv war nicht erreichbar')).toBeVisible();
+    await expect(page.getByText('Set: Other (10 Emotes)')).toBeVisible();
+    await expect(page.getByText('Zeitraum: 08.07.2026 – 07.10.2026')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Backfill abbrechen' })).toHaveCount(0);
   });
 });
