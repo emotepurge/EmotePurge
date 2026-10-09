@@ -292,7 +292,7 @@ public class ChannelService(
                 outcome = await PurgeProvenRowsAsync(normalized, actor, loginProven, cancellationToken);
                 break;
             }
-            catch (Exception ex) when (IsDeadlock(ex) && attempt < BroadcasterPurgeMaxAttempts)
+            catch (Exception ex) when (DatabaseErrors.IsDeadlock(ex) && attempt < BroadcasterPurgeMaxAttempts)
             {
                 // The failed attempt's transaction has rolled back on dispose.
                 db.ChangeTracker.Clear();
@@ -903,21 +903,6 @@ public class ChannelService(
             BotCommands.Channel, $"{BotCommands.JoinPrefix}{channel.ChannelName}", cancellationToken);
 
         return ChannelJoinResult.Joined(channel);
-    }
-
-    // A deadlock surfaces either straight from a locking query (PostgresException) or from a save
-    // (DbUpdateException around it), so the whole chain is searched.
-    private static bool IsDeadlock(Exception exception)
-    {
-        for (Exception? current = exception; current is not null; current = current.InnerException)
-        {
-            if (current is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.DeadlockDetected })
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private readonly record struct BroadcasterPurgeOutcome(

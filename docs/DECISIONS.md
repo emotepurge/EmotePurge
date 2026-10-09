@@ -19,6 +19,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Services/ArchivedEmoteRowUpsert.cs` ·
 `docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md` ·
 `src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/DatabaseErrors.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/ChatLogBackfillServiceTests.Races.cs`
 
 The chat-log backfill spec (D35) asked for two new channel-row locks so that a leave and a backfill
@@ -47,7 +48,11 @@ channel row, and that is the difference that matters:
 The shared placeholder upsert now inserts in `SevenTvEmoteId` order, so two of its callers (a ballot
 and an enqueue of the same channel) take overlapping keys in the same order, and it reports via
 `RETURNING` which rows it created: with a lock that no longer blocks other inserters, "absent in a read
-before the insert" would over-claim `CreatedRow` (D41) for a row a concurrent writer inserted first.
+before the insert" would over-claim `CreatedRow` (D41) for a row a concurrent writer inserted first. The shared order covers only the helper's own callers, not the sync's EF
+inserts (a dispatch adding the same missing emotes inserts in `Emote.Id` order), so with two or more
+shared keys the enqueue and a dispatch can still deadlock; the enqueue therefore repeats its whole
+locked transaction on 40P01, up to three attempts with jitter like the broadcaster purge
+(`DatabaseErrors.IsDeadlock`, shared with `ChannelService`), and the sync stays unchanged.
 
 The backfill's block commit takes the channel `FOR KEY SHARE` as its first statement. Without it the
 commit held `KEY SHARE` on emote rows (its usage insert) when a purge locked the channel `FOR UPDATE`

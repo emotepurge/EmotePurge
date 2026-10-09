@@ -58,6 +58,9 @@ public sealed class ChatLogBackfillService(
     // The audit target type the existing emote-set targets use.
     private const string EmoteSetTargetType = "emoteSet";
 
+    // Attempts in total for the enqueue's final transaction on a deadlock (the broadcaster purge's policy).
+    private const int EnqueueMaxAttempts = 3;
+
     // The base of the 429 back-off: 60 s * 2^PauseCount, capped by MaxRetryAfterSeconds (§4.5).
     private const int BasePauseSeconds = 60;
 
@@ -211,9 +214,32 @@ public sealed class ChatLogBackfillService(
             return ChatLogBackfillEnqueueResult.Failed(ChatLogBackfillEnqueueStatus.SetEmpty);
         }
 
-        var outcome = await EnqueueUnderLocksAsync(
-            channel.Id, capturedTwitchChannelId, channel.ChannelName, emoteSetId, preview.EmoteSetName, months, window, members, actor,
-            cancellationToken);
+        // The final transaction as one retry unit, like the broadcaster purge's: its placeholder upsert
+        // takes the emote keys in SevenTvEmoteId order, but a 7TV dispatch inserting the same missing
+        // emotes through EF takes them in Emote.Id (Guid) order, so with two or more shared keys each
+        // can wait for the other (40P01), and the enqueue usually is the victim. A failed attempt has
+        // rolled back on dispose; the next one starts from an empty change tracker and repeats every
+        // check under the locks with the 7TV snapshot already read. The last deadlock propagates.
+        (ChatLogBackfillEnqueueStatus Status, ChatLogBackfillRun? Run, string? ChannelName) outcome;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                outcome = await EnqueueUnderLocksAsync(
+                    channel.Id, capturedTwitchChannelId, channel.ChannelName, emoteSetId, preview.EmoteSetName, months, window, members, actor,
+                    cancellationToken);
+                break;
+            }
+            catch (Exception ex) when (DatabaseErrors.IsDeadlock(ex) && attempt < EnqueueMaxAttempts)
+            {
+                db.ChangeTracker.Clear();
+                logger.LogWarning(
+                    "Chat-log backfill enqueue hit a database deadlock (attempt {Attempt} of {MaxAttempts}); retrying.",
+                    attempt, EnqueueMaxAttempts);
+                await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(20, 150)), cancellationToken);
+            }
+        }
+
         if (outcome.Run is not { } run)
         {
             return ChatLogBackfillEnqueueResult.Failed(outcome.Status);

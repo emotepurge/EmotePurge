@@ -5,8 +5,10 @@ using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fixtures;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -326,6 +328,41 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(("XLive", false, false), (x1.Name, x1.IsArchived, x1.IsPlaceholder));
         var snapshot = await verify.ChatLogBackfillRunEmotes.AsNoTracking().SingleAsync();
         Assert.Equal((x1.Id, true), (snapshot.EmoteId, snapshot.CreatedRow));
+    }
+
+    // Two writers taking two shared missing keys in opposite order: the enqueue's upsert inserts "a" and
+    // waits for "z", which another transaction (standing in for a dispatch's EF insert, Guid-ordered)
+    // holds and then inserts "a" as well. Postgres aborts the enqueue (the first waiter) with 40P01; the
+    // enqueue retries its whole locked transaction, finds both keys committed and adopts them.
+    // Mutation probe: without the retry the enqueue throws 40P01.
+    [Fact]
+    public async Task LockRace_OppositeKeyOrderDeadlock_IsRetried_AndTheEnqueueAdoptsTheOtherWritersRows()
+    {
+        var channel = await SeedChannelAsync("bflockdeadlock");
+        await SeedUserAsync();
+        PreviewReturns(SetB, "Set B", Member("a", "AliasA", null), Member("z", "AliasZ", null));
+        var logger = new RecordingLogger<ChatLogBackfillService>();
+
+        await using var other = fixture.CreateTaggedDbContext("bflockdeadlock-other", DatabaseName);
+        await using var otherTx = await other.Database.BeginTransactionAsync();
+        other.Emotes.Add(new Emote { ChannelId = channel.Id, SevenTvEmoteId = "z", Name = "OtherZ", ImageUrl = ImageUrl("z") });
+        await other.SaveChangesAsync();
+
+        await using var enqueueDb = fixture.CreateTaggedDbContext("bflockdeadlock-enq", DatabaseName);
+        var enqueue = Task.Run(() => CreateService(enqueueDb, logger: logger).EnqueueAsync(channel.ChannelName, SetB, 6, Today, Actor));
+        await fixture.WaitUntilBlockedOnLockAsync("bflockdeadlock-enq", enqueue);
+
+        other.Emotes.Add(new Emote { ChannelId = channel.Id, SevenTvEmoteId = "a", Name = "OtherA", ImageUrl = ImageUrl("a") });
+        await other.SaveChangesAsync();
+        await otherTx.CommitAsync();
+
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await enqueue).Status);
+        await using var verify = CreateDbContext();
+        Assert.Equal(1, await verify.ChatLogBackfillRuns.CountAsync());
+        var snapshot = await verify.ChatLogBackfillRunEmotes.AsNoTracking().OrderBy(e => e.SevenTvEmoteId).ToListAsync();
+        Assert.Equal([("a", false), ("z", false)], snapshot.Select(e => (e.SevenTvEmoteId, e.CreatedRow)).ToArray());
+        Assert.Equal(["OtherA", "OtherZ"], await verify.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).OrderBy(e => e.SevenTvEmoteId).Select(e => e.Name).ToListAsync());
+        Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("deadlock", StringComparison.Ordinal));
     }
 
     // Child 3 AC 1, the index path: a run inserted by a writer that bypasses the lock (here a plain insert
