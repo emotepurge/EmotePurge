@@ -2297,7 +2297,7 @@ export function backfillCoverageBody(
 
 /**
  * DELETE /api/channels/{channelName}/backfill (#353). Counts the requests the UI really sent. A
- * numeric `response` answers with that status and `{ errorCode }`; otherwise 204.
+ * `{ status, errorCode }` response answers with that status and `{ errorCode }`; `'accepted'` is 204.
  */
 export async function mockBackfillCancel(
   page: Page,

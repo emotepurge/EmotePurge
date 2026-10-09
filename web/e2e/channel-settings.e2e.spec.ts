@@ -317,6 +317,8 @@ test.describe('channel settings tab (chat-log backfill, start half)', () => {
     });
 
     await page.goto('/channels/sensitron/settings');
+    // The run must be on screen before the mock stops reporting it, or the page may load without it.
+    await expect(page.getByRole('button', { name: 'Backfill abbrechen' })).toBeVisible();
     status.set({ lastRun: backfillRunBody({ status: 'completed', weeksDone: 14 }) });
     await page.getByRole('button', { name: 'Backfill abbrechen' }).click();
     await page
