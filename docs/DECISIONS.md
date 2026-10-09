@@ -10,6 +10,40 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-09 — Chat-log backfill becomes a product feature, sourced from logs.cyex.app; its spec stays in English
+
+**Betrifft:** `docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md` ·
+`docs/Untersuchung-Chat-Log-Archiv-Range-2026-10-08.md`
+
+#69 closed on 2026-10-08 with the binding verdict "variant (i)": replaying archived chat cannot
+stand in for live counting (renamed emotes lose their hits, tied values cap the precision metric).
+The operator accepts those limits knowingly and decides to build a backfill anyway, as a separate
+product decision rather than a reversal of #69. It runs only on explicit request by a channel
+manager (admin, broadcaster, live moderator; not 7TV editors), fills only days before the channel's
+counting start, never touches a live-counted day, and labels its numbers with their source.
+
+The source is the public archive `https://logs.cyex.app/`. Its operator agreed to the use on
+2026-10-08, needs no API key, and asked only for a link to the archive wherever imported numbers are
+shown. The previous archive (`logs.zonian.dev`) went offline without notice the same morning. Two
+probes on 2026-10-08 (42 requests in total, at least 10 s apart) established that the `from`/`to`
+range query returns the same lines as the per-day endpoint, with `to` exclusive. Six months of the
+largest tracked channel took 26 weekly blocks, 705 MB and 5.5 minutes, with no rate limiting. The
+backfill therefore fetches weekly ranges in one global, strictly sequential queue with configurable
+spacing, and treats a 429 as a normal pause.
+
+One exception to the archive operator's link request is the operator's own decision: vote-session
+ballots include imported days without a source line (spec D30). The link appears on the usage-stats
+caption and the Settings tab.
+
+The spec is written in **English**, an exception to the rule that specs under `docs/` are German.
+It was drafted as GitHub issue text, reviewed twice adversarially (Codex Sol) and once by the `/spec`
+quality gate in that language, and is too long for a single issue (132 kB against GitHub's
+65,536-character limit). A translation would put at risk exactly the precision the language rule
+protects. As with epic #200, the epic and its eight child issues point to the spec file as the
+single source of truth. Later specs stay German unless the same situation recurs.
+
+---
+
 ### 2026-10-08 — Unbindable request input answers 400 `invalid_request_body` in every environment (#245 live run)
 
 **Betrifft:** `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` · `web/src/app/core/i18n/api-error.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · `tests/EmotePurge.Api.Tests/UnbindableBodyTests.cs`
