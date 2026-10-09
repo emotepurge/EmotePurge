@@ -270,7 +270,8 @@
       "usage": "Nutzung",
       "tags": "Tags",
       "voting": "Votings",
-      "activity": "Aktivität"
+      "activity": "Aktivität",
+      "settings": "Einstellungen"
     },
     "activity": {
       "title": "Aktivitätsverlauf",
@@ -294,6 +295,9 @@
       "rejoinFailed": "Bot konnte nicht reaktiviert werden.",
       "purgeOwnDataFailed": "Die Channel-Daten konnten nicht gelöscht werden. Es ist alles unverändert, du kannst es erneut versuchen.",
       "purgeOwnDataUnconfirmed": "Ob die Channel-Daten gelöscht wurden, ist unklar – die Antwort ist nicht angekommen. Lade die Seite neu: Ist der Channel dann verschwunden, wurde er gelöscht."
+    },
+    "settings": {
+      "title": "Einstellungen"
     }
   },
   "broadcasterLock": {
@@ -2000,6 +2004,42 @@
       "backfill_set_empty": "Dieses Emote-Set enthält keine Emotes, es gibt also nichts zu suchen.",
       "backfill_set_truncated": "Dieses Emote-Set ist zu groß, um es vollständig zu lesen, der Backfill kann dafür nicht gestartet werden.",
       "backfill_channel_identity_changed": "Der Channel hat sich während deiner Anfrage geändert. Bitte lade neu und versuche es erneut."
+    }
+  },
+  "backfill": {
+    "title": "Backfill aus dem Chat-Archiv",
+    "explain": {
+      "source": "Die nachgetragenen Zahlen stammen aus dem öffentlichen Chat-Archiv",
+      "inaccurate": "Sie sind möglicherweise ungenau: Das Archiv ist nicht von uns und kann lückenhaft oder fehlerhaft sein.",
+      "namesOnly": "Gefunden werden nur die Namen, wie sie im gewählten Set jetzt heißen. Ein Emote, das im Chat unter einem anderen Namen oder aus einem anderen Set verwendet wurde, wird nicht gefunden.",
+      "renamed": "Umbenannte Emotes verlieren ihre Treffer unter den alten Namen.",
+      "gaps": "Lücken im Archiv lassen sich nicht von ruhigen Tagen unterscheiden.",
+      "oneSetPerDay": "Jeder nachgetragene Tag gehört zu genau einem Set: Ein Lauf ersetzt frühere Importe für die Tage in seinem Zeitraum, auch solche, die für ein anderes Set gezählt wurden, und zählt diese Tage für das gewählte Set so, wie es jetzt ist."
+    },
+    "setLabel": "Emote-Set",
+    "setPlaceholder": "Set wählen",
+    "setActiveMarker": "aktiv",
+    "setNote": "Es werden nur Sets des 7TV-Kontos dieses Channels angeboten; der Lauf sucht nach den Namen, wie sie im gewählten Set jetzt sind.",
+    "windowLabel": "Zeitraum",
+    "option": {
+      "months": {
+        "one": "{{ count }} Monat",
+        "other": "{{ count }} Monate"
+      },
+      "range": "{{ from }} – {{ to }}",
+      "days": {
+        "one": "{{ count }} Tag",
+        "other": "{{ count }} Tage"
+      }
+    },
+    "reasons": {
+      "noDaysBeforeCounting": "Vor dem Zählbeginn dieses Channels liegen keine Tage in diesem Zeitraum.",
+      "unknown": "Dieser Zeitraum ist nicht verfügbar."
+    },
+    "runActive": "Für diesen Channel läuft oder wartet bereits ein Backfill.",
+    "start": "Backfill starten",
+    "errors": {
+      "channelExcluded": "Dieser Channel ist von der Erfassung ausgenommen, daher kann kein Backfill für ihn laufen."
     }
   }
 }
