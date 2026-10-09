@@ -53,6 +53,9 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
     /// <summary>Throws from <c>FailAsync</c> while it returns an exception.</summary>
     public Func<Exception?>? FailFault { get; set; }
 
+    /// <summary>Throws from <c>PauseAsync</c> while it returns an exception.</summary>
+    public Func<Exception?>? PauseFault { get; set; }
+
     /// <summary>Throws from <c>IsRunActiveAsync</c> on the given instance while it returns an exception.</summary>
     public Func<FakeBackfillService, Exception?>? IsRunActiveFault { get; set; }
 
@@ -406,7 +409,11 @@ internal sealed class FakeBackfillService(FakeBackfillStore store) : IChatLogBac
         Record(nameof(ReplaceBlockAsync), () => store.Replace(runId, blockFrom, blockToExclusive, rows, bytes, messages, isLastBlock));
 
     public Task<ChatLogBackfillTransition> PauseAsync(long runId, TimeSpan? retryAfter, DateTime nowUtc, CancellationToken cancellationToken = default) =>
-        Record(nameof(PauseAsync), () => store.Pause(runId, retryAfter, nowUtc));
+        Record(nameof(PauseAsync), () =>
+        {
+            ThrowIf(store.PauseFault?.Invoke());
+            return store.Pause(runId, retryAfter, nowUtc);
+        });
 
     public Task<DateTime?> GetCooldownUntilAsync(CancellationToken cancellationToken = default) =>
         Record(nameof(GetCooldownUntilAsync), () => store.CooldownUntilUtc);
@@ -565,7 +572,9 @@ internal sealed class BackfillRig : IAsyncDisposable
     private int _clientResolutions;
     private bool _started;
 
-    public BackfillRig(Action<ChatLogBackfillOptions>? configure = null, BackfillRig? sharingWith = null)
+    /// <param name="workerClock">Wraps the fake clock for the worker only (e.g. timers that fire early).</param>
+    public BackfillRig(
+        Action<ChatLogBackfillOptions>? configure = null, BackfillRig? sharingWith = null, Func<TimeProvider, TimeProvider>? workerClock = null)
     {
         Options = new ChatLogBackfillOptions { Enabled = true };
         configure?.Invoke(Options);
@@ -605,7 +614,7 @@ internal sealed class BackfillRig : IAsyncDisposable
             redis,
             new BotChatterDetector(new ConfigurationBuilder().Build()),
             excluded,
-            Clock);
+            workerClock?.Invoke(Clock) ?? Clock);
     }
 
     /// <summary>Shared with the rig passed as <c>sharingWith</c>, like the store: two loops, one database.</summary>
