@@ -905,8 +905,10 @@ public class ChatLogBackfillWorkerTests
         await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Completed);
     }
 
-    // Interpretation (c): a failure that cannot be recorded leaves the row running; it is an abandon
-    // event, so the block is read again once later and the failure recorded then.
+    // Interpretation (c), now only for failures without a persisted marker (malformed, oversized): a
+    // failure that cannot be recorded leaves the row running; it is an abandon event, so the block is
+    // read again once later and the failure recorded then. An exhausted transport limit is persisted in
+    // BlockAttempts and is recorded at the next claim without a read (see the tests below).
     [Fact]
     public async Task AFailureThatCouldNotBeRecorded_IsRecordedAtTheNextClaim()
     {
@@ -1016,6 +1018,103 @@ public class ChatLogBackfillWorkerTests
         {
             Assert.InRange(at[i] - at[i - 1], TimeSpan.FromSeconds(100), TimeSpan.FromSeconds(103));
         }
+    }
+
+    // Codex/Fable F1: inside a run the lock is probed, never retaken. A lock connection that dies
+    // during a read leaves the lock free for a while; even when nobody took it, this loop writes nothing
+    // for that read and only takes the lock again at its next claim (with the reset that goes with it).
+    [Theory]
+    [InlineData(ChatLogDayStatus.Complete)]
+    [InlineData(ChatLogDayStatus.TransportFailure)]
+    public async Task ALockLostAndFreeAgainDuringARead_IsNotRetakenInsideTheRun(ChatLogDayStatus status)
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+        var reads = 0;
+        rig.Archive.Handler = (_, _, _) =>
+        {
+            if (reads++ == 0)
+            {
+                // The connection died; nobody else holds the lock, so a retake would succeed at once.
+                rig.Store.ReleaseLock(rig.Store.Instances[0]);
+                return Task.FromResult(FakeArchive.Status(status, status == ChatLogDayStatus.Complete ? 200 : 503, bytes: 64));
+            }
+
+            return Task.FromResult(FakeArchive.Complete(10, 1));
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Completed);
+
+        var loop = rig.Store.Instances[0].Calls;
+        Assert.Contains(rig.Logger.Entries, e => e.Message.Contains("lost during a read", StringComparison.Ordinal));
+        Assert.DoesNotContain(nameof(IChatLogBackfillService.RecordBlockAttemptAsync), loop);
+        Assert.Equal(0, run.BlockAttempts);
+        Assert.Single(run.Commits);
+        Assert.Equal(10, run.BytesReceived);
+        Assert.Equal(2, rig.Archive.Requests.Count);
+
+        // Retaken at the loop level only: the second claim comes after a second reset.
+        Assert.Equal(2, loop.Count(c => c == nameof(IChatLogBackfillService.ResetInterruptedRunsAsync)));
+        Assert.Equal(2, run.Claims);
+    }
+
+    // Codex/Fable F2: the persisted attempt limit holds across a resume. The attempt that exhausted it is
+    // booked, its failure was not (FailAsync threw, or the process stopped between the writes): the next
+    // claim records transport_failure without reading the block again.
+    [Fact]
+    public async Task AnExhaustedAttemptLimitAtTheClaim_FailsWithoutARequest()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+        run.BlockAttempts = rig.Options.TransportRetries;
+        run.BytesReceived = 300;
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Failed);
+
+        Assert.Equal(ChatLogBackfillWorker.TransportFailureErrorCode, run.ErrorCode);
+        Assert.Null(run.ErrorHttpStatus);
+        Assert.Equal(300, run.BytesReceived);
+        Assert.Empty(rig.Archive.Requests);
+    }
+
+    [Fact]
+    public async Task AnExhaustedAttemptLimitThatCannotBeRecorded_ConvergesToWorkerError_WithoutARequest()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+        run.BlockAttempts = rig.Options.TransportRetries;
+
+        // The three transport_failure writes fail; the fourth write, the third strike's worker_error, lands.
+        var faults = 3;
+        rig.Store.FailFault = () => faults-- > 0 ? new InvalidOperationException("write refused") : null;
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Failed);
+
+        Assert.Equal(ChatLogBackfillWorker.WorkerErrorCode, run.ErrorCode);
+        Assert.Equal(0, run.BytesReceived);
+        Assert.Equal(3, run.Claims);
+        Assert.Empty(rig.Archive.Requests);
+    }
+
+    // Codex/Fable F3: the effective spacing is max(RequestDelaySeconds, ChatLogArchive:RequestDelay)
+    // (spec 8) also across runs, where each run's fresh client knows nothing about the previous request.
+    [Fact]
+    public async Task TheArchiveDelay_HoldsAcrossRuns_WhenItIsTheLarger()
+    {
+        await using var rig = new BackfillRig(configureArchive: a => a.RequestDelay = TimeSpan.FromSeconds(30));
+        var first = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+        var second = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7), channelName: "other");
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => second.Status == ChatLogBackfillRunStatus.Completed);
+
+        Assert.Equal(ChatLogBackfillRunStatus.Completed, first.Status);
+        var requests = rig.Archive.Requests;
+        Assert.Equal(["tw-zokka", "tw-other"], requests.Select(r => r.TwitchChannelId));
+        Assert.True(requests[1].AtUtc - requests[0].AtUtc >= TimeSpan.FromSeconds(30));
     }
 
     private static int MonitorCalls(BackfillRig rig) => rig.Store.Instances.Skip(1).Sum(i => i.Calls.Count);

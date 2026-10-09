@@ -4,6 +4,7 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.Matching;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.ChatLogArchive;
 using EmotePurge.Infrastructure.Services;
 
 namespace EmotePurge.Worker.ChatLogBackfill;
@@ -26,9 +27,10 @@ namespace EmotePurge.Worker.ChatLogBackfill;
 /// <b>The database decides, the worker follows.</b> Every counter the worker acts on comes from the
 /// last transition the service returned (D38); a status other than <c>running</c> stops the run at
 /// once. A 429 ends the run's turn (D44): the pause is spent in the loop, which waits out the persisted
-/// provider cooldown (D31) before it claims again. The loop lock is re-checked before every claim,
-/// every archive request and every commit (D46). Nothing here holds a database lock of its own — the
-/// service takes them, channel row before run row.
+/// provider cooldown (D31) before it claims again. The loop lock is (re)acquired only before a claim;
+/// inside a run it is probed — before every archive request and right after every read, before any
+/// write — and never retaken: a lock lost during a run stays lost until the next claim (D46). Nothing
+/// here holds a database lock of its own — the service takes them, channel row before run row.
 /// </para>
 /// <para>
 /// <b>Abandon and resume</b> (operator decision 2026-10-09). When the worker cannot tell whether it may
@@ -48,6 +50,7 @@ public sealed class ChatLogBackfillWorker(
     ILogger<ChatLogBackfillWorker> logger,
     IServiceScopeFactory scopeFactory,
     ChatLogBackfillOptions options,
+    ChatLogArchiveOptions archiveOptions,
     BootRecoveryGate bootRecoveryGate,
     ChatLogBackfillSignal signal,
     IRedisPublisher redisPublisher,
@@ -291,6 +294,18 @@ public sealed class ChatLogBackfillWorker(
                 return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, null, stoppingToken);
             }
 
+            // The persisted attempt limit holds across a resume (operator decision 2026-10-09, Codex/Fable):
+            // the attempt that exhausted it is booked, but its failure was not recorded (FailAsync threw,
+            // or the process stopped between the two writes). Record it now, without another request;
+            // that attempt's bytes are already booked.
+            if (claim.BlockAttempts >= options.TransportRetries)
+            {
+                logger.LogWarning(
+                    "Chat-log backfill run {RunId} ({Channel}): {Attempts} transport attempts already used on its next block; failing it without another request.",
+                    claim.RunId, claim.ChannelName, claim.BlockAttempts);
+                return await FailOrAbandonAsync(service, claim, state, TransportFailureErrorCode, null, stoppingToken);
+            }
+
             // The status monitor's own instance (D39): a second user of the loop's instance would race it.
             monitorScope = scopeFactory.CreateAsyncScope();
             monitor = MonitorAsync(monitorScope.Value.ServiceProvider.GetRequiredService<IChatLogBackfillService>(), claim.RunId, runCancellation);
@@ -359,7 +374,7 @@ public sealed class ChatLogBackfillWorker(
             // without a request.
             await WaitForCooldownAsync(service, runToken, stoppingToken);
             await WaitForSpacingAsync(runToken);
-            if (!await service.TryAcquireLoopLockAsync(stoppingToken))
+            if (!await service.HoldsLoopLockAsync(stoppingToken))
             {
                 return await AbandonAsync(service, claim, state, "the loop lock was lost before a request", null, deferFailure: false, stoppingToken);
             }
@@ -400,9 +415,11 @@ public sealed class ChatLogBackfillWorker(
             // Every write after a read happens only under the lock (D46): a read can last up to the body
             // timeout, and another loop that took the lock meanwhile may have reset and re-claimed this
             // very run — a commit, a pause, an attempt or a failure written now would land on its run.
-            // Not held: nothing is written for this read, not even a 429's cooldown (the holder gets its
-            // own 429 if the archive still means it).
-            if (result.Status != ChatLogDayStatus.Cancelled && !await service.TryAcquireLoopLockAsync(stoppingToken))
+            // The lock is probed, never retaken: a connection that died during the read means the lock
+            // was free for a while, and retaking it now would hide another loop's turn. Not held:
+            // nothing is written for this read, not even a 429's cooldown (the holder gets its own 429 if
+            // the archive still means it), and the lock stays lost until the next claim.
+            if (result.Status != ChatLogDayStatus.Cancelled && !await service.HoldsLoopLockAsync(stoppingToken))
             {
                 return await AbandonAsync(service, claim, state, "the loop lock was lost during a read", null, deferFailure: false, stoppingToken);
             }
@@ -642,12 +659,16 @@ public sealed class ChatLogBackfillWorker(
         }
     }
 
-    // D7: a request starts no earlier than RequestDelaySeconds after the previous one started — never a
-    // millisecond earlier. A timer may fire up to a tick early against the wall clock (and a delay is
-    // truncated to whole milliseconds), so the wait is rounded up and the clock checked again after it.
+    // D7: a request starts no earlier than the effective spacing after the previous one started — never a
+    // millisecond earlier. The effective spacing is the larger of RequestDelaySeconds and the archive
+    // client's own ChatLogArchive:RequestDelay (spec 8): the client paces only within its run, and each
+    // run gets a fresh client, so across runs only this wait keeps the larger delay. A timer may fire up
+    // to a tick early against the wall clock (and a delay is truncated to whole milliseconds), so the
+    // wait is rounded up and the clock checked again after it.
     private async Task WaitForSpacingAsync(CancellationToken runToken)
     {
-        var spacing = TimeSpan.FromSeconds(options.RequestDelaySeconds);
+        var workerSpacing = TimeSpan.FromSeconds(options.RequestDelaySeconds);
+        var spacing = workerSpacing > archiveOptions.RequestDelay ? workerSpacing : archiveOptions.RequestDelay;
         while (ChatLogBackfillRetryPolicy.SpacingWait(_lastRequestStartedUtc, spacing, UtcNow()) is var wait && wait > TimeSpan.Zero)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(wait.TotalMilliseconds)), timeProvider, runToken);
@@ -693,7 +714,8 @@ public sealed class ChatLogBackfillWorker(
     {
         try
         {
-            return await service.TryAcquireLoopLockAsync(stoppingToken);
+            // A probe, never an acquisition: see the post-read check in RunBlocksAsync.
+            return await service.HoldsLoopLockAsync(stoppingToken);
         }
         catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
         {

@@ -2,6 +2,7 @@ using EmotePurge.Core.ChatLogArchive;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.ChatLogArchive;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Worker.ChatLogBackfill;
 using Microsoft.Extensions.Configuration;
@@ -588,9 +589,14 @@ internal sealed class BackfillRig : IAsyncDisposable
     private bool _started;
 
     /// <param name="workerClock">Wraps the fake clock for the worker only (e.g. timers that fire early).</param>
+    /// <param name="configureArchive">Adjusts the archive client's options the worker sees (its RequestDelay).</param>
     public BackfillRig(
-        Action<ChatLogBackfillOptions>? configure = null, BackfillRig? sharingWith = null, Func<TimeProvider, TimeProvider>? workerClock = null)
+        Action<ChatLogBackfillOptions>? configure = null,
+        BackfillRig? sharingWith = null,
+        Func<TimeProvider, TimeProvider>? workerClock = null,
+        Action<ChatLogArchiveOptions>? configureArchive = null)
     {
+        configureArchive?.Invoke(ArchiveOptions);
         Options = new ChatLogBackfillOptions { Enabled = true };
         configure?.Invoke(Options);
         Clock = sharingWith?.Clock ?? new FakeTimeProvider(Start);
@@ -624,6 +630,7 @@ internal sealed class BackfillRig : IAsyncDisposable
             Logger,
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
             Options,
+            ArchiveOptions,
             gate,
             Signal,
             redis,
@@ -636,6 +643,8 @@ internal sealed class BackfillRig : IAsyncDisposable
     public FakeTimeProvider Clock { get; }
 
     public ChatLogBackfillOptions Options { get; }
+
+    public ChatLogArchiveOptions ArchiveOptions { get; } = new();
 
     public FakeBackfillStore Store { get; }
 
