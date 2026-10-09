@@ -149,6 +149,7 @@ public class SessionRejectionCookieSchemeTests : IClassFixture<SessionRejectionC
             builder.UseSetting("Redis:ConnectionString", "localhost:6379");
             builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=none;Username=none;Password=none");
             builder.UseSetting("Auth:AdminTwitchLogins", string.Empty);
+            builder.UseSetting("Auth:AdminTwitchUserIds", string.Empty);
             builder.ConfigureLogging(logging =>
             {
                 logging.ClearProviders();

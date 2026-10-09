@@ -91,6 +91,14 @@ public sealed class TwitchUserLookup
 /// <see cref="LoginsMissing"/>, and it never carries an id or a login into the log for the same
 /// reason the gate itself does not.
 /// </para>
+/// <para>
+/// <see cref="LockedDeactivated"/> (#245) counts an active row the pass stopped observing because its
+/// Twitch id — stored, or just resolved by the row's login — is locked by its broadcaster
+/// (<c>BroadcasterChannelLocks</c>). Kept apart from <see cref="Deactivated"/> because it is also the
+/// rollout evidence that the running worker image knows the lock at all: the summary line names it on
+/// every tick, zero included. <see cref="UnresolvableDeactivated"/> (#245, D2) counts an old id-less
+/// row whose login Twitch definitively does not know, that has not synced for a week either.
+/// </para>
 /// </summary>
 public record ChannelIdentityReconcileSummary(
     int Checked,
@@ -99,7 +107,9 @@ public record ChannelIdentityReconcileSummary(
     int Merged,
     int MergesRefused,
     int LoginsMissing,
-    int Deactivated);
+    int Deactivated,
+    int LockedDeactivated,
+    int UnresolvableDeactivated);
 
 /// <summary>
 /// Keeps the stored channel rows in step with Twitch's own view of who they are. The immutable

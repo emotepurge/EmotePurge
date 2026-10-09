@@ -273,6 +273,7 @@ public class EmoteTagCascadeTests(PostgresFixture fixture)
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IChannelIdentityService>(),
             new ChannelEmoteSetObservationService(db),
+            new BroadcasterChannelLockService(db),
             new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
             Substitute.For<IExcludedChannelFilter>(),
             NullLogger<ChannelService>.Instance);

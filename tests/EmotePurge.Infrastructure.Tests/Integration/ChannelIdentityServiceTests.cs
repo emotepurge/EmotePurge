@@ -643,6 +643,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
             Substitute.For<IRedisPublisher>(),
             identityService,
             new ChannelEmoteSetObservationService(joinDb),
+            new BroadcasterChannelLockService(joinDb),
             new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
             excludedChannelFilter,
             NullLogger<ChannelService>.Instance);
@@ -1166,6 +1167,299 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.DoesNotContain(harness.Logger.Entries, e => e.Message.Contains("identitylookupdown"));
     }
 
+    // ---- Broadcaster lock (#245): the lock pass, its races, and D2 ----
+
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheStoredIdIsLocked_DeactivatesTheRowNamed_WithReasonLocked()
+    {
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "10301");
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identitylocked", "10301");
+        var emoteSetObservations = Substitute.For<IChannelEmoteSetObservationService>();
+        var harness = CreateHarness(
+            db, [new TwitchUserIdentity("10301", "IdentityLocked")], emoteSetObservationService: emoteSetObservations);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.LockedDeactivated);
+        Assert.Equal(0, summary.Deactivated);
+        Assert.Equal(["channel:bot:commands|LEAVE:identitylocked"], harness.Redis.Messages);
+        // The open observation interval is closed in the same save (the #200 invariant).
+        await emoteSetObservations.Received(1).CloseOpenIntervalAsync(
+            seeded.Id, ChannelEmoteSetObservationClosedBy.Leave, Arg.Any<CancellationToken>());
+
+        await using var verify = fixture.CreateDbContext();
+        var channel = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
+        Assert.False(channel.IsBotActive);
+        Assert.NotNull(channel.DeactivatedAtUtc);
+        var leave = await verify.AuditLogEntries.AsNoTracking()
+            .SingleAsync(e => e.Action == AuditActions.ChannelLeave && e.ChannelName == "identitylocked");
+        Assert.Equal("system", leave.ActorLogin);
+        Assert.Equal("locked", JsonDocument.Parse(leave.DetailsJson!).RootElement.GetProperty("reason").GetString());
+        // The lock itself stays: only a join lifts it.
+        Assert.Equal(lockScope.LockedAtUtc, await new BroadcasterChannelLockService(verify).GetLockedAtUtcAsync("10301"));
+    }
+
+    // Like the exclusion pass, the lock pass runs before the two early returns: a token or Helix
+    // outage must not keep a locked channel under observation, and the summary of the early return
+    // must still say what it did.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ReconcileActiveChannelsAsync_WithoutATokenOrHelix_StillDeactivatesALockedRow(bool withoutToken)
+    {
+        var twitchId = withoutToken ? "10302" : "10303";
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, twitchId);
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, $"identitylockedout{(withoutToken ? "a" : "b")}", twitchId);
+        var harness = withoutToken
+            ? CreateHarness(db, [new TwitchUserIdentity(twitchId, seeded.ChannelName)], token: null)
+            : CreateHarness(db, identities: null);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.LockedDeactivated);
+        Assert.Equal(0, summary.Deactivated);
+        Assert.Equal([$"channel:bot:commands|LEAVE:{seeded.ChannelName}"], harness.Redis.Messages);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id)).IsBotActive);
+    }
+
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_LockPass_PublishesLeaveOnlyAfterTheCommit()
+    {
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "10304");
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identitylockedorder", "10304");
+        bool? activeSeenAtPublish = null;
+        var harness = CreateHarness(
+            db,
+            [],
+            onPublish: async _ =>
+            {
+                await using var probe = fixture.CreateDbContext();
+                activeSeenAtPublish = (await probe.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id)).IsBotActive;
+            });
+
+        await harness.Service.ReconcileActiveChannelsAsync();
+
+        // A second connection sees the deactivation while the LEAVE goes out: committed, not merely saved.
+        Assert.False(activeSeenAtPublish);
+    }
+
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheLockPassLeavePublishFails_KeepsTheDeactivationAndFinishesTheTick()
+    {
+        await using var firstLock = await BroadcasterLockScope.CreateAsync(fixture, "10305");
+        await using var secondLock = await BroadcasterLockScope.CreateAsync(fixture, "10306");
+        await using var db = fixture.CreateDbContext();
+        var first = await SeedChannelAsync(db, "idlockedpubfaila", "10305");
+        var second = await SeedChannelAsync(db, "idlockedpubfailb", "10306");
+        var harness = CreateHarness(db, [], failPublishes: true);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(2, summary.LockedDeactivated);
+        Assert.Contains(
+            harness.Logger.Entries,
+            e => e.Level == LogLevel.Warning && e.Message.Contains("LEAVE announcement could not be published"));
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == first.Id)).IsBotActive);
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == second.Id)).IsBotActive);
+    }
+
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenAnIdLessRowsLoginResolvesToALockedId_WritesTheIdDownAndDeactivatesIt()
+    {
+        // The row a join created during a Helix outage after the broadcaster's purge.
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "10307");
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identitylockedidless", twitchChannelId: null);
+        var harness = CreateHarness(db, [new TwitchUserIdentity("10307", "IdentityLockedIdLess")]);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.LockedDeactivated);
+        Assert.Equal(0, summary.IdsBackfilled);
+        Assert.Equal(["channel:bot:commands|LEAVE:identitylockedidless"], harness.Redis.Messages);
+        await using var verify = fixture.CreateDbContext();
+        var channel = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
+        Assert.False(channel.IsBotActive);
+        Assert.Equal("10307", channel.TwitchChannelId);
+        Assert.True(await verify.AuditLogEntries.AsNoTracking().AnyAsync(
+            e => e.Action == AuditActions.ChannelLeave && e.ChannelName == "identitylockedidless"));
+    }
+
+    // The broadcaster's join holds the row lock while it lifts the lock; the reconcile, waiting for
+    // the same row, checks the lock again once it has the row and finds it gone — nothing written.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_RacingTheBroadcastersJoin_FindsTheLockLiftedAndWritesNothing()
+    {
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "10308");
+        await using (var seedDb = fixture.CreateDbContext())
+        {
+            await SeedChannelAsync(seedDb, "identitylockrace1", "10308");
+        }
+
+        await using var auditHold = await HoldTheAuditLogAsync();
+
+        await using var joinDb = fixture.CreateTaggedDbContext("identitylockrace1-join");
+        var join = CreateJoinService(joinDb, new TwitchUserIdentity("10308", "identitylockrace1"))
+            .JoinAsync("identitylockrace1", new AuditActor("10308", "identitylockrace1"));
+        await fixture.WaitUntilBlockedOnLockAsync("identitylockrace1-join", join);
+
+        await using var reconcileDb = fixture.CreateTaggedDbContext("identitylockrace1-reconcile");
+        var harness = CreateHarness(reconcileDb, [new TwitchUserIdentity("10308", "identitylockrace1")]);
+        var reconcile = harness.Service.ReconcileActiveChannelsAsync();
+        await fixture.WaitUntilBlockedOnLockAsync("identitylockrace1-reconcile", reconcile);
+
+        await auditHold.ReleaseAsync();
+
+        Assert.Equal(ChannelJoinStatus.Joined, (await join).Status);
+        var summary = await reconcile;
+        Assert.NotNull(summary);
+        Assert.Equal(0, summary.LockedDeactivated);
+        Assert.Empty(harness.Redis.Messages);
+        await using var verify = fixture.CreateDbContext();
+        Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.ChannelName == "identitylockrace1")).IsBotActive);
+        Assert.Null(await new BroadcasterChannelLockService(verify).GetLockedAtUtcAsync("10308"));
+        await verify.Channels.Where(c => c.ChannelName == "identitylockrace1").ExecuteUpdateAsync(c => c.SetProperty(x => x.IsBotActive, false));
+    }
+
+    // The other direction: the reconcile holds the row while it deactivates it; a join waits, then
+    // finds the row left — the broadcaster lifts the lock and reactivates it, a moderator is refused.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ReconcileActiveChannelsAsync_HoldingTheRow_MakesAJoinWait_ThatThenDecidesOnTheLeftRow(bool byBroadcaster)
+    {
+        var twitchId = byBroadcaster ? "10309" : "10310";
+        var name = byBroadcaster ? "identitylockrace2a" : "identitylockrace2b";
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, twitchId);
+        await using (var seedDb = fixture.CreateDbContext())
+        {
+            await SeedChannelAsync(seedDb, name, twitchId);
+        }
+
+        await using var auditHold = await HoldTheAuditLogAsync();
+
+        await using var reconcileDb = fixture.CreateTaggedDbContext($"{name}-reconcile");
+        var harness = CreateHarness(reconcileDb, [new TwitchUserIdentity(twitchId, name)]);
+        var reconcile = harness.Service.ReconcileActiveChannelsAsync();
+        await fixture.WaitUntilBlockedOnLockAsync($"{name}-reconcile", reconcile);
+
+        await using var joinDb = fixture.CreateTaggedDbContext($"{name}-join");
+        var actor = byBroadcaster ? new AuditActor(twitchId, name) : new AuditActor("identity-mod", "identitymod");
+        var join = CreateJoinService(joinDb, new TwitchUserIdentity(twitchId, name)).JoinAsync(name, actor);
+        await fixture.WaitUntilBlockedOnLockAsync($"{name}-join", join);
+
+        await auditHold.ReleaseAsync();
+
+        Assert.Equal(1, (await reconcile)?.LockedDeactivated);
+        var joinResult = await join;
+        await using var verify = fixture.CreateDbContext();
+        var channel = await verify.Channels.AsNoTracking().SingleAsync(c => c.ChannelName == name);
+        var lockedAt = await new BroadcasterChannelLockService(verify).GetLockedAtUtcAsync(twitchId);
+        if (byBroadcaster)
+        {
+            Assert.Equal(ChannelJoinStatus.Joined, joinResult.Status);
+            Assert.True(channel.IsBotActive);
+            Assert.Null(lockedAt);
+            await verify.Channels.Where(c => c.Id == channel.Id).ExecuteUpdateAsync(c => c.SetProperty(x => x.IsBotActive, false));
+        }
+        else
+        {
+            Assert.Equal(ChannelJoinStatus.LockedByBroadcaster, joinResult.Status);
+            Assert.False(channel.IsBotActive);
+            Assert.NotNull(lockedAt);
+        }
+    }
+
+    // D2 (#245): an active id-less row whose login Twitch definitively does not know is left after a
+    // week of age and a week without a successful 7TV sync — named, reason loginUnresolvable, LEAVE
+    // after the commit — and then stands in the retention's candidate set like every left channel.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_AnOldIdLessRowTwitchDoesNotKnow_IsDeactivatedAsLoginUnresolvable()
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identityunresolvable", twitchChannelId: null);
+        seeded.CreatedAt = DateTime.UtcNow.AddDays(-8);
+        await db.SaveChangesAsync();
+        var harness = CreateHarness(db, []);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.UnresolvableDeactivated);
+        Assert.Equal(0, summary.LockedDeactivated);
+        Assert.Equal(["channel:bot:commands|LEAVE:identityunresolvable"], harness.Redis.Messages);
+        await using var verify = fixture.CreateDbContext();
+        var channel = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
+        Assert.False(channel.IsBotActive);
+        // The retention's candidate filter is !IsBotActive && DeactivatedAtUtc < cutoff — the stamp is set.
+        Assert.NotNull(channel.DeactivatedAtUtc);
+        var leave = await verify.AuditLogEntries.AsNoTracking()
+            .SingleAsync(e => e.Action == AuditActions.ChannelLeave && e.ChannelName == "identityunresolvable");
+        Assert.Equal("loginUnresolvable", JsonDocument.Parse(leave.DetailsJson!).RootElement.GetProperty("reason").GetString());
+    }
+
+    [Theory]
+    [InlineData("recentsync")]
+    [InlineData("young")]
+    [InlineData("helixdown")]
+    public async Task ReconcileActiveChannelsAsync_AnIdLessRowTwitchDoesNotKnow_StaysActiveWithinTheGracePeriodOrWithoutAnAnswer(string variant)
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, $"identityunres{variant}", twitchChannelId: null);
+        seeded.CreatedAt = DateTime.UtcNow.AddDays(variant == "young" ? -2 : -8);
+        seeded.LastSyncedAtUtc = variant == "recentsync" ? DateTime.UtcNow.AddDays(-2) : null;
+        await db.SaveChangesAsync();
+        // Only Helix's definite "no such login" counts; an outage is no answer at all.
+        var harness = CreateHarness(db, variant == "helixdown" ? null : []);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.Equal(0, summary?.UnresolvableDeactivated ?? 0);
+        Assert.Empty(harness.Redis.Messages);
+        await using var verify = fixture.CreateDbContext();
+        Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id)).IsBotActive);
+        await verify.Channels.Where(c => c.Id == seeded.Id).ExecuteUpdateAsync(c => c.SetProperty(x => x.IsBotActive, false));
+    }
+
+    // R5 pin, no production change: the known, pre-existing limit #245 only documents. A rename left
+    // an active old-login row holding the Twitch id; a join during a Helix outage created an id-less
+    // duplicate under the new login, and the mod team gave it an (empty) tag. The identity reconcile
+    // refuses to merge it (a tag is the moderators' work), so the duplicate stays id-less, and under
+    // D3 = A the 7TV sync refuses it as a rename duplicate and leaves its cache cold — until a person
+    // removes the tag or the duplicate. The "about an hour" in DECISIONS is retry spacing, not this.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_ATaggedIdLessRenameDuplicate_IsNeitherMergedNorBackfilled()
+    {
+        await using var db = fixture.CreateDbContext();
+        var original = await SeedChannelAsync(db, "identitytagdupold", "10311");
+        var duplicate = await SeedChannelAsync(db, "identitytagdupnew", twitchChannelId: null);
+        db.EmoteTags.Add(new EmoteTag { ChannelId = duplicate.Id, Name = "Empty", NormalizedName = "empty", CreatedAtUtc = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+        var harness = CreateHarness(db, [new TwitchUserIdentity("10311", "identitytagdupnew")]);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(0, summary.Merged);
+        Assert.True(summary.MergesRefused >= 1);
+        await using var verify = fixture.CreateDbContext();
+        var row = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == duplicate.Id);
+        Assert.Null(row.TwitchChannelId);
+        Assert.True(row.IsBotActive);
+        Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == original.Id)).IsBotActive);
+        await verify.Channels.Where(c => c.Id == duplicate.Id || c.Id == original.Id)
+            .ExecuteUpdateAsync(c => c.SetProperty(x => x.IsBotActive, false));
+    }
+
     // Fourth Codex review: a channel.leave by the system actor is written for nothing but the
     // objection gate, so an entry naming the channel would tell every admin reading the audit log
     // which channel the objection concerns. The entry exists, but carries only the reason.
@@ -1203,7 +1497,8 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         ChannelIdentityWarningState? warningState = null,
         bool failPublishes = false,
         IChannelEmoteSetObservationService? emoteSetObservationService = null,
-        IExcludedChannelFilter? excludedChannelFilter = null)
+        IExcludedChannelFilter? excludedChannelFilter = null,
+        Func<string, Task>? onPublish = null)
     {
         var helix = Substitute.For<ITwitchHelixClient>();
         helix.GetUsersAsync(
@@ -1216,7 +1511,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         var appTokenProvider = Substitute.For<ITwitchAppTokenProvider>();
         appTokenProvider.GetTokenAsync(Arg.Any<CancellationToken>()).Returns(token);
 
-        var publisher = new RecordingPublisher(failPublishes);
+        var publisher = new RecordingPublisher(failPublishes, onPublish);
         var logger = new RecordingLogger<ChannelIdentityService>();
         var state = warningState ?? new ChannelIdentityWarningState();
         var emoteSetObservations = emoteSetObservationService ?? Substitute.For<IChannelEmoteSetObservationService>();
@@ -1228,7 +1523,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
             emoteSetObservations,
             new ChannelIdentityService(
                 db, helix, appTokenProvider, publisher, emoteSetObservations, state,
-                excludedChannelFilter ?? Substitute.For<IExcludedChannelFilter>(), logger));
+                excludedChannelFilter ?? Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), logger));
     }
 
     private sealed record Harness(
@@ -1240,22 +1535,69 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
 
     // Order matters here in a way NSubstitute's Received() cannot express as clearly: LEAVE has to
     // precede JOIN, so the fake keeps the sequence rather than a set of calls.
-    private sealed class RecordingPublisher(bool fails = false) : IRedisPublisher
+    // onPublish runs at the moment of the publish, before it returns — a probe for what a second
+    // connection can see then (the lock pass must have committed by that point, #245).
+    private sealed class RecordingPublisher(bool fails = false, Func<string, Task>? onPublish = null) : IRedisPublisher
     {
         private readonly List<string> _messages = [];
 
         public IReadOnlyList<string> Messages => _messages;
 
-        public Task PublishAsync(string channel, string message, CancellationToken cancellationToken = default)
+        public async Task PublishAsync(string channel, string message, CancellationToken cancellationToken = default)
         {
             // Recorded before it throws: a Redis outage happens on the wire, so the call was made.
             _messages.Add($"{channel}|{message}");
+            if (onPublish is not null)
+            {
+                await onPublish(message);
+            }
+
             if (fails)
             {
                 throw new InvalidOperationException("Redis nicht erreichbar (Test).");
             }
+        }
+    }
 
-            return Task.CompletedTask;
+    private static ChannelService CreateJoinService(AppDbContext db, TwitchUserIdentity identity)
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        identityService.LookupByLoginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(TwitchUserLookup.Found(identity));
+        return new ChannelService(
+            db,
+            Substitute.For<IRedisPublisher>(),
+            identityService,
+            new ChannelEmoteSetObservationService(db),
+            new BroadcasterChannelLockService(db),
+            new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
+            Substitute.For<IExcludedChannelFilter>(),
+            NullLogger<ChannelService>.Instance);
+    }
+
+    /// <summary>
+    /// Takes the audit log in SHARE mode, which blocks every insert into it until released — where a
+    /// join or a deactivation parks right before its commit, row lock in hand. Released by rolling back.
+    /// </summary>
+    private async Task<AuditLogHold> HoldTheAuditLogAsync()
+    {
+        var holdDb = fixture.CreateDbContext();
+        await holdDb.Database.BeginTransactionAsync();
+        await holdDb.Database.ExecuteSqlRawAsync("""LOCK TABLE "AuditLogEntries" IN SHARE MODE""");
+        return new AuditLogHold(holdDb);
+    }
+
+    private sealed class AuditLogHold(AppDbContext db) : IAsyncDisposable
+    {
+        public async Task ReleaseAsync() => await db.Database.RollbackTransactionAsync();
+
+        public async ValueTask DisposeAsync()
+        {
+            if (db.Database.CurrentTransaction is not null)
+            {
+                await db.Database.RollbackTransactionAsync();
+            }
+
+            await db.DisposeAsync();
         }
     }
 }

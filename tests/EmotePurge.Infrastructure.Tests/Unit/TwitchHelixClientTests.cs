@@ -101,6 +101,24 @@ public class TwitchHelixClientTests
         Assert.Null(result);
     }
 
+    // #245 (plan P15): the live coverage keeps a locked or excluded channel out by the stream's
+    // Helix user id, so the client has to carry user_id through rather than drop it.
+    [Fact]
+    public async Task GetLiveStreamsByLoginsAsync_ReadsTheUserIdOfEachStream()
+    {
+        var client = CreateClient(
+            HttpStatusCode.OK,
+            """{"data":[{"id":"9","user_id":"141981764","user_login":"twitchdev","started_at":"2026-10-08T12:00:00Z"}]}""",
+            "application/json");
+
+        var result = await client.GetLiveStreamsByLoginsAsync(["twitchdev"], "app-token");
+
+        var stream = Assert.Single(result!);
+        Assert.Equal("twitchdev", stream.UserLogin);
+        Assert.Equal("141981764", stream.UserId);
+        Assert.Equal(new DateTime(2026, 10, 8, 12, 0, 0, DateTimeKind.Utc), stream.StartedAtUtc);
+    }
+
     [Fact]
     public async Task GetLiveStreamsByLoginsAsync_WithMalformedJsonBody_ReturnsNull_InsteadOfThrowing()
     {

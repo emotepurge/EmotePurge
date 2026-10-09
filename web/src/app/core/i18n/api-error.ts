@@ -30,6 +30,8 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'channel_not_on_twitch',
   'channel_capacity_reached',
   'channel_excluded',
+  'channel_locked_by_broadcaster',
+  'channel_identity_unresolved',
   'account_mismatch',
   'foreign_channel_twitch_unavailable',
   'foreign_channel_no_seventv_account',
@@ -44,6 +46,7 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'live_stream_unavailable',
   'live_stream_quota_exhausted',
   'unexpected_error',
+  'invalid_request_body',
   'no_health_data',
   'health_data_unreadable',
   // Four codes for the emote-set surface (spec 2026-09-20, E13). Added together even though only

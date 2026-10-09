@@ -228,7 +228,7 @@ public class WorkerBootSequenceTests
         }
 
         await chatManager.DidNotReceive().JoinChannelAsync("unlistedchannel");
-        await chatManager.DidNotReceive().EnsureJoinedAsync("unlistedchannel");
+        await chatManager.DidNotReceive().EnsureJoinedAsync("unlistedchannel", Arg.Any<long>());
         await syncService.DidNotReceive().SyncChannelAsync("unlistedchannel", Arg.Any<CancellationToken>());
         await syncService.Received(1).SyncChannelAsync("listedchannel", Arg.Any<CancellationToken>());
         if (prefix == "JOIN:")
@@ -237,7 +237,7 @@ public class WorkerBootSequenceTests
         }
         else
         {
-            await chatManager.Received(1).EnsureJoinedAsync("listedchannel");
+            await chatManager.Received(1).EnsureJoinedAsync("listedchannel", Arg.Any<long>());
         }
     }
 

@@ -74,6 +74,19 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.ToTable("AuditLogEntries");
                 });
 
+            modelBuilder.Entity("EmotePurge.Core.Entities.BroadcasterChannelLock", b =>
+                {
+                    b.Property<string>("TwitchChannelId")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("LockedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TwitchChannelId");
+
+                    b.ToTable("BroadcasterChannelLocks");
+                });
+
             modelBuilder.Entity("EmotePurge.Core.Entities.Channel", b =>
                 {
                     b.Property<string>("Id")

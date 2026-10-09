@@ -1,6 +1,6 @@
 import { expect, test, type Page } from './support/test';
 
-import { AUTH_USER, mockWorkerHealth } from './support/mocks';
+import { AUTH_USER, mockMyChannels, mockWorkerHealth } from './support/mocks';
 
 /**
  * Self-service account deletion (GDPR Art. 17). `/api/auth/me` answers GET (the session probe) and
@@ -87,6 +87,39 @@ test.describe('account deletion from the account menu', () => {
 
     await expect(page).toHaveURL(/\/welcome$/);
     await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
+
+  test('points the owner of a tracked channel at the channel data first', async ({ page }) => {
+    await mockSession(page, 204);
+    await mockMyChannels(page, [
+      { channelName: 'sensitron', isBroadcaster: true, isTracked: true, isBotActive: true },
+    ]);
+    const dialog = await openDeleteDialog(page);
+
+    await expect(
+      dialog.getByText(/Die Daten deines Channels „sensitron“ bleiben erhalten/),
+    ).toBeVisible();
+    await expect(dialog.getByText(/zuerst im Workspace deines Channels/)).toBeVisible();
+  });
+
+  test('says nothing about a channel when the account owns none', async ({ page }) => {
+    await mockSession(page, 204);
+    await mockMyChannels(page, [{ channelName: 'other', isModerator: true, isTracked: true }]);
+    const dialog = await openDeleteDialog(page);
+
+    await expect(dialog.getByText(/jede Stimme, die du abgegeben hast/)).toBeVisible();
+    await expect(dialog.getByText(/Daten deines Channels/)).toHaveCount(0);
+  });
+
+  test('still opens the dialog, without the hint, when the channel list fails', async ({
+    page,
+  }) => {
+    await mockSession(page, 204);
+    await page.route('**/api/channels/mine', (route) => route.fulfill({ status: 500 }));
+    const dialog = await openDeleteDialog(page);
+
+    await expect(dialog.getByText(/jede Stimme, die du abgegeben hast/)).toBeVisible();
+    await expect(dialog.getByText(/Workspace deines Channels/)).toHaveCount(0);
   });
 
   test('a failed deletion keeps the user signed in and says so in the reopened menu', async ({

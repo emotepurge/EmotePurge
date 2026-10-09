@@ -239,6 +239,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Redis:ConnectionString", "localhost:6379");
         builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=none;Username=none;Password=none");
         builder.UseSetting("Auth:AdminTwitchLogins", string.Empty);
+        builder.UseSetting("Auth:AdminTwitchUserIds", string.Empty);
 
         // Warnings and above still reach the console. A failing filter test reports only a status
         // code, and the difference between "the filter answered 500" and "the filter answered the

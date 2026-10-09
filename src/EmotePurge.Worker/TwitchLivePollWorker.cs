@@ -90,8 +90,11 @@ public class TwitchLivePollWorker(
 
             var coverageService = scope.ServiceProvider.GetRequiredService<ILiveCoverageService>();
             var minutes = Math.Max(1, (int)Math.Round(_pollInterval.TotalMinutes));
+            // Login and Helix user id per stream: the coverage keeps an excluded or broadcaster-locked
+            // channel out by the id (#245). The live-status publish above stays unfiltered — a display
+            // value with a TTL that writes nothing lasting.
             var credited = await coverageService.AddLiveMinutesAsync(
-                streams.Select(s => s.UserLogin).ToList(),
+                streams.Select(s => (s.UserLogin, s.UserId)).ToList(),
                 DateOnly.FromDateTime(DateTime.UtcNow),
                 minutes,
                 ct);

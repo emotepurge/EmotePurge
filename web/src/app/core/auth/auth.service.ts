@@ -3,6 +3,7 @@ import { inject, Injectable, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { catchError, Observable, of, tap, throwError } from 'rxjs';
 
+import { isUnknownOutcome } from '../http/unknown-outcome';
 import { apiErrorTranslationKey } from '../i18n/api-error';
 import { ChannelService } from '../channels/channel.service';
 import { SevenTvTokenService } from '../seven-tv/seven-tv-token.service';
@@ -24,17 +25,6 @@ export type DeletionState =
   | { status: 'failed'; errorKey: string }
   | { status: 'unconfirmed' }
   | { status: 'mismatch' };
-
-/**
- * Whether a status says nothing about the deletion having committed: 0 is a dropped or aborted
- * connection, and every 5xx can follow a commit — the API's own 500 (an uncertain commit: the
- * connection drops before the database acknowledges it, `CommitAsync` throws although the
- * transaction went through) as much as a proxy's 502/503/504 or a CDN's 520–527. Only a 4xx other
- * than 401/410 is a confirmed rejection.
- */
-function isUnknownOutcome(status: number): boolean {
-  return status === 0 || status >= 500;
-}
 
 const RETURN_URL_STORAGE_KEY = 'ep_return_url';
 

@@ -89,6 +89,7 @@ const MANAGER: ChannelPermissions = {
   isTracked: true,
   isBotActive: true,
   tagRunsEnabled: false,
+  canPurgeAsBroadcaster: false,
 };
 
 function setStatus(activeEmoteSetId: string): EmoteSetStatus {

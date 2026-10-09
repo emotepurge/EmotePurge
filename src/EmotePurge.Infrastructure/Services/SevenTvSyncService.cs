@@ -19,6 +19,7 @@ public class SevenTvSyncService(
     IChannelEmoteSetObservationService emoteSetObservationService,
     ChannelSyncGate channelSyncGate,
     IExcludedChannelFilter excludedChannelFilter,
+    IBroadcasterChannelLockService broadcasterChannelLocks,
     ISevenTvSearchBudget searchBudget,
     TwitchIdResolutionBackoff resolutionBackoff,
     IEmptySetConfirmationTracker emptySetConfirmations,
@@ -65,6 +66,21 @@ public class SevenTvSyncService(
             return;
         }
 
+        // D3 = A (#245): an id-less row is not warmed here at all. Nothing proves yet which Twitch
+        // account it is, so counting its chat from Postgres before the identity and both gates are
+        // through would observe a channel its broadcaster may have locked. Boot recovery syncs it right
+        // after, and SyncChannelAsync warms it once the resolved id has passed the gates.
+        if (channel.TwitchChannelId is null)
+        {
+            return;
+        }
+
+        if (await IsLockedByBroadcasterAsync(channel.TwitchChannelId, cancellationToken))
+        {
+            RefuseLockedChannel(channel);
+            return;
+        }
+
         await WarmMatchCacheIfEmptyAsync(channel, cancellationToken);
     }
 
@@ -104,12 +120,39 @@ public class SevenTvSyncService(
             return null;
         }
 
-        await WarmMatchCacheIfEmptyAsync(channel, cancellationToken);
+        // The broadcaster lock's twin of the gate above (#245), on the stored id — after it, the env
+        // list wins. Same effect: no 7TV call, no warm-up, no observation interval, no subscription.
+        if (await IsLockedByBroadcasterAsync(channel.TwitchChannelId, cancellationToken))
+        {
+            RefuseLockedChannel(channel);
+            return null;
+        }
+
+        // A row with a stored id is warmed before either 7TV call (DECISIONS 2026-09-08: it counts
+        // from the join, even while 7TV does not answer). An id-less row only once its resolved id
+        // has passed both gates (D3 = A, #245) — see below.
+        var hasStoredTwitchId = channel.TwitchChannelId is not null;
+        if (hasStoredTwitchId)
+        {
+            await WarmMatchCacheIfEmptyAsync(channel, cancellationToken);
+        }
 
         var twitchUserId = await ResolveTwitchUserIdAsync(channel, normalized, cancellationToken);
         if (twitchUserId is null)
         {
+            // Only an id-less row gets here (a stored id is returned as is). Every way this ends —
+            // backoff not due, search budget refused, 7TV failing, the env list or the broadcaster
+            // lock, a rename duplicate — leaves the row unproven, so its match cache stays empty:
+            // nothing about it may be counted until 7TV names an id that passes both gates (D3 = A).
+            // Since #165 that can take up to the backoff ceiling plus a budget lockout (both about an
+            // hour by default) between attempts; see docs/DECISIONS.md, #245.
+            emoteMatchCache.RemoveChannel(channel.ChannelName);
             return null;
+        }
+
+        if (!hasStoredTwitchId)
+        {
+            await WarmMatchCacheIfEmptyAsync(channel, cancellationToken);
         }
 
         var channelState = await sevenTvApiClient.GetChannelStateForTwitchUserAsync(twitchUserId, cancellationToken);
@@ -237,6 +280,13 @@ public class SevenTvSyncService(
         if (excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
         {
             RefuseExcludedChannel(channel);
+            return SevenTvDeltaResult.WithoutChannel(SevenTvDeltaOutcome.ChannelUnknown);
+        }
+
+        // The broadcaster lock (#245), same answer for the same reason: the subscription is dropped.
+        if (await IsLockedByBroadcasterAsync(channel.TwitchChannelId, cancellationToken))
+        {
+            RefuseLockedChannel(channel);
             return SevenTvDeltaResult.WithoutChannel(SevenTvDeltaOutcome.ChannelUnknown);
         }
 
@@ -488,6 +538,20 @@ public class SevenTvSyncService(
     }
 
     /// <summary>
+    /// <see cref="RefuseExcludedChannel"/> for the broadcaster lock (#245): the same effect, and the
+    /// same nameless Debug line. The lock is not secret, but the line has nothing to add — the identity
+    /// reconcile's LockedDeactivated count is the operator-visible signal.
+    /// </summary>
+    private void RefuseLockedChannel(Channel channel)
+    {
+        emoteMatchCache.RemoveChannel(channel.ChannelName);
+        logger.LogDebug("7TV sync skipped: the channel is locked by its broadcaster.");
+    }
+
+    private async Task<bool> IsLockedByBroadcasterAsync(string? twitchChannelId, CancellationToken cancellationToken) =>
+        await broadcasterChannelLocks.GetLockedAtUtcAsync(twitchChannelId, cancellationToken) is not null;
+
+    /// <summary>
     /// Takes the row gate for a channel that was just looked up by name, and re-reads the row under
     /// it. Returns null when the row is gone, in which case the gate is already released and the
     /// caller must not write anything.
@@ -534,6 +598,11 @@ public class SevenTvSyncService(
     /// boot. The condition is "cache empty for this channel", not "process just started" — that keeps
     /// the existing asymmetry intact: a cache a previous successful sync already filled is never
     /// touched by a failed one, here or in <see cref="RecordFailedAttemptAsync(Channel, string?, CancellationToken)"/>.
+    /// <para>
+    /// Since #245 (D3 = A) that early warm-up holds only for a row with a stored Twitch id. An id-less
+    /// row is warmed only after 7TV has resolved its id and the id has passed the env list and the
+    /// broadcaster lock; until then its cache stays empty and nothing is counted for it.
+    /// </para>
     /// </summary>
     private async Task WarmMatchCacheIfEmptyAsync(Channel channel, CancellationToken cancellationToken)
     {
@@ -599,10 +668,10 @@ public class SevenTvSyncService(
         // backed off instead of letting the next tick spend another search.
         var (misses, delay) = resolutionBackoff.RecordMiss(channel.Id);
 
-        var (twitchUserId, excluded) = await ResolveWithChargedSearchAsync(channel, normalized, cancellationToken);
+        var (twitchUserId, silent) = await ResolveWithChargedSearchAsync(channel, normalized, cancellationToken);
         if (twitchUserId is null)
         {
-            LogResolutionMiss(channel, excluded, misses, delay);
+            LogResolutionMiss(channel, silent, misses, delay);
         }
 
         return twitchUserId;
@@ -611,9 +680,10 @@ public class SevenTvSyncService(
     /// <summary>
     /// The resolution proper, once a search has been paid for. A null id for every way it can end
     /// without an id this row may store — the caller turns each of them into one backoff step.
-    /// <c>Excluded</c> marks the one of them that must stay out of the default log level.
+    /// <c>Silent</c> marks the ones that must stay out of the default log level: the env list and the
+    /// broadcaster lock.
     /// </summary>
-    private async Task<(string? TwitchUserId, bool Excluded)> ResolveWithChargedSearchAsync(Channel channel, string normalized, CancellationToken cancellationToken)
+    private async Task<(string? TwitchUserId, bool Silent)> ResolveWithChargedSearchAsync(Channel channel, string normalized, CancellationToken cancellationToken)
     {
         // channel.ChannelName, not `normalized`: this runs after the row gate re-read the row, so
         // asking 7TV about the caller's name would ask about a login the rename has already retired.
@@ -631,10 +701,21 @@ public class SevenTvSyncService(
         // could not be asked learns its id only here, from 7TV — independently of Helix, so this
         // also catches a blocked channel joined during a Helix outage. Checked before the duplicate
         // lookup below, whose warning would otherwise name the blocked id, and before the backfill:
-        // nothing is written for it. The warm-up that already ran for this call is undone.
+        // nothing is written for it. No warm-up has run for this id-less row (D3 = A, #245).
         if (excludedChannelFilter.IsExcluded(twitchUserId))
         {
             RefuseExcludedChannel(channel);
+            return (null, true);
+        }
+
+        // The broadcaster lock's twin (#245), after the env list and at the same place: before the
+        // duplicate lookup and the backfill, so a row created during a Helix outage after the purge
+        // never stores the locked id from here, never gets a set and counts nothing. Silent like the
+        // env case; the backoff counts it as a miss — intended, the identity reconcile deactivates the
+        // row within the hour. No failure reason is recorded: 7TV answered fine.
+        if (await IsLockedByBroadcasterAsync(twitchUserId, cancellationToken))
+        {
+            RefuseLockedChannel(channel);
             return (null, true);
         }
 
@@ -655,11 +736,12 @@ public class SevenTvSyncService(
         return (twitchUserId, false);
     }
 
-    private void LogResolutionMiss(Channel channel, bool excluded, int misses, TimeSpan delay)
+    private void LogResolutionMiss(Channel channel, bool silent, int misses, TimeSpan delay)
     {
-        // An excluded channel backs off like any other, but silently: a recurring line naming it
-        // would tie the block to that channel, which RefuseExcludedChannel keeps at Debug for.
-        if (misses >= MissesBeforeLogging && !excluded)
+        // An excluded or locked channel backs off like any other, but silently: a recurring line
+        // naming it would tie the block to that channel, which RefuseExcludedChannel keeps at Debug
+        // for (and RefuseLockedChannel follows suit).
+        if (misses >= MissesBeforeLogging && !silent)
         {
             logger.LogInformation(
                 "Twitch id of {Channel} ({ChannelId}) still unresolved after {Misses} attempts in a row, next 7TV search in {DelaySeconds}s.",

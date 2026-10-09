@@ -5,19 +5,44 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EmotePurge.Infrastructure.Services;
 
-public class LiveCoverageService(AppDbContext db) : ILiveCoverageService
+public class LiveCoverageService(
+    AppDbContext db,
+    IExcludedChannelFilter excludedChannelFilter,
+    IBroadcasterChannelLockService broadcasterChannelLocks) : ILiveCoverageService
 {
     private const int MinutesPerDay = 1440;
 
     public async Task<int> AddLiveMinutesAsync(
-        IReadOnlyCollection<string> liveChannelNames, DateOnly dateUtc, int minutes, CancellationToken cancellationToken = default)
+        IReadOnlyCollection<(string Login, string UserId)> liveChannels, DateOnly dateUtc, int minutes, CancellationToken cancellationToken = default)
     {
-        if (liveChannelNames.Count == 0 || minutes <= 0)
+        if (liveChannels.Count == 0 || minutes <= 0)
         {
             return 0;
         }
 
-        var normalized = liveChannelNames.Select(ChannelName.Normalize).Distinct().ToList();
+        // The env list and the broadcaster lock (#245, plan P15), checked on Helix's user id rather
+        // than on the row's stored id: the roster already drops a row whose stored id is blocked, but a
+        // row created during a Helix outage carries no id yet, and Helix's answer is the truth of the
+        // moment. One batch lookup for the lock. No id is written back here — that stays the sync's
+        // and the identity reconcile's job.
+        var userIds = liveChannels.Select(c => c.UserId).Where(id => !string.IsNullOrEmpty(id)).Distinct().ToList();
+        var lockedIds = userIds.Count == 0
+            ? []
+            : (await broadcasterChannelLocks.Locks
+                .Where(l => userIds.Contains(l.TwitchChannelId))
+                .Select(l => l.TwitchChannelId)
+                .ToListAsync(cancellationToken))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var normalized = liveChannels
+            .Where(c => !excludedChannelFilter.IsExcluded(c.UserId) && !lockedIds.Contains(c.UserId))
+            .Select(c => ChannelName.Normalize(c.Login))
+            .Distinct()
+            .ToList();
+        if (normalized.Count == 0)
+        {
+            return 0;
+        }
 
         var channelIds = await db.Channels
             .Where(c => normalized.Contains(c.ChannelName))

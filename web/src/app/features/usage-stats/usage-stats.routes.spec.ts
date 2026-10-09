@@ -107,6 +107,7 @@ const PERMISSIONS: ChannelPermissions = {
   isTracked: true,
   isBotActive: true,
   tagRunsEnabled: false,
+  canPurgeAsBroadcaster: false,
 };
 
 const DE_TRANSLATIONS = {

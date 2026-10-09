@@ -13,6 +13,7 @@ const PERMISSIONS: ChannelPermissions = {
   isTracked: true,
   isBotActive: false,
   tagRunsEnabled: false,
+  canPurgeAsBroadcaster: false,
 };
 
 describe('ChannelService', () => {
@@ -164,6 +165,45 @@ describe('ChannelService', () => {
     expect(req.request.method).toBe('POST');
     expect(req.request.body).toEqual({});
     req.flush({});
+  });
+
+  it('join with liftBroadcasterLock sends the flag and the confirmed lock date verbatim', () => {
+    // Verbatim: the server compares the date tick for tick, so it must not pass through Date.
+    service
+      .join('sensitron', {
+        liftBroadcasterLock: { confirmedLockedAtUtc: '2026-10-01T10:00:00.123456Z' },
+      })
+      .subscribe();
+
+    const req = httpMock.expectOne((r) => r.url === '/api/channels/sensitron/join');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.params.get('liftBroadcasterLock')).toBe('true');
+    expect(req.request.params.get('confirmedLockedAtUtc')).toBe('2026-10-01T10:00:00.123456Z');
+    req.flush({});
+  });
+
+  it('purgeOwnData DELETEs /data with the expected Twitch id and drops the cached permissions', () => {
+    service.getPermissions('sensitron').subscribe();
+    httpMock.expectOne('/api/channels/sensitron/permissions').flush(PERMISSIONS);
+
+    service.purgeOwnData('sensitron', '123').subscribe();
+    const req = httpMock.expectOne('/api/channels/sensitron/data?expectedTwitchUserId=123');
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null);
+
+    service.getPermissions('sensitron').subscribe();
+    httpMock.expectOne('/api/channels/sensitron/permissions').flush(PERMISSIONS);
+  });
+
+  it('getDataSummary GETs /api/channels/{channelName}/data-summary', () => {
+    let result: unknown;
+    service.getDataSummary('sensitron').subscribe((summary) => (result = summary));
+
+    const req = httpMock.expectOne('/api/channels/sensitron/data-summary');
+    expect(req.request.method).toBe('GET');
+    const body = { emoteCount: 1, voteSessionCount: 2, liveDayCount: 3, tagCount: 4 };
+    req.flush(body);
+    expect(result).toEqual(body);
   });
 
   it('leave DELETEs /api/channels/{channelName}', () => {

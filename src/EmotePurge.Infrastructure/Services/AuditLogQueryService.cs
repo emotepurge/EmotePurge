@@ -129,6 +129,11 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
             query = query.Where(e => e.ChannelName == normalized);
         }
 
+        if (filter.OccurredAfterUtc is { } occurredAfterUtc)
+        {
+            query = query.Where(e => e.OccurredAtUtc >= occurredAfterUtc);
+        }
+
         if (!string.IsNullOrWhiteSpace(filter.ActorLogin))
         {
             // Substring on purpose: logins are free text to the admin. ILIKE cannot use the

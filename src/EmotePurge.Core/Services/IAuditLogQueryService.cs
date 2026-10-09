@@ -132,8 +132,12 @@ public record AuditLogEntryDto(
 /// user input, the implementation normalizes via <see cref="Entities.ChannelName.Normalize"/>.
 /// <paramref name="ActorLogin"/> is a case-insensitive substring match, because actor logins are
 /// not enumerable in the UI the way actions and channels are.
+/// <paramref name="OccurredAfterUtc"/> is an inclusive lower bound on <c>OccurredAtUtc</c>; null means
+/// no bound. The channel-scoped route passes the current row's <c>CreatedAt</c>, so entries of an
+/// earlier row with the same name (purged, login later taken over by someone else) stay unreadable
+/// for the new owner (#245).
 /// </summary>
-public record AuditLogFilter(string? Action, string? ChannelName, string? ActorLogin);
+public record AuditLogFilter(string? Action, string? ChannelName, string? ActorLogin, DateTime? OccurredAfterUtc = null);
 
 /// <summary>
 /// Read side of the audit log, behind GET /api/admin/audit-log and GET

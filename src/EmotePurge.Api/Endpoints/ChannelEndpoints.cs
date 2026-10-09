@@ -1,6 +1,8 @@
+using System.Globalization;
 using EmotePurge.Api.Auth;
 using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
+using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Services;
 
@@ -49,6 +51,7 @@ public static class ChannelEndpoints
             string? pageSize,
             string? action,
             string? actor,
+            HttpContext httpContext,
             IAuditLogQueryService auditLogQueryService,
             CancellationToken ct) =>
         {
@@ -57,14 +60,23 @@ public static class ChannelEndpoints
             // The channel comes from the route value and from nowhere else. No `channel` query
             // parameter is bound on purpose: binding one would let a caller authorized for their own
             // channel read another channel's log through their own authorized route.
+            //
+            // Bounded below by the current row's CreatedAt (loaded by TrackedChannelFilter): a purged
+            // channel's name can be taken over by another account, and the new owner must not read
+            // the previous generation's entries.
+            var tracked = (Channel)httpContext.Items[TrackedChannelFilter.ItemKey]!;
             var filter = new AuditLogFilter(
                 PagingQuery.NullIfBlank(action),
                 channelName,
-                PagingQuery.NullIfBlank(actor));
+                PagingQuery.NullIfBlank(actor),
+                tracked.CreatedAt);
 
             var result = await auditLogQueryService.ListAsync(effectivePage, effectivePageSize, filter, ct);
             return Results.Ok(result);
         })
+        // TrackedChannelFilter first: no row, no log — 404 for everyone, before the login-based
+        // management check can say yes to a same-named account (#245).
+        .AddEndpointFilter<TrackedChannelFilter>()
         .AddEndpointFilter<ChannelManagementAuthorizationFilter>()
         // Pure DB read against a covering index, but it is reachable per keystroke through the
         // actor filter — Bookkeeping is the policy for "ours only, still not unlimited".
@@ -103,7 +115,8 @@ public static class ChannelEndpoints
                 channelAccessService.IsGlobalAdmin(principal),
                 IsTracked: channel is not null,
                 IsBotActive: channel?.IsBotActive ?? false,
-                TagRunsEnabled: tagOptions.RunsEnabled));
+                TagRunsEnabled: tagOptions.RunsEnabled,
+                CanPurgeAsBroadcaster: BroadcasterOwnership.CanPurge(channel, principal)));
         })
         // Ordinary navigation, and the single most requested route in the app: every page that shows
         // anything channel-scoped asks it first. Both access checks can reach Helix or 7TV on a cache
@@ -140,6 +153,8 @@ public static class ChannelEndpoints
             HttpContext httpContext,
             IChannelService channelService,
             IChannelAccessService channelAccessService,
+            bool? liftBroadcasterLock,
+            string? confirmedLockedAtUtc,
             CancellationToken ct) =>
         {
             var actor = httpContext.User.TryBuildAuditActor();
@@ -150,12 +165,21 @@ public static class ChannelEndpoints
 
             // Built again rather than reused from the authorization filter above: that filter only
             // proves the caller may manage *this* channel, it never hands its principal on to the
-            // handler. IsGlobalAdmin is a pure claims check (Auth:AdminTwitchLogins), so the extra
+            // handler. IsGlobalAdmin is a pure claims check (Auth:AdminTwitchUserIds), so the extra
             // build costs nothing external — no second Helix/7TV round trip.
             var principal = httpContext.User.TryBuildTwitchPrincipal();
             var isGlobalAdmin = principal is not null && channelAccessService.IsGlobalAdmin(principal);
 
-            var result = await channelService.JoinAsync(channelName, actor, isGlobalAdmin, ct);
+            // Lifting a broadcaster's lock overrides the streamer's own decision, so it hangs on the
+            // immutable id: an admin known only through the login fallback keeps the cap exemption but
+            // is refused like a moderator here. The lift is bound to the lock the admin confirmed —
+            // the 409's lockedAtUtc, sent back verbatim — so a lock set again since is not lifted blind.
+            var mayLiftLock = isGlobalAdmin && channelAccessService.IsGlobalAdminById(principal!);
+            var adminLiftConfirmedLockedAtUtc = mayLiftLock && liftBroadcasterLock == true
+                ? ParseConfirmedLockedAtUtc(confirmedLockedAtUtc)
+                : null;
+
+            var result = await channelService.JoinAsync(channelName, actor, isGlobalAdmin, adminLiftConfirmedLockedAtUtc, ct);
             // A switch over every status rather than an `is null` check on Channel: a future third
             // status (e.g. "channel suspended") would otherwise silently fall through the old
             // two-way check and be reported as ChannelNotOnTwitch. This way the compiler flags a
@@ -188,6 +212,22 @@ public static class ChannelEndpoints
                 ChannelJoinStatus.ChannelExcluded =>
                     Results.Json(
                         new { errorCode = ApiErrorCodes.ChannelExcluded }, statusCode: StatusCodes.Status403Forbidden),
+
+                // The broadcaster locked the channel against re-adding (#245). 403 for everyone who
+                // cannot lift the lock — a login-fallback admin included, and every admin when two
+                // broadcasters' locks meet in this join. An id admin who did not (validly) confirm it
+                // gets a 409 with the lock date instead: the lift is an explicit, confirmed repeat of
+                // the request (liftBroadcasterLock=true&confirmedLockedAtUtc=<this date>), never a
+                // side effect of the first one, and a stale date is answered with the current one.
+                ChannelJoinStatus.LockedByBroadcaster => mayLiftLock && result.LockLiftableByAdmin
+                    ? Results.Conflict(new
+                    {
+                        errorCode = ApiErrorCodes.ChannelLockedByBroadcaster,
+                        lockedAtUtc = DateTime.SpecifyKind(result.LockedAtUtc!.Value, DateTimeKind.Utc),
+                    })
+                    : Results.Json(
+                        new { errorCode = ApiErrorCodes.ChannelLockedByBroadcaster },
+                        statusCode: StatusCodes.Status403Forbidden),
 
                 // The stored login, which is always the one that was asked for: LookupByLoginAsync
                 // only reports Found on a normalized name match, so even in the rename case the
@@ -287,6 +327,77 @@ public static class ChannelEndpoints
         // A management mutation against our own database, like join above: guarded, but generously.
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
+        // The broadcaster's own erasure of their channel's data (#245): irreversible, and it leaves a
+        // lock behind so the channel cannot be re-added by anyone but the broadcaster. Behind
+        // ChannelBroadcasterAuthorizationFilter — no admin override, no moderator branch.
+        // expectedTwitchUserId is mandatory (like DELETE /api/auth/me): a second tab signed in as
+        // someone else must not erase the wrong channel, so a missing or different id is a 409
+        // before the service is called.
+        group.MapDelete("/{channelName}/data", async (
+            string channelName,
+            string? expectedTwitchUserId,
+            HttpContext httpContext,
+            IChannelService channelService,
+            CancellationToken ct) =>
+        {
+            var actor = httpContext.User.TryBuildAuditActor();
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            if (!string.Equals(expectedTwitchUserId, actor.TwitchUserId, StringComparison.Ordinal))
+            {
+                return Results.Conflict(new { errorCode = ApiErrorCodes.AccountMismatch });
+            }
+
+            var result = await channelService.PurgeByBroadcasterAsync(channelName, actor, ct);
+            return result switch
+            {
+                ChannelBroadcasterPurgeResult.Purged => Results.NoContent(),
+                ChannelBroadcasterPurgeResult.NotFound => Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound }),
+                // No body, like the filter's 403: the caller is not this channel's broadcaster.
+                ChannelBroadcasterPurgeResult.NotBroadcaster => Results.Forbid(),
+                ChannelBroadcasterPurgeResult.IdentityUnresolved =>
+                    Results.Conflict(new { errorCode = ApiErrorCodes.ChannelIdentityUnresolved }),
+                _ => Results.Problem(),
+            };
+        })
+        .AddEndpointFilter<ChannelBroadcasterAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
+        // What the purge above would delete, for the confirmation dialog's numbers (#245). Same
+        // audience as the purge, but decided without Twitch: its own filter admits an id-less row only
+        // for the caller whose current login is the row's name, since nothing here proves it live.
+        // InteractiveRead rather than folded into /permissions, the most requested route in the app,
+        // which must not carry four COUNTs.
+        group.MapGet("/{channelName}/data-summary", async (
+            string channelName,
+            HttpContext httpContext,
+            IChannelService channelService,
+            CancellationToken ct) =>
+        {
+            var actor = httpContext.User.TryBuildAuditActor();
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            // The caller's id, because the purge deletes the row holding it as well as the routed one.
+            var summary = await channelService.GetDataSummaryAsync(channelName, actor.TwitchUserId, ct);
+            return summary is null
+                ? Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound })
+                : Results.Ok(new
+                {
+                    emoteCount = summary.EmoteCount,
+                    voteSessionCount = summary.VoteSessionCount,
+                    liveDayCount = summary.LiveDayCount,
+                    tagCount = summary.TagCount,
+                });
+        })
+        .AddEndpointFilter<ChannelBroadcasterSummaryAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
+
         // Admin-only: the only way to irreversibly remove a channel with its emotes, usage history,
         // vote sessions and votes. It has a UI since 2026-07-31 (admin channel page, S1-1 reversed) —
         // reachable only from the global-admin area and behind a typed name confirmation. Not behind
@@ -320,6 +431,19 @@ public static class ChannelEndpoints
         // place to inherit an exemption by accident.
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
     }
+
+    // The lock date an admin confirmed, as the 409 sent it (ISO-8601 with a UTC marker), read back as
+    // a UTC instant at full precision so the service can compare it tick for tick. Bound as a string
+    // rather than a DateTime? so the parse rules are visible here: a missing or unparseable value
+    // confirms nothing — the service then answers the 409 again with the current date.
+    private static DateTime? ParseConfirmedLockedAtUtc(string? value) =>
+        DateTime.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+            out var parsed)
+            ? parsed
+            : null;
 }
 
 /// <summary>
@@ -338,6 +462,12 @@ public static class ChannelEndpoints
 /// not a per-channel permission.
 /// </para>
 /// <para>
+/// <c>CanPurgeAsBroadcaster</c> (#245) is visibility for the purge button: the caller's id equals the
+/// row's stored Twitch id, or the row has none yet and the login matches. The login branch never
+/// authorizes the purge itself (the service proves ownership live); it is, by the same rule, who may
+/// read the data summary.
+/// </para>
+/// <para>
 /// No <c>IsSevenTvEditor</c> field, despite the review's sketch: nothing consumes it today, and
 /// computing it would defeat the short-circuit above and put a 7TV call in every manager's request.
 /// Add it together with its first consumer.
@@ -349,4 +479,5 @@ internal sealed record ChannelPermissionsDto(
     bool IsGlobalAdmin,
     bool IsTracked,
     bool IsBotActive,
-    bool TagRunsEnabled);
+    bool TagRunsEnabled,
+    bool CanPurgeAsBroadcaster);

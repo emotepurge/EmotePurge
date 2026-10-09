@@ -27,7 +27,7 @@ public class ChannelAccessServiceTests
         var service = CreateService(
             moderatorCheck: moderatorCheck,
             channelService: channels,
-            settings: new() { ["Auth:AdminTwitchLogins"] = "sensitron" });
+            settings: new() { ["Auth:AdminTwitchUserIds"] = "42" });
 
         Assert.True(await service.CanManageChannelAsync(Principal("sensitron"), "somechannel"));
 
@@ -38,11 +38,25 @@ public class ChannelAccessServiceTests
     }
 
     [Fact]
-    public async Task CanManageChannelAsync_MatchesTheAdminAllowListCaseInsensitively()
+    public async Task CanManageChannelAsync_AllowsAnAdminLogin_OnTheTransitionalLoginList_WhenNoIdListIsConfigured()
     {
-        var service = CreateService(settings: new() { ["Auth:AdminTwitchLogins"] = "HandOfBlood" });
+        var service = CreateService(
+            channelService: Substitute.For<IChannelService>(),
+            settings: new() { ["Auth:AdminTwitchLogins"] = "HandOfBlood" });
 
-        Assert.True(await service.CanManageChannelAsync(Principal("handofblood"), "somechannel"));
+        Assert.True(await service.CanManageChannelAsync(new TwitchPrincipalInfo("999", "handofblood", null), "somechannel"));
+    }
+
+    [Fact]
+    public async Task CanManageChannelAsync_DoesNotTreatAnAdminLoginAsAdmin_OnceAnIdListIsConfigured()
+    {
+        var service = CreateService(settings: new()
+        {
+            ["Auth:AdminTwitchLogins"] = "HandOfBlood",
+            ["Auth:AdminTwitchUserIds"] = "1",
+        });
+
+        Assert.False(await service.CanManageChannelAsync(new TwitchPrincipalInfo("999", "handofblood", null), "somechannel"));
     }
 
     [Fact]
@@ -219,7 +233,7 @@ public class ChannelAccessServiceTests
         var editors = Substitute.For<ISevenTvEditorService>();
         var service = CreateService(
             sevenTvEditorService: editors,
-            settings: new() { ["Auth:AdminTwitchLogins"] = "sensitron" });
+            settings: new() { ["Auth:AdminTwitchUserIds"] = "42" });
 
         Assert.True(await service.CanViewUsageStatsAsync(Principal("sensitron"), "streamer"));
         await editors.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
@@ -237,12 +251,13 @@ public class ChannelAccessServiceTests
         Dictionary<string, string?>? settings = null)
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings ?? []).Build();
+        var allowlist = new GlobalAdminAllowlist(configuration, NullLogger<GlobalAdminAllowlist>.Instance);
 
         return new ChannelAccessService(
             moderatorCheck ?? Substitute.For<IModeratorCheckService>(),
             sevenTvEditorService ?? Substitute.For<ISevenTvEditorService>(),
             channelService ?? Substitute.For<IChannelService>(),
-            configuration,
+            allowlist,
             NullLogger<ChannelAccessService>.Instance);
     }
 }

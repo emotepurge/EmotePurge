@@ -655,6 +655,9 @@ export async function mockChannelPermissions(
     /** #201 T-C: the operator switch for tag runs. On by default (the run buttons are what the
      *  tag specs exercise); pass `false` for the switched-off case. */
     tagRunsEnabled: boolean;
+    /** #245: the channel's own broadcaster may delete its data. Off by default — mods and admins
+     *  never see the button. */
+    canPurgeAsBroadcaster: boolean;
   }> = {},
 ): Promise<void> {
   await page.route(`**/api/channels/${channelName}/permissions`, (route) =>
@@ -665,9 +668,94 @@ export async function mockChannelPermissions(
       isTracked: true,
       isBotActive: true,
       tagRunsEnabled: true,
+      canPurgeAsBroadcaster: false,
       ...overrides,
     }),
   );
+}
+
+/** GET /api/channels/{channelName}/data-summary — the numbers the broadcaster self-purge dialog names. */
+export async function mockChannelDataSummary(
+  page: Page,
+  channelName: string,
+  summary: Partial<{
+    emoteCount: number;
+    voteSessionCount: number;
+    liveDayCount: number;
+    tagCount: number;
+  }> = {},
+): Promise<void> {
+  await page.route(`**/api/channels/${channelName}/data-summary`, (route) =>
+    fulfillJson(route, 200, {
+      emoteCount: 12,
+      voteSessionCount: 3,
+      liveDayCount: 45,
+      tagCount: 2,
+      ...summary,
+    }),
+  );
+}
+
+/**
+ * DELETE /api/channels/{channelName}/data — the broadcaster's own purge. Answers 204 by default;
+ * `status: 409` with a `body` carries the coded refusals (`account_mismatch`,
+ * `channel_identity_unresolved`). The returned list holds the request URLs it saw.
+ */
+export async function mockPurgeOwnData(
+  page: Page,
+  channelName: string,
+  options: { status?: number; body?: unknown } = {},
+): Promise<string[]> {
+  const seen: string[] = [];
+  await page.route(new RegExp(`/api/channels/${channelName}/data(\\?|$)`), (route) => {
+    if (route.request().method() !== 'DELETE') {
+      return route.fallback();
+    }
+    seen.push(route.request().url());
+    const status = options.status ?? 204;
+    return status === 204
+      ? route.fulfill({ status })
+      : fulfillJson(route, status, options.body ?? null);
+  });
+  return seen;
+}
+
+/**
+ * POST /api/channels/{channelName}/join for a channel its broadcaster deleted and locked.
+ * `403` is the moderator's final refusal; `409` is the admin's prompt, answered `200` once the
+ * retry carries `liftBroadcasterLock=true` and, like the server, the confirmed lock date exactly as
+ * the 409 sent it (`confirmedLockedAtUtc`). The returned list holds every request URL it saw.
+ */
+export async function mockJoinLocked(
+  page: Page,
+  channelName: string,
+  options: { status: 403 | 409; lockedAtUtc?: string },
+): Promise<string[]> {
+  const seen: string[] = [];
+  await page.route(`**/api/channels/${channelName}/join*`, (route) => {
+    seen.push(route.request().url());
+    const params = new URL(route.request().url()).searchParams;
+    if (
+      options.status === 409 &&
+      params.get('liftBroadcasterLock') === 'true' &&
+      params.get('confirmedLockedAtUtc') === options.lockedAtUtc
+    ) {
+      return fulfillJson(route, 200, {
+        channelId: '1',
+        channelName,
+        isBotActive: true,
+        activeEmoteSetId: 'set-1',
+      });
+    }
+    return fulfillJson(
+      route,
+      options.status,
+      options.status === 409
+        ? { errorCode: 'channel_locked_by_broadcaster', lockedAtUtc: options.lockedAtUtc }
+        : { errorCode: 'channel_locked_by_broadcaster' },
+    );
+  });
+  return seen;
 }
 
 export interface MockEmoteUsage {

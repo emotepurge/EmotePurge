@@ -189,7 +189,7 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(following.TwitchChannelId!, Arg.Any<CancellationToken>()).Returns(state);
         var service = new SevenTvSyncService(
             db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(),
-            Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
+            Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         var first = service.SyncChannelAsync("inflight_ctx_gone");
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -227,7 +227,7 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
 
         var service = new SevenTvSyncService(
             db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(),
-            Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
+            Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
         return (service, entered, release);
     }
 

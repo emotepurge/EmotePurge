@@ -14,7 +14,7 @@ public class TwitchIdentityReconcileWorker(
     IConfiguration configuration,
     IServiceScopeFactory scopeFactory) : BackgroundService
 {
-    private static readonly ChannelIdentityReconcileSummary EmptySummary = new(0, 0, 0, 0, 0, 0, 0);
+    private static readonly ChannelIdentityReconcileSummary EmptySummary = new(0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     // 60 minutes default (Betreiber-Antwort 2): one tick costs one Helix request per 100 channels,
     // and renames are rare enough that hourly is plenty responsive.
@@ -80,9 +80,13 @@ public class TwitchIdentityReconcileWorker(
             // without an id whose login Helix does not know (case 5), and a row *with* an id that
             // resolves to nothing (case 6). Saying "Logins" alone sends the first production
             // investigation looking for an id-less row that may not exist.
+            //
+            // LockedDeactivated is named on every line, zero included (#245, D4): its presence in the
+            // production log is the evidence that the running worker image knows the broadcaster lock.
             logger.LogInformation(
-                "Identity-Reconcile: {Checked} geprüft, {IdsBackfilled} IDs nachgetragen, {Renamed} umbenannt, {Merged} zusammengeführt, {MergesRefused} Zusammenführungen abgelehnt, {LoginsMissing} Kanäle bei Twitch nicht mehr auffindbar (Login oder ID unbekannt), {Deactivated} wegen Sperrliste deaktiviert.",
-                summary.Checked, summary.IdsBackfilled, summary.Renamed, summary.Merged, summary.MergesRefused, summary.LoginsMissing, summary.Deactivated);
+                "Identity-Reconcile: {Checked} checked, {IdsBackfilled} ids backfilled, {Renamed} renamed, {Merged} merged, {MergesRefused} merges refused, {LoginsMissing} channels no longer found on Twitch (login or id unknown), {Deactivated} deactivated for the excluded-channel list, LockedDeactivated {LockedDeactivated} (broadcaster lock), UnresolvableDeactivated {UnresolvableDeactivated} (login unknown to Twitch).",
+                summary.Checked, summary.IdsBackfilled, summary.Renamed, summary.Merged, summary.MergesRefused, summary.LoginsMissing, summary.Deactivated,
+                summary.LockedDeactivated, summary.UnresolvableDeactivated);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

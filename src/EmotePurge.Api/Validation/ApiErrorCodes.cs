@@ -44,6 +44,13 @@ internal static class ApiErrorCodes
     // language-neutral and free of any mention of a legal objection — the frontend text says only
     // that the channel cannot be added.
     public const string ChannelExcluded = "channel_excluded";
+    // From the join endpoint (#245): the broadcaster purged this channel's data and locked it against
+    // re-adding. 403 for everyone who cannot lift the lock; a global admin gets a 409 that also
+    // carries lockedAtUtc, and can repeat the join with liftBroadcasterLock=true.
+    public const string ChannelLockedByBroadcaster = "channel_locked_by_broadcaster";
+    // 409 from DELETE /api/channels/{name}/data (#245): the channel row has no stored Twitch id yet and
+    // Helix could not prove the caller owns it right now. Nothing was deleted; retry later.
+    public const string ChannelIdentityUnresolved = "channel_identity_unresolved";
     // 409 from DELETE /api/auth/me: the account the client asked to delete (expectedTwitchUserId)
     // is not the one the session cookie belongs to — another tab signed in as someone else. Nothing
     // was deleted, the session is untouched.
@@ -90,6 +97,11 @@ internal static class ApiErrorCodes
 
     // Returned by the global exception handler — deliberately opaque, no exception detail.
     public const string UnexpectedError = "unexpected_error";
+
+    // Returned by the same handler for a request body (or other input) Minimal API could not bind:
+    // unparseable JSON, an unknown enum member, a missing body. Status stays the 4xx the framework
+    // chose (400 for all of these), never a 500.
+    public const string InvalidRequestBody = "invalid_request_body";
     public const string NoHealthData = "no_health_data";
     public const string HealthDataUnreadable = "health_data_unreadable";
 

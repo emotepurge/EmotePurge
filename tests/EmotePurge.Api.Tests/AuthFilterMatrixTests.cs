@@ -63,6 +63,8 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/testchannel/join")]
     [InlineData("DELETE", "/api/channels/testchannel")]
     [InlineData("DELETE", "/api/channels/testchannel/purge")]
+    [InlineData("DELETE", "/api/channels/testchannel/data")]
+    [InlineData("GET", "/api/channels/testchannel/data-summary")]
     [InlineData("GET", "/api/channels/testchannel/audit-log")]
     [InlineData("POST", "/api/channels/testchannel/resync")]
     [InlineData("GET", "/api/channels/testchannel/permissions")]
@@ -118,6 +120,8 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/testchannel/audit-log")]
     [InlineData("POST", "/api/channels/testchannel/resync")]
     [InlineData("DELETE", "/api/channels/testchannel/purge")]
+    [InlineData("DELETE", "/api/channels/testchannel/data")]
+    [InlineData("GET", "/api/channels/testchannel/data-summary")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
     [InlineData("GET", "/api/channels/testchannel/tags")]
     [InlineData("POST", "/api/channels/testchannel/tags")]
@@ -169,7 +173,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         // handler that a filter test alone cannot reach.
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
-        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>())
             .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.CapacityReached));
 
         var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
@@ -185,7 +189,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         // stay refused even for a global admin — asserted separately below.
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
-        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>())
             .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded));
 
         var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
@@ -200,7 +204,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
         _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(true);
-        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>())
             .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded));
 
         var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
@@ -221,14 +225,14 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
         _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(isGlobalAdmin);
-        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>())
             .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.CapacityReached));
 
         var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         await _factory.Channels.Received(1)
-            .JoinAsync(Channel, Arg.Any<AuditActor>(), isGlobalAdmin, Arg.Any<CancellationToken>());
+            .JoinAsync(Channel, Arg.Any<AuditActor>(), isGlobalAdmin, Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -253,6 +257,24 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         var response = await SendAsync("GET", "/api/admin/channels", NewUserId());
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GlobalAdminFilter_HandsTheTwitchUserIdToTheAccessService_RegardlessOfTheLogin()
+    {
+        // Admins are allowlisted by immutable Twitch id (#245): the filter must pass the id claim on
+        // untouched and decide solely on IsGlobalAdmin. The substitute answers by id only, so a
+        // foreign login on the admin id still passes and an admin-looking login on a foreign id is
+        // refused — the real id-versus-login precedence is covered by GlobalAdminAllowlistTests.
+        const string adminId = "900001";
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>())
+            .Returns(call => call.Arg<TwitchPrincipalInfo>().TwitchUserId == adminId);
+
+        var asAdmin = await SendAsync("GET", "/api/admin/channels", adminId, login: "renamed-login");
+        var asLookalike = await SendAsync("GET", "/api/admin/channels", NewUserId(), login: "sensitron");
+
+        Assert.NotEqual(HttpStatusCode.Forbidden, asAdmin.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, asLookalike.StatusCode);
     }
 
     [Fact]
@@ -447,6 +469,9 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         // the channel's 7TV editors — who are frequently outside the mod team. A caller who passes
         // the wider check but not the management one must be refused, and the wider check must not
         // even be consulted. Without this, the exclusion is a comment rather than a behaviour.
+        // A tracked channel: without a row the TrackedChannelFilter answers 404 before this check.
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(new Channel { ChannelName = Channel });
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(false);
         _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())

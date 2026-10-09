@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Worker.SevenTv;
@@ -120,6 +121,65 @@ public class SevenTvPeriodicResyncWorkerTests
 
         eventClient.Received().Unsubscribe("ghostlogin");
         await chatManager.DidNotReceive().LeaveChannelAsync(Arg.Any<string>());
+    }
+
+    // #245 live run: a LEAVE processed while the tick walks its roster must win over that roster. The
+    // manager can only tell if the stamp it compares against was taken before the roster read —
+    // taken after it, a LEAVE in between would look older than the read and the stale JOIN would pass.
+    [Fact]
+    public async Task Tick_CapturesTheLeaveStampBeforeTheRosterRead_AndHandsItToEnsureJoined()
+    {
+        var gate = new BootRecoveryGate();
+        gate.MarkCompleted();
+        var events = new ConcurrentQueue<string>();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            events.Enqueue("roster");
+            return new List<string> { "sensitron" };
+        });
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        chatManager.GetRoster().Returns([]);
+        chatManager.CaptureLeaveStamp().Returns(_ =>
+        {
+            events.Enqueue("stamp");
+            return 7L;
+        });
+        var joined = new TaskCompletionSource<long>();
+        chatManager.When(x => x.EnsureJoinedAsync("sensitron", Arg.Any<long>()))
+            .Do(callInfo => joined.TrySetResult(callInfo.ArgAt<long>(1)));
+
+        var services = new ServiceCollection();
+        services.AddSingleton(channelService);
+        services.AddSingleton(Substitute.For<ISevenTvSyncService>());
+
+        var worker = new SevenTvPeriodicResyncWorker(
+            new Logger<SevenTvPeriodicResyncWorker>(new LoggerFactory()),
+            chatManager,
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
+            Substitute.For<IRedisPublisher>(),
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["SevenTv:ResyncIntervalSeconds"] = "1"
+            }).Build(),
+            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>());
+
+        await worker.StartAsync(CancellationToken.None);
+        long stampHandedOver;
+        try
+        {
+            stampHandedOver = await joined.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(7L, stampHandedOver);
+        Assert.Equal(["stamp", "roster"], events.Take(2));
     }
 
     private sealed class CapturingLoggerProvider : ILoggerProvider
