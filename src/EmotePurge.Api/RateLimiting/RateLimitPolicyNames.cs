@@ -58,6 +58,11 @@ internal static class RateLimitPolicyNames
     /// of a tracked channel, after membership of the set in that channel is proven. Per-user only,
     /// like <see cref="ForeignEmoteLookup"/> — the provider-wide half stays with the hardening
     /// decorator around <c>IForeignEmoteSetService</c>, not an ASP.NET Core policy.
+    /// <para>
+    /// Shared with <c>POST /api/channels/{channelName}/backfill</c> (#346, D29), whose start costs the
+    /// same cached set-list read plus one preview walk. Tuning this bucket therefore changes the
+    /// backfill start budget too.
+    /// </para>
     /// </summary>
     internal const string TrackedEmoteSetPreview = "TrackedEmoteSetPreview";
 
