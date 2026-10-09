@@ -1,3 +1,4 @@
+using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.SevenTv;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -28,5 +29,90 @@ public class ForeignEmoteSetCacheTests(RedisFixture fixture)
         Assert.Null(result);
     }
 
-    private static RedisKey Key(string channel) => $"7tvforeign:{channel}";
+    [Fact]
+    public async Task ARoundTrip_KeepsAddedAt_ForATimestampAndForNull_AndStampsTheCurrentSchemaVersion()
+    {
+        const string channel = "foreign-cache-added-at";
+        var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
+        var addedAt = new DateTime(2026, 3, 14, 18, 22, 5, DateTimeKind.Utc);
+        var stored = new ForeignEmoteSet(
+            channel, null, "set-1", 2, false,
+            [
+                new ForeignEmoteRow("e1", "A", "A", "https://cdn.example/e1", null, null, addedAt),
+                new ForeignEmoteRow("e2", "B", "B", "https://cdn.example/e2", null, null)
+            ]);
+
+        await cache.SetAsync(channel, stored);
+        var viaSet = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
+        await viaSet.SetBySetIdAsync("set-1", stored);
+        var fromLogin = await cache.TryGetAsync(channel);
+        var fromSet = await viaSet.TryGetBySetIdAsync("set-1");
+
+        Assert.Equal(2, ForeignEmoteSet.CurrentSchemaVersion);
+        foreach (var read in new[] { fromLogin, fromSet })
+        {
+            Assert.NotNull(read);
+            Assert.Equal(ForeignEmoteSet.CurrentSchemaVersion, read.SchemaVersion);
+            Assert.Equal(addedAt, read.Emotes[0].AddedAt);
+            Assert.Null(read.Emotes[1].AddedAt);
+        }
+    }
+
+    [Fact]
+    public async Task TheKeysCarryTheV2Prefixes_ForTheLoginAndTheSetIdSpace()
+    {
+        const string channel = "foreign-cache-v2-keys";
+        var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
+        var set = new ForeignEmoteSet(channel, null, "set-v2", 0, false, []);
+
+        await cache.SetAsync(channel, set);
+        await cache.SetBySetIdAsync("set-v2", set);
+
+        var db = fixture.Connection.GetDatabase();
+        Assert.True(await db.KeyExistsAsync($"7tvforeign:v2:login:{channel}"));
+        Assert.True(await db.KeyExistsAsync("7tvforeign:v2:set:set-v2"));
+    }
+
+    [Fact]
+    public async Task APayloadWithoutASchemaVersion_IsAMiss_EvenUnderTheCurrentKey()
+    {
+        // What the previous code wrote: no schemaVersion, rows without addedAt. If such an entry were
+        // ever found under a current key (it cannot be, by prefix - this is the second belt), reading
+        // it would turn every row's missing date into "7TV reported none" and drop every gate.
+        const string channel = "foreign-cache-pre-v2";
+        var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
+        const string preV2 =
+            """{"channelName":"x","sevenTvUserId":null,"emoteSetId":"s","totalCount":1,"truncated":false,"emotes":[{"sevenTvEmoteId":"e1","name":"A","defaultName":"A","imageUrl":"u","topAllTime":null,"trending":null}],"emoteSetName":null,"capacity":null}""";
+        await fixture.Connection.GetDatabase().StringSetAsync(Key(channel), preV2);
+
+        Assert.Null(await cache.TryGetAsync(channel));
+    }
+
+    [Fact]
+    public async Task APayloadWithAnOlderExplicitSchemaVersion_IsAMiss()
+    {
+        const string channel = "foreign-cache-v1-explicit";
+        var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
+        const string v1 =
+            """{"channelName":"x","sevenTvUserId":null,"emoteSetId":"s","totalCount":0,"truncated":false,"emotes":[],"schemaVersion":1}""";
+        await fixture.Connection.GetDatabase().StringSetAsync(Key(channel), v1);
+
+        Assert.Null(await cache.TryGetAsync(channel));
+    }
+
+    [Fact]
+    public async Task AnOldKeyOfThePreviousCode_IsNeverRead()
+    {
+        const string channel = "foreign-cache-old-key";
+        var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
+        const string valid =
+            """{"channelName":"x","sevenTvUserId":null,"emoteSetId":"s","totalCount":0,"truncated":false,"emotes":[],"schemaVersion":2}""";
+        await fixture.Connection.GetDatabase().StringSetAsync($"7tvforeign:{channel}", valid);
+        await fixture.Connection.GetDatabase().StringSetAsync("7tvforeign:set:old-set", valid);
+
+        Assert.Null(await cache.TryGetAsync(channel));
+        Assert.Null(await cache.TryGetBySetIdAsync("old-set"));
+    }
+
+    private static RedisKey Key(string channel) => $"7tvforeign:v2:login:{channel}";
 }

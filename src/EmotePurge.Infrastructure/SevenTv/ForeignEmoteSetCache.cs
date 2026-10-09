@@ -21,14 +21,17 @@ namespace EmotePurge.Infrastructure.SevenTv;
 public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, ILogger<ForeignEmoteSetCache> logger)
     : IForeignEmoteSetCache
 {
-    private const string KeyPrefix = "7tvforeign:";
+    // v2 prefixes since the payload gained ForeignEmoteRow.AddedAt (#346, D43): an entry written by
+    // the previous code can never be read, whatever its remaining TTL. Belt and braces with the
+    // payload's SchemaVersion check in TryGetByKeyAsync.
+    private const string KeyPrefix = "7tvforeign:v2:login:";
 
     // The set-ID read mode's own namespace (spec 2026-09-20, E12): nested under the same prefix as
     // the login-keyed entries above but never colliding with one — a channel login can never contain
     // a colon, so "set:{id}" and any normalized login are disjoint strings by construction. An entry
     // here for channel A's currently-inactive set must never be overwritten by, or overwrite, the
     // "{login}"-keyed entry for A's active set.
-    private const string SetIdKeyPrefix = "7tvforeign:set:";
+    private const string SetIdKeyPrefix = "7tvforeign:v2:set:";
 
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(60);
 
@@ -54,7 +57,14 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
                 return null;
             }
 
-            return JsonSerializer.Deserialize<ForeignEmoteSet>(value.ToString(), JsonSerializerOptions.Web);
+            var json = value.ToString();
+            if (!HasCurrentSchemaVersion(json))
+            {
+                logger.LogDebug("Foreign-channel preview cache entry for {Identifier} predates schema version {Version}; treating it as a miss.", logIdentifier, ForeignEmoteSet.CurrentSchemaVersion);
+                return null;
+            }
+
+            return JsonSerializer.Deserialize<ForeignEmoteSet>(json, JsonSerializerOptions.Web);
         }
         catch (Exception ex) when (ex is RedisException or TimeoutException or JsonException)
         {
@@ -78,6 +88,19 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
             logger.LogWarning(
                 ex, "Writing the foreign-channel preview cache for {Identifier} failed; the result is used for this request only.", logIdentifier);
         }
+    }
+
+    // A payload without the field (written before the schema version existed) reads as version 0, so
+    // it is below the current one like any explicitly older value. Checked on the raw JSON because the
+    // record's own default would otherwise turn a missing field into the current version.
+    private static bool HasCurrentSchemaVersion(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.ValueKind == JsonValueKind.Object
+            && document.RootElement.TryGetProperty("schemaVersion", out var version)
+            && version.ValueKind == JsonValueKind.Number
+            && version.TryGetInt32(out var number)
+            && number >= ForeignEmoteSet.CurrentSchemaVersion;
     }
 
     private static string BuildLoginKey(string normalizedChannelName) => $"{KeyPrefix}{normalizedChannelName}";

@@ -46,7 +46,7 @@ public class HardenedForeignEmoteSetServiceTests(RedisFixture fixture)
 
         await service.GetForeignEmoteSetAsync(channel);
 
-        var ttl = await fixture.Connection.GetDatabase().KeyTimeToLiveAsync($"7tvforeign:{ChannelName.Normalize(channel)}");
+        var ttl = await fixture.Connection.GetDatabase().KeyTimeToLiveAsync($"7tvforeign:v2:login:{ChannelName.Normalize(channel)}");
         Assert.NotNull(ttl);
         Assert.InRange(ttl!.Value.TotalSeconds, 1, 60);
     }
@@ -342,8 +342,8 @@ public class HardenedForeignEmoteSetServiceTests(RedisFixture fixture)
 
     /// <summary>
     /// AK 26 / E12: the set-ID mode reads and writes a second Redis key space
-    /// (<c>7tvforeign:set:{setId}</c>), never the channel-login key space
-    /// <c>7tvforeign:{login}</c> the other method above uses — an entry for a channel's currently
+    /// (<c>7tvforeign:v2:set:{setId}</c>), never the channel-login key space
+    /// <c>7tvforeign:v2:login:{login}</c> the other method above uses — an entry for a channel's currently
     /// non-active set must not collide with, or be shadowed by, the entry for that same channel's
     /// active set.
     /// </summary>
@@ -362,10 +362,10 @@ public class HardenedForeignEmoteSetServiceTests(RedisFixture fixture)
 
         Assert.Equal(ForeignEmoteSetLookupStatus.Ok, result.Status);
         var db = fixture.Connection.GetDatabase();
-        Assert.True(await db.KeyExistsAsync($"7tvforeign:set:{setId}"));
+        Assert.True(await db.KeyExistsAsync($"7tvforeign:v2:set:{setId}"));
         // The login-keyed space this channel would use for its active set stays untouched — the
         // set-ID lookup never wrote there.
-        Assert.False(await db.KeyExistsAsync($"7tvforeign:{ChannelName.Normalize(channel)}"));
+        Assert.False(await db.KeyExistsAsync($"7tvforeign:v2:login:{ChannelName.Normalize(channel)}"));
     }
 
     /// <summary>

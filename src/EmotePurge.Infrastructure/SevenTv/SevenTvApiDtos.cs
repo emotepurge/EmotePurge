@@ -347,6 +347,12 @@ internal sealed class SevenTvGqlEmoteSetPreviewItemDto
     // one level down on the embedded Emote (issue #37-style: two different "name" fields with two
     // different meanings, kept apart on purpose).
     public string Alias { get; set; } = string.Empty;
+
+    // The set entry's own date (EmoteSetEmote.addedAt), the chat-log backfill's per-emote gate (#346).
+    // Read exactly like SevenTvGqlSetEntryDto.AddedAt: a nullable DateTimeOffset, no plausibility
+    // bounds; an absent field and a JSON null both stay null = "7TV reported none".
+    public DateTimeOffset? AddedAt { get; set; }
+
     public SevenTvGqlEmoteSetPreviewEmoteDto? Emote { get; set; }
 }
 

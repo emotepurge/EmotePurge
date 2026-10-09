@@ -138,7 +138,7 @@ public class ForeignEmoteSetService(
         var preview = previewResult.Preview!;
         var emotes = preview.Items
             .Select(item => new ForeignEmoteRow(
-                item.SevenTvEmoteId, item.Alias, item.DefaultName, item.ImageUrl, item.TopAllTime, item.Trending))
+                item.SevenTvEmoteId, item.Alias, item.DefaultName, item.ImageUrl, item.TopAllTime, item.Trending, item.AddedAt))
             .ToList();
 
         return ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(
@@ -192,7 +192,7 @@ public class ForeignEmoteSetService(
         var preview = previewResult.Preview!;
         var emotes = preview.Items
             .Select(item => new ForeignEmoteRow(
-                item.SevenTvEmoteId, item.Alias, item.DefaultName, item.ImageUrl, item.TopAllTime, item.Trending))
+                item.SevenTvEmoteId, item.Alias, item.DefaultName, item.ImageUrl, item.TopAllTime, item.Trending, item.AddedAt))
             .ToList();
 
         // channelName is the route's channel, echoed — never resolved (E8). SevenTvUserId is always

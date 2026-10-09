@@ -340,6 +340,63 @@ public class SevenTvApiClientEmoteSetPreviewTests
         return root.ToJsonString();
     }
 
+    /// <summary>
+    /// #346: the preview query selects the set entry's date, aliased like every other v4 field here.
+    /// Pinned on the query text because a regression that dropped it would leave every parser
+    /// assertion green (the stubs hand the field over regardless) while production lost the gate.
+    /// </summary>
+    [Fact]
+    public async Task PreviewQuery_AsksForTheSetEntryDate()
+    {
+        var handler = new PagedStubHandler(_ => Page(totalCount: 0, pageCount: 1));
+        var client = CreateClient(handler);
+
+        await client.GetEmoteSetPreviewAsync(SetId);
+
+        var query = Assert.Single(handler.SentQueries);
+        Assert.Contains("items { alias added_at: addedAt emote {", query, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #346, AC 3: present maps to a UTC <c>AddedAt</c>, JSON null and an absent field both map to
+    /// <c>null</c> ("7TV reported none", no gate), and nothing else is validated.
+    /// PROVISIONAL FIXTURE: the file is hand-built in the shape of the existing preview fixtures. It is
+    /// to be replaced by the operator's redacted live answer to the new query (curl by hand, the
+    /// session cannot probe 7tv.io); keep the three cases (timestamp, null, absent) when it is.
+    /// </summary>
+    [Fact]
+    public async Task AddedAt_IsMapped_ForATimestamp_ANull_AndAnAbsentField()
+    {
+        var fixture = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Unit", "TestData", "emote-set-preview-added-at.provisional.json"));
+        var client = CreateClient(new PagedStubHandler(_ => fixture));
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(SevenTvPreviewLookupStatus.Ok, result.Status);
+        Assert.Equal(3, result.Preview!.Items.Count);
+        var withTimestamp = result.Preview.Items[0];
+        Assert.Equal(new DateTime(2026, 3, 14, 18, 22, 5, 123, DateTimeKind.Utc), withTimestamp.AddedAt);
+        Assert.Equal(DateTimeKind.Utc, withTimestamp.AddedAt!.Value.Kind);
+        Assert.Null(result.Preview.Items[1].AddedAt);
+        Assert.Null(result.Preview.Items[2].AddedAt);
+        Assert.Equal(["withTimestamp", "withNull", "withoutField"], result.Preview.Items.Select(i => i.Alias));
+    }
+
+    [Fact]
+    public async Task AddedAt_WithAnOffsetTimestamp_IsNormalisedToUtc_AndImplausibleDatesAreNotRejected()
+    {
+        var payload = JsonNode.Parse(Page(totalCount: 2, pageCount: 1, ("e1", "A", "A", null, null, true), ("e2", "B", "B", null, null, true)))!;
+        var items = payload["data"]!["emote_sets"]!["emote_set"]!["emotes"]!["items"]!;
+        items[0]!["added_at"] = "2026-03-14T20:00:00+02:00";
+        items[1]!["added_at"] = "1970-01-01T00:00:00Z";
+        var client = CreateClient(new PagedStubHandler(_ => payload.ToJsonString()));
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(new DateTime(2026, 3, 14, 18, 0, 0, DateTimeKind.Utc), result.Preview!.Items[0].AddedAt);
+        Assert.Equal(new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc), result.Preview.Items[1].AddedAt);
+    }
+
     /// <summary>F6/AK 28: name and a non-zero capacity are read off the set object and land on the
     /// assembled preview alongside the paginated entries.</summary>
     [Fact]

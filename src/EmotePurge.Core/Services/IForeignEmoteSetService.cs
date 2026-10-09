@@ -240,6 +240,13 @@ public sealed class ForeignEmoteSetLookupResult
 /// same idiom <see cref="EmotePurge.Core.SevenTv.SevenTvEmoteSet"/> and
 /// <see cref="EmotePurge.Core.SevenTv.SevenTvEmoteSetListEntry"/> already use.
 /// </param>
+/// <param name="SchemaVersion">
+/// The shape version of this payload as it travels through the preview cache (#346, D43). Version 2
+/// introduced <see cref="ForeignEmoteRow.AddedAt"/>; a cached payload below it is treated as a miss
+/// and refetched, so a row's <c>AddedAt == null</c> on a current payload always means "7TV reported
+/// none", never "the field did not exist yet". Every construction gets <see cref="CurrentSchemaVersion"/>
+/// by default; only a payload read back from the cache can carry another value.
+/// </param>
 public sealed record ForeignEmoteSet(
     string ChannelName,
     string? SevenTvUserId,
@@ -248,11 +255,18 @@ public sealed record ForeignEmoteSet(
     bool Truncated,
     IReadOnlyList<ForeignEmoteRow> Emotes,
     string? EmoteSetName = null,
-    int? Capacity = null);
+    int? Capacity = null,
+    int SchemaVersion = ForeignEmoteSet.CurrentSchemaVersion)
+{
+    /// <summary>The payload shape this code writes and requires when reading.</summary>
+    public const int CurrentSchemaVersion = 2;
+}
 
 /// <summary>
 /// One emote in a foreign set preview. <see cref="SevenTvEmoteId"/> is 7TV's own ObjectID, never our
 /// internal <c>Emote.Id</c> guid (Regel 8) — this type never touches our database at all.
+/// <paramref name="AddedAt"/> is the set entry's date (UTC) as 7TV reports it, <c>null</c> when it
+/// reports none; trailing and optional like <see cref="EmotePurge.Core.SevenTv.SevenTvEmoteSetPreviewItem.AddedAt"/>.
 /// </summary>
 public sealed record ForeignEmoteRow(
     string SevenTvEmoteId,
@@ -260,4 +274,5 @@ public sealed record ForeignEmoteRow(
     string DefaultName,
     string ImageUrl,
     int? TopAllTime,
-    int? Trending);
+    int? Trending,
+    DateTime? AddedAt = null);

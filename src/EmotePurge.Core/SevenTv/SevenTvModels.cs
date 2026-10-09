@@ -542,13 +542,21 @@ public sealed record SevenTvEmoteSetPreview(
 /// <see cref="TopAllTime"/>/<see cref="Trending"/> are network-wide 7TV scores, never a per-channel
 /// usage figure — <c>EmoteSetEmote</c> carries no such data (spec P5').
 /// </summary>
+/// <param name="AddedAt">
+/// When this emote entered this set, as 7TV's set entry reports it (<c>EmoteSetEmote.addedAt</c>, UTC),
+/// read by the chat-log backfill as its per-emote gate (#346). <c>null</c> means 7TV reported none
+/// (field absent or JSON null) — no gate, never "unknown field". Trailing and optional so every
+/// existing positional construction keeps compiling (the idiom <see cref="SevenTvEmoteSetPreview.Name"/>
+/// already uses). Leaderboard hits are not set entries and always carry <c>null</c>.
+/// </param>
 public record SevenTvEmoteSetPreviewItem(
     string SevenTvEmoteId,
     string Alias,
     string DefaultName,
     string ImageUrl,
     int? TopAllTime,
-    int? Trending);
+    int? Trending,
+    DateTime? AddedAt = null);
 
 /// <summary>
 /// Why <see cref="ISevenTvApiClient.SearchEmotesAsync"/> produced no usable page. Mirrors
