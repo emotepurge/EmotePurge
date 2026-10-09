@@ -138,6 +138,14 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
         }
     }
 
+    internal bool HoldsLock(object holder)
+    {
+        lock (_gate)
+        {
+            return ReferenceEquals(_lockHolder, holder);
+        }
+    }
+
     internal bool TryLock(object holder)
     {
         lock (_gate)
@@ -434,6 +442,13 @@ internal sealed class FakeBackfillService(FakeBackfillStore store) : IChatLogBac
         {
             ThrowIf(store.LockFault?.Invoke(this));
             return store.TryLock(this);
+        });
+
+    public Task<bool> HoldsLoopLockAsync(CancellationToken cancellationToken = default) =>
+        Record(nameof(HoldsLoopLockAsync), () =>
+        {
+            ThrowIf(store.LockFault?.Invoke(this));
+            return store.HoldsLock(this);
         });
 
     public ValueTask DisposeAsync()

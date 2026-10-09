@@ -639,20 +639,9 @@ public sealed class ChatLogBackfillService(
 
     public async Task<bool> TryAcquireLoopLockAsync(CancellationToken cancellationToken = default)
     {
-        if (loopLockConnection is not null)
+        if (await HoldsLoopLockAsync(cancellationToken))
         {
-            try
-            {
-                // Still alive means still held: a session lock lives exactly as long as its connection.
-                await using var probe = new NpgsqlCommand("SELECT 1", loopLockConnection);
-                await probe.ExecuteScalarAsync(cancellationToken);
-                return true;
-            }
-            catch (Exception ex) when (ex is NpgsqlException or InvalidOperationException)
-            {
-                await loopLockConnection.DisposeAsync();
-                loopLockConnection = null;
-            }
+            return true;
         }
 
         // Unpooled: a pooled connection would go back to the pool instead of closing, and the lock
@@ -681,6 +670,36 @@ public sealed class ChatLogBackfillService(
         }
 
         await connection.DisposeAsync();
+        return false;
+    }
+
+    public async Task<bool> HoldsLoopLockAsync(CancellationToken cancellationToken = default)
+    {
+        if (loopLockConnection is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            // A session lock lives exactly as long as its connection; asking pg_locks on that very
+            // connection proves both at once.
+            await using var probe = new NpgsqlCommand(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted)",
+                loopLockConnection);
+            if (await probe.ExecuteScalarAsync(cancellationToken) is true)
+            {
+                return true;
+            }
+        }
+        catch (Exception ex) when (ex is NpgsqlException or InvalidOperationException)
+        {
+            // Dead connection: the lock went with it.
+        }
+
+        // Never retaken here: a lost lock stays lost for this caller until it acquires again.
+        await loopLockConnection.DisposeAsync();
+        loopLockConnection = null;
         return false;
     }
 

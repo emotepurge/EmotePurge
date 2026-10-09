@@ -598,18 +598,7 @@ public partial class ChatLogBackfillServiceTests
         var holderB = CreateService(dbB);
         Assert.True(await holderA.TryAcquireLoopLockAsync());
 
-        await using (var killer = CreateDbContext())
-        {
-            var terminated = await killer.Database.SqlQuery<int>(
-                    $"""
-                     SELECT count(*)::int AS "Value" FROM (
-                         SELECT pg_terminate_backend(pid) FROM pg_locks
-                         WHERE locktype = 'advisory' AND granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-                     ) AS t
-                     """)
-                .SingleAsync();
-            Assert.Equal(1, terminated);
-        }
+        await TerminateAdvisoryLockHoldersAsync();
 
         Assert.True(await holderA.TryAcquireLoopLockAsync());
         Assert.False(await holderB.TryAcquireLoopLockAsync());
@@ -617,7 +606,60 @@ public partial class ChatLogBackfillServiceTests
         await holderB.DisposeAsync();
     }
 
+    // #350 review (Codex/Fable): inside a run the worker probes the lock and never retakes it. The probe
+    // answers true only for a live connection that holds the lock, and after the connection died it
+    // stays false — even though the lock is free again — until the holder acquires again; a competitor
+    // can take it meanwhile.
+    [Fact]
+    public async Task HoldsLoopLock_ProbesWithoutEverTakingTheLock()
+    {
+        await using var dbA = CreateDbContext();
+        await using var dbB = CreateDbContext();
+        var holderA = CreateService(dbA);
+        var holderB = CreateService(dbB);
+
+        Assert.False(await holderA.HoldsLoopLockAsync());
+        Assert.True(await holderB.TryAcquireLoopLockAsync());
+        Assert.False(await holderA.HoldsLoopLockAsync());
+        await holderB.DisposeAsync();
+        Assert.False(await holderA.HoldsLoopLockAsync());
+
+        Assert.True(await holderA.TryAcquireLoopLockAsync());
+        Assert.True(await holderA.HoldsLoopLockAsync());
+        Assert.True(await holderA.HoldsLoopLockAsync());
+
+        await TerminateAdvisoryLockHoldersAsync();
+
+        Assert.False(await holderA.HoldsLoopLockAsync());
+        Assert.False(await holderA.HoldsLoopLockAsync());
+
+        // The probe did not retake it: another instance can.
+        await using var dbC = CreateDbContext();
+        var holderC = CreateService(dbC);
+        Assert.True(await holderC.TryAcquireLoopLockAsync());
+        Assert.False(await holderA.TryAcquireLoopLockAsync());
+        Assert.False(await holderA.HoldsLoopLockAsync());
+        await holderA.DisposeAsync();
+        await holderC.DisposeAsync();
+    }
+
     // ---------------------------------------------------------------- Helpers
+
+    // Kills every backend holding an advisory lock in this database (the loop lock's connection) and
+    // asserts there was exactly one.
+    private async Task TerminateAdvisoryLockHoldersAsync()
+    {
+        await using var killer = CreateDbContext();
+        var terminated = await killer.Database.SqlQuery<int>(
+                $"""
+                 SELECT count(*)::int AS "Value" FROM (
+                     SELECT pg_terminate_backend(pid) FROM pg_locks
+                     WHERE locktype = 'advisory' AND granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                 ) AS t
+                 """)
+            .SingleAsync();
+        Assert.Equal(1, terminated);
+    }
 
     private static UsageStat Imported(Emote emote, string emoteSetId, DateOnly date, int useCount) =>
         new() { EmoteId = emote.Id, EmoteSetId = emoteSetId, Date = date, UseCount = useCount, Source = UsageStatSource.ChatLogArchive };

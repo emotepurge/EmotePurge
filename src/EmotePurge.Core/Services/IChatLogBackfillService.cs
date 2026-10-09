@@ -110,6 +110,14 @@ public interface IChatLogBackfillService
     /// lives as long as its loop. <c>true</c> when this instance holds the lock (again).
     /// </summary>
     Task<bool> TryAcquireLoopLockAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Probes, never acquires: <c>true</c> only while the connection that took the loop lock is alive and
+    /// holds it. A dead connection is disposed and answers <c>false</c> — the lock is lost until the
+    /// next <see cref="TryAcquireLoopLockAsync"/>. The worker asks this inside a run, where a lock that
+    /// was lost and silently retaken would hide another loop's turn (D46).
+    /// </summary>
+    Task<bool> HoldsLoopLockAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>Every way <see cref="IChatLogBackfillService.EnqueueAsync"/> can end (spec section 3).</summary>
