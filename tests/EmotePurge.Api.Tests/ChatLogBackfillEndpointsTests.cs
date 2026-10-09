@@ -338,6 +338,19 @@ public class ChatLogBackfillEndpointsTests : IClassFixture<ApiFactory>
 
     // ---- DELETE ----
 
+    [Fact]
+    public void EveryCancelResult_HasAMappingCase_InTheDeleteTheory()
+    {
+        var covered = typeof(ChatLogBackfillEndpointsTests)
+            .GetMethod(nameof(Delete_MapsEveryCancelResult))!
+            .GetCustomAttributes(typeof(InlineDataAttribute), false)
+            .Cast<InlineDataAttribute>()
+            .Select(a => (ChatLogBackfillCancelResult)a.GetData(null!)!.First()[0]!)
+            .ToHashSet();
+
+        Assert.True(covered.SetEquals(Enum.GetValues<ChatLogBackfillCancelResult>()));
+    }
+
     [Theory]
     [InlineData(ChatLogBackfillCancelResult.Cancelled, HttpStatusCode.NoContent, null)]
     [InlineData(ChatLogBackfillCancelResult.NoActiveRun, HttpStatusCode.NotFound, "backfill_no_active_run")]
