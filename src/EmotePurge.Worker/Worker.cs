@@ -1,6 +1,7 @@
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Worker.ChatLogBackfill;
 using EmotePurge.Worker.SevenTv;
 
 namespace EmotePurge.Worker;
@@ -16,7 +17,8 @@ public class Worker(
     ISevenTvEventClient sevenTvEventClient,
     ITwitchLiveStatusReader liveStatusReader,
     IServiceScopeFactory scopeFactory,
-    IConfiguration configuration) : BackgroundService
+    IConfiguration configuration,
+    ChatLogBackfillSignal backfillSignal) : BackgroundService
 {
     // Worker-local debug command for the RECONNECT path (issue #68, Entscheidung 7.5, Task 6):
     // the Api never sends this. BotCommands in EmotePurge.Core stays the Api<->Worker contract
@@ -96,6 +98,13 @@ public class Worker(
                 logger.LogInformation("Redis-Kommando: resynce {Channel}.", channelName);
                 await twitchChatManager.EnsureJoinedAsync(channelName, leaveStamp);
                 await SyncSevenTvAsync(channelName, stoppingToken, publishCompletion: true);
+            }
+            else if (message.StartsWith(BotCommands.BackfillPrefix, StringComparison.Ordinal))
+            {
+                // A nudge for the chat-log backfill loop and nothing else (spec 4.8): the payload is
+                // never trusted for identity — the queued run row is the truth, and the claim
+                // re-validates the channel itself, so no roster check is needed here.
+                backfillSignal.Set();
             }
             else if (string.Equals(message, DebugTwitchReconnectCommand, StringComparison.Ordinal))
             {

@@ -1,11 +1,13 @@
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
+using EmotePurge.Worker.ChatLogBackfill;
 using EmotePurge.Worker.SevenTv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using NSubstitute;
 using Xunit;
 using WorkerService = EmotePurge.Worker.Worker;
@@ -60,7 +62,8 @@ public class WorkerBootSequenceTests
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService),
-            new ConfigurationBuilder().Build());
+            new ConfigurationBuilder().Build(),
+            new ChatLogBackfillSignal());
 
         await worker.StartAsync(CancellationToken.None);
         try
@@ -111,7 +114,8 @@ public class WorkerBootSequenceTests
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService),
-            new ConfigurationBuilder().Build());
+            new ConfigurationBuilder().Build(),
+            new ChatLogBackfillSignal());
 
         await worker.StartAsync(CancellationToken.None);
         try
@@ -157,7 +161,8 @@ public class WorkerBootSequenceTests
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService),
-            new ConfigurationBuilder().Build());
+            new ConfigurationBuilder().Build(),
+            new ChatLogBackfillSignal());
 
         await worker.StartAsync(CancellationToken.None);
         try
@@ -173,6 +178,60 @@ public class WorkerBootSequenceTests
 
         emoteMatchCache.Received(1).RemoveChannel("leftchannel");
         emptySetConfirmations.Received(1).Reset("leftchannel");
+    }
+
+    // #350, spec 4.8: BACKFILL: only wakes the backfill loop. It joins nothing, syncs nothing and does
+    // not even read the roster — the payload is never trusted, the claim re-validates the run's row.
+    [Fact]
+    public async Task Worker_BackfillCommand_OnlySetsTheBackfillSignal()
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(new List<string>());
+        var syncService = Substitute.For<ISevenTvSyncService>();
+        var chatManager = Substitute.For<ITwitchChatManager>();
+
+        Func<string, string, Task>? capturedHandler = null;
+        var subscriber = Substitute.For<IRedisSubscriber>();
+        subscriber.When(x => x.SubscribeAsync(Arg.Any<string>(), Arg.Any<Func<string, string, Task>>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo => capturedHandler = callInfo.Arg<Func<string, string, Task>>());
+        var signal = new ChatLogBackfillSignal();
+        var clock = new FakeTimeProvider();
+
+        var worker = new WorkerService(
+            NullLogger<WorkerService>.Instance,
+            chatManager,
+            subscriber,
+            Substitute.For<IRedisPublisher>(),
+            Substitute.For<IEmoteMatchCache>(),
+            Substitute.For<IEmptySetConfirmationTracker>(),
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            Substitute.For<ITwitchLiveStatusReader>(),
+            CreateScopeFactory(channelService, syncService),
+            new ConfigurationBuilder().Build(),
+            signal);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.CommandChannelSubscribed.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(capturedHandler);
+            Assert.False(await signal.WaitAsync(TimeSpan.Zero, clock, CancellationToken.None));
+            channelService.ClearReceivedCalls();
+
+            await capturedHandler!(BotCommands.Channel, BotCommands.BackfillPrefix + "somechannel");
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.True(await signal.WaitAsync(TimeSpan.Zero, clock, CancellationToken.None));
+        await channelService.DidNotReceive().ListActiveChannelNamesAsync(Arg.Any<CancellationToken>());
+        await chatManager.DidNotReceive().JoinChannelAsync(Arg.Any<string>());
+        await syncService.DidNotReceive().SyncChannelAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     // Fourth Codex review of the block list: JOIN and RESYNC commands used to be followed blindly, so
@@ -210,7 +269,8 @@ public class WorkerBootSequenceTests
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService, syncService),
-            new ConfigurationBuilder().Build());
+            new ConfigurationBuilder().Build(),
+            new ChatLogBackfillSignal());
 
         await worker.StartAsync(CancellationToken.None);
         try
@@ -268,7 +328,8 @@ public class WorkerBootSequenceTests
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService),
-            new ConfigurationBuilder().Build());
+            new ConfigurationBuilder().Build(),
+            new ChatLogBackfillSignal());
 
         await worker.StartAsync(CancellationToken.None);
         try
@@ -403,7 +464,8 @@ public class WorkerBootSequenceTests
             Substitute.For<ISevenTvEventClient>(),
             liveStatusReader,
             CreateScopeFactory(channelService, syncService),
-            new ConfigurationBuilder().Build());
+            new ConfigurationBuilder().Build(),
+            new ChatLogBackfillSignal());
 
         await worker.StartAsync(CancellationToken.None);
         try
@@ -449,7 +511,8 @@ public class WorkerBootSequenceTests
             Substitute.For<ISevenTvEventClient>(),
             liveStatusReader,
             CreateScopeFactory(channelService),
-            new ConfigurationBuilder().Build());
+            new ConfigurationBuilder().Build(),
+            new ChatLogBackfillSignal());
 
         await worker.StartAsync(CancellationToken.None);
         try
@@ -495,7 +558,8 @@ public class WorkerBootSequenceTests
             Substitute.For<ISevenTvEventClient>(),
             Substitute.For<ITwitchLiveStatusReader>(),
             CreateScopeFactory(channelService),
-            new ConfigurationBuilder().Build());
+            new ConfigurationBuilder().Build(),
+            new ChatLogBackfillSignal());
 
         await worker.StartAsync(CancellationToken.None);
         await joinEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -535,7 +599,8 @@ public class WorkerBootSequenceTests
             Substitute.For<ISevenTvEventClient>(),
             liveStatusReader,
             CreateScopeFactory(channelService),
-            new ConfigurationBuilder().Build())
+            new ConfigurationBuilder().Build(),
+            new ChatLogBackfillSignal())
         {
             LiveStatusReadTimeout = TimeSpan.FromMilliseconds(100)
         };
