@@ -60,7 +60,7 @@ internal static class ArchivedEmoteRowUpsert
             InsertSql,
             [
                 new NpgsqlParameter("channelId", NpgsqlDbType.Text) { Value = channelId },
-                new NpgsqlParameter("now", NpgsqlDbType.TimestampTz) { Value = now },
+                new NpgsqlParameter("now", NpgsqlDbType.TimestampTz) { Value = ToUtc(now) },
                 new NpgsqlParameter("ids", NpgsqlDbType.Array | NpgsqlDbType.Text)
                 {
                     Value = rows.Select(_ => Guid.NewGuid().ToString()).ToArray(),
@@ -79,16 +79,27 @@ internal static class ArchivedEmoteRowUpsert
                 },
                 new NpgsqlParameter("firstSeenAts", NpgsqlDbType.Array | NpgsqlDbType.TimestampTz)
                 {
-                    Value = rows.Select(r => r.FirstSeenAt).ToArray(),
+                    Value = rows.Select(r => r.FirstSeenAt is { } firstSeenAt ? ToUtc(firstSeenAt) : (DateTime?)null).ToArray(),
                 },
             ],
             cancellationToken);
     }
+
+    // Npgsql refuses a DateTime whose Kind is not Utc for a timestamptz parameter, and the dates come
+    // from callers' 7TV reads. Local is converted; Unspecified is taken as UTC, the convention every
+    // 7TV timestamp in this codebase follows.
+    private static DateTime ToUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+    };
 }
 
 /// <summary>
 /// One emote for <see cref="ArchivedEmoteRowUpsert.EnsureRowsAsync"/>. <paramref name="FirstSeenAt"/> is
 /// when the emote was added to its set, where the caller's 7TV read reports it; null means unknown
-/// (the ballot's read path carries no date) and is stored as null, never guessed.
+/// (the ballot's read path carries no date) and is stored as null, never guessed. Any
+/// <see cref="DateTimeKind"/> is accepted and stored as UTC (Unspecified is read as UTC).
 /// </summary>
 internal sealed record ArchivedEmoteRow(string SevenTvEmoteId, string Name, string ImageUrl, DateTime? FirstSeenAt);
