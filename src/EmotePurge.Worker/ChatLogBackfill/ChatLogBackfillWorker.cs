@@ -147,7 +147,14 @@ public sealed class ChatLogBackfillWorker(
             try
             {
                 // Before every claim (D46): a lock lost with its connection is noticed here, before
-                // anything else is claimed, reset or committed.
+                // anything else is claimed, reset or committed. Probed first: TryAcquireLoopLockAsync
+                // would retake a lock that died since the run's last in-run probe without saying so,
+                // and a retake must always go through the reset below.
+                if (holdsLock && !await service.HoldsLoopLockAsync(stoppingToken))
+                {
+                    holdsLock = false;
+                }
+
                 if (!await service.TryAcquireLoopLockAsync(stoppingToken))
                 {
                     if (!warnedAboutLock)

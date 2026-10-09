@@ -45,6 +45,9 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
     /// <summary>Overrides the block commit; null = the contract's own behaviour.</summary>
     public Func<FakeRun, ChatLogBackfillBlockResult?>? ReplaceOverride { get; set; }
 
+    /// <summary>Called with the instance and the method name at the start of every service call.</summary>
+    public Action<FakeBackfillService, string>? OnCall { get; set; }
+
     /// <summary>Throws from the next claims while it returns an exception.</summary>
     public Func<Exception?>? ClaimFault { get; set; }
 
@@ -465,6 +468,7 @@ internal sealed class FakeBackfillService(FakeBackfillStore store) : IChatLogBac
             _calls.Add(call);
         }
 
+        store.OnCall?.Invoke(this, call);
         try
         {
             return Task.FromResult(action());

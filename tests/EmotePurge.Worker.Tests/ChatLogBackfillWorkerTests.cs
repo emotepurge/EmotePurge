@@ -1117,6 +1117,82 @@ public class ChatLogBackfillWorkerTests
         Assert.True(requests[1].AtUtc - requests[0].AtUtc >= TimeSpan.FromSeconds(30));
     }
 
+    // Review P3-1: the lock connection dies while the loop is idle and nobody takes the lock. The next
+    // turn must notice the loss (probe) before it retakes, so the retake goes through the reset.
+    [Fact]
+    public async Task ALockLostWhileIdle_IsRetakenThroughTheReset()
+    {
+        await using var rig = new BackfillRig();
+        var first = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => first.Status == ChatLogBackfillRunStatus.Completed);
+        await rig.DriveForAsync(TimeSpan.FromSeconds(5));
+        var loop = rig.Store.Instances[0];
+        Assert.Equal(1, loop.Calls.Count(c => c == nameof(IChatLogBackfillService.ResetInterruptedRunsAsync)));
+
+        rig.Store.ReleaseLock(loop);
+        var second = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7), channelName: "other");
+        rig.Signal.Set();
+        await rig.DriveUntilAsync(() => second.Status == ChatLogBackfillRunStatus.Completed);
+
+        Assert.Equal(2, loop.Calls.Count(c => c == nameof(IChatLogBackfillService.ResetInterruptedRunsAsync)));
+    }
+
+    // Review P3-3: the in-run probes before a request and before recording a failure never retake the
+    // lock. The lock dies right after attempt 1 is booked: the next request, or the failure, only
+    // happens after the loop has retaken the lock through a second reset.
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task ALockLostAfterAnAttemptWasBooked_IsOnlyRetakenThroughTheReset(int attemptsBefore)
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+        run.BlockAttempts = attemptsBefore;
+        var resetsAtRequests = new List<int>();
+        var resetsAtFailures = new List<int>();
+        int Resets() => rig.Store.Instances[0].Calls.Count(c => c == nameof(IChatLogBackfillService.ResetInterruptedRunsAsync));
+        rig.Archive.Handler = (_, _, _) =>
+        {
+            resetsAtRequests.Add(Resets());
+            return Task.FromResult(resetsAtRequests.Count == 1
+                ? FakeArchive.Status(ChatLogDayStatus.TransportFailure, 503, bytes: 10)
+                : FakeArchive.Complete(10, 1));
+        };
+        var released = false;
+        rig.Store.OnCall = (instance, call) =>
+        {
+            if (call == nameof(IChatLogBackfillService.RecordBlockAttemptAsync) && !released)
+            {
+                released = true;
+                rig.Store.ReleaseLock(instance);
+            }
+            else if (call == nameof(IChatLogBackfillService.FailAsync))
+            {
+                resetsAtFailures.Add(Resets());
+            }
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status is ChatLogBackfillRunStatus.Completed or ChatLogBackfillRunStatus.Failed);
+
+        if (attemptsBefore == 0)
+        {
+            // Attempt 2 is read only in the next turn, after the second reset.
+            Assert.Equal([1, 2], resetsAtRequests);
+            Assert.Equal(ChatLogBackfillRunStatus.Completed, run.Status);
+        }
+        else
+        {
+            // Attempt 3 exhausted the limit: the failure is recorded only after the retake and reset,
+            // by the next claim, without another request.
+            Assert.Equal([1], resetsAtRequests);
+            Assert.Equal([2], resetsAtFailures);
+            Assert.Equal(ChatLogBackfillWorker.TransportFailureErrorCode, run.ErrorCode);
+        }
+    }
+
     private static int MonitorCalls(BackfillRig rig) => rig.Store.Instances.Skip(1).Sum(i => i.Calls.Count);
 
     private static ChatLogMessage Message(DateTime at, string userId, string text) => new(at, userId, [], "room1", null, false, text);
