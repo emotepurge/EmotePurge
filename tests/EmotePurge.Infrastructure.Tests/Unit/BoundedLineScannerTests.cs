@@ -48,6 +48,43 @@ public class BoundedLineScannerTests
     }
 
     [Fact]
+    public async Task ReadLineAsync_SkipsABomEvenWhenTheStreamHandsOutOneByteAtATime()
+    {
+        var bytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Encoding.UTF8.GetBytes("hello\nnext\n")).ToArray();
+        var scanner = new BoundedLineScanner(new OneByteAtATimeStream(bytes), maxLineBytes: 64);
+
+        Assert.Equal("hello", await ReadTextAsync(scanner));
+        Assert.Equal("next", await ReadTextAsync(scanner));
+    }
+
+    [Fact]
+    public async Task ReadLineAsync_SkipsABomSplitIntoTwoByteChunks()
+    {
+        var bytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Encoding.UTF8.GetBytes("hello\n")).ToArray();
+        var scanner = new BoundedLineScanner(new ChunkedStream(bytes, chunkSize: 2), maxLineBytes: 64);
+
+        Assert.Equal("hello", await ReadTextAsync(scanner));
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 0xEF, 0xBB })]
+    [InlineData(new byte[] { (byte)'o', (byte)'k' })]
+    [InlineData(new byte[] { (byte)'x' })]
+    public async Task ReadLineAsync_WithABodyShorterThanABom_DoesNotSwallowIt(byte[] body)
+    {
+        // The body ends while the BOM check is still topping up: its 1-2 bytes are content, not lost
+        // and not turned into an empty end of stream. (Incomplete UTF-8 decodes to replacement
+        // characters, as everywhere else in the scanner.)
+        var scanner = new BoundedLineScanner(new OneByteAtATimeStream(body), maxLineBytes: 64);
+
+        var line = await scanner.ReadLineAsync(CancellationToken.None);
+
+        Assert.Equal(BoundedLineKind.Line, line.Kind);
+        Assert.Equal(Encoding.UTF8.GetString(body), line.Text);
+        Assert.Equal(BoundedLineKind.EndOfStream, (await scanner.ReadLineAsync(CancellationToken.None)).Kind);
+    }
+
+    [Fact]
     public async Task ReadLineAsync_AcceptsALineOfExactlyTheLimit_AndRejectsOneByteMore()
     {
         var exact = new string('a', 100);
@@ -186,6 +223,45 @@ public class BoundedLineScannerTests
 
             buffer.Span[0] = body[_position++];
             return ValueTask.FromResult(1);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class ChunkedStream(byte[] body, int chunkSize) : Stream
+    {
+        private int _position;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var toCopy = Math.Min(Math.Min(chunkSize, buffer.Length), body.Length - _position);
+            body.AsSpan(_position, toCopy).CopyTo(buffer.Span);
+            _position += toCopy;
+            return ValueTask.FromResult(toCopy);
         }
 
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();

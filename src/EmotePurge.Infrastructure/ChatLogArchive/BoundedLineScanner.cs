@@ -34,9 +34,9 @@ public readonly record struct BoundedLine(BoundedLineKind Kind, string? Text);
 /// <b>Counting.</b> The limit counts raw bytes of the line without its <c>0x0A</c> terminator, so a
 /// <c>0x0D</c> in front of it counts (a line of exactly the limit plus a CR is too long). A bare
 /// <c>0x0D</c> is not a separator - unlike <c>StreamReader</c>, which also splits on it - and stays in
-/// the line unless it is the last byte before the terminator. A BOM split across the first read
-/// boundary is not recognised (it would need three bytes in the first read; a stream's first read of
-/// fewer than three bytes is not expected from a socket) and would surface as a malformed first line.
+/// the line unless it is the last byte before the terminator. A BOM is recognised however the
+/// first reads are cut (a decompression stream may hand out a single byte at first): the first reads
+/// are topped up to three bytes before the check, and a body shorter than that stays ordinary content.
 /// </para>
 /// </summary>
 public sealed class BoundedLineScanner
@@ -105,6 +105,22 @@ public sealed class BoundedLineScanner
                 if (_atStart)
                 {
                     _atStart = false;
+
+                    // The first read may be shorter than the three bytes of a BOM (GZipStream and
+                    // BrotliStream can start with one byte). Top the buffer up, then decide; a stream
+                    // that ends first leaves its 1-2 bytes in the buffer as ordinary content.
+                    while (_readLength < 3)
+                    {
+                        var more = await _stream.ReadAsync(_readBuffer.AsMemory(_readLength), ct);
+                        if (more == 0)
+                        {
+                            _ended = true;
+                            break;
+                        }
+
+                        _readLength += more;
+                    }
+
                     if (_readLength >= 3 && _readBuffer[0] == 0xEF && _readBuffer[1] == 0xBB && _readBuffer[2] == 0xBF)
                     {
                         _readPosition = 3;
