@@ -1394,6 +1394,51 @@ export async function mockActiveEmoteSet(
   );
 }
 
+export interface MockImportCoverage {
+  sources?: { name: string; url: string }[];
+  importedFrom: string;
+  /** Exclusive, like the server: the last imported day + 1. */
+  importedTo: string;
+  hasGaps?: boolean;
+  contiguousFrom?: string | null;
+}
+
+/**
+ * GET /api/channels/{channelName}/usage-stats/import-coverage — the usage page's disclosure read
+ * (chat-log backfill). Answers per `emoteSetId`; a set missing from `bySet` (and the unscoped read)
+ * has nothing imported, the shape the server uses for that, so most callers need only the default.
+ */
+export async function mockImportCoverage(
+  page: Page,
+  channelName: string,
+  bySet: Record<string, MockImportCoverage> = {},
+): Promise<void> {
+  await page.route(`**/api/channels/${channelName}/usage-stats/import-coverage**`, (route) => {
+    const emoteSetId = new URL(route.request().url()).searchParams.get('emoteSetId');
+    const coverage = emoteSetId === null ? undefined : bySet[emoteSetId];
+    if (!coverage) {
+      return fulfillJson(route, 200, {
+        emoteSetId,
+        sources: [],
+        importedFrom: null,
+        importedTo: null,
+        hasGaps: false,
+        contiguousFrom: null,
+        intervals: [],
+      });
+    }
+    return fulfillJson(route, 200, {
+      emoteSetId,
+      sources: coverage.sources ?? [{ name: 'logs.cyex.app', url: 'https://logs.cyex.app/' }],
+      importedFrom: coverage.importedFrom,
+      importedTo: coverage.importedTo,
+      hasGaps: coverage.hasGaps ?? false,
+      contiguousFrom: coverage.contiguousFrom ?? coverage.importedFrom,
+      intervals: [],
+    });
+  });
+}
+
 export interface MockVoteSession {
   id: number;
   title: string;
