@@ -1,5 +1,7 @@
 using EmotePurge.Core.ChatLogArchive;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Services;
+using EmotePurge.Worker.ChatLogBackfill;
 using EmotePurge.Worker.Harness;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -29,13 +31,34 @@ public class WorkerServiceRegistrationTests
     }
 
     [Fact]
-    public void AddWorkerHostedServices_RegistersExactlyTheTenOfTheWorker()
+    public void AddWorkerHostedServices_RegistersExactlyTheElevenOfTheWorker()
     {
         var services = new ServiceCollection();
         services.AddWorkerCore(Configuration());
         services.AddWorkerHostedServices();
 
-        Assert.Equal(10, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Equal(11, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(ChatLogBackfillWorker));
+    }
+
+    // #350: the backfill loop and its wake-up resolve with the worker's own graph, and Worker and the
+    // loop share one signal instance — two would leave every BACKFILL: nudge unheard.
+    [Fact]
+    public void AddWorkerHostedServices_ResolvesTheBackfillWorker_AndOneSharedSignal()
+    {
+        var configuration = Configuration();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(configuration);
+        services.AddWorkerCore(configuration);
+        services.AddWorkerHostedServices();
+        services.AddSingleton(Substitute.For<IConnectionMultiplexer>());
+
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Contains(provider.GetServices<IHostedService>(), s => s is ChatLogBackfillWorker);
+        Assert.Same(provider.GetRequiredService<ChatLogBackfillSignal>(), provider.GetRequiredService<ChatLogBackfillSignal>());
+        Assert.False(provider.GetRequiredService<ChatLogBackfillOptions>().Enabled);
     }
 
     [Fact]

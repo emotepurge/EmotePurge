@@ -51,7 +51,9 @@ public sealed class ChatLogBackfillOptions
     {
         Require(nameof(RequestDelaySeconds), RequestDelaySeconds);
         Require(nameof(MaxBlockMegabytes), MaxBlockMegabytes);
+        Require(nameof(MaxRetryAfterSeconds), MaxRetryAfterSeconds);
         Require(nameof(TransportRetries), TransportRetries);
+        Require(nameof(MaxConsecutivePauses), MaxConsecutivePauses);
         Require(nameof(IdlePollSeconds), IdlePollSeconds);
         Require(nameof(CancelPollSeconds), CancelPollSeconds);
     }

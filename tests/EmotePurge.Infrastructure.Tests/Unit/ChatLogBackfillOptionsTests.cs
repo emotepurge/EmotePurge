@@ -42,6 +42,23 @@ public class ChatLogBackfillOptionsTests
         Assert.Contains(key, ex.Message);
     }
 
+    // #350 review: 0 would mean a 429 pause of no length (and fail the run on its first 429), a
+    // negative cap would make the worker's Task.Delay throw.
+    [Theory]
+    [InlineData("MaxRetryAfterSeconds", 0)]
+    [InlineData("MaxRetryAfterSeconds", -1)]
+    [InlineData("MaxConsecutivePauses", 0)]
+    [InlineData("MaxConsecutivePauses", -1)]
+    public void Validate_RejectsAnUnusablePauseLimit_NamingTheKey(string property, int value)
+    {
+        var options = new ChatLogBackfillOptions();
+        typeof(ChatLogBackfillOptions).GetProperty(property)!.SetValue(options, value);
+
+        var ex = Assert.Throws<InvalidOperationException>(options.Validate);
+
+        Assert.Contains("ChatLogBackfill:" + property, ex.Message);
+    }
+
     [Fact]
     public void ArchiveOptions_Validate_RejectsAnUnusableLineLimitOrDeadline_AndAcceptsTheDefaults()
     {
