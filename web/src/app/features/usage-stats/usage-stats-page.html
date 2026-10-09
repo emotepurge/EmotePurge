@@ -473,7 +473,32 @@
 
   @if (trackedSince(); as since) {
     <p class="text-xs text-fg-muted">
-      {{ 'usageStats.trackedSince' | transloco: { date: formatDate(since) } }}
+      @if (importCaption(); as caption) {
+        @let coverage = importCoverage()!;
+        <!-- Imported days exist for this set: the first sentence names them and where they came from.
+             The link is its own element, so the sentence is lead + link(s) + tail. The order of the
+             sentences after it is unchanged (contract, below). -->
+        {{
+          caption.leadKey
+            | transloco
+              : {
+                  date: formatDate(since),
+                  importedFrom: formatDate(coverage.importedFrom),
+                  importedToInclusive: formatDate(importedToInclusiveDate()),
+                }
+        }}
+        @for (source of coverage.sources; track source.url; let last = $last) {
+          <a
+            [href]="source.url"
+            target="_blank"
+            rel="noopener"
+            class="underline decoration-border-strong underline-offset-2 transition hover:text-fg hover:decoration-accent"
+            >{{ source.name }}</a
+          >{{ last ? (caption.tailKey | transloco) : ', ' }}
+        }
+      } @else {
+        {{ 'usageStats.trackedSince' | transloco: { date: formatDate(since) } }}
+      }
       <!-- The channel-wide live count, stated once here instead of on every emote. Without a
            denominator on purpose: a missing ChannelLiveDay row means "no data", never "offline". -->
       @if (liveDaysInRangeKey(); as liveKey) {

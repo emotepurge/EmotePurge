@@ -68,6 +68,13 @@ import {
 import { SetStatusFlushProbeGate } from './set-status-flush-probe-gate';
 import { LIVE_EVENT_TYPES, channelLiveUrl } from '../../core/live/live-event.model';
 import { CHANNEL_RELOAD_DEBOUNCE_MS, liveReload } from '../../core/live/live-reload';
+import { ImportCoverageService } from '../../core/usage/import-coverage.service';
+import {
+  ImportCoverage,
+  coverageStartFor,
+  importCaptionFor,
+  importedToInclusive,
+} from '../../core/usage/import-coverage.model';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import {
   ChannelUsageSeries,
@@ -371,6 +378,7 @@ export class UsageStatsPage {
    *  non-active/untracked target, spec F5) and, since T4.2, used directly here for the set-dropdown's
    *  own list request (`emoteSetListResource` below). */
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
+  private readonly importCoverageService = inject(ImportCoverageService);
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix, via `import-flow.ts`)
    *  — every other read on this page goes through `emoteAdminService`. */
   private readonly httpClient = inject(HttpClient);
@@ -544,6 +552,72 @@ export class UsageStatsPage {
       : null,
   );
   protected readonly trackedSince = computed(() => this.setStatus()?.trackedSince ?? null);
+
+  // --- Imported coverage (chat-log backfill, spec 2026-10-09 §7) ---------------------------------
+
+  /**
+   * Which days of the shown set came from a chat archive. Asked for the dropdown's set once the set
+   * list has confirmed it (the same hold-back as the rows, `awaitingEmoteSetId`) and never without a
+   * known set: a channel without an active set has nothing imported to disclose. The scope is part of
+   * the answer so that a stale one can never be read for another set.
+   */
+  private readonly importCoverageResource = rxResource({
+    params: () => {
+      const emoteSetId = this.selectedEmoteSetId();
+      return emoteSetId === null || this.awaitingEmoteSetId()
+        ? undefined
+        : { channelName: this.channelName(), emoteSetId };
+    },
+    stream: ({ params }) =>
+      this.importCoverageService
+        .getCoverage(params.channelName, { kind: 'set', emoteSetId: params.emoteSetId })
+        .pipe(map((coverage) => ({ ...params, coverage }))),
+  });
+
+  /**
+   * The last coverage read successfully for the scope now on screen. A failed refetch (a flush-driven
+   * reload that hits a 429, say) keeps serving it instead of dropping the attribution from numbers
+   * that stay on screen; a different channel or set starts over with nothing latched. The first read
+   * failing leaves the plain sentence — the numbers then have no disclosure, which is the same
+   * degraded state as the disclosure endpoint being down. `hasValue()` guards `.value()`, which
+   * re-throws once the resource errored.
+   */
+  private readonly lastImportCoverage = signal<{
+    readonly channelName: string;
+    readonly emoteSetId: string;
+    readonly coverage: ImportCoverage;
+  } | null>(null);
+
+  protected readonly importCoverage = computed<ImportCoverage | null>(() => {
+    const emoteSetId = this.selectedEmoteSetId();
+    const read = this.importCoverageResource.hasValue()
+      ? this.importCoverageResource.value()
+      : this.lastImportCoverage();
+    return read?.channelName === this.channelName() && read.emoteSetId === emoteSetId
+      ? read.coverage
+      : null;
+  });
+
+  /** Wording keys of the first caption sentence, or `null` = the plain tracked-since sentence. */
+  protected readonly importCaption = computed(() => importCaptionFor(this.importCoverage()));
+
+  /** Where reliable counting starts for this set (D34/D49) — a date, or the full `trackedSince`
+   *  timestamp whenever the live start governs, so nothing changes for a channel without imports. */
+  protected readonly coverageStart = computed(() => {
+    const since = this.trackedSince();
+    if (!since) {
+      return null;
+    }
+    const sinceDate = since.slice(0, 10);
+    const start = coverageStartFor(this.importCoverage(), sinceDate);
+    return start === sinceDate ? since : start;
+  });
+
+  /** The last imported day itself (the wire's `importedTo` is exclusive). */
+  protected readonly importedToInclusiveDate = computed(() => {
+    const coverage = this.importCoverage();
+    return coverage ? importedToInclusive(coverage) : null;
+  });
 
   // --- Set dropdown (spec #200, 8.1) --------------------------------------------------------
   //
@@ -1097,7 +1171,7 @@ export class UsageStatsPage {
       return false;
     }
 
-    const trackedSince = this.trackedSince();
+    const trackedSince = this.coverageStart();
     if (!trackedSince) {
       return false;
     }
@@ -2271,6 +2345,15 @@ export class UsageStatsPage {
       }
     });
 
+    // Latches every successful coverage read — what `importCoverage()` keeps serving when a later
+    // reload of the same scope fails.
+    effect(() => {
+      if (this.importCoverageResource.hasValue()) {
+        const read = this.importCoverageResource.value();
+        untracked(() => this.lastImportCoverage.set(read));
+      }
+    });
+
     // The viewed set just became (or stopped being) the channel's active set, under rows merged for
     // the other kind of view (`viewKindStale`) — reload them now rather than wait for the next event;
     // `viewSwitching` keeps delete and vote locked until they land. Silent: nobody asked for this,
@@ -2484,9 +2567,18 @@ export class UsageStatsPage {
     // user who did not ask for anything — this update arrives unrequested. (The one exception is a
     // sync that moves the selected set itself: the load effect reloads loudly then, see below.)
     liveReload(this.liveUrl, {
-      accept: [LIVE_EVENT_TYPES.usageFlushed, LIVE_EVENT_TYPES.channelSynced],
+      accept: [
+        LIVE_EVENT_TYPES.usageFlushed,
+        LIVE_EVENT_TYPES.channelSynced,
+        LIVE_EVENT_TYPES.backfillProgress,
+      ],
       debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
     }).subscribe((seen) => {
+      // A backfill block moves the imported range; the worker also publishes `usage.flushed` per
+      // committed block, so the rows follow on their own below. Only the disclosure is refetched here.
+      if (seen.has(LIVE_EVENT_TYPES.backfillProgress)) {
+        this.importCoverageResource.reload();
+      }
       // A sync can move the active set id, its capacity or the occupied-slot count — nothing else in
       // EmoteSetStatus moves on a sync, so it always earns a refetch. And the rows wait for it, a
       // flush in the same burst included: asked under the page's own active id, they would be
@@ -2514,6 +2606,10 @@ export class UsageStatsPage {
         // one, `liveMembersParams` turns `undefined` and the resource drops this request itself.
         this.reloadLiveMembers();
         this.refreshSetStatus({ reloadRowsAfter: true });
+        return;
+      }
+      // A burst of nothing but `backfill.progress` has no rows to reload.
+      if (!seen.has(LIVE_EVENT_TYPES.usageFlushed)) {
         return;
       }
       // Not while a URL-carried set is still unconfirmed: `selectedEmoteSetId()` answers with the
@@ -2787,7 +2883,7 @@ export class UsageStatsPage {
   protected trendFor(
     emote: Pick<EmoteUsageTotal, 'totalUseCount' | 'previousWindowUseCount' | 'firstSeenAt'>,
   ): UsageTrend {
-    const trackedSince = this.trackedSince();
+    const trackedSince = this.coverageStart();
     // No counts under the shown set means no trend either — "unknown" is the one honest answer, and
     // never a "falling" computed from a coerced 0.
     if (!trackedSince || emote.totalUseCount === null || emote.previousWindowUseCount === null) {
@@ -3038,7 +3134,7 @@ export class UsageStatsPage {
       imageUrl: emote.imageUrl,
       firstSeenAt: emote.firstSeenAt,
       previousWindowUseCount: emote.previousWindowUseCount ?? undefined,
-      trackedSince: this.trackedSince(),
+      trackedSince: this.coverageStart(),
     };
     openEmoteDrilldownDialog(this.dialog, data);
   }
