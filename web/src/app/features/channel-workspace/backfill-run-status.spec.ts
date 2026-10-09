@@ -150,8 +150,7 @@ describe('BackfillRunStatusView', () => {
 
     expect(element.querySelector('[role="status"]')).toBeNull();
     const bar = element.querySelector('progress') as HTMLProgressElement;
-    expect(bar.max).toBe(1);
-    expect(bar.value).toBeCloseTo(3 / 14);
+    expect(bar.position).toBeCloseTo(3 / 14);
     expect(bar.getAttribute('aria-label')).toBeTruthy();
   });
 

@@ -245,13 +245,13 @@ test.describe('channel settings tab (chat-log backfill, start half)', () => {
 
     await page.goto('/channels/sensitron/settings');
     await expect(page.getByRole('status').filter({ hasText: '3 von 14 Wochen' })).toBeVisible();
-    await expect(page.getByRole('progressbar')).toHaveAttribute('value', '3');
+    await expect(page.getByRole('progressbar')).toHaveJSProperty('position', 3 / 14);
 
     status.set({ activeRun: running(5) });
     await emitLive(page, { type: 'backfill.progress', channel: 'sensitron' });
 
     await expect(page.getByRole('status').filter({ hasText: '5 von 14 Wochen' })).toBeVisible();
-    await expect(page.getByRole('progressbar')).toHaveAttribute('value', '5');
+    await expect(page.getByRole('progressbar')).toHaveJSProperty('position', 5 / 14);
   });
 
   test('a queued run under the archive cooldown shows the wait sentence and its position', async ({
