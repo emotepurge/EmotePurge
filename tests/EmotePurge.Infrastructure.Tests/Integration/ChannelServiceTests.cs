@@ -8,6 +8,7 @@ using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -159,6 +160,79 @@ public class ChannelServiceTests(PostgresFixture fixture)
         var channel = await service.GetByNameAsync("channelserviceretention1");
         Assert.NotNull(channel!.DeactivatedAtUtc);
         Assert.InRange(channel.DeactivatedAtUtc.Value, before.AddMilliseconds(-1), DateTime.UtcNow.AddMilliseconds(1));
+    }
+
+    [Theory]
+    [InlineData(ChatLogBackfillRunStatus.Queued)]
+    [InlineData(ChatLogBackfillRunStatus.Running)]
+    [InlineData(ChatLogBackfillRunStatus.Paused)]
+    public async Task LeaveAsync_CancelsTheActiveBackfillRun_WithChannelLeft(ChatLogBackfillRunStatus activeStatus)
+    {
+        // D16: a leave takes the channel's active chat-log backfill run with it, in the same commit.
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var joined = await JoinChannelAsync(service, $"bfleave{activeStatus}".ToLowerInvariant());
+        var run = await BackfillRunSeed.AddRunAsync(db, joined.Id, activeStatus);
+        var before = DateTime.UtcNow.AddSeconds(-1);
+
+        await service.LeaveAsync(joined.ChannelName, Actor);
+
+        await using var verify = fixture.CreateDbContext();
+        var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Cancelled, after.Status);
+        Assert.Equal("channel_left", after.ErrorCode);
+        Assert.NotNull(after.FinishedAtUtc);
+        Assert.True(after.FinishedAtUtc >= before);
+        Assert.Null(after.PausedUntilUtc);
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
+    }
+
+    [Fact]
+    public async Task LeaveAsync_LeavesFinishedRunsAndOtherChannelsRunsAlone()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var leaving = await JoinChannelAsync(service, "bfleaving");
+        var staying = await JoinChannelAsync(service, "bfstaying");
+        var finished = await BackfillRunSeed.AddRunAsync(db, leaving.Id, ChatLogBackfillRunStatus.Completed, finishedAtUtc: DateTime.UtcNow.AddDays(-1));
+        var otherChannelsRun = await BackfillRunSeed.AddRunAsync(db, staying.Id, ChatLogBackfillRunStatus.Running);
+
+        await service.LeaveAsync(leaving.ChannelName, Actor);
+
+        await using var verify = fixture.CreateDbContext();
+        var completed = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == finished.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Completed, completed.Status);
+        Assert.Null(completed.ErrorCode);
+        var untouched = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == otherChannelsRun.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Running, untouched.Status);
+    }
+
+    [Fact]
+    public async Task LeaveAsync_WhenTheSaveFails_DoesNotCancelTheBackfillRun()
+    {
+        // The cancellation is a conditional UPDATE that runs before the deactivation is saved; the
+        // transaction around both is what keeps a failed leave from cancelling a run that goes on.
+        await using var seedDb = fixture.CreateDbContext();
+        var joined = await JoinChannelAsync(CreateService(seedDb), "bfrollback");
+        var run = await BackfillRunSeed.AddRunAsync(seedDb, joined.Id, ChatLogBackfillRunStatus.Running);
+
+        await using var failingDb = fixture.CreateDbContext([new FailEverySaveInterceptor()]);
+        var service = CreateService(failingDb);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.LeaveAsync(joined.ChannelName, Actor));
+
+        await using var verify = fixture.CreateDbContext();
+        var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Running, after.Status);
+        Assert.Null(after.ErrorCode);
+        Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
+    }
+
+    private sealed class FailEverySaveInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("injected save failure");
     }
 
     [Fact]

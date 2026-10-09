@@ -11,7 +11,7 @@ namespace EmotePurge.Infrastructure.Services;
 /// <summary>
 /// One retention pass (data-retention plan, "Der Job") — see <see cref="IDataRetentionService"/> for
 /// the contract. The categories run in a fixed order, each in its own transaction(s), and never inside
-/// an outer one: tokens → accounts → ended vote sessions → audit log → channels.
+/// an outer one: tokens → accounts → ended vote sessions → audit log → chat-log backfill runs → channels.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -57,6 +57,7 @@ public class DataRetentionService(
     // deployment, and a configurable one would only be one more way to misconfigure the job.
     private const int VoteSessionBatchSize = 500;
     private const int AuditLogBatchSize = 5_000;
+    private const int BackfillRunBatchSize = 500;
 
     public async Task<RetentionRunSummary> RunAsync(bool enforce, CancellationToken cancellationToken = default)
     {
@@ -69,10 +70,12 @@ public class DataRetentionService(
         var sessionCutoff = now - RetentionPolicy.EndedVoteSession;
         var voteSessions = await RunVoteSessionsAsync(enforce, sessionCutoff, removedAccountIds, cancellationToken);
         var auditEntriesDeleted = await RunAuditLogAsync(enforce, now - RetentionPolicy.AuditLogEntry, cancellationToken);
+        var backfillRunsDeleted = await RunChatLogBackfillRunsAsync(enforce, now - RetentionPolicy.ChatLogBackfillRun, cancellationToken);
         var channels = await RunChannelsAsync(
             enforce, now, now - RetentionPolicy.DeactivatedChannel, sessionCutoff, removedAccountIds, cancellationToken);
 
-        return new RetentionRunSummary(enforce, now, tokensCleared, accounts, voteSessions, auditEntriesDeleted, channels);
+        return new RetentionRunSummary(
+            enforce, now, tokensCleared, accounts, voteSessions, auditEntriesDeleted, channels, backfillRunsDeleted);
     }
 
     /// <summary>
@@ -293,6 +296,40 @@ public class DataRetentionService(
             deleted += enforce
                 ? await db.AuditLogEntries
                     .Where(e => batch.Contains(e.Id) && e.OccurredAtUtc < cutoffUtc)
+                    .ExecuteDeleteAsync(cancellationToken)
+                : batch.Count;
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Category 4b: finished chat-log backfill runs (completed, failed or cancelled) whose
+    /// <c>FinishedAtUtc</c> is older than the period, in id batches like the audit log. The snapshot rows
+    /// go with the run by cascade; the coverage days stay (their <c>RunId</c> is set to null by the FK),
+    /// as do the imported usage rows — they are statistics, not the request record. No audit entry.
+    /// </summary>
+    private async Task<int> RunChatLogBackfillRunsAsync(bool enforce, DateTime cutoffUtc, CancellationToken cancellationToken)
+    {
+        var deleted = 0;
+        var lastId = 0L;
+        while (true)
+        {
+            var batch = await db.ChatLogBackfillRuns
+                .Where(r => r.FinishedAtUtc < cutoffUtc && r.Id > lastId)
+                .OrderBy(r => r.Id)
+                .Select(r => r.Id)
+                .Take(BackfillRunBatchSize)
+                .ToListAsync(cancellationToken);
+            if (batch.Count == 0)
+            {
+                break;
+            }
+
+            lastId = batch[^1];
+            deleted += enforce
+                ? await db.ChatLogBackfillRuns
+                    .Where(r => batch.Contains(r.Id) && r.FinishedAtUtc < cutoffUtc)
                     .ExecuteDeleteAsync(cancellationToken)
                 : batch.Count;
         }

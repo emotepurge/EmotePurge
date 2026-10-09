@@ -125,6 +125,17 @@ public class AccountDeletionService(
             var auditEntriesPseudonymised = asActor + asTarget - asBoth;
             var asOwner = await PseudonymiseOwnerEntriesAsync(user.TwitchUsername, cancellationToken);
 
+            // Chat-log backfill runs keep a snapshot of who requested them (not an FK, so the account
+            // deletion is never blocked or cascaded into them); the snapshot gets the same marker the
+            // audit entries do. A running run simply carries on under it.
+            await db.ChatLogBackfillRuns
+                .Where(r => r.RequestedByTwitchUserId == twitchUserId)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(r => r.RequestedByTwitchUserId, AuditActor.DeletedUser.TwitchUserId)
+                        .SetProperty(r => r.RequestedByLogin, AuditActor.DeletedUser.Login),
+                    cancellationToken);
+
             // The encrypted Twitch tokens live on the row and go with it.
             db.Users.Remove(user);
 

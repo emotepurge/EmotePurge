@@ -2,6 +2,7 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 namespace EmotePurge.Infrastructure.Services;
 
@@ -61,6 +62,9 @@ internal static class ChannelDeactivation
     private const string LockedReason = "locked";
     private const string LoginUnresolvableReason = "loginUnresolvable";
 
+    /// <summary>The <c>ErrorCode</c> a deactivation leaves on the chat-log backfill run it cancels (D16).</summary>
+    public const string BackfillChannelLeftErrorCode = "channel_left";
+
     /// <summary>
     /// Stage, save, publish — for a caller that opens no transaction of its own (the manager's leave,
     /// the objection gate's deactivation). Committed before published: the row is already the source
@@ -77,8 +81,23 @@ internal static class ChannelDeactivation
         ChannelDeactivationReason reason,
         CancellationToken cancellationToken)
     {
-        await StageAsync(db, emoteSetObservationService, channel, actor, reason, cancellationToken);
-        await db.SaveChangesAsync(cancellationToken);
+        // The backfill cancellation inside StageAsync is a conditional UPDATE that runs at once, while
+        // the rest is only staged for the save below. A caller with a transaction of its own
+        // (ChannelIdentityService) already makes the two atomic; for the others one is opened here, so
+        // the run is never cancelled for a deactivation that then fails to save.
+        if (db.Database.CurrentTransaction is null)
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            await StageAsync(db, emoteSetObservationService, channel, actor, reason, cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        else
+        {
+            await StageAsync(db, emoteSetObservationService, channel, actor, reason, cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
         await PublishLeaveAsync(redisPublisher, channel.ChannelName, cancellationToken);
     }
 
@@ -107,6 +126,13 @@ internal static class ChannelDeactivation
 
         channel.IsBotActive = false;
         channel.DeactivatedAtUtc = DateTime.UtcNow;
+
+        // A chat-log backfill run of a channel that is no longer observed cannot continue (the worker
+        // would fail it as channel_not_active at the next claim), so it is cancelled here, with the
+        // same commit as the deactivation (D16). Conditional on the run still being active: a run the
+        // worker finished a moment ago stays what it is. A rejoin does not resume anything.
+        await CancelActiveBackfillRunAsync(db, channel.Id, cancellationToken);
+
         switch (reason)
         {
             case ChannelDeactivationReason.Excluded:
@@ -126,6 +152,21 @@ internal static class ChannelDeactivation
             default:
                 throw new ArgumentOutOfRangeException(nameof(reason), reason, "Unknown deactivation reason.");
         }
+    }
+
+    private static async Task CancelActiveBackfillRunAsync(AppDbContext db, string channelId, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        ChatLogBackfillRunStatus[] active = [ChatLogBackfillRunStatus.Queued, ChatLogBackfillRunStatus.Running, ChatLogBackfillRunStatus.Paused];
+        await db.ChatLogBackfillRuns
+            .Where(r => r.ChannelId == channelId && active.Contains(r.Status))
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(r => r.Status, ChatLogBackfillRunStatus.Cancelled)
+                    .SetProperty(r => r.FinishedAtUtc, (DateTime?)now)
+                    .SetProperty(r => r.PausedUntilUtc, (DateTime?)null)
+                    .SetProperty(r => r.ErrorCode, BackfillChannelLeftErrorCode),
+                cancellationToken);
     }
 
     /// <summary>The LEAVE command for a deactivation that is already committed.</summary>

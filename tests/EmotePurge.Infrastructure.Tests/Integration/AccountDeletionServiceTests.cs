@@ -63,6 +63,38 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
     }
 
     [Fact]
+    public async Task Delete_PseudonymisesTheRequesterOfBackfillRuns_AndLeavesOtherRequestersAlone()
+    {
+        // D15: the run row keeps a snapshot of who asked, not a foreign key; the deletion rewrites it to
+        // the marker (like the audit entries) and the run itself - even a running one - stays.
+        var user = await SeedUserAsync("acctdel-backfill");
+        var other = await SeedUserAsync("acctdel-backfill-other");
+        var (channel, _, _, _) = await SeedChannelWithSessionsAsync("acctdelbackfill");
+        long ownRunId, otherRunId;
+        await using (var seedDb = fixture.CreateDbContext())
+        {
+            ownRunId = (await BackfillRunSeed.AddRunAsync(seedDb, channel.Id, ChatLogBackfillRunStatus.Completed, user.Id, user.TwitchUsername, DateTime.UtcNow.AddDays(-1))).Id;
+            otherRunId = (await BackfillRunSeed.AddRunAsync(seedDb, channel.Id, ChatLogBackfillRunStatus.Running, other.Id, other.TwitchUsername)).Id;
+        }
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var result = await CreateService(db).DeleteAsync(user.Id, Admin, AccountDeletionReason.AdminRequest, null);
+            Assert.Equal(AccountDeletionOutcome.Deleted, result.Outcome);
+        }
+
+        await using var verify = fixture.CreateDbContext();
+        var own = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == ownRunId);
+        Assert.Equal(AuditActor.DeletedUser.TwitchUserId, own.RequestedByTwitchUserId);
+        Assert.Equal(AuditActor.DeletedUser.Login, own.RequestedByLogin);
+        Assert.Equal("deleted-user", AuditActor.DeletedUser.TwitchUserId);
+        Assert.Equal(ChatLogBackfillRunStatus.Completed, own.Status);
+        var untouched = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == otherRunId);
+        Assert.Equal(other.Id, untouched.RequestedByTwitchUserId);
+        Assert.Equal(other.TwitchUsername, untouched.RequestedByLogin);
+    }
+
+    [Fact]
     public async Task Delete_OpenSessionLosesTheVote_AndItsScoreDrops()
     {
         var user = await SeedUserAsync("acctdel-score");

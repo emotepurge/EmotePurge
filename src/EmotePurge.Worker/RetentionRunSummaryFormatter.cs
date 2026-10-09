@@ -26,6 +26,7 @@ public static class RetentionRunSummaryFormatter
             $"vote sessions deleted: {voteSessions.Deleted}, votes deleted: {voteSessions.VotesDeleted}, " +
             $"ballot entries deleted: {voteSessions.BallotEntriesDeleted}; " +
             $"audit log entries deleted: {summary.AuditEntriesDeleted}; " +
+            $"backfill runs deleted: {summary.ChatLogBackfillRunsDeleted}; " +
             $"channels restamped: {channels.Restamped}, purged: {channels.Purged}, " +
             $"still active: {channels.StillActive}, not found: {channels.NotFound}, failed: {channels.Failed}, " +
             $"emotes deleted: {channels.EmotesDeleted}, usage rows deleted: {channels.UsageRowsDeleted}, " +
