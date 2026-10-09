@@ -30,7 +30,7 @@ public class ForeignEmoteSetCacheTests(RedisFixture fixture)
     }
 
     [Fact]
-    public async Task ARoundTrip_KeepsAddedAt_ForATimestampAndForNull_AndStampsTheCurrentSchemaVersion()
+    public async Task ARoundTrip_KeepsAddedAt_ForATimestampAndForNull_AndStoresTheSchemaVersionOutsideTheSet()
     {
         const string channel = "foreign-cache-added-at";
         var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
@@ -48,11 +48,14 @@ public class ForeignEmoteSetCacheTests(RedisFixture fixture)
         var fromLogin = await cache.TryGetAsync(channel);
         var fromSet = await viaSet.TryGetBySetIdAsync("set-1");
 
-        Assert.Equal(2, ForeignEmoteSet.CurrentSchemaVersion);
+        // The version is in the stored envelope, never on the set itself: the set is also the public
+        // HTTP answer and must not carry a cache internal.
+        var raw = (string?)await fixture.Connection.GetDatabase().StringGetAsync($"7tvforeign:v2:login:{channel}");
+        Assert.Contains("\"schemaVersion\":2", raw);
+        Assert.DoesNotContain("schemaVersion", System.Text.Json.JsonSerializer.Serialize(stored, System.Text.Json.JsonSerializerOptions.Web));
         foreach (var read in new[] { fromLogin, fromSet })
         {
             Assert.NotNull(read);
-            Assert.Equal(ForeignEmoteSet.CurrentSchemaVersion, read.SchemaVersion);
             Assert.Equal(addedAt, read.Emotes[0].AddedAt);
             Assert.Null(read.Emotes[1].AddedAt);
         }
@@ -94,7 +97,7 @@ public class ForeignEmoteSetCacheTests(RedisFixture fixture)
         const string channel = "foreign-cache-v1-explicit";
         var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
         const string v1 =
-            """{"channelName":"x","sevenTvUserId":null,"emoteSetId":"s","totalCount":0,"truncated":false,"emotes":[],"schemaVersion":1}""";
+            """{"schemaVersion":1,"emoteSet":{"channelName":"x","sevenTvUserId":null,"emoteSetId":"s","totalCount":0,"truncated":false,"emotes":[]}}""";
         await fixture.Connection.GetDatabase().StringSetAsync(Key(channel), v1);
 
         Assert.Null(await cache.TryGetAsync(channel));
@@ -106,7 +109,7 @@ public class ForeignEmoteSetCacheTests(RedisFixture fixture)
         const string channel = "foreign-cache-old-key";
         var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
         const string valid =
-            """{"channelName":"x","sevenTvUserId":null,"emoteSetId":"s","totalCount":0,"truncated":false,"emotes":[],"schemaVersion":2}""";
+            """{"schemaVersion":2,"emoteSet":{"channelName":"x","sevenTvUserId":null,"emoteSetId":"s","totalCount":0,"truncated":false,"emotes":[]}}""";
         await fixture.Connection.GetDatabase().StringSetAsync($"7tvforeign:{channel}", valid);
         await fixture.Connection.GetDatabase().StringSetAsync("7tvforeign:set:old-set", valid);
 

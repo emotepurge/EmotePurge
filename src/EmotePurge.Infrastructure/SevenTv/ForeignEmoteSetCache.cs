@@ -26,6 +26,14 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
     // payload's SchemaVersion check in TryGetByKeyAsync.
     private const string KeyPrefix = "7tvforeign:v2:login:";
 
+    /// <summary>
+    /// The payload shape this code writes and requires when reading (#346, D43). Version 2 introduced
+    /// <see cref="ForeignEmoteRow.AddedAt"/>; a cached payload below it is a miss and is refetched, so
+    /// a row's <c>AddedAt == null</c> on a current payload always means "7TV reported none", never "the
+    /// field did not exist yet".
+    /// </summary>
+    internal const int CurrentSchemaVersion = 2;
+
     // The set-ID read mode's own namespace (spec 2026-09-20, E12): nested under the same prefix as
     // the login-keyed entries above but never colliding with one — a channel login can never contain
     // a colon, so "set:{id}" and any normalized login are disjoint strings by construction. An entry
@@ -57,14 +65,18 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
                 return null;
             }
 
-            var json = value.ToString();
-            if (!HasCurrentSchemaVersion(json))
+            // The version lives in an envelope around the set, not on the set: the set is also the
+            // public HTTP answer, and a cache internal must not leak into it. A payload written before
+            // the envelope existed has no SchemaVersion (reads as 0) and no EmoteSet, so it is a miss
+            // like any older version.
+            var envelope = JsonSerializer.Deserialize<CachedForeignEmoteSet>(value.ToString(), JsonSerializerOptions.Web);
+            if (envelope is null || envelope.SchemaVersion < CurrentSchemaVersion || envelope.EmoteSet is null)
             {
-                logger.LogDebug("Foreign-channel preview cache entry for {Identifier} predates schema version {Version}; treating it as a miss.", logIdentifier, ForeignEmoteSet.CurrentSchemaVersion);
+                logger.LogDebug("Foreign-channel preview cache entry for {Identifier} predates schema version {Version}; treating it as a miss.", logIdentifier, CurrentSchemaVersion);
                 return null;
             }
 
-            return JsonSerializer.Deserialize<ForeignEmoteSet>(json, JsonSerializerOptions.Web);
+            return envelope.EmoteSet;
         }
         catch (Exception ex) when (ex is RedisException or TimeoutException or JsonException)
         {
@@ -80,7 +92,7 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
     {
         try
         {
-            var payload = JsonSerializer.Serialize(emoteSet, JsonSerializerOptions.Web);
+            var payload = JsonSerializer.Serialize(new CachedForeignEmoteSet(CurrentSchemaVersion, emoteSet), JsonSerializerOptions.Web);
             await connectionMultiplexer.GetDatabase().StringSetAsync(key, payload, Ttl);
         }
         catch (Exception ex) when (ex is RedisException or TimeoutException)
@@ -90,20 +102,10 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
         }
     }
 
-    // A payload without the field (written before the schema version existed) reads as version 0, so
-    // it is below the current one like any explicitly older value. Checked on the raw JSON because the
-    // record's own default would otherwise turn a missing field into the current version.
-    private static bool HasCurrentSchemaVersion(string json)
-    {
-        using var document = JsonDocument.Parse(json);
-        return document.RootElement.ValueKind == JsonValueKind.Object
-            && document.RootElement.TryGetProperty("schemaVersion", out var version)
-            && version.ValueKind == JsonValueKind.Number
-            && version.TryGetInt32(out var number)
-            && number >= ForeignEmoteSet.CurrentSchemaVersion;
-    }
-
     private static string BuildLoginKey(string normalizedChannelName) => $"{KeyPrefix}{normalizedChannelName}";
 
     private static string BuildSetIdKey(string emoteSetId) => $"{SetIdKeyPrefix}{emoteSetId}";
+
+    // What is stored: the set plus the shape version it was written with. Nested at the class end.
+    private sealed record CachedForeignEmoteSet(int SchemaVersion, ForeignEmoteSet? EmoteSet);
 }

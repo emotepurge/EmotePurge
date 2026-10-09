@@ -205,7 +205,6 @@ public class ForeignEmoteSetServiceTests
             Assert.Equal(ForeignEmoteSetLookupStatus.Ok, result.Status);
             Assert.Equal(addedAt, result.EmoteSet!.Emotes[0].AddedAt);
             Assert.Null(result.EmoteSet.Emotes[1].AddedAt);
-            Assert.Equal(ForeignEmoteSet.CurrentSchemaVersion, result.EmoteSet.SchemaVersion);
         }
     }
 
