@@ -119,12 +119,6 @@ public class ChannelService(
 
     public async Task<bool> LeaveAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default)
     {
-        var channel = await db.LoadChannelAsync(channelName, cancellationToken);
-        if (channel is null)
-        {
-            return false;
-        }
-
         // Soft deactivate, not Remove(): the row hangs on four cascade edges (Channel -> Emote,
         // Emote -> UsageStat, Channel -> VoteSession, VoteSession -> Vote, Emote -> Vote), so a
         // hard delete threw away every emote, the entire daily usage history since the bot joined,
@@ -145,9 +139,31 @@ public class ChannelService(
         // sync loop itself; only this method needed a new convergence net, since JOIN/RESYNC already
         // had one.
         // The helper also closes the open observation interval (spec 4.3) in the same save.
-        await ChannelDeactivation.DeactivateAsync(
-            db, redisPublisher, emoteSetObservationService, channel, actor, ChannelDeactivationReason.Leave, cancellationToken);
+        //
+        // The row is loaded under FOR NO KEY UPDATE inside the leave's own transaction, so the leave
+        // decides on the row's current state and serializes with a chat-log backfill enqueue, which
+        // locks the same row by id (spec D35): either the enqueue commits first and StageAsync's
+        // cancellation finds its run, or the leave commits first and the enqueue finds the channel
+        // inactive. NO KEY UPDATE rather than UPDATE for the reason ChannelDeactivation gives (a
+        // concurrent set switch's observation insert takes KEY SHARE on the row); the channel row
+        // comes before any run row, the order every deactivation follows.
+        string leftChannelName;
+        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+        {
+            var channel = await db.LoadChannelForNoKeyUpdateAsync(channelName, cancellationToken);
+            if (channel is null)
+            {
+                return false;
+            }
 
+            await ChannelDeactivation.StageAsync(
+                db, emoteSetObservationService, channel, actor, ChannelDeactivationReason.Leave, cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            leftChannelName = channel.ChannelName;
+        }
+
+        await ChannelDeactivation.PublishLeaveAsync(redisPublisher, leftChannelName, cancellationToken);
         return true;
     }
 

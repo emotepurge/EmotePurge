@@ -137,6 +137,44 @@ internal static class ChannelQueries
             cancellationToken);
 
     /// <summary>
+    /// <see cref="LoadChannelByIdAsync"/> with <c>SELECT … FOR NO KEY UPDATE</c>: the chat-log backfill
+    /// enqueue's lock (spec D35), taken by the id read before its 7TV call, so a purge and re-join under
+    /// the same login meanwhile cannot hand it a different row. Same guards as
+    /// <see cref="LoadChannelForUpdateAsync"/>.
+    /// <para>
+    /// <c>NO KEY UPDATE</c>, not <c>UPDATE</c>: it conflicts with itself (the leave's
+    /// <see cref="LoadChannelForNoKeyUpdateAsync"/>) and with the <c>FOR UPDATE</c> of join, purge, merge
+    /// and the identity reconcile, so all of them serialize with the enqueue — but not with the
+    /// <c>FOR KEY SHARE</c> every foreign-key insert takes on the channel. The enqueue inserts
+    /// placeholder <c>Emote</c> rows with <c>ON CONFLICT DO NOTHING</c>, which waits for a concurrent,
+    /// uncommitted insert of the same key; a 7TV dispatch holding such an insert then needs
+    /// <c>KEY SHARE</c> on the channel for its foreign-key check. Under <c>FOR UPDATE</c> each would
+    /// wait for the other (40P01).
+    /// </para>
+    /// </summary>
+    public static Task<Channel?> LockChannelByIdAsync(
+        this AppDbContext db, string channelId, CancellationToken cancellationToken) =>
+        db.LockAsync(
+            db.Channels.FromSql($"""SELECT * FROM "Channels" WHERE "Id" = {channelId} FOR NO KEY UPDATE"""),
+            cancellationToken);
+
+    /// <summary>
+    /// Loads a channel by its (un-normalized) name with <c>SELECT … FOR NO KEY UPDATE</c>: the leave's
+    /// loader. Serializes with the backfill enqueue (<see cref="LockChannelByIdAsync"/>) and every
+    /// <c>FOR UPDATE</c> path, but not with foreign-key inserts (a 7TV set switch inserting its
+    /// observation row) — the strength the leave's own <c>UPDATE</c> of the row takes anyway. Same
+    /// guards and the same "gone while waiting reads as null" as <see cref="LoadChannelForUpdateAsync"/>.
+    /// </summary>
+    public static Task<Channel?> LoadChannelForNoKeyUpdateAsync(
+        this AppDbContext db, string channelName, CancellationToken cancellationToken)
+    {
+        var normalized = ChannelName.Normalize(channelName);
+        return db.LockAsync(
+            db.Channels.FromSql($"""SELECT * FROM "Channels" WHERE "ChannelName" = {normalized} FOR NO KEY UPDATE"""),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Loads a channel by its (un-normalized) name and locks the row with <c>SELECT … FOR UPDATE</c>
     /// until the surrounding transaction ends — for every path where activating a row can race the
     /// retention purge deleting it (data-retention plan, "Zeilensperren statt Hoffnung"): the join,

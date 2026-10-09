@@ -10,6 +10,54 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-09 — The leave and the backfill enqueue lock the channel row `FOR NO KEY UPDATE`, not `FOR UPDATE` (#349)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChatLogBackfillService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ArchivedEmoteRowUpsert.cs` ·
+`docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChatLogBackfillServiceTests.Races.cs`
+
+The chat-log backfill spec (D35) asked for two new channel-row locks so that a leave and a backfill
+enqueue serialize: a by-id lock in the enqueue and a locking loader in `LeaveAsync`, both
+`FOR UPDATE`. Both take `FOR NO KEY UPDATE` instead. `NO KEY UPDATE` conflicts with itself and with the
+`FOR UPDATE` of join, purge, merge and the identity reconcile, so the serialization D35 wants is kept
+in full. What it does not conflict with is the `FOR KEY SHARE` every foreign-key insert takes on the
+channel row, and that is the difference that matters:
+
+- The enqueue inserts placeholder `Emote` rows with `ON CONFLICT DO NOTHING`, which waits for any
+  concurrent, uncommitted insert of the same `(ChannelId, SevenTvEmoteId)` key. A 7TV dispatch that
+  pushes that emote holds exactly such an insert and then needs `KEY SHARE` on the channel for its
+  foreign-key check. Under `FOR UPDATE` each waits for the other (40P01, reproduced by
+  `LockRace_DispatchInsertingTheSameEmoteWhileTheEnqueueHoldsTheChannel_DoesNotDeadlock` with the
+  stronger lock). A plain run insert in another transaction would block on the enqueue for the same
+  reason.
+- The leave already took `NO KEY UPDATE` since #348 (a set switch's observation insert would otherwise
+  deadlock it). It now takes it in a loader inside its own transaction (`LoadChannelForNoKeyUpdateAsync`
+  → `ChannelDeactivation.StageAsync` → commit → LEAVE), so it decides on the row's current state and the
+  cancellation of a backfill run cannot run before a concurrent enqueue's run exists.
+- The full REST resync needs no lock of its own: its save updates the channel row (a plain `UPDATE`
+  is `NO KEY UPDATE`) before it inserts emote rows, so it waits for an enqueue without holding a key the
+  enqueue needs, and its existing retry after a key conflict (E10) then adopts the enqueue's
+  placeholder.
+
+The shared placeholder upsert now inserts in `SevenTvEmoteId` order, so two of its callers (a ballot
+and an enqueue of the same channel) take overlapping keys in the same order, and it reports via
+`RETURNING` which rows it created: with a lock that no longer blocks other inserters, "absent in a read
+before the insert" would over-claim `CreatedRow` (D41) for a row a concurrent writer inserted first.
+
+The backfill's block commit takes the channel `FOR KEY SHARE` as its first statement. Without it the
+commit held `KEY SHARE` on emote rows (its usage insert) when a purge locked the channel `FOR UPDATE`
+and waited for those rows, and the commit's coverage insert then waited for the channel (40P01,
+`LockRace_PurgeDuringABlockCommit_WaitsForTheCommit`).
+
+Every one of these locks has a race test whose mutation was run once by hand (stronger lock → 40P01,
+no lock → a queued run left on an inactive channel): `ChatLogBackfillServiceTests.Races.cs`, plus
+`ChannelServiceTests.LeaveAsync_DuringASetSwitch_DoesNotDeadlockWithTheObservationInsert` for the
+leave loader.
+
 ### 2026-10-09 — `Emotes.IsPlaceholder` keeps never-active emote rows out of the REST leave detection (#347)
 
 **Betrifft:** `src/EmotePurge.Core/Entities/Emote.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
