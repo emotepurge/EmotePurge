@@ -1,8 +1,9 @@
 namespace EmotePurge.Core.Services;
 
 /// <summary>
-/// One retention pass over the five categories of <see cref="RetentionPolicy"/>, in a fixed order:
-/// Twitch tokens, inactive accounts, ended vote sessions, audit log entries, deactivated channels.
+/// One retention pass over the six categories of <see cref="RetentionPolicy"/>, in a fixed order:
+/// Twitch tokens, inactive accounts, ended vote sessions, audit log entries, finished chat-log backfill
+/// runs, deactivated channels.
 /// Called by the worker's retention job once per tick.
 /// </summary>
 /// <remarks>

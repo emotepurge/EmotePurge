@@ -1201,6 +1201,91 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.Equal(lockScope.LockedAtUtc, await new BroadcasterChannelLockService(verify).GetLockedAtUtcAsync("10301"));
     }
 
+    // D16, extended contract: every deactivation reason takes the channel's active chat-log backfill
+    // run with it (channel_left), and a finished run stays what it is. The excluded path goes through
+    // DeactivateAsync's own transaction, the locked path through the pass's transaction + StageAsync.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheIdIsExcluded_CancelsTheActiveBackfillRun_AndKeepsAFinishedOne()
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identityexcludedbf", "10401");
+        var active = await BackfillRunSeed.AddRunAsync(db, seeded.Id, ChatLogBackfillRunStatus.Running);
+        var finished = await BackfillRunSeed.AddRunAsync(db, seeded.Id, ChatLogBackfillRunStatus.Completed, finishedAtUtc: DateTime.UtcNow.AddDays(-2));
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10401").Returns(true);
+        var harness = CreateHarness(db, [new TwitchUserIdentity("10401", "IdentityExcludedBf")], excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.Equal(1, summary!.Deactivated);
+        await AssertBackfillCancelledAsync(active.Id, finished.Id);
+    }
+
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheIdIsLocked_CancelsTheActiveBackfillRun_AndKeepsAFinishedOne()
+    {
+        await using var lockScope = await BroadcasterLockScope.CreateAsync(fixture, "10402");
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identitylockedbf", "10402");
+        var active = await BackfillRunSeed.AddRunAsync(db, seeded.Id, ChatLogBackfillRunStatus.Paused);
+        var finished = await BackfillRunSeed.AddRunAsync(db, seeded.Id, ChatLogBackfillRunStatus.Failed, finishedAtUtc: DateTime.UtcNow.AddDays(-2));
+        var harness = CreateHarness(db, [new TwitchUserIdentity("10402", "IdentityLockedBf")]);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.Equal(1, summary!.LockedDeactivated);
+        await AssertBackfillCancelledAsync(active.Id, finished.Id);
+    }
+
+    private async Task AssertBackfillCancelledAsync(long activeRunId, long finishedRunId)
+    {
+        await using var verify = fixture.CreateDbContext();
+        var cancelled = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == activeRunId);
+        Assert.Equal(ChatLogBackfillRunStatus.Cancelled, cancelled.Status);
+        Assert.Equal("channel_left", cancelled.ErrorCode);
+        Assert.NotNull(cancelled.FinishedAtUtc);
+        var kept = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == finishedRunId);
+        Assert.NotEqual(ChatLogBackfillRunStatus.Cancelled, kept.Status);
+        Assert.Null(kept.ErrorCode);
+    }
+
+    // The excluded path's database failures are not DbUpdateExceptions when they come from the run
+    // cancellation (an ExecuteUpdate) or the commit; they must still count as "nothing written" - no
+    // Deactivated increment, no LEAVE, the row stays active for the next pass - and not as a committed
+    // write whose announcement failed.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheExcludedPathsBackfillCancellationFailsInTheDatabase_CountsNothingAndPublishesNothing()
+    {
+        await using var seedDb = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(seedDb, "identityexcludedfail", "10403");
+        var run = await BackfillRunSeed.AddRunAsync(seedDb, seeded.Id, ChatLogBackfillRunStatus.Running);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10403").Returns(true);
+        await using var failingDb = fixture.CreateDbContext([new FailBackfillCancelInterceptor()]);
+        var harness = CreateHarness(failingDb, [new TwitchUserIdentity("10403", "IdentityExcludedFail")], excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.Equal(0, summary!.Deactivated);
+        Assert.Empty(harness.Redis.Messages);
+        Assert.DoesNotContain(harness.Logger.Entries, e => e.Message.Contains("LEAVE announcement"));
+        await using var verify = fixture.CreateDbContext();
+        Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id)).IsBotActive);
+        Assert.Equal(ChatLogBackfillRunStatus.Running, (await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).Status);
+    }
+
+    private sealed class FailBackfillCancelInterceptor : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+    {
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> NonQueryExecutingAsync(
+            System.Data.Common.DbCommand command,
+            Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result,
+            CancellationToken cancellationToken = default) =>
+            command.CommandText.Contains("\"ChatLogBackfillRuns\"", StringComparison.Ordinal)
+                ? throw new Npgsql.NpgsqlException("injected database failure", innerException: null)
+                : base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+    }
+
     // Like the exclusion pass, the lock pass runs before the two early returns: a token or Helix
     // outage must not keep a locked channel under observation, and the summary of the early return
     // must still say what it did.

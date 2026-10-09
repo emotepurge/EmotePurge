@@ -228,6 +228,22 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
     }
 
+    [Fact]
+    public async Task DeactivateAsync_WithACallerTransaction_Throws_InsteadOfPublishingLeaveBeforeTheCallersCommit()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var joined = await JoinChannelAsync(service, "bftxguard");
+        var redis = Substitute.For<IRedisPublisher>();
+        await using var callerTransaction = await db.Database.BeginTransactionAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ChannelDeactivation.DeactivateAsync(
+            db, redis, Substitute.For<IChannelEmoteSetObservationService>(), joined, Actor, ChannelDeactivationReason.Leave, CancellationToken.None));
+
+        await redis.DidNotReceiveWithAnyArgs().PublishAsync(default!, default!, default);
+        Assert.True(joined.IsBotActive);
+    }
+
     private sealed class FailEverySaveInterceptor : SaveChangesInterceptor
     {
         public override ValueTask<InterceptionResult<int>> SavingChangesAsync(

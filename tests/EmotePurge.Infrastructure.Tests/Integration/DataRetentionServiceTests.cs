@@ -463,7 +463,7 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
     {
         var channel = await SeedChannelAsync("backfill-retention", isBotActive: true, deactivatedAtUtc: null);
         var dueDays = RetentionPolicy.ChatLogBackfillRun.TotalDays;
-        long dueId, atCutoffId, keptId, unfinishedId;
+        long dueId, atCutoffId, keptId, unfinishedId, staleActiveId;
         await using (var seed = CreateDbContext())
         {
             // 366 days old (due), exactly 365 (not due yet: every period is exclusive), 364 (kept) - one
@@ -474,6 +474,9 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
             atCutoffId = (await BackfillRunSeed.AddRunAsync(seed, channel.Id, ChatLogBackfillRunStatus.Completed, finishedAtUtc: _now.AddDays(-dueDays))).Id;
             keptId = (await BackfillRunSeed.AddRunAsync(seed, channel.Id, ChatLogBackfillRunStatus.Completed, finishedAtUtc: _now.AddDays(-dueDays + 1), withSnapshot: true)).Id;
             unfinishedId = (await BackfillRunSeed.AddRunAsync(seed, channel.Id, ChatLogBackfillRunStatus.Running)).Id;
+            // A non-terminal run with a stale FinishedAtUtc (never written by the code, but the filter on
+            // the terminal status is what keeps an anomaly like it from deleting a live run).
+            staleActiveId = (await BackfillRunSeed.AddRunAsync(seed, (await SeedChannelAsync("backfill-retention-2", true, null)).Id, ChatLogBackfillRunStatus.Queued, finishedAtUtc: _now.AddDays(-dueDays - 5))).Id;
             await BackfillRunSeed.AddCoverageDayAsync(seed, channel.Id, new DateOnly(2026, 8, 1), dueId);
         }
 
@@ -482,7 +485,7 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(3, dry.ChatLogBackfillRunsDeleted);
         Assert.Equal(3, enforced.ChatLogBackfillRunsDeleted);
         await using var db = CreateDbContext();
-        Assert.Equal([atCutoffId, keptId, unfinishedId], await db.ChatLogBackfillRuns.OrderBy(r => r.Id).Select(r => r.Id).ToListAsync());
+        Assert.Equal([atCutoffId, keptId, unfinishedId, staleActiveId], await db.ChatLogBackfillRuns.OrderBy(r => r.Id).Select(r => r.Id).ToListAsync());
         // The due run's snapshot went with it; the kept run's stays.
         Assert.Equal(1, await db.ChatLogBackfillRunEmotes.CountAsync());
         Assert.False(await db.ChatLogBackfillRunEmotes.AnyAsync(e => e.RunId == dueId));

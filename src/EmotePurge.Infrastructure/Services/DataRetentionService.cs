@@ -316,7 +316,8 @@ public class DataRetentionService(
         while (true)
         {
             var batch = await db.ChatLogBackfillRuns
-                .Where(r => r.FinishedAtUtc < cutoffUtc && r.Id > lastId)
+                .Where(FinishedBefore(cutoffUtc))
+                .Where(r => r.Id > lastId)
                 .OrderBy(r => r.Id)
                 .Select(r => r.Id)
                 .Take(BackfillRunBatchSize)
@@ -329,7 +330,8 @@ public class DataRetentionService(
             lastId = batch[^1];
             deleted += enforce
                 ? await db.ChatLogBackfillRuns
-                    .Where(r => batch.Contains(r.Id) && r.FinishedAtUtc < cutoffUtc)
+                    .Where(FinishedBefore(cutoffUtc))
+                    .Where(r => batch.Contains(r.Id))
                     .ExecuteDeleteAsync(cancellationToken)
                 : batch.Count;
         }
@@ -457,6 +459,13 @@ public class DataRetentionService(
     /// </summary>
     private static Expression<Func<VoteSession, bool>> EndedBefore(DateTime cutoffUtc) =>
         s => !s.IsActive && (s.EndedAt ?? s.StartedAt) < cutoffUtc;
+
+    /// <summary>A terminal backfill run (completed, failed, cancelled) that finished before the cutoff.</summary>
+    private static Expression<Func<ChatLogBackfillRun, bool>> FinishedBefore(DateTime cutoffUtc) =>
+        r => (r.Status == ChatLogBackfillRunStatus.Completed
+              || r.Status == ChatLogBackfillRunStatus.Failed
+              || r.Status == ChatLogBackfillRunStatus.Cancelled)
+             && r.FinishedAtUtc < cutoffUtc;
 
     /// <summary>Left, and stamped as deactivated at least one period ago. A missing stamp is never due.</summary>
     private static Expression<Func<Channel, bool>> DeactivatedBefore(DateTime cutoffUtc) =>

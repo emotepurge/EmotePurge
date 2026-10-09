@@ -82,20 +82,21 @@ internal static class ChannelDeactivation
         CancellationToken cancellationToken)
     {
         // The backfill cancellation inside StageAsync is a conditional UPDATE that runs at once, while
-        // the rest is only staged for the save below. A caller with a transaction of its own
-        // (ChannelIdentityService) already makes the two atomic; for the others one is opened here, so
-        // the run is never cancelled for a deactivation that then fails to save.
-        if (db.Database.CurrentTransaction is null)
+        // the rest is only staged for the save below, so both happen in one transaction opened here:
+        // the run is never cancelled for a deactivation that then fails to save. A caller that already
+        // holds a transaction must not come through here - it would publish LEAVE before its own
+        // commit - and uses StageAsync + PublishLeaveAsync instead.
+        if (db.Database.CurrentTransaction is not null)
         {
-            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            throw new InvalidOperationException(
+                $"{nameof(DeactivateAsync)} opens its own transaction; a caller with one must use {nameof(StageAsync)} and publish after its commit.");
+        }
+
+        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+        {
             await StageAsync(db, emoteSetObservationService, channel, actor, reason, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-        }
-        else
-        {
-            await StageAsync(db, emoteSetObservationService, channel, actor, reason, cancellationToken);
-            await db.SaveChangesAsync(cancellationToken);
         }
 
         await PublishLeaveAsync(redisPublisher, channel.ChannelName, cancellationToken);
