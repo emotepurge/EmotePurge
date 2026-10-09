@@ -51,6 +51,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         factory.AccountDeletion.ClearReceivedCalls();
         factory.Users.ClearReceivedCalls();
         factory.TwitchAuth.ClearReceivedCalls();
+        factory.ChatLogBackfill.ClearReceivedCalls();
 
         // Default to "the slot was free", so the cooldown never masks the status code a test is
         // actually asserting. The one case that cares sets it explicitly.
@@ -68,6 +69,10 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/testchannel/audit-log")]
     [InlineData("POST", "/api/channels/testchannel/resync")]
     [InlineData("GET", "/api/channels/testchannel/permissions")]
+    [InlineData("GET", "/api/channels/testchannel/backfill")]
+    [InlineData("POST", "/api/channels/testchannel/backfill")]
+    [InlineData("DELETE", "/api/channels/testchannel/backfill")]
+    [InlineData("GET", "/api/channels/testchannel/usage-stats/import-coverage")]
     [InlineData("GET", "/api/channels/mine")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
     [InlineData("GET", "/api/channels/testchannel/tags")]
@@ -125,6 +130,10 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
     [InlineData("GET", "/api/channels/testchannel/tags")]
     [InlineData("POST", "/api/channels/testchannel/tags")]
+    [InlineData("GET", "/api/channels/testchannel/backfill")]
+    [InlineData("POST", "/api/channels/testchannel/backfill")]
+    [InlineData("DELETE", "/api/channels/testchannel/backfill")]
+    [InlineData("GET", "/api/channels/testchannel/usage-stats/import-coverage")]
     [InlineData("GET", "/api/channels/testchannel/emote-sets/01GV88A38G0006FW5TVZVMG507/emotes")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions/1/results")]
     [InlineData("POST", "/api/channels/testchannel/vote-sessions/1/votes")]
@@ -162,6 +171,75 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         var response = await SendAsync("GET", $"/api/channels/{Channel}", NewUserId());
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // ---- Chat-log backfill routes (#351, acceptance criterion 1) ----
+    // The three routes share one authorization contract: 400 invalid_channel_name before any access
+    // check, 403 for a caller who may view usage but not manage (7TV editors are excluded, B1) without
+    // the wider check ever being consulted, and the success code for a manager. The service answers
+    // are arranged per case; the mapping of every service outcome is pinned in
+    // ChatLogBackfillEndpointsTests.
+
+    public static TheoryData<string, string, HttpStatusCode> BackfillRoutes => new()
+    {
+        { "GET", "/api/channels/{0}/backfill", HttpStatusCode.OK },
+        { "POST", "/api/channels/{0}/backfill", HttpStatusCode.Accepted },
+        { "DELETE", "/api/channels/{0}/backfill", HttpStatusCode.NoContent },
+    };
+
+    [Theory]
+    [MemberData(nameof(BackfillRoutes))]
+    public async Task BackfillRoutes_Answer400InvalidChannelName_BeforeAnyAccessCheck(string method, string pathFormat, HttpStatusCode _)
+    {
+        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, "bad-name"), NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
+        await _factory.ChannelAccess.DidNotReceiveWithAnyArgs()
+            .CanManageChannelAsync(default!, default!, default);
+        await _factory.ChatLogBackfill.DidNotReceiveWithAnyArgs().GetStatusAsync(default!, default, default);
+    }
+
+    [Theory]
+    [MemberData(nameof(BackfillRoutes))]
+    public async Task BackfillRoutes_Answer403_ForAViewerWhoCannotManage_WithoutConsultingTheWiderCheck(string method, string pathFormat, HttpStatusCode _)
+    {
+        // A 7TV editor passes the wider usage-stats check and must still be refused here — and the
+        // wider check must not even be asked, or the route would be one refactor away from admitting them.
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, Channel), NewUserId(), body: "{\"emoteSetId\":\"" + TrackedPreviewSetId + "\",\"months\":3}");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await _factory.ChannelAccess.DidNotReceive()
+            .CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _factory.ChatLogBackfill.DidNotReceiveWithAnyArgs().GetStatusAsync(default!, default, default);
+        await _factory.ChatLogBackfill.DidNotReceiveWithAnyArgs().EnqueueAsync(default!, default!, default, default, default!, default);
+        await _factory.ChatLogBackfill.DidNotReceiveWithAnyArgs().CancelAsync(default!, default!, default);
+    }
+
+    [Theory]
+    [MemberData(nameof(BackfillRoutes))]
+    public async Task BackfillRoutes_AnswerTheSuccessCode_ForAManager_AndNeverAskTheWiderCheck(string method, string pathFormat, HttpStatusCode expected)
+    {
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.ChatLogBackfill.GetStatusAsync(Channel, Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
+            .Returns(BackfillTestData.Status());
+        _factory.ChatLogBackfill.EnqueueAsync(
+                Channel, TrackedPreviewSetId, 3, Arg.Any<DateOnly>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(ChatLogBackfillEnqueueResult.Enqueued(BackfillTestData.Run()));
+        _factory.ChatLogBackfill.CancelAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(ChatLogBackfillCancelResult.Cancelled);
+
+        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, Channel), NewUserId(), body: "{\"emoteSetId\":\"" + TrackedPreviewSetId + "\",\"months\":3}");
+
+        Assert.Equal(expected, response.StatusCode);
+        await _factory.ChannelAccess.DidNotReceive()
+            .CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

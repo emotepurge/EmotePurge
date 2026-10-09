@@ -173,4 +173,25 @@ internal static class ApiErrorCodes
     public const string TagOperationConflict = "tag_operation_conflict";
     // 400: the registration's kind is missing or not one of EmoteTagOperationKind.
     public const string TagOperationKindInvalid = "tag_operation_kind_invalid";
+
+    // Chat-log backfill (#346, spec 5.5). The routes also reuse invalid_emote_set_id, emote_set_not_found,
+    // foreign_channel_seventv_unavailable, channel_not_found, channel_not_joined and channel_excluded.
+    // 404 on all three routes while ChatLogBackfill:Enabled is false — after the authorization filter.
+    public const string BackfillDisabled = "backfill_disabled";
+    // 400: months missing or not one of 1, 3, 6.
+    public const string BackfillMonthsInvalid = "backfill_months_invalid";
+    // 409: the chosen window has no day before the counting start.
+    public const string BackfillWindowEmpty = "backfill_window_empty";
+    // 409: the channel already has a queued, running or paused run (pre-check or unique-index race).
+    public const string BackfillAlreadyActive = "backfill_already_active";
+    // 404 from DELETE: nothing to cancel.
+    public const string BackfillNoActiveRun = "backfill_no_active_run";
+    // 409: the channel row has no Twitch id yet (identity reconcile has not resolved it).
+    public const string BackfillTwitchIdUnknown = "backfill_twitch_id_unknown";
+    // 409: 7TV returned no emote for the chosen set; nothing to match.
+    public const string BackfillSetEmpty = "backfill_set_empty";
+    // 409: the set preview hit its page ceiling; a partial name list would silently under-count.
+    public const string BackfillSetTruncated = "backfill_set_truncated";
+    // 409: a rename/merge handed the login to another Twitch identity while the request ran.
+    public const string BackfillChannelIdentityChanged = "backfill_channel_identity_changed";
 }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using EmotePurge.Api.Auth;
 using EmotePurge.Api.RateLimiting;
@@ -94,6 +95,7 @@ public static class ChannelEndpoints
             IChannelAccessService channelAccessService,
             IChannelService channelService,
             EmoteTagOptions tagOptions,
+            ChatLogBackfillOptions backfillOptions,
             CancellationToken ct) =>
         {
             var principal = httpContext.User.TryBuildTwitchPrincipal();
@@ -116,7 +118,8 @@ public static class ChannelEndpoints
                 IsTracked: channel is not null,
                 IsBotActive: channel?.IsBotActive ?? false,
                 TagRunsEnabled: tagOptions.RunsEnabled,
-                CanPurgeAsBroadcaster: BroadcasterOwnership.CanPurge(channel, principal)));
+                CanPurgeAsBroadcaster: BroadcasterOwnership.CanPurge(channel, principal),
+                ChatLogBackfillEnabled: backfillOptions.Enabled));
         })
         // Ordinary navigation, and the single most requested route in the app: every page that shows
         // anything channel-scoped asks it first. Both access checks can reach Helix or 7TV on a cache
@@ -306,6 +309,99 @@ public static class ChannelEndpoints
         .AddEndpointFilter<UsageStatsAccessAuthorizationFilter>()
         .RequireRateLimiting(RateLimitPolicyNames.ChannelResync);
 
+        // Chat-log backfill (#346, spec section 5): fills the days before we started counting from a
+        // public chat-log archive. Managers only (B1) — ChannelManagementAuthorizationFilter, not the
+        // wider usage-stats one, because a run rewrites the numbers every reader sees. While
+        // ChatLogBackfill:Enabled is off all three answer 404 backfill_disabled, but only *after* the
+        // filter: a 7TV editor still gets 403 and never learns whether the feature exists (D17).
+        group.MapGet("/{channelName}/backfill", async (
+            string channelName,
+            ChatLogBackfillOptions options,
+            IChatLogBackfillService backfillService,
+            CancellationToken ct) =>
+        {
+            if (!options.Enabled)
+            {
+                return BackfillDisabled();
+            }
+
+            var status = await backfillService.GetStatusAsync(channelName, TodayUtc(), ct);
+            return status is null
+                ? Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound })
+                : Results.Ok(status);
+        })
+        .AddEndpointFilter<ChannelManagementAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
+
+        // TrackedEmoteSetPreview instead of Bookkeeping (D29): the request costs the same cached set
+        // list read plus one preview walk as the tracked set preview route, so it draws on the same
+        // per-user budget. emoteSetId travels in the body; months and set id are checked here, the
+        // rest of the ladder (7TV, locks, one active run) is the service's.
+        group.MapPost("/{channelName}/backfill", async (
+            string channelName,
+            StartBackfillRequest? request,
+            HttpContext httpContext,
+            ChatLogBackfillOptions options,
+            IChatLogBackfillService backfillService,
+            CancellationToken ct) =>
+        {
+            if (!options.Enabled)
+            {
+                return BackfillDisabled();
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            if (request?.Months is not { } months || !ChatLogBackfillWindow.AllowedMonths.Contains(months))
+            {
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.BackfillMonthsInvalid });
+            }
+
+            if (request.EmoteSetId is not { } emoteSetId || !EmoteSetIdValidation.IsValid(emoteSetId))
+            {
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidEmoteSetId });
+            }
+
+            var result = await backfillService.EnqueueAsync(channelName, emoteSetId, months, TodayUtc(), actor, ct);
+            return MapEnqueueResult(result, httpContext);
+        })
+        .AddEndpointFilter<ChannelManagementAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.TrackedEmoteSetPreview);
+
+        group.MapDelete("/{channelName}/backfill", async (
+            string channelName,
+            HttpContext httpContext,
+            ChatLogBackfillOptions options,
+            IChatLogBackfillService backfillService,
+            CancellationToken ct) =>
+        {
+            if (!options.Enabled)
+            {
+                return BackfillDisabled();
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var result = await backfillService.CancelAsync(channelName, actor, ct);
+            return result switch
+            {
+                ChatLogBackfillCancelResult.Cancelled => Results.NoContent(),
+                ChatLogBackfillCancelResult.NoActiveRun => Results.NotFound(new { errorCode = ApiErrorCodes.BackfillNoActiveRun }),
+                ChatLogBackfillCancelResult.NotFound => Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound }),
+                _ => throw new UnreachableException($"Unexpected {nameof(ChatLogBackfillCancelResult)} value: {result}."),
+            };
+        })
+        .AddEndpointFilter<ChannelManagementAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
         group.MapDelete("/{channelName}", async (
             string channelName,
             HttpContext httpContext,
@@ -432,6 +528,63 @@ public static class ChannelEndpoints
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
     }
 
+    // "Today" for the window arithmetic is the Api's UTC date at request time (D1); it is frozen on the
+    // run row, so a worker that starts after midnight does not shift the window.
+    private static DateOnly TodayUtc() => DateOnly.FromDateTime(DateTime.UtcNow);
+
+    private static IResult BackfillDisabled() =>
+        Results.NotFound(new { errorCode = ApiErrorCodes.BackfillDisabled });
+
+    // A switch over every status, like the join mapping above: a status the service grows later must
+    // not be answered with a guess. RequesterGone is a bare 401 — the session's account was deleted
+    // while the request ran, which is what a revoked session looks like (D35).
+    private static IResult MapEnqueueResult(ChatLogBackfillEnqueueResult result, HttpContext httpContext)
+    {
+        switch (result.Status)
+        {
+            case ChatLogBackfillEnqueueStatus.Enqueued:
+                return Results.Accepted(uri: null, value: result.Run);
+            case ChatLogBackfillEnqueueStatus.NotFound:
+            case ChatLogBackfillEnqueueStatus.ChannelGone:
+                return Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound });
+            case ChatLogBackfillEnqueueStatus.NotActive:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.ChannelNotJoined });
+            case ChatLogBackfillEnqueueStatus.ChannelExcluded:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.ChannelExcluded });
+            case ChatLogBackfillEnqueueStatus.TwitchIdUnknown:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.BackfillTwitchIdUnknown });
+            case ChatLogBackfillEnqueueStatus.ChannelIdentityChanged:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.BackfillChannelIdentityChanged });
+            case ChatLogBackfillEnqueueStatus.RequesterGone:
+                return Results.Unauthorized();
+            case ChatLogBackfillEnqueueStatus.WindowEmpty:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.BackfillWindowEmpty });
+            case ChatLogBackfillEnqueueStatus.AlreadyActive:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.BackfillAlreadyActive });
+            case ChatLogBackfillEnqueueStatus.MonthsInvalid:
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.BackfillMonthsInvalid });
+            case ChatLogBackfillEnqueueStatus.SetNotMember:
+                return Results.NotFound(new { errorCode = ApiErrorCodes.EmoteSetNotFound });
+            case ChatLogBackfillEnqueueStatus.SetEmpty:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.BackfillSetEmpty });
+            case ChatLogBackfillEnqueueStatus.SetTruncated:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.BackfillSetTruncated });
+            case ChatLogBackfillEnqueueStatus.SevenTvUnavailable:
+                if (result.RetryAfter is { } retryAfter)
+                {
+                    httpContext.Response.Headers.RetryAfter =
+                        Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(CultureInfo.InvariantCulture);
+                }
+
+                return Results.Json(
+                    new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            default:
+                throw new UnreachableException(
+                    $"Unexpected {nameof(ChatLogBackfillEnqueueStatus)} value: {result.Status}.");
+        }
+    }
+
     // The lock date an admin confirmed, as the 409 sent it (ISO-8601 with a UTC marker), read back as
     // a UTC instant at full precision so the service can compare it tick for tick. Bound as a string
     // rather than a DateTime? so the parse rules are visible here: a missing or unparseable value
@@ -468,6 +621,11 @@ public static class ChannelEndpoints
 /// read the data summary.
 /// </para>
 /// <para>
+/// <c>ChatLogBackfillEnabled</c> (#346) is the operator's <c>ChatLogBackfill:Enabled</c> switch, global
+/// like <c>TagRunsEnabled</c>: the workspace shows the settings tab only while it is on, and the
+/// backfill routes answer 404 <c>backfill_disabled</c> while it is off.
+/// </para>
+/// <para>
 /// No <c>IsSevenTvEditor</c> field, despite the review's sketch: nothing consumes it today, and
 /// computing it would defeat the short-circuit above and put a 7TV call in every manager's request.
 /// Add it together with its first consumer.
@@ -480,4 +638,13 @@ internal sealed record ChannelPermissionsDto(
     bool IsTracked,
     bool IsBotActive,
     bool TagRunsEnabled,
-    bool CanPurgeAsBroadcaster);
+    bool CanPurgeAsBroadcaster,
+    bool ChatLogBackfillEnabled);
+
+/// <summary>
+/// Body of <c>POST /api/channels/{channelName}/backfill</c>. Both members are nullable on purpose: a
+/// missing member is a 400 with its own error code (<c>backfill_months_invalid</c> /
+/// <c>invalid_emote_set_id</c>) rather than a binding failure, so the client always gets a code it
+/// can translate.
+/// </summary>
+internal sealed record StartBackfillRequest(string? EmoteSetId, int? Months);

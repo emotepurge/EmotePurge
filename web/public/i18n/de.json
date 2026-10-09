@@ -621,6 +621,8 @@
       "tagDelete": "Tag gelöscht",
       "tagPlayedIn": "Tag ins Set geholt",
       "tagRemoved": "Tag aus dem Set entfernt",
+      "backfillRequest": "Backfill angefordert",
+      "backfillCancel": "Backfill abgebrochen",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
@@ -650,6 +652,10 @@
       "importedFromTag": {
         "one": "{{count}} Emote aus einem Tag",
         "other": "{{count}} Emotes aus einem Tag"
+      },
+      "backfillMonths": {
+        "one": "{{count}} Monat",
+        "other": "{{count}} Monate"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
@@ -1984,7 +1990,16 @@
       "tag_operation_id_invalid": "Der Lauf konnte nicht gemeldet werden: Die Vorgangskennung ist ungültig.",
       "tag_operation_unknown": "Dieser Vorgang ist dem Server nicht bekannt. Starte den Lauf bitte neu.",
       "tag_operation_conflict": "Dieser Vorgang gehört zu einem anderen Tag oder Set. Starte den Lauf bitte neu.",
-      "tag_operation_kind_invalid": "Die Art des Vorgangs ist ungültig."
+      "tag_operation_kind_invalid": "Die Art des Vorgangs ist ungültig.",
+      "backfill_disabled": "Der Backfill aus dem Chat-Archiv ist nicht verfügbar.",
+      "backfill_months_invalid": "Bitte wähle 1, 3 oder 6 Monate.",
+      "backfill_window_empty": "In diesem Zeitraum liegen keine Tage vor dem Zählbeginn dieses Channels.",
+      "backfill_already_active": "Für diesen Channel läuft oder wartet bereits ein Backfill.",
+      "backfill_no_active_run": "Es gibt keinen Backfill, der abgebrochen werden könnte.",
+      "backfill_twitch_id_unknown": "Dieser Channel ist noch nicht vollständig eingerichtet. Bitte versuche es in ein paar Minuten erneut.",
+      "backfill_set_empty": "Dieses Emote-Set enthält keine Emotes, es gibt also nichts zu suchen.",
+      "backfill_set_truncated": "Dieses Emote-Set ist zu groß, um es vollständig zu lesen, der Backfill kann dafür nicht gestartet werden.",
+      "backfill_channel_identity_changed": "Der Channel hat sich während deiner Anfrage geändert. Bitte lade neu und versuche es erneut."
     }
   }
 }

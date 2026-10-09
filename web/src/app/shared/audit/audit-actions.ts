@@ -28,6 +28,8 @@ export const ACTION_KEYS: Record<string, string> = {
   'tag.delete': 'audit.actions.tagDelete',
   'tag.playedIn': 'audit.actions.tagPlayedIn',
   'tag.removed': 'audit.actions.tagRemoved',
+  'backfill.request': 'audit.actions.backfillRequest',
+  'backfill.cancel': 'audit.actions.backfillCancel',
   'user.revokeSessions': 'audit.actions.userRevokeSessions',
   'user.invalidateRoleCache': 'audit.actions.userInvalidateRoleCache',
   'user.delete': 'audit.actions.userDelete',
@@ -63,6 +65,7 @@ export const DETAIL_KEYS: Record<string, string> = {
   importedFromFile: 'audit.details.importedFromFile',
   importedFromLeaderboard: 'audit.details.importedFromLeaderboard',
   importedFromTag: 'audit.details.importedFromTag',
+  backfillMonths: 'audit.details.backfillMonths',
 };
 
 /**

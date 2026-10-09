@@ -30,6 +30,8 @@ export type AuditAction =
   | 'tag.delete'
   | 'tag.playedIn'
   | 'tag.removed'
+  | 'backfill.request'
+  | 'backfill.cancel'
   | 'user.revokeSessions'
   | 'user.invalidateRoleCache'
   | 'user.delete';
@@ -43,7 +45,9 @@ export type AuditDetailKind =
   | 'importedFromFile'
   | 'importedFromLeaderboard'
   /** A tag play-in (T-C): count only — the server never sends the tag's name (E30). */
-  | 'importedFromTag';
+  | 'importedFromTag'
+  /** A chat-log backfill request (#346): the number of months asked for; the set rides on the target fields. */
+  | 'backfillMonths';
 
 /**
  * An action's target set (spec 2026-09-20), present on an `AuditLogDetail` whenever the row's
