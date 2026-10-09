@@ -1,5 +1,6 @@
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure;
+using EmotePurge.Worker.ChatLogBackfill;
 using EmotePurge.Worker.Harness;
 using EmotePurge.Worker.SevenTv;
 using Microsoft.Extensions.Configuration;
@@ -14,7 +15,7 @@ namespace EmotePurge.Worker;
 /// <para>
 /// It exists so <c>Program</c> cannot accidentally hand the harness branch a hosted service. That
 /// is not a style preference: <c>docker compose run</c> replaces a service's <c>command</c>, not
-/// its <c>entrypoint</c>, and a harness container that started the ten hosted services would sit
+/// its <c>entrypoint</c>, and a harness container that started the eleven hosted services would sit
 /// in IRC next to the production worker and double every usage row through the additive UPSERT
 /// (Codex-adversarial "Fail-open CLI"). With the registration in one place, a test can assert the
 /// absence directly instead of trusting a reading of <c>Program</c>.
@@ -34,6 +35,8 @@ public static class WorkerServiceRegistration
         services.AddSingleton<IBotChatterDetector, BotChatterDetector>();
         services.AddSingleton<IExcludedChatterFilter, ExcludedChatterFilter>();
         services.AddSingleton<BootRecoveryGate>();
+        // Set by Worker on a BACKFILL: command, awaited by ChatLogBackfillWorker (spec 4.8).
+        services.AddSingleton<ChatLogBackfillSignal>();
         services.AddSingleton<WorkerStats>();
         services.AddSingleton<WorkerIdentity>();
         services.AddSingleton<SevenTvSubscriptionRegistry>();
@@ -42,7 +45,7 @@ public static class WorkerServiceRegistration
     }
 
     /// <summary>
-    /// The ten hosted services of the long-running worker. The host starts them in registration
+    /// The eleven hosted services of the long-running worker. The host starts them in registration
     /// order, and Worker deliberately goes first: it runs the boot recovery (rejoin every tracked
     /// channel, initial 7TV sync) that the others assume has happened. The ordering is not
     /// load-bearing on its own, though — BootRecoveryGate is what actually enforces it, because
@@ -62,6 +65,9 @@ public static class WorkerServiceRegistration
         services.AddHostedService<TwitchLivePollWorker>();
         services.AddHostedService<TwitchIdentityReconcileWorker>();
         services.AddHostedService<DataRetentionWorker>();
+        // Exits after one log line unless ChatLogBackfill:Enabled is true; waits for BootRecoveryGate
+        // like DataRetentionWorker.
+        services.AddHostedService<ChatLogBackfillWorker>();
         return services;
     }
 

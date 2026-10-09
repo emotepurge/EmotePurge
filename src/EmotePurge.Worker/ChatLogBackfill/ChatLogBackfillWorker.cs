@@ -1,0 +1,526 @@
+using EmotePurge.Core.ChatLogArchive;
+using EmotePurge.Core.Entities;
+using EmotePurge.Core.Matching;
+using EmotePurge.Core.Messaging;
+using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Services;
+
+namespace EmotePurge.Worker.ChatLogBackfill;
+
+/// <summary>
+/// The chat-log backfill's sequential queue (#346, spec section 4): claims one run at a time, reads
+/// its window block by block from the archive, counts every block against the run's persisted
+/// matching snapshot and commits it through <see cref="IChatLogBackfillService"/>. Off unless
+/// <c>ChatLogBackfill:Enabled</c> is true; then it waits for the boot recovery like
+/// <see cref="DataRetentionWorker"/> and loops for the worker's lifetime.
+/// <para>
+/// <b>Scopes and instances.</b> The loop resolves its <see cref="IChatLogBackfillService"/> from
+/// exactly one async scope that lives as long as the loop and is that instance's only user: the
+/// instance holds the advisory-lock connection (D46) and is not thread-safe. The per-run status
+/// monitor (D39) resolves its own instance from its own async scope and only ever asks
+/// <see cref="IChatLogBackfillService.IsRunActiveAsync"/>. The archive client is resolved once per
+/// run from a third scope and held for the run, because its pacing is instance state (D7).
+/// </para>
+/// <para>
+/// <b>The database decides, the worker follows.</b> Every counter the worker acts on comes from the
+/// last transition the service returned (D38); a status other than <c>running</c> stops the run at
+/// once. A 429 ends <see cref="RunAsync"/> (D44): the pause is spent in the loop, which waits out the
+/// persisted provider cooldown (D31) before it claims again. Nothing here holds a database lock of
+/// its own — the service takes them, channel row before run row.
+/// </para>
+/// <para>
+/// <b>Logs</b> name the channel, the run id, the block range and counts — never message text or a
+/// chatter id. A run failed at claim for an excluded channel is logged by the service without a name
+/// (D32).
+/// </para>
+/// </summary>
+public sealed class ChatLogBackfillWorker(
+    ILogger<ChatLogBackfillWorker> logger,
+    IServiceScopeFactory scopeFactory,
+    ChatLogBackfillOptions options,
+    BootRecoveryGate bootRecoveryGate,
+    ChatLogBackfillSignal signal,
+    IRedisPublisher redisPublisher,
+    IBotChatterDetector botChatterDetector,
+    IExcludedChatterFilter excludedChatterFilter,
+    TimeProvider timeProvider) : BackgroundService
+{
+    /// <summary>Transport attempts on one block are exhausted (spec 4.5).</summary>
+    public const string TransportFailureErrorCode = "transport_failure";
+
+    /// <summary>The archive answered with something the line parser could not read, or a line over the limit.</summary>
+    public const string MalformedResponseErrorCode = "malformed_response";
+
+    /// <summary>A block exceeded <c>MaxBlockMegabytes</c>.</summary>
+    public const string BlockTooLargeErrorCode = "block_too_large";
+
+    /// <summary>The run's matching snapshot is empty (defensive; the enqueue refuses an empty set).</summary>
+    public const string SnapshotMissingErrorCode = "snapshot_missing";
+
+    /// <summary>A live usage row exists for an imported cell (D3, D48).</summary>
+    public const string LiveRowConflictErrorCode = "live_row_conflict";
+
+    /// <summary>Anything unexpected, including a run whose block plan no longer fits its row.</summary>
+    public const string WorkerErrorCode = "worker_error";
+
+    private const long BytesPerMegabyte = 1024 * 1024;
+
+    // The start of the previous archive request, for the worker-side spacing (D7). Across runs on
+    // purpose: a fresh run's fresh client knows nothing about the previous run's last request.
+    private DateTime? _lastRequestStartedUtc;
+
+    private TimeSpan IdlePoll => TimeSpan.FromSeconds(options.IdlePollSeconds);
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await bootRecoveryGate.Completed.WaitAsync(stoppingToken);
+
+        if (!options.Enabled)
+        {
+            logger.LogInformation("Chat-log backfill disabled.");
+            return;
+        }
+
+        try
+        {
+            // The loop's one service instance: it owns the advisory-lock connection, and disposing
+            // this scope at shutdown is what releases the lock.
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var service = scope.ServiceProvider.GetRequiredService<IChatLogBackfillService>();
+            await RunLoopAsync(service, stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Regular shutdown. A run interrupted mid-block stays running and is requeued at the next boot.
+        }
+    }
+
+    // Spec 4.2: lock, boot reset under the lock, then claim the head whenever the cooldown allows.
+    private async Task RunLoopAsync(IChatLogBackfillService service, CancellationToken stoppingToken)
+    {
+        var holdsLock = false;
+        var warnedAboutLock = false;
+
+        while (true)
+        {
+            stoppingToken.ThrowIfCancellationRequested();
+            try
+            {
+                // Before every claim (D46): a lock lost with its connection is noticed here, before
+                // anything else is claimed, reset or committed.
+                if (!await service.TryAcquireLoopLockAsync(stoppingToken))
+                {
+                    if (!warnedAboutLock)
+                    {
+                        logger.LogWarning(
+                            "Chat-log backfill: another backfill loop holds the lock; retrying every {Seconds} s.",
+                            options.IdlePollSeconds);
+                        warnedAboutLock = true;
+                    }
+
+                    holdsLock = false;
+                    await Task.Delay(IdlePoll, timeProvider, stoppingToken);
+                    continue;
+                }
+
+                if (!holdsLock)
+                {
+                    // Only under the lock, and again after the lock was lost and retaken: no run of
+                    // this loop is in flight here, so every running row is an interrupted one.
+                    var requeued = await service.ResetInterruptedRunsAsync(stoppingToken);
+                    holdsLock = true;
+                    warnedAboutLock = false;
+                    logger.LogInformation("Chat-log backfill loop holds the lock; {Count} interrupted runs requeued.", requeued);
+                }
+
+                // The provider cooldown (D31) holds every claim, not only the paused run's: a 429 is the
+                // archive's answer to us, whichever run asked. It is written in the same transaction as a
+                // pause, so it also covers the paused head's own due time (D44). Waited in slices of at
+                // most one idle poll, so the lock is re-checked while waiting.
+                var cooldown = ChatLogBackfillRetryPolicy.CooldownWait(await service.GetCooldownUntilAsync(stoppingToken), UtcNow());
+                if (cooldown > TimeSpan.Zero)
+                {
+                    await Task.Delay(cooldown < IdlePoll ? cooldown : IdlePoll, timeProvider, stoppingToken);
+                    continue;
+                }
+
+                var claim = await service.ClaimNextAsync(UtcNow(), stoppingToken);
+                if (claim is null)
+                {
+                    // Nothing to do, or the head is paused and not yet due: a BACKFILL: nudge or the idle
+                    // poll wakes the loop (D8).
+                    await signal.WaitAsync(IdlePoll, timeProvider, stoppingToken);
+                    continue;
+                }
+
+                await RunAsync(service, claim, stoppingToken);
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                // A database outage costs a poll, never the host (StopHost would take the live
+                // counting down with it). The lock may have died with its connection: the next turn
+                // takes it again and repeats the reset.
+                holdsLock = false;
+                logger.LogWarning(ex, "Chat-log backfill loop failed; retrying in {Seconds} s.", options.IdlePollSeconds);
+                await Task.Delay(IdlePoll, timeProvider, stoppingToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Works one claimed run until it completes, fails, pauses (a 429 returns here, D44) or is no
+    /// longer running. A process stop leaves the row <c>running</c> for the next boot's reset.
+    /// </summary>
+    private async Task RunAsync(IChatLogBackfillService service, ChatLogBackfillClaim claim, CancellationToken stoppingToken)
+    {
+        // Claim → running, a fresh start and a resume after a pause alike.
+        await PublishProgressAsync(claim.ChannelName, stoppingToken);
+        logger.LogInformation(
+            "Chat-log backfill run {RunId} for {Channel} running: {From:yyyy-MM-dd}..{To:yyyy-MM-dd}, week {WeeksDone} of {WeeksTotal} done, pause count {PauseCount}, attempts {BlockAttempts}.",
+            claim.RunId, claim.ChannelName, claim.WindowFrom, claim.WindowTo, claim.WeeksDone, claim.WeeksTotal, claim.PauseCount,
+            claim.BlockAttempts);
+
+        // Spec 4.3: the persisted snapshot, never Emotes or the channel's active set (D10).
+        var snapshot = await service.GetSnapshotAsync(claim.RunId, stoppingToken);
+        if (snapshot.Emotes.Count == 0)
+        {
+            await FailRunAsync(service, claim, SnapshotMissingErrorCode, null, 0, stoppingToken);
+            return;
+        }
+
+        var map = EmoteNameMatching.Coalesce(snapshot.Emotes.Select(e => new KeyValuePair<string, string>(e.Name, e.EmoteId)));
+        if (map.AmbiguousNames.Count > 0)
+        {
+            logger.LogInformation(
+                "Chat-log backfill run {RunId}: {Count} aliases appear twice in the snapshot; the first emote id wins.",
+                claim.RunId, map.AmbiguousNames.Count);
+        }
+
+        var addedToSetDay = new Dictionary<string, DateOnly?>(StringComparer.Ordinal);
+        foreach (var emote in snapshot.Emotes)
+        {
+            addedToSetDay.TryAdd(emote.EmoteId, emote.AddedToSetDay);
+        }
+
+        var plan = ChatLogBackfillBlockPlanner.Plan(claim.WindowFrom, claim.WindowTo);
+        if (plan.Count != claim.WeeksTotal || claim.WeeksDone < 0 || claim.WeeksDone >= plan.Count)
+        {
+            logger.LogError(
+                "Chat-log backfill run {RunId}: the block plan ({Blocks} blocks) does not fit the row (week {WeeksDone} of {WeeksTotal}).",
+                claim.RunId, plan.Count, claim.WeeksDone, claim.WeeksTotal);
+            await FailRunAsync(service, claim, WorkerErrorCode, null, 0, stoppingToken);
+            return;
+        }
+
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
+        // The status monitor's own instance (D39): a second user of the loop's instance would race it.
+        await using var monitorScope = scopeFactory.CreateAsyncScope();
+        var monitor = MonitorAsync(
+            monitorScope.ServiceProvider.GetRequiredService<IChatLogBackfillService>(), claim.RunId, runCancellation);
+
+        // One client for the whole run: its pacing is instance state (D7).
+        await using var clientScope = scopeFactory.CreateAsyncScope();
+        var client = clientScope.ServiceProvider.GetRequiredService<IChatLogArchiveClient>();
+
+        try
+        {
+            await RunBlocksAsync(service, client, claim, plan, map.NameToId, addedToSetDay, runCancellation.Token, stoppingToken);
+        }
+        catch (OperationCanceledException) when (runCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+        {
+            // The monitor saw the row leave running (cancel, leave, purge) and aborted a read or a wait.
+            LogStopped(claim);
+        }
+        catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            logger.LogError(ex, "Chat-log backfill run {RunId} ({Channel}) failed with an unexpected error.", claim.RunId, claim.ChannelName);
+            await FailRunAsync(service, claim, WorkerErrorCode, null, 0, stoppingToken);
+        }
+        finally
+        {
+            await runCancellation.CancelAsync();
+            await monitor;
+        }
+    }
+
+    private async Task RunBlocksAsync(
+        IChatLogBackfillService service,
+        IChatLogArchiveClient client,
+        ChatLogBackfillClaim claim,
+        IReadOnlyList<ChatLogBackfillBlock> plan,
+        IReadOnlyDictionary<string, string> nameToId,
+        IReadOnlyDictionary<string, DateOnly?> addedToSetDay,
+        CancellationToken runToken,
+        CancellationToken stoppingToken)
+    {
+        var maxBytes = options.MaxBlockMegabytes * BytesPerMegabyte;
+        var index = claim.WeeksDone;
+        while (index < plan.Count)
+        {
+            var block = plan[index];
+            var isLastBlock = index + 1 == plan.Count;
+
+            // Before every request, first attempt or retry: the provider cooldown (D31), the spacing
+            // (D7), and the row itself (D39) — a non-running row stops the run without a request.
+            await WaitForCooldownAsync(service, runToken, stoppingToken);
+            await Task.Delay(
+                ChatLogBackfillRetryPolicy.SpacingWait(_lastRequestStartedUtc, TimeSpan.FromSeconds(options.RequestDelaySeconds), UtcNow()),
+                timeProvider,
+                runToken);
+            if (!await service.IsRunActiveAsync(claim.RunId, stoppingToken))
+            {
+                LogStopped(claim);
+                return;
+            }
+
+            var counter = new ChatLogBackfillBlockCounter(block, nameToId, addedToSetDay, botChatterDetector.IsBot);
+            _lastRequestStartedUtc = UtcNow();
+            var result = await client.ReadRangeAsync(
+                claim.TwitchChannelId,
+                block.FromUtc,
+                block.ToUtcExclusive,
+                maxBytes,
+                message =>
+                {
+                    // Objection gate (GDPR Art. 21) before anything counts — the harness's placement
+                    // (HarnessRunner) and the live path's. The client's MessageCount still includes
+                    // the message (D47: a count before the gate, no identity).
+                    if (!excludedChatterFilter.IsExcluded(message.UserId))
+                    {
+                        counter.Count(message);
+                    }
+
+                    return ValueTask.CompletedTask;
+                },
+                runToken);
+
+            logger.LogInformation(
+                "Chat-log backfill run {RunId} ({Channel}): block {Block}/{Blocks} {From:yyyy-MM-dd}..{To:yyyy-MM-dd} {Status}, {Lines} lines, {Bytes} bytes.",
+                claim.RunId, claim.ChannelName, index + 1, plan.Count, block.From, block.ToExclusive, result.Status, result.MessageCount,
+                result.BytesReceived);
+
+            switch (result.Status)
+            {
+                case ChatLogDayStatus.Complete:
+                case ChatLogDayStatus.NoLogDay:
+                    // A 404 is a block without data (D12): committed like any other, replacing and covering its days.
+                    var outcome = await service.ReplaceBlockAsync(
+                        claim.RunId, block.From, block.ToExclusive, counter.Aggregates(), result.BytesReceived, result.MessageCount,
+                        isLastBlock, stoppingToken);
+                    if (outcome is ChatLogBackfillBlockResult.Committed committed)
+                    {
+                        await redisPublisher.PublishChannelEventAsync(logger, LiveEvents.UsageFlushed, claim.ChannelName, stoppingToken);
+                        await PublishProgressAsync(claim.ChannelName, stoppingToken);
+                        if (committed.Transition.Status == ChatLogBackfillRunStatus.Completed)
+                        {
+                            logger.LogInformation(
+                                "Chat-log backfill run {RunId} ({Channel}) completed: {Blocks} blocks.", claim.RunId, claim.ChannelName, plan.Count);
+                            return;
+                        }
+
+                        if (committed.Transition.Status != ChatLogBackfillRunStatus.Running)
+                        {
+                            LogStopped(claim);
+                            return;
+                        }
+
+                        index++;
+                        continue;
+                    }
+
+                    await HandleUncommittedBlockAsync(service, claim, outcome, stoppingToken);
+                    return;
+
+                case ChatLogDayStatus.RateLimited:
+                    // D38/D44: the delay and the rate_limited threshold are computed in the database
+                    // from the row's own PauseCount; the pause is spent outside this method.
+                    var paused = await service.PauseAsync(claim.RunId, result.RetryAfter, UtcNow(), stoppingToken);
+                    await PublishProgressAsync(claim.ChannelName, stoppingToken);
+                    if (paused.Status == ChatLogBackfillRunStatus.Paused)
+                    {
+                        logger.LogWarning(
+                            "Chat-log backfill run {RunId} ({Channel}) paused by a 429 until {PausedUntil:O} (pause {PauseCount} on this block, Retry-After {RetryAfter}).",
+                            claim.RunId, claim.ChannelName, paused.PausedUntilUtc, paused.PauseCount, result.RetryAfter?.ToString() ?? "none");
+                    }
+                    else if (paused.Status == ChatLogBackfillRunStatus.Failed)
+                    {
+                        logger.LogError(
+                            "Chat-log backfill run {RunId} ({Channel}) failed: {ErrorCode} after {PauseCount} pauses on one block.",
+                            claim.RunId, claim.ChannelName, ChatLogBackfillService.RateLimitedErrorCode, paused.PauseCount);
+                    }
+                    else
+                    {
+                        LogStopped(claim);
+                    }
+
+                    return;
+
+                case ChatLogDayStatus.TransportFailure:
+                case ChatLogDayStatus.BodyTimeout:
+                    var attempt = await service.RecordBlockAttemptAsync(claim.RunId, result.BytesReceived, stoppingToken);
+                    if (attempt.Status != ChatLogBackfillRunStatus.Running)
+                    {
+                        LogStopped(claim);
+                        return;
+                    }
+
+                    if (!ChatLogBackfillRetryPolicy.ShouldRetryTransport(attempt.BlockAttempts, options.TransportRetries))
+                    {
+                        // This attempt's bytes are already booked by RecordBlockAttemptAsync.
+                        await FailRunAsync(service, claim, TransportFailureErrorCode, result.HttpStatusCode, 0, stoppingToken);
+                        return;
+                    }
+
+                    var delay = ChatLogBackfillRetryPolicy.TransportRetryDelay(attempt.BlockAttempts);
+                    logger.LogWarning(
+                        "Chat-log backfill run {RunId} ({Channel}): attempt {Attempt} of {Attempts} on block {Block}/{Blocks} failed ({Status}, HTTP {HttpStatus}); retrying in {Delay}.",
+                        claim.RunId, claim.ChannelName, attempt.BlockAttempts, options.TransportRetries, index + 1, plan.Count, result.Status,
+                        result.HttpStatusCode?.ToString() ?? "none", delay);
+                    await Task.Delay(delay, timeProvider, runToken);
+                    continue;
+
+                case ChatLogDayStatus.MalformedResponse:
+                case ChatLogDayStatus.LineTooLong:
+                    await FailRunAsync(service, claim, MalformedResponseErrorCode, result.HttpStatusCode, result.BytesReceived, stoppingToken);
+                    return;
+
+                case ChatLogDayStatus.ByteCapExceeded:
+                    await FailRunAsync(service, claim, BlockTooLargeErrorCode, result.HttpStatusCode, result.BytesReceived, stoppingToken);
+                    return;
+
+                case ChatLogDayStatus.Cancelled:
+                    // Either the process is stopping (the row stays running for the next boot's reset) or
+                    // the monitor aborted the read; nothing of the block is committed in both cases.
+                    if (!stoppingToken.IsCancellationRequested)
+                    {
+                        LogStopped(claim);
+                    }
+
+                    return;
+
+                default:
+                    logger.LogError("Chat-log backfill run {RunId}: unexpected archive status {Status}.", claim.RunId, result.Status);
+                    await FailRunAsync(service, claim, WorkerErrorCode, result.HttpStatusCode, result.BytesReceived, stoppingToken);
+                    return;
+            }
+        }
+    }
+
+    // D48: RunNotActive, LiveRowConflict and ChannelGone roll the block back; only LiveRowConflict
+    // records an error code of its own.
+    private async Task HandleUncommittedBlockAsync(
+        IChatLogBackfillService service, ChatLogBackfillClaim claim, ChatLogBackfillBlockResult outcome, CancellationToken stoppingToken)
+    {
+        switch (outcome)
+        {
+            case ChatLogBackfillBlockResult.LiveRowConflict:
+                await FailRunAsync(service, claim, LiveRowConflictErrorCode, null, 0, stoppingToken);
+                return;
+
+            case ChatLogBackfillBlockResult.RunNotActive:
+                // RunNotActive also answers a block that is not the run's next planned one, while the
+                // row may still be running (§3 step 4) — so the status is read again instead of
+                // assuming a cancel. Stopping silently on a still-running row would hand the same head
+                // straight back to the next claim, which resumes a running head.
+                if (await service.IsRunActiveAsync(claim.RunId, stoppingToken))
+                {
+                    logger.LogError(
+                        "Chat-log backfill run {RunId} ({Channel}): the service did not accept the block as the run's next one.",
+                        claim.RunId, claim.ChannelName);
+                    await FailRunAsync(service, claim, WorkerErrorCode, null, 0, stoppingToken);
+                }
+                else
+                {
+                    LogStopped(claim);
+                }
+
+                return;
+
+            default:
+                // ChannelGone: the purge's cascade took the run along; nothing left to record.
+                logger.LogInformation(
+                    "Chat-log backfill run {RunId} stopped: its channel is gone (purged).", claim.RunId);
+                return;
+        }
+    }
+
+    // D39: polls the row every CancelPollSeconds on its own service instance and cancels the run's
+    // token as soon as the row is no longer running — independent of the serial Redis command queue.
+    private async Task MonitorAsync(IChatLogBackfillService monitorService, long runId, CancellationTokenSource runCancellation)
+    {
+        var token = runCancellation.Token;
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(options.CancelPollSeconds), timeProvider);
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                bool active;
+                try
+                {
+                    active = await monitorService.IsRunActiveAsync(runId, token);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // A database hiccup is not a cancel; the pre-request check and the counter writes
+                    // still stop the run if the row really changed.
+                    logger.LogWarning(ex, "Chat-log backfill status monitor could not read run {RunId}; the next poll retries.", runId);
+                    continue;
+                }
+
+                if (!active)
+                {
+                    await runCancellation.CancelAsync();
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The run ended (or the process is stopping); the monitor ends with it.
+        }
+    }
+
+    private async Task WaitForCooldownAsync(IChatLogBackfillService service, CancellationToken runToken, CancellationToken stoppingToken)
+    {
+        while (true)
+        {
+            var wait = ChatLogBackfillRetryPolicy.CooldownWait(await service.GetCooldownUntilAsync(stoppingToken), UtcNow());
+            if (wait <= TimeSpan.Zero)
+            {
+                return;
+            }
+
+            logger.LogInformation("Chat-log backfill: waiting {Wait} for the archive's cooldown.", wait);
+            await Task.Delay(wait, timeProvider, runToken);
+        }
+    }
+
+    private async Task FailRunAsync(
+        IChatLogBackfillService service, ChatLogBackfillClaim claim, string errorCode, int? httpStatus, long bytes, CancellationToken stoppingToken)
+    {
+        try
+        {
+            await service.FailAsync(claim.RunId, errorCode, httpStatus, bytes, stoppingToken);
+            logger.LogError(
+                "Chat-log backfill run {RunId} ({Channel}) failed: {ErrorCode} (HTTP {HttpStatus}).",
+                claim.RunId, claim.ChannelName, errorCode, httpStatus?.ToString() ?? "none");
+            await PublishProgressAsync(claim.ChannelName, stoppingToken);
+        }
+        catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            // The row stays running; the loop's next claim resumes it (or the next boot resets it).
+            logger.LogWarning(ex, "Chat-log backfill run {RunId}: recording the failure {ErrorCode} failed.", claim.RunId, errorCode);
+        }
+    }
+
+    private Task PublishProgressAsync(string channelName, CancellationToken cancellationToken) =>
+        redisPublisher.PublishChannelEventAsync(logger, LiveEvents.BackfillProgress, channelName, cancellationToken);
+
+    private void LogStopped(ChatLogBackfillClaim claim) =>
+        logger.LogInformation(
+            "Chat-log backfill run {RunId} ({Channel}) stopped: it is no longer running (cancelled, left or purged).",
+            claim.RunId, claim.ChannelName);
+
+    private DateTime UtcNow() => timeProvider.GetUtcNow().UtcDateTime;
+}
