@@ -71,6 +71,17 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'tag_operation_unknown',
   'tag_operation_conflict',
   'tag_operation_kind_invalid',
+  // Chat-log backfill (#346). The routes also reuse invalid_emote_set_id, emote_set_not_found,
+  // foreign_channel_seventv_unavailable, channel_not_found, channel_not_joined and channel_excluded.
+  'backfill_disabled',
+  'backfill_months_invalid',
+  'backfill_window_empty',
+  'backfill_already_active',
+  'backfill_no_active_run',
+  'backfill_twitch_id_unknown',
+  'backfill_set_empty',
+  'backfill_set_truncated',
+  'backfill_channel_identity_changed',
 ]);
 
 /**

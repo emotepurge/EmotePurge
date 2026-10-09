@@ -1984,7 +1984,16 @@
       "tag_operation_id_invalid": "The run could not be reported: the operation id is invalid.",
       "tag_operation_unknown": "The server does not know this operation. Please start the run again.",
       "tag_operation_conflict": "This operation belongs to a different tag or set. Please start the run again.",
-      "tag_operation_kind_invalid": "The operation kind is invalid."
+      "tag_operation_kind_invalid": "The operation kind is invalid.",
+      "backfill_disabled": "The chat-archive backfill is not available.",
+      "backfill_months_invalid": "Please choose 1, 3 or 6 months.",
+      "backfill_window_empty": "There are no days before we started counting this channel in that range.",
+      "backfill_already_active": "A backfill is already queued or running for this channel.",
+      "backfill_no_active_run": "There is no backfill to cancel.",
+      "backfill_twitch_id_unknown": "This channel is not fully set up yet. Please try again in a few minutes.",
+      "backfill_set_empty": "This emote set has no emotes, so there is nothing to look for.",
+      "backfill_set_truncated": "This emote set is too large to read completely, so the backfill cannot be started for it.",
+      "backfill_channel_identity_changed": "The channel changed while your request was running. Please reload and try again."
     }
   }
 }
