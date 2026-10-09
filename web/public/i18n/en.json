@@ -2019,6 +2019,7 @@
     "setLabel": "Emote set",
     "setPlaceholder": "Choose a set",
     "setActiveMarker": "active",
+    "setCapacity": "{{ count }} slots",
     "setNote": "Only sets of this channel's 7TV account are listed; the run matches the names as they are in the chosen set right now.",
     "windowLabel": "Time range",
     "option": {
@@ -2039,7 +2040,7 @@
     "runActive": "A backfill is already queued or running for this channel.",
     "start": "Start backfill",
     "errors": {
-      "channelExcluded": "This channel is excluded from tracking, so no backfill can run for it."
+      "channel_excluded": "This channel is excluded from tracking, so no backfill can run for it."
     }
   }
 }

@@ -141,12 +141,35 @@ describe('BackfillSection (start half)', () => {
     expect(section.canStart()).toBe(false);
   });
 
-  it('does not preselect an active set that is personal (not offered)', async () => {
+  it('never offers a personal or non-NORMAL set, except the active one', async () => {
     getStatus.mockReturnValue(of(status({ activeEmoteSetId: 'set-personal' })));
+    listSets.mockReturnValue(
+      of({
+        activeEmoteSetId: 'set-personal',
+        sets: [
+          set('set-active', { kind: 'GLOBAL' }),
+          set('set-personal', { isPersonal: true, kind: 'PERSONAL', isActive: true }),
+          set('set-other'),
+        ],
+      }),
+    );
     const section = (await create()).componentInstance;
 
-    expect(section.selectedSetId()).toBeNull();
-    expect(section.canStart()).toBe(false);
+    expect(section.offeredSets().map((s) => s.id)).toEqual(['set-personal', 'set-other']);
+    expect(section.selectedSetId()).toBe('set-personal');
+  });
+
+  it('adds the active set as a synthetic option when a stale list does not name it', async () => {
+    getStatus.mockReturnValue(of(status({ activeEmoteSetId: 'set-new' })));
+    const section = (await create()).componentInstance;
+
+    expect(section.offeredSets()[0]).toMatchObject({
+      id: 'set-new',
+      label: 'set-new',
+      isActive: true,
+    });
+    expect(section.selectedSetId()).toBe('set-new');
+    expect(section.canStart()).toBe(true);
   });
 
   it('can start with the active set and the first available window', async () => {
@@ -172,6 +195,8 @@ describe('BackfillSection (start half)', () => {
 
     const views = section.optionViews();
     expect(views[0].available).toBe(false);
+    expect(views[0].showRange).toBe(false);
+    expect(views[1].showRange).toBe(true);
     expect(views[0].reasonKey).toBe('backfill.reasons.noDaysBeforeCounting');
     expect(views[1].reasonKey).toBeNull();
     expect(section.selectedMonths()).toBe(3);
@@ -253,12 +278,75 @@ describe('BackfillSection (start half)', () => {
     expect(fixture.componentInstance['startErrorKey']()).toBe('errors.api.backfill_set_empty');
     expect(getStatus).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps start disabled between the 202 and the refetch, so a double click sends one POST', async () => {
+    const fixture = await create();
+    getStatus.mockReturnValue(new Subject<BackfillStatus>());
+
+    const button = fixture.nativeElement.querySelector('button') as HTMLButtonElement;
+    button.click();
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.canStart()).toBe(false);
+    button.click();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, 500, 503])('refetches the status after an unknown outcome (%i)', async (code) => {
+    start.mockReturnValue(throwError(() => httpError(code)));
+    const fixture = await create();
+
+    (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+    await fixture.whenStable();
+
+    expect(getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the start error once the refetched status shows the run', async () => {
+    start.mockReturnValue(throwError(() => httpError(409, 'backfill_already_active')));
+    const fixture = await create();
+    getStatus.mockReturnValue(of(status({ activeRun: RUN })));
+
+    (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+    await fixture.whenStable();
+
+    expect(fixture.componentInstance.visibleStartErrorKey()).toBeNull();
+  });
+
+  it('keeps the last good status and says so when a refetch fails', async () => {
+    const fixture = await create();
+    getStatus.mockReturnValue(throwError(() => httpError(503)));
+
+    fixture.componentInstance['statusResource'].reload();
+    await fixture.whenStable();
+
+    expect(fixture.componentInstance['status']()).not.toBeNull();
+    expect(fixture.componentInstance.statusRefetchErrorKey()).toBe('errors.status.server');
+    expect(fixture.componentInstance.canStart()).toBe(true);
+  });
+
+  it('forgets the picks and the start error when the channel changes', async () => {
+    const fixture = await create();
+    const section = fixture.componentInstance;
+    section['setChoice'].set('set-other');
+    section['selectedMonthsChoice'].set(3);
+    section['startErrorKey'].set('errors.api.backfill_set_empty');
+    expect(section.selectedSetId()).toBe('set-other');
+
+    fixture.componentRef.setInput('channelName', 'other');
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(section.selectedSetId()).toBe('set-active');
+    expect(section.selectedMonths()).toBe(1);
+    expect(section.visibleStartErrorKey()).toBeNull();
+  });
 });
 
 describe('backfillStartErrorKey', () => {
   it('gives channel_excluded the backfill-specific sentence', () => {
     expect(backfillStartErrorKey(httpError(409, 'channel_excluded'))).toBe(
-      'backfill.errors.channelExcluded',
+      'backfill.errors.channel_excluded',
     );
   });
 

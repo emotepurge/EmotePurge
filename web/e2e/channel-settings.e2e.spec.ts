@@ -18,7 +18,7 @@ const SETS = {
   sets: [
     { id: 'set-active', name: 'Normal' },
     { id: 'set-other', name: 'Halloween' },
-    { id: 'set-personal', name: 'Persönlich', isPersonal: true },
+    { id: 'set-personal', name: 'Persönlich', isPersonal: true, kind: 'PERSONAL' },
   ],
 };
 
@@ -84,9 +84,11 @@ test.describe('channel settings tab (chat-log backfill, start half)', () => {
     await mockChannelPermissions(page, 'sensitron');
     await mockBackfillStatus(page, 'sensitron', {
       options: [
+        // What the server sends for an unavailable window: windowFrom (today − months) lies at or
+        // after windowTo (the day counting started), and no days are left.
         {
           months: 1,
-          windowFrom: '2026-10-07',
+          windowFrom: '2026-11-08',
           windowTo: '2026-10-08',
           days: 0,
           weeks: 0,
@@ -111,6 +113,9 @@ test.describe('channel settings tab (chat-log backfill, start half)', () => {
     const unavailable = page.getByRole('radio', { name: /1 Monat/ });
     await expect(unavailable).toBeDisabled();
     await expect(page.getByText('liegen keine Tage in diesem Zeitraum')).toBeVisible();
+    // Only the reason: no inverted range, no "0 Tage".
+    await expect(page.getByText('08.11.2026')).toHaveCount(0);
+    await expect(page.getByText('0 Tage')).toHaveCount(0);
     await expect(page.getByRole('radio', { name: /3 Monate/ })).toBeChecked();
   });
 

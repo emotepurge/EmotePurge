@@ -2019,6 +2019,7 @@
     "setLabel": "Emote-Set",
     "setPlaceholder": "Set wählen",
     "setActiveMarker": "aktiv",
+    "setCapacity": "{{ count }} Slots",
     "setNote": "Es werden nur Sets des 7TV-Kontos dieses Channels angeboten; der Lauf sucht nach den Namen, wie sie im gewählten Set jetzt sind.",
     "windowLabel": "Zeitraum",
     "option": {
@@ -2039,7 +2040,7 @@
     "runActive": "Für diesen Channel läuft oder wartet bereits ein Backfill.",
     "start": "Backfill starten",
     "errors": {
-      "channelExcluded": "Dieser Channel ist von der Erfassung ausgenommen, daher kann kein Backfill für ihn laufen."
+      "channel_excluded": "Dieser Channel ist von der Erfassung ausgenommen, daher kann kein Backfill für ihn laufen."
     }
   }
 }

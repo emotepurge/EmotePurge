@@ -1,9 +1,9 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject, input, signal } from '@angular/core';
+import { Component, computed, inject, input, linkedSignal, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { TranslocoPipe } from '@jsverse/transloco';
 
-import { BackfillOption } from '../../core/channels/backfill.model';
+import { BackfillOption, BackfillStatus } from '../../core/channels/backfill.model';
 import { BackfillService } from '../../core/channels/backfill.service';
 import { isUnknownOutcome } from '../../core/http/unknown-outcome';
 import { apiErrorTranslationKey } from '../../core/i18n/api-error';
@@ -24,7 +24,8 @@ const REASON_KEYS: Record<string, string> = {
   no_days_before_counting: 'backfill.reasons.noDaysBeforeCounting',
 };
 const UNKNOWN_REASON_KEY = 'backfill.reasons.unknown';
-const CHANNEL_EXCLUDED_KEY = 'backfill.errors.channelExcluded';
+// Same vocabulary as the run errors (`backfill.errors.<snake_case ErrorCode>`, spec §4.6).
+const CHANNEL_EXCLUDED_KEY = 'backfill.errors.channel_excluded';
 
 /**
  * The translation key for a failed start. The generic mapping, except that `channel_excluded` gets a
@@ -49,6 +50,9 @@ interface OptionView {
   to: string;
   days: number;
   available: boolean;
+  /** An unavailable option has no meaningful window (the server's `windowFrom` lies at or after
+   *  `windowTo`), so it shows its reason only. */
+  showRange: boolean;
   reasonKey: string | null;
 }
 
@@ -73,8 +77,10 @@ interface SetView {
         {{ 'backfill.title' | transloco }}
       </h3>
 
-      @if (statusResource.hasValue()) {
-        @let status = statusResource.value();
+      @if (status(); as status) {
+        @if (statusRefetchErrorKey(); as key) {
+          <app-notice-banner variant="warning">{{ key | transloco }}</app-notice-banner>
+        }
         <div class="flex flex-col gap-2 text-sm text-fg-secondary">
           <p>
             {{ 'backfill.explain.source' | transloco }}
@@ -112,7 +118,11 @@ interface SetView {
             }
             @for (set of offeredSets(); track set.id) {
               <option [value]="set.id" [selected]="set.id === selectedSetId()">
-                {{ set.label }}{{ set.capacity !== null ? ' (' + set.capacity + ')' : ''
+                {{ set.label
+                }}{{
+                  set.capacity !== null
+                    ? ' · ' + ('backfill.setCapacity' | transloco: { count: set.capacity })
+                    : ''
                 }}{{ set.isActive ? ' · ' + ('backfill.setActiveMarker' | transloco) : '' }}
               </option>
             }
@@ -141,16 +151,19 @@ interface SetView {
                 pluralKey(option.months, 'backfill.option.months')
                   | transloco: { count: option.months }
               }}</span>
-              <span class="text-fg-muted">
-                {{
-                  'backfill.option.range'
-                    | transloco: { from: formatDay(option.from), to: formatDay(option.to) }
-                }}
-                ·
-                {{
-                  pluralKey(option.days, 'backfill.option.days') | transloco: { count: option.days }
-                }}
-              </span>
+              @if (option.showRange) {
+                <span class="text-fg-muted">
+                  {{
+                    'backfill.option.range'
+                      | transloco: { from: formatDay(option.from), to: formatDay(option.to) }
+                  }}
+                  ·
+                  {{
+                    pluralKey(option.days, 'backfill.option.days')
+                      | transloco: { count: option.days }
+                  }}
+                </span>
+              }
               @if (option.reasonKey; as reasonKey) {
                 <span class="text-fg-muted">· {{ reasonKey | transloco }}</span>
               }
@@ -171,7 +184,7 @@ interface SetView {
           >
             {{ 'backfill.start' | transloco }}
           </button>
-          @if (startErrorKey(); as key) {
+          @if (visibleStartErrorKey(); as key) {
             <app-notice-banner variant="error" class="block">{{
               key | transloco
             }}</app-notice-banner>
@@ -197,43 +210,79 @@ export class BackfillSection {
     stream: ({ params }) => this.backfillService.getStatus(params),
   });
 
+  /**
+   * The status on screen: the freshest good read of this channel. A failed background refetch must
+   * not throw the whole section away (it would drop the user's picks), so the last good answer
+   * stays until a newer one replaces it; a channel switch starts over with nothing.
+   */
+  protected readonly status = linkedSignal<
+    { channel: string; value: BackfillStatus | undefined },
+    BackfillStatus | null
+  >({
+    source: () => ({
+      channel: this.channelName(),
+      value: this.statusResource.hasValue() ? this.statusResource.value() : undefined,
+    }),
+    computation: (source, previous) =>
+      source.value ??
+      (previous && previous.source.channel === source.channel ? previous.value : null),
+  });
+
   private readonly setListResource = rxResource({
     params: () => this.channelName(),
     stream: ({ params }) => this.emoteSetService.listChannelEmoteSets(params),
   });
 
   /** The user's own pick; `undefined` = never touched, so the preselection applies. */
-  private readonly setChoice = signal<string | undefined>(undefined);
-  protected readonly selectedMonthsChoice = signal<number | null>(null);
+  private readonly setChoice = linkedSignal<string, string | undefined>({
+    source: this.channelName,
+    computation: () => undefined,
+  });
+  // The three below start over with every channel: the router reuses this component when the
+  // user moves from /channels/a/settings to /channels/b/settings.
+  protected readonly selectedMonthsChoice = linkedSignal<string, number | null>({
+    source: this.channelName,
+    computation: () => null,
+  });
   protected readonly starting = signal(false);
-  protected readonly startErrorKey = signal<string | null>(null);
+  protected readonly startErrorKey = linkedSignal<string, string | null>({
+    source: this.channelName,
+    computation: () => null,
+  });
   protected readonly pluralKey = pluralKey;
 
   /** The active set, or `null` while no sync has completed (`""` on the wire). */
   readonly preselectedSetId = computed(() => {
-    if (!this.statusResource.hasValue()) {
-      return null;
-    }
-    return this.statusResource.value().activeEmoteSetId || null;
+    return this.status()?.activeEmoteSetId || null;
   });
 
-  /** The channel's non-personal sets; empty until the list is on hand. */
+  /**
+   * What the server accepts (`EmoteSetMembershipRule.BelongsToChannel`): the channel's `NORMAL`
+   * sets of its 7TV account plus the active set. Personal sets are never offered. When the list
+   * does not name the active set (7TV's REST cache lags behind a set switch) a synthetic entry
+   * keeps the preselection working. Empty until the list is on hand.
+   */
   readonly offeredSets = computed<SetView[]>(() => {
     if (!this.setListResource.hasValue()) {
       return [];
     }
-    return this.setListResource
+    const activeId = this.preselectedSetId();
+    const sets: SetView[] = this.setListResource
       .value()
-      .sets.filter((set) => !set.isPersonal)
+      .sets.filter((set) => set.id === activeId || (set.kind === 'NORMAL' && !set.isPersonal))
       .map((set) => ({
         id: set.id,
         label: set.name || set.id,
         capacity: set.capacity,
-        isActive: set.isActive,
+        isActive: set.isActive || set.id === activeId,
       }));
+    if (activeId !== null && !sets.some((set) => set.id === activeId)) {
+      sets.unshift({ id: activeId, label: activeId, capacity: null, isActive: true });
+    }
+    return sets;
   });
 
-  /** Only an offered set can be selected, so a stale pick or a personal active set yields `null`. */
+  /** Only an offered set can be selected, so a stale pick yields `null`. */
   readonly selectedSetId = computed(() => {
     const candidate = this.setChoice() ?? this.preselectedSetId();
     return candidate !== null && this.offeredSets().some((set) => set.id === candidate)
@@ -255,10 +304,7 @@ export class BackfillSection {
   });
 
   readonly optionViews = computed<OptionView[]>(() => {
-    if (!this.statusResource.hasValue()) {
-      return [];
-    }
-    return this.statusResource.value().options.map((option) => this.toOptionView(option));
+    return (this.status()?.options ?? []).map((option) => this.toOptionView(option));
   });
 
   /** The user's pick if it is still available, otherwise the first available option. */
@@ -271,8 +317,8 @@ export class BackfillSection {
 
   readonly canStart = computed(
     () =>
-      this.statusResource.hasValue() &&
-      this.statusResource.value().activeRun === null &&
+      this.status() !== null &&
+      this.status()?.activeRun === null &&
       this.selectedMonths() !== null &&
       this.selectedSetId() !== null &&
       this.setListLoaded(),
@@ -282,6 +328,17 @@ export class BackfillSection {
     const error = this.statusResource.error();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : 'errors.generic';
   });
+
+  /** A failed refetch while an earlier answer is on screen: said next to the section, not instead of it. */
+  readonly statusRefetchErrorKey = computed(() =>
+    this.status() !== null && this.statusResource.error() ? this.statusErrorKey() : null,
+  );
+
+  /** Once the refetched status shows a run, the "run is active" sentence says it all — an error
+   *  left over from a lost `backfill_already_active` race would only repeat it. */
+  readonly visibleStartErrorKey = computed(() =>
+    this.status()?.activeRun ? null : this.startErrorKey(),
+  );
 
   constructor() {
     liveReload(
@@ -314,8 +371,13 @@ export class BackfillSection {
     this.starting.set(true);
     this.startErrorKey.set(null);
     this.backfillService.start(this.channelName(), emoteSetId, months).subscribe({
-      next: () => {
+      next: (run) => {
         this.starting.set(false);
+        // Until the refetch lands the status still says "no run": patch it in so the button stays
+        // locked and a second click cannot send a second POST.
+        if (this.statusResource.hasValue()) {
+          this.statusResource.update((current) => current && { ...current, activeRun: run });
+        }
         this.statusResource.reload();
       },
       error: (error: HttpErrorResponse) => {
@@ -338,6 +400,7 @@ export class BackfillSection {
       to: lastDayOf(option.windowTo),
       days: option.days,
       available: option.available,
+      showRange: option.available,
       reasonKey: option.available ? null : (REASON_KEYS[option.reason ?? ''] ?? UNKNOWN_REASON_KEY),
     };
   }

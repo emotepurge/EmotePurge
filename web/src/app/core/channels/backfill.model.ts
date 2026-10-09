@@ -3,9 +3,6 @@
  * server's ISO calendar days (`YYYY-MM-DD`, UTC), timestamps ISO instants.
  */
 
-/** The window lengths the server accepts (`backfill_months_invalid` otherwise). */
-export type BackfillMonths = 1 | 3 | 6;
-
 export type BackfillRunStatus =
   'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
@@ -33,6 +30,7 @@ export interface BackfillCoverageInterval {
   to: string;
   emoteSetId: string;
   emoteSetName: string | null;
+  archiveHost: string;
 }
 
 export interface BackfillRun {
@@ -48,7 +46,7 @@ export interface BackfillRun {
   requestedAtUtc: string;
   startedAtUtc: string | null;
   finishedAtUtc: string | null;
-  requestedByLogin: string | null;
+  requestedByLogin: string;
   emoteSetId: string;
   emoteSetName: string | null;
   emoteCount: number;
