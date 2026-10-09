@@ -1,6 +1,6 @@
 # Spec: Chat-log backfill — fill a channel's pre-join days from the public chat archive on request
 
-**Date:** 2026-10-09 · **Status:** settled with the operator; two adversarial reviews (Codex Sol, 2026-10-08/09) incorporated · **Epic:** #EPIC · **Archive measurements:** [`docs/Untersuchung-Chat-Log-Archiv-Range-2026-10-08.md`](../../Untersuchung-Chat-Log-Archiv-Range-2026-10-08.md) · **Predecessor:** #69 (closed, variant (i))
+**Date:** 2026-10-09 · **Status:** settled with the operator; two adversarial reviews (Codex Sol, 2026-10-08/09) incorporated · **Epic:** #346 · **Archive measurements:** [`docs/Untersuchung-Chat-Log-Archiv-Range-2026-10-08.md`](../../Untersuchung-Chat-Log-Archiv-Range-2026-10-08.md) · **Predecessor:** #69 (closed, variant (i))
 
 > Written in English on purpose (exception to the language rule for specs, see `docs/DECISIONS.md` 2026-10-09): this text was authored, reviewed twice and settled in English; the epic and child issues quote it. **This file is the single source of truth**; the issues point here.
 
@@ -13,7 +13,7 @@ A freshly joined channel is useless for weeks: every emote reads as unused, the 
 
 This issue is the **separate product decision** #69's last comment deferred: the operator accepts those limits knowingly and wants an explicit, manager-triggered backfill that fills only the days **before** EmotePurge started counting a channel, stored with a provenance mark, shown with an honesty caption, and never mixed into a live-counted day. Archive: `https://logs.cyex.app/` (rustlog fork, justlog-compatible), measured twice on 2026-10-08 (report: `docs/Untersuchung-Chat-Log-Archiv-Range-2026-10-08.md`, in German; "probe 1/2" below = "Sonde 1/2" there; key figures below). Archive operator's condition: link `https://logs.cyex.app/` wherever imported numbers are shown; no personal credit.
 
-Thirteen operator decisions are binding and reproduced in "Proposed Change" (B1–B13). Everything else the implementer needs is settled in "Decisions made in this spec" (D1–D24); the operator may veto any of them before work starts.
+Thirteen operator decisions are binding and reproduced in "Proposed Change" (B1–B13). Everything else the implementer needs is settled in "Decisions made in this spec" (D1–D49).
 
 ## Current State (verified 2026-10-08 against `origin/main` @ ff405ff4; includes PR #341)
 
@@ -670,14 +670,14 @@ Per child (each child body repeats its own list):
 
 | # | Title | Depends on | Days |
 |---|---|---|---|
-| 1 | `Emotes.IsPlaceholder`: mark never-observed emote rows and keep them out of delayed-leave detection | — | 1.5 |
-| 2 | Backfill schema and archive range client (incl. provider-state table, versioned preview cache, leave/deletion/retention hooks) | — (independent of 1; the hooks touch only the new entities) | 3 |
-| 3 | `IChatLogBackfillService`: locked enqueue with 7TV snapshot, block replace with coverage, run transitions | 1, 2 | 3 (at the limit after moving the D15/D16/retention hooks to child 2) |
-| 4 | `ChatLogBackfillWorker`: sequential queue, block replay, 429/transport policy, SSE progress | 2, 3 | 3.5 (exceeds 3 d by the live verification on two channels, which cannot be shortened — the handofblood run alone is 10 min wall plus restart/cancel/exclusion/memory probes; splitting the worker from its live proof would merge an unverified worker, against rule 16) |
-| 5 | Backfill API: status/start/cancel routes, error codes, audit, permissions flag | 3 | 2 |
-| 6 | Settings tab, guard, `BackfillService` and set picker (start a run) | 5 (contract), 4 (live check only) | 2.5 |
-| 7 | Backfill progress, cancel, replace warning and last-run display | 6 | 2 |
-| 8 | Provenance caption from per-set coverage, docs, compose wiring, acceptance run | 1–7 | 2 |
+| 1 | #347 `Emotes.IsPlaceholder`: mark never-observed emote rows and keep them out of delayed-leave detection | — | 1.5 |
+| 2 | #348 Backfill schema and archive range client (incl. provider-state table, versioned preview cache, leave/deletion/retention hooks) | — (independent of 1; the hooks touch only the new entities) | 3 |
+| 3 | #349 `IChatLogBackfillService`: locked enqueue with 7TV snapshot, block replace with coverage, run transitions | 1, 2 | 3 (at the limit after moving the D15/D16/retention hooks to child 2) |
+| 4 | #350 `ChatLogBackfillWorker`: sequential queue, block replay, 429/transport policy, SSE progress | 2, 3 | 3.5 (exceeds 3 d by the live verification on two channels, which cannot be shortened — the handofblood run alone is 10 min wall plus restart/cancel/exclusion/memory probes; splitting the worker from its live proof would merge an unverified worker, against rule 16) |
+| 5 | #351 Backfill API: status/start/cancel routes, error codes, audit, permissions flag | 3 | 2 |
+| 6 | #352 Settings tab, guard, `BackfillService` and set picker (start a run) | 5 (contract), 4 (live check only) | 2.5 |
+| 7 | #353 Backfill progress, cancel, replace warning and last-run display | 6 | 2 |
+| 8 | #354 Provenance caption from per-set coverage, docs, compose wiring, acceptance run | 1–7 | 2 |
 
 ```
 1 ──┐
@@ -688,7 +688,7 @@ Per child (each child body repeats its own list):
 
 Sequencing rationale: 1 is a standalone fix that is useful without the feature and must be in before 3 creates placeholder rows; 2 fixes every contract the others code against (entities, archive result, options, command/event/audit constants) and merges behind nothing because nothing reaches it; 1 and 2 are independent and can run in parallel; 3 is the only consumer of both and the one child near the 3-day limit; 4 and 5 are independent consumers of 3 and run in parallel; 6 needs only 5's wire contract (mocked in E2E), so it starts once 5's DTOs are merged, and ships a tab that can start a run (behind the flag); 7 adds the running/finished half of the section on top of 6; 8 is the integration tail: it is where AC 2, 10, 11, 18 are actually run and where the docs state what shipped. Every child passes all three suites on its own: constants and their consumers' tests travel together (child 5 owns the frontend audit map, labels and spec; child 2's event type only has `Contains` assertions in `LiveEventTests`; error codes and their locale entries are one child).
 
-# Child 1: `Emotes.IsPlaceholder` — mark never-observed emote rows and keep them out of delayed-leave detection
+# Child 1 (#347): `Emotes.IsPlaceholder` — mark never-observed emote rows and keep them out of delayed-leave detection
 
 Labels: `fix`, `infrastructure`, `migration`
 Part of: EPIC "Chat-log backfill" (D27 helper, D37). **Mergeable and useful on its own, before any backfill code**, and the first PR of the epic.
@@ -720,7 +720,7 @@ Today a set-session's ballot creates archived `Emote` rows for members without a
 
 `src/EmotePurge.Core/Entities/Emote.cs`, `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs`, `src/EmotePurge.Infrastructure/Migrations/2026xxxx_AddEmotePlaceholderMarker.cs`, `src/EmotePurge.Infrastructure/Services/ArchivedEmoteRowUpsert.cs` (new), `…/Services/{VoteSessionService,SevenTvSyncService,EmoteService}.cs`, `docs/DECISIONS.md`.
 
-# Child 2: Backfill schema and archive range client
+# Child 2 (#348): Backfill schema and archive range client
 
 Labels: `feature`, `infrastructure`, `migration`
 Part of: EPIC "Chat-log backfill" (§1, §2, §8 and D3–D6, D21, D25, D33, D34, D40 bind this issue). Pure contracts and plumbing: nothing here is reachable by a user, so it merges behind nothing.
@@ -750,7 +750,7 @@ Part of: EPIC "Chat-log backfill" (§1, §2, §8 and D3–D6, D21, D25, D33, D34
 
 `src/EmotePurge.Core/Entities/{UsageStat,UsageStatSource,ChatLogBackfillRun,ChatLogBackfillRunEmote,ChatLogBackfillCoverageDay,AuditLogEntry}.cs`, `src/EmotePurge.Core/Services/{IAuditLogQueryService,RetentionPolicy}.cs`, `src/EmotePurge.Core/ChatLogArchive/{IChatLogArchiveClient,ChatLogArchiveModels}.cs`, `src/EmotePurge.Core/Messaging/{BotCommands,LiveEvents}.cs`, `src/EmotePurge.Core/SevenTv/SevenTvModels.cs`, `src/EmotePurge.Core/Services/IForeignEmoteSetService.cs`, `src/EmotePurge.Infrastructure/ChatLogArchive/{ChatLogArchiveClient,ChatLogArchiveOptions,BoundedLineScanner}.cs`, `src/EmotePurge.Infrastructure/SevenTv/{SevenTvApiClient,SevenTvApiDtos}.cs`, `src/EmotePurge.Infrastructure/Services/{ChatLogBackfillOptions,ForeignEmoteSetService,ChannelDeactivation,AccountDeletionService,DataRetentionService}.cs`, `src/EmotePurge.Infrastructure/SevenTv/ForeignEmoteSetCache.cs`, `src/EmotePurge.Worker/RetentionRunSummaryFormatter.cs`, `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs`, `src/EmotePurge.Infrastructure/Migrations/2026xxxx_AddChatLogBackfill.cs`, `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`.
 
-# Child 3: `IChatLogBackfillService` — locked enqueue with 7TV snapshot, block replace with coverage, run transitions
+# Child 3 (#349): `IChatLogBackfillService` — locked enqueue with 7TV snapshot, block replace with coverage, run transitions
 
 Labels: `feature`, `infrastructure`
 Part of: EPIC "Chat-log backfill" (§3 in full, §4.1, D1, D2, D7, D10–D14, D25–D28, D31, D32, D34–D38, D43 bind this issue; depends on children 1 and 2).
@@ -785,7 +785,7 @@ Part of: EPIC "Chat-log backfill" (§3 in full, §4.1, D1, D2, D7, D10–D14, D2
 
 3 days — at the limit the operator set; the D15/D16/retention hooks were moved to child 2 to make room for the id lock, the in-transition pause delay and the provider cooldown.
 
-# Child 4: ChatLogBackfillWorker — sequential queue, block replay, 429/transport policy, SSE progress
+# Child 4 (#350): ChatLogBackfillWorker — sequential queue, block replay, 429/transport policy, SSE progress
 
 Labels: `feature`, `worker`
 Part of: EPIC "Chat-log backfill" (§4 in full, §6, D7–D13, D31–D33, D38, D39; depends on children 2 and 3).
@@ -813,7 +813,7 @@ Part of: EPIC "Chat-log backfill" (§4 in full, §6, D7–D13, D31–D33, D38, D
 
 `tests/EmotePurge.Worker.Tests/ChatLogBackfillBlockPlannerTests.cs`, `ChatLogBackfillBlockCounterTests.cs`, `ChatLogBackfillRetryPolicyTests.cs`, `WorkerServiceRegistrationTests.cs` extension, `WorkerBootSequenceTests.cs`/dispatch test for the new prefix.
 
-# Child 5: Backfill API — status/start/cancel routes, error codes, audit, permissions flag
+# Child 5 (#351): Backfill API — status/start/cancel routes, error codes, audit, permissions flag
 
 Labels: `feature`, `api`
 Part of: EPIC "Chat-log backfill" (§5 incl. §5.6, D14, D17, D26, D32, D35; depends on child 3).
@@ -840,7 +840,7 @@ Part of: EPIC "Chat-log backfill" (§5 incl. §5.6, D14, D17, D26, D32, D35; dep
 
 `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` (three routes added, `ApiFactory` gets `IChatLogBackfillService` substitute + a factory variant with the flag off), new `ChatLogBackfillEndpointsTests.cs`; `web/src/app/core/i18n/api-error-locales.spec.ts` (existing).
 
-# Child 6: Settings tab, guard, BackfillService and set picker — start a run
+# Child 6 (#352): Settings tab, guard, BackfillService and set picker — start a run
 
 Labels: `feature`, `web`
 Part of: EPIC "Chat-log backfill" (§5.1 contract, §6, §7 start half, B8, D17–D18, D26; depends on child 5; E2E runs fully mocked, so it does not wait for child 4). Mergeable behind the flag: a manager can start a run; the running/finished half of the section comes in child 7.
@@ -865,7 +865,7 @@ Part of: EPIC "Chat-log backfill" (§5.1 contract, §6, §7 start half, B8, D17�
 
 `backfill.service.spec.ts`, `backfill-section.spec.ts` (start half), `channel-settings.guard.spec.ts`, `channel-workspace-layout.spec.ts` (tab condition), `web/e2e/channel-settings.e2e.spec.ts` with new mocks `mockBackfillStatus/Start` in `web/e2e/support/mocks.ts`.
 
-# Child 7: Backfill progress, cancel, replace warning and last-run display
+# Child 7 (#353): Backfill progress, cancel, replace warning and last-run display
 
 Labels: `feature`, `web`
 Part of: EPIC "Chat-log backfill" (§5.1 contract, §6, §7 status half, B8, B11, D28, D31; depends on child 6).
@@ -889,7 +889,7 @@ Part of: EPIC "Chat-log backfill" (§5.1 contract, §6, §7 status half, B8, B11
 
 `backfill-section.spec.ts` (status half), `backfill-run-status.spec.ts`, `web/e2e/channel-settings.e2e.spec.ts` extensions with `mockBackfillCancel` and coverage fixtures in `web/e2e/support/mocks.ts`.
 
-# Child 8: Provenance caption from per-set coverage, docs, compose wiring, acceptance run
+# Child 8 (#354): Provenance caption from per-set coverage, docs, compose wiring, acceptance run
 
 Labels: `feature`, `web`, `docs`, `ops`
 Part of: EPIC "Chat-log backfill" (B7, B13, §5.6, §7 caption, §8–§9, D19–D22, D24, D34, D40–D42; depends on 1–7 for the acceptance run).
