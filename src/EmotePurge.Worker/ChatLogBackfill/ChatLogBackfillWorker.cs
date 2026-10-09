@@ -78,9 +78,10 @@ public sealed class ChatLogBackfillWorker(
 
     private const long BytesPerMegabyte = 1024 * 1024;
 
-    // Consecutive abandon-and-resume events per run id; reset by a committed block, dropped when the
-    // run ends. In memory on purpose: a process restart is itself a resume and starts the count afresh.
-    private readonly Dictionary<long, int> _abandonsInARow = [];
+    // Consecutive abandon-and-resume events per run id, with the WeeksDone they happened at; reset by a
+    // committed block, dropped when the run ends or a later claim shows progress made elsewhere. In
+    // memory on purpose: a process restart is itself a resume and starts the count afresh.
+    private readonly Dictionary<long, (int Count, int WeeksDone)> _abandonsInARow = [];
 
     // The start of the previous archive request, for the worker-side spacing (D7). Across runs on
     // purpose: a fresh run's fresh client knows nothing about the previous run's last request.
@@ -233,14 +234,22 @@ public sealed class ChatLogBackfillWorker(
 
     private async Task<RunOutcome> RunClaimedAsync(IChatLogBackfillService service, ChatLogBackfillClaim claim, CancellationToken stoppingToken)
     {
-        // Abandoned three times already, and the failure could not be recorded then: record it now,
-        // before a single further request.
-        if (_abandonsInARow.GetValueOrDefault(claim.RunId) >= MaxConsecutiveAbandons)
+        var state = new RunState { WeeksDone = claim.WeeksDone };
+
+        // A count from before progress somebody else made (another loop that held the lock meanwhile, or
+        // a commit the server applied while this process saw an error) is stale: the run moved on.
+        if (_abandonsInARow.TryGetValue(claim.RunId, out var pending) && claim.WeeksDone != pending.WeeksDone)
         {
-            return await FailOrAbandonAsync(service, claim, WorkerErrorCode, null, 0, stoppingToken);
+            _abandonsInARow.Remove(claim.RunId);
         }
 
-        var state = new RunState();
+        // Abandoned three times already at this very progress, and the failure was deferred or could not
+        // be recorded then: record it now, before a single further request (no read, so 0 bytes).
+        if (_abandonsInARow.GetValueOrDefault(claim.RunId).Count >= MaxConsecutiveAbandons)
+        {
+            return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, null, stoppingToken);
+        }
+
         using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         var monitor = Task.CompletedTask;
         AsyncServiceScope? monitorScope = null;
@@ -255,7 +264,7 @@ public sealed class ChatLogBackfillWorker(
             var snapshot = await service.GetSnapshotAsync(claim.RunId, stoppingToken);
             if (snapshot.Emotes.Count == 0)
             {
-                return await FailOrAbandonAsync(service, claim, SnapshotMissingErrorCode, null, 0, stoppingToken);
+                return await FailOrAbandonAsync(service, claim, state, SnapshotMissingErrorCode, null, stoppingToken);
             }
 
             var map = EmoteNameMatching.Coalesce(snapshot.Emotes.Select(e => new KeyValuePair<string, string>(e.Name, e.EmoteId)));
@@ -279,7 +288,7 @@ public sealed class ChatLogBackfillWorker(
                 logger.LogError(
                     "Chat-log backfill run {RunId}: the block plan ({Blocks} blocks) does not fit the row (week {WeeksDone} of {WeeksTotal}).",
                     claim.RunId, plan.Count, claim.WeeksDone, claim.WeeksTotal);
-                return await FailOrAbandonAsync(service, claim, WorkerErrorCode, null, 0, stoppingToken);
+                return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, null, stoppingToken);
             }
 
             // The status monitor's own instance (D39): a second user of the loop's instance would race it.
@@ -297,16 +306,22 @@ public sealed class ChatLogBackfillWorker(
         catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
         {
             // Before the block loop (client, snapshot, monitor scope) every failure is resumable, and so
-            // is a transient database error inside it. A transient error on the commit may hide a
-            // commit the server did make: resuming re-reads WeeksDone from the row, so that block is
-            // simply not read again — safe either way.
-            if (!state.InBlockLoop || IsTransient(ex))
+            // is a transient database error inside it. A transient error on a write may hide a write the
+            // server did apply: resuming re-reads WeeksDone from the row, so that block is simply not
+            // read again — and the third strike of such an error is deferred to the next claim, which
+            // sees that progress and drops the count instead of failing a run that just moved on.
+            if (!state.InBlockLoop)
             {
-                return await AbandonAsync(service, claim, "an error the run can resume from", state.UnbookedBytes, ex, stoppingToken);
+                return await AbandonAsync(service, claim, state, "an error before the block loop", ex, deferFailure: false, stoppingToken);
+            }
+
+            if (IsTransient(ex))
+            {
+                return await AbandonAsync(service, claim, state, "a transient database error", ex, deferFailure: true, stoppingToken);
             }
 
             logger.LogError(ex, "Chat-log backfill run {RunId} ({Channel}) failed with an unexpected error.", claim.RunId, claim.ChannelName);
-            return await FailOrAbandonAsync(service, claim, WorkerErrorCode, null, state.UnbookedBytes, stoppingToken);
+            return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, null, stoppingToken);
         }
         finally
         {
@@ -343,13 +358,10 @@ public sealed class ChatLogBackfillWorker(
             // (D7), the loop lock (D46), and the row itself (D39) — a non-running row stops the run
             // without a request.
             await WaitForCooldownAsync(service, runToken, stoppingToken);
-            await Task.Delay(
-                ChatLogBackfillRetryPolicy.SpacingWait(_lastRequestStartedUtc, TimeSpan.FromSeconds(options.RequestDelaySeconds), UtcNow()),
-                timeProvider,
-                runToken);
+            await WaitForSpacingAsync(runToken);
             if (!await service.TryAcquireLoopLockAsync(stoppingToken))
             {
-                return await AbandonAsync(service, claim, "the loop lock was lost before a request", 0, null, stoppingToken);
+                return await AbandonAsync(service, claim, state, "the loop lock was lost before a request", null, deferFailure: false, stoppingToken);
             }
 
             if (!await service.IsRunActiveAsync(claim.RunId, stoppingToken))
@@ -385,17 +397,20 @@ public sealed class ChatLogBackfillWorker(
                 claim.RunId, claim.ChannelName, index + 1, plan.Count, block.From, block.ToExclusive, result.Status, result.MessageCount,
                 result.BytesReceived);
 
+            // Every write after a read happens only under the lock (D46): a read can last up to the body
+            // timeout, and another loop that took the lock meanwhile may have reset and re-claimed this
+            // very run — a commit, a pause, an attempt or a failure written now would land on its run.
+            // Not held: nothing is written for this read, not even a 429's cooldown (the holder gets its
+            // own 429 if the archive still means it).
+            if (result.Status != ChatLogDayStatus.Cancelled && !await service.TryAcquireLoopLockAsync(stoppingToken))
+            {
+                return await AbandonAsync(service, claim, state, "the loop lock was lost during a read", null, deferFailure: false, stoppingToken);
+            }
+
             switch (result.Status)
             {
                 case ChatLogDayStatus.Complete:
                 case ChatLogDayStatus.NoLogDay:
-                    // Commits happen only under the lock (D46): another loop that took it meanwhile may
-                    // have reset and re-claimed this very run.
-                    if (!await service.TryAcquireLoopLockAsync(stoppingToken))
-                    {
-                        return await AbandonAsync(service, claim, "the loop lock was lost before a commit", 0, null, stoppingToken);
-                    }
-
                     // A 404 is a block without data (D12): committed like any other, replacing and covering its days.
                     var outcome = await service.ReplaceBlockAsync(
                         claim.RunId, block.From, block.ToExclusive, counter.Aggregates(), result.BytesReceived, result.MessageCount,
@@ -403,6 +418,7 @@ public sealed class ChatLogBackfillWorker(
                     if (outcome is ChatLogBackfillBlockResult.Committed committed)
                     {
                         state.UnbookedBytes = 0;
+                        state.WeeksDone++;
                         _abandonsInARow.Remove(claim.RunId);
                         await redisPublisher.PublishChannelEventAsync(logger, LiveEvents.UsageFlushed, claim.ChannelName, stoppingToken);
                         await PublishProgressAsync(claim.ChannelName, stoppingToken);
@@ -423,9 +439,12 @@ public sealed class ChatLogBackfillWorker(
                         continue;
                     }
 
-                    return await HandleUncommittedBlockAsync(service, claim, outcome, result.BytesReceived, stoppingToken);
+                    return await HandleUncommittedBlockAsync(service, claim, state, outcome, stoppingToken);
 
                 case ChatLogDayStatus.RateLimited:
+                    // A 429 books no bytes (D47), also when the pause write below fails.
+                    state.UnbookedBytes = 0;
+
                     // D38/D44: the delay and the rate_limited threshold are computed in the database
                     // from the row's own PauseCount; the pause is spent outside this method.
                     var paused = await service.PauseAsync(claim.RunId, result.RetryAfter, UtcNow(), stoppingToken);
@@ -464,7 +483,7 @@ public sealed class ChatLogBackfillWorker(
                     if (!ChatLogBackfillRetryPolicy.ShouldRetryTransport(attempt.BlockAttempts, options.TransportRetries))
                     {
                         // This attempt's bytes are already booked by RecordBlockAttemptAsync.
-                        return await FailOrAbandonAsync(service, claim, TransportFailureErrorCode, result.HttpStatusCode, 0, stoppingToken);
+                        return await FailOrAbandonAsync(service, claim, state, TransportFailureErrorCode, result.HttpStatusCode, stoppingToken);
                     }
 
                     var delay = ChatLogBackfillRetryPolicy.TransportRetryDelay(
@@ -478,11 +497,10 @@ public sealed class ChatLogBackfillWorker(
 
                 case ChatLogDayStatus.MalformedResponse:
                 case ChatLogDayStatus.LineTooLong:
-                    return await FailOrAbandonAsync(
-                        service, claim, MalformedResponseErrorCode, result.HttpStatusCode, result.BytesReceived, stoppingToken);
+                    return await FailOrAbandonAsync(service, claim, state, MalformedResponseErrorCode, result.HttpStatusCode, stoppingToken);
 
                 case ChatLogDayStatus.ByteCapExceeded:
-                    return await FailOrAbandonAsync(service, claim, BlockTooLargeErrorCode, result.HttpStatusCode, result.BytesReceived, stoppingToken);
+                    return await FailOrAbandonAsync(service, claim, state, BlockTooLargeErrorCode, result.HttpStatusCode, stoppingToken);
 
                 case ChatLogDayStatus.Cancelled:
                     // Either the process is stopping (the row stays running for the next boot's reset) or
@@ -496,7 +514,7 @@ public sealed class ChatLogBackfillWorker(
 
                 default:
                     logger.LogError("Chat-log backfill run {RunId}: unexpected archive status {Status}.", claim.RunId, result.Status);
-                    return await FailOrAbandonAsync(service, claim, WorkerErrorCode, result.HttpStatusCode, result.BytesReceived, stoppingToken);
+                    return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, result.HttpStatusCode, stoppingToken);
             }
         }
 
@@ -505,14 +523,14 @@ public sealed class ChatLogBackfillWorker(
 
     // D48: RunNotActive, LiveRowConflict and ChannelGone roll the block back.
     private async Task<RunOutcome> HandleUncommittedBlockAsync(
-        IChatLogBackfillService service, ChatLogBackfillClaim claim, ChatLogBackfillBlockResult outcome, long bytes, CancellationToken stoppingToken)
+        IChatLogBackfillService service, ChatLogBackfillClaim claim, RunState state, ChatLogBackfillBlockResult outcome, CancellationToken stoppingToken)
     {
         switch (outcome)
         {
             case ChatLogBackfillBlockResult.LiveRowConflict:
                 // The bytes were received and the run is still running: booked with the failure (D47,
                 // operator decision 2026-10-09).
-                return await FailOrAbandonAsync(service, claim, LiveRowConflictErrorCode, null, bytes, stoppingToken);
+                return await FailOrAbandonAsync(service, claim, state, LiveRowConflictErrorCode, null, stoppingToken);
 
             case ChatLogBackfillBlockResult.RunNotActive:
                 // RunNotActive also answers a block that is not the run's next planned one, while the
@@ -521,7 +539,8 @@ public sealed class ChatLogBackfillWorker(
                 // (operator decision 2026-10-09); three in a row fail the run.
                 if (await service.IsRunActiveAsync(claim.RunId, stoppingToken))
                 {
-                    return await AbandonAsync(service, claim, "the service did not accept the block as the run's next one", bytes, null, stoppingToken);
+                    return await AbandonAsync(
+                        service, claim, state, "the service did not accept the block as the run's next one", null, deferFailure: false, stoppingToken);
                 }
 
                 LogStopped(claim);
@@ -536,21 +555,27 @@ public sealed class ChatLogBackfillWorker(
 
     /// <summary>
     /// One abandon-and-resume event: nothing is written, the loop takes the lost-lock path and the run
-    /// resumes at the next claim. The third in a row fails the run with <c>worker_error</c>, booking
-    /// <paramref name="unbookedBytes"/> — but only while this loop still holds the lock; otherwise the
-    /// failure waits for the next claim, which records it before any request.
+    /// resumes at the next claim. Counted per run and per <c>WeeksDone</c>: the third event in a row at
+    /// the same progress fails the run with <c>worker_error</c>, booking the read this loop could not
+    /// commit (<see cref="RunState.UnbookedBytes"/>) — but only while this loop still holds the lock,
+    /// and not for a transient write error (<paramref name="deferFailure"/>), whose write may have been
+    /// applied. Those wait for the next claim, which re-reads <c>WeeksDone</c> and records the failure
+    /// with 0 bytes before any request — or drops the count when the run has moved on.
     /// </summary>
     private async Task<RunOutcome> AbandonAsync(
-        IChatLogBackfillService service, ChatLogBackfillClaim claim, string reason, long unbookedBytes, Exception? exception,
+        IChatLogBackfillService service, ChatLogBackfillClaim claim, RunState state, string reason, Exception? exception, bool deferFailure,
         CancellationToken stoppingToken)
     {
-        var abandons = _abandonsInARow[claim.RunId] = _abandonsInARow.GetValueOrDefault(claim.RunId) + 1;
-        if (abandons >= MaxConsecutiveAbandons && await HoldsLockAsync(service, stoppingToken))
+        var previous = _abandonsInARow.GetValueOrDefault(claim.RunId);
+        var abandons = previous.Count > 0 && previous.WeeksDone == state.WeeksDone ? previous.Count + 1 : 1;
+        _abandonsInARow[claim.RunId] = (abandons, state.WeeksDone);
+
+        if (abandons >= MaxConsecutiveAbandons && !deferFailure && await HoldsLockAsync(service, stoppingToken))
         {
             logger.LogError(
                 exception, "Chat-log backfill run {RunId} ({Channel}) abandoned {Abandons} times in a row (last: {Reason}).",
                 claim.RunId, claim.ChannelName, abandons, reason);
-            if (await TryFailRunAsync(service, claim, WorkerErrorCode, null, unbookedBytes, stoppingToken))
+            if (await TryFailRunAsync(service, claim, WorkerErrorCode, null, state.UnbookedBytes, stoppingToken))
             {
                 return RunOutcome.Finished;
             }
@@ -565,12 +590,21 @@ public sealed class ChatLogBackfillWorker(
         return RunOutcome.Abandoned;
     }
 
-    // A failure that cannot be recorded is itself an abandon event: the row stays running and is resumed.
+    // Every failure is a write after a read, so it is lock-guarded like any other (D46); one that is not
+    // held, or cannot be recorded, is itself an abandon event: the row stays running and is resumed.
     private async Task<RunOutcome> FailOrAbandonAsync(
-        IChatLogBackfillService service, ChatLogBackfillClaim claim, string errorCode, int? httpStatus, long bytes, CancellationToken stoppingToken) =>
-        await TryFailRunAsync(service, claim, errorCode, httpStatus, bytes, stoppingToken)
+        IChatLogBackfillService service, ChatLogBackfillClaim claim, RunState state, string errorCode, int? httpStatus, CancellationToken stoppingToken)
+    {
+        if (!await HoldsLockAsync(service, stoppingToken))
+        {
+            return await AbandonAsync(
+                service, claim, state, $"the loop lock was lost before recording {errorCode}", null, deferFailure: false, stoppingToken);
+        }
+
+        return await TryFailRunAsync(service, claim, errorCode, httpStatus, state.UnbookedBytes, stoppingToken)
             ? RunOutcome.Finished
-            : await AbandonAsync(service, claim, $"recording {errorCode} failed", bytes, null, stoppingToken);
+            : await AbandonAsync(service, claim, state, $"recording {errorCode} failed", null, deferFailure: false, stoppingToken);
+    }
 
     // D39: polls the row every CancelPollSeconds on its own service instance and cancels the run's
     // token as soon as the row is no longer running — independent of the serial Redis command queue.
@@ -605,6 +639,18 @@ public sealed class ChatLogBackfillWorker(
         catch (OperationCanceledException)
         {
             // The run ended (or the process is stopping); the monitor ends with it.
+        }
+    }
+
+    // D7: a request starts no earlier than RequestDelaySeconds after the previous one started — never a
+    // millisecond earlier. A timer may fire up to a tick early against the wall clock (and a delay is
+    // truncated to whole milliseconds), so the wait is rounded up and the clock checked again after it.
+    private async Task WaitForSpacingAsync(CancellationToken runToken)
+    {
+        var spacing = TimeSpan.FromSeconds(options.RequestDelaySeconds);
+        while (ChatLogBackfillRetryPolicy.SpacingWait(_lastRequestStartedUtc, spacing, UtcNow()) is var wait && wait > TimeSpan.Zero)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(wait.TotalMilliseconds)), timeProvider, runToken);
         }
     }
 
@@ -684,6 +730,9 @@ public sealed class ChatLogBackfillWorker(
     private sealed class RunState
     {
         public bool InBlockLoop { get; set; }
+
+        /// <summary>The run's progress as this loop knows it: the claim's value plus its own commits.</summary>
+        public int WeeksDone { get; set; }
 
         public long UnbookedBytes { get; set; }
     }

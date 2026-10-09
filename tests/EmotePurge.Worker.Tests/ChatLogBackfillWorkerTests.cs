@@ -683,20 +683,226 @@ public class ChatLogBackfillWorkerTests
         Assert.Equal(2, rig.Archive.Requests.Count);
     }
 
+    // The loop's first database contact is the lock, not the service's construction: an outage there
+    // costs an idle poll and never escapes ExecuteAsync.
     [Fact]
-    public async Task ADatabaseErrorWhileStartingTheLoop_CostsAnIdlePoll_NotTheHost()
+    public async Task ADatabaseErrorOnTheFirstLockAttempt_CostsAnIdlePoll_NotTheHost()
     {
         await using var rig = new BackfillRig();
         var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
         var faults = 1;
-        rig.ServiceResolutionFault = () => faults-- > 0 ? new TimeoutException("database away") : null;
+        rig.Store.LockFault = _ => faults-- > 0 ? new TimeoutException("database away") : null;
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Completed);
+
+        Assert.False(rig.ExecuteTask!.IsCompleted);
+        Assert.Contains(rig.Logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("loop failed", StringComparison.Ordinal));
+        Assert.True(rig.Archive.Requests[0].AtUtc - BackfillRig.Start.UtcDateTime >= TimeSpan.FromSeconds(rig.Options.IdlePollSeconds));
+    }
+
+    // A service that cannot even be resolved (a broken registration) is retried, never the host's end.
+    [Fact]
+    public async Task AServiceThatCannotBeResolved_IsRetriedAfterAnIdlePoll()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+        var faults = 1;
+        rig.ServiceResolutionFault = () => faults-- > 0 ? new InvalidOperationException("no registration") : null;
 
         await rig.StartAsync();
         await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Completed);
 
         Assert.False(rig.ExecuteTask!.IsCompleted);
         Assert.Contains(rig.Logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("could not start its loop", StringComparison.Ordinal));
-        Assert.True(rig.Archive.Requests[0].AtUtc - BackfillRig.Start.UtcDateTime >= TimeSpan.FromSeconds(rig.Options.IdlePollSeconds));
+    }
+
+    // Review P2: every write after a read is lock-guarded, not only the commit. A loop whose lock
+    // connection died during the read must not record an attempt, a pause or a failure — those would
+    // land on the run another loop has meanwhile reset and re-claimed.
+    [Theory]
+    [InlineData(ChatLogDayStatus.TransportFailure)]
+    [InlineData(ChatLogDayStatus.RateLimited)]
+    [InlineData(ChatLogDayStatus.MalformedResponse)]
+    public async Task ALockLostDuringTheRead_WritesNothingForThatRead(ChatLogDayStatus status)
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+
+        // On its last transport attempt: without the guard, this read's failure would fail the run.
+        run.BlockAttempts = 2;
+        rig.Archive.Handler = (_, _, _) =>
+        {
+            rig.Store.ReleaseLock(rig.Store.Instances[0]);
+            rig.Store.SetLockHeldElsewhere(true);
+            return Task.FromResult(FakeArchive.Status(status, status == ChatLogDayStatus.RateLimited ? 429 : 503, bytes: 64));
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => rig.Logger.Entries.Any(e => e.Message.Contains("lost during a read", StringComparison.Ordinal)));
+        await rig.DriveForAsync(TimeSpan.FromMinutes(3), TimeSpan.FromSeconds(10));
+
+        var calls = rig.Store.Instances[0].Calls;
+        Assert.DoesNotContain(nameof(IChatLogBackfillService.RecordBlockAttemptAsync), calls);
+        Assert.DoesNotContain(nameof(IChatLogBackfillService.PauseAsync), calls);
+        Assert.DoesNotContain(nameof(IChatLogBackfillService.FailAsync), calls);
+        Assert.Equal(ChatLogBackfillRunStatus.Running, run.Status);
+        Assert.Equal(2, run.BlockAttempts);
+        Assert.Equal(0, run.BytesReceived);
+        Assert.Null(rig.Store.CooldownUntilUtc);
+        Assert.Single(rig.Archive.Requests);
+    }
+
+    // The failure recorded from the catch is a write after a read as well.
+    [Fact]
+    public async Task AnUnexpectedErrorAfterTheLockWasLost_RecordsNoFailure()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+        rig.Store.ReplaceOverride = _ =>
+        {
+            rig.Store.ReleaseLock(rig.Store.Instances[0]);
+            rig.Store.SetLockHeldElsewhere(true);
+            throw new InvalidOperationException("boom");
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => rig.Logger.Entries.Any(e => e.Message.Contains("lost before recording worker_error", StringComparison.Ordinal)));
+
+        Assert.DoesNotContain(nameof(IChatLogBackfillService.FailAsync), rig.Store.Instances[0].Calls);
+        Assert.Equal(ChatLogBackfillRunStatus.Running, run.Status);
+    }
+
+    // Review P3: the third strike while the lock is not held writes nothing; the next claim under the
+    // lock records worker_error before any request, with 0 bytes (no read of its own).
+    [Fact]
+    public async Task AThirdStrikeWithoutTheLock_IsRecordedAtTheNextClaim_WithoutARequest()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+        rig.Archive.Handler = (_, _, _) => Task.FromResult(FakeArchive.Complete(500, 3));
+        var refusals = 0;
+        rig.Store.ReplaceOverride = _ =>
+        {
+            if (++refusals == 3)
+            {
+                // The lock goes away between the commit attempt and the strike's own lock check.
+                rig.Store.ReleaseLock(rig.Store.Instances[0]);
+                rig.Store.SetLockHeldElsewhere(true);
+            }
+
+            return new ChatLogBackfillBlockResult.RunNotActive();
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => rig.Logger.Entries.Any(e => e.Message.Contains("3 of 3", StringComparison.Ordinal)));
+
+        Assert.Equal(ChatLogBackfillRunStatus.Running, run.Status);
+        Assert.DoesNotContain(nameof(IChatLogBackfillService.FailAsync), rig.Store.Instances[0].Calls);
+
+        rig.Store.SetLockHeldElsewhere(false);
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Failed);
+
+        Assert.Equal(ChatLogBackfillWorker.WorkerErrorCode, run.ErrorCode);
+        Assert.Equal(0, run.BytesReceived);
+        Assert.Equal(3, rig.Archive.Requests.Count);
+        Assert.Equal(4, run.Claims);
+    }
+
+    // Review P3: a pending count belongs to the progress it was counted at. Another loop that moved the
+    // run on meanwhile makes it stale — the next refusal is the first, not the third.
+    [Fact]
+    public async Task AnAbandonCount_IsDropped_WhenTheRunProgressedElsewhere()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(21));
+        var calls = 0;
+        rig.Store.ReplaceOverride = _ => ++calls <= 3 ? new ChatLogBackfillBlockResult.RunNotActive() : null;
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => rig.Logger.Entries.Any(e => e.Message.Contains("2 of 3", StringComparison.Ordinal)));
+
+        // While this loop waits out its idle poll, another loop commits the first block.
+        run.WeeksDone = 1;
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Completed);
+
+        Assert.Null(run.ErrorCode);
+        Assert.Equal([WindowFrom.AddDays(7), WindowFrom.AddDays(14)], run.Commits.Select(c => c.From));
+        Assert.Contains(rig.Logger.Entries, e => e.Message.Contains("1 of 3", StringComparison.Ordinal) && e.Message.Contains("not accept", StringComparison.Ordinal));
+    }
+
+    // Review P3: a transient error on a commit the server applied, landing on the third strike, must not
+    // fail (and double-book) a run that just progressed: the failure is deferred to the next claim,
+    // which sees the progress and drops the count.
+    [Fact]
+    public async Task ATransientErrorOnAnAppliedCommit_AtTheThirdStrike_DoesNotFailTheRun()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(14));
+        rig.Archive.Handler = (_, _, _) => Task.FromResult(FakeArchive.Complete(100, 1));
+        var calls = 0;
+        rig.Store.ReplaceOverride = r =>
+        {
+            switch (++calls)
+            {
+                case <= 2:
+                    return new ChatLogBackfillBlockResult.RunNotActive();
+                case 3:
+                    // The server commits; the client only sees the connection drop.
+                    r.WeeksDone++;
+                    r.BytesReceived += 100;
+                    r.Commits.Add(new FakeCommit(WindowFrom, WindowFrom.AddDays(7), [], 100, 1));
+                    throw new TimeoutException("connection dropped after commit");
+                default:
+                    return null;
+            }
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Completed);
+
+        Assert.Null(run.ErrorCode);
+        Assert.Equal(200, run.BytesReceived);
+        Assert.Equal([WindowFrom, WindowFrom.AddDays(7)], run.Commits.Select(c => c.From));
+        Assert.DoesNotContain(nameof(IChatLogBackfillService.FailAsync), rig.Store.Instances[0].Calls);
+    }
+
+    // Review P3: a 429 books no bytes (D47), also when its pause write fails non-transiently.
+    [Fact]
+    public async Task A429WhosePauseCannotBeWritten_BooksNoBytes()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(7));
+        rig.Archive.Handler = (_, _, _) => Task.FromResult(FakeArchive.Status(ChatLogDayStatus.RateLimited, 429, bytes: 999));
+        rig.Store.PauseFault = () => new InvalidOperationException("boom");
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Failed);
+
+        Assert.Equal(ChatLogBackfillWorker.WorkerErrorCode, run.ErrorCode);
+        Assert.Equal(0, run.BytesReceived);
+    }
+
+    // Check (spacing never below the configured delay): a timer may fire a little early against the
+    // wall clock. The worker re-checks the clock after the wait, so the next request still starts no
+    // earlier than RequestDelaySeconds after the previous one.
+    [Fact]
+    public async Task TheSpacing_HoldsEvenWhenTimersFireEarly()
+    {
+        await using var rig = new BackfillRig(workerClock: clock => new EarlyTimerTimeProvider(clock));
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(14));
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Commits.Count == 1, TimeSpan.FromMilliseconds(1));
+
+        // Let the worker reach its spacing wait (registered at the first request's instant) before the
+        // clock moves; otherwise the wait would only start after the jump below.
+        await Task.Delay(200);
+        rig.Clock.Advance(TimeSpan.FromSeconds(rig.Options.RequestDelaySeconds) - TimeSpan.FromMilliseconds(2));
+        await rig.DriveUntilAsync(() => rig.Archive.Requests.Count == 2, TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(5));
+
+        Assert.True(rig.Archive.Requests[1].AtUtc - rig.Archive.Requests[0].AtUtc >= TimeSpan.FromSeconds(rig.Options.RequestDelaySeconds));
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Completed);
     }
 
     // Interpretation (c): a failure that cannot be recorded leaves the row running; it is an abandon
@@ -819,5 +1025,16 @@ public class ChatLogBackfillWorkerTests
     private sealed class TransientDbException : System.Data.Common.DbException
     {
         public override bool IsTransient => true;
+    }
+
+    // Timers of a second or more fire 5 ms early, the way a coarse timer queue can against the wall clock.
+    private sealed class EarlyTimerTimeProvider(TimeProvider inner) : TimeProvider
+    {
+        private static readonly TimeSpan Early = TimeSpan.FromMilliseconds(5);
+
+        public override DateTimeOffset GetUtcNow() => inner.GetUtcNow();
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
+            inner.CreateTimer(callback, state, dueTime >= TimeSpan.FromSeconds(1) ? dueTime - Early : dueTime, period);
     }
 }
