@@ -959,6 +959,12 @@ public class SevenTvSyncService(
     /// it is written once and not on every resync while the stale cache still shows the row missing
     /// (counter-example 8). Observations are not inventory changes and never set the return value.
     /// </para>
+    /// <para>
+    /// (b2) skips placeholder rows (<see cref="Emote.IsPlaceholder"/>, D37): they were created archived
+    /// for an emote never observed in the active set, so their absence from it is no leave. Only (b2):
+    /// a row that was active when this pass began was in the set, whatever its marker says, and (b1)
+    /// records its leave as before.
+    /// </para>
     /// </summary>
     private async Task<bool> ReconcileAsync(
         string channelId, string activeEmoteSetId, IReadOnlyList<SevenTvEmote> liveEmotes, CancellationToken cancellationToken)
@@ -1014,9 +1020,10 @@ public class SevenTvSyncService(
                     leaves.Add(sevenTvEmoteId);
                 }
             }
-            else if (!liveIds.Contains(sevenTvEmoteId) && IsCredibleRestLeave(emote, credibleIfEnteredBefore))
+            else if (!liveIds.Contains(sevenTvEmoteId) && !emote.IsPlaceholder && IsCredibleRestLeave(emote, credibleIfEnteredBefore))
             {
-                // (b2) archived before this pass; decided after the loop with one read.
+                // (b2) archived before this pass; decided after the loop with one read. A placeholder
+                // never was in the active set, so it has nothing to leave (D37).
                 postCheck.Add(emote);
             }
         }
@@ -1069,6 +1076,16 @@ public class SevenTvSyncService(
                 emote.FirstSeenAt = live.AddedToSetAt;
             }
 
+            // An active row still marked as a placeholder can only be left over from an image older
+            // than the marker, which un-archives without clearing it (the window between a manual
+            // migration and the redeploy). Listed in the active set means observed there, so the
+            // marker goes. REST only and outside the change detection, for the same reasons as the
+            // FirstSeenAt correction above; an archived placeholder is cleared by the un-archive below.
+            if (!fromDispatch && emote.IsPlaceholder && !emote.IsArchived)
+            {
+                emote.IsPlaceholder = false;
+            }
+
             // Dispatch payloads have not been proven to always carry the image-host block, so the
             // delta path never overwrites a known image URL with an empty one (the REST path keeps
             // its verbatim behaviour — there an empty URL is 7TV's authoritative answer).
@@ -1084,6 +1101,10 @@ public class SevenTvSyncService(
                     // credibility window for the next REST leave. Read before the flag flips below; a
                     // rename of an active row is no entry and keeps its stamp.
                     emote.LastEnteredSetAtUtc = DateTime.UtcNow;
+                    // D37: the emote has now been observed in the active set, so a placeholder is
+                    // one no longer — its next absence from the set is an ordinary leave. Never set
+                    // back to true.
+                    emote.IsPlaceholder = false;
                 }
 
                 emote.Name = live.Name;

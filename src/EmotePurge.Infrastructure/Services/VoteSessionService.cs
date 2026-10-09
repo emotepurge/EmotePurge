@@ -449,9 +449,10 @@ public class VoteSessionService(
     /// Set-session steps 3–4 (spec section 9): an all-or-nothing race-safe upsert of the ballot's 7TV
     /// emote ids into this channel's Emotes table, then a read-back by SevenTvEmoteId. The upsert is
     /// <see cref="ArchivedEmoteRowUpsert"/>: a row that already exists — active or archived — is left
-    /// exactly as it is; a row that does not exist yet is created archived ("never active"), so a
-    /// set-session's ballot never grants a never-synced 7TV emote the appearance of being live in our
-    /// own database. <c>FirstSeenAt</c> is left null for a new row: 7TV's set-entry response does carry an
+    /// exactly as it is; a row that does not exist yet is created archived ("never active") and marked
+    /// as a placeholder, so a set-session's ballot never grants a never-synced 7TV emote the appearance
+    /// of being live in our own database, nor makes the sync read its absence from the active set as a
+    /// leave. <c>FirstSeenAt</c> is left null for a new row: 7TV's set-entry response does carry an
     /// "added to set" timestamp (<c>SevenTvGqlSetEntryDto.AddedAt</c>), but
     /// <see cref="IForeignEmoteSetService"/>'s set-ID read (<see cref="ForeignEmoteRow"/>) does not
     /// thread it through — this preview path was built for reading, not for backfilling that column.

@@ -363,6 +363,45 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task CreateAsync_SetSession_MarksOnlyTheRowsItCreatesAsPlaceholders()
+    {
+        // Chat-log backfill spec, child 1 (D37): the ballot's insert goes through
+        // ArchivedEmoteRowUpsert, so a created row carries IsPlaceholder = true and stays out of the
+        // sync's REST leave detection. Rows that already existed — an active one and one the sync
+        // archived — are taken over without being marked.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setballotplaceholder", twitchChannelId: "setballotplaceholder-twitch");
+        var active = await SeedEmoteAsync(db, channel.Id, "Active");
+        active.SevenTvEmoteId = "7tv-active";
+        var archived = await SeedEmoteAsync(db, channel.Id, "Archived");
+        archived.SevenTvEmoteId = "7tv-archived";
+        archived.IsArchived = true;
+        archived.ArchivedAt = DateTime.UtcNow.AddDays(-1);
+        await db.SaveChangesAsync();
+        var foreignEmoteSetService = SubstituteForeignEmoteSetService(
+            channel.ChannelName, "set-placeholder",
+            ("7tv-new", "NewMember", "https://cdn.7tv.app/emote/new/2x.webp"),
+            ("7tv-active", "Active", "https://cdn.7tv.app/emote/active/2x.webp"),
+            ("7tv-archived", "Archived", "https://cdn.7tv.app/emote/archived/2x.webp"));
+        var service = new VoteSessionService(db, foreignEmoteSetService, SubstituteEmoteSetListService("set-placeholder"));
+
+        var (result, _) = await service.CreateAsync(
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Halloween-Set", AllowedRoles.Everyone,
+                EmoteSetId: "set-placeholder", SevenTvEmoteIds: ["7tv-new", "7tv-active", "7tv-archived"]),
+            Actor);
+
+        Assert.Equal(CreateVoteSessionResult.Success, result);
+        var rows = await db.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).ToDictionaryAsync(e => e.SevenTvEmoteId);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal((true, true, (DateTime?)null, (DateTime?)null),
+            (rows["7tv-new"].IsArchived, rows["7tv-new"].IsPlaceholder, rows["7tv-new"].ArchivedAt, rows["7tv-new"].FirstSeenAt));
+        Assert.False(rows["7tv-active"].IsPlaceholder);
+        Assert.False(rows["7tv-archived"].IsPlaceholder);
+        Assert.NotNull(rows["7tv-archived"].ArchivedAt);
+    }
+
+    [Fact]
     public async Task CreateAsync_SetSession_WhenSevenTvIsUnreadable_ReturnsSevenTvUnavailable_AndWritesNothing()
     {
         // Spec section 9, step 1: an unreadable live membership list creates no session at all.

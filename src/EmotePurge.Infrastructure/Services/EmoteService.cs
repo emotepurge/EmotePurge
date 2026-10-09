@@ -291,6 +291,9 @@ public class EmoteService(
                     // existing leave observation stays: it is history, and the read-time rule compares
                     // it against registrations, not against this stamp.
                     emote.LastEnteredSetAtUtc = now;
+                    // D37: restored into the channel's active set, so no longer a placeholder (same
+                    // as the sync's un-archive); never set back to true.
+                    emote.IsPlaceholder = false;
                 }
             }
 

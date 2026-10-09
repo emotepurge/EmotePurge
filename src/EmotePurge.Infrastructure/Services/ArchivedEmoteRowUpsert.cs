@@ -12,11 +12,13 @@ namespace EmotePurge.Infrastructure.Services;
 /// row that already exists, active or archived, is left exactly as it is, stamps included.
 /// <para>
 /// A created row is archived without an archive date (<c>IsArchived = true</c>, <c>ArchivedAt = null</c>:
-/// "not in the active set, never was"), so no reader of the active set sees it.
-/// <c>LastEnteredSetAtUtc</c> is stamped as well (spec E34): it holds the sync's REST leave detection
-/// off for one credibility window. If the emote's set later becomes the active one,
-/// <c>SevenTvSyncService.UpsertEmote</c> finds the row by the same key, un-archives it and corrects
-/// name, image and <c>FirstSeenAt</c>.
+/// "not in the active set, never was"), so no reader of the active set sees it, and it carries
+/// <c>IsPlaceholder = true</c> (D37), which keeps it out of the sync's REST leave detection until the
+/// sync actually observes it in the active set. <c>LastEnteredSetAtUtc</c> is stamped as well, kept
+/// from the ballot's original statement (spec E34) so its rows stay what they were; while the marker
+/// is set, the stamp plays no part in the leave detection. If the emote's set later becomes the active
+/// one, <c>SevenTvSyncService.UpsertEmote</c> finds the row by the same key, un-archives it, clears
+/// the marker and corrects name, image and <c>FirstSeenAt</c>.
 /// </para>
 /// <para>
 /// Runs immediately as a raw statement, not at the caller's next save, and does not join
@@ -29,15 +31,15 @@ namespace EmotePurge.Infrastructure.Services;
 internal static class ArchivedEmoteRowUpsert
 {
     private const string InsertSql = """
-        INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "ArchivedAt", "FirstSeenAt", "LastSyncedAt", "LastEnteredSetAtUtc")
-        SELECT input."Id", input."SevenTvEmoteId", @channelId, input."Name", input."ImageUrl", true, NULL, input."FirstSeenAt", @now, @now
+        INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "ArchivedAt", "FirstSeenAt", "LastSyncedAt", "LastEnteredSetAtUtc", "IsPlaceholder")
+        SELECT input."Id", input."SevenTvEmoteId", @channelId, input."Name", input."ImageUrl", true, NULL, input."FirstSeenAt", @now, @now, true
         FROM UNNEST(@ids, @sevenTvEmoteIds, @names, @imageUrls, @firstSeenAts) AS input("Id", "SevenTvEmoteId", "Name", "ImageUrl", "FirstSeenAt")
         ON CONFLICT ("ChannelId", "SevenTvEmoteId") DO NOTHING;
         """;
 
     /// <summary>
     /// Ensures a row exists for every entry of <paramref name="rows"/> in channel
-    /// <paramref name="channelId"/>, creating the missing ones archived and stamped with
+    /// <paramref name="channelId"/>, creating the missing ones as archived placeholders stamped with
     /// <paramref name="now"/>. Returns how many rows were created. The caller deduplicates
     /// <paramref name="rows"/> on <see cref="ArchivedEmoteRow.SevenTvEmoteId"/> first: Postgres refuses
     /// one statement that inserts the same key twice.

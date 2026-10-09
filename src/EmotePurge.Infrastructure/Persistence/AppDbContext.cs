@@ -37,6 +37,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // uniqueness only holds per channel, not globally.
             entity.HasIndex(e => new { e.ChannelId, e.SevenTvEmoteId }).IsUnique();
 
+            // A database default as well as the CLR one: an image older than this column keeps
+            // inserting emote rows without naming it while the migration is already applied (the
+            // window between a manual prod migration and the redeploy), and those must land on false.
+            entity.Property(e => e.IsPlaceholder).HasDefaultValue(false);
+
             entity.HasOne(e => e.Channel)
                 .WithMany(c => c.Emotes)
                 .HasForeignKey(e => e.ChannelId)

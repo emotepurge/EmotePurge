@@ -683,6 +683,71 @@ the first tick; the figures go into the PR.
 Known follow-up: the loader for tracked sets in the tag flows is not yet on the #220 route, so a
 tag run against a tracked set pays the foreign-permit cost the earlier route has.
 
+## Emote placeholder marker
+
+Migration `AddEmotePlaceholderMarker` adds `Emotes.IsPlaceholder` (`boolean NOT NULL DEFAULT false`).
+It marks emote rows created for an emote the channel has never been observed to have in its active
+set. Today only set-session ballots create such rows; the chat-log backfill will create them too. The
+7TV sync skips marked rows when it looks for emotes that left the active set, and it clears the marker
+once the emote really enters the active set. The reasoning is in `docs/DECISIONS.md` (2026-10-09,
+"Emotes.IsPlaceholder").
+
+**This migration is never reverted in production.** An image without the marker treats every marked
+row as an emote that just left the active set. It writes a false leave observation for each one and
+discards tag placements because of it. The api/worker image pair that first shipped this migration is
+the oldest image you may roll back to.
+
+### Deploying it
+
+1. **Migration first, by hand**, as described under "Prod-Migration" in `CLAUDE.md`: tunnel,
+   `dotnet ef migrations list` (expect `AddEmotePlaceholderMarker` as `(Pending)`; the one before it
+   is `AddBroadcasterChannelLocks`), `dotnet ef database update`, then `list` again. The migration
+   adds the column and marks the existing ballot rows in the same step.
+2. **Update api and worker together.** Both images change: the Api creates ballot rows with the
+   marker, and the Worker skips and clears it. Check that the running revision is the merge commit.
+3. **Re-run the marking once, after step 2.** Between steps 1 and 2 the old Api keeps running and keeps
+   creating ballot rows. It does not know the column, so those rows get the default `false`. Run the
+   statements below once the new revision is confirmed. Then no old writer is left.
+
+The marking is safe to run any number of times. It only ever sets `true`, and only on rows that are
+archived, have no archive date and have an entry stamp. Only the ballot insert produces that
+combination. Every archive the sync or the set-centric delete report performs stamps `ArchivedAt`,
+and rows from before the `LastEnteredSetAtUtc` column have no entry stamp. A row the new sync has
+already un-archived is not archived, so it is correctly left alone. Run the statements through the
+SSH tunnel, as for the migration. psql prompts for the password, so it stays out of your shell
+history and out of the repository:
+
+```
+psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge'
+```
+
+```sql
+-- 1. Before: "unmarked" is the number of ballot rows the old Api created after the migration
+--    (often 0). "ballot_shaped" is every row with the ballot combination, marked or not.
+SELECT count(*) FILTER (WHERE NOT "IsPlaceholder") AS unmarked,
+       count(*) AS ballot_shaped
+FROM "Emotes"
+WHERE "IsArchived" AND "ArchivedAt" IS NULL AND "LastEnteredSetAtUtc" IS NOT NULL;
+
+-- 2. The marking itself (identical to the migration's statement). psql reports UPDATE <n>;
+--    <n> must equal "unmarked" from step 1.
+UPDATE "Emotes" SET "IsPlaceholder" = true
+WHERE "IsArchived" AND "ArchivedAt" IS NULL AND "LastEnteredSetAtUtc" IS NOT NULL
+  AND NOT "IsPlaceholder";
+
+-- 3. After: "unmarked" must be 0. "ballot_shaped" normally stays the same; it only drops
+--    if the sync un-archived one of those rows in between.
+SELECT count(*) FILTER (WHERE NOT "IsPlaceholder") AS unmarked,
+       count(*) AS ballot_shaped
+FROM "Emotes"
+WHERE "IsArchived" AND "ArchivedAt" IS NULL AND "LastEnteredSetAtUtc" IS NOT NULL;
+
+-- 4. Active rows still marked: the old worker un-archived them during the window without clearing
+--    the marker. Expected 0 one resync tick after the redeploy (SevenTv:ResyncIntervalSeconds,
+--    default 60), because the new sync clears the marker on every row the active set lists.
+SELECT count(*) AS active_marked FROM "Emotes" WHERE "IsPlaceholder" AND NOT "IsArchived";
+```
+
 ## Database backup and restore
 
 [`scripts/backup-postgres.sh`](../scripts/backup-postgres.sh) dumps the database and rotates
