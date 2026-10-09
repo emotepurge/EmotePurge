@@ -60,6 +60,19 @@ public class BoundedLineScannerTests
     }
 
     [Fact]
+    public async Task ReadLineAsync_AfterACancel_ThrowsEvenForLinesAlreadyBuffered()
+    {
+        // Both lines arrive in one read; the cancel comes after the first.
+        var scanner = Scanner("first\nsecond\n", maxLineBytes: 64);
+        using var cts = new CancellationTokenSource();
+
+        Assert.Equal("first", (await scanner.ReadLineAsync(cts.Token)).Text);
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await scanner.ReadLineAsync(cts.Token));
+    }
+
+    [Fact]
     public async Task ReadLineAsync_WithTheCarriageReturnAtTheEndOfOneReadAndTheNewlineAtTheStartOfTheNext_DropsTheCarriageReturn()
     {
         // 1023 bytes of text, CR at byte index 1023 (last byte of the first 1024-byte read), LF at 1024.

@@ -525,6 +525,25 @@ public class ChatLogArchiveClientTests
     }
 
     [Fact]
+    public async Task ReadRangeAsync_WhenTheCallbackCancelsOnAnUnterminatedLastLine_ReturnsCancelled_NotComplete()
+    {
+        // The last line has no newline, so the scanner hands it out at end of stream and the next call
+        // would report a clean end. The cancel must win: the run was cancelled, it did not complete.
+        var fixtureBytes = await File.ReadAllBytesAsync(FixturePath);
+        var firstLine = fixtureBytes[..Array.IndexOf(fixtureBytes, (byte)'\n')];
+        var client = CreateClient(new CapturingStreamHandler(() => new MemoryStream(firstLine)), new ChatLogArchiveOptions());
+        using var cts = new CancellationTokenSource();
+
+        var result = await client.ReadRangeAsync(
+            "1", RangeFrom, RangeTo, 10_000_000, async _ => await cts.CancelAsync(), cts.Token);
+
+        Assert.Equal(ChatLogDayStatus.Cancelled, result.Status);
+        // The bytes that had arrived: the whole unterminated line, which was also counted as a message.
+        Assert.Equal(firstLine.Length, result.BytesReceived);
+        Assert.Equal(1, result.MessageCount);
+    }
+
+    [Fact]
     public async Task ReadRangeAsync_WithCallerCancellationBeforeTheHeaders_StillThrows()
     {
         var client = CreateClient(new HangingHandler(), new ChatLogArchiveOptions());

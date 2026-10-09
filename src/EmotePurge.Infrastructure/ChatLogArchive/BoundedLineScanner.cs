@@ -75,6 +75,11 @@ public sealed class BoundedLineScanner
 
     public async ValueTask<BoundedLine> ReadLineAsync(CancellationToken ct)
     {
+        // Checked on every call, not only where the stream is read: lines already buffered (several
+        // per read) would otherwise keep coming after a cancel, and an unterminated last line would be
+        // followed by a clean end of stream, which the client would report as Complete.
+        ct.ThrowIfCancellationRequested();
+
         if (_tooLong)
         {
             return new BoundedLine(BoundedLineKind.TooLong, null);
