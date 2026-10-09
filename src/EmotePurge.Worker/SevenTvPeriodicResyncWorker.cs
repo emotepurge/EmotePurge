@@ -57,6 +57,11 @@ public class SevenTvPeriodicResyncWorker(
             // Postgres restart, a failover, an exhausted connection pool or a hiccup in the Docker
             // bridge network would escape ExecuteAsync and stop the whole host (StopHost default),
             // taking the buffered usage counts of the current flush window with it.
+            //
+            // The leave stamp strictly before the roster read: the walk below can take minutes, and a
+            // channel deactivated meanwhile (its LEAVE already processed) must not be joined back from
+            // this list (#245 live run; see ChannelLeaveLedger for the ordering argument).
+            var leaveStamp = twitchChatManager.CaptureLeaveStamp();
             var activeChannels = await channelService.ListActiveChannelNamesAsync(ct);
 
             // Convergence net for a lost Redis LEAVE (issue #41): as close to the snapshot above as
@@ -70,8 +75,8 @@ public class SevenTvPeriodicResyncWorker(
                     // Convergence net for channels the bot should be in but isn't: a lost Redis
                     // command, a join that failed during boot recovery, or one Twitch never
                     // confirmed. Skips channels already joined and confirmed, so healthy channels
-                    // don't get a JOIN every minute.
-                    await twitchChatManager.EnsureJoinedAsync(channelName);
+                    // don't get a JOIN every minute, and channels left since the roster read.
+                    await twitchChatManager.EnsureJoinedAsync(channelName, leaveStamp);
 
                     var result = await syncService.SyncChannelAsync(channelName, ct);
                     if (result is not null)

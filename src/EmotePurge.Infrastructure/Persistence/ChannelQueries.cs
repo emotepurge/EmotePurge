@@ -93,24 +93,48 @@ internal static class ChannelQueries
 
     /// <summary>
     /// Loads the active, unblocked channel for a Twitch id — the rule every caller means by "this
-    /// account's tracked channel": an <see cref="Channel.IsBotActive"/> row whose Twitch id is not on
-    /// <c>Channels:ExcludedChannelIds</c>. <c>null</c> covers untracked, left and blocked alike, on
-    /// purpose — a blocked channel must look exactly like an untracked one to every caller
-    /// (<see cref="ChannelService.GetActiveByTwitchChannelIdAsync"/>, and the set-centric report's
-    /// owner-channel paper entry, addendum N3 5.2 step 3a).
+    /// account's tracked channel": an <see cref="Channel.IsBotActive"/> row whose Twitch id is neither
+    /// on <c>Channels:ExcludedChannelIds</c> nor locked by its broadcaster (#245). <c>null</c> covers
+    /// untracked, left, blocked and locked alike, on purpose — a blocked or locked channel must look
+    /// exactly like an untracked one to every caller (<see cref="ChannelService.GetActiveByTwitchChannelIdAsync"/>,
+    /// and the set-centric report's owner-channel paper entry, addendum N3 5.2 step 3a).
     /// </summary>
     public static async Task<Channel?> LoadActiveChannelByTwitchIdReadOnlyAsync(
-        this AppDbContext db, string twitchChannelId, IExcludedChannelFilter excludedChannelFilter, CancellationToken cancellationToken)
+        this AppDbContext db,
+        string twitchChannelId,
+        IExcludedChannelFilter excludedChannelFilter,
+        IBroadcasterChannelLockService broadcasterChannelLocks,
+        CancellationToken cancellationToken)
     {
         var channel = await db.Channels
             .AsNoTracking()
             .Where(c => c.TwitchChannelId == twitchChannelId && c.IsBotActive)
             .FirstOrDefaultAsync(cancellationToken);
 
-        return channel is not null && excludedChannelFilter.IsExcluded(channel.TwitchChannelId)
-            ? null
-            : channel;
+        if (channel is null || excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
+        {
+            return null;
+        }
+
+        // The lock's twin of the line above (#245): reachable only while an active row still carries
+        // a locked id — a restore from before the purge, or the window until the identity reconcile
+        // deactivates it — but then it must not surface as a transfer target or name a paper entry.
+        return await broadcasterChannelLocks.GetLockedAtUtcAsync(channel.TwitchChannelId, cancellationToken) is null
+            ? channel
+            : null;
     }
+
+    /// <summary>
+    /// <see cref="LoadChannelByIdAsync"/> with <c>SELECT … FOR UPDATE</c>, for a caller that already
+    /// knows the exact row it means and must decide on its current state under the lock (the identity
+    /// reconcile's deactivation of an id-less row, #245). Same guards as
+    /// <see cref="LoadChannelForUpdateAsync"/>.
+    /// </summary>
+    public static Task<Channel?> LoadChannelByIdForUpdateAsync(
+        this AppDbContext db, string channelId, CancellationToken cancellationToken) =>
+        db.LockAsync(
+            db.Channels.FromSql($"""SELECT * FROM "Channels" WHERE "Id" = {channelId} FOR UPDATE"""),
+            cancellationToken);
 
     /// <summary>
     /// Loads a channel by its (un-normalized) name and locks the row with <c>SELECT … FOR UPDATE</c>

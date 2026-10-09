@@ -17,6 +17,7 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { ADMIN_LIVE_URL, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { liveEvents } from '../../core/live/live-reload';
+import { joinWithBroadcasterLockPrompt } from '../../shared/channels/join-with-lock-prompt';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
@@ -425,7 +426,19 @@ export class AdminChannelsPage {
   }
 
   protected join(channelName: string): void {
-    this.runAction(channelName, () => this.channelService.join(channelName));
+    // An admin who joins a channel its broadcaster deleted is asked first; declining ends quietly
+    // (the list reloads unchanged).
+    this.runAction(channelName, () =>
+      joinWithBroadcasterLockPrompt(
+        {
+          channelService: this.channelService,
+          dialog: this.dialog,
+          transloco: this.translocoService,
+          lang: this.languageService.lang(),
+        },
+        channelName,
+      ),
+    );
   }
 
   protected leave(channelName: string): void {

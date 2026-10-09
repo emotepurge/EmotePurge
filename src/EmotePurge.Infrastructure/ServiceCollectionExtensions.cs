@@ -86,6 +86,10 @@ public static class ServiceCollectionExtensions
         // the same list without either depending on the other.
         services.AddSingleton<IExcludedChannelFilter, ExcludedChannelFilter>();
 
+        // Global admins by immutable Twitch id (#245); the login list is a transitional fallback.
+        services.AddSingleton<IGlobalAdminAllowlist, GlobalAdminAllowlist>();
+
+        services.AddScoped<IBroadcasterChannelLockService, BroadcasterChannelLockService>();
         services.AddScoped<IChannelService, ChannelService>();
         // Scoped like every other AppDbContext consumer, with its warning deduplication parked in a
         // singleton beside it: the worker opens a fresh scope per reconcile tick, so a set living on

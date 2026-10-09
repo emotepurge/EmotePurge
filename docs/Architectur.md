@@ -129,20 +129,23 @@ There is **no** `Role` column and no role enum. "Role" here means: one of four c
 
 | Role | Where from | Particularity |
 |---|---|---|
-| **Global Admin** | Config `Auth:AdminTwitchLogins` (a comma-separated scalar from env/user secret **beats** the JSON array from `appsettings.json`) | channel-independent |
+| **Global Admin** | Config `Auth:AdminTwitchUserIds`, matched ordinally against `principal.TwitchUserId` (a comma-separated scalar from env/user secret **beats** the JSON array from `appsettings.json`). `Auth:AdminTwitchLogins` is a transitional fallback that applies only while the id list is empty; a non-empty id list decides alone and the login list is ignored with a startup warning | channel-independent |
 | **Broadcaster** | `Channel.TwitchChannelId` against `principal.TwitchUserId` | Login comparison only as a fallback, as long as the ID has never been resolved. If the login matches but the ID does not → **rejected plus a warning in the log**: Twitch releases names again after a rename |
 | **Moderator** | Helix `GetModeratedChannelLogins`, via `IModRoleCache` | cached positively as well as negatively; an `/unmod` takes up to 10 minutes to take effect |
 | **7TV editor** | 7TV's `editor_of` relation | **only** read access to usage stats plus the legacy Guid-keyed `sync-deleted`/`sync-restored` (restore-per-set spec 5.6 — audit and a guarded resync, no row change any more), never channel management |
 
 **Precedence:** `CanManageChannelAsync` = admin → broadcaster → moderator. `CanViewUsageStatsAsync` = *exactly that* plus 7TV editor. Thus `CanManageChannelAsync ⊂ CanViewUsageStatsAsync` holds strictly; the only difference is the editor.
 
-**The five filters:**
+**The seven filters:**
 
 | Filter | Lets through | Rejection |
 |---|---|---|
 | `GlobalAdminAuthorizationFilter` | admin only | 401 without a principal, otherwise 403 |
 | `ChannelManagementAuthorizationFilter` | admin, broadcaster, moderator | 400 `invalid_channel_name` · 401 · 403 |
 | `UsageStatsAccessAuthorizationFilter` | + 7TV editor | as above |
+| `ChannelBroadcasterAuthorizationFilter` (#245) | the channel's own broadcaster only — **no** admin, **no** moderator; a row without a stored id passes (the service proves it live) | 400 `invalid_channel_name` · 401 · 404 `channel_not_found` · 403 |
+| `ChannelBroadcasterSummaryAuthorizationFilter` (#245, data summary) | as above, but a row without a stored id passes only when its name is the caller's current login — the summary has no live proof | as above |
+| `TrackedChannelFilter` (#245) | any principal, but only for a channel with a row; sits *before* the authorization filter on the channel audit log | 400 · 401 · 404 `channel_not_found` |
 | `VoteEligibilityFilter` (casting a vote) | admin/broadcaster/mod **always**, otherwise per `AllowedRoles` | 404 `vote_session_not_found` · **409 `vote_session_ended`** · 403 |
 | `VoteAudienceFilter` (viewing results) | the same role logic | 404 · 403 — **no 409**: ended sessions stay visible to their target audience |
 
@@ -152,7 +155,7 @@ There is **no** `Role` column and no role enum. "Role" here means: one of four c
 
 | Group | Filter of the group | Deviations of individual endpoints |
 |---|---|---|
-| `/api/channels` | Auth + ChannelNameValidation | `GET /{name}`, `GET /{name}/audit-log`, `POST /{name}/join`, `DELETE /{name}` → additionally ChannelManagement · **`POST /{name}/resync` → UsageStatsAccess** (deliberately the wider filter, see the decision log) with its own policy `ChannelResync` **plus** a per-channel cooldown · **`DELETE /{name}/purge` → GlobalAdmin** (the only admin endpoint outside `/api/admin`) · `GET /{name}/permissions` and `GET /mine` → **deliberately without** an authorization filter |
+| `/api/channels` | Auth + ChannelNameValidation | `GET /{name}`, `GET /{name}/audit-log`, `POST /{name}/join`, `DELETE /{name}` → additionally ChannelManagement · **`POST /{name}/resync` → UsageStatsAccess** (deliberately the wider filter, see the decision log) with its own policy `ChannelResync` **plus** a per-channel cooldown · **`DELETE /{name}/purge` → GlobalAdmin** (the only admin endpoint outside `/api/admin`) · **`DELETE /{name}/data` → ChannelBroadcaster, `GET /{name}/data-summary` → ChannelBroadcasterSummary** (the broadcaster's own erasure and its dialog numbers, #245) · `GET /{name}/audit-log` additionally **TrackedChannel** first (404 without a row) · `GET /{name}/permissions` and `GET /mine` → **deliberately without** an authorization filter |
 | `/api/channels/{name}/emotes` | Auth + ChannelNameValidation + **UsageStatsAccess** + `ExternalApi` | `POST /sync-deleted` and `POST /sync-restored` use `Bookkeeping` instead of `ExternalApi` — together with `GET /{name}/audit-log` the three endpoints with that policy. Both are now the legacy Guid-keyed form only (restore-per-set spec 5.6): the set-centric report lives at `POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted`/`.../sync-restored` instead, authorized by 7TV editing rights rather than this group's filter chain |
 | `GET /api/channels/{name}/emote-sets/{emoteSetId}/emotes` (a route of its own, not in a group) | Auth + ChannelNameValidation + UsageStatsAccess + EmoteSetIdValidation + policy `TrackedEmoteSetPreview` (30/min per user) | Fail-closed membership proof before the preview: 404 bare (channel not tracked) · 404 `emote_set_not_found` (set not in the channel) · 503 `foreign_channel_seventv_unavailable`. A tracked channel's set preview no longer shares the `ForeignEmoteLookup` bucket. |
 | `/api/channels/{name}/usage-stats` | Auth + ChannelNameValidation + UsageStatsAccess + `ExternalApi` | — |
@@ -213,7 +216,7 @@ mutation RemoveEmote($setId: Id!, $emoteId: Id!) {
 
 ### Module Admin: Global admin area
 
-Not part of the original specification, but in scope a module of its own: a vertical slice from the entity through to the page, reachable under `/admin/*` behind the `adminGuard`. Access is governed exclusively by the allowlist `Auth:AdminTwitchLogins` — channel-independent, no Twitch role.
+Not part of the original specification, but in scope a module of its own: a vertical slice from the entity through to the page, reachable under `/admin/*` behind the `adminGuard`. Access is governed exclusively by the allowlist `Auth:AdminTwitchUserIds` (Twitch user ids; the login list `Auth:AdminTwitchLogins` is only a transitional fallback) — channel-independent, no Twitch role.
 
 **Eight endpoints**, all in the `/api/admin` group behind `GlobalAdminAuthorizationFilter`:
 
@@ -230,7 +233,7 @@ Not part of the original specification, but in scope a module of its own: a vert
 
 **Audit log.** Every privileged action writes an `AuditLogEntry` row with the actor, `Action` (one of the `AuditActions` constants), an optional channel reference, a target and free-form `DetailsJson`. Logged are channel join/leave/purge/resync, channel rename and merge, vote-session creation/ending/deletion, the three emote sync actions (`emotes.syncDeleted`, `emotes.syncRestored`, `emotes.syncImported`), session revoke and role-cache invalidation.
 
-**`DELETE /api/channels/{name}/purge` is the only admin endpoint outside the group** and carries its `GlobalAdminAuthorizationFilter` individually. It deletes the channel along with the cascade (emotes, usage stats, vote sessions) and deliberately does **not** sit behind `ChannelManagementAuthorizationFilter`: that filter's moderator branch depends on a cache up to 10 minutes old, and a freshly de-modded user could thereby still destroy an entire channel.
+**`DELETE /api/channels/{name}/purge` is the only admin endpoint outside the group** and carries its `GlobalAdminAuthorizationFilter` individually. It deletes the channel along with the cascade (emotes, usage stats, vote sessions) and deliberately does **not** sit behind `ChannelManagementAuthorizationFilter`: that filter's moderator branch depends on a cache up to 10 minutes old, and a freshly de-modded user could thereby still destroy an entire channel. **The broadcaster has their own, narrower route (#245):** `DELETE /api/channels/{name}/data?expectedTwitchUserId=` behind `ChannelBroadcasterAuthorizationFilter` removes the channel's data and leaves a re-add lock (see the decision log); the admin purge above stays unlocked and writes no lock.
 
 **Two known deviations:** The `/api/admin` group registers **no** `RequireRateLimiting` (deliberately — admins are a closed, small set) and **no** `ChannelNameValidationFilter`. The latter means: for a formally invalid channel name `POST /channels/{name}/resync` does not answer with `400 invalid_channel_name` as everywhere else, but runs into the normal not-found path.
 

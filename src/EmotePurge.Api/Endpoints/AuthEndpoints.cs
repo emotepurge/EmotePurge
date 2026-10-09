@@ -137,7 +137,7 @@ public static class AuthEndpoints
 
         group.MapGet("/me", (ClaimsPrincipal user, IChannelAccessService channelAccessService) =>
         {
-            // Pure config lookup (Auth:AdminTwitchLogins) — no DB, no HTTP, safe to do per request.
+            // Pure config lookup (Auth:AdminTwitchUserIds) — no DB, no HTTP, safe to do per request.
             // Lets the frontend gate its admin area off the cached /me instead of probing an
             // admin-only endpoint and reading its 403 as a permission bit.
             var principal = user.TryBuildTwitchPrincipal();

@@ -5,9 +5,12 @@ import {
   installLiveStub,
   mockActiveEmoteSet,
   mockAuthMe,
+  mockChannelDataSummary,
   mockChannelPermissions,
   mockChannelStatus,
+  mockJoinLocked,
   mockMyChannels,
+  mockPurgeOwnData,
   mockUsageTotals,
   mockVoteSessionList,
   mockWorkerHealth,
@@ -269,5 +272,212 @@ test.describe('authenticated broadcaster', () => {
     await expect(page.getByRole('textbox', { name: 'Name suchen…' })).toBeInViewport();
     // ...while the channel title above them scrolls away like normal content.
     await expect(page.getByRole('heading', { level: 1 })).not.toBeInViewport();
+  });
+});
+
+/**
+ * #245: the broadcaster's own "delete channel data" and the lock a moderator runs into afterwards.
+ * The workspace needs the permission read, the live stub and (for the usage page behind it) an emote
+ * set and totals; everything else falls through to the unreachable dev proxy.
+ */
+test.describe('broadcaster self-purge and the broadcaster lock', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page, 'connected');
+    await installLiveStub(page);
+    await mockActiveEmoteSet(page, 'sensitron');
+    await mockUsageTotals(page, 'sensitron', []);
+  });
+
+  test('only the channel own broadcaster is offered the button', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron', { canPurgeAsBroadcaster: true });
+    await page.goto('/channels/sensitron/usage-stats');
+    await expect(page.getByRole('button', { name: 'Channel-Daten löschen' })).toBeVisible();
+  });
+
+  test('a moderator does not see the button', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron', { canPurgeAsBroadcaster: false });
+    await page.goto('/channels/sensitron/usage-stats');
+    await expect(page.getByRole('button', { name: 'Channel verlassen' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Channel-Daten löschen' })).toHaveCount(0);
+  });
+
+  test('stays available on a deactivated channel', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron', {
+      canPurgeAsBroadcaster: true,
+      isBotActive: false,
+    });
+    await page.goto('/channels/sensitron/usage-stats');
+    await expect(page.getByRole('button', { name: 'Bot reaktivieren' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Channel-Daten löschen' })).toBeVisible();
+  });
+
+  test('names the numbers and the limits, unlocks on the typed name, deletes bound to the account and lands on the overview', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron', { canPurgeAsBroadcaster: true });
+    await mockChannelDataSummary(page, 'sensitron', {
+      emoteCount: 903,
+      voteSessionCount: 4,
+      liveDayCount: 31,
+      tagCount: 7,
+    });
+    const purgeUrls = await mockPurgeOwnData(page, 'sensitron');
+    await mockMyChannels(page, []);
+
+    await page.goto('/channels/sensitron/usage-stats');
+    await page.getByRole('button', { name: 'Channel-Daten löschen' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(
+      dialog.getByRole('heading', { name: 'Channel-Daten unwiderruflich löschen' }),
+    ).toBeVisible();
+    await expect(dialog.getByText('Emotes: 903')).toBeVisible();
+    await expect(dialog.getByText(/Abstimmungen: 4/)).toBeVisible();
+    await expect(dialog.getByText(/Live-Tage: 31/)).toBeVisible();
+    await expect(dialog.getByText(/Tags deines Mod-Teams: 7/)).toBeVisible();
+    // The evidence limit and the retention promises have to be in the text, not only in the docs.
+    await expect(dialog.getByText(/180 Tage nach ihrer Deaktivierung/)).toBeVisible();
+    await expect(dialog.getByText(/Backups bis zu 60 Tage/)).toBeVisible();
+    await expect(dialog.getByText(/deine Moderatoren nicht/)).toBeVisible();
+
+    const confirm = dialog.getByRole('button', { name: 'Channel-Daten endgültig löschen' });
+    const input = dialog.getByLabel('Zur Bestätigung den Channel-Namen eingeben');
+    await expect(confirm).toBeDisabled();
+    await input.fill('sensitro');
+    await expect(confirm).toBeDisabled();
+    await input.fill('sensitron');
+    await expect(confirm).toBeEnabled();
+
+    const purgeRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes('/api/channels/sensitron/data') && request.method() === 'DELETE',
+    );
+    await confirm.click();
+    await purgeRequest;
+
+    expect(purgeUrls).toHaveLength(1);
+    expect(new URL(purgeUrls[0]).searchParams.get('expectedTwitchUserId')).toBe(
+      AUTH_USER.twitchUserId,
+    );
+    await expect(page).toHaveURL('/');
+  });
+
+  test('cancelling the dialog sends nothing', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron', { canPurgeAsBroadcaster: true });
+    await mockChannelDataSummary(page, 'sensitron');
+    const purgeUrls = await mockPurgeOwnData(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/usage-stats');
+    await page.getByRole('button', { name: 'Channel-Daten löschen' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Abbrechen' }).click();
+
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(purgeUrls).toHaveLength(0);
+    await expect(page).toHaveURL(/usage-stats$/);
+  });
+
+  for (const [code, text] of [
+    ['account_mismatch', /in einem anderen Tab mit einem anderen Konto angemeldet/],
+    ['channel_identity_unresolved', /Channel-Identität konnte gerade nicht bestätigt werden/],
+  ] as const) {
+    test(`a 409 ${code} is shown as a message and the page stays`, async ({ page }) => {
+      await mockChannelPermissions(page, 'sensitron', { canPurgeAsBroadcaster: true });
+      await mockChannelDataSummary(page, 'sensitron');
+      await mockPurgeOwnData(page, 'sensitron', { status: 409, body: { errorCode: code } });
+
+      await page.goto('/channels/sensitron/usage-stats');
+      await page.getByRole('button', { name: 'Channel-Daten löschen' }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('Zur Bestätigung den Channel-Namen eingeben').fill('sensitron');
+      await dialog.getByRole('button', { name: 'Channel-Daten endgültig löschen' }).click();
+
+      await expect(page.getByRole('alert').filter({ hasText: text })).toBeVisible();
+      await expect(page).toHaveURL(/usage-stats$/);
+      await expect(page.getByRole('button', { name: 'Channel-Daten löschen' })).toBeEnabled();
+    });
+  }
+
+  // A moderator must not get a dialog (only the admin can lift a lock): the 403 is a message.
+  test('a moderator reactivating a locked channel from the workspace gets the streamer text, no dialog', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron', { isBotActive: false });
+    const joinUrls = await mockJoinLocked(page, 'sensitron', { status: 403 });
+
+    await page.goto('/channels/sensitron/usage-stats');
+    await page.getByRole('button', { name: 'Bot reaktivieren' }).click();
+
+    await expect(
+      page
+        .getByRole('alert')
+        .filter({ hasText: 'Der Streamer hat diesen Channel aus EmotePurge entfernt' }),
+    ).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(joinUrls).toHaveLength(1);
+  });
+
+  test('a moderator adding a locked channel from the overview gets the streamer text, no dialog', async ({
+    page,
+  }) => {
+    await mockMyChannels(page, [{ channelName: 'sensitron', isModerator: true, isTracked: false }]);
+    const joinUrls = await mockJoinLocked(page, 'sensitron', { status: 403 });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Hinzufügen' }).click();
+
+    await expect(
+      page
+        .getByRole('alert')
+        .filter({ hasText: 'Der Streamer hat diesen Channel aus EmotePurge entfernt' }),
+    ).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(joinUrls).toHaveLength(1);
+  });
+
+  test('a moderator reactivating a locked channel from the overview gets the streamer text, no dialog', async ({
+    page,
+  }) => {
+    await mockMyChannels(page, [
+      { channelName: 'sensitron', isModerator: true, isTracked: true, isBotActive: false },
+    ]);
+    const joinUrls = await mockJoinLocked(page, 'sensitron', { status: 403 });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Bot reaktivieren' }).click();
+
+    await expect(
+      page
+        .getByRole('alert')
+        .filter({ hasText: 'Der Streamer hat diesen Channel aus EmotePurge entfernt' }),
+    ).toBeVisible();
+    expect(joinUrls).toHaveLength(1);
+  });
+
+  test('an admin adding a locked channel from the overview is asked, and the retry carries the flag and the confirmed date', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, { ...AUTH_USER, isGlobalAdmin: true });
+    await mockMyChannels(page, [{ channelName: 'sensitron', isModerator: true, isTracked: false }]);
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelStatus(page, 'sensitron');
+    const joinUrls = await mockJoinLocked(page, 'sensitron', {
+      status: 409,
+      lockedAtUtc: '2026-10-01T10:00:00.123456Z',
+    });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Hinzufügen' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText(/am 01\.10\.2026 gelöscht und gesperrt/)).toBeVisible();
+    await dialog.getByRole('button', { name: 'Trotzdem hinzufügen' }).click();
+
+    await expect(page).toHaveURL(/\/channels\/sensitron/);
+    expect(joinUrls).toHaveLength(2);
+    const retry = new URL(joinUrls[1]).searchParams;
+    expect(retry.get('liftBroadcasterLock')).toBe('true');
+    // Verbatim, at full precision: the server lifts only while the lock still carries this date.
+    expect(retry.get('confirmedLockedAtUtc')).toBe('2026-10-01T10:00:00.123456Z');
   });
 });

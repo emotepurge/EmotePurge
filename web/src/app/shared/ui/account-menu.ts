@@ -15,8 +15,10 @@ import {
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
+import { catchError, map, of } from 'rxjs';
 
 import { AuthService } from '../../core/auth/auth.service';
+import { ChannelService } from '../../core/channels/channel.service';
 import { Avatar } from './avatar';
 import { DisplayPreferences } from './display-preferences';
 import { Popover } from './popover';
@@ -222,6 +224,7 @@ import { openTypedConfirmDialog } from './typed-confirm-dialog';
 })
 export class AccountMenu {
   private readonly authService = inject(AuthService);
+  private readonly channelService = inject(ChannelService);
   private readonly transloco = inject(TranslocoService);
   private readonly dialog = inject(Dialog);
   private readonly document = inject(DOCUMENT);
@@ -351,18 +354,32 @@ export class AccountMenu {
     const expectedTwitchUserId = user.twitchUserId;
     this.close();
 
-    openTypedConfirmDialog(this.dialog, {
-      title: this.transloco.translate('account.delete.title'),
-      message: this.transloco.translate('account.delete.message'),
-      requiredText: user.login,
-      inputLabel: this.transloco.translate('account.delete.inputLabel'),
-      confirmLabel: this.transloco.translate('account.delete.confirm'),
-    }).closed.subscribe((confirmed) => {
-      if (!confirmed) {
-        return;
-      }
-      this.authService.startAccountDeletion(expectedTwitchUserId);
-    });
+    // The account deletion keeps a tracked channel's data (it is the channel's, not the account's).
+    // Whoever owns such a channel is told so before confirming — and where to delete it first. The
+    // lookup is a convenience: if it fails or comes back empty the dialog opens without the hint.
+    this.channelService
+      .listMine()
+      .pipe(
+        map((mine) => mine.channels.some((c) => c.isBroadcaster && c.isTracked)),
+        catchError(() => of(false)),
+      )
+      .subscribe((ownsTrackedChannel) => {
+        const base = this.transloco.translate('account.delete.message');
+        openTypedConfirmDialog(this.dialog, {
+          title: this.transloco.translate('account.delete.title'),
+          message: ownsTrackedChannel
+            ? `${base}\n\n${this.transloco.translate('account.delete.channelHint', { login: user.login })}`
+            : base,
+          requiredText: user.login,
+          inputLabel: this.transloco.translate('account.delete.inputLabel'),
+          confirmLabel: this.transloco.translate('account.delete.confirm'),
+        }).closed.subscribe((confirmed) => {
+          if (!confirmed) {
+            return;
+          }
+          this.authService.startAccountDeletion(expectedTwitchUserId);
+        });
+      });
   }
 
   /**

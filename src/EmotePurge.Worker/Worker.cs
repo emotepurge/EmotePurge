@@ -85,13 +85,16 @@ public class Worker(
                 // Admin-getriggerter Sofort-Resync: gleiche Schritte wie ein Tick des periodischen
                 // Resyncs für genau diesen Channel (EnsureJoined als Konvergenznetz inklusive).
                 var channelName = message[BotCommands.ResyncPrefix.Length..];
+                // Before the roster check, like the periodic resync's stamp before its roster read:
+                // a LEAVE processed between the check and the join must win (see ChannelLeaveLedger).
+                var leaveStamp = twitchChatManager.CaptureLeaveStamp();
                 if (!await IsInActiveRosterAsync(channelName, stoppingToken))
                 {
                     return;
                 }
 
                 logger.LogInformation("Redis-Kommando: resynce {Channel}.", channelName);
-                await twitchChatManager.EnsureJoinedAsync(channelName);
+                await twitchChatManager.EnsureJoinedAsync(channelName, leaveStamp);
                 await SyncSevenTvAsync(channelName, stoppingToken, publishCompletion: true);
             }
             else if (string.Equals(message, DebugTwitchReconnectCommand, StringComparison.Ordinal))

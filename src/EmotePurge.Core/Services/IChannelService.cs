@@ -25,6 +25,38 @@ public enum ChannelRetentionPurgeResult
     StillActive,
 }
 
+/// <summary>What <see cref="IChannelService.PurgeByBroadcasterAsync"/> did (#245).</summary>
+public enum ChannelBroadcasterPurgeResult
+{
+    /// <summary>
+    /// Every row proven to be the caller's channel is gone with its whole history, a
+    /// <c>channel.purge</c> entry per row was written and the caller's Twitch id is locked against re-adding.
+    /// </summary>
+    Purged,
+
+    /// <summary>No row under this name (any more) — nothing written, not even an audit entry.</summary>
+    NotFound,
+
+    /// <summary>
+    /// The row belongs to a different Twitch account: its stored id is someone else's, or Twitch
+    /// resolved the login of an id-less row to someone else. Nothing written.
+    /// </summary>
+    NotBroadcaster,
+
+    /// <summary>
+    /// The row has no stored Twitch id and Twitch could not confirm who owns its login right now
+    /// (unreachable, or no account under that login). Nothing written; the caller may try again later.
+    /// </summary>
+    IdentityUnresolved,
+}
+
+/// <summary>
+/// What a broadcaster's purge of their own channel would delete, counted per kind for the
+/// confirmation dialog (#245, plan P5). <see cref="TagCount"/> counts the mod team's tags, which the
+/// purge takes down with the channel.
+/// </summary>
+public sealed record ChannelDataSummary(int EmoteCount, int VoteSessionCount, int LiveDayCount, int TagCount);
+
 public enum ChannelJoinStatus
 {
     Joined,
@@ -47,6 +79,15 @@ public enum ChannelJoinStatus
     // from the list. Matched on the immutable Twitch id, resolved before any row is written; never
     // returned for a login Twitch could not resolve at all (that stays ChannelNotOnTwitch).
     ChannelExcluded,
+
+    // The broadcaster behind this Twitch id purged their own channel's data and locked it against
+    // re-adding (#245, BroadcasterChannelLocks). Lifted only by a join of the broadcaster themselves
+    // or by a global admin who confirmed this lock's date (adminLiftConfirmedLockedAtUtc); everyone
+    // else, admins without a matching confirmation included, gets this status with
+    // ChannelJoinResult.LockedAtUtc and LockLiftableByAdmin. Checked on the resolved identity and on
+    // the stored id of the row the join landed on, under that row's lock; the excluded-channel list is
+    // checked first and wins. Nothing is written for it.
+    LockedByBroadcaster,
 }
 
 /// <summary>
@@ -64,10 +105,12 @@ public enum ChannelJoinStatus
 /// </summary>
 public sealed class ChannelJoinResult
 {
-    private ChannelJoinResult(ChannelJoinStatus status, Channel? channel)
+    private ChannelJoinResult(ChannelJoinStatus status, Channel? channel, DateTime? lockedAtUtc, bool lockLiftableByAdmin)
     {
         Status = status;
         Channel = channel;
+        LockedAtUtc = lockedAtUtc;
+        LockLiftableByAdmin = lockLiftableByAdmin;
     }
 
     public ChannelJoinStatus Status { get; }
@@ -75,11 +118,32 @@ public sealed class ChannelJoinResult
     /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="ChannelJoinStatus.Joined"/>.</summary>
     public Channel? Channel { get; }
 
+    /// <summary>
+    /// When the broadcaster locked the channel; non-null if and only if <see cref="Status"/> is
+    /// <see cref="ChannelJoinStatus.LockedByBroadcaster"/> (#245). The admin's confirmation names it.
+    /// </summary>
+    public DateTime? LockedAtUtc { get; }
+
+    /// <summary>
+    /// Whether a global admin could lift the refusing lock by confirming <see cref="LockedAtUtc"/>:
+    /// true when exactly one lock of someone other than the actor stands in the way, false when two
+    /// broadcasters' locks meet in this join (one confirmation overrides one decision, not two), and
+    /// false for every other status. The endpoint offers the admin's 409 only when this is true.
+    /// </summary>
+    public bool LockLiftableByAdmin { get; }
+
     public static ChannelJoinResult Joined(Channel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        return new ChannelJoinResult(ChannelJoinStatus.Joined, channel);
+        return new ChannelJoinResult(ChannelJoinStatus.Joined, channel, lockedAtUtc: null, lockLiftableByAdmin: false);
     }
+
+    /// <summary>
+    /// The one way to build a <see cref="ChannelJoinStatus.LockedByBroadcaster"/> result, so that no
+    /// call site can forget the date the admin's confirmation shows.
+    /// </summary>
+    public static ChannelJoinResult LockedByBroadcaster(DateTime lockedAtUtc, bool liftableByAdmin = true) =>
+        new(ChannelJoinStatus.LockedByBroadcaster, channel: null, lockedAtUtc, liftableByAdmin);
 
     /// <summary>
     /// Builds a rejected join. Rejects a success status outright: a caller that passes one is asking
@@ -98,6 +162,16 @@ public sealed class ChannelJoinResult
                 "ChannelJoinResult.Failed() kann keinen Erfolgsstatus tragen — für Joined ist ChannelJoinResult.Joined(channel) zuständig.");
         }
 
+        // Same reasoning for the one failure that carries a payload: built through Failed() it would
+        // reach the endpoint without the date the admin's confirmation needs.
+        if (status == ChannelJoinStatus.LockedByBroadcaster)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status),
+                status,
+                "ChannelJoinResult.Failed() cannot carry LockedByBroadcaster; use ChannelJoinResult.LockedByBroadcaster(lockedAtUtc).");
+        }
+
         // Keeps an undefined cast like (ChannelJoinStatus)7 out of the type, which is what the join
         // endpoint's switch would otherwise fall through unmatched.
         if (!Enum.IsDefined(status))
@@ -106,7 +180,7 @@ public sealed class ChannelJoinResult
                 nameof(status), status, "Unbekannter ChannelJoinStatus.");
         }
 
-        return new ChannelJoinResult(status, null);
+        return new ChannelJoinResult(status, channel: null, lockedAtUtc: null, lockLiftableByAdmin: false);
     }
 }
 
@@ -130,7 +204,24 @@ public interface IChannelService
     // already resolved it from the request's claims (IChannelAccessService.IsGlobalAdmin), and this
     // service has no ClaimsPrincipal to work from. Defaults to false so every existing caller keeps
     // being subject to the cap unless it explicitly says otherwise.
-    Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default);
+    //
+    // The broadcaster re-add lock (#245): when the resolved identity or the stored id of the row the
+    // join lands on is locked, the join is refused with LockedByBroadcaster — unless the actor is that
+    // broadcaster (actor.TwitchUserId equals the locked id), or isGlobalAdmin is true and
+    // adminLiftConfirmedLockedAtUtc equals the date of the one lock in the way: the admin's
+    // confirmation is bound to the lock it was shown, so a lock set again since then is refused with
+    // its new date. Exactly one lock of someone else can be lifted that way; when two meet in one
+    // join, the refusal says LockLiftableByAdmin = false and nothing is lifted. Either lift happens in
+    // the join's own transaction and is recorded on the channel.join entry ({ broadcasterLockLifted },
+    // plus { liftedByAdmin, lockedAtUtc } for the admin). The confirmation means nothing without
+    // isGlobalAdmin, and nothing without a lock. Whether the admin may lift at all (recognised by id,
+    // not by the login fallback) is the caller's decision: it passes null otherwise.
+    Task<ChannelJoinResult> JoinAsync(
+        string channelName,
+        AuditActor actor,
+        bool isGlobalAdmin = false,
+        DateTime? adminLiftConfirmedLockedAtUtc = null,
+        CancellationToken cancellationToken = default);
 
     // Deactivates the bot for this channel and keeps the row and all its history. Reversible via
     // JoinAsync. See PurgeAsync for the irreversible variant.
@@ -151,13 +242,45 @@ public interface IChannelService
     Task<ChannelRetentionPurgeResult> PurgeIfInactiveSinceAsync(
         string channelName, DateTime deactivatedBeforeUtc, AuditActor actor, CancellationToken cancellationToken = default);
 
+    // The broadcaster's own purge (#245): deletes the channel like PurgeAsync, but only the rows proven
+    // to be the caller's channel, and locks the caller's Twitch id against re-adding in the same
+    // transaction. actor.TwitchUserId is the caller's identity; this method performs the ownership
+    // proof itself rather than trusting an endpoint filter:
+    //  - a row with a stored Twitch id is the caller's exactly when that id is actor.TwitchUserId
+    //    (no Twitch call);
+    //  - an id-less row is the caller's only when Twitch resolves its login to actor.TwitchUserId,
+    //    asked before any transaction opens; any other answer writes nothing.
+    // Under the row locks (id row first, then the name row — the merge order) the proof is checked
+    // again, so a concurrent backfill, merge or purge cannot widen what is deleted. Besides the routed
+    // row, the row holding the caller's id is purged too (an id-less duplicate under the caller's
+    // login goes with it when the login was proven); a duplicate under some *other* login is not —
+    // the proof covers the login that was asked about, nothing more.
+    // Audited as channel.purge with { reason: "broadcasterRequest" } per deleted row. LEAVE is
+    // published per deleted row only after the commit; a failed publish is logged, not thrown (the
+    // row is the source of truth and the periodic resync's roster prune catches up).
+    // A Postgres deadlock (40P01, e.g. against a 7TV sync holding an emote-set leave observation)
+    // retries the whole transaction up to three attempts with a fresh change tracker; after that, or
+    // on any other failure, the exception propagates and nothing is written.
+    Task<ChannelBroadcasterPurgeResult> PurgeByBroadcasterAsync(
+        string channelName, AuditActor actor, CancellationToken cancellationToken = default);
+
+    // What PurgeByBroadcasterAsync would delete for this caller, counted for the confirmation dialog
+    // (#245, plan P5): the row under this name plus the row holding actorTwitchUserId, counted once when
+    // they are the same row — the purge's own target set, so a rename leftover under the current login
+    // and the old-login row that holds the id are summed. Null when no row holds this name, or when it
+    // stores a Twitch id other than actorTwitchUserId (the purge would refuse it). Proves nothing about
+    // an id-less row: the endpoint filter decides who may ask (the caller's current login is its name).
+    Task<ChannelDataSummary?> GetDataSummaryAsync(
+        string channelName, string actorTwitchUserId, CancellationToken cancellationToken = default);
+
     Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default);
 
     // Spec 2026-09-20, 6.2: the target picker's "is this account one of our tracked channels?"
     // question, asked by Twitch id rather than by name — a 7TV editor grant and the picker's own
     // account both carry an id, never a channel name to look up by. IsBotActive = true only: a
     // channel we once tracked and then left is, for this endpoint's purpose, exactly as untracked as
-    // one we never joined — its ActiveEmoteSetId is stale, not a live observed state (E21).
+    // one we never joined — its ActiveEmoteSetId is stale, not a live observed state (E21). A row
+    // whose id is on the excluded-channel list or locked by its broadcaster (#245) reads as untracked too.
     Task<Channel?> GetActiveByTwitchChannelIdAsync(string twitchChannelId, CancellationToken cancellationToken = default);
 
     // The normalized names of every channel the bot is currently meant to be in — the worker's
@@ -173,6 +296,10 @@ public interface IChannelService
     // observing it the moment it restarts with the id configured, before the identity reconcile has
     // deactivated the row itself. Admin views that must still show the row read their own query
     // (IAdminChannelQueryService), not this one.
+    //
+    // It also excludes a row whose stored Twitch id is locked by its broadcaster (#245), as a SQL
+    // anti-join against BroadcasterChannelLocks rather than in memory: the table changes at runtime.
+    // An id-less row never matches the lock here; the 7TV sync's gate on the resolved id covers it.
     Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default);
 
     // Publishes a RESYNC command for an active channel, making the worker re-resolve the full 7TV

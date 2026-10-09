@@ -46,6 +46,31 @@ public class ChannelJoinResultTests
         Assert.Null(failed.Channel);
     }
 
+    // #245: the lock status carries the date the admin's confirmation shows, so it has a factory of
+    // its own and Failed() refuses it — a call site cannot build the status without the date.
+    [Fact]
+    public void Failed_WithTheLockStatus_Throws()
+    {
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(
+            () => ChannelJoinResult.Failed(ChannelJoinStatus.LockedByBroadcaster));
+
+        Assert.Equal("status", ex.ParamName);
+    }
+
+    [Fact]
+    public void LockedAtUtc_IsSetExactlyForTheLockStatus()
+    {
+        var lockedAt = new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc);
+
+        var locked = ChannelJoinResult.LockedByBroadcaster(lockedAt);
+        Assert.Equal(ChannelJoinStatus.LockedByBroadcaster, locked.Status);
+        Assert.Equal(lockedAt, locked.LockedAtUtc);
+        Assert.Null(locked.Channel);
+
+        Assert.Null(ChannelJoinResult.Joined(new Channel { ChannelName = "somechannel" }).LockedAtUtc);
+        Assert.Null(ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded).LockedAtUtc);
+    }
+
     // The two escape hatches a caller does not have to call a factory to use. Asserted by reflection
     // rather than by a commented-out line of code, because the point is that they stay shut as the
     // type is edited: making it a record again, or widening the constructor, turns these red.

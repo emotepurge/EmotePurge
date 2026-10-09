@@ -7,6 +7,7 @@ using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure;
+using EmotePurge.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
@@ -252,7 +253,16 @@ builder.Services.AddRateLimiter(options =>
         RateLimitRejection.PartitionPerIpTokenBucket(httpContext, RateLimitPolicyNames.Contact, rateLimits.Contact));
 });
 
+// See the exception handler below: unbindable input must reach it in every environment, not only
+// in Development (the framework default), so the 400 carries an errorCode everywhere.
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
+
 var app = builder.Build();
+
+// Resolve the admin allowlist once at startup so its migration warning lands in the Api log at boot
+// instead of at the first request. Deliberately no validation throw: a login-only list is the
+// supported transition state, not a misconfiguration.
+_ = app.Services.GetRequiredService<IGlobalAdminAllowlist>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -263,12 +273,47 @@ if (app.Environment.IsDevelopment())
 // crash apart from a network failure and shows its generic message. Concretely reachable: two
 // concurrent votes racing the (VoteSessionId, EmoteId, UserId) unique index. Deliberately no
 // exception detail in the body — only a stable errorCode the frontend can translate.
+//
+// Minimal API reports a request it could not bind (unparseable JSON, an enum member that does not
+// exist, a missing body) in one of two ways, chosen by
+// RouteHandlerOptions.ThrowOnBadRequest, whose default is "true in Development only": either it
+// throws BadHttpRequestException out of the request delegate, or it logs and answers a body-less
+// 400. Development therefore flattened the throw into a 500 unexpected_error (found in the #245
+// live run: "type":"Keep" on POST .../votes), while every other environment answered a 400 with no
+// errorCode. The option is now on everywhere; the middleware below turns the exception into the
+// 4xx the framework chose plus a language-neutral code. A wrong content type does not reach this
+// catch: routing rejects the JSON-only endpoint and the /api fallback answers a body-less 404.
+//
+// A middleware rather than a branch inside the handler on purpose: ExceptionHandlerMiddleware logs
+// everything that reaches it as `fail:` with a stack trace, and an unbindable body is client input
+// anyone can send, so that would be externally triggerable error noise. Sitting inside the handler
+// (registered after it), this catch answers first and the exception never reaches the handler, which
+// stays reserved for genuine server errors. Logged at Debug, without the exception.
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 {
     context.Response.StatusCode = StatusCodes.Status500InternalServerError;
     context.Response.ContentType = "application/json";
     await context.Response.WriteAsJsonAsync(new { errorCode = ApiErrorCodes.UnexpectedError });
 }));
+
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (BadHttpRequestException badRequest) when (!context.Response.HasStarted)
+    {
+        app.Logger.LogDebug("Rejected unbindable request body on {Path}: {Reason}", context.Request.Path, badRequest.Message);
+        // Deliberately no Response.Clear(): it also drops the headers the middleware below has already
+        // set for this response (Cache-Control: no-store on /api, HSTS, CSP, nosniff, ...), which
+        // would exempt exactly this 400 from the documented policy. Nothing has been written to the
+        // body yet (HasStarted is false), so setting status and content type is enough.
+        context.Response.StatusCode = badRequest.StatusCode;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new { errorCode = ApiErrorCodes.InvalidRequestBody });
+    }
+});
 
 // Behind a host-level reverse proxy (TLS termination) the connection reaches the container through
 // the Docker bridge gateway address, not through loopback, so the middleware's default trust list

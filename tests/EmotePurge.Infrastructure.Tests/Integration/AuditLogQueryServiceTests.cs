@@ -21,6 +21,29 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
     private const string ChannelPrefix = "auditquery";
 
     [Fact]
+    public async Task ListAsync_WithOccurredAfterUtc_HidesEntriesOfAnEarlierRowWithTheSameName()
+    {
+        // A purged channel's login can be taken over: the new row (new Twitch id, CreatedAt = t0)
+        // shares the name with the old row's audit entries. The channel-scoped route passes
+        // CreatedAt as the lower bound so the new owner cannot read the predecessor's history.
+        await using var db = fixture.CreateDbContext();
+        var channel = $"{ChannelPrefix}-gen";
+        var t0 = new DateTime(2099, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        await SeedAsync(db, channel,
+            (AuditActions.ChannelJoin, t0.AddDays(-3)),
+            (AuditActions.ChannelPurge, t0.AddDays(-1)),
+            (AuditActions.ChannelJoin, t0),
+            (AuditActions.ChannelLeave, t0.AddHours(2)));
+
+        var service = new AuditLogQueryService(db);
+        var bounded = await service.ListAsync(1, 50, new AuditLogFilter(null, channel, null, t0));
+        var unbounded = await service.ListAsync(1, 50, new AuditLogFilter(null, channel, null));
+
+        Assert.Equal([AuditActions.ChannelLeave, AuditActions.ChannelJoin], bounded.Items.Select(i => i.Action).ToList());
+        Assert.Equal(4, unbounded.Items.Count);
+    }
+
+    [Fact]
     public async Task ListAsync_ReturnsNewestFirst()
     {
         await using var db = fixture.CreateDbContext();

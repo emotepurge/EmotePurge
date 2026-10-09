@@ -368,6 +368,7 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
             Substitute.For<IRedisPublisher>(),
             identityService,
             new ChannelEmoteSetObservationService(db),
+            new BroadcasterChannelLockService(db),
             new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
             Substitute.For<IExcludedChannelFilter>(),
             NullLogger<ChannelService>.Instance);
@@ -391,6 +392,7 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
             new ChannelEmoteSetObservationService(db),
             new ChannelSyncGate(),
             Substitute.For<IExcludedChannelFilter>(),
+            new BroadcasterChannelLockService(db),
             new RecordingSevenTvSearchBudget(),
             new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),

@@ -366,6 +366,10 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         var channel = new Channel
         {
             ChannelName = channelName,
+            // A stored id keeps these active rows out of the identity reconcile's unresolvable-login
+            // branch (#245, D2): two cases here backdate CreatedAt, and the shared collection database
+            // would otherwise hand the reconcile tests old, active, id-less rows to deactivate.
+            TwitchChannelId = $"tw_status_{channelName}",
             IsBotActive = true,
             ActiveEmoteSetId = activeEmoteSetId,
             ActiveEmoteSetCapacity = capacity

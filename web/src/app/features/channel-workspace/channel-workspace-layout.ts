@@ -4,16 +4,23 @@ import { Component, effect, inject, input, signal, untracked } from '@angular/co
 import { Router, RouterOutlet } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
+import { AuthService } from '../../core/auth/auth.service';
 import { ChannelService } from '../../core/channels/channel.service';
+import { isUnknownOutcome } from '../../core/http/unknown-outcome';
 import { apiErrorTranslationKey } from '../../core/i18n/api-error';
+import { LanguageService } from '../../core/i18n/language.service';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
+import { joinWithBroadcasterLockPrompt } from '../../shared/channels/join-with-lock-prompt';
 import { BackLink } from '../../shared/ui/back-link';
 import { Button } from '../../shared/ui/button';
 import { ConfirmDialogData, openConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { TabLink } from '../../shared/ui/tab-link';
+import { openTypedConfirmDialog } from '../../shared/ui/typed-confirm-dialog';
+
+const LOCKED_BY_BROADCASTER_KEY = 'errors.api.channel_locked_by_broadcaster';
 
 @Component({
   selector: 'app-channel-workspace-layout',
@@ -47,6 +54,19 @@ import { TabLink } from '../../shared/ui/tab-link';
                 {{ 'channelWorkspace.rejoinChannel' | transloco }}
               </button>
             }
+          }
+          <!-- Its own condition, not nested in canManage: it follows the server's
+               canPurgeAsBroadcaster (the channel's own broadcaster only) and, like the reactivate
+               button, stays available while the bot is inactive. -->
+          @if (canPurgeAsBroadcaster()) {
+            <button
+              type="button"
+              appButton="danger"
+              [disabled]="purgeInProgress()"
+              (click)="purgeOwnData()"
+            >
+              {{ 'channelWorkspace.purgeOwnData' | transloco }}
+            </button>
           }
         </div>
       </div>
@@ -96,6 +116,8 @@ export class ChannelWorkspaceLayout {
   private readonly router = inject(Router);
   private readonly translocoService = inject(TranslocoService);
   private readonly dialog = inject(Dialog);
+  private readonly authService = inject(AuthService);
+  private readonly languageService = inject(LanguageService);
 
   // Was two probes: GET /api/channels/{c} for "may manage" and a throwaway one-day
   // GetUsageTotalsAsync call for "may see the usage tab" (weaker — it also admits the channel's 7TV
@@ -104,6 +126,8 @@ export class ChannelWorkspaceLayout {
   // through the server-side filter, and the usage route has its own guard.
   protected readonly canManage = signal(false);
   protected readonly canViewUsageStats = signal(false);
+  protected readonly canPurgeAsBroadcaster = signal(false);
+  protected readonly purgeInProgress = signal(false);
 
   // Without this a deactivated channel offered no way back in: leaving keeps the row (see
   // ChannelService.LeaveAsync), so the overview lists it as tracked and never shows the "Hinzufügen"
@@ -176,9 +200,18 @@ export class ChannelWorkspaceLayout {
     this.rejoinInProgress.set(true);
     this.errorMessage.set(null);
 
-    this.channelService.join(this.channelName()).subscribe({
-      next: () => {
-        this.isBotActive.set(true);
+    const deps = {
+      channelService: this.channelService,
+      dialog: this.dialog,
+      transloco: this.translocoService,
+      lang: this.languageService.lang(),
+    };
+    joinWithBroadcasterLockPrompt(deps, this.channelName()).subscribe({
+      next: (status) => {
+        // null = an admin declined to lift the broadcaster's lock: nothing changed.
+        if (status) {
+          this.isBotActive.set(true);
+        }
         this.rejoinInProgress.set(false);
       },
       error: (error: HttpErrorResponse) => {
@@ -187,13 +220,87 @@ export class ChannelWorkspaceLayout {
         // everything else — including a 409 channel_capacity_reached — goes through the generic
         // mapping instead of the single hardcoded "could not reactivate" this used to fall back to,
         // the same generic mapping the other channel actions use.
+        // A locked channel's 403 is the exception: it has its own text (the streamer removed the
+        // channel), which is also how the mod team learns about the purge.
+        const key = apiErrorTranslationKey(error);
         this.errorMessage.set(
-          error.status === 403
+          error.status === 403 && key !== LOCKED_BY_BROADCASTER_KEY
             ? 'channelWorkspace.errors.leaveForbidden'
-            : apiErrorTranslationKey(error),
+            : key,
         );
       },
     });
+  }
+
+  /**
+   * The broadcaster's own wipe of this channel's data. The numbers in the dialog are the server's
+   * (`data-summary`), the confirmation is the typed channel name, and the call is bound to the
+   * account the user confirmed as (`expectedTwitchUserId`, like the account deletion): a session
+   * that changed in another tab by then is refused instead of acting for the wrong person.
+   */
+  protected purgeOwnData(): void {
+    const user = this.authService.currentUser();
+    if (!user || this.purgeInProgress()) {
+      return;
+    }
+    const channelName = this.channelName();
+    const expectedTwitchUserId = user.twitchUserId;
+    this.purgeInProgress.set(true);
+    this.errorMessage.set(null);
+
+    this.channelService.getDataSummary(channelName).subscribe({
+      next: (summary) => {
+        openTypedConfirmDialog(this.dialog, {
+          title: this.translocoService.translate('channelWorkspace.purgeOwnDataDialog.title'),
+          message: this.translocoService.translate('channelWorkspace.purgeOwnDataDialog.message', {
+            channelName,
+            emotes: summary.emoteCount,
+            voteSessions: summary.voteSessionCount,
+            liveDays: summary.liveDayCount,
+            tags: summary.tagCount,
+          }),
+          requiredText: channelName,
+          inputLabel: this.translocoService.translate(
+            'channelWorkspace.purgeOwnDataDialog.inputLabel',
+          ),
+          confirmLabel: this.translocoService.translate(
+            'channelWorkspace.purgeOwnDataDialog.confirm',
+          ),
+        }).closed.subscribe((confirmed) => {
+          if (!confirmed) {
+            this.purgeInProgress.set(false);
+            return;
+          }
+          this.channelService.purgeOwnData(channelName, expectedTwitchUserId).subscribe({
+            next: () => {
+              this.purgeInProgress.set(false);
+              void this.router.navigateByUrl('/');
+            },
+            error: (error: HttpErrorResponse) => {
+              // Only the deletion can have committed behind a lost answer; the summary is a read.
+              if (isUnknownOutcome(error.status)) {
+                this.purgeInProgress.set(false);
+                this.errorMessage.set('channelWorkspace.errors.purgeOwnDataUnconfirmed');
+                return;
+              }
+              this.failPurge(error);
+            },
+          });
+        });
+      },
+      error: (error: HttpErrorResponse) => this.failPurge(error),
+    });
+  }
+
+  private failPurge(error: HttpErrorResponse): void {
+    this.purgeInProgress.set(false);
+    // A confirmed refusal, or a failed summary read (nothing was deleted then). A coded answer
+    // (account_mismatch, channel_identity_unresolved, ...) says exactly what went wrong; anything else
+    // gets the action's own "nothing changed" sentence.
+    const key = apiErrorTranslationKey(error);
+    this.errorMessage.set(
+      key.startsWith('errors.api.') ? key : 'channelWorkspace.errors.purgeOwnDataFailed',
+    );
   }
 
   private loadPermissions(channelName: string): void {
@@ -202,12 +309,14 @@ export class ChannelWorkspaceLayout {
         this.canManage.set(permissions.canManage);
         this.canViewUsageStats.set(permissions.canViewUsageStats);
         this.isBotActive.set(permissions.isBotActive);
+        this.canPurgeAsBroadcaster.set(permissions.canPurgeAsBroadcaster);
       },
       // Only reachable for a logged-out user (the interceptor already redirects) or a server error —
       // hide everything privileged rather than guess.
       error: () => {
         this.canManage.set(false);
         this.canViewUsageStats.set(false);
+        this.canPurgeAsBroadcaster.set(false);
       },
     });
   }

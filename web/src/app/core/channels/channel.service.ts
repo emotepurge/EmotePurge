@@ -3,7 +3,12 @@ import { inject, Injectable } from '@angular/core';
 import { catchError, Observable, shareReplay, throwError } from 'rxjs';
 
 import { normalizeChannelName } from './channel-name';
-import { ChannelPermissions, ChannelStatus, MyChannelsResult } from './channel.model';
+import {
+  ChannelDataSummary,
+  ChannelPermissions,
+  ChannelStatus,
+  MyChannelsResult,
+} from './channel.model';
 
 /** Long enough to collapse one navigation's worth of readers, short enough that a role change
  *  (a new mod, a revoked 7TV editor) shows up on the next page the user opens rather than after
@@ -88,9 +93,39 @@ export class ChannelService {
     this.permissionsCache.delete(normalizeChannelName(channelName));
   }
 
-  join(channelName: string): Observable<ChannelStatus> {
+  /**
+   * `liftBroadcasterLock` is only sent after an admin has confirmed the prompt for a channel its
+   * broadcaster deleted and locked, together with the lock date that prompt showed — exactly the
+   * `lockedAtUtc` string of the 409, never re-formatted, because the server lifts only while the lock
+   * still carries that date, compared at full precision. Without the option the request is
+   * byte-identical to a plain join.
+   */
+  join(
+    channelName: string,
+    options?: { liftBroadcasterLock?: { confirmedLockedAtUtc: string } },
+  ): Observable<ChannelStatus> {
     this.invalidatePermissions(channelName);
-    return this.http.post<ChannelStatus>(`/api/channels/${channelName}/join`, {});
+    const lift = options?.liftBroadcasterLock;
+    const params = lift
+      ? { liftBroadcasterLock: 'true', confirmedLockedAtUtc: lift.confirmedLockedAtUtc }
+      : undefined;
+    return this.http.post<ChannelStatus>(`/api/channels/${channelName}/join`, {}, { params });
+  }
+
+  getDataSummary(channelName: string): Observable<ChannelDataSummary> {
+    return this.http.get<ChannelDataSummary>(`/api/channels/${channelName}/data-summary`);
+  }
+
+  /**
+   * Irreversible, broadcaster-only: deletes this channel's data and locks the channel against
+   * re-adding by anyone but its broadcaster. `expectedTwitchUserId` binds the call to the session
+   * the user confirmed in (409 `account_mismatch` otherwise).
+   */
+  purgeOwnData(channelName: string, expectedTwitchUserId: string): Observable<void> {
+    this.invalidatePermissions(channelName);
+    return this.http.delete<void>(`/api/channels/${channelName}/data`, {
+      params: { expectedTwitchUserId },
+    });
   }
 
   leave(channelName: string): Observable<void> {

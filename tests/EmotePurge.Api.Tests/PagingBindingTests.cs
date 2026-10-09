@@ -118,6 +118,8 @@ public class PagingBindingTests : IClassFixture<ApiFactory>
     [MemberData(nameof(GuardedRoutes))]
     public async Task GuardedRoutes_Answer403_NotABindingFailure_ForACallerWhoMayNotRead(string route)
     {
+        _factory.Channels.GetByNameAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => new Channel { ChannelName = call.Arg<string>() });
         _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(false);
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(false);
@@ -140,6 +142,9 @@ public class PagingBindingTests : IClassFixture<ApiFactory>
 
     private void AllowEverything()
     {
+        // The channel audit log answers 404 for an untracked channel before it authorizes.
+        _factory.Channels.GetByNameAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => new Channel { ChannelName = call.Arg<string>() });
         _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(true);
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(true);

@@ -492,6 +492,7 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
             Substitute.For<IRedisPublisher>(),
             Substitute.For<IChannelIdentityService>(),
             new ChannelEmoteSetObservationService(db),
+            new BroadcasterChannelLockService(db),
             new ChannelCapacityOptions(),
             Substitute.For<IExcludedChannelFilter>(),
             _logs.For<ChannelService>());

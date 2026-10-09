@@ -31,6 +31,7 @@ const DE_TRANSLATIONS = {
       pending: 'Konto wird gelöscht …',
       failed: 'Dein Konto konnte nicht gelöscht werden. Es ist alles unverändert.',
       mismatch: 'Anderes Konto in einem anderen Tab.',
+      channelHint: 'channelHint:{{ login }}',
       unconfirmed:
         'Wir konnten nicht bestätigen, ob dein Konto gelöscht wurde. Lade die Seite neu.',
     },
@@ -422,11 +423,24 @@ describe('AccountMenu', () => {
       TestBed.tick();
     }
 
-    function openDialog(menu: Harness): void {
+    /** The dialog opens once `/api/channels/mine` has answered (it decides the channel hint);
+     *  `mine` is that answer, `null` a failing request. */
+    function openDialog(
+      menu: Harness,
+      mine: { channels: { isBroadcaster: boolean; isTracked: boolean }[] } | null = {
+        channels: [],
+      },
+    ): void {
       menu.resolve(USER);
       menu.trigger().click();
       menu.detect();
       menu.button('Konto löschen').click();
+      const request = TestBed.inject(HttpTestingController).expectOne('/api/channels/mine');
+      if (mine) {
+        request.flush(mine);
+      } else {
+        request.flush(null, { status: 500, statusText: 'Server Error' });
+      }
       menu.detect();
       TestBed.tick();
     }
@@ -449,6 +463,29 @@ describe('AccountMenu', () => {
 
       type('sensitron');
       expect(dialogButton('Konto endgültig löschen').disabled).toBe(false);
+    });
+
+    describe('hint about the owner channel', () => {
+      const hint = () => dialogEl()!.textContent ?? '';
+
+      it('names the channel data when the account is the broadcaster of a tracked channel', () => {
+        openDialog(render(), { channels: [{ isBroadcaster: true, isTracked: true }] });
+        expect(hint()).toContain('channelHint:sensitron');
+      });
+
+      it.each([
+        ['a channel the account only moderates', { isBroadcaster: false, isTracked: true }],
+        ['an own channel that is not tracked', { isBroadcaster: true, isTracked: false }],
+      ])('stays silent for %s', (_label, channel) => {
+        openDialog(render(), { channels: [channel] });
+        expect(hint()).not.toContain('channelHint');
+      });
+
+      it('opens the dialog without the hint when the lookup fails (fail-open)', () => {
+        openDialog(render(), null);
+        expect(dialogEl()).not.toBeNull();
+        expect(hint()).not.toContain('channelHint');
+      });
     });
 
     it('sends nothing and keeps the session when the dialog is cancelled', () => {

@@ -204,6 +204,48 @@ Then open `http://localhost:8025` to watch submissions arrive while running the 
 (`dotnet run --project src/EmotePurge.Api`) or via `docker compose up -d --build`. Remove the
 container (`docker rm -f emotepurge-mailpit`) when done — it holds no state worth keeping.
 
+## Global admins
+
+The admin area (`/admin/*`) and the rights that go with it (purging a channel, deleting an account,
+and lifting a broadcaster's re-add lock) are reserved to an allowlist, configured by **numeric
+Twitch user id**, not by login: a login can be released after a rename and registered by someone
+else, an id cannot.
+
+| Setting | Env variable | Notes |
+|---|---|---|
+| `Auth:AdminTwitchUserIds` | `ADMIN_TWITCH_USER_IDS` | Comma-separated ids (`1234,5678`). Compared exactly, as text. A JSON array in `appsettings.json` works too; the comma-separated env variable wins over it. |
+| `Auth:AdminTwitchLogins` | `ADMIN_TWITCH_LOGINS` | Transitional fallback, case-insensitive logins. Used **only** while the id list is empty. |
+
+**Transition.** As soon as the id list is non-empty it decides alone and the login list is ignored.
+The Api logs exactly one of these warnings at startup, with counts only, never the values:
+
+- `Auth:AdminTwitchLogins is ignored because Auth:AdminTwitchUserIds is configured (N id(s), M login(s))`
+  — expected after migrating while the old login variable is still set; remove `ADMIN_TWITCH_LOGINS`
+  when convenient. Until then the warning repeats on every start.
+- `The global admin allowlist is login-based (M login(s)); migrate to Auth:AdminTwitchUserIds`
+  — only logins are configured; set `ADMIN_TWITCH_USER_IDS`.
+
+With neither list set nobody is an admin (the area answers a blank 403).
+
+**Lifting a broadcaster's lock needs the id list.** An admin recognised only through the login
+fallback keeps every other admin right, but a join against a locked channel is refused for them like
+for a moderator (`403 channel_locked_by_broadcaster`, no confirmation dialog): overriding a streamer's
+own decision must not hang on a reassignable login. Set `ADMIN_TWITCH_USER_IDS` before an admin needs
+to lift a lock.
+
+**Finding your id.** `GET https://api.twitch.tv/helix/users?login=<login>` with an App Access Token
+(the same credentials the worker's Helix calls use) returns it in `data[0].id`; a third-party lookup
+tool works as well.
+
+**Local development.** `appsettings.json` ships an empty id list and the login `sensitron`, so a
+plain `dotnet run` shows the login-based warning. To use an id locally, set it as a user secret in
+the Api project: `dotnet user-secrets set "Auth:AdminTwitchUserIds" "<your-id>" --project
+src/EmotePurge.Api`.
+
+**Deploying.** Set `ADMIN_TWITCH_USER_IDS` in the stack's environment (Portainer) **before** updating
+the stack with a build that contains the broadcaster self-purge (#245). The variable is read at
+startup; recreate the `api` container after changing it.
+
 ## Excluding a chatter (GDPR objection)
 
 The worker processes public chat on a legitimate-interest basis (GDPR Art. 6(1)(f)) to count emote
@@ -320,6 +362,124 @@ interval of the block taking effect. Purging in step 4 is still the right thing 
 recommended — it is what actually deletes the channel's data — but it is no longer what keeps the
 objection enforced.
 
+## A broadcaster removes their own channel
+
+Besides the e-mail route above, a broadcaster can erase their channel's data themselves. In the
+channel workspace the broadcaster (only them: no moderator, no 7TV editor, no admin) sees the quiet
+danger button **Delete channel data**. It opens a dialog that states what will be deleted — emote
+count, vote sessions, live days and the mod team's tags — and unlocks after the channel name is typed
+out. The data summary behind that dialog is `GET /api/channels/{name}/data-summary`; the deletion is
+`DELETE /api/channels/{name}/data`. Both answer only to the account that owns the channel, proven by
+the stored Twitch id. For a row without one, the deletion asks Helix whether the login belongs to the
+caller; the summary does not call Twitch and answers only when the row's name is the caller's current
+login. If the broadcaster renamed and an old row under the previous login still holds their Twitch id,
+the deletion removes that row too, and the summary counts both.
+
+**What is deleted.** The channel row and everything bound to it: emotes, usage statistics, live
+days, vote sessions with their ballots and votes, set observations and leave observations, and the
+**mod team's emote tags** with their entries, placements, activations and operations. Each deleted
+row writes a `channel.purge` audit entry with `{ "reason": "broadcasterRequest" }`.
+
+**What stays.**
+
+- Audit-log entries, for 12 months, like every audit entry.
+- Backups, for as long as your backup chain keeps them (`RETENTION_DAYS` locally; the reference
+  deployment's chain holds them for at most 60 days, which is also what the dialog tells the
+  broadcaster; see [Database backup and restore](#database-backup-and-restore)).
+- Redis keys, until their TTL runs out: role caches, the resync cooldown, the foreign-channel and
+  emote-set caches. None of them outlives its TTL.
+- Log lines, until log rotation. Logs carry counts, never ids.
+- `emotes.syncImported` audit entries of **other** channels that name the deleted channel as the
+  source of an import. They are other channels' history; the privacy policy covers them.
+- A lock row (next paragraph): the numeric Twitch id and a timestamp, nothing else.
+
+**The lock.** The purge also writes a row to `BroadcasterChannelLocks` (primary key: the numeric
+Twitch id; no foreign key, because the channel row it belongs to is exactly what was deleted). A
+locked channel looks untracked everywhere the excluded-channel list is read — **seven read points**:
+the join, the 7TV sync (including the boot-recovery warm-up), the worker's active roster, the
+identity reconcile, the tracked-channel lookup behind the target picker and the editability
+pre-check, and the two membership steps of the emote-set report. The live poll additionally stops
+writing live minutes for locked and excluded channels, decided on Helix's user id.
+
+The lock does not expire and the retention job does not know it. It is not secret: the join answers
+`403 channel_locked_by_broadcaster`, with the date of the lock for an admin. How it relates to
+`EXCLUDED_CHANNEL_IDS`: the two are independent and the env list wins where both apply; the env list
+is immutable at runtime and the operator's tool for an objection received by e-mail, the lock is the
+broadcaster's own and changes at runtime.
+
+**Lifting the lock.** Only a join lifts it, never a timer:
+
+- The broadcaster adds their own channel again (the prompt in the overview asks for the join); the
+  `channel.join` audit entry carries `broadcasterLockLifted`.
+- A global admin on the id list (not via the login fallback, see [Global admins](#global-admins))
+  joins with `liftBroadcasterLock=true&confirmedLockedAtUtc=<lockedAtUtc>`. The first join without
+  the flag is a pure read (`409 channel_locked_by_broadcaster` with `lockedAtUtc`); the admin channel
+  list asks for confirmation, naming that date, and repeats the join with the flag and the date
+  exactly as the `409` sent it. The lock is lifted only while its date is still that one; if the
+  broadcaster has locked again since, the answer is another `409` with the new date and a new
+  confirmation. The audit entry carries `liftedByAdmin: true` and the original lock date, so
+  overriding a broadcaster's decision stays recognisable.
+
+Nobody else can: a moderator or editor gets the `403`, and so does every admin in the rare case where
+one join meets two different broadcasters' locks (Twitch gives the login to one locked account while
+the row under it still stores another locked id) — one confirmation overrides one decision, not two.
+That state settles once the identity reconcile has deactivated the stale row; if an admin really has to
+override both, the lock rows are removed by hand in `BroadcasterChannelLocks`.
+
+**Limits.**
+
+- *Legacy rows.* A channel row without a stored Twitch id, created under an old login (a rename
+  leftover), can be proven by nobody once that login no longer resolves to the caller. The purge
+  leaves it; the identity reconcile deactivates an unresolvable row after seven days, and the
+  180-day retention then deletes it. The dialog says so.
+- *Helix outage at join time.* A join while Helix is unreachable creates an id-less row. If that
+  channel is locked, the next reconcile deactivates the row and the owner's next join lifts the
+  lock. Fail-closed and self-healing.
+- *Uncounted time for an id-less row.* Such a row is counted only after 7TV has resolved its id.
+  The retry spacing can be up to about an hour (`SevenTv:SearchBudget:ResolutionBackoffMaxSeconds`,
+  default 3600, plus the shared search lockout). That is the spacing between two attempts, not a
+  promised recovery time.
+- *Tag-blocked duplicate.* A rename duplicate (id-less, old login) whose original row still holds
+  the Twitch id is refused by the sync; once the mod team has given it a tag, even an empty one, the
+  reconcile refuses the merge as well, and the row stays uncounted until a person removes the tag or
+  the duplicate. This limit predates the self-purge and is independent of it.
+- *Audit-log generation.* A channel created again under the same name sees only the audit entries
+  from its own creation onward; its predecessor's entries stay hidden from the channel's log. The
+  admin audit view is unbounded.
+
+**Restore.** A restored backup brings back what was deleted after the backup was taken, the lock
+table included: a channel purged after the backup date can be observed again until the purge is
+repeated. Before a restore, read the **running** database: note the `channel.purge` entries with
+`broadcasterRequest` since the backup date (or the lock table), and after the restore purge those
+channels again and enter their ids in `EXCLUDED_CHANNEL_IDS` before `api` and `worker` start. If the
+running database is no longer readable, those purges are lost; the operator repeats the deletion as
+soon as it becomes known. The step-by-step version lives in the private backup runbook.
+
+**Rolling back.** Only images that contain migration `AddBroadcasterChannelLocks` and the self-purge
+code check the table. Rolling back to an older image does not: the purged channels stay purged, but a
+locked channel could be added again until a newer image runs once more.
+
+### Deploying this feature
+
+1. **Migration first, by hand.** `AddBroadcasterChannelLocks` is additive (one new table), so the
+   image still running ignores it. Apply it before the images, as with every migration here: tunnel
+   to the VPS, `dotnet ef migrations list` (expect exactly this one as `(Pending)`; the one before it
+   is `AddEmoteTagPlacements`), `dotnet ef database update`, `list` again. See "Prod-Migration" in
+   `CLAUDE.md`.
+2. **Set `ADMIN_TWITCH_USER_IDS`** in the stack environment (see [Global admins](#global-admins)).
+   `ADMIN_TWITCH_LOGINS` can stay; it is ignored once the id list is set, and the startup warning
+   saying so is the proof that the ids are in effect.
+3. **Worker before Api.** Update `worker` first and wait until its identity-reconcile summary line
+   names `LockedDeactivated` (printed on every summary line, zero included; at the latest after
+   `Twitch:IdentityReconcileIntervalMinutes`). Only then update `api` — until the Api runs there is no
+   purge endpoint, hence no lock a stale worker could miss. Roster, sync gate, reconcile and live
+   coverage live in the Worker image, not only in the Api.
+4. **Check.** Both running containers carry the same image revision (`docker inspect --format
+   '{{index .Config.Labels "org.opencontainers.image.revision"}}' <api> <worker>`) and it is the
+   merge commit; `/api/health` answers 200; the admin area opens with the id-based allowlist.
+
+The deploy follows the merge on its own schedule; it does not wait for any other open decision.
+
 ## Data retention
 
 Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,
@@ -415,7 +575,7 @@ change what it does, and changing them needs a rebuilt image:
 ### Account deletion on request
 
 For anyone who asks you to delete their account by email (or however you take such requests): an
-admin (one of `Auth:AdminTwitchLogins`) can delete a single account immediately from the admin
+admin (one of `Auth:AdminTwitchUserIds`, see [Global admins](#global-admins)) can delete a single account immediately from the admin
 user list, independent of the retention job's schedule and independent of whether the account is
 inactive. The row's delete action asks for the account's Twitch login typed out before it
 unlocks, the same typed-confirmation dialog the channel list's purge action uses — an accidental

@@ -2,7 +2,8 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { Component, DestroyRef, computed, effect, inject, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { Dialog } from '@angular/cdk/dialog';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { AuthService } from '../../core/auth/auth.service';
 import { MyChannelDto } from '../../core/channels/channel.model';
@@ -10,6 +11,8 @@ import { ChannelService } from '../../core/channels/channel.service';
 import { GENERIC_ERROR_TRANSLATION_KEY, apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LIVE_EVENT_TYPES, LIVE_STATUS_URL } from '../../core/live/live-event.model';
 import { liveReload } from '../../core/live/live-reload';
+import { LanguageService } from '../../core/i18n/language.service';
+import { joinWithBroadcasterLockPrompt } from '../../shared/channels/join-with-lock-prompt';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
@@ -38,6 +41,9 @@ export class OverviewPage {
   private readonly authService = inject(AuthService);
   private readonly channelService = inject(ChannelService);
   private readonly router = inject(Router);
+  private readonly dialog = inject(Dialog);
+  private readonly languageService = inject(LanguageService);
+  private readonly translocoService = inject(TranslocoService);
 
   // rxResource instead of a one-shot constructor subscribe: live.changed pushes reload the list.
   // Two different mechanisms keep the rows on screen across such a reload: the resource itself holds
@@ -141,8 +147,9 @@ export class OverviewPage {
   }
 
   protected join(channelName: string): void {
-    this.channelService.join(channelName).subscribe({
-      next: () => this.openChannel(channelName),
+    this.joinWithPrompt(channelName).subscribe({
+      // null = an admin declined to lift the broadcaster's lock: stay put.
+      next: (status) => status && this.openChannel(channelName),
       error: (error: HttpErrorResponse) => this.handleError(error),
     });
   }
@@ -150,8 +157,11 @@ export class OverviewPage {
   // Same call as join(), but stays on the overview and flips the row in place — someone is likely
   // reactivating one of several channels, and being navigated away after each one is in the way.
   protected reactivate(channelName: string): void {
-    this.channelService.join(channelName).subscribe({
-      next: () => {
+    this.joinWithPrompt(channelName).subscribe({
+      next: (status) => {
+        if (!status) {
+          return;
+        }
         // update() on a resource without a value would patch nothing and, worse, put it into a
         // value state built from undefined — the row to patch only exists if there is a value.
         if (!this.myChannelsResource.hasValue()) {
@@ -184,6 +194,18 @@ export class OverviewPage {
 
   // 401 is not handled here — apiAuthInterceptor resets the session and redirects for every
   // /api/ call in the app.
+  private joinWithPrompt(channelName: string) {
+    return joinWithBroadcasterLockPrompt(
+      {
+        channelService: this.channelService,
+        dialog: this.dialog,
+        transloco: this.translocoService,
+        lang: this.languageService.lang(),
+      },
+      channelName,
+    );
+  }
+
   private handleError(error: HttpErrorResponse): void {
     this.actionError.set(apiErrorTranslationKey(error));
   }

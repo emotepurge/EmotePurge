@@ -67,9 +67,20 @@ public interface ITwitchChatManager
 
     Task JoinChannelAsync(string channelName);
 
-    // Joins only if the channel isn't already joined-and-confirmed. Driven by the periodic 7TV
-    // resync as a convergence net for lost Redis commands and joins Twitch never confirmed.
-    Task EnsureJoinedAsync(string channelName);
+    /// <summary>
+    /// The position in the worker's leave sequence. A caller of <see cref="EnsureJoinedAsync"/> takes
+    /// it <em>before</em> it reads the active roster from Postgres and hands it over unchanged — see
+    /// <see cref="ChannelLeaveLedger"/> for why that order makes a stale read harmless.
+    /// </summary>
+    long CaptureLeaveStamp();
+
+    /// <summary>
+    /// Joins only if the channel isn't already joined-and-confirmed. Driven by the periodic 7TV
+    /// resync (and the RESYNC command) as a convergence net for lost Redis commands and joins Twitch
+    /// never confirmed. Does nothing when the channel was left after <paramref name="leaveStamp"/>
+    /// was captured: the caller's roster read predates that LEAVE, so its "active" is stale.
+    /// </summary>
+    Task EnsureJoinedAsync(string channelName, long leaveStamp);
 
     Task LeaveChannelAsync(string channelName);
 

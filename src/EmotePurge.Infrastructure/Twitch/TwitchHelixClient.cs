@@ -177,7 +177,7 @@ public class TwitchHelixClient(HttpClient httpClient, ILogger<TwitchHelixClient>
                 }
 
                 streams.AddRange(dto.Data.Select(s =>
-                    new TwitchStreamInfo(s.UserLogin, DateTime.SpecifyKind(s.StartedAt, DateTimeKind.Utc))));
+                    new TwitchStreamInfo(s.UserLogin, s.UserId, DateTime.SpecifyKind(s.StartedAt, DateTimeKind.Utc))));
             }
 
             return streams;

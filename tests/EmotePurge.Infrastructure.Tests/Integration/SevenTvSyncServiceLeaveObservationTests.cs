@@ -731,7 +731,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         await using var apiDb = fixture.CreateDbContext([pause]);
         var emoteService = new EmoteService(
             apiDb, NullLogger<EmoteService>.Instance,
-            new ExcludedChannelFilter(new ConfigurationBuilder().Build(), NullLogger<ExcludedChannelFilter>.Instance));
+            new ExcludedChannelFilter(new ConfigurationBuilder().Build(), NullLogger<ExcludedChannelFilter>.Instance), new BroadcasterChannelLockService(apiDb));
         var report = emoteService.MarkDeletedInSetAsync(
             ReportSetId, "owner-seven-tv-id", "setowner", "owner-twitch-id", ["logone1"], channel.ChannelName, Actor);
         await pause.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -754,7 +754,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         AppDbContext db, EmoteMatchCache cache, ISevenTvApiClient? apiClient = null, IEmptySetConfirmationTracker? emptySetConfirmations = null) =>
         new(db, apiClient ?? Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(),
             new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
-            new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
+            new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             emptySetConfirmations ?? new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
             NullLogger<SevenTvSyncService>.Instance);
 
