@@ -89,14 +89,34 @@ describe('BackfillRunStatusView', () => {
     ).toBeNull();
   });
 
-  it('says the archive asked us to wait for a paused run, from its own deadline', () => {
+  it('says the archive asked us to wait for a paused run, until the later of deadline and cooldown', () => {
     const view = create(
       run({ status: 'paused', pausedUntilUtc: '2026-10-09T19:00:00Z' }),
       'active',
       '2026-10-09T20:00:00Z',
     ).componentInstance;
 
-    expect(view.waitUntil()).toBe('2026-10-09T19:00:00Z');
+    expect(view.waitUntil()).toBe('2026-10-09T20:00:00Z');
+  });
+
+  it("keeps the paused run's own deadline when it is the later one", () => {
+    const view = create(
+      run({ status: 'paused', pausedUntilUtc: '2026-10-09T21:00:00Z' }),
+      'active',
+      '2026-10-09T20:00:00Z',
+    ).componentInstance;
+
+    expect(view.waitUntil()).toBe('2026-10-09T21:00:00Z');
+  });
+
+  it('uses whichever of the two is set for a paused run', () => {
+    expect(
+      create(
+        run({ status: 'paused', pausedUntilUtc: null }),
+        'active',
+        '2026-10-09T20:00:00Z',
+      ).componentInstance.waitUntil(),
+    ).toBe('2026-10-09T20:00:00Z');
   });
 
   it('says it for a queued run too while the provider cooldown is set, and for nothing else', () => {
@@ -125,13 +145,13 @@ describe('BackfillRunStatusView', () => {
     expect(named.lastDay()).toBe('2026-10-07');
   });
 
-  it('announces the progress of the active run as a status next to a progress bar with a name', () => {
+  it('shows the progress bar with a name, filled by the progress fraction, and no live region of its own', () => {
     const element = create(run()).nativeElement as HTMLElement;
 
-    expect(element.querySelector('p[role="status"]')).not.toBeNull();
+    expect(element.querySelector('[role="status"]')).toBeNull();
     const bar = element.querySelector('progress') as HTMLProgressElement;
-    expect(bar.value).toBe(3);
-    expect(bar.max).toBe(14);
+    expect(bar.max).toBe(1);
+    expect(bar.value).toBeCloseTo(3 / 14);
     expect(bar.getAttribute('aria-label')).toBeTruthy();
   });
 

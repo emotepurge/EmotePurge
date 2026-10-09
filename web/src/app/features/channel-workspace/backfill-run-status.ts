@@ -14,7 +14,8 @@ import { StatusBadge, StatusBadgeTone } from '../../shared/ui/status-badge';
 
 /**
  * Every `ChatLogBackfillRun.ErrorCode` the backend writes (spec 2026-10-09, §4.6, checked against
- * the string constants in `ChatLogBackfillService`, `ChatLogBackfillWorker` and `ChannelDeactivation`).
+ * the string constants in `ChatLogBackfillService`, `ChatLogBackfillWorker` and
+ * `ChannelDeactivation`).
  * The vocabulary spec asserts a de and an en sentence for each.
  */
 export const BACKFILL_RUN_ERROR_CODES = [
@@ -61,6 +62,13 @@ export function backfillRunStatusKey(status: string): string {
     : UNKNOWN_STATUS_KEY;
 }
 
+function laterOf(a: string | null, b: string | null): string | null {
+  if (a === null || b === null) {
+    return a ?? b;
+  }
+  return Date.parse(b) > Date.parse(a) ? b : a;
+}
+
 const STATUS_TONES: Record<BackfillRunStatus, StatusBadgeTone> = {
   queued: 'neutral',
   running: 'info',
@@ -88,12 +96,13 @@ const STATUS_TONES: Record<BackfillRunStatus, StatusBadgeTone> = {
       @if (kind() === 'active') {
         <progress
           class="h-2 w-full max-w-md"
-          [value]="run().weeksDone"
-          [max]="run().weeksTotal"
+          [value]="progressFraction()"
+          max="1"
           [attr.aria-label]="'backfill.progressLabel' | transloco"
         ></progress>
       }
-      <p [attr.role]="kind() === 'active' ? 'status' : null">
+      <!-- Not a live region: the section's permanent one announces progress and outcomes. -->
+      <p>
         {{ 'backfill.progress' | transloco: { done: run().weeksDone, total: run().weeksTotal } }}
       </p>
 
@@ -164,13 +173,14 @@ export class BackfillRunStatusView {
   });
 
   /**
-   * When the archive asked us to wait: the paused run's own deadline, or the provider cooldown for
-   * a run that is still queued behind it. A running run is not waiting; a terminal one never is.
+   * When the archive asked us to wait: for a paused run the later of its own deadline and the
+   * provider cooldown (D31, which only ever grows), for a queued run the cooldown it waits behind.
+   * A running run is not waiting; a terminal one never is.
    */
   readonly waitUntil = computed(() => {
     const run = this.run();
     if (run.status === 'paused') {
-      return run.pausedUntilUtc;
+      return laterOf(run.pausedUntilUtc, this.cooldownUntilUtc());
     }
     return run.status === 'queued' ? this.cooldownUntilUtc() : null;
   });
