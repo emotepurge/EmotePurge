@@ -27,7 +27,7 @@ public class SevenTvSyncServiceDuplicateEmoteIdTests(PostgresFixture fixture)
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(SetId, emotes))));
         var service = new SevenTvSyncService(
             db, apiClient, new EmoteMatchCache(), new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(),
-            Substitute.For<IExcludedChannelFilter>(), new RecordingSevenTvSearchBudget(),
+            Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(),
             new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), new RecordingLogger<SevenTvSyncService>());
         return service.SyncChannelAsync(channel.ChannelName);
