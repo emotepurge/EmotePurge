@@ -36,6 +36,7 @@ Legende: ✅ umgesetzt · 🟡 teilweise · ⬜ offen
 | **A12** Ergebnis-Export | ✅ 2026-08-02 | DECISIONS „Der Export ist eine Client-Serialisierung …" |
 | **A13**–**A15** | ⬜ | — |
 | **A16** Emote-Liste importieren (Nachtrag 2026-08-04) | ✅ 2026-09-06 | DECISIONS „Import-Lauf: dritter Arbiter-Zweig ohne DI-Zirkel, kein Kanal-Reset, Nachlauf ans Laufobjekt gebunden …" (#72, K3) |
+| **A17** Chat-Log-Backfill (Nachtrag 2026-10-08) | ✅ 2026-10-09 | DECISIONS „Chat-log backfill: imported rows are marked, one set owns an imported day, coverage is disclosed unconditionally, the flag ships off (#354)“ (Epic #346); Flag auf Prod bis zum Datenschutztext aus |
 | **B1** Support-Drilldown | 🟡 2026-08-01 | Audit-Zeilen und Per-Channel-Flush fehlen |
 | **B2** Soll/Ist-Roster | ✅ 2026-08-02 | DECISIONS „Auslastungsbalken bekommen eine Schwellen-Leiter, das Roster-Badge nicht" |
 | **B3**–**B9** | ⬜ | — |
@@ -493,6 +494,25 @@ die Purge-Protokoll-Zeilen mit `status: 'failed'` sind das Muster dafür. Der Ve
 case-sensitiv und unnormalisiert, deckt sich also exakt mit dem ordinalen Vergleich in
 `EmoteSetStatusService` (die Duplikat-Erkennung ist seit #45 dort gefaltet, kein eigener
 Query-Service mehr): was unser Duplikat-Banner zeigt, ist auch für 7TV eine Kollision.
+
+---
+
+### A17 — Chat-Log-Backfill: Tage vor dem Zählbeginn aus einem Chat-Archiv füllen (Nachtrag 2026-10-08)
+
+**Status: ✅ umgesetzt am 2026-10-09** (Epic #346, acht Kinder #347–#354) — ein Channel-Manager startet je Lauf
+1, 3 oder 6 Monate für ein gewähltes 7TV-Set; der Worker holt wochenweise Blöcke aus `logs.cyex.app`, zählt
+mit den Live-Regeln und schreibt sie als `UsageStats`-Zeilen mit `Source = 1`. Die Nutzungsseite nennt den
+importierten Bereich samt Link zur Quelle. Die Funktion liegt hinter `ChatLogBackfill:Enabled` (Default
+`false`); auf Prod geht das Flag erst nach dem Datenschutztext und dem Abnahmelauf an. Details, Rollback und
+Konfiguration: DECISIONS (Sammeleintrag #354 plus die Einträge zu #347/#349) und `docs/Operations.md`
+„Chat-log backfill“; Spec: `docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md`.
+
+Ein neu aufgenommener Channel hat am Zählbeginn leere Zahlen, obwohl sein Chat seit Monaten läuft. Die
+Zahlen vergangener Wochen lassen sich aus einem öffentlichen Chat-Archiv nachrechnen — mit klaren Grenzen
+(#69, Variante (i)): umbenannte Emotes verlieren ihre Treffer unter dem alten Namen, Archivlücken sehen aus
+wie ruhige Tage. Der Betreiber nimmt das bewusst in Kauf; deshalb läuft der Backfill nie automatisch, füllt
+nur Tage **vor** dem Zählbeginn, fasst nie einen live gezählten Tag an und benennt seine Quelle überall dort,
+wo importierte Zahlen stehen.
 
 ---
 
