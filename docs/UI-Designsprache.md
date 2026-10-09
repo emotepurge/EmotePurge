@@ -799,7 +799,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **What applies:** Tab bars are router links, **not** an ARIA tabs pattern (`role="tablist"`/`aria-selected` are wrong here, since these are real navigations). A tab is `<app-tab-link>`; the bar stays with the caller, because its sticky position differs per level:
 
   ```html
-  <nav class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 border-b border-border">
+  <nav class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 overflow-x-auto border-b border-border">
     <app-tab-link link="usage-stats" [label]="'x.tab' | transloco" />
   </nav>
   ```
@@ -807,8 +807,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   **The tab itself is a primitive** (`shared/ui/tab-link.ts`) and is never rebuilt as a class chain — a contract that lives in copied string literals drifts on the first edit. `ariaCurrentWhenActive="page"` sits in the primitive and is thereby unforgettable. `display: contents` on the host: the anchor has to be the flex child itself, otherwise it centres in a box of its own instead of carrying the bar's `h-10`.
 
   `h-10` and `flex items-center` (instead of `py-2`) are part of the sticky contract from §8.5 — the tab bar height is the `top` offset of the filter toolbars.
-  **Tabs never wrap or shrink** (`shrink-0 whitespace-nowrap` in the primitive): a label that wraps to two lines grows past the bar's `h-10` and covers the content below. A bar that is wider than the viewport scrolls horizontally instead (`overflow-x-auto` on the caller's `<nav>`) — the channel workspace needs that on a phone since the fifth tab, "Settings", for managers while the backfill switch is on.
-- **Reference:** `web/src/app/shared/ui/tab-link.ts`; bars in `admin-layout.ts`, `channel-workspace-layout.ts` (a fourth tab, "Tags", since #201 — shown under the same condition as "Usage", the bar's `h-10` unchanged).
+
+  **Tabs never wrap or shrink** (`shrink-0 whitespace-nowrap` in the primitive): a label that wraps to two lines grows past the bar's `h-10` and covers the content below. A bar wider than the viewport scrolls horizontally instead, so **every** tab bar's `<nav>` carries `overflow-x-auto` (snippet above; the channel workspace needs it on a phone since the fifth tab, "Settings"; the admin bar carries it for the same reason at narrow widths). `overflow-x-auto` clips vertically too, which would cut the global outset focus ring (§8.5: the outline must not be clipped) — so the tab is the one documented exception: its ring is **inset** (`focus-visible:-outline-offset-2` in the primitive), fully visible inside the clip box.
+- **Reference:** `web/src/app/shared/ui/tab-link.ts`; bars in `admin-layout.ts`, `channel-workspace-layout.ts` (five tabs at most: "Tags" since #201 under the same condition as "Usage", "Settings" for managers while the backfill switch is on; the bar's `h-10` unchanged).
 
 ### 8.2 In-page anchors
 

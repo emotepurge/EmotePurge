@@ -24,7 +24,9 @@ import { TabLink } from '../../shared/ui/tab-link';
 
       <!-- Sticky under the h-14 shell header; h-10 is a contract — filter toolbars pin at
            top-24 (= 14 + 10). Links are flex/items-center so the fixed height carries exactly. -->
-      <nav class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 border-b border-border">
+      <nav
+        class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 overflow-x-auto border-b border-border"
+      >
         <app-tab-link link="monitoring" [label]="'admin.tabs.monitoring' | transloco" />
         <app-tab-link link="channels" [label]="'admin.tabs.channels' | transloco" />
         <app-tab-link link="users" [label]="'admin.tabs.users' | transloco" />
