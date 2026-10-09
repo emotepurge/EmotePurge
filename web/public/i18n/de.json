@@ -2038,6 +2038,7 @@
       "unknown": "Dieser Zeitraum ist nicht verfügbar."
     },
     "runActive": "Für diesen Channel läuft oder wartet bereits ein Backfill.",
+    "statusRefreshFailed": "Der Status konnte nicht aktualisiert werden. Du siehst den zuletzt bekannten Stand.",
     "start": "Backfill starten",
     "errors": {
       "channel_excluded": "Dieser Channel ist von der Erfassung ausgenommen, daher kann kein Backfill für ihn laufen."

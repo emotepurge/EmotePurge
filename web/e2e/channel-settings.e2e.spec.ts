@@ -115,7 +115,7 @@ test.describe('channel settings tab (chat-log backfill, start half)', () => {
     await expect(page.getByText('liegen keine Tage in diesem Zeitraum')).toBeVisible();
     // Only the reason: no inverted range, no "0 Tage".
     await expect(page.getByText('08.11.2026')).toHaveCount(0);
-    await expect(page.getByText('0 Tage')).toHaveCount(0);
+    await expect(page.getByText('0 Tage', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('radio', { name: /3 Monate/ })).toBeChecked();
   });
 

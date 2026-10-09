@@ -2038,6 +2038,7 @@
       "unknown": "This range is not available."
     },
     "runActive": "A backfill is already queued or running for this channel.",
+    "statusRefreshFailed": "The status could not be refreshed. This is the last known state.",
     "start": "Start backfill",
     "errors": {
       "channel_excluded": "This channel is excluded from tracking, so no backfill can run for it."

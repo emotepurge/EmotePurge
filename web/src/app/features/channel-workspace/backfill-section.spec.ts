@@ -310,7 +310,7 @@ describe('BackfillSection (start half)', () => {
     (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
     await fixture.whenStable();
 
-    expect(fixture.componentInstance.visibleStartErrorKey()).toBeNull();
+    expect(fixture.componentInstance['startErrorKey']()).toBeNull();
   });
 
   it('keeps the last good status and says so when a refetch fails', async () => {
@@ -321,7 +321,7 @@ describe('BackfillSection (start half)', () => {
     await fixture.whenStable();
 
     expect(fixture.componentInstance['status']()).not.toBeNull();
-    expect(fixture.componentInstance.statusRefetchErrorKey()).toBe('errors.status.server');
+    expect(fixture.componentInstance.statusRefetchFailed()).toBe(true);
     expect(fixture.componentInstance.canStart()).toBe(true);
   });
 
@@ -339,7 +339,77 @@ describe('BackfillSection (start half)', () => {
 
     expect(section.selectedSetId()).toBe('set-active');
     expect(section.selectedMonths()).toBe(1);
-    expect(section.visibleStartErrorKey()).toBeNull();
+    expect(section['startErrorKey']()).toBeNull();
+  });
+
+  it('ignores the answer of a start issued for a channel the user has since left', async () => {
+    const pending = new Subject<BackfillRun>();
+    start.mockReturnValue(pending);
+    const fixture = await create();
+    const section = fixture.componentInstance;
+
+    (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+    fixture.componentRef.setInput('channelName', 'other');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(section['starting']()).toBe(false);
+    const callsBefore = getStatus.mock.calls.length;
+
+    pending.next(RUN);
+    pending.complete();
+
+    expect(section['status']()?.activeRun).toBeNull();
+    expect(section['starting']()).toBe(false);
+    expect(getStatus.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('does not show the error of a start issued for a channel the user has since left', async () => {
+    const pending = new Subject<BackfillRun>();
+    start.mockReturnValue(pending);
+    const fixture = await create();
+
+    (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+    fixture.componentRef.setInput('channelName', 'other');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    pending.error(httpError(409, 'backfill_set_empty'));
+
+    expect(fixture.componentInstance['startErrorKey']()).toBeNull();
+  });
+
+  it('locks start after a 202 even when the preceding refetch had failed', async () => {
+    const fixture = await create();
+    getStatus.mockReturnValue(throwError(() => httpError(503)));
+    fixture.componentInstance['statusResource'].reload();
+    await fixture.whenStable();
+    expect(fixture.componentInstance.statusRefetchFailed()).toBe(true);
+    getStatus.mockReturnValue(new Subject<BackfillStatus>());
+
+    const button = fixture.nativeElement.querySelector('button') as HTMLButtonElement;
+    button.click();
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.canStart()).toBe(false);
+    button.click();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not bring a lost-race error back when the run later ends', async () => {
+    start.mockReturnValue(throwError(() => httpError(409, 'backfill_already_active')));
+    const fixture = await create();
+    const section = fixture.componentInstance;
+    getStatus.mockReturnValue(of(status({ activeRun: { ...RUN, id: 7 } })));
+
+    (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+    await fixture.whenStable();
+    expect(section['startErrorKey']()).toBeNull();
+
+    getStatus.mockReturnValue(of(status({ activeRun: null })));
+    section['statusResource'].reload();
+    await fixture.whenStable();
+
+    expect(section['status']()?.activeRun).toBeNull();
+    expect(section['startErrorKey']()).toBeNull();
   });
 });
 

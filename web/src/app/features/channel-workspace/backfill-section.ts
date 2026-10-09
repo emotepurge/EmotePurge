@@ -78,8 +78,10 @@ interface SetView {
       </h3>
 
       @if (status(); as status) {
-        @if (statusRefetchErrorKey(); as key) {
-          <app-notice-banner variant="warning">{{ key | transloco }}</app-notice-banner>
+        @if (statusRefetchFailed()) {
+          <app-notice-banner variant="warning">{{
+            'backfill.statusRefreshFailed' | transloco
+          }}</app-notice-banner>
         }
         <div class="flex flex-col gap-2 text-sm text-fg-secondary">
           <p>
@@ -184,7 +186,7 @@ interface SetView {
           >
             {{ 'backfill.start' | transloco }}
           </button>
-          @if (visibleStartErrorKey(); as key) {
+          @if (startErrorKey(); as key) {
             <app-notice-banner variant="error" class="block">{{
               key | transloco
             }}</app-notice-banner>
@@ -228,6 +230,17 @@ export class BackfillSection {
       (previous && previous.source.channel === source.channel ? previous.value : null),
   });
 
+  /**
+   * A start error belongs to one channel and to the "no run" state it was answered in: it goes when
+   * the channel changes and when a run shows up (a lost `backfill_already_active` race, a 5xx whose
+   * run had committed) — cleared, not masked, so it cannot come back when that run ends. The source
+   * is a primitive on purpose: an object would reset on every refetch.
+   */
+  protected readonly startErrorKey = linkedSignal<string, string | null>({
+    source: computed(() => `${this.channelName()}|${this.status()?.activeRun?.id ?? ''}`),
+    computation: () => null,
+  });
+
   private readonly setListResource = rxResource({
     params: () => this.channelName(),
     stream: ({ params }) => this.emoteSetService.listChannelEmoteSets(params),
@@ -244,10 +257,9 @@ export class BackfillSection {
     source: this.channelName,
     computation: () => null,
   });
-  protected readonly starting = signal(false);
-  protected readonly startErrorKey = linkedSignal<string, string | null>({
+  protected readonly starting = linkedSignal<string, boolean>({
     source: this.channelName,
-    computation: () => null,
+    computation: () => false,
   });
   protected readonly pluralKey = pluralKey;
 
@@ -258,7 +270,7 @@ export class BackfillSection {
 
   /**
    * What the server accepts (`EmoteSetMembershipRule.BelongsToChannel`): the channel's `NORMAL`
-   * sets of its 7TV account plus the active set. Personal sets are never offered. When the list
+   * sets of its 7TV account plus the active set. Personal sets are not offered unless one is the active set. When the list
    * does not name the active set (7TV's REST cache lags behind a set switch) a synthetic entry
    * keeps the preselection working. Empty until the list is on hand.
    */
@@ -274,7 +286,7 @@ export class BackfillSection {
         id: set.id,
         label: set.name || set.id,
         capacity: set.capacity,
-        isActive: set.isActive || set.id === activeId,
+        isActive: set.id === activeId,
       }));
     if (activeId !== null && !sets.some((set) => set.id === activeId)) {
       sets.unshift({ id: activeId, label: activeId, capacity: null, isActive: true });
@@ -330,14 +342,8 @@ export class BackfillSection {
   });
 
   /** A failed refetch while an earlier answer is on screen: said next to the section, not instead of it. */
-  readonly statusRefetchErrorKey = computed(() =>
-    this.status() !== null && this.statusResource.error() ? this.statusErrorKey() : null,
-  );
-
-  /** Once the refetched status shows a run, the "run is active" sentence says it all — an error
-   *  left over from a lost `backfill_already_active` race would only repeat it. */
-  readonly visibleStartErrorKey = computed(() =>
-    this.status()?.activeRun ? null : this.startErrorKey(),
+  readonly statusRefetchFailed = computed(
+    () => this.status() !== null && !!this.statusResource.error(),
   );
 
   constructor() {
@@ -368,19 +374,25 @@ export class BackfillSection {
     if (!this.canStart() || this.starting() || emoteSetId === null || months === null) {
       return;
     }
+    const channel = this.channelName();
     this.starting.set(true);
     this.startErrorKey.set(null);
-    this.backfillService.start(this.channelName(), emoteSetId, months).subscribe({
+    this.backfillService.start(channel, emoteSetId, months).subscribe({
       next: (run) => {
-        this.starting.set(false);
-        // Until the refetch lands the status still says "no run": patch it in so the button stays
-        // locked and a second click cannot send a second POST.
-        if (this.statusResource.hasValue()) {
-          this.statusResource.update((current) => current && { ...current, activeRun: run });
+        // The answer of a channel the user has left is none of this channel's business.
+        if (channel !== this.channelName()) {
+          return;
         }
+        this.starting.set(false);
+        // Until the refetch lands the status still says "no run": patch the retained status (the one
+        // place that does) so the button stays locked and a second click cannot send a second POST.
+        this.status.update((current) => current && { ...current, activeRun: run });
         this.statusResource.reload();
       },
       error: (error: HttpErrorResponse) => {
+        if (channel !== this.channelName()) {
+          return;
+        }
         this.starting.set(false);
         this.startErrorKey.set(backfillStartErrorKey(error));
         const code = (error.error as { errorCode?: string } | null)?.errorCode;
