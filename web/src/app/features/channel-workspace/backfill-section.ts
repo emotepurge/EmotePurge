@@ -477,8 +477,33 @@ export class BackfillSection {
     return (chosen ?? options.find((option) => option.available))?.months ?? null;
   });
 
+  /**
+   * What the status resource held when a cancel was answered with 204, or `null`. The patched
+   * status has no run, but its coverage is the pre-cancel snapshot (a block committed just before
+   * the DELETE is missing), so Start waits for the next read to *settle* — answer or failure; a
+   * failed GET must not lock Start for good. Keyed on the channel like the other request state.
+   */
+  private readonly cancelRefetchBaseline = linkedSignal<
+    string,
+    { value: unknown; error: unknown } | null
+  >({
+    source: this.channelName,
+    computation: () => null,
+  });
+
+  /** The refetch after a cancel has not settled yet: the resource still holds what it held then. */
+  private readonly awaitingPostCancelRead = computed(() => {
+    const baseline = this.cancelRefetchBaseline();
+    return (
+      baseline !== null &&
+      baseline.value === this.currentResourceValue() &&
+      baseline.error === this.statusResource.error()
+    );
+  });
+
   readonly canStart = computed(
     () =>
+      !this.awaitingPostCancelRead() &&
       this.status() !== null &&
       this.status()?.activeRun === null &&
       this.selectedMonths() !== null &&
@@ -660,6 +685,10 @@ export class BackfillSection {
             ? { ...current, activeRun: null, lastRun: { ...run, status: 'cancelled' } }
             : current,
         );
+        this.cancelRefetchBaseline.set({
+          value: this.currentResourceValue(),
+          error: this.statusResource.error(),
+        });
         this.statusResource.reload();
       },
       error: (error: HttpErrorResponse) => {
@@ -680,6 +709,10 @@ export class BackfillSection {
         }
       },
     });
+  }
+
+  private currentResourceValue(): unknown {
+    return this.statusResource.hasValue() ? this.statusResource.value() : undefined;
   }
 
   private toSentence(interval: ReplacedInterval): ReplaceSentence {
