@@ -372,7 +372,7 @@ public sealed class ChatLogBackfillWorker(
                         return;
                     }
 
-                    var delay = ChatLogBackfillRetryPolicy.TransportRetryDelay(attempt.BlockAttempts);
+                    var delay = ChatLogBackfillRetryPolicy.TransportRetryDelay(attempt.BlockAttempts, TimeSpan.FromSeconds(options.MaxRetryAfterSeconds));
                     logger.LogWarning(
                         "Chat-log backfill run {RunId} ({Channel}): attempt {Attempt} of {Attempts} on block {Block}/{Blocks} failed ({Status}, HTTP {HttpStatus}); retrying in {Delay}.",
                         claim.RunId, claim.ChannelName, attempt.BlockAttempts, options.TransportRetries, index + 1, plan.Count, result.Status,

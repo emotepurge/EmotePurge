@@ -6,7 +6,8 @@ namespace EmotePurge.Worker.ChatLogBackfill;
 /// <para>
 /// <b>Transport</b> (<c>TransportFailure</c> incl. 5xx, <c>BodyTimeout</c>): up to
 /// <c>TransportRetries</c> attempts per block, attempt 1 included; the delay before attempt n
-/// (n ≥ 2) is <c>30 s × 4^(n−2)</c> — 30 s before the 2nd, 120 s before the 3rd (D13).
+/// (n ≥ 2) is <c>30 s × 4^(n−2)</c> — 30 s before the 2nd, 120 s before the 3rd (D13) — capped at
+/// <c>MaxRetryAfterSeconds</c>.
 /// </para>
 /// <para>
 /// <b>429</b> is deliberately not decided here: the pause length and the <c>rate_limited</c>
@@ -29,12 +30,17 @@ public static class ChatLogBackfillRetryPolicy
 
     /// <summary>
     /// The wait before the next attempt after <paramref name="blockAttempts"/> failed ones: attempt
-    /// <c>n = blockAttempts + 1</c> waits <c>30 s × 4^(n−2)</c>.
+    /// <c>n = blockAttempts + 1</c> waits <c>30 s × 4^(n−2)</c>, never longer than <paramref name="cap"/>
+    /// (the worker passes <c>MaxRetryAfterSeconds</c>), so a raised <c>TransportRetries</c> cannot turn
+    /// into hour-long waits.
     /// </summary>
-    public static TimeSpan TransportRetryDelay(int blockAttempts)
+    public static TimeSpan TransportRetryDelay(int blockAttempts, TimeSpan cap)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(blockAttempts, 1);
-        return FirstTransportRetryDelay * Math.Pow(4, blockAttempts - 1);
+
+        // In seconds and capped before a TimeSpan exists: 4^n overflows TimeSpan long before it overflows a double.
+        var seconds = FirstTransportRetryDelay.TotalSeconds * Math.Pow(4, blockAttempts - 1);
+        return seconds >= cap.TotalSeconds ? cap : TimeSpan.FromSeconds(seconds);
     }
 
     /// <summary>

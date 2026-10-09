@@ -10,14 +10,16 @@ namespace EmotePurge.Worker.Tests;
 // acts on what that update returned.
 public class ChatLogBackfillRetryPolicyTests
 {
+    private static readonly TimeSpan Cap = TimeSpan.FromSeconds(900);
+
     [Fact]
     public void ThreeAttemptsPerBlock_ThirtySecondsBeforeTheSecond_HundredTwentyBeforeTheThird()
     {
         Assert.True(ChatLogBackfillRetryPolicy.ShouldRetryTransport(blockAttempts: 1, transportRetries: 3));
-        Assert.Equal(TimeSpan.FromSeconds(30), ChatLogBackfillRetryPolicy.TransportRetryDelay(1));
+        Assert.Equal(TimeSpan.FromSeconds(30), ChatLogBackfillRetryPolicy.TransportRetryDelay(1, Cap));
 
         Assert.True(ChatLogBackfillRetryPolicy.ShouldRetryTransport(blockAttempts: 2, transportRetries: 3));
-        Assert.Equal(TimeSpan.FromSeconds(120), ChatLogBackfillRetryPolicy.TransportRetryDelay(2));
+        Assert.Equal(TimeSpan.FromSeconds(120), ChatLogBackfillRetryPolicy.TransportRetryDelay(2, Cap));
 
         // The third failed attempt ends the block: transport_failure.
         Assert.False(ChatLogBackfillRetryPolicy.ShouldRetryTransport(blockAttempts: 3, transportRetries: 3));
@@ -35,13 +37,22 @@ public class ChatLogBackfillRetryPolicyTests
     public void FurtherAttempts_KeepQuadrupling_WhenMoreRetriesAreConfigured()
     {
         Assert.True(ChatLogBackfillRetryPolicy.ShouldRetryTransport(blockAttempts: 3, transportRetries: 5));
-        Assert.Equal(TimeSpan.FromSeconds(480), ChatLogBackfillRetryPolicy.TransportRetryDelay(3));
+        Assert.Equal(TimeSpan.FromSeconds(480), ChatLogBackfillRetryPolicy.TransportRetryDelay(3, Cap));
+    }
+
+    [Fact]
+    public void TheDelay_IsCappedAtMaxRetryAfter_HoweverManyRetriesAreConfigured()
+    {
+        // 30 · 4^3 = 1920 s would exceed the 900 s cap; 4^60 would overflow a TimeSpan.
+        Assert.Equal(Cap, ChatLogBackfillRetryPolicy.TransportRetryDelay(4, Cap));
+        Assert.Equal(Cap, ChatLogBackfillRetryPolicy.TransportRetryDelay(60, Cap));
+        Assert.Equal(TimeSpan.FromSeconds(100), ChatLogBackfillRetryPolicy.TransportRetryDelay(2, TimeSpan.FromSeconds(100)));
     }
 
     [Fact]
     public void ADelayBeforeTheFirstAttempt_IsNotDefined()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => ChatLogBackfillRetryPolicy.TransportRetryDelay(0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ChatLogBackfillRetryPolicy.TransportRetryDelay(0, Cap));
     }
 
     [Fact]
