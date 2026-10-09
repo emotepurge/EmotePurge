@@ -621,6 +621,8 @@
       "tagDelete": "Tag deleted",
       "tagPlayedIn": "Tag added to set",
       "tagRemoved": "Tag removed from set",
+      "backfillRequest": "Backfill requested",
+      "backfillCancel": "Backfill cancelled",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
       "userDelete": "Account deleted"
@@ -650,6 +652,10 @@
       "importedFromTag": {
         "one": "{{count}} emote from a tag",
         "other": "{{count}} emotes from a tag"
+      },
+      "backfillMonths": {
+        "one": "{{count}} month",
+        "other": "{{count}} months"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV trending today",

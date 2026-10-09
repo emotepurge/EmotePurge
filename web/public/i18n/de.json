@@ -621,6 +621,8 @@
       "tagDelete": "Tag gelöscht",
       "tagPlayedIn": "Tag ins Set geholt",
       "tagRemoved": "Tag aus dem Set entfernt",
+      "backfillRequest": "Backfill angefordert",
+      "backfillCancel": "Backfill abgebrochen",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
@@ -650,6 +652,10 @@
       "importedFromTag": {
         "one": "{{count}} Emote aus einem Tag",
         "other": "{{count}} Emotes aus einem Tag"
+      },
+      "backfillMonths": {
+        "one": "{{count}} Monat",
+        "other": "{{count}} Monate"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
