@@ -499,6 +499,7 @@ stand:
 | Ended vote session, with its votes | deleted 365 days after it ended | `EndedAt` (falls back to `StartedAt`) |
 | Audit log entry | deleted 365 days after it occurred | `OccurredAtUtc` |
 | Channel after "leave" | deleted with its whole history 180 days after it was deactivated | `DeactivatedAtUtc` |
+| Chat-log backfill run (the run row; its snapshot goes with it) | deleted 365 days after it finished | `FinishedAtUtc` |
 
 "Last activity" is the later of a login and the daily "last seen" stamp `OnValidatePrincipal`
 writes at most once per 24 hours — without it, a user who never logs out again (the session
@@ -687,7 +688,7 @@ tag run against a tracked set pays the foreign-permit cost the earlier route has
 
 Migration `AddEmotePlaceholderMarker` adds `Emotes.IsPlaceholder` (`boolean NOT NULL DEFAULT false`).
 It marks emote rows created for an emote the channel has never been observed to have in its active
-set. Today only set-session ballots create such rows; the chat-log backfill will create them too. The
+set. Set-session ballots create such rows, and so does the chat-log backfill (see "Chat-log backfill"). The
 7TV sync skips marked rows that never got an archive date when it looks for emotes that left the
 active set. The marker is cleared once the emote really enters the active set, and also when an active
 row is archived. The reasoning is in `docs/DECISIONS.md` (2026-10-09,
@@ -774,6 +775,149 @@ FROM "Emotes" e
 WHERE e."IsArchived" AND e."ArchivedAt" IS NULL AND e."LastEnteredSetAtUtc" IS NULL
   AND e."FirstSeenAt" IS NULL AND e."LastSyncedAt" >= '2026-09-22';
 ```
+
+## Chat-log backfill
+
+A channel manager (global admin, broadcaster or live moderator) can fill the days **before** a channel's
+counting start from a public chat archive (`https://logs.cyex.app/` by default). A run covers 1, 3 or
+6 months, matches the names of one chosen 7TV set, and writes the counts as `UsageStats` rows with
+`Source = 1`. It never touches a live-counted day, and the usage page names the imported range and links
+the archive wherever the numbers are shown. The feature is off by default.
+
+**Before you switch it on, update the privacy statement.** The backfill reads chat messages of third
+parties from an archive the operator does not run. Add the archive as a data source to the
+operator-owned `privacy.de.md` / `privacy.en.md` first (see "Legal pages"); no repository commit is
+needed. The flag stays `false` on production until that text is live.
+
+### Configuration
+
+Section `ChatLogBackfill` (and `ChatLogArchive`). Only the first three keys have a compose variable;
+the others are tuning knobs you set as `ChatLogBackfill__<Key>` / `ChatLogArchive__<Key>` environment
+variables on the service if you ever need them. Every value is validated at startup; a typo stops the
+container with a readable message.
+
+| Key | Default | Compose variable | Meaning |
+|---|---|---|---|
+| `ChatLogBackfill:Enabled` | `false` | `CHAT_LOG_BACKFILL_ENABLED` | The feature flag. Read by **api and worker**. Off: the backfill routes answer 404 `backfill_disabled`, the Settings tab is hidden, the worker loop logs one line and exits. |
+| `ChatLogBackfill:RequestDelaySeconds` | `10` | `CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS` | Worker-side spacing between archive requests, minimum 1. The effective spacing is the larger of this and `ChatLogArchive:RequestDelay`. Keep it at 10 or above. |
+| `ChatLogBackfill:MaxBlockMegabytes` | `256` | — | Byte cap per weekly block (decompressed). Exceeding it fails the run with `block_too_large`. Bounds transfer, not memory. |
+| `ChatLogBackfill:MaxRetryAfterSeconds` | `900` | — | Cap on one pause after an HTTP 429. |
+| `ChatLogBackfill:TransportRetries` | `3` | — | Attempts per block on transport errors before the run fails. |
+| `ChatLogBackfill:MaxConsecutivePauses` | `10` | — | 429 pauses on one block before the run fails with `rate_limited`. |
+| `ChatLogBackfill:IdlePollSeconds` | `60` | — | How often an idle worker looks for queued runs when no signal arrives. |
+| `ChatLogBackfill:CancelPollSeconds` | `2` | — | How often the worker checks whether the running run was cancelled. |
+| `ChatLogArchive:BaseUrl` | `https://logs.cyex.app/` | `CHAT_LOG_ARCHIVE_BASE_URL` | The archive. Needed on **api** (stored per run, shown as the next run's source), **worker** (must equal the run's stored value, otherwise the run fails with `archive_mismatch`) and **harness**. Set it once in `.env`; compose passes it to all three. Changing it does not relabel old imports: the attribution follows the host stored with each imported day. |
+| `ChatLogArchive:RangeBodyTimeout` | `00:05:00` | — | Body deadline for one weekly block. |
+| `ChatLogArchive:MaxLineBytes` | `16384` | — | Longest decoded line the reader accepts; a longer one fails the run with `malformed_response`. |
+
+Block length is a constant 7 days. In production set the three compose variables as Portainer stack
+environment variables, not by editing `stack.env` by hand.
+
+### The archive operator's condition
+
+The archive's operator agreed to the use on 2026-10-08, asked for no API key, and asked for **a link to
+the archive wherever imported numbers are shown**. The usage-page caption and the Settings tab carry
+it. Vote-session ballots include imported days without a source line; that is an operator decision.
+If the link is ever removed from a place that shows imported numbers, the agreement no longer holds.
+
+### Enabling it
+
+1. Privacy statement updated and live (above).
+2. The running api image already contains the caption: its `/i18n/de.json` has the key
+   `usageStats.trackedSinceWithImport`. Never switch the flag on while an older image is running.
+3. Set `CHAT_LOG_BACKFILL_ENABLED=true` and **recreate api and worker** (Portainer: update the stack
+   with "Re-pull image and redeploy"). Both read the flag at startup; one without the other leaves the
+   tab visible and the queue unprocessed, or the other way round.
+4. Smoke test on your own channel with a 1-month window. Check the progress, the result and the
+   caption with its link on the usage page.
+
+Exactly **one worker replica** is the supported deployment (compose pins it with `container_name`).
+The loop holds a Postgres advisory lock, so a second replica would be harmless but useless.
+
+### Monitoring
+
+- Worker log lines starting `Chat-log backfill`: `run … running: <from>..<to>, week n of m`, then one
+  `block i/n …` line per committed block (with lines and bytes), `completed`, `stopped`, `waiting …
+  for the archive's cooldown`, and warnings for retries and failures. A 429 is a normal pause, not an
+  error; a run that keeps being rate-limited fails with `rate_limited`.
+- The `backfill.progress` event on the channel's live stream tells open pages to refetch. It carries no
+  state; the Settings tab and the usage page read their numbers from the API.
+- The run rows are the record. Completion and failure are not audited (only the request and the cancel
+  are). Read them with psql:
+
+```sql
+SELECT "Id", "ChannelId", "Status", "WeeksDone", "WeeksTotal", "ErrorCode", "PausedUntilUtc",
+       "RequestedAtUtc", "FinishedAtUtc"
+FROM "ChatLogBackfillRuns" ORDER BY "Id" DESC LIMIT 20;
+```
+
+### Rolling back
+
+**Switching it off is cheap.** `ChatLogBackfill:Enabled=false` on api **and** worker, recreate both: the
+routes answer 404, the tab disappears, the worker loop exits. Queued and paused rows stay as they are.
+To freeze a run first, cancel it in the UI, then flip the flag. Imported data stays and is still shown
+with its disclosure, because the usage caption does not depend on the flag.
+
+**Going back to an image without caption support needs the cleanup below first**, even though the
+schema stays: such an image would show imported numbers with no indication where they came from. The
+same cleanup is required before reverting the migration `AddChatLogBackfill`; its `Down` refuses
+(`RAISE EXCEPTION`) while any `UsageStats.Source = 1` row or any `ChatLogBackfillCoverage` row exists.
+
+**The oldest image you may ever roll back to is the pair that first shipped
+`AddEmotePlaceholderMarker`** (see "Emote placeholder marker"). That migration is never reverted. A
+worker from before it treats the retained placeholder rows as credible leaves again, and ballot-created
+placeholders carry votes and cannot be removed. Every rollback stops there.
+
+Run these through the SSH tunnel, as for the migration; psql prompts for the password. The order
+matters:
+
+1. **Flag off on api and worker, and recreate both.** This quiesces every writer. Check the worker log
+   for `Chat-log backfill disabled.`
+2. **Cancel active runs in the UI and confirm no run is `running`** (the monitoring query above). A
+   `running` row means a writer is still alive; stop here until it is not.
+3. **Remove the placeholder rows the backfill created (optional, restricted).** This runs **before**
+   the run rows are cancelled or deleted, because the run's snapshot is the only proof which rows the
+   backfill created (`CreatedRow`). It deletes exactly the rows that are placeholders, were created by
+   a run, are not on any vote or ballot, and carry no live usage. A legacy archived row with votes, and
+   a ballot placeholder that a backfill merely snapshotted, are never touched. Rows whose run was
+   already removed by retention are no longer identifiable and stay. It is never run automatically.
+
+   ```sql
+   DELETE FROM "Emotes" e
+   WHERE e."IsPlaceholder"
+     AND EXISTS (SELECT 1 FROM "ChatLogBackfillRunEmotes" r WHERE r."EmoteId" = e."Id" AND r."CreatedRow")
+     AND NOT EXISTS (SELECT 1 FROM "Votes" v WHERE v."EmoteId" = e."Id")
+     AND NOT EXISTS (SELECT 1 FROM "VoteSessionEmotes" s WHERE s."EmoteId" = e."Id")
+     AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."EmoteId" = e."Id" AND u."Source" = 0);
+   ```
+
+   The vote predicates are what keep a ballot's history intact: `Vote.Emote` cascades.
+4. **Delete the imported rows and the coverage.** Globally, or per channel by adding the channel id:
+
+   ```sql
+   -- Globally:
+   DELETE FROM "UsageStats" WHERE "Source" = 1;
+   DELETE FROM "ChatLogBackfillCoverage";
+
+   -- One channel instead:
+   DELETE FROM "UsageStats" u USING "Emotes" e
+   WHERE u."EmoteId" = e."Id" AND e."ChannelId" = '<channel-id>' AND u."Source" = 1;
+   DELETE FROM "ChatLogBackfillCoverage" WHERE "ChannelId" = '<channel-id>';
+   ```
+
+   The caption disappears with the coverage rows.
+5. **Close the runs that are still open:**
+
+   ```sql
+   UPDATE "ChatLogBackfillRuns"
+   SET "Status" = 'cancelled', "FinishedAtUtc" = now(), "ErrorCode" = 'worker_error'
+   WHERE "Status" IN ('queued', 'running', 'paused');
+   ```
+6. Only now deploy the older image, or run `dotnet ef database update <previous migration>`. The
+   revert drops `Source` and the four backfill tables and leaves `Emotes.IsPlaceholder` in place.
+
+After the cleanup, verify: `SELECT count(*) FROM "UsageStats" WHERE "Source" = 1;` is 0, the usage page
+shows the plain "counting since" sentence, and the vote rows you care about are still there.
 
 ## Database backup and restore
 
