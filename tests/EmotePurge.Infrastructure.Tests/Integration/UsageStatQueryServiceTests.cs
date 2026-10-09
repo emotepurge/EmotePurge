@@ -1491,6 +1491,58 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         Assert.False(activeRow.IsArchived);
     }
 
+    // Chat-log backfill B6 (#349): imported rows (Source = ChatLogArchive) are usage like any other —
+    // every read includes them unchanged, with no read-path change and no per-row marking. One live
+    // and one imported day of the same emote and set; every read sees both.
+    [Fact]
+    public async Task EveryRead_IncludesImportedRows_Unchanged()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "imported_reads", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Imported");
+        var imported = new DateOnly(2026, 7, 2);
+        var live = new DateOnly(2026, 7, 5);
+        db.UsageStats.AddRange(
+            new UsageStat
+            {
+                EmoteId = emote.Id,
+                EmoteSetId = ActiveSetId,
+                Date = imported,
+                UseCount = 4,
+                BotUseCount = 1,
+                SharedChatUseCount = 2,
+                Source = UsageStatSource.ChatLogArchive
+            },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = live, UseCount = 3 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var from = new DateOnly(2026, 7, 1);
+        var to = new DateOnly(2026, 7, 7);
+
+        var context = Assert.Single(await service.GetUsageContextAsync(channel.ChannelName, from, to));
+        Assert.Equal((7, (DateOnly?)live), (context.TotalUseCount, context.LastUsedDate));
+
+        var series = await service.GetDailySeriesAsync(channel.ChannelName, emote.Id, from, to);
+        Assert.NotNull(series);
+        Assert.Equal([(imported, 4), (live, 3)], series.Days.Select(d => (d.Date, d.UseCount)).ToArray());
+        Assert.Equal((DateOnly?)imported, series.FirstUsedDate);
+
+        var channelSeries = await service.GetChannelSeriesAsync(channel.ChannelName, from, to);
+        Assert.Equal([[1, 4], [4, 3]], Assert.Single(channelSeries.Emotes).Days);
+
+        var totals = await service.GetTotalsByEmoteIdsAsync([emote.Id], from, to, EmoteSetScope.AllSets);
+        Assert.Equal(7, totals[emote.Id]);
+
+        var rows = await service.GetRowsAsync([emote.Id], from, to);
+        Assert.Equal(
+            [(imported, 4, 1, 2), (live, 3, 0, 0)],
+            rows.Select(r => (r.Date, r.UseCount, r.BotUseCount, r.SharedChatUseCount)).ToArray());
+
+        Assert.Equal(imported, await service.GetEarliestBotUsageDateAsync(channel.Id));
+        Assert.Equal(imported, await service.GetEarliestSharedChatUsageDateAsync(channel.Id));
+    }
+
     private static async Task<Channel> SeedChannelAsync(AppDbContext db, string channelName, string activeEmoteSetId = "")
     {
         var channel = new Channel { ChannelName = channelName, IsBotActive = true, ActiveEmoteSetId = activeEmoteSetId };
