@@ -2041,7 +2041,45 @@
     "statusRefreshFailed": "Der Status konnte nicht aktualisiert werden. Du siehst den zuletzt bekannten Stand.",
     "start": "Backfill starten",
     "errors": {
-      "channel_excluded": "Dieser Channel ist von der Erfassung ausgenommen, daher kann kein Backfill für ihn laufen."
-    }
+      "channel_excluded": "Dieser Channel ist von der Erfassung ausgenommen, daher kann kein Backfill für ihn laufen.",
+      "transport_failure": "Das Archiv war nicht erreichbar oder lieferte wiederholt Fehler, daher wurde der Lauf beendet. Bereits nachgetragene Wochen bleiben bestehen.",
+      "rate_limited": "Das Archiv hat uns immer wieder gebeten, langsamer zu machen, daher hat der Lauf aufgegeben. Bereits nachgetragene Wochen bleiben bestehen.",
+      "malformed_response": "Das Archiv hat Daten geschickt, die wir nicht lesen konnten, daher wurde der Lauf beendet.",
+      "block_too_large": "Eine Woche des Archivs war größer, als wir annehmen, daher wurde der Lauf beendet.",
+      "snapshot_missing": "Die Namen des gewählten Sets standen dem Lauf nicht zur Verfügung, daher wurde er beendet.",
+      "channel_not_active": "Dieser Channel wird nicht mehr erfasst, daher wurde der Lauf beendet.",
+      "archive_mismatch": "Das auf dem Server eingestellte Archiv hat sich nach der Anforderung geändert, daher wurde der Lauf beendet.",
+      "twitch_id_unknown": "Die Twitch-ID dieses Channels ist noch nicht bekannt, daher konnte das Archiv nicht angefragt werden.",
+      "live_row_conflict": "Für einen Tag dieses Laufs lagen bereits live erfasste Zahlen vor, daher wurde der Lauf beendet, statt sie zu überschreiben.",
+      "channel_left": "Der Lauf wurde abgebrochen, weil der Bot diesen Channel verlassen hat.",
+      "worker_error": "Der Lauf wurde wegen eines internen Fehlers beendet. Bereits nachgetragene Wochen bleiben bestehen.",
+      "unknown": "Der Lauf ist mit einem Fehler beendet worden, der hier nicht beschrieben ist."
+    },
+    "status": {
+      "queued": "In der Warteschlange",
+      "running": "Läuft",
+      "paused": "Pausiert",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen",
+      "unknown": "Unbekannt"
+    },
+    "activeRun": "Aktueller Lauf",
+    "lastRun": "Letzter Lauf",
+    "progress": "{{ done }} von {{ total }} Wochen",
+    "progressLabel": "Fortschritt des Backfills",
+    "queuePosition": "Position {{ position }} in der Warteschlange",
+    "waitUntil": "Das Archiv hat uns gebeten, bis {{ time }} zu warten.",
+    "runWindow": "Zeitraum: {{ from }} – {{ to }}",
+    "runSet": {
+      "one": "Set: {{ set }} ({{ count }} Emote)",
+      "other": "Set: {{ set }} ({{ count }} Emotes)"
+    },
+    "requestedBy": "Angefordert von {{ login }}",
+    "finishedAt": "Beendet {{ time }}",
+    "cancel": "Backfill abbrechen",
+    "cancelConfirm": "Diesen Backfill abbrechen? Bereits nachgetragene Wochen bleiben bestehen; die Woche, die gerade läuft, wird verworfen.",
+    "replaceWarning": "Dieser Lauf ersetzt die nachgetragenen Tage {{ from }} – {{ to }}, die derzeit für {{ set }} gezählt werden.",
+    "startConfirm": "Backfill trotzdem starten?"
   }
 }
