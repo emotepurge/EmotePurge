@@ -321,6 +321,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 t.HasCheckConstraint("CK_ChatLogBackfillRuns_Window", "\"WindowFrom\" < \"WindowTo\"");
             });
 
+            // The counters start at 0 in the database as well as in C# (spec section 1).
+            entity.Property(r => r.WeeksDone).HasDefaultValue(0);
+            entity.Property(r => r.PauseCount).HasDefaultValue(0);
+            entity.Property(r => r.BlockAttempts).HasDefaultValue(0);
+            entity.Property(r => r.BytesReceived).HasDefaultValue(0L);
+            entity.Property(r => r.MessagesRead).HasDefaultValue(0L);
+
             // At most one active run per channel, enforced by the database rather than only by the
             // Api's pre-check (the index is the last word in a race).
             entity.HasIndex(r => r.ChannelId)
@@ -343,6 +350,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         modelBuilder.Entity<ChatLogBackfillRunEmote>(entity =>
         {
             entity.HasKey(e => new { e.RunId, e.EmoteId });
+            entity.Property(e => e.CreatedRow).HasDefaultValue(false);
             entity.HasIndex(e => new { e.RunId, e.SevenTvEmoteId });
 
             // No FK to Emotes on purpose (see the entity's remarks); only the run owns these rows.
