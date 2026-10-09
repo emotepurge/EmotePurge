@@ -165,6 +165,63 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(before, await StateFingerprintAsync());
     }
 
+    // A rename during the 7TV read (same Twitch id, another login on the row): the request named the old
+    // login, so the identity it was made for no longer holds. Mutation probe: without the name check
+    // under the lock the enqueue stores a run for the renamed row.
+    [Fact]
+    public async Task Race_RenameDuringThePreview_IsChannelIdentityChanged_AndWritesNothing()
+    {
+        var channel = await SeedChannelAsync("bfracerename");
+        await SeedUserAsync();
+        var (entered, release) = BlockPreview();
+
+        await using var db = CreateDbContext();
+        var enqueue = CreateService(db).EnqueueAsync(channel.ChannelName, SetB, 6, Today, Actor);
+        await entered.Task;
+
+        await using (var rename = CreateDbContext())
+        {
+            await rename.Channels.Where(c => c.Id == channel.Id).ExecuteUpdateAsync(s => s.SetProperty(c => c.ChannelName, "bfracerenamed"));
+        }
+
+        var before = await StateFingerprintAsync();
+        release.SetResult(PreviewOf(SetB, Member("n1", "BNew1", null)));
+
+        Assert.Equal(ChatLogBackfillEnqueueStatus.ChannelIdentityChanged, (await enqueue).Status);
+        Assert.Equal(before, await StateFingerprintAsync());
+    }
+
+    // AC 25a the other way round: the enqueue already holds the requester's row FOR SHARE when the
+    // account deletion arrives. The deletion waits for the enqueue's commit and then pseudonymises the
+    // run it finds — the requester snapshot is never left behind.
+    [Fact]
+    public async Task Race_AccountDeletionWhileTheEnqueueHoldsTheUser_WaitsAndPseudonymisesTheNewRun()
+    {
+        var channel = await SeedChannelAsync("bfraceuserlate");
+        await SeedUserAsync();
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+
+        var atUpsert = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var enqueueDb = CreateDbContext(new PauseBeforeCommand("INSERT INTO \"Emotes\"", atUpsert, proceed));
+        var enqueue = Task.Run(() => CreateService(enqueueDb).EnqueueAsync(channel.ChannelName, SetB, 6, Today, Actor));
+        await atUpsert.Task;
+
+        await using var deletionDb = fixture.CreateTaggedDbContext("bfraceuserlate-delete", DatabaseName);
+        var deletion = Task.Run(() => new AccountDeletionService(
+                deletionDb, Substitute.For<IModRoleCache>(), Substitute.For<IRateLimitTelemetry>(), NullLogger<AccountDeletionService>.Instance)
+            .DeleteAsync(Actor.TwitchUserId, AuditActor.System, AccountDeletionReason.AdminRequest, null));
+        await fixture.WaitUntilBlockedOnLockAsync("bfraceuserlate-delete", deletion);
+
+        proceed.SetResult();
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await enqueue).Status);
+        Assert.Equal(AccountDeletionOutcome.Deleted, (await deletion).Outcome);
+
+        await using var verify = CreateDbContext();
+        var run = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync();
+        Assert.Equal((AuditActor.DeletedUser.TwitchUserId, AuditActor.DeletedUser.Login), (run.RequestedByTwitchUserId, run.RequestedByLogin));
+    }
+
     // ---------------------------------------------------------------- Lock strength (enqueue parked under its channel lock)
 
     // Leave ↔ enqueue serialize on the channel row (D35). The enqueue holds the row and waits for the
@@ -455,13 +512,24 @@ public partial class ChatLogBackfillServiceTests
         public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
             DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
         {
+            await PauseIfMarkedAsync(command);
+            return result;
+        }
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            await PauseIfMarkedAsync(command);
+            return result;
+        }
+
+        private async Task PauseIfMarkedAsync(DbCommand command)
+        {
             if (command.CommandText.Contains(marker, StringComparison.Ordinal) && Interlocked.Exchange(ref _paused, 1) == 0)
             {
                 reached.TrySetResult();
                 await proceed.Task;
             }
-
-            return result;
         }
     }
 }

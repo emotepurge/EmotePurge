@@ -3,7 +3,9 @@ using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
+using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
@@ -204,6 +206,107 @@ public partial class ChatLogBackfillServiceTests
         await Assert.ThrowsAsync<ArgumentException>(() => service.ReplaceBlockAsync(
             1, BlockFrom, BlockTo, [new ChatLogBackfillAggregate("e", BlockFrom, 1, 0, 0), new ChatLogBackfillAggregate("e", BlockFrom, 2, 0, 0)], 0, 0, false));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.ReplaceBlockAsync(1, BlockFrom, BlockFrom, [], 0, 0, false));
+    }
+
+    // A block committed twice writes nothing the second time: the progress update checks WeeksDone
+    // against the block's index. Mutation probe: without that condition WeeksDone ends at 2.
+    [Fact]
+    public async Task ReplaceBlock_CommittedTwice_WritesNothingTheSecondTime()
+    {
+        var channel = await SeedChannelAsync("bfreplacetwice", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
+        var e1 = await SeedEmoteAsync(channel, "e1", "E1");
+        var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
+
+        await using (var db = CreateDbContext())
+        {
+            var service = CreateService(db);
+            Assert.IsType<ChatLogBackfillBlockResult.Committed>(await service.ReplaceBlockAsync(
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, BlockFrom, 3, 0, 0)], 10, 1, isLastBlock: false));
+            Assert.IsType<ChatLogBackfillBlockResult.RunNotActive>(await service.ReplaceBlockAsync(
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, BlockFrom, 99, 0, 0)], 10, 1, isLastBlock: false));
+        }
+
+        await using var verify = CreateDbContext();
+        Assert.Equal(3, (await verify.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == e1.Id)).UseCount);
+        var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
+        Assert.Equal((1, 10L, ChatLogBackfillRunStatus.Running), (after.WeeksDone, after.BytesReceived, after.Status));
+    }
+
+    // Blocks outside the run's plan write nothing: past WindowTo, misaligned, cut wrong, out of order,
+    // or with an isLastBlock flag the counters contradict.
+    [Fact]
+    public async Task ReplaceBlock_OutsideThePlan_WritesNothing()
+    {
+        var channel = await SeedChannelAsync("bfreplaceplan", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
+        var e1 = await SeedEmoteAsync(channel, "e1", "E1");
+        // Window Jun 1 – Jun 18 (17 days): blocks Jun 1–8, Jun 8–15, Jun 15–18.
+        var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
+        await using (var db = CreateDbContext())
+        {
+            await db.ChatLogBackfillRuns.Where(r => r.Id == run.Id).ExecuteUpdateAsync(s => s.SetProperty(r => r.WindowTo, new DateOnly(2026, 6, 18)));
+        }
+
+        var cases = new (DateOnly From, DateOnly To, bool Last)[]
+        {
+            (new DateOnly(2026, 6, 18), new DateOnly(2026, 6, 25), false), // past WindowTo
+            (new DateOnly(2026, 6, 15), new DateOnly(2026, 6, 22), true),  // runs past WindowTo
+            (new DateOnly(2026, 6, 2), new DateOnly(2026, 6, 9), false),   // misaligned
+            (BlockFrom, new DateOnly(2026, 6, 5), false),                  // cut short
+            (new DateOnly(2026, 6, 8), new DateOnly(2026, 6, 15), false),  // out of order (WeeksDone is 0)
+            (BlockFrom, BlockTo, true),                                    // claims to be the last block
+        };
+        await using (var db = CreateDbContext())
+        {
+            var service = CreateService(db);
+            foreach (var (from, to, last) in cases)
+            {
+                var day = from < to ? from : BlockFrom;
+                Assert.IsType<ChatLogBackfillBlockResult.RunNotActive>(await service.ReplaceBlockAsync(
+                    run.Id, from, to, [new ChatLogBackfillAggregate(e1.Id, day, 1, 0, 0)], 10, 1, last));
+            }
+        }
+
+        await using var verify = CreateDbContext();
+        Assert.False(await verify.UsageStats.AnyAsync(u => u.EmoteId == e1.Id));
+        Assert.False(await verify.ChatLogBackfillCoverage.AnyAsync(d => d.ChannelId == channel.Id));
+        var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
+        Assert.Equal((0, 0L, ChatLogBackfillRunStatus.Running), (after.WeeksDone, after.BytesReceived, after.Status));
+
+        // The short last block is accepted and completes the run.
+        await using (var db = CreateDbContext())
+        {
+            var service = CreateService(db);
+            Assert.IsType<ChatLogBackfillBlockResult.Committed>(await service.ReplaceBlockAsync(run.Id, BlockFrom, BlockTo, [], 0, 0, false));
+            Assert.IsType<ChatLogBackfillBlockResult.Committed>(await service.ReplaceBlockAsync(run.Id, new DateOnly(2026, 6, 8), new DateOnly(2026, 6, 15), [], 0, 0, false));
+            Assert.Equal(
+                new ChatLogBackfillBlockResult.Committed(new ChatLogBackfillTransition(ChatLogBackfillRunStatus.Completed, 0, 0, null)),
+                await service.ReplaceBlockAsync(run.Id, new DateOnly(2026, 6, 15), new DateOnly(2026, 6, 18), [], 0, 0, true));
+        }
+    }
+
+    // An aggregate naming another channel's emote is dropped like a deleted one, never written.
+    [Fact]
+    public async Task ReplaceBlock_DropsAnAggregateOfAnotherChannelsEmote()
+    {
+        var channel = await SeedChannelAsync("bfreplaceforeign", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
+        var other = await SeedChannelAsync("bfreplaceforeign2");
+        var own = await SeedEmoteAsync(channel, "e1", "E1");
+        var foreignEmote = await SeedEmoteAsync(other, "o1", "O1");
+        var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
+        var logger = new RecordingLogger<ChatLogBackfillService>();
+
+        await using (var db = CreateDbContext())
+        {
+            Assert.IsType<ChatLogBackfillBlockResult.Committed>(await CreateService(db, logger: logger).ReplaceBlockAsync(
+                run.Id, BlockFrom, BlockTo,
+                [new ChatLogBackfillAggregate(own.Id, BlockFrom, 2, 0, 0), new ChatLogBackfillAggregate(foreignEmote.Id, BlockFrom, 5, 0, 0)],
+                10, 1, isLastBlock: false));
+        }
+
+        await using var verify = CreateDbContext();
+        Assert.Equal(2, (await verify.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == own.Id)).UseCount);
+        Assert.False(await verify.UsageStats.AnyAsync(u => u.EmoteId == foreignEmote.Id));
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("1 aggregates", StringComparison.Ordinal));
     }
 
     // ---------------------------------------------------------------- Pause, attempts, failure (EPIC AC 28, AC 30)
@@ -465,6 +568,52 @@ public partial class ChatLogBackfillServiceTests
 
         await holderA.DisposeAsync();
         Assert.True(await holderB.TryAcquireLoopLockAsync());
+        await holderB.DisposeAsync();
+
+        // Resolved from a DI scope and disposed synchronously: no throw (the service is IDisposable as
+        // well), and the lock is released with it. Mutation probe: IAsyncDisposable only throws here.
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(o => o.UseNpgsql(dbA.Database.GetConnectionString()));
+        services.AddScoped<IChatLogBackfillService>(sp => CreateService(sp.GetRequiredService<AppDbContext>()));
+        await using var provider = services.BuildServiceProvider();
+        using (var scope = provider.CreateScope())
+        {
+            Assert.True(await scope.ServiceProvider.GetRequiredService<IChatLogBackfillService>().TryAcquireLoopLockAsync());
+        }
+
+        await using var dbC = CreateDbContext();
+        var holderC = CreateService(dbC);
+        Assert.True(await holderC.TryAcquireLoopLockAsync());
+        await holderC.DisposeAsync();
+    }
+
+    // The lock's connection is killed (a network drop, a Postgres restart): the holder notices on its next
+    // call and takes the lock again on a new connection; a competitor in between could have taken it.
+    [Fact]
+    public async Task LoopLock_IsTakenAgain_AfterTheLockConnectionIsTerminated()
+    {
+        await using var dbA = CreateDbContext();
+        await using var dbB = CreateDbContext();
+        var holderA = CreateService(dbA);
+        var holderB = CreateService(dbB);
+        Assert.True(await holderA.TryAcquireLoopLockAsync());
+
+        await using (var killer = CreateDbContext())
+        {
+            var terminated = await killer.Database.SqlQuery<int>(
+                    $"""
+                     SELECT count(*)::int AS "Value" FROM (
+                         SELECT pg_terminate_backend(pid) FROM pg_locks
+                         WHERE locktype = 'advisory' AND granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                     ) AS t
+                     """)
+                .SingleAsync();
+            Assert.Equal(1, terminated);
+        }
+
+        Assert.True(await holderA.TryAcquireLoopLockAsync());
+        Assert.False(await holderB.TryAcquireLoopLockAsync());
+        await holderA.DisposeAsync();
         await holderB.DisposeAsync();
     }
 

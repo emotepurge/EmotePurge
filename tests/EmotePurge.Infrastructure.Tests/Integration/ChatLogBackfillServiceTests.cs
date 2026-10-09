@@ -393,6 +393,51 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
         Assert.True((await verify.Emotes.AsNoTracking().SingleAsync(e => e.SevenTvEmoteId == "a-only" && e.ChannelId == channel.Id)).IsArchived);
     }
 
+    // A purge committing between the enqueue's commit and its answer cascades the run away; the request
+    // still answers with the run it stored instead of failing after the fact. The purge runs inside the
+    // first publish, which comes after the commit.
+    [Fact]
+    public async Task Enqueue_AnswersWithTheStoredRun_EvenWhenAPurgeRemovesItRightAfterTheCommit()
+    {
+        var channel = await SeedChannelAsync("bfpurgedafter");
+        await SeedUserAsync();
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null), Member("n2", "BNew2", null));
+        _publisher.PublishAsync(BotCommands.Channel, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                await using var purge = CreateDbContext();
+                await purge.Channels.Where(c => c.Id == channel.Id).ExecuteDeleteAsync();
+            });
+
+        var result = await EnqueueAsync(channel, SetB, months: 6);
+
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, result.Status);
+        Assert.Equal(("queued", 2, SetB, "Set B", 1), (result.Run!.Status, result.Run.EmoteCount, result.Run.EmoteSetId, result.Run.EmoteSetName, result.Run.QueuePosition));
+        await using var verify = CreateDbContext();
+        Assert.False(await verify.ChatLogBackfillRuns.AnyAsync());
+    }
+
+    // A Redis outage after the commit costs only the acceleration: the run is stored, the answer is
+    // Enqueued, and the failure is a warning.
+    [Fact]
+    public async Task Enqueue_WhenPublishingFails_StillAnswersEnqueued_AndLogs()
+    {
+        var channel = await SeedChannelAsync("bfpublishfails");
+        await SeedUserAsync();
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+        _publisher.PublishAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(new InvalidOperationException("redis down")));
+        var logger = new RecordingLogger<ChatLogBackfillService>();
+
+        await using var db = CreateDbContext();
+        var result = await CreateService(db, logger: logger).EnqueueAsync(channel.ChannelName, SetB, 6, Today, Actor);
+
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, result.Status);
+        await using var verify = CreateDbContext();
+        Assert.Equal(ChatLogBackfillRunStatus.Queued, (await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(2, logger.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains("publishing", StringComparison.Ordinal)));
+    }
+
     // ---------------------------------------------------------------- Cancel
 
     [Fact]
