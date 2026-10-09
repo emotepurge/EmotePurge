@@ -45,6 +45,35 @@ public class AddChatLogBackfillMigrationTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task Down_Succeeds_OverLiveRows_AndKeepsThem()
+    {
+        // AC 1, backward direction on a database with data: live rows (Source = 0) do not block Down,
+        // survive it, and the column is gone afterwards.
+        var (databaseName, previous, current) = await CreateDatabaseAtPreviousMigrationAsync();
+        await using var db = fixture.CreateDbContext(databaseName);
+        await InsertChannelAsync(db, "down-live-channel", "downlivechannel", "5550010");
+        await InsertEmoteAsync(db, "down-live-emote", "down-live-channel");
+        await MigrateAsync(db, current);
+        foreach (var day in new[] { 1, 2, 3 })
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount")
+                VALUES ('down-live-emote', {0}, {1}, 4, 0, 0);
+                """,
+                SetId,
+                new DateOnly(2026, 9, day));
+        }
+
+        Assert.Equal(["3"], await QueryAsync(db, """SELECT count(*)::text AS "Value" FROM "UsageStats" WHERE "Source" = 0;"""));
+
+        await MigrateAsync(db, previous);
+
+        Assert.False(await ColumnExistsAsync(db, "UsageStats", "Source"));
+        Assert.Equal(["3"], await QueryAsync(db, """SELECT count(*)::text AS "Value" FROM "UsageStats";"""));
+    }
+
+    [Fact]
     public async Task Up_GivesEveryExistingUsageRowTheLiveSource_AndSeedsExactlyOneProviderStateRow()
     {
         var (databaseName, _, current) = await CreateDatabaseAtPreviousMigrationAsync();
@@ -92,6 +121,7 @@ public class AddChatLogBackfillMigrationTests(PostgresFixture fixture)
 
         Assert.Contains("Refusing to revert AddChatLogBackfill", message);
         Assert.Contains("1 imported usage row(s)", message);
+        Assert.Contains("Rollback Plan", message);
         await AssertSchemaInPlaceAsync(db);
         Assert.Equal(["1"], await QueryAsync(db, """SELECT count(*)::text AS "Value" FROM "UsageStats" WHERE "Source" = 1;"""));
     }
