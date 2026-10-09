@@ -2168,3 +2168,115 @@ export async function mockTurnstile(page: Page, { token = 'e2e-fake-token' } = {
     }),
   );
 }
+
+/** The `GET /api/channels/{c}/backfill` payload (spec 2026-10-09, §5.1), every field overridable. */
+export function backfillStatusBody(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const option = (months: number, days: number, windowFrom: string) => ({
+    months,
+    windowFrom,
+    windowTo: '2026-10-08',
+    days,
+    weeks: Math.ceil(days / 7),
+    available: true,
+    reason: null,
+  });
+  return {
+    countingSince: '2026-10-08',
+    archive: { name: 'logs.cyex.app', url: 'https://logs.cyex.app/' },
+    requestDelaySeconds: 10,
+    options: [
+      option(1, 30, '2026-09-08'),
+      option(3, 92, '2026-07-08'),
+      option(6, 183, '2026-04-08'),
+    ],
+    activeEmoteSetId: 'set-active',
+    coverage: [],
+    activeRun: null,
+    lastRun: null,
+    importedFrom: null,
+    importedTo: null,
+    importedContiguous: false,
+    cooldownUntilUtc: null,
+    ...overrides,
+  };
+}
+
+/** A queued run object as the start route answers with (and the status carries as `activeRun`). */
+export function backfillRunBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 1,
+    status: 'queued',
+    requestedMonths: 3,
+    windowFrom: '2026-07-08',
+    windowTo: '2026-10-08',
+    weeksDone: 0,
+    weeksTotal: 14,
+    queuePosition: 1,
+    pausedUntilUtc: null,
+    requestedAtUtc: '2026-10-09T18:02:11Z',
+    startedAtUtc: null,
+    finishedAtUtc: null,
+    requestedByLogin: 'sensitron',
+    emoteSetId: 'set-other',
+    emoteSetName: 'Other',
+    emoteCount: 10,
+    errorCode: null,
+    errorHttpStatus: null,
+    bytesReceived: 0,
+    messagesRead: 0,
+    ...overrides,
+  };
+}
+
+/**
+ * GET /api/channels/{channelName}/backfill (#352). The returned handle counts the requests and
+ * swaps the answer: a spec that starts a run calls `set({ activeRun: … })` so the refetch after the
+ * 202 sees it. `requests` staying 0 is how a spec proves the status was never asked for.
+ */
+export async function mockBackfillStatus(
+  page: Page,
+  channelName: string,
+  initial: Record<string, unknown> = {},
+): Promise<{ requests: () => number; set: (next: Record<string, unknown>) => void }> {
+  let current = backfillStatusBody(initial);
+  let requests = 0;
+  await page.route(`**/api/channels/${channelName}/backfill`, (route) => {
+    if (route.request().method() !== 'GET') {
+      return route.fallback();
+    }
+    requests++;
+    return fulfillJson(route, 200, current);
+  });
+  return {
+    requests: () => requests,
+    set: (next) => {
+      current = backfillStatusBody(next);
+    },
+  };
+}
+
+/**
+ * POST /api/channels/{channelName}/backfill (#352). Records the JSON body the UI actually sent —
+ * the seam check reads these, not the mock's own idea of what should have been sent. A numeric
+ * `response` answers with that status and `{ errorCode }`; otherwise 202 with a queued run.
+ */
+export async function mockBackfillStart(
+  page: Page,
+  channelName: string,
+  response: { status: number; errorCode: string } | 'accepted' = 'accepted',
+): Promise<{ bodies: () => unknown[] }> {
+  const bodies: unknown[] = [];
+  await page.route(`**/api/channels/${channelName}/backfill`, (route) => {
+    if (route.request().method() !== 'POST') {
+      return route.fallback();
+    }
+    bodies.push(route.request().postDataJSON());
+    if (response === 'accepted') {
+      return fulfillJson(route, 202, backfillRunBody());
+    }
+    return fulfillJson(route, response.status, { errorCode: response.errorCode });
+  });
+  return { bodies: () => bodies };
+}
