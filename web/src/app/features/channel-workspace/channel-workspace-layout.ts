@@ -87,7 +87,9 @@ const LOCKED_BY_BROADCASTER_KEY = 'errors.api.channel_locked_by_broadcaster';
 
       <!-- Sticky under the h-14 shell header; h-10 is a contract — filter toolbars pin at
            top-24 (= 14 + 10). Links are flex/items-center so the fixed height carries exactly. -->
-      <nav class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 border-b border-border">
+      <nav
+        class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 overflow-x-auto border-b border-border"
+      >
         @if (canViewUsageStats()) {
           <app-tab-link link="usage-stats" [label]="'channelWorkspace.tabs.usage' | transloco" />
           <!-- Same visibility as the usage tab: the tags page has the same route guard (spec 9.3). -->

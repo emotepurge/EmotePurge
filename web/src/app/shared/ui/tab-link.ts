@@ -1,7 +1,7 @@
 import { Component, input } from '@angular/core';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 
-const BASE = 'flex items-center border-b-2 px-3 text-sm transition';
+const BASE = 'flex shrink-0 items-center whitespace-nowrap border-b-2 px-3 text-sm transition';
 const ACTIVE = `${BASE} border-accent text-fg`;
 const INACTIVE = `${BASE} border-transparent text-fg-muted hover:text-fg-body`;
 

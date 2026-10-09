@@ -807,6 +807,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   **The tab itself is a primitive** (`shared/ui/tab-link.ts`) and is never rebuilt as a class chain — a contract that lives in copied string literals drifts on the first edit. `ariaCurrentWhenActive="page"` sits in the primitive and is thereby unforgettable. `display: contents` on the host: the anchor has to be the flex child itself, otherwise it centres in a box of its own instead of carrying the bar's `h-10`.
 
   `h-10` and `flex items-center` (instead of `py-2`) are part of the sticky contract from §8.5 — the tab bar height is the `top` offset of the filter toolbars.
+  **Tabs never wrap or shrink** (`shrink-0 whitespace-nowrap` in the primitive): a label that wraps to two lines grows past the bar's `h-10` and covers the content below. A bar that is wider than the viewport scrolls horizontally instead (`overflow-x-auto` on the caller's `<nav>`) — the channel workspace needs that on a phone since the fifth tab, "Settings", for managers while the backfill switch is on.
 - **Reference:** `web/src/app/shared/ui/tab-link.ts`; bars in `admin-layout.ts`, `channel-workspace-layout.ts` (a fourth tab, "Tags", since #201 — shown under the same condition as "Usage", the bar's `h-10` unchanged).
 
 ### 8.2 In-page anchors
