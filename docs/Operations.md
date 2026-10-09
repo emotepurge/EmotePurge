@@ -683,6 +683,98 @@ the first tick; the figures go into the PR.
 Known follow-up: the loader for tracked sets in the tag flows is not yet on the #220 route, so a
 tag run against a tracked set pays the foreign-permit cost the earlier route has.
 
+## Emote placeholder marker
+
+Migration `AddEmotePlaceholderMarker` adds `Emotes.IsPlaceholder` (`boolean NOT NULL DEFAULT false`).
+It marks emote rows created for an emote the channel has never been observed to have in its active
+set. Today only set-session ballots create such rows; the chat-log backfill will create them too. The
+7TV sync skips marked rows that never got an archive date when it looks for emotes that left the
+active set. The marker is cleared once the emote really enters the active set, and also when an active
+row is archived. The reasoning is in `docs/DECISIONS.md` (2026-10-09,
+"Emotes.IsPlaceholder").
+
+**This migration is never reverted in production.** An image without the marker treats every marked
+row as an emote that just left the active set. It writes a false leave observation for each one and
+discards tag placements because of it. The api/worker image pair that first shipped this migration is
+the oldest image you may roll back to.
+
+### Deploying it
+
+1. **Migration first, by hand**, as described under "Prod-Migration" in `CLAUDE.md`: tunnel,
+   `dotnet ef migrations list` (expect `AddEmotePlaceholderMarker` as `(Pending)`; the one before it
+   is `AddBroadcasterChannelLocks`), `dotnet ef database update`, then `list` again. The migration
+   adds the column and, in the same step, marks the ballot rows that carry an entry stamp. Those are
+   rows created since 2026-10-05. Ballot rows created between 2026-09-22 and 2026-10-05 have no stamp,
+   so they look like legacy rows and stay unmarked on purpose. Query 6 below counts them; the reason is
+   in `docs/DECISIONS.md`.
+2. **Update api and worker together.** Both images change: the Api creates ballot rows with the
+   marker, and the Worker skips and clears it. Check that the running revision is the merge commit.
+3. **Re-run the marking once, after step 2.** Between steps 1 and 2 the old Api keeps running and keeps
+   creating ballot rows. It does not know the column, so those rows get the default `false`. Run the
+   statements below once the new revision is confirmed. Then no old writer is left. In the same window,
+   the old worker's sync and the old Api's restore report can un-archive a marked row without clearing
+   the marker. Queries 4 and 5 show what that left behind.
+
+The marking is safe to run any number of times. It only ever sets `true`, and only on rows that are
+archived, have no archive date and have an entry stamp. Only the ballot insert produces that
+combination. Every archive the sync or the set-centric delete report performs stamps `ArchivedAt`,
+and rows from before the `LastEnteredSetAtUtc` column have no entry stamp. A row the new sync has
+already un-archived is not archived, so it is correctly left alone. Run the statements through the
+SSH tunnel, as for the migration. psql prompts for the password, so it stays out of your shell
+history and out of the repository:
+
+```
+psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge'
+```
+
+```sql
+-- 1. Before: "unmarked" is the number of ballot rows the old Api created after the migration
+--    (often 0). "ballot_shaped" is every row with the ballot combination, marked or not.
+SELECT count(*) FILTER (WHERE NOT "IsPlaceholder") AS unmarked,
+       count(*) AS ballot_shaped
+FROM "Emotes"
+WHERE "IsArchived" AND "ArchivedAt" IS NULL AND "LastEnteredSetAtUtc" IS NOT NULL;
+
+-- 2. The marking itself (identical to the migration's statement). psql reports UPDATE <n>;
+--    <n> must equal "unmarked" from step 1.
+UPDATE "Emotes" SET "IsPlaceholder" = true
+WHERE "IsArchived" AND "ArchivedAt" IS NULL AND "LastEnteredSetAtUtc" IS NOT NULL
+  AND NOT "IsPlaceholder";
+
+-- 3. After: "unmarked" must be 0. "ballot_shaped" normally stays the same; it only drops
+--    if the sync un-archived one of those rows in between.
+SELECT count(*) FILTER (WHERE NOT "IsPlaceholder") AS unmarked,
+       count(*) AS ballot_shaped
+FROM "Emotes"
+WHERE "IsArchived" AND "ArchivedAt" IS NULL AND "LastEnteredSetAtUtc" IS NOT NULL;
+
+-- 4. Active rows still marked: an old image un-archived them during the window without clearing
+--    the marker. Normally 0 one resync tick after the redeploy (SevenTv:ResyncIntervalSeconds,
+--    default 60): the new sync clears the marker on every active row the REST answer lists, and
+--    archiving an active row clears it too. Exceptions that are harmless: rows in a channel the
+--    sync refuses (excluded, or locked by its broadcaster) or cannot reach (a sync failure reason
+--    is set), and rows 7TV's lagging REST cache does not list yet. They keep the marker until their
+--    channel syncs; their leave is observed all the same.
+SELECT count(*) AS active_marked FROM "Emotes" WHERE "IsPlaceholder" AND NOT "IsArchived";
+
+-- 5. Marked rows with an archive date: an old image un-archived them and archived them again in the
+--    window. The new code never produces this (it clears the marker whenever it archives an active
+--    row). Usually 0. A non-zero count is harmless: the sync only skips marked rows WITHOUT an
+--    archive date, so these rows' leaves are observed normally. No action needed.
+SELECT count(*) AS marked_with_archive_date FROM "Emotes" WHERE "IsPlaceholder" AND "ArchivedAt" IS NOT NULL;
+
+-- 6. Read-only, for information: ballot rows from 2026-09-22 to 2026-10-05, which carry no entry
+--    stamp and stay unmarked on purpose. Legacy archived rows share the null stamps, but only a
+--    ballot row has a null FirstSeenAt AND a LastSyncedAt from that period: nothing writes
+--    LastSyncedAt on a row that stays archived. "still_on_a_ballot" narrows it further to rows a
+--    vote session still references (deleting a session removes its ballot rows).
+SELECT count(*) AS unstamped_ballot_rows,
+       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM "VoteSessionEmotes" s WHERE s."EmoteId" = e."Id")) AS still_on_a_ballot
+FROM "Emotes" e
+WHERE e."IsArchived" AND e."ArchivedAt" IS NULL AND e."LastEnteredSetAtUtc" IS NULL
+  AND e."FirstSeenAt" IS NULL AND e."LastSyncedAt" >= '2026-09-22';
+```
+
 ## Database backup and restore
 
 [`scripts/backup-postgres.sh`](../scripts/backup-postgres.sh) dumps the database and rotates

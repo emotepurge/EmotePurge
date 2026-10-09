@@ -1215,6 +1215,43 @@ public class EmoteServiceTests(PostgresFixture fixture)
         Assert.Equal(observedAt, observation.LastObservedAtUtc);
     }
 
+    [Fact]
+    public async Task MarkRestoredInSetAsync_ClearsThePlaceholderMarker()
+    {
+        // Chat-log backfill spec, child 1 (D37): a restore into the channel's active set is an entry
+        // like the sync's un-archive, so a placeholder row stops being one.
+        await using var db = fixture.CreateDbContext();
+        var channel = SeedChannel(db, "insetplaceholder_res", "4444", "insetplaceholder01");
+        var emote = SeedEmote(db, channel, "phres1", isArchived: true);
+        emote.IsPlaceholder = true;
+        await db.SaveChangesAsync();
+
+        await CreateService(db).MarkRestoredInSetAsync(
+            "insetplaceholder01", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["phres1"], null, Actor);
+
+        var row = await db.Emotes.AsNoTracking().SingleAsync(e => e.Id == emote.Id);
+        Assert.Equal((false, false), (row.IsArchived, row.IsPlaceholder));
+    }
+
+    [Fact]
+    public async Task MarkDeletedInSetAsync_ActiveRowWithAStaleMarker_DropsTheMarker()
+    {
+        // Chat-log backfill spec, child 1 (D37): an active row was in the set, so a marker on it is
+        // stale; archiving it through the set-centric delete report drops the marker.
+        await using var db = fixture.CreateDbContext();
+        var channel = SeedChannel(db, "insetplaceholder_del", "4445", "insetplaceholder02");
+        var emote = SeedEmote(db, channel, "phdel1");
+        emote.IsPlaceholder = true;
+        await db.SaveChangesAsync();
+
+        await CreateService(db).MarkDeletedInSetAsync(
+            "insetplaceholder02", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["phdel1"], null, Actor);
+
+        var row = await db.Emotes.AsNoTracking().SingleAsync(e => e.Id == emote.Id);
+        Assert.Equal((true, false), (row.IsArchived, row.IsPlaceholder));
+        Assert.NotNull(row.ArchivedAt);
+    }
+
     private static EmoteService CreateService(AppDbContext db, ILogger<EmoteService>? logger = null)
     {
         var configuration = new ConfigurationBuilder()

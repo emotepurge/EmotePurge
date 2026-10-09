@@ -4,8 +4,6 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
-using NpgsqlTypes;
 
 namespace EmotePurge.Infrastructure.Services;
 
@@ -449,13 +447,13 @@ public class VoteSessionService(
 
     /// <summary>
     /// Set-session steps 3–4 (spec section 9): an all-or-nothing race-safe upsert of the ballot's 7TV
-    /// emote ids into this channel's Emotes table, then a read-back by SevenTvEmoteId. A row that
-    /// already exists — active or archived — is left exactly as it is (<c>DO NOTHING</c> on the
-    /// existing <c>(ChannelId, SevenTvEmoteId)</c> unique index); a row that does not exist yet is
-    /// created archived (<c>IsArchived = true</c>, <c>ArchivedAt = null</c>, "never active") so a
-    /// set-session's ballot never grants a never-synced 7TV emote the appearance of being live in our
-    /// own database. <c>FirstSeenAt</c> is left null for a new row: 7TV's set-entry response does
-    /// carry an "added to set" timestamp (<c>SevenTvGqlSetEntryDto.AddedAt</c>), but
+    /// emote ids into this channel's Emotes table, then a read-back by SevenTvEmoteId. The upsert is
+    /// <see cref="ArchivedEmoteRowUpsert"/>: a row that already exists — active or archived — is left
+    /// exactly as it is; a row that does not exist yet is created archived ("never active") and marked
+    /// as a placeholder, so a set-session's ballot never grants a never-synced 7TV emote the appearance
+    /// of being live in our own database, nor makes the sync read its absence from the active set as a
+    /// leave. <c>FirstSeenAt</c> is left null for a new row: 7TV's set-entry response does carry an
+    /// "added to set" timestamp (<c>SevenTvGqlSetEntryDto.AddedAt</c>), but
     /// <see cref="IForeignEmoteSetService"/>'s set-ID read (<see cref="ForeignEmoteRow"/>) does not
     /// thread it through — this preview path was built for reading, not for backfilling that column.
     /// If this set later becomes the channel's active one, the worker's regular resync corrects
@@ -470,35 +468,10 @@ public class VoteSessionService(
         string channelId, IReadOnlyList<string> sevenTvEmoteIds, IReadOnlyDictionary<string, ForeignEmoteRow> liveMembers,
         CancellationToken cancellationToken)
     {
-        var newLocalIds = sevenTvEmoteIds.Select(_ => Guid.NewGuid().ToString()).ToArray();
-        var names = sevenTvEmoteIds.Select(id => liveMembers[id].Name).ToArray();
-        var imageUrls = sevenTvEmoteIds.Select(id => liveMembers[id].ImageUrl).ToArray();
-        var now = DateTime.UtcNow;
-
-        // LastEnteredSetAtUtc = now on a new row (T-C, spec E34). Not because the row is in the active
-        // set — it is inserted archived for any ballot set. Without a stamp it would read as "unknown,
-        // older than the credibility window", and if a tag later plays that emote in and the PUSH
-        // dispatch is missed, the next stale REST resync's post-check would write a leave observation
-        // right away and invalidate the fresh placement. The stamp holds that off for one window. An
-        // existing row is left alone (DO NOTHING), its stamp included.
-        const string sql = """
-            INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "ArchivedAt", "FirstSeenAt", "LastSyncedAt", "LastEnteredSetAtUtc")
-            SELECT input."Id", input."SevenTvEmoteId", @channelId, input."Name", input."ImageUrl", true, NULL, NULL, @now, @now
-            FROM UNNEST(@ids, @sevenTvEmoteIds, @names, @imageUrls) AS input("Id", "SevenTvEmoteId", "Name", "ImageUrl")
-            ON CONFLICT ("ChannelId", "SevenTvEmoteId") DO NOTHING;
-            """;
-
-        await db.Database.ExecuteSqlRawAsync(
-            sql,
-            [
-                new NpgsqlParameter("channelId", NpgsqlDbType.Text) { Value = channelId },
-                new NpgsqlParameter("now", NpgsqlDbType.TimestampTz) { Value = now },
-                new NpgsqlParameter("ids", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = newLocalIds },
-                new NpgsqlParameter("sevenTvEmoteIds", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = sevenTvEmoteIds.ToArray() },
-                new NpgsqlParameter("names", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = names },
-                new NpgsqlParameter("imageUrls", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = imageUrls },
-            ],
-            cancellationToken);
+        var rowsToEnsure = sevenTvEmoteIds
+            .Select(id => new ArchivedEmoteRow(id, liveMembers[id].Name, liveMembers[id].ImageUrl, FirstSeenAt: null))
+            .ToList();
+        await ArchivedEmoteRowUpsert.EnsureRowsAsync(db, channelId, rowsToEnsure, DateTime.UtcNow, cancellationToken);
 
         var rows = await db.Emotes
             .Where(e => e.ChannelId == channelId && sevenTvEmoteIds.Contains(e.SevenTvEmoteId))

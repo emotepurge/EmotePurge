@@ -10,6 +10,101 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-09 — `Emotes.IsPlaceholder` keeps never-active emote rows out of the REST leave detection (#347)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/Emote.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/20261009092645_AddEmotePlaceholderMarker.cs` ·
+`src/EmotePurge.Infrastructure/Services/ArchivedEmoteRowUpsert.cs` ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` · `docs/Operations.md` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServicePlaceholderTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AddEmotePlaceholderMarkerMigrationTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ArchivedEmoteRowUpsertTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteServiceTests.cs`
+
+A set-session ballot creates an archived `Emote` row for every member that has no row in the channel
+yet (`IsArchived = true`, `ArchivedAt = null`, "never active"). Until now, the only thing that kept such
+a row away from the sync's delayed-leave detection was its entry stamp: `LastEnteredSetAtUtc = now`
+held the REST post-check off for one credibility window (30 minutes, spec #201 E34). That was not
+enough. Once the window was over, every REST resync of the **active** set found the row missing,
+judged that a credible leave, and wrote an `EmoteSetLeaveObservation` against the active set, for an
+emote that was never in it. The tag read-time rule then discarded any placement of that emote
+registered before the observation. The chat-log backfill (#346) will create the same kind of row in
+bulk, so the gap had to close before it ships (spec D37).
+
+**The marker.** `Emotes.IsPlaceholder` (`boolean NOT NULL DEFAULT false`) is `true` on a row created
+for an emote this channel has never been observed to have in its active set. The ballot's insert,
+now the shared helper `ArchivedEmoteRowUpsert.EnsureRowsAsync` that the backfill will reuse (D27),
+writes `true`. Otherwise its statement is unchanged: `ON CONFLICT DO NOTHING` leaves existing rows
+untouched, and the entry stamp is still written. The helper stores every date as UTC, because Npgsql
+refuses any other `DateTimeKind` for a `timestamptz`. Two places clear the marker when the emote
+really enters the active set. One is the un-archive in `SevenTvSyncService.UpsertEmote` (REST and
+dispatch). The other is the set-centric restore in `EmoteService`. Nothing ever sets it back to
+`true`.
+
+**Stale markers.** An image older than the marker un-archives a marked row without clearing it. That
+can be the old worker's sync or the old Api's set-centric restore report, during the window between
+the manual migration and the redeploy. The row is then active and marked. The old image may also
+archive it again, stamping `ArchivedAt` and keeping the marker. Three rules keep such a row from losing
+its leave. A REST answer that lists an **active** marked row clears the marker; this sits outside the
+change detection, like the `FirstSeenAt` correction. Archiving an active row also clears it, whether
+the REST reconcile (b1), a dispatch pull or the set-centric delete report does it. That is part of the
+archive change, so it adds no inventory change. And the post-check only skips rows that are marked **and** have no `ArchivedAt` (see
+below).
+
+**The skip is (b2) only, and only for `IsPlaceholder AND ArchivedAt IS NULL`.** `ReconcileAsync` skips
+such rows in its post-check for rows archived before the pass (b2). `IsCredibleRestLeave` and the
+immediate archive branch (b1) do not skip anything, and `EmoteSetLeaveObservations.RecordAsync` is
+unchanged. A row that was active when the pass began was in the set, whatever its marker says, so its
+leave is real. A real placeholder never has an `ArchivedAt`: every archive only touches active rows
+and stamps the date. That holds for the sync, the dispatch pull and the set-centric report, in every
+image since the column was added on 2026-08-02. A marked row **with** an `ArchivedAt` was therefore
+active once. If an old image archived it inside the credibility window, the post-check must still
+record that leave once the window is over. A skip inside `IsCredibleRestLeave`, or one that ignored
+`ArchivedAt`, would suppress exactly those leaves. This departs from the spec's first wording, which
+named `IsCredibleRestLeave` and the marker alone; the spec is corrected.
+
+**The backfill rule.** The migration marks `"IsArchived" AND "ArchivedAt" IS NULL AND
+"LastEnteredSetAtUtc" IS NOT NULL`. Only the ballot insert produces that combination. Every archive
+in the sync (dispatch pull, REST reconcile) and in `EmoteService` stamps `ArchivedAt`. Rows archived
+before `ArchivedAt` existed also predate `LastEnteredSetAtUtc`, so their stamp is null. Deriving
+"never active" from `ArchivedAt IS NULL` alone would wrongly mark those legacy rows.
+
+The rule does not mark **every** existing ballot row. The ballot insert has existed since 2026-09-22.
+It only began stamping `LastEnteredSetAtUtc` on 2026-10-05, with the leave observations. A ballot row
+created in between carries a null stamp, so the predicate cannot tell it from a legacy row, and it
+stays unmarked on purpose. The cost is small. With a null stamp, the first REST resync that recorded
+leave observations already wrote one false observation for such a row, if its emote was missing from the
+active set. Once an observation exists, the post-check writes no new one, so leaving the row unmarked
+causes no further false observation. A placement registered after that observation still counts.
+`docs/Operations.md` has a read-only query to count these rows.
+
+**A repeatable operator step.** The migration runs by hand before the redeploy, and the old Api keeps
+creating ballot rows without the marker until it is replaced. The same statement is therefore run
+once more after the redeploy, with a count before and after (`docs/Operations.md`, "Emote placeholder
+marker"). The statement is idempotent. It only ever sets `true`, only on rows not yet marked, and only
+on the ballot combination. A row from the window still has that combination unless the new sync has
+already un-archived it, and then it is correctly left alone. A row the new code once cleared and
+archived again carries an `ArchivedAt`, so it is never marked a second time. A Postgres-side default
+on the column covers the old image's inserts in the meantime.
+
+**Known limit.** A ballot over the **active** set can run while 7TV's REST cache lags. It may then
+create a placeholder for an emote that is in fact already in the active set. If that emote leaves
+again before a REST answer lists it, and the EventAPI's REMOVE is missed, no leave is observed. The
+row was never seen in the set, so D37 accepts this. The chat-log backfill's row creation (#349)
+inherits the same limit.
+
+**Never reverted (D42).** An image without the marker would treat every retained placeholder as a
+credible leave again. Ballot-created rows carry votes and cannot be removed. The api/worker image
+pair of this change is therefore the oldest one a rollback may go back to, and the migration's
+`Down` exists for local work only.
+
+**Rejected:** keeping the one-window hold-off (it only postpones the false observation); a second
+table for "known but never active" emotes (every reader of `Emotes` would have to learn it); stopping
+the Api during the migration window instead of re-running the marking afterwards.
+
 ### 2026-10-09 — Backup retention is stated as "up to 90 days", not 60
 
 **Betrifft:** `web/public/i18n/de.json` · `web/public/i18n/en.json` (`purgeOwnDataDialog.message`) ·
