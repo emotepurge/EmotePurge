@@ -315,6 +315,11 @@ public static class ServiceCollectionExtensions
         chatLogBackfillOptions.Validate();
         services.AddSingleton(chatLogBackfillOptions);
         services.TryAddSingleton(TimeProvider.System);
+
+        // The backfill's database side for both processes (spec section 3). Scoped like every service
+        // on AppDbContext; the worker resolves it from a scope that lives as long as its loop, because
+        // the instance holds the loop's advisory-lock connection (D46).
+        services.AddScoped<IChatLogBackfillService, ChatLogBackfillService>();
         services.AddScoped<IDataRetentionService, DataRetentionService>();
         services.AddScoped<ITwitchUserTokenService, TwitchUserTokenService>();
         services.AddScoped<IModeratedChannelsProvider, ModeratedChannelsProvider>();
