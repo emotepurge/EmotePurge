@@ -1,0 +1,915 @@
+# Spec: Chat-log backfill — fill a channel's pre-join days from the public chat archive on request
+
+**Date:** 2026-10-09 · **Status:** settled with the operator; two adversarial reviews (Codex Sol, 2026-10-08/09) incorporated · **Epic:** #EPIC · **Archive measurements:** [`docs/Untersuchung-Chat-Log-Archiv-Range-2026-10-08.md`](../../Untersuchung-Chat-Log-Archiv-Range-2026-10-08.md) · **Predecessor:** #69 (closed, variant (i))
+
+> Written in English on purpose (exception to the language rule for specs, see `docs/DECISIONS.md` 2026-10-09): this text was authored, reviewed twice and settled in English; the epic and child issues quote it. **This file is the single source of truth**; the issues point here.
+
+
+Labels: `epic`, `feature`, `worker`, `api`, `web`, `needs-privacy-update`
+
+## Context
+
+A freshly joined channel is useless for weeks: every emote reads as unused, the curve is empty, and a moderator judges the tool in exactly that window. #69 asked whether a replay of a public chat-log archive can *stand in for* our live counting. Its binding run (2026-10-08) answered **no, variant (i)**: a replay matches names valid on the run day, so renamed emotes lose their history (vassilly: 69 emotes with live uses and zero log hits), and the precision metric caps at plateaus. That verdict stands and is not reopened here.
+
+This issue is the **separate product decision** #69's last comment deferred: the operator accepts those limits knowingly and wants an explicit, manager-triggered backfill that fills only the days **before** EmotePurge started counting a channel, stored with a provenance mark, shown with an honesty caption, and never mixed into a live-counted day. Archive: `https://logs.cyex.app/` (rustlog fork, justlog-compatible), measured twice on 2026-10-08 (report: `docs/Untersuchung-Chat-Log-Archiv-Range-2026-10-08.md`, in German; "probe 1/2" below = "Sonde 1/2" there; key figures below). Archive operator's condition: link `https://logs.cyex.app/` wherever imported numbers are shown; no personal credit.
+
+Thirteen operator decisions are binding and reproduced in "Proposed Change" (B1–B13). Everything else the implementer needs is settled in "Decisions made in this spec" (D1–D24); the operator may veto any of them before work starts.
+
+## Current State (verified 2026-10-08 against `origin/main` @ ff405ff4; includes PR #341)
+
+**Write path cannot write the past.** `UsageStatFlushService.FlushAsync` pins every row to `DateOnly.FromDateTime(DateTime.UtcNow)` (`src/EmotePurge.Infrastructure/Services/UsageStatFlushService.cs:19`) and upserts additively (`ON CONFLICT ("EmoteId", "EmoteSetId", "Date") DO UPDATE SET "UseCount" = … + EXCLUDED…`, `:80-88`). A second import over the same days would double the numbers; a backfill needs its own write path with replace semantics.
+
+**No provenance.** `UsageStat` carries `Id, EmoteId, Date, UseCount, BotUseCount, SharedChatUseCount, EmoteSetId` and nothing that says live vs imported (`src/EmotePurge.Core/Entities/UsageStat.cs:3-33`). Unique covering index `(EmoteId, EmoteSetId, Date) INCLUDE (UseCount)` (`src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs:54-56`), FK to `Emote` cascades (`:58-61`).
+
+**Counting start.** `Channel.CreatedAt = DateTime.UtcNow` at row creation and never reset on rejoin (`src/EmotePurge.Core/Entities/Channel.cs:16`); `TrackingResumedAt` marks the last reactivating join (`:18-23`). The usage page's "tracked since" is `TrackingCoverage.TrackedSince(trackingResumedAt, createdAt)` = `trackingResumedAt ?? createdAt` (`src/EmotePurge.Core/Services/TrackingCoverage.cs:17-18`), served as `EmoteSetStatusDto.TrackedSince` (`src/EmotePurge.Core/Services/IEmoteSetStatusService.cs:65-74`, built at `src/EmotePurge.Infrastructure/Services/EmoteSetStatusService.cs:46`) by `GET /api/channels/{channelName}/emotes/active-set` (`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs:307`).
+
+**Live matching.** `EmoteNameMatching.MatchEmoteIds` splits on single spaces, ordinal lookup, per-message dedup (`src/EmotePurge.Core/Matching/EmoteNameMatching.cs:39-77`); `Coalesce` keeps the first id per name and reports collisions (`:87-101`). The live match map is every **unarchived** emote of the channel, no `OrderBy`, keyed with `channel.ActiveEmoteSetId` (`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs:806-845`). Live classification order in `TwitchChatManager.OnMessageReceived`: exclusion gate (`src/EmotePurge.Worker/TwitchChatManager.cs:1017`) → `SharedChatRule.FromTags` (`:1057`) → `IBotChatterDetector.IsBot` (`:1063`) → `UsageCategoryRule.Resolve` (`:1064`) → `usageCounter.Increment(emoteId, snapshot.EmoteSetId, category)` (`:1074`). `UsageCategoryRule`: Own+bot → Bot, Own+human → Human, Foreign/Indeterminate → SharedChat (`src/EmotePurge.Worker/UsageCategory.cs:42-47`).
+
+**Harness (#69) — reference, must not change behaviour.** `HarnessRunner` applies `IExcludedChatterFilter.IsExcluded` in the archive callback before anything else (`src/EmotePurge.Worker/Harness/HarnessRunner.cs:488-491`), then `ReplayDayCounter.Count` (`:510-512`). `ReplayDayCounter` resolves origin first, calls `isBot` only for `Own` (`src/EmotePurge.Worker/Harness/ReplayDayCounter.cs:133-149`), matches through `EmoteNameMatching` (`:163, :172`), and gates emotes per day by `FirstSeenAt`/`ArchivedAt` (`CoversDay`, `:321-334`). It is per-day, diagnostics-heavy and reports ambiguous names rather than resolving them — not reusable as the product counter (D9).
+
+**Archive client is per-day only.** `IChatLogArchiveClient.ReadDayAsync(twitchChannelId, day, maxBytes, onMessage, ct)` (`src/EmotePurge.Core/ChatLogArchive/IChatLogArchiveClient.cs:25-30`) hits `channelid/{id}/{y}/{m}/{d}?raw` (`src/EmotePurge.Infrastructure/ChatLogArchive/ChatLogArchiveClient.cs:65`), streams with `ResponseHeadersRead` (`:71`), maps 404 → `NoLogDay` (`:83-90`), 429 → `RateLimited` without reading `Retry-After` (`:92-96`), other non-2xx → `TransportFailure` (`:98-104`), body timeout via `ChatLogArchiveOptions.BodyTimeout` (`:114-116`, default 120 s `ChatLogArchiveOptions.cs:29`), byte cap in the counting stream (`:284-348`), malformed-ratio > 0.5 → `MalformedResponse` (`:55, :157-164`). Pacing is instance state (`_lastRequestStartedAtTicks`, `:57`, `:263-276`) with `RequestDelay` default 1500 ms (`ChatLogArchiveOptions.cs:22`); the client is registered as a transient typed client with `BaseUrl` default `https://logs.zonian.dev/` (`ChatLogArchiveOptions.cs:15`), header timeout 30 s and `User-Agent: EmotePurge/1.0` (`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs:261-282`). No `Accept-Encoding`. `JustlogRawLineParser.TryParse` yields `ChatLogMessage(SentAtUtc, UserId, Badges, RoomId, SourceRoomId, HasOtherSourceMarkers, Text)` (`src/EmotePurge.Core/ChatLogArchive/ChatLogArchiveModels.cs:15-22`; parser `src/EmotePurge.Infrastructure/ChatLogArchive/JustlogRawLineParser.cs:58-80`). The zonian instance went offline on 2026-10-08 (#69 last comment); the default URL is dead.
+
+**Command and event plumbing.** `BotCommands.Channel = "channel:bot:commands"`, prefixes `JOIN:`/`LEAVE:`/`RESYNC:` (`src/EmotePurge.Core/Messaging/BotCommands.cs:12-16`); the worker dispatches by `StartsWith` and ignores unknown prefixes (`src/EmotePurge.Worker/Worker.cs:52-101`), guarding JOIN/RESYNC with `IsInActiveRosterAsync` (`:243-262`). `LiveEvents.Channel = "live:events"`, `LiveEvent(Type, Channel?, SessionId?)` camelCase (`src/EmotePurge.Core/Messaging/LiveEvents.cs:20, :68-81`); the channel SSE stream forwards `ChannelTypes` filtered by normalized channel (`:58-59`; `src/EmotePurge.Api/Endpoints/LiveEndpoints.cs:51-73`, auth = logged in + valid name only). `UsageFlushWorker` publishes `usage.flushed` per written channel (`src/EmotePurge.Worker/UsageFlushWorker.cs:119-121`). Frontend: `liveReload(url, { accept, debounceMs })` (`web/src/app/core/live/live-update.service.ts`; consumer example `web/src/app/features/usage-stats/usage-stats-page.ts:2486`); event names in `web/src/app/core/live/live-event.model.ts:16-25`.
+
+**Authorization.** `ChannelManagementAuthorizationFilter` → `IChannelAccessService.CanManageChannelAsync`, 403 on deny (`src/EmotePurge.Api/Auth/ChannelManagementAuthorizationFilter.cs:6`); `UsageStatsAccessAuthorizationFilter` additionally admits 7TV editors (`…/UsageStatsAccessAuthorizationFilter.cs:25`). `/api/channels` group: `RequireAuthorization` + `ChannelNameValidationFilter` (`src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs:17-19`); error bodies are `{ errorCode }` (`:261-263`), `ApiErrorCodes` are snake_case (`src/EmotePurge.Api/Validation/ApiErrorCodes.cs:11-70`); `api-error-locales.spec.ts` enforces code ↔ both locales (`web/src/app/core/i18n/api-error-locales.spec.ts:21-40`). `ChannelPermissionsDto(CanManage, CanViewUsageStats, IsGlobalAdmin, IsTracked, IsBotActive, TagRunsEnabled)` carries the `Tags:RunsEnabled` flag to every channel page (`ChannelEndpoints.cs:346-352`; `web/src/app/core/channels/channel.model.ts:14-22`).
+
+**Workspace tabs.** Inline in `web/src/app/features/channel-workspace/channel-workspace-layout.ts:70-83`; the activity tab is wrapped in `@if (canManage())` (`:80`), routed under `channels/:channelName` with `canActivate: [channelManageGuard]` (`web/src/app/app.routes.ts:135-140`; guard reads `permissions.canManage`, `web/src/app/core/channels/channel-manage.guard.ts:38-40`). Tab labels `channelWorkspace.tabs.*` (`web/public/i18n/en.json:261-266`). No settings concept exists in the workspace.
+
+**Active set name and non-active set views.** `GET /api/channels/{channelName}/emote-sets` (`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs:58-101`, `UsageStatsAccessAuthorizationFilter`, `InteractiveRead`) returns `EmoteSetListResponse(activeEmoteSetId, sets[])` with `EmoteSetSummary(Id, Name, Capacity, Kind, IsPersonal, OwnerDisplayName, …)` (`src/EmotePurge.Core/Services/ISevenTvEmoteSetListService.cs:39-41`), cached 60 s per Twitch id (`SevenTvEmoteSetListService.AnswerTimeToLive`, `src/EmotePurge.Infrastructure/Services/SevenTvEmoteSetListService.cs:53`); the frontend reads it through `SevenTvEmoteSetService.listChannelEmoteSets` (`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts:276-278`, model `seven-tv-emote-set.model.ts:28-36`), already used by the tags and vote-detail pages. A non-active set's usage view is "every row of the channel with at least one count under that set" (`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs:115`), so imported rows carrying a non-active set id are visible under that set. Our observed `Channel.ActiveEmoteSetId` follows a 7TV switch within the periodic resync (`SevenTv:ResyncIntervalSeconds`, default 60, `src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs:29`) or sooner via the EventAPI delta when enabled.
+
+**7TV set preview and membership (reused by the picker and the snapshot).** `ISevenTvApiClient.GetEmoteSetPreviewAsync(emoteSetId)` (`src/EmotePurge.Core/SevenTv/ISevenTvApiClient.cs:53`) walks the v4 `emoteSet(id).emotes(page, perPage)` query (`src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs:70-72`, 500 per page, at most 10 pages, `:47-48`, `:564-611`) and yields `SevenTvEmoteSetPreview(TotalCount, Truncated, Items, Name, Capacity)` with `SevenTvEmoteSetPreviewItem(SevenTvEmoteId, Alias, DefaultName, ImageUrl, TopAllTime, Trending)` (`src/EmotePurge.Core/SevenTv/SevenTvModels.cs:532-551`) — **no added-to-set timestamp**: the preview query selects `items { alias emote { id … } }` only. The timestamp exists on the same v4 type and is read by the separate `GqlSetEntriesQuery` (`SevenTvApiClient.cs:39-47`, `added_at`) that overlays `AddedToSetAt` for the active set during a sync (`:1125-1131`, `:1189-1250`). The hardened path `IForeignEmoteSetService.GetForeignEmoteSetBySetIdAsync(channelName, emoteSetId, refresh)` (`src/EmotePurge.Core/Services/IForeignEmoteSetService.cs:44-45`) wraps the preview with a 60 s cache (`src/EmotePurge.Infrastructure/SevenTv/ForeignEmoteSetCache.cs:33`), the provider-wide rolling budget of 60 upstream requests per minute (`ForeignEmoteSetProviderBudget.cs:9-14, :83`) and the circuit breaker, and maps to `ForeignEmoteRow(SevenTvEmoteId, Name, DefaultName, ImageUrl, TopAllTime, Trending)` (`IForeignEmoteSetService.cs:257-263`). "Set belongs to this tracked channel" is `ITrackedEmoteSetMembershipService.CheckAsync` (`src/EmotePurge.Core/Services/ITrackedEmoteSetMembershipService.cs:35`; `Member` = the active set or a `NORMAL` set of the channel's 7TV account, fail-closed) — the gate of `GET /api/channels/{channelName}/emote-sets/{emoteSetId}/emotes` (`EmoteEndpoints.cs:116-150`, policy `TrackedEmoteSetPreview`, 30/min per user, #220). `EmoteSetOwnershipRejection` (`src/EmotePurge.Api/Endpoints/EmoteSetOwnershipRejection.cs:24-36`) is the other ladder — it answers whether the **actor** may write to a set through their 7TV editor grants; a backfill writes nothing on 7TV and B1 admits moderators without 7TV grants, so the channel-membership ladder is the right one here.
+
+**Archived `Emote` rows without a live past — precedent.** `VoteSessionService.UpsertSetSessionEmotesAsync` already creates rows for a set-session's ballot members that have no row: `INSERT … ("IsArchived","ArchivedAt","FirstSeenAt","LastSyncedAt","LastEnteredSetAtUtc") VALUES (true, NULL, NULL, @now, @now) ON CONFLICT ("ChannelId","SevenTvEmoteId") DO NOTHING` (`src/EmotePurge.Infrastructure/Services/VoteSessionService.cs:450-500`, DECISIONS 2026-09-22 "Voting: member of the session's set replaces not archived", `docs/DECISIONS.md:6468`). The sync's REST reconcile loads **all** rows of the channel keyed by `SevenTvEmoteId` (`SevenTvSyncService.cs:884-886`); `UpsertEmote` finds an archived row by that key, stamps `LastEnteredSetAtUtc`, sets `Name`/`ImageUrl`, `IsArchived = false`, `ArchivedAt = null`, `LastSyncedAt`, and corrects `FirstSeenAt` from the live `AddedToSetAt` (`:969-1020`); a brand-new row is created only when the key is absent (`:1021-1033`); a concurrent insert on the same key is handled as `IsEmoteKeyConflict` (`:1040-1045`). Since #341 the reconcile first dedupes the live list on emote id, **last entry wins** (`:888-895`, `SevenTvSyncServiceDuplicateEmoteIdTests`). Delayed-leave detection: a row archived in an earlier pass and absent from the live set is a credible leave when `LastEnteredSetAtUtc` is null or older than the 30-minute window (`IsCredibleRestLeave`, `:1049-1050`; window `:43`), goes to the post-check (`:935-938`) and gets an `EmoteSetLeaveObservation` unless one was observed since its entry (`:940-957`); tag placements are discarded when such an observation is newer than their registration (`EmoteTagService.cs:559-564`, `:936-946`). Nothing today marks a row as "never observed active": a vote-session-created row carries `LastEnteredSetAtUtc = now` only to hold that detection off for one window (`VoteSessionService.cs:478-483`). Readers that filter `!IsArchived`: the match cache (`:808`), `EmoteSetStatusService` slots/duplicates (`:36, :67, :79`), `EmoteListQueryService` (`:18`), `EmoteTagService` (`:153, :366, :876`), `VoteSessionQueryService` candidates (`:90`), the active-set usage view (`UsageStatQueryService.cs:115`). Readers that include archived rows: non-active set usage views (`:115`, badged `IsArchived`, spec #200 E23), set-session ballots (`VoteSessionQueryService.cs:213`), the admin channel list's `archivedEmoteCount` (`AdminChannelQueryService.cs:67`), the harness lifetimes (`GetEmoteLifetimesAsync`; `ReplayDayCounter.CoversDay` excludes an archived row without `ArchivedAt`, `ReplayDayCounter.cs:323-326`). There is no emote-level retention.
+
+**Usage-stats caption.** `@if (trackedSince(); as since) { <p …>{{ 'usageStats.trackedSince' | transloco: { date } }} …` (`web/src/app/features/usage-stats/usage-stats-page.html:474-505`; sentence order is a contract, `:482-489`); `trackedSince = computed(() => this.setStatus()?.trackedSince ?? null)` (`usage-stats-page.ts:546`); `rangeStartsBeforeTracking` compares the selected range against `trackedSince` (`:1093-1110`) and drives a warning banner (`.html:506-510`, keys `usageStats.rangeBeforeTracking` `en.json:772`/`de.json:772`); `trendFor` passes `trackedSince` into `usageTrend` (`:2787-2804`; `web/src/app/shared/emotes/emote-context.ts:88-89` suppresses the trend when the previous window starts before it).
+
+**Audit.** `AuditLogEntry` is snapshot strings, no FK (`src/EmotePurge.Core/Entities/AuditLogEntry.cs:45-90`; constants `:11-42`); `db.AddAuditEntry(actor, action, channelName, targetType, targetId, details)` (`src/EmotePurge.Infrastructure/Persistence/AuditLogWrites.cs:21-40`); details render through the closed `AuditLogDetail.Kinds` list (`src/EmotePurge.Core/Services/IAuditLogQueryService.cs:83-102`); the channel feed is `GET /api/channels/{channelName}/audit-log` behind `ChannelManagementAuthorizationFilter` (`ChannelEndpoints.cs:46-71`); frontend keys `audit.actions.*` (`web/src/app/shared/audit/audit-actions.ts:14-33`).
+
+**Retention and deletion.** `RetentionPolicy` constants (`src/EmotePurge.Core/Services/RetentionPolicy.cs:16-42`); `DataRetentionService` steps tokens → accounts → vote sessions → audit log → channels (`src/EmotePurge.Infrastructure/Services/DataRetentionService.cs:67-73`); `AccountDeletionService` pseudonymises audit actor/target to `AuditActor.DeletedUser` (`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs:117-124`; marker `src/EmotePurge.Core/Services/AuditActor.cs:29`); channel purge is one `db.Channels.Remove` relying on cascades (`src/EmotePurge.Infrastructure/Services/ChannelService.cs:147-155`); `ChannelDeactivation.DeactivateAsync` is the shared leave write (`src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs:33-60`).
+
+**Excluded channels, worker memory, row locks.** `IExcludedChannelFilter.IsExcluded(twitchChannelId)` (`src/EmotePurge.Infrastructure/Services/IExcludedChannelFilter.cs`, config `Channels:ExcludedChannelIds` / env `EXCLUDED_CHANNEL_IDS`, read once at startup, `ExcludedChannelFilter.cs:8, :29, :44`; compose `docker-compose.prod.yml:98, :150`) is applied in `ListActiveChannelNamesAsync` (`ChannelService.cs:224-236`) and thereby by the worker's JOIN/RESYNC guard (`Worker.cs:225-262`); `ApiErrorCodes.ChannelExcluded = "channel_excluded"` exists (`ApiErrorCodes.cs:46`). The prod worker runs under a 512 MB memory limit (`docker-compose.prod.yml:124-128`). `AccountDeletionService.DeleteAsync` locks the user row `FOR UPDATE` (`AccountDeletionService.cs:85-88`; `UserRowLock.ForShare` exists for writers that only need the row to stay put and blocks/waits for a deletion, `UserQueries.cs:10-16`); `ChannelQueries.LoadChannelForUpdateAsync` locks a channel row by name (`ChannelQueries.cs:128-133`), used by the retention purge but not by `LeaveAsync`.
+
+**Cache payloads, vote FKs, command queue.** `ForeignEmoteSetCache` stores `ForeignEmoteSet` as JSON under `7tvforeign:set:{id}` / `{login}` keys with a 60 s TTL and no schema version (`src/EmotePurge.Infrastructure/SevenTv/ForeignEmoteSetCache.cs:30-57`). `Vote.Emote` cascades (`AppDbContext.cs:244-247`) — deleting an `Emote` row deletes its votes; `VoteSessionEmotes` references the row too (`VoteSessionService.cs:439-443`). `RedisSubscriber` delivers one channel's commands strictly in order and awaits each handler before the next (`src/EmotePurge.Infrastructure/Redis/RedisSubscriber.cs:13-24`), so a `BACKFILL:` nudge waits behind any JOIN/RESYNC handler ahead of it (`Worker.cs:54-95`). `ChannelQueries.LoadChannelByIdAsync` exists for callers that resolved the exact row and must not reload by a name another row may have taken over (`ChannelQueries.cs:62-72`); there is no by-id `FOR UPDATE` loader yet.
+
+**Config/binding.** Options are plain POCOs bound once in `AddEmotePurgeInfrastructure` (`ChatLogArchive` at `ServiceCollectionExtensions.cs:261-263`, `Retention` at `:299`); feature flags read the same way (`Tags:RunsEnabled` → `EmoteTagOptions.RunsEnabled`, `Retention:Enforce` → `RetentionOptions.Enforce`). Worker services in `src/EmotePurge.Worker/WorkerServiceRegistration.cs:33-35` (detector, exclusion filter) and `:55-64` (hosted services); `DataRetentionWorker` waits on `BootRecoveryGate.Completed` (`src/EmotePurge.Worker/DataRetentionWorker.cs:23`).
+
+**Measured archive behaviour (2026-10-08).**
+- `GET /channelid/{id}?from=<RFC3339>&to=<RFC3339>&raw` returns the same justlog raw lines as the per-day endpoint, sorted ascending by `tmi-sent-ts`, UTC day boundaries, set-equal to per-day fetches (probe 1 #3–#6: 186,114 lines both ways).
+- `to` is **exclusive** at millisecond precision (probe 2, 1b). `from` inclusivity unmeasured; adjacent `[from, to)` blocks showed no boundary anomalies.
+- Empty window of a known channel, unknown channel, and a window before archive coverage all answer **404 `Not found`** (probe 1 #7, #9; probe 2 1c). 404 = "no data in this block", never an error.
+- Streamed, no `Content-Length`; brotli on request, factor ~1.2 (probe 2, 1a). No rate-limit headers observed in 42 requests.
+- handofblood, 6 months, 26 weekly blocks at 10 s spacing: 705 MB uncompressed, 1,732,197 lines, 327 s wall (~47 s transfer), largest block 66 MB / 159,416 lines, no 429 (probe 2, step 2). An earlier per-day harness run hit 429 after ~30 min at 1.5 s spacing; threshold unknown.
+- A repeat of an identical request once returned equal size/lines but a different SHA-256 (probe 2, 1a vs 1d) → body hashes are never an identity. The archive changes closed days after the fact (#69) — accepted.
+- Archive gaps are unmarked: a missing day is indistinguishable from a quiet day.
+
+## Proposed Change
+
+### Binding operator decisions (B1–B13)
+
+| # | Decision |
+|---|---|
+| B1 | Trigger only by users passing `CanManageChannelAsync` (global admin, broadcaster, live moderator) via `ChannelManagementAuthorizationFilter`. Not 7TV editors. Never automatic, never on join. |
+| B2 | Window per run: 1, 3 or 6 months. |
+| B3 | Only days strictly before the counting start are filled. Counting start = UTC date of `Channel.CreatedAt`; the join day is never filled. Options yielding zero days are disabled in the UI with a reason and rejected by the API. |
+| B4 | Mid-period gaps (leave/rejoin, worker downtime after counting start) are not filled. |
+| B5 | Re-running is allowed; a new run re-fetches its whole window and replaces imported days within it; it never touches live-counted rows. |
+| B6 | Imported data lives in `UsageStat` with a provenance column; every read path (grid, sort, curve, totals, trend) includes imported days unchanged. No per-row/per-cell marking in the grid. |
+| B7 | The "tracked since" caption is extended ("Tracked since 08.10.2026 · before that, from 09.04.2026, from the chat archive logs.cyex.app" with a link), shown only when imported data exists, date = earliest imported day. No link from there to the backfill UI. |
+| B8 | New workspace tab "Settings" / "Einstellungen", guarded like the activity tab, containing the backfill section: 1/3/6 months, explanations (source + link, possibly inaccurate, only names of the chosen set match, renamed emotes lose old-name hits, archive gaps look like quiet days), progress (weeks done of total, queue position), status, cancel, last run's result. **Amended by the operator's review of this draft (2026-10-08):** the section has a picker for the 7TV set to match against (preselected = active set); the tab exists only while `ChatLogBackfill:Enabled` is true (D17). |
+| B9 | Matching = live rules: `EmoteNameMatching` (ordinal, case-sensitive, same coalesce/ambiguity rule), only the members of **one chosen 7TV set** as 7TV lists them at request time (amended 2026-10-08, was: the currently active set), all usage attributed to that set's `EmoteSetId`; hits before the emote's entry day into that set discarded (`addedAt`, null = no gate — the `FirstSeenAt` gate re-based on the chosen set, D25); bots → `BotUseCount`; shared-chat → `SharedChatUseCount` (same rule as `ReplayDayCounter`/`SharedChatRule`); excluded chatters dropped before counting. No name history. |
+| B10 | Queue: new table `ChatLogBackfillRun`; global, strictly sequential; at most one active run per channel. Api inserts the row and nudges the worker with `BACKFILL:<channel>` on `BotCommands.Channel`. Worker restart loses nothing and resumes from the last completed week. Progress is a new SSE event type on the existing per-channel stream. |
+| B11 | Cancel allowed while queued/running/paused; completed weeks stay. |
+| B12 | Archive access `GET {BaseUrl}channelid/{twitchChannelId}?from=<RFC3339>&to=<RFC3339>&raw`, 7-day blocks `[from, to)`, oldest first; configurable spacing (default 10 s); 429 → paused, wait `Retry-After` (capped) or growing backoff, resume the same block; base URL configurable. Feature flag `ChatLogBackfill:Enabled` default `false`; enabling on prod requires the operator to update the privacy statement first (operator-owned markdown, `Legal:ContentPath`, `docs/Operations.md` "Legal pages"). |
+| B13 | Link `https://logs.cyex.app/` wherever imported numbers are shown (B7, B8). No personal credit. **Amended by the operator's later decision OD-C (D30):** vote-session ballots are the one place that shows imported numbers without the link. |
+
+### Overview
+
+1. **Schema**: `UsageStat.Source` (live/archive), `Emotes.IsPlaceholder`, tables `ChatLogBackfillRuns`, `ChatLogBackfillRunEmotes` (the matching snapshot of the **chosen 7TV set**, fetched from 7TV and persisted at request time) and `ChatLogBackfillCoverage` (which imported days the channel holds, from which set), two additive migrations: `AddEmotePlaceholderMarker` (child 1, permanent — the rollback floor, D42) and `AddChatLogBackfill` (child 2, everything else; `IsPlaceholder` is not part of it) whose `Down` refuses while imported data exists.
+2. **Archive client**: `IChatLogArchiveClient.ReadRangeAsync` (range endpoint, `Retry-After` surfaced, brotli), `ReadDayAsync` untouched for the harness.
+3. **Service** `IChatLogBackfillService` (Core interface, Infrastructure implementation): enqueue (membership check, 7TV fetch of the chosen set, creation of missing archived `Emote` rows, persisted snapshot)/cancel/status for the Api; claim/snapshot/replace-block/pause/fail/complete for the worker. Replace semantics per weekly block in one transaction.
+4. **Worker** `ChatLogBackfillWorker` (hosted service): sequential queue processor, block planner, pure block counter, 429/transport policy, SSE progress, resume after restart.
+5. **Api**: `GET/POST/DELETE /api/channels/{channelName}/backfill`, eight new error codes, two audit actions, `chatLogBackfillEnabled` on `/permissions`.
+6. **Frontend**: Settings tab (managers, flag on) + backfill section with a 7TV set picker (preselected = active set) + `BackfillService`; caption extension on the usage page; audit action labels; i18n de/en.
+7. **Docs/ops**: `docs/Operations.md` section "Chat-log backfill" (config, privacy prerequisite, enabling, rollback SQL), DECISIONS entry (English), `docs/Feature-Ideen-2026-08-01.md` row, compose/env wiring.
+
+## Implementation Details
+
+### 1. Schema
+
+**Migrations** — exactly two, in two PRs: `AddEmotePlaceholderMarker` (child 1: the `Emotes.IsPlaceholder` column and its backfill; permanent, never reverted — D42) and `AddChatLogBackfill` (child 2: `UsageStats.Source`, the four backfill tables, the provider-state seed; its `Down` refuses while imported data exists — D40, and it does not touch `IsPlaceholder`). Both additive, no data rewrite beyond the marker backfill.
+
+**`UsageStats.Source`** — `integer NOT NULL DEFAULT 0`; C# `public UsageStatSource Source { get; set; }` on `UsageStat`, enum in `EmotePurge.Core.Entities`:
+
+```
+public enum UsageStatSource { Live = 0, ChatLogArchive = 1 }
+```
+
+- The live flush (`UsageStatFlushService`) is not changed: it inserts without naming `Source`, so rows get the default `0`. Its `ON CONFLICT … DO UPDATE` is unreachable for imported rows by construction (imported dates < `CreatedAt` date ≤ every live flush date) — see D3 for the invariant and how a violation surfaces.
+- No new index. The existing `(EmoteId, EmoteSetId, Date)` index serves both the block delete (`EmoteId` prefix + `Date` range) and the earliest-imported-day query (`EmoteId` prefix, then `Source` filter).
+- Existing unique index unchanged: a `(EmoteId, EmoteSetId, Date)` cell is **either** live **or** imported, never both.
+- **One set per imported day (OD-A):** a run replaces every imported row of the channel in its window regardless of set id (§3 step 1), so an imported day of a channel belongs to exactly one set — the same shape a live day has outside a mid-day switch — and set-agnostic reads (`EmoteSetScope.AllSets`) sum nothing twice without any read-path change.
+
+**`Emotes.IsPlaceholder`** — `boolean NOT NULL DEFAULT false` (D37): `true` on a row created by a ballot or a backfill for an emote this channel has never been observed to have in its active set; set `false` by `UpsertEmote`'s un-archive branch and by `EmoteService`'s restore path (`EmoteService.cs:272-280`), never set back to `true`. Its own migration `AddEmotePlaceholderMarker` (child 1) backfills `true` for `"IsArchived" AND "ArchivedAt" IS NULL AND "LastEnteredSetAtUtc" IS NOT NULL` — the only combination the vote-session insert produces and no sync path can (every sync/`EmoteService` archive stamps `ArchivedAt`, `SevenTvSyncService.cs:310-311, :925-926`, `EmoteService.cs:272-273`; rows older than the column have `LastEnteredSetAtUtc` null).
+
+**`ChatLogBackfillRuns`** — entity `ChatLogBackfillRun` in `EmotePurge.Core.Entities`:
+
+| Column | Type (Postgres) | Notes |
+|---|---|---|
+| `Id` | `bigint` identity PK | queue order = ascending `Id` |
+| `ChannelId` | `text NOT NULL` FK → `Channels.Id` `ON DELETE CASCADE` | purge takes the runs with it |
+| `Status` | `text NOT NULL` | one of `queued`, `running`, `paused`, `completed`, `failed`, `cancelled` (CHECK constraint); C# enum `ChatLogBackfillRunStatus`, stored as the lowercase string |
+| `RequestedMonths` | `integer NOT NULL` | CHECK `IN (1, 3, 6)` |
+| `WindowFrom` | `date NOT NULL` | first day filled (inclusive), frozen at request |
+| `WindowTo` | `date NOT NULL` | exclusive end = `CreatedAt` UTC date, frozen at request; CHECK `WindowFrom < WindowTo` |
+| `WeeksTotal` | `integer NOT NULL` | `ceil((WindowTo − WindowFrom) / 7)` |
+| `WeeksDone` | `integer NOT NULL DEFAULT 0` | blocks committed; resume pointer = `WindowFrom + 7·WeeksDone` (no separate column) |
+| `EmoteSetId` | `text NOT NULL` | the 7TV set the user chose (D10); the snapshot rows below belong to it |
+| `EmoteSetName` | `text NULL` | the set's name as 7TV reported it at request time (`SevenTvEmoteSetPreview.Name`), null when 7TV omitted it — a snapshot for display, never an identity |
+| `ArchiveBaseUrl` | `text NOT NULL` | `ChatLogArchive:BaseUrl` as configured on the Api at request time (D45); the worker refuses a run whose value differs from its own configuration (`archive_mismatch`) |
+| `RequestedByTwitchUserId` | `text NOT NULL` | snapshot, pseudonymised on account deletion |
+| `RequestedByLogin` | `text NOT NULL` | snapshot, same |
+| `RequestedAtUtc` | `timestamptz NOT NULL` | |
+| `StartedAtUtc` | `timestamptz NULL` | first claim |
+| `FinishedAtUtc` | `timestamptz NULL` | set on completed/failed/cancelled |
+| `PausedUntilUtc` | `timestamptz NULL` | set while `paused` |
+| `PauseCount` | `integer NOT NULL DEFAULT 0` | consecutive 429 pauses on the current block; reset to 0 on each committed block |
+| `BlockAttempts` | `integer NOT NULL DEFAULT 0` | transport attempts on the current block; reset to 0 on each committed block |
+| `BytesReceived` | `bigint NOT NULL DEFAULT 0` | decompressed bytes of every `ReadRangeAsync` result the worker could book (D47): committed blocks (`ReplaceBlockAsync`), transport/body-timeout attempts (`RecordBlockAttemptAsync`), malformed/oversized/cap failures (`FailAsync`); a 429 reads no body (0); bytes of a read aborted by cancellation or a process stop are **not** booked (the run is no longer `running`, the conditional update would not apply) |
+| `MessagesRead` | `bigint NOT NULL DEFAULT 0` | sum of `ChatLogRangeResult.MessageCount` over **committed** blocks = PRIVMSG lines the client parsed, counted **before** the exclusion gate (a count, no identity); persisted by `ReplaceBlockAsync`'s `messages` argument, never by the counter (D47) |
+| `ErrorCode` | `text NULL` | run-level failure vocabulary (§4.6), set with `failed`/`cancelled`-by-system |
+| `ErrorHttpStatus` | `integer NULL` | last archive HTTP status on failure |
+
+**`ChatLogBackfillRunEmotes`** — entity `ChatLogBackfillRunEmote`, the matching snapshot of the chosen set, fetched from 7TV by the Api at request time (D10):
+
+| Column | Type | Notes |
+|---|---|---|
+| `RunId` | `bigint NOT NULL` FK → `ChatLogBackfillRuns.Id` `ON DELETE CASCADE` | goes with the run (cancel/retention/channel purge) |
+| `EmoteId` | `text NOT NULL` | our `Emote.Id` for `(ChannelId, SevenTvEmoteId)` — existing row or the archived row created at request (§3.1); **no FK to `Emotes`** (D25) |
+| `SevenTvEmoteId` | `text NOT NULL` | 7TV ObjectID, for traceability and re-resolution in tests |
+| `Name` | `text NOT NULL` | the emote's **alias in the chosen set** (`SevenTvEmoteSetPreviewItem.Alias`) — what the counter matches; may differ from `Emote.Name`, which is the active set's alias |
+| `AddedToSetDay` | `date NULL` | UTC day of the set entry's `addedAt` from the same 7TV read (§2.1); null when 7TV reported none = no gate (D25) |
+| `CreatedRow` | `boolean NOT NULL DEFAULT false` | `true` iff **this** enqueue created the `Emote` row (the id was absent in the read under the channel lock that precedes the upsert, §3.1) — the creation provenance the rollback cleanup relies on (D41); `false` for rows that existed, placeholder or not |
+
+PK `(RunId, EmoteId)`; index on `(RunId, SevenTvEmoteId)`. Filled by `EnqueueAsync` in the same transaction as the run row, ordered by `EmoteId` ordinal (D11), after the preview items were deduplicated on `SevenTvEmoteId` last-wins (D36). Size: one row per set member, ≤ ~1,000 per run (7TV caps non-subscriber sets at 1,000; `Truncated` previews are refused, §5.2); a 365-day-old finished run takes its rows with it.
+
+**`ChatLogBackfillProviderState`** — one row (`Id integer PK CHECK (Id = 1)`, `CooldownUntilUtc timestamptz NULL`, `LastRateLimitedAtUtc timestamptz NULL`, `UpdatedAtUtc timestamptz NOT NULL`), seeded by the migration (D31): the archive's cooldown, independent of any run. Written by `PauseAsync` in the pause transaction, read by the worker before every archive request; never cleared by cancel/fail/leave/purge — only time clears it. Dropped by `Down` without a guard (it is state, not data).
+
+**`ChatLogBackfillCoverage`** — entity `ChatLogBackfillCoverageDay`, the channel's successfully processed import coverage (Fix 3, D34), one row per covered UTC day:
+
+| Column | Type | Notes |
+|---|---|---|
+| `ChannelId` | `text NOT NULL` FK → `Channels.Id` `ON DELETE CASCADE` | |
+| `Day` | `date NOT NULL` | PK `(ChannelId, Day)` |
+| `EmoteSetId` | `text NOT NULL` | the set that run matched this day against (for the OD-A warning) |
+| `ArchiveHost` | `text NOT NULL` | host of the run's `ArchiveBaseUrl` (e.g. `logs.cyex.app`), copied at commit — the attribution the caption shows (D45) |
+| `RunId` | `bigint NULL` FK → `ChatLogBackfillRuns.Id` `ON DELETE SET NULL` | survives the run row's retention deletion |
+| `CompletedAtUtc` | `timestamptz NOT NULL` | |
+
+Written only inside a committed block transaction (§3 step 3, same transaction as steps 1–2 and 4), so a cancelled or failed run can never claim a week it did not process. Separate from the usage rows on purpose: a block with no matched usage (404, or chat without set emotes) still counts as covered, and a day's rows can be absent for both reasons. `importedFrom` is derived from this table, never from `MIN(Date)` over usage rows.
+
+Indexes/constraints:
+- `IX_ChatLogBackfillRuns_ChannelId_Active` — **partial unique** on `(ChannelId) WHERE "Status" IN ('queued','running','paused')` → at most one active run per channel (B10), enforced by the database, not only by the Api check.
+- `IX_ChatLogBackfillRuns_Status_Id` on `(Status, Id)` — the worker's "next queued" and "paused whose timer passed" scans.
+- `IX_ChatLogBackfillRuns_RequestedByTwitchUserId` — account-deletion pseudonymisation.
+
+**Status machine** (every transition is a conditional `UPDATE … WHERE "Status" = <expected>`; 0 rows affected = lost the race, re-read and act on the new state):
+
+```
+queued    --worker claims (snapshot already on the row)--> running
+running   --block committed, blocks remain--------> running   (WeeksDone+1)
+running   --last block committed------------------> completed (FinishedAtUtc)
+running   --429-----------------------------------> paused    (PausedUntilUtc, PauseCount+1)
+paused    --PausedUntilUtc reached----------------> running   (same block)
+running   --unrecoverable error-------------------> failed    (ErrorCode, FinishedAtUtc)
+running   --11th consecutive 429 (PauseCount = MaxConsecutivePauses) --> failed (ErrorCode = rate_limited; §4.5)
+queued|running|paused --user cancel / leave-------> cancelled (FinishedAtUtc; ErrorCode = channel_left for leave)
+running   --worker boot (crash recovery)----------> queued    (WeeksDone kept; see §4.7)
+```
+
+Terminal: `completed`, `failed`, `cancelled`. A terminal row is never reused; a re-run is a new row (B5).
+
+### 2. Archive client extension
+
+`IChatLogArchiveClient` (Core) gains:
+
+```
+Task<ChatLogRangeResult> ReadRangeAsync(
+    string twitchChannelId, DateTime fromUtc, DateTime toUtcExclusive,
+    long maxBytes, Func<ChatLogMessage, ValueTask> onMessage, CancellationToken ct);
+```
+
+- `ChatLogRangeResult(ChatLogDayStatus Status, long BytesReceived, int MessageCount, int NonPrivmsgLines, int MalformedLines, int? HttpStatusCode, TimeSpan? RetryAfter)` — same status enum as today; `RetryAfter` parsed from a 429's `Retry-After` header (delta-seconds or HTTP-date, else null). No body hash (D4).
+- Path: `channelid/{twitchChannelId}?from={from:yyyy-MM-dd'T'HH:mm:ss'Z'}&to={to:…'Z'}&raw` (both UTC, second precision; probe confirmed ms accepted, seconds suffice for day boundaries).
+- Body deadline: new `ChatLogArchiveOptions.RangeBodyTimeout` default **300 s** (a 66 MB block at the measured 13–27 MB/s needs < 6 s; 300 s tolerates a 10× slower link). `ReadDayAsync` keeps `BodyTimeout`.
+- Reuses `ReadBodyAsync`/`ScanLinesAsync`/`CountingHashStream` unchanged except that the hash is optional (skip for ranges).
+- **Bounded line length (Fix 2/D33).** `ReadRangeAsync` does not use `StreamReader.ReadLineAsync` (which accumulates a delimiter-free body without bound); it scans the counting stream with a `BoundedLineScanner` that decodes UTF-8 up to `ChatLogArchiveOptions.MaxLineBytes` (default **16 KiB**; a Twitch IRC line is ≤ 512 bytes of text plus tags, measured lines stay well under 4 KiB) and reports a longer line as the new `ChatLogDayStatus.LineTooLong` after discarding the body — the run fails with `malformed_response`. Memory held per block is therefore ≤ one 1 KiB read buffer + one line buffer + the counter's cells (≤ emotes × 7 days), independent of the body size; the body cap (`MaxBlockMegabytes`, default lowered to **256**, ~4× the largest measured weekly block of 66 MB) bounds transfer volume and time, not memory. `ReadDayAsync` keeps its `StreamReader` path untouched (harness behaviour unchanged).
+- Pacing stays instance state exactly as documented in the class comment; the worker holds one instance per run (D7).
+- Typed-client registration changes (`ServiceCollectionExtensions.cs:277-282`): `User-Agent: EmotePurge (+https://emotepurge.app)`; primary handler `AutomaticDecompression = DecompressionMethods.All` (brotli/gzip accepted; the byte cap and `BytesReceived` count **decompressed** bytes, which is what the parser sees). `ChatLogArchiveOptions.BaseUrl` default → `https://logs.cyex.app/` (D6).
+- `ReadDayAsync` behaviour is unchanged (same path, statuses, cap, timeouts); the harness's counting is untouched. UA and decompression apply to it too — transport only.
+
+#### 2.1 7TV preview carries the set-entry date
+
+`GqlEmoteSetPreviewQuery` (`SevenTvApiClient.cs:70-72`) selects `added_at: addedAt` on `items` (the same field `GqlSetEntriesQuery` already reads from the same v4 type, `:39-47`); `SevenTvEmoteSetPreviewItem` gains a trailing optional `DateTime? AddedAt = null` and `ForeignEmoteRow` a trailing optional `DateTime? AddedAt = null` (the compile-compatibility idiom the two records already use for `Name`/`Capacity`, `SevenTvModels.cs:519-527`); `ForeignEmoteSetService` threads it through (`ForeignEmoteSetService.cs:129`-style mapping). Per the client's own rule (`SevenTvApiClient.cs:76-82`) the changed query string is **run live first** (`curl` by hand against `https://7tv.io/v4/gql`, automated probes are blocked) and the recorded answer becomes the fixture second. The overlay reads `addedAt` as a nullable `DateTimeOffset` with no plausibility bounds (`SevenTvGqlSetEntryDto.AddedAt`, `SevenTvApiDtos.cs:243-247`; `:1223-1225` stores `addedAt.UtcDateTime`, absent → not stored) — `:1296-1300` is the rate-reset hint reader and unrelated. The preview mapping does the same: present → `AddedAt`, absent or JSON null → `null` (= "7TV reported none", no gate). No further validation is invented.
+
+### 3. Service contract `IChatLogBackfillService` (Core `Services/`, Infrastructure `Services/ChatLogBackfillService.cs`)
+
+Api side:
+
+```
+Task<ChatLogBackfillStatusDto?> GetStatusAsync(string channelName, DateOnly todayUtc, CancellationToken ct);   // null = channel unknown
+Task<ChatLogBackfillEnqueueResult> EnqueueAsync(string channelName, string emoteSetId, int months, DateOnly todayUtc, AuditActor actor, CancellationToken ct);
+Task<ChatLogBackfillCancelResult> CancelAsync(string channelName, AuditActor actor, CancellationToken ct);
+```
+
+- `EnqueueAsync` result enum: `Enqueued(run)`, `NotFound`, `NotActive`, `ChannelExcluded`, `TwitchIdUnknown`, `ChannelGone`, `ChannelIdentityChanged`, `RequesterGone`, `WindowEmpty`, `AlreadyActive`, `MonthsInvalid`, `SetNotMember`, `SetEmpty`, `SetTruncated`, `SevenTvUnavailable` (carries an optional `RetryAfter`). Order of checks (pre-transaction, unlocked): channel row → `IsBotActive` → `TwitchChannelId` → **excluded channel** (`IExcludedChannelFilter.IsExcluded(channel.TwitchChannelId)` → `ChannelExcluded`, Fix 1/D32) → months/window → no active run (pre-check) → **membership** (`ITrackedEmoteSetMembershipService.CheckAsync(channelName, emoteSetId)`: `Member` or stop with `SetNotMember`/`SevenTvUnavailable`) → **7TV read** (`IForeignEmoteSetService.GetForeignEmoteSetBySetIdAsync(channelName, emoteSetId, refresh: false)`: `Ok` with `Truncated == false` and ≥ 1 row, else `SetTruncated`/`SetEmpty`/`SevenTvUnavailable`; the 60 s cache, the provider budget and the breaker all apply, §Current State) → **final transaction under locks (Fix 4/D35)**: the pre-transaction read captured `channel.Id` and `channel.TwitchChannelId`; the transaction locks **by id** with a new `LockChannelByIdAsync(channelId)` (`SELECT … WHERE "Id" = @id FOR UPDATE`; `LeaveAsync` switches to a `FOR UPDATE` loader as well so a leave and an enqueue serialize, child 3) and `LockUserAsync(actor.TwitchUserId, UserRowLock.ForShare)` (waits for a running account deletion and blocks one until commit), then re-validates: row present under that id (else `ChannelGone` → 404 `channel_not_found`: purged, even if a fresh join recreated the login), `TwitchChannelId` unchanged (else `ChannelIdentityChanged` → 409 `backfill_channel_identity_changed`: a rename/merge handed the login to another identity meanwhile), user row present (else `RequesterGone` → 401), `IsBotActive` (else `NotActive`), not excluded (else `ChannelExcluded`), no active run (the partial unique index is the last word), then §3.1. The 7TV read happens **before** the locks are taken (it can wait up to the budget's 5 s and the network), so nothing holds a channel or user row while 7TV answers. Nothing is enqueued when 7TV cannot be read. On `Enqueued`: the transaction inserts the run row (window per §4.1, `EmoteSetId` = the chosen set, `EmoteSetName` = the preview's name, `ArchiveBaseUrl` = the Api's configured `ChatLogArchive:BaseUrl`, D45) **and** the `ChatLogBackfillRunEmotes` snapshot (§1), stages `AuditActions.BackfillRequest`, `SaveChangesAsync`, **then** publishes `BACKFILL:<normalized>` on `BotCommands.Channel` and `backfill.progress` on `LiveEvents.Channel` (same order as `TriggerResyncAsync`, `ChannelService.cs:239-262`: audit + row committed before the one-way command). `AlreadyActive` is detected by the partial unique index (catch `UniqueConstraintException`/`PostgresException 23505` on that index name) as well as by a pre-check — the index is the truth.
+- **§3.1 Snapshot transaction and `Emote` row creation (D27).** Inside the enqueue transaction, before the snapshot rows: `INSERT INTO "Emotes" ("Id","SevenTvEmoteId","ChannelId","Name","ImageUrl","IsArchived","ArchivedAt","FirstSeenAt","LastSyncedAt","LastEnteredSetAtUtc") SELECT gen-guid, input.sevenTvEmoteId, @channelId, input.alias, input.imageUrl, true, NULL, input.addedAt, @now, @now FROM UNNEST(…) ON CONFLICT ("ChannelId","SevenTvEmoteId") DO NOTHING` — the vote-session precedent's statement (`VoteSessionService.cs:485-489`) extracted into one shared Infrastructure helper `ArchivedEmoteRowUpsert.EnsureRowsAsync(db, channelId, rows, now, ct)` used by both callers (child 1), with one addition: `FirstSeenAt = addedAt` where 7TV reported it (the precedent left it null only because its read path lacked the date, `:457-463`). The ids already present are read **before** the upsert, inside the same transaction and under the channel lock (`SELECT "Id","SevenTvEmoteId" FROM "Emotes" WHERE "ChannelId" = @channelId AND "SevenTvEmoteId" = ANY(@ids)`); after the upsert the same read maps every preview item to its `EmoteId`, and `CreatedRow = true` is written for exactly the ids that were absent before (D41 provenance); the snapshot rows are written with the **alias from the preview**, never `Emote.Name`. Why this is consistent with the sync: an existing row (active or archived) is left untouched (`DO NOTHING`); a created row carries the key the reconcile looks rows up by (`SevenTvSyncService.cs:884-886`), so when the set later becomes active, `UpsertEmote` finds it, un-archives it, stamps `LastEnteredSetAtUtc`, overwrites `Name`/`ImageUrl` with the active set's alias and corrects `FirstSeenAt` from the live `AddedToSetAt` (`:969-1020`) — exactly what it does for a vote-session-created row today, and the unique index makes a duplicate impossible; a concurrent sync inserting the same key is the already-handled `IsEmoteKeyConflict` (`:1040-1045`). **Duplicate ids (D36):** the preview items are deduplicated on `SevenTvEmoteId` with the reconcile's own rule — last entry wins (`Reverse().DistinctBy(id).Reverse()`, `SevenTvSyncService.cs:888-895`, #341) — before the row upsert and the snapshot insert, so the snapshot matches the alias the sync would store and the PK `(RunId, EmoteId)` cannot collide. **Placeholder marker (D37):** created rows get `IsPlaceholder = true` (§1), which keeps them out of the delayed-leave detection until the sync has observed them in the active set. `IsArchived = true, ArchivedAt = NULL` is the established meaning "not in the active set, never was / date unknown" (`Emote.cs:17-21`), so every `!IsArchived` reader (match cache, slot count, duplicate tracker, emote list, tags, candidates, the active-set usage view) ignores these rows by construction. Readers that see them: the chosen set's usage view (rows with counts under that set id, badged archived per E23 — the badge then reads "not in the active set", which is true; for a set never active since the join that is every row of the view, and the set-view caption already states the set was not observed in the range, spec #200 8.4), set-session ballots for that set (eligible members, their totals under that set — correct), the admin list's `archivedEmoteCount` (rises; it already counts vote-session-created rows), the harness lifetimes (excluded by `CoversDay` because `ArchivedAt` is null). No `ChannelEmoteSetObservation` row is written: observations record when **we observed a set as active** (`ChannelEmoteSetObservation.cs:19-21`), and a backfill observes nothing. This is the riskiest write of the feature and gets its own DECISIONS paragraph (D27).
+- `CancelAsync` result: `Cancelled`, `NoActiveRun`, `NotFound`. Conditional update `Status IN ('queued','running','paused') → 'cancelled'`, `FinishedAtUtc = now`; stages `AuditActions.BackfillCancel`; publishes `backfill.progress`.
+- `GetStatusAsync` returns the DTO of §5.1 (options computed from `todayUtc` and `CreatedAt`, `activeEmoteSetId` = `Channel.ActiveEmoteSetId` for the picker's preselection, active run, last terminal run by `Id` desc, `coverage` intervals from `ChatLogBackfillCoverage` merged into contiguous `[from, to)` ranges of equal set id, `importedFrom`/`importedTo`/`importedContiguous` for `AllSets` per D34, and `cooldownUntilUtc` from the provider state).
+- `GetCoverageAsync(channelId, EmoteSetScope scope)` → `ChatLogBackfillCoverageDto(string? EmoteSetId, DateOnly? ImportedFrom, DateOnly? ImportedTo, bool HasGaps, DateOnly? ContiguousFrom, IReadOnlyList<CoverageInterval> Intervals)` — the one coverage rule (D34): `scope = Set(id)` counts only coverage days whose `EmoteSetId` is that set; `AllSets` counts every covered day of the channel. `ImportedFrom`/`ImportedTo` = earliest covered day / latest covered day + 1 (exclusive) for that scope; `HasGaps` = not every day in between is covered; `ContiguousFrom` = start of the covered stretch ending exactly at the counting start (`CreatedAt` date), null when that day is not covered — an older gap further back does **not** null it. `CoverageInterval(from, toExclusive, emoteSetId, archiveHost)` carries the attribution per stretch (D45). Worked example (D49): scope covers Apr 1–Apr 10 and Jun 1–Oct 7, counting start Oct 8 → `ImportedFrom = Apr 1`, `ImportedTo = Oct 8`, `HasGaps = true`, `ContiguousFrom = Jun 1`; the caption says "from Apr 1 to Oct 7, with gaps"; `coverageStart` = Jun 1, so the before-tracking warning fires only for ranges starting before Jun 1 and the trend is eligible for windows inside Jun 1–. Consumed by the usage-stats coverage read (§5.6) and by `GetStatusAsync` (AllSets). Run objects carry `emoteSetId`, `emoteSetName` and `emoteCount` (= `COUNT(*)` of the run's snapshot rows).
+
+Worker side (same interface, separate region; the worker is the only caller):
+
+```
+Task<int> ResetInterruptedRunsAsync(CancellationToken ct);                        // running → queued at boot
+Task<ChatLogBackfillClaim?> ClaimNextAsync(DateTime nowUtc, CancellationToken ct); // the lowest-Id active run (queued|paused); null while it is paused and not yet due (strict FIFO, D31); → running
+Task<bool> IsRunActiveAsync(long runId, CancellationToken ct);                        // Status = running — read before every archive request (D39)
+Task<ChatLogBackfillSnapshot> GetSnapshotAsync(long runId, CancellationToken ct);    // EmoteSetId + persisted (EmoteId, Name, AddedToSetDay) rows
+Task<ChatLogBackfillBlockResult> ReplaceBlockAsync(long runId, DateOnly blockFrom, DateOnly blockToExclusive,
+    IReadOnlyList<ChatLogBackfillAggregate> rows, long bytes, long messages, bool isLastBlock, CancellationToken ct); // Committed(transition with counters 0,0) | RunNotActive | LiveRowConflict | ChannelGone (D48)
+Task<ChatLogBackfillTransition> PauseAsync(long runId, TimeSpan? retryAfter, DateTime nowUtc, CancellationToken ct); // running → paused; delay computed INSIDE from the persisted PauseCount (D38); also writes ProviderState.CooldownUntilUtc (D31); returns (Status, PauseCount, BlockAttempts, PausedUntilUtc)
+Task<DateTime?> GetCooldownUntilAsync(CancellationToken ct);                        // ProviderState.CooldownUntilUtc — read before every archive request (D31)
+Task<ChatLogBackfillTransition> RecordBlockAttemptAsync(long runId, long bytes, CancellationToken ct);         // BlockAttempts+1, BytesReceived+=; returns (Status, BlockAttempts)
+Task FailAsync(long runId, string errorCode, int? httpStatus, long bytes, CancellationToken ct);              // conditional on running; books the failed attempt's bytes (D47)
+Task<bool> TryAcquireLoopLockAsync(CancellationToken ct);                            // pg_try_advisory_lock on a dedicated connection, held for the loop's lifetime (D46)
+```
+
+- `ChatLogBackfillClaim(RunId, ChannelId, ChannelName, TwitchChannelId, WindowFrom, WindowTo, WeeksDone, WeeksTotal, PauseCount, BlockAttempts, EmoteSetId)` — the persisted counters travel with the claim (Fix 7/D38). `ChatLogBackfillTransition(ChatLogBackfillRunStatus Status, int PauseCount, int BlockAttempts, DateTime? PausedUntilUtc)`: every counter-changing call is a conditional update `WHERE "Status" = 'running'` and returns the row's current status and counters — the worker never carries a counter across a call, it always uses the last transition's values (D38); a status other than `running` means the run was cancelled, failed or purged meanwhile and the worker stops at once (D39). Claiming re-checks the channel's liveness: not `IsBotActive` → fail `channel_not_active`; `TwitchChannelId` null → fail `twitch_id_unknown`; `IExcludedChannelFilter.IsExcluded(TwitchChannelId)` with the **worker's own** configuration → fail `channel_excluded` without naming the channel (Fix 1/D32). The set and the emote list are **not** re-read from `Channel`/`Emotes` — they come from the row and its snapshot (`GetSnapshotAsync`), so nothing that happened after the click changes what the run counts (D10).
+- `ChatLogBackfillBlockResult` (D48): a closed union used identically in §3, §4.4 and child 3 — `Committed(ChatLogBackfillTransition)` (counters reset to 0, 0), `RunNotActive` (the conditional progress update hit 0 rows: cancelled, failed or purged meanwhile; everything rolled back), `LiveRowConflict` (unique violation on insert: a live row exists for an imported day; everything rolled back), `ChannelGone` (the channel row vanished between claim and commit; everything rolled back). The worker maps them: `Committed` → publish and continue; `RunNotActive` → stop silently; `LiveRowConflict` → `FailAsync("live_row_conflict")` then stop; `ChannelGone` → stop silently (the cascade removed the run).
+- `ChatLogBackfillSnapshot(string EmoteSetId, IReadOnlyList<ChatLogBackfillSnapshotEmote> Emotes)`, `ChatLogBackfillSnapshotEmote(string EmoteId, string Name, DateOnly? AddedToSetDay)`, in `(RunId, EmoteId)` order.
+- `ChatLogBackfillAggregate(string EmoteId, DateOnly Date, int UseCount, int BotUseCount, int SharedChatUseCount)`; the service stamps `EmoteSetId = run.EmoteSetId`, `Source = ChatLogArchive`.
+- **`ReplaceBlockAsync` is one transaction** (D2):
+  1. `DELETE FROM "UsageStats" WHERE "Source" = 1 AND "Date" >= @from AND "Date" < @to AND "EmoteId" IN (SELECT "Id" FROM "Emotes" WHERE "ChannelId" = @channelId)` — every imported row of the channel in the block, archived emotes included, **any set id** (OD-A): an imported day belongs to one set, the newest run's.
+  2. `INSERT INTO "UsageStats" ("EmoteId","EmoteSetId","Date","UseCount","BotUseCount","SharedChatUseCount","Source") SELECT … FROM UNNEST(…)` — plain insert, **no** `ON CONFLICT`. Rows with all three counts 0 are not written (mirrors "the flush only writes rows for days with usage", `IUsageStatQueryService.cs:72-75`). A unique-index violation here can only mean a live row exists for an imported day → catch, roll back, return `LiveRowConflict`; the worker fails the run with `live_row_conflict` (D3, D48).
+  3. `INSERT INTO "ChatLogBackfillCoverage" ("ChannelId","Day","EmoteSetId","ArchiveHost","RunId","CompletedAtUtc") SELECT @channelId, d, @runEmoteSetId, @archiveHost, @runId, now() FROM generate_series(@from, @to - 1, '1 day') d ON CONFLICT ("ChannelId","Day") DO UPDATE SET "EmoteSetId" = EXCLUDED."EmoteSetId", "ArchiveHost" = EXCLUDED."ArchiveHost", "RunId" = EXCLUDED."RunId", "CompletedAtUtc" = EXCLUDED."CompletedAtUtc"` (Fix 3, D45). A foreign-key failure here (channel gone) → roll back, return `ChannelGone`.
+  4. `UPDATE "ChatLogBackfillRuns" SET "WeeksDone" = "WeeksDone" + 1, "BytesReceived" = … , "MessagesRead" = …, "PauseCount" = 0, "BlockAttempts" = 0, "Status" = CASE WHEN @isLast THEN 'completed' ELSE 'running' END, "FinishedAtUtc" = CASE WHEN @isLast THEN now() END WHERE "Id" = @runId AND "Status" = 'running'`. **0 rows affected → the run was cancelled (or purged) meanwhile → roll back the whole block** and return `RunNotActive`; otherwise return `Committed(transition)` with `PauseCount = BlockAttempts = 0`. This is what makes "completed weeks stay, the in-flight block is discarded" exact (B11).
+  5. After commit the worker publishes `usage.flushed` and `backfill.progress` for the channel.
+- Emote-id validation as in the flush (`UsageStatFlushService.cs:33-45`): aggregates whose `EmoteId` no longer exists in `Emotes` are dropped with a warning naming the count, not failed (D25: the snapshot has no FK, so an emote hard-deleted after the click — only an admin purge or the retention purge can do that today, both of which also remove the run via the channel cascade — never breaks the insert).
+
+### 4. Worker
+
+New folder `src/EmotePurge.Worker/ChatLogBackfill/`:
+
+- `ChatLogBackfillWorker : BackgroundService` (hosted, registered in `WorkerServiceRegistration.cs` next to `DataRetentionWorker`; concrete class per rule 5's hosted-service exception).
+- `ChatLogBackfillBlockPlanner` (pure, static): `Plan(DateOnly windowFrom, DateOnly windowTo) → IReadOnlyList<(DateOnly From, DateOnly ToExclusive)>`, 7-day blocks, last block shorter; `WeeksTotal = count`.
+- `ChatLogBackfillBlockCounter` (pure): the product counter (D9).
+- `ChatLogBackfillRetryPolicy` (pure): transport retry and 429 pause decisions (§4.5).
+- `ChatLogBackfillSignal` (singleton, same shape as `TwitchReconnectSignalSlot`): `Worker.cs` sets it when a `BACKFILL:` command arrives; the hosted service awaits it or a timer.
+
+#### 4.1 Window computation (Api, at request time)
+
+```
+today      = DateOnly.FromDateTime(DateTime.UtcNow)
+windowTo   = DateOnly.FromDateTime(channel.CreatedAt)          // exclusive; join day never filled (B3)
+windowFrom = today.AddMonths(-months)                            // calendar months, DateOnly.AddMonths (D1)
+days       = windowTo.DayNumber - windowFrom.DayNumber
+available  = days > 0
+```
+
+Example (today 2026-10-08): channel created 2026-07-10 → 1 month: from 2026-09-08, 0 days, **disabled** (`no_days_before_counting`); 3 months: from 2026-07-08 → 2 days; 6 months: from 2026-04-08 → 93 days. Channel created 2026-10-08 → 6 months = 183 days, 27 blocks (26 × 7 + 1). "Today" is only ever the UTC date on the Api host at request time; the current unfinished day cannot be in any window because `windowTo ≤ today`. The window is frozen on the row; a run started days later fills exactly the frozen days.
+
+#### 4.2 Main loop
+
+```
+await bootRecoveryGate.Completed            // same as DataRetentionWorker.cs:23, no startup delay
+if (!options.Enabled) { log once "Chat-log backfill disabled."; return; }
+while (!await service.TryAcquireLoopLockAsync()) { log Warning once "another backfill loop holds the lock"; await Task.Delay(IdlePoll); }   // D46
+await service.ResetInterruptedRunsAsync()   // running → queued (§4.7) — only under the lock
+loop:
+  claim = await service.ClaimNextAsync(now)                         // strict FIFO: the lowest-Id active run, or null while it is paused (D31)
+  if (claim is null) { await signal.WaitAsync(min(IdlePoll, timeUntilHeadDue)); continue; }   // signal from BACKFILL:, or 60 s poll (D8)
+  await RunAsync(claim)
+```
+
+**Single loop (D46):** the supported deployment is exactly one worker replica (as `docker-compose.prod.yml` runs today); the loop additionally holds a Postgres session advisory lock (`pg_try_advisory_lock(hashtext('emotepurge:chatlog-backfill'))`) on a dedicated connection for its whole lifetime, so a second worker — a rolling deploy, an accidental scale-out — never claims, resets or commits anything: it logs a warning and retries every `IdlePollSeconds`. The lock dies with the connection, so a crashed holder frees it without cleanup.
+
+**Pause lifecycle (D44):** `RunAsync` **returns** when a run is paused; a pause wait is never spent inside `RunAsync`. The loop sleeps `min(IdlePoll, timeUntilHeadDue)` and re-claims the head when due (`paused → running`, same block). Consequently no monitor and no in-flight read exist during a pause; a cancel or leave during a pause flips the row `paused → cancelled` directly (Api/`ChannelDeactivation`), the `BACKFILL:` nudge wakes the loop, and the next claim finds nothing to do — at worst the loop sleeps until `timeUntilHeadDue` and then finds the row cancelled, with no request made either way. `IsRunActiveAsync(runId)` therefore means exactly `Status = 'running'`.
+
+**Provider-wide cooldown (D31):** a 429 writes `ProviderState.CooldownUntilUtc` (same transaction as the pause) and pauses the run that received it. Before **every** archive request the worker reads `GetCooldownUntilAsync` and waits it out; the claim loop does the same before claiming. Cancelling, failing, leaving or purging the paused head does not touch the provider state — the next run still waits until the cooldown passes — and a restart re-reads it from the row. Strict FIFO by `Id` holds on top: the paused head is claimed again when due, nothing younger overtakes it. `queuePosition` counts the paused head like any run ahead.
+
+**Cancellation (D39):** `RunAsync` starts a **status monitor** task per run — a `PeriodicTimer` every `ChatLogBackfill:CancelPollSeconds` (default 2) polling `IsRunActiveAsync(runId)` and cancelling the run-scoped `CancellationTokenSource` as soon as the row is no longer `running`; the CTS aborts an in-flight body read (the client returns `Cancelled` with the bytes so far), a retry wait or a cooldown wait (a pause wait never happens inside `RunAsync`, D44). The monitor is independent of the Redis command queue: `RedisSubscriber` runs handlers serially (`RedisSubscriber.cs:13-24`), so a nudge behind a slow JOIN/RESYNC handler would be late — the nudge stays as an accelerator only. A leave cancels the row in its own transaction (D16), so the monitor catches it the same way; so does a purge (row gone → `IsRunActiveAsync` false). Before every archive request — first attempt or retry — the worker reads `IsRunActiveAsync` once more, and every counter write returns the row's status (§3); a non-`running` answer stops the run without a further request. **Bound: the monitor guarantees ≤ `CancelPollSeconds` (2 s) + the time to abort the current read, independent of Redis and of block size; never a whole block.**
+
+`RunAsync` holds **one** `IChatLogArchiveClient` instance from a dedicated scope for the whole run (pacing is instance state, `ChatLogArchiveClient.cs:14-23`).
+
+#### 4.3 Matching snapshot (persisted at request time, loaded at claim and after every resume)
+
+1. `GetSnapshotAsync(runId)` → `EmoteSetId` and the persisted `(EmoteId, Name, AddedToSetDay)` rows in `(RunId, EmoteId)` order (§1). The worker never queries `Emotes` or `Channel.ActiveEmoteSetId` for matching.
+2. `EmoteNameMatching.Coalesce(Name → EmoteId)` over that order — first wins, the live rule; a 7TV set refuses duplicate aliases (`addEmote` 409 on alias conflict, measured 2026-09-10), so ambiguity cannot normally arise; if it does it is logged at Information with the count only. The snapshot cannot be empty (`EnqueueAsync` refuses `SetEmpty`), but a defensive empty map fails the run with `snapshot_missing`.
+3. `addedToSetDay[emoteId] = row.AddedToSetDay` (null = no gate) — the gate B9 describes for `FirstSeenAt`, taken from the chosen set's own entry dates instead of the active set's.
+
+The same persisted snapshot is used by every attempt of the run: before and after a queue wait, a pause, or a worker restart. Whatever happens on 7TV after the click — the chosen set being switched in or out, renamed, edited — changes nothing about what the run counts; its rows carry the chosen `EmoteSetId` and are visible under that set's view (`UsageStatQueryService.cs:115`), which is where they belong (D10).
+
+#### 4.4 Per block
+
+```
+for block in planner.Plan(windowFrom, windowTo).Skip(weeksDone):
+  counter = new ChatLogBackfillBlockCounter(block, nameToId, addedToSetDay, botChatterDetector.IsBot)
+  pace(RequestDelaySeconds)                                   // worker-side spacing (D7)
+  result = await client.ReadRangeAsync(twitchId, block.From 00:00:00Z, block.ToExclusive 00:00:00Z, MaxBlockBytes,
+             m => { if (excludedChatterFilter.IsExcluded(m.UserId)) return; counter.Count(m); }, ct)
+  switch result.Status:
+    Complete, NoLogDay  → commit (ReplaceBlockAsync with counter.Aggregates(), may be empty) → publish events
+    RateLimited         → t = PauseAsync(runId, result.RetryAfter, now); return      // delay computed inside from the row (D38); the loop re-claims when due (D44); t.Status == failed → rate_limited was recorded by the transition
+    TransportFailure, BodyTimeout → t = RecordBlockAttemptAsync(bytes); if t.Status != running → stop; if t.BlockAttempts < TransportRetries: wait policy.RetryDelay(t.BlockAttempts), if !IsRunActiveAsync → stop, retry same block; else FailAsync("transport_failure", http)
+    MalformedResponse, LineTooLong → FailAsync("malformed_response", http, result.BytesReceived)
+    ByteCapExceeded     → FailAsync("block_too_large", http, result.BytesReceived)
+    Cancelled           → return (stoppingToken: §4.7 handles it at next boot)
+  on ReplaceBlockAsync(…, result.BytesReceived, result.MessageCount, …): Committed(t) → publish, counters := t (0, 0); RunNotActive | ChannelGone → stop; LiveRowConflict → FailAsync("live_row_conflict", null, 0), stop   // D48
+```
+
+**`ChatLogBackfillBlockCounter.Count(ChatLogMessage m)`** — exact rule, in order:
+1. `day = DateOnly.FromDateTime(m.SentAtUtc)`; if `day < block.From || day >= block.ToExclusive` → drop (defensive; the archive sorts and bounds, probe 1 §2).
+2. `origin = SharedChatRule.Classify(m.RoomId, m.SourceRoomId, m.HasOtherSourceMarkers)`; `isBot = origin == Own && isBot(m.UserId, m.Badges)`; `category = UsageCategoryRule.Resolve(origin, isBot)` — identical to `ReplayDayCounter.cs:133-149` and the live path.
+3. `foreach emoteId in EmoteNameMatching.MatchEmoteIds(m.Text, nameToId)`: if `addedToSetDay[emoteId] is { } f && day < f` → skip (B9 gate, chosen-set entry date); else `cells[(emoteId, day)]` += 1 in the `category` bucket.
+4. The counter counts nothing else: `MessagesRead` is **not** its business — it is the client's `ChatLogRangeResult.MessageCount` (parsed PRIVMSG lines, before the exclusion gate) that `ReplaceBlockAsync` persists for committed blocks (D47).
+
+No chatter id is retained beyond the call. `Aggregates()` returns one `ChatLogBackfillAggregate` per `(emoteId, day)` with at least one non-zero bucket.
+
+#### 4.5 Retry and pause policy (`ChatLogBackfillRetryPolicy`, pure, unit-tested)
+
+- Transport (`TransportFailure` incl. 5xx, `BodyTimeout`): attempts per block up to `TransportRetries` (default 3, attempt 1 included); delay before attempt n (n ≥ 2) = `30 s × 2^(n−2)` → exactly 30 s before attempt 2 and 120 s before attempt 3; after attempt 3 fails → `failed`, `ErrorCode = transport_failure`, `ErrorHttpStatus` = last status.
+- 429: `PauseAsync(runId, retryAfter, now)` computes `delay = min(retryAfter ?? 60 s × 2^(PauseCount), MaxRetryAfterSeconds)` **inside the conditional update from the row's persisted `PauseCount`** (`SET "PausedUntilUtc" = @now + delay("PauseCount"), "PauseCount" = "PauseCount" + 1 WHERE "Id" = @id AND "Status" = 'running'`), writes `ProviderState.CooldownUntilUtc = PausedUntilUtc` in the same transaction, and returns the fresh values — the worker never passes a counter in (Fix 8/D38; 60 s, 120 s, 240 s, …, cap 900 s). **Threshold, one definition:** `MaxConsecutivePauses` (default 10) pauses are tolerated per block; the 429 that arrives with `PauseCount` already equal to `MaxConsecutivePauses` — the **11th consecutive 429** — is turned by the same transition into `failed`, `rate_limited` instead of an 11th pause. A committed block resets `PauseCount` and `BlockAttempts` to 0 (§3 step 4) and returns them, so a resume → commit → 429 on the next block pauses 60 s. The pause is process-wide by the provider state (D31).
+- 404 → the block is **done with no data**: the delete of §3 step 1 still runs (replace semantics), nothing is inserted, the coverage days are written (step 3), `WeeksDone + 1`.
+- The block is always retried/resumed from its `From`; partial reads are discarded (nothing was committed).
+
+#### 4.6 Run error vocabulary (`ChatLogBackfillRun.ErrorCode`, language-neutral, translated by the frontend under `backfill.errors.*`)
+
+`transport_failure`, `rate_limited`, `malformed_response` (incl. `LineTooLong`), `block_too_large`, `snapshot_missing`, `channel_not_active`, `channel_excluded`, `archive_mismatch` (the run's `ArchiveBaseUrl` differs from the worker's configured one, D45), `twitch_id_unknown`, `live_row_conflict`, `channel_left`, `worker_error` (any unexpected exception; logged with the exception, never with chatter data). An empty or truncated set and a set that does not belong to the channel are refused at request time (§5.2), so none of them is a run failure.
+
+#### 4.7 Restart, cancel, leave, purge
+
+- **Boot**: under the loop lock only (D46), `ResetInterruptedRunsAsync` sets every `running` row to `queued` (`WeeksDone`, `EmoteSetId` kept). It keeps its `Id`, so it is claimed first; the persisted snapshot is reloaded unchanged (§4.3). Nothing committed is lost; the in-flight block is re-fetched.
+- **Cancel (user) / leave / purge**: the row flips (Api cancel; `ChannelDeactivation` for a leave; the cascade for a purge); while `running` the per-run status monitor (≤ 2 s) aborts the in-flight read or wait, and every counter write or pre-request check stops the run (D39); while `paused` there is nothing to abort — the row is simply never re-claimed (D44). The in-flight block's rows are never committed (`ReplaceBlockAsync`'s conditional update rolls them back). The provider cooldown, if any, stays (D31).
+- **Excluded after enqueue** (operator adds the id and restarts the worker): the claim's own filter check fails the queued run with `channel_excluded` and no archive request is made (Fix 1); the log line names no channel.
+- **Leave** (`ChannelDeactivation.DeactivateAsync`, `ChannelDeactivation.cs:33-60`): in the same `SaveChangesAsync`, cancel any active run of the channel with `ErrorCode = channel_left` (no separate audit entry: the leave is audited). Reactivation does not resume it; the manager requests again.
+- **Purge**: FK cascade removes the rows; the worker's conditional update affects 0 rows and it stops; the next claim finds nothing.
+- **`stoppingToken`** during a body read returns `Cancelled` from the client; the worker leaves the row `running` and the next boot resets it.
+
+#### 4.8 Redis command
+
+`BotCommands.BackfillPrefix = "BACKFILL:"` (`src/EmotePurge.Core/Messaging/BotCommands.cs`). `Worker.cs` branch: `else if (message.StartsWith(BotCommands.BackfillPrefix, …)) { backfillSignal.Set(); }` — the payload is only a nudge; the worker never trusts it for channel identity (the row is the truth, and `ClaimNextAsync` orders globally). No `IsInActiveRosterAsync` check needed (the claim re-validates `IsBotActive`). Old worker images ignore the prefix (`BotCommands.cs:8`).
+
+### 5. Api
+
+Routes in `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` (same `/api/channels` group; the `channelName` route value feeds the filters). All three: `AddEndpointFilter<ChannelManagementAuthorizationFilter>()` (B1). When `ChatLogBackfill:Enabled` is false, all three answer **404 `{ "errorCode": "backfill_disabled" }`** after the filters (so a 7TV editor still gets 403, never a hint); the UI knows beforehand through `/permissions` (§5.4).
+
+#### 5.1 `GET /api/channels/{channelName}/backfill` — `InteractiveRead`
+
+200:
+
+```json
+{
+  "countingSince": "2026-10-08",
+  "archive": { "name": "logs.cyex.app", "url": "https://logs.cyex.app/" },
+  "requestDelaySeconds": 10,
+  "options": [
+    { "months": 1, "windowFrom": "2026-09-08", "windowTo": "2026-10-08", "days": 30, "weeks": 5, "available": true,  "reason": null },
+    { "months": 3, "windowFrom": "2026-07-08", "windowTo": "2026-10-08", "days": 92, "weeks": 14, "available": true,  "reason": null },
+    { "months": 6, "windowFrom": "2026-04-08", "windowTo": "2026-10-08", "days": 183, "weeks": 27, "available": true, "reason": null }
+  ],
+  "activeEmoteSetId": "01HQ…",
+  "coverage": [ { "from": "2026-07-08", "to": "2026-10-08", "emoteSetId": "01HQ…", "emoteSetName": "Normal" } ],
+  "activeRun": null,
+  "lastRun": {
+    "id": 12, "status": "completed", "requestedMonths": 3,
+    "windowFrom": "2026-07-08", "windowTo": "2026-10-08", "weeksDone": 14, "weeksTotal": 14,
+    "queuePosition": null, "pausedUntilUtc": null,
+    "requestedAtUtc": "2026-10-09T18:02:11Z", "startedAtUtc": "2026-10-09T18:02:13Z", "finishedAtUtc": "2026-10-09T18:05:40Z",
+    "requestedByLogin": "somemod", "emoteSetId": "01HQ…", "emoteSetName": "Normal", "emoteCount": 812, "errorCode": null, "errorHttpStatus": null,
+    "bytesReceived": 123456789, "messagesRead": 345678
+  },
+  "importedFrom": "2026-07-08",
+  "importedTo": "2026-10-08",
+  "importedContiguous": true,
+  "cooldownUntilUtc": null
+}
+```
+
+- `reason` ∈ `no_days_before_counting` (the only reason today; the UI translates). `archive.name` = host of `ChatLogArchive:BaseUrl`.
+- `queuePosition`: only for `queued`; `1 + count(runs with Status IN (queued, running, paused) AND Id < this.Id)`. `1` = next to start (or the only run). Null otherwise.
+- `activeEmoteSetId` = `Channel.ActiveEmoteSetId` (`""` while no sync has completed) — the picker's preselection; the picker's list itself comes from the existing `GET /api/channels/{channelName}/emote-sets` (D26). `emoteSetId`/`emoteSetName`/`emoteCount` on a run object are the persisted snapshot's (`emoteSetName` null when 7TV omitted it → UI shows the id).
+- `coverage`: contiguous runs of `ChatLogBackfillCoverage` days with the same set id **and** archive host, ascending, `to` exclusive, each with `archiveHost`; `emoteSetName` from the run row when it still exists, else null. `archive` (name/url) describes the **next** run: the Api's configured base URL (D45). The UI derives the OD-A warning from it: for the selected option's window and the chosen set, every interval inside the window whose `emoteSetId` differs is named (set + range) before start.
+- `importedFrom`/`importedTo`/`importedContiguous` per D34 for `AllSets`: earliest and latest covered day (+1) of the channel and whether every day between is covered; null/false when nothing is covered. `cooldownUntilUtc`: the provider cooldown when one is active (the UI shows "the archive asked us to wait until …" on a queued run too).
+- 404 `channel_not_found` when the channel is unknown.
+
+#### 5.2 `POST /api/channels/{channelName}/backfill` — `Bookkeeping`
+
+Body `{ "emoteSetId": "01HQ…", "months": 6 }`. Policy `TrackedEmoteSetPreview` instead of `Bookkeeping` (D29): the request costs the same cached set-list read plus one preview walk as the tracked set preview route, and the provider-wide 60/min budget applies underneath either way. 202 with the run object of §5.1 (`status: "queued"`, `queuePosition`). Errors (all `{ errorCode }`):
+
+| Status | `errorCode` | When |
+|---|---|---|
+| 400 | `backfill_months_invalid` | body missing, `months ∉ {1,3,6}` |
+| 400 | `invalid_emote_set_id` | `emoteSetId` missing or not a 7TV ObjectID (`EmoteSetIdValidation.IsValid`, `src/EmotePurge.Api/Validation/EmoteSetIdValidation.cs:15`; reuse `ApiErrorCodes.InvalidEmoteSetId`, `:105`) |
+| 404 | `channel_not_found` | no row |
+| 404 | `backfill_disabled` | flag off |
+| 409 | `channel_not_joined` | `IsBotActive = false` (reuse, `ApiErrorCodes.cs:25`) — also when a leave wins the race under the lock (D35) |
+| 409 | `channel_excluded` | the channel's Twitch id is on `Channels:ExcludedChannelIds` (reuse `ApiErrorCodes.ChannelExcluded`, `:46`), pre-check and under the lock |
+| 404 | `channel_not_found` | the row captured before the 7TV read is gone under the lock (`ChannelGone`: purged meanwhile, even if the login was re-joined as a new row) |
+| 409 | `backfill_channel_identity_changed` | the row's `TwitchChannelId` differs from the captured one (`ChannelIdentityChanged`: rename/merge handover during the 7TV read) |
+| 401 | — | the requester's account was deleted while the request ran (`RequesterGone`, D35) — bare `Results.Unauthorized()` like a revoked session |
+| 409 | `backfill_twitch_id_unknown` | `TwitchChannelId` null (identity reconcile has not resolved it) |
+| 404 | `emote_set_not_found` | membership check says the set is not the active set and not a `NORMAL` set of the channel's 7TV account (reuse `ApiErrorCodes.EmoteSetNotFound`, `:111`; same answer as the tracked preview route) |
+| 409 | `backfill_set_empty` | the 7TV read returned 0 entries — nothing to match |
+| 409 | `backfill_set_truncated` | the preview hit the 10-page ceiling (`Truncated`); fail-closed, a partial name list would silently under-count |
+| 503 | `foreign_channel_seventv_unavailable` | membership list or preview unreadable (7TV outage, 7TV 429, own provider budget, breaker open) — reuse `ApiErrorCodes.ForeignChannelSevenTvUnavailable` (`:61`); `Retry-After` header when 7TV sent one. Nothing is enqueued. |
+| 409 | `backfill_window_empty` | `days ≤ 0` for the chosen months |
+| 409 | `backfill_already_active` | an active run exists (pre-check or unique-index race) |
+
+#### 5.3 `DELETE /api/channels/{channelName}/backfill` — `Bookkeeping`
+
+204 on cancel; 404 `backfill_no_active_run`; 404 `channel_not_found`; 404 `backfill_disabled`.
+
+#### 5.4 `/permissions`
+
+`ChannelPermissionsDto` gains `bool ChatLogBackfillEnabled` (global flag, same pattern as `TagRunsEnabled`, `ChannelEndpoints.cs:346-352`); `ChannelPermissions` model gains `chatLogBackfillEnabled: boolean`.
+
+#### 5.5 `ApiErrorCodes` additions (rule 7: each with `api-error.ts` + `errors.api.*` in de/en)
+
+`backfill_disabled`, `backfill_months_invalid`, `backfill_window_empty`, `backfill_already_active`, `backfill_no_active_run`, `backfill_twitch_id_unknown`, `backfill_set_empty`, `backfill_set_truncated`, `backfill_channel_identity_changed` (nine). Reused unchanged: `invalid_emote_set_id`, `emote_set_not_found`, `foreign_channel_seventv_unavailable`, `channel_not_found`, `channel_not_joined`.
+
+#### 5.6 `GET /api/channels/{channelName}/usage-stats/import-coverage?emoteSetId=<id>|all` — `InteractiveRead`, `UsageStatsAccessAuthorizationFilter` (in `UsageStatsEndpoints.cs`, next to the other set-scoped reads)
+
+The disclosure read for the usage page (B7, D34). Omitted `emoteSetId` = the channel's active set; `all` = `EmoteSetScope.AllSets`; otherwise `EmoteSetIdValidation` (400 `invalid_emote_set_id`). Served to everyone who may see usage (7TV editors included), not only managers — the caption must reach every reader of the numbers. **Not** behind the backfill flag: imported rows outlive the flag, so their disclosure must too (404 only for an unknown channel). 200:
+
+```json
+{ "emoteSetId": "01HQ…", "sources": [ { "name": "logs.cyex.app", "url": "https://logs.cyex.app/" } ],
+  "importedFrom": "2026-04-08", "importedTo": "2026-10-08", "hasGaps": false, "contiguousFrom": "2026-04-08",
+  "intervals": [ { "from": "2026-04-08", "to": "2026-10-08", "archiveHost": "logs.cyex.app" } ] }
+```
+
+`sources` = the distinct `archiveHost`s of the scope's coverage rows (`url` = `https://{host}/`), so attribution follows what was actually imported, not the current configuration (D45); all date fields null, `sources` and `intervals` empty when nothing is imported for that scope. `EmoteSetStatusDto` is **not** extended (its route is the active set only).
+
+#### 5.7 Audit
+
+- `AuditActions.BackfillRequest = "backfill.request"` — `channelName`, `targetType = "emoteSet"`, `targetId = emoteSetId`, details `{ kind: "backfillMonths", count: months }` → new `AuditLogDetail.Kinds.BackfillMonths = "backfillMonths"` (Count only; the set rides on the target fields like the existing `emoteSet` targets, `AuditLogTargetEmoteSet`).
+- `AuditActions.BackfillCancel = "backfill.cancel"` — `channelName`, no details.
+- Completion/failure is **not** audited (D14); the run row is the record and the settings tab shows it.
+- Frontend: `audit-actions.ts` + `audit.actions.backfill.request` / `.cancel` + detail label for `backfillMonths` ("{{count}} months") in de/en; the channel activity filter lists both.
+
+### 6. SSE
+
+- `LiveEvents.BackfillProgress = "backfill.progress"`, added to `ChannelTypes` (`LiveEvents.cs:58-59`). Payload: `LiveEvent(Type, Channel)` — thin, no state (protocol, `LiveEvents.cs:6-16`); clients refetch `GET …/backfill`.
+- Published by the worker on: claim (→ running), each committed block, pause, resume, completed, failed; by the Api on enqueue and cancel. Additionally `usage.flushed` after each committed block so an open usage page refreshes (`usage-stats-page.ts:2486` already accepts it).
+- Frontend `LIVE_EVENT_TYPES.backfillProgress = 'backfill.progress'` (`live-event.model.ts`); the settings page uses `liveReload(channelLiveUrl, { accept: [backfillProgress], debounceMs: 500 })` → refetch status.
+
+### 7. Frontend
+
+- Route `settings` under `channels/:channelName`, `canActivate: [channelSettingsGuard]` — a new guard next to `channelManageGuard` (`web/src/app/core/channels/channel-settings.guard.ts`) that passes only when `permissions.canManage && permissions.chatLogBackfillEnabled`, same fallback redirect as the manage guard; `loadComponent` → `ChannelSettingsPage` (`web/src/app/features/channel-workspace/channel-settings-page.ts`). Tab in `channel-workspace-layout.ts` after `activity`, condition `@if (canManage() && chatLogBackfillEnabled())` (both signals set from the one `/permissions` response, `:200-202`), label `channelWorkspace.tabs.settings` ("Settings" / "Einstellungen"). **While the flag is off the tab does not exist** (D17). The flag condition is a temporary one: once a second settings section lands, the tab becomes `@if (canManage())` and the flag only hides the backfill section — note this in the layout comment.
+- `web/src/app/core/channels/backfill.service.ts` (`providedIn: 'root'`): `getStatus(channel)`, `start(channel, emoteSetId, months)`, `cancel(channel)`; model `web/src/app/core/channels/backfill.model.ts` mirroring §5.1 (`BackfillStatus`, `BackfillRun`, `BackfillOption`).
+- `ChannelSettingsPage` holds one section today, `BackfillSection` (`features/channel-workspace/backfill-section.ts`, input: `channelName`):
+  - Heading, explanation block (source with link, "possibly inaccurate", "only the names as they are in the chosen set right now can be matched — an emote that was in the chat under another name or in another set is not found", "renamed emotes lose hits under old names", "archive gaps are indistinguishable from quiet days").
+  - **Set picker, before the window choice** (B8 + operator review): a `<select>`/radio list of the channel's 7TV sets from `SevenTvEmoteSetService.listChannelEmoteSets(channelName)` (`GET /api/channels/{channelName}/emote-sets`, D26) showing `name` (fallback id) and `capacity`; preselected = `activeEmoteSetId` from the status payload (or the list's `activeEmoteSetId`, both are `Channel.ActiveEmoteSetId`), marked "active"; personal sets are not offered (`isPersonal`, the picker idiom of the import target list). While the list is loading or 503: picker disabled, start disabled, the list's error sentence shown. A short note under the picker: "Only sets of this channel's 7TV account are listed; the run matches the names as they are in the chosen set right now." (`backfill.setNote`).
+  - A radio group 1/3/6 months showing `windowFrom`–`windowTo` and `days` per option; a disabled option shows its `reason`; **replace warning (OD-A)**: when `coverage` holds intervals inside the selected window with a set id other than the chosen one, a notice sentence names them ("This run replaces the imported days 08.04.2026 – 07.07.2026, currently counted against **Halloween**.", one sentence per interval, `backfill.replaceWarning`) and the confirm dialog repeats it; primary button "Start backfill" disabled while `activeRun` exists; progress: `weeksDone / weeksTotal` with a `<progress>` element and `role="status"` text, `queued` shows "position {{queuePosition}} in the queue", `paused` shows "archive asked us to wait until {{pausedUntilUtc}}"; cancel button (confirm dialog, same `DialogActionRow` pattern as other destructive actions) while queued/running/paused; last run: status, window, weeks, finished time, requested by, **set used** (`emoteSetName ?? emoteSetId`, plus `emoteCount`), error (translated `backfill.errors.*`). The active run shows its set the same way.
+  - Decision logic (`computed()`): `canStart = !activeRun && selectedOption?.available && selectedSetId !== null && setListLoaded`, `canCancel = activeRun?.status in (queued, running, paused)`, `progressFraction`, `statusKey`, `setLabel(run) = run.emoteSetName ?? run.emoteSetId`, `preselectedSetId = activeEmoteSetId || null`, `replacedIntervals(option, setId)` = coverage intervals ∩ window with `emoteSetId !== setId`; these are the spec'd behaviours (rule 12).
+- Usage page caption (B7, restored by the operator's second review): the page calls `GET …/usage-stats/import-coverage?emoteSetId=<selected|all>` (§5.6) alongside the set status, refetching on `backfill.progress`. **Whenever `importedFrom` is set for the viewed set**, the first sentence uses `usageStats.trackedSinceWithImport` — en: `We have been counting for this channel since {{ date }}; the numbers from {{ importedFrom }} to {{ importedToInclusive }} come from the chat archive` followed by one `<a [href]="source.url" target="_blank" rel="noopener">{{ source.name }}</a>` per entry of `sources` (one in practice), and when `hasGaps` is true the sentence continues `, with gaps` (`usageStats.trackedSinceWithImportGaps`); de: `Wir zählen für diesen Channel seit dem {{ date }}; die Zahlen vom {{ importedFrom }} bis {{ importedToInclusive }} stammen aus dem Chat-Archiv` + link (+ `, mit Lücken`). The link is its own element; the sentence order contract stays (`.html:482-489`). Contiguity governs only the warning and the trend, by one rule (D34/D49): `coverageStart = computed(() => contiguousFrom !== null && importedTo === trackedSinceDate() ? contiguousFrom : trackedSinceDate())` replaces `trackedSince` in `rangeStartsBeforeTracking` (`.ts:1093-1110`) and in `trendFor` (`:2787-2804`); an older gap in front of the contiguous suffix does not disable it (the warning then fires for ranges starting before `contiguousFrom`), while a rejoin gap (`trackedSince` later than `importedTo`) keeps the live tracking start for both and the existing gap banner.
+
+### 8. Configuration
+
+Section `ChatLogBackfill` (new POCO `ChatLogBackfillOptions` in Infrastructure, bound and validated like `RetentionOptions`, registered singleton, read by Api and Worker):
+
+| Key | Default | Env (compose) | Meaning |
+|---|---|---|---|
+| `ChatLogBackfill:Enabled` | `false` | `CHAT_LOG_BACKFILL_ENABLED` | B12 |
+| `ChatLogBackfill:RequestDelaySeconds` | `10` | `CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS` | worker-side spacing; effective spacing = max(this, `ChatLogArchive:RequestDelay`) |
+| `ChatLogBackfill:MaxBlockMegabytes` | `256` | — | byte cap per block (decompressed); exceeded → `block_too_large`; bounds transfer, not memory (D33) |
+| `ChatLogBackfill:MaxRetryAfterSeconds` | `900` | — | cap on a pause |
+| `ChatLogBackfill:TransportRetries` | `3` | — | attempts per block |
+| `ChatLogBackfill:MaxConsecutivePauses` | `10` | — | 429 pauses on one block before `rate_limited` |
+| `ChatLogBackfill:IdlePollSeconds` | `60` | — | convergence poll when no signal arrives |
+| `ChatLogBackfill:CancelPollSeconds` | `2` | — | the per-run status monitor's poll interval (D39) |
+| `ChatLogArchive:BaseUrl` | `https://logs.cyex.app/` (changed) | `CHAT_LOG_ARCHIVE_BASE_URL` | needed on **api** (stored per run, shown as the next run's source), **worker** (the client's base address; must equal the run's stored value) and **harness**; set once in `.env`, referenced by all three services (D45) |
+| `ChatLogArchive:RangeBodyTimeout` | `00:05:00` | — | body deadline for `ReadRangeAsync` |
+| `ChatLogArchive:MaxLineBytes` | `16384` | — | longest decoded line the range reader accepts; longer → `LineTooLong` (D33) |
+
+Block length is a constant `7` (D5). `Validate()` rejects `RequestDelaySeconds < 1`, `MaxBlockMegabytes < 1`, `TransportRetries < 1`.
+
+### 9. Docs
+
+- `docs/Operations.md`: new section "Chat-log backfill" — what it does, the privacy prerequisite (**before** setting the flag: add the archive as a data source to the operator-owned `privacy.de.md`/`privacy.en.md`), config table above, the archive operator's link condition, enabling steps (flag on Api **and** Worker, recreate both), monitoring (log lines, `backfill.progress`), rollback (§Rollback), and a row in the retention table.
+- `docs/DECISIONS.md`: one English entry (title, `**Betrifft:**` line listing the touched files) covering: provenance column + "a cell is live or imported, never both", one set per imported day with channel-scoped replace (OD-A), the request-time snapshot fetched from 7TV, the creation of placeholder `Emote` rows by a backfill and the new `IsPlaceholder` marker that keeps them out of delayed-leave detection (D27/D37, with the reconcile argument), coverage tracked per day apart from usage rows (D34), the preview query now carrying `added_at`, the refusing `Down` migration (D40), the archive default switch, no ballot attribution (OD-C), and why completion is not audited.
+- `docs/Feature-Ideen-2026-08-01.md`: new row `**A17** Chat-Log-Backfill (Nachtrag 2026-10-08)` in the status table + an idea section (German) with the status line; the implementing PR of child 8 flips it to ✅ (D22).
+- `CLAUDE.md` Umsetzungsstand/Worker list: add `ChatLogBackfillWorker` to the hosted-service enumeration (eleven services); `docs/Operations.md` states the supported deployment — exactly one worker replica — and that the loop's advisory lock makes a second replica harmless but useless (D46).
+
+## Decisions made in this spec (operator may veto)
+
+| # | Decision | Alternative rejected |
+|---|---|---|
+| D1 | Window = `[today − months (calendar, `DateOnly.AddMonths`), CreatedAt date)`, "today" = UTC date on the Api at request time, frozen on the row. | Fixed 30/90/180 days; measuring back from `CreatedAt` instead of today. |
+| D2 | Replace unit = one 7-day block in one transaction: delete imported rows of the channel in the block (all emotes, any set id), plain insert, conditional progress update. An interrupted re-run leaves earlier blocks replaced and later blocks from the previous run — both imported, both honest; the run row says how far it got. | Whole-window transaction (holds locks for minutes, loses everything on failure); per-day transactions (26× more commits for no benefit). |
+| D3 | Provenance column `UsageStats.Source integer NOT NULL DEFAULT 0` (`Live=0`, `ChatLogArchive=1`); the unique index stays `(EmoteId, EmoteSetId, Date)` so a cell is live **or** imported. A unique violation on import = invariant broken → run `failed` (`live_row_conflict`), never a merge. | Boolean column; a separate `ImportedUsageStats` table (would force every read path to union two tables — contradicts B6). |
+| D4 | No body hash for ranges (identity by request parameters only), per the probe's hash finding. | Hash-based idempotency. |
+| D5 | Block length is a constant 7 days, not configurable. | Config key (one more knob with no measured need; the 26-block/6-month figure is what was measured). |
+| D6 | `ChatLogArchive:BaseUrl` default becomes `https://logs.cyex.app/` (zonian is offline since 2026-10-08). Harness counting is unaffected; the binding run already used cyex. | A second `ChatLogBackfill:BaseUrl` (two keys for one service). |
+| D7 | Worker-side spacing (`RequestDelaySeconds`, default 10 s) on top of the client's instance pacing; the worker holds one client instance per run. | Changing `ChatLogArchive:RequestDelay` to 10 s (would slow the harness 6.7×). |
+| D8 | Wake-up = in-process signal set by the `BACKFILL:` command **plus** a 60 s idle poll; the command carries no trusted payload. | Command-driven only (a lost pub/sub message would strand a queued run until restart). |
+| D9 | New pure `ChatLogBackfillBlockCounter` reusing `EmoteNameMatching`, `SharedChatRule`, `UsageCategoryRule`; `ReplayDayCounter` is not reused or changed. | Reusing `ReplayDayCounter` (per-day, diagnostics, archived-emote rules, couples the harness). |
+| D10 | **(operator-settled)** The user chooses the 7TV set; the matching snapshot — the chosen set's members as 7TV lists them at request time: `(EmoteId, SevenTvEmoteId, alias-in-set, addedAt day)` — is fetched by the Api, persisted in `ChatLogBackfillRunEmotes`, and the worker matches only against it. Anything on 7TV or in our sync after the click, queue waiting time, pauses and restarts change nothing; there is no `active_set_changed` failure. Rows carry the chosen set id and show under that set's view. | Snapshot at claim time; "briefly activate the set in 7TV" as the way to pick a set (superseded by the picker). |
+| D11 | Snapshot rows are written and read in `OrderBy(EmoteId)` ordinal order for determinism; the live cache's order is unspecified, so neither order is "the" live order (aliases are unique within one 7TV set anyway). | Mimicking Postgres' arbitrary order. |
+| D12 | 404 on a block = block done with no data; the replace delete still runs. | Treating 404 as failure (probe shows it is the normal empty answer). |
+| D13 | Retry/pause numbers: 3 transport attempts per block (30 s before the 2nd, 120 s before the 3rd), 429 pause = `Retry-After` or 60 s·2^PauseCount capped 900 s, up to 10 pauses per block — the 11th consecutive 429 → `rate_limited` (§4.5). | Infinite waiting; no retry. |
+| D14 | Audit `backfill.request` and `backfill.cancel` (user actions); no audit for completed/failed (worker, no actor; the run row is the record). | Auditing completion with the system actor. |
+| D15 | `RequestedBy*` snapshot strings on the run row; account deletion pseudonymises them to `AuditActor.DeletedUser` (same as audit entries); finished runs are deleted 365 days after `FinishedAtUtc` (`RetentionPolicy.ChatLogBackfillRun = 365 d`, new retention step after the audit-log step). | FK to `Users` (cascade would delete the run record with the account). |
+| D16 | Leave cancels an active run (`channel_left`) in the same save; rejoin does not resume. | Letting the run continue on an inactive channel. |
+| D17 | **(operator-settled)** While `ChatLogBackfill:Enabled` is false the Settings tab is hidden entirely (it would hold nothing else today) and its route guard redirects; the routes still answer 404 `backfill_disabled` after the auth filters. With the flag on, the tab appears for managers only. The tab becomes unconditional once other settings land. | Showing the tab with an explanation. |
+| D18 | SSE event is thin (`type`, `channel`); the client refetches. | Carrying progress in the payload (breaks the "events say what changed, never the data" protocol). |
+| D19 | `usage.flushed` is also published per committed block so open usage pages refresh. | A dedicated event the usage page would have to learn. |
+| D20 | Caption: a second key `usageStats.trackedSinceWithImport` (+ `…Gaps` variant) replaces the first sentence whenever the viewed set has any imported day, naming the actual imported range; the link is a separate `<a>`; contiguity feeds only `rangeStartsBeforeTracking` and `trendFor` (D34). | Appending a fifth sentence (would read as a limitation, but it is coverage); showing the caption only for contiguous coverage (deviated from B7, reverted by the operator). |
+| D21 | `ReadRangeAsync` on the existing client/interface, `ReadDayAsync` untouched; UA `EmotePurge (+https://emotepurge.app)` and brotli apply to both. | A second client class. |
+| D22 | Feature-Ideen gets a new idea `A17` (the document has no backfill row today). | Only a DECISIONS entry. |
+| D23 | Epic with eight children (below; child 1 is a standalone fix that merges first), merged behind the flag in any order consistent with the graph; the flag stays `false` on prod until the privacy text is updated. | One PR. |
+| D24 | Live verification channels (rule 16): one small tracked channel (`zokka`, 22/30 days with logs) and `handofblood` (largest set) on the LAN stack against the real archive. | Dev-only synthetic verification. |
+| D25 | `ChatLogBackfillRunEmotes` snapshots the gate date (`AddedToSetDay`, from the chosen set's own `addedAt`) so the counter needs nothing from `Emotes` at runtime, and has **no FK to `Emotes`**: an emote hard-deleted after the click does not break the snapshot; its aggregates are dropped at commit with a warning (the flush's own rule). Today only an admin purge or the retention purge hard-deletes emotes, and both remove the run through the channel cascade anyway. | FK with cascade (a purge race would silently shrink the snapshot mid-run); reading `Emote.FirstSeenAt` (it is the *active* set's entry date, wrong for any other set, and a resync could move it between blocks). |
+| D26 | The picker lists sets from the **tracked** channel's route `GET /api/channels/{channelName}/emote-sets` (`EmoteEndpoints.cs:58-101`), not the foreign route `GET /api/seventv/channels/{channelName}/emote-sets` the operator pointed at: both read the same cached list, but the tracked route reports our observed `Channel.ActiveEmoteSetId` for the preselection (E21), is behind `UsageStatsAccessAuthorizationFilter` (managers pass) and costs `InteractiveRead` instead of the per-user `ForeignEmoteLookup` budget meant for channels one has no role in. Run rows carry `EmoteSetName` as snapshotted from the preview at request (display only; the id is the identity). | The foreign route; resolving the last run's name from the live list (the set may be gone or renamed). |
+| D27 | Members of the chosen set without an `Emote` row for this channel are created **archived** at request time through the vote-session precedent's statement, factored into one shared helper (`ArchivedEmoteRowUpsert`), with `FirstSeenAt = addedAt`; existing rows are never touched; no observation row is written. A later activation of that set un-archives these rows through the ordinary reconcile (same key, no duplicate). The chosen set's usage view then shows them badged archived (true: not in the active set) — the wording of that badge is a candidate follow-up, not changed here. Gets a DECISIONS paragraph. | Writing usage rows for emotes without an `Emote` row (FK forbids it); creating rows unarchived (would make the active-set view and the match cache lie); a second table for "known but never active" emotes (every reader would have to learn it). |
+| D28 | **(operator-settled, OD-A)** One set per imported day: a run replaces **all** imported rows of the channel in its window regardless of set id (`Source = 1` only, live rows untouched). The Settings tab warns before start which imported days currently held by another set the run would replace (set name and range, from `coverage`). `AllSets` reads stay honest without read-path changes. | Set-scoped replace (an emote in two sets would be imported twice for the same day and double in set-agnostic reads). |
+| D30 | **(operator-settled, OD-C)** Vote sessions and ballots are not changed: ballot usage columns include imported days without a source line; the archive link appears on the usage-stats caption and the Settings tab only. | Attributing imported usage on ballots. |
+| D31 | A 429 is a provider-wide cooldown **persisted in `ChatLogBackfillProviderState`** (one row, written in the pause transaction) and enforced before every archive request and every claim; cancel/fail/leave/purge of the paused head do not lift it; a restart re-reads it. Strict FIFO by `Id` holds on top. | Deriving the cooldown from the paused run's status (cancelling the head would lift it); skipping a paused head. |
+| D32 | The excluded-channel filter is applied at enqueue (pre-check and under the lock → 409 `channel_excluded`) and at every claim with the worker's own configuration (→ run `failed`, `channel_excluded`, no channel named in the log). | Trusting the Api's configuration only (an Api still running with an older `EXCLUDED_CHANNEL_IDS` would feed the worker a blocked channel). |
+| D33 | `ReadRangeAsync` scans with a bounded line reader (`MaxLineBytes` 16 KiB → `LineTooLong` → `malformed_response`); per-block memory is independent of body size; `MaxBlockMegabytes` default 256 bounds transfer, not memory, against the worker's 512 MB limit. `ReadDayAsync` untouched. | Keeping `StreamReader.ReadLineAsync` (a delimiter-free 256 MB body would be buffered as one line). |
+| D34 | Coverage is tracked per channel and day in `ChatLogBackfillCoverage` (set id and run id recorded), written only with a committed block. **Disclosure (B7) is unconditional:** whenever the viewed scope has any covered day, the caption names the actual range (`importedFrom`–`importedTo`, "with gaps" when not every day between is covered). **Contiguity is used only for the before-tracking warning and the trend, by one rule:** `contiguousFrom` = the covered stretch ending exactly at the counting start (an older gap further back does not null it), and `coverageStart = contiguousFrom` iff it exists and `importedTo` equals the tracked-since date; otherwise (no covered day adjacent to the counting start, or a rejoin gap) the live start governs and the existing gap banner stays. Worked example in §3 (D49). Coverage is computed **per viewed set** (days whose `EmoteSetId` is that set) and over all days only for `AllSets`; adjacent days from different sets are two scopes' coverage, not one. Coverage survives run-row retention (`RunId SET NULL`) and falls with the channel. | Deriving coverage from usage rows; coupling the caption to contiguity (hides partial imports — a disclosure gap). |
+| D35 | The final enqueue transaction locks the channel row **by the id captured before the 7TV read** (new `LockChannelByIdAsync`, `FOR UPDATE`; `LeaveAsync` adopts a `FOR UPDATE` loader so leave and enqueue serialize) and the requester's user row `FOR SHARE`, then re-validates: row present under that id (else 404 `channel_not_found` — a purge + rejoin under the same login is a different row), `TwitchChannelId` unchanged (else 409 `backfill_channel_identity_changed`), liveness, exclusion, requester (deletion wins → 401) and the one-active-run rule. The 7TV read precedes the locks. | Locking by name (`LoadChannelForUpdateAsync`): a purge/recreate or a login handover during the read would lock and enqueue against a different channel. |
+| D36 | Preview items are deduplicated on `SevenTvEmoteId` last-wins before row creation and snapshot insert — the reconcile's #341 rule, so snapshot alias and stored name agree. | First-wins (would disagree with the sync's name); failing the request. |
+| D37 | `Emotes.IsPlaceholder` marks rows created by a ballot or a backfill for an emote never observed in the active set; the reconcile's delayed-leave detection and `IsCredibleRestLeave` skip placeholders; the un-archive and restore paths clear the flag; the migration backfills it from the one combination only the vote-session insert produces. | Deriving "never active" from `ArchivedAt IS NULL` (also true for rows archived before that column existed); leaving the vote-session precedent's one-window hold-off in place (a placeholder older than 30 min writes a false leave observation for the active set and discards tag placements). |
+| D38 | `PauseCount`/`BlockAttempts` are persisted-only and **never passed in** (`PauseAsync(runId, retryAfter, now)` takes no counter): the pause delay is computed inside `PauseAsync`'s conditional update from the row's own `PauseCount`; `ReplaceBlockAsync` resets both and returns the fresh (0, 0) transition; every attempt/pause write returns the row's status and counters, and the worker always continues from the last transition it received. | In-memory counters (reset by a restart); passing the claim's counters into later pauses (stale after a commit: resume → commit → 429 would pause for 2^n instead of 60 s). |
+| D39 | Cancellation: a per-run **status monitor** (`PeriodicTimer`, `CancelPollSeconds` default 2) polls `IsRunActiveAsync` (= `Status = 'running'`) during reads, retry waits and cooldown waits and cancels the run-scoped CTS; a pause is spent outside `RunAsync` (D44); independent of the serial Redis command queue, so a nudge delayed behind a JOIN/RESYNC handler cannot delay it; leave and purge flip the row and are caught the same way; `IsRunActiveAsync` before every request and the returned status of every counter write stop the run at once. The nudge remains an accelerator only. Bound: ≤ 2 s + abort of the current read, whatever Redis is doing. | Relying on the nudge (serial handler queue, lost messages); noticing only at the next block commit. |
+| D40 | `Down` of `AddChatLogBackfill` refuses (`RAISE EXCEPTION`) while any `UsageStats.Source = 1` or `ChatLogBackfillCoverage` row exists; the documented procedure before reverting the migration **or deploying any image without caption support** is: flag off → cancel active runs → delete imported rows and coverage → remove backfill placeholders (D41) → cancel/verify runs → revert. | `Down` deleting imported rows silently. |
+| D41 | Placeholder cleanup (rollback only, documented, never automatic) deletes exactly the rows positively identified as backfill-**created**: `IsPlaceholder` **and** referenced by a `ChatLogBackfillRunEmotes` row with `CreatedRow = true` (the enqueue records which ids it created, §1/§3.1 — snapshot membership alone would also match existing ballot placeholders the enqueue merely snapshotted) **and** not referenced by `Votes` or `VoteSessionEmotes` **and** without any `Source = 0` usage row. Because `Vote.Emote` cascades (`AppDbContext.cs:244-247`), the vote exclusion is what keeps a ballot's history intact; the snapshot row is the provenance, so the cleanup runs **before** the run rows are deleted (after retention has removed a run, its created rows are no longer identifiable and stay — a narrowed, stated guarantee). A regression test keeps a legacy archived emote with whole-channel votes and a ballot placeholder snapshotted by a backfill untouched. | The earlier `IsArchived AND ArchivedAt IS NULL` sweep; snapshot membership without `CreatedRow` (would delete ballot placeholders a backfill happened to snapshot). |
+| D42 | **Minimum rollback image = child 1's image** (`IsPlaceholder` migration applied). Its migration is never reverted and every later rollback stops there: a pre-marker worker would treat retained placeholders as credible leaves again (the latent bug child 1 fixes). Documented in the Rollback plan and Operations. | Removing all placeholders before starting an older worker (impossible for ballot-created rows that carry votes). |
+| D43 | `ForeignEmoteSet` payloads carry `SchemaVersion` (current 2, introduced with `AddedAt`); cache key prefixes become `7tvforeign:v2:set:` / `7tvforeign:v2:login:` so pre-change entries are never read; a cached payload with `SchemaVersion < 2` is a miss (refetch). `AddedAt == null` on a v2 payload therefore means "7TV reported none" (no gate), never "field unknown". | Relying on the 60 s TTL across a deploy (an old-schema hit would silently drop every gate). |
+| D44 | A pause is spent outside `RunAsync`: `RunAsync` returns on `paused`, the loop re-claims the head when due; no monitor or in-flight read exists while paused, so a cancel/leave during a pause only flips the row and the head is never re-claimed. `IsRunActiveAsync` = `Status = 'running'`. | Waiting inside `RunAsync` with the monitor alive (a second code path for cancellation, and a worker restart would have to reconstruct the wait). |
+| D45 | Archive identity is stored: `ChatLogBackfillRuns.ArchiveBaseUrl` (Api config at enqueue; the worker fails a run whose value differs from its own `ChatLogArchive:BaseUrl` with `archive_mismatch`) and `ChatLogBackfillCoverage.ArchiveHost` per covered day; the usage caption and the coverage read attribute from the stored hosts (`sources`), the Settings tab's "next run" source from the Api's config. `ChatLogArchive:BaseUrl` is therefore required on api, worker and harness. | Attributing from the current configuration (a base-URL change would relabel old imports). |
+| D46 | Supported deployment: exactly one worker replica (today's compose). Enforced anyway: the backfill loop holds a Postgres session advisory lock (`pg_try_advisory_lock(hashtext('emotepurge:chatlog-backfill'))`) on a dedicated connection for its lifetime; boot reset, claims and commits happen only under it; a second loop warns and retries every `IdlePollSeconds`; the lock dies with the connection. | Trusting the single-replica compose alone (a rolling deploy briefly runs two workers). |
+| D47 | Counters are defined by their booking path: `MessagesRead` = Σ `ChatLogRangeResult.MessageCount` of committed blocks (parsed PRIVMSG lines before the exclusion gate), persisted by `ReplaceBlockAsync`; `BytesReceived` = Σ `BytesReceived` of every result the worker books (`ReplaceBlockAsync`, `RecordBlockAttemptAsync`, `FailAsync`); a 429 contributes 0 and a read aborted by cancellation or a process stop is not booked — the promise is narrowed to "bytes of attempts the run could still record". | Counting in the block counter (would skip excluded chatters and diverge from the client's count); booking after cancellation (no `running` row to book against). |
+| D48 | `ReplaceBlockAsync` returns the closed union `ChatLogBackfillBlockResult` = `Committed(transition)` \| `RunNotActive` \| `LiveRowConflict` \| `ChannelGone`; the worker's mapping is fixed in §3 and §4.4; `live_row_conflict` is recorded by the worker via `FailAsync` on `LiveRowConflict`. | `null`/`false` results (three different failure meanings behind one value). |
+| D49 | Coverage worked example fixed in §3: an older gap plus a contiguous suffix reaching the counting start yields `ImportedFrom` = first covered day, `HasGaps = true`, `ContiguousFrom` = start of the suffix, caption "with gaps", warning/trend anchored at the suffix. | Treating any gap as "no contiguous coverage" (would suppress the trend for a channel whose last three months are complete). |
+| D29 | `POST …/backfill` runs under `RateLimitPolicyNames.TrackedEmoteSetPreview` (30/min per user) because it costs the same 7TV reads as the tracked set preview; `GET`/`DELETE` stay `InteractiveRead`/`Bookkeeping`. | `Bookkeeping` (would let a user trigger 7TV preview walks at the bookkeeping rate). |
+
+## Acceptance Criteria (pass/fail)
+
+1. Migration applies on a copy of prod data; `SELECT count(*) FROM "UsageStats" WHERE "Source" <> 0` = 0 afterwards; `dotnet ef migrations list` shows no pending.
+2. **Deterministic gate** (Infrastructure/Worker tests with a stubbed archive serving pinned recorded blocks from `tests/EmotePurge.Infrastructure.Tests/Fixtures/ChatLogArchive/`): a 6-month run over the pinned fixture produces byte-identical aggregates and coverage rows on every execution. **Observational live check** (LAN stack, flag on, real archive): `POST …/backfill {emoteSetId: <handofblood's active set id>, months: 6}` on `handofblood` with an empty queue answers 202; the window is whatever §4.1 computes from the request day and the channel's `CreatedAt` (expected `weeksTotal` = ceil(days/7), recorded in the PR together with the dates); the run reaches `completed`; targets — wall time < 10 min and `bytesReceived` in the order of the 2026-10-08 measurement (705 MB for 26 weeks, ±30 % as the archive mutates) — are observations with tolerance, not pass/fail bytes; every imported row has `Date < CreatedAt date`.
+3. A channel created 3 months ago choosing 6 months gets rows only for days `< CreatedAt` date; `SELECT count(*) FROM "UsageStats" u JOIN "Emotes" e … WHERE u."Source"=1 AND u."Date" >= CreatedAtDate` = 0.
+4. Before/after any run: `SELECT md5(string_agg(…)) FROM "UsageStats" WHERE "Source"=0 ORDER BY "Id"` for the channel is unchanged (live rows untouched), including a second run over the same window.
+5. Re-run over the same window (same or another set): no imported day of the channel carries rows from two runs or two set ids, no `UseCount` doubles versus a single run on identical archive data, and every covered day in the window now carries the new run's set id in `ChatLogBackfillCoverage` (OD-A).
+6. With `Twitch:ExcludedChatterIds` containing a chatter who posted emotes in the window (verified by a one-off grep on a fetched block, not stored): the imported counts for those messages are zero; the run row's `messagesRead` still equals the client's parsed PRIVMSG count including those messages (D47: counted before the gate, a count only).
+7. A 429 injected by a local stub (Testcontainers/`WireMock`-style fake archive, Infrastructure test) → run `paused` with `pausedUntilUtc = now + Retry-After`; after the timer the same block is re-fetched and the run completes; `pauseCount` reset to 0 after the block commits.
+8. Cancel while `running`: 204; the worker stops within `CancelPollSeconds` + abort (≤ 3 s measured on the LAN stack with a 60 MB block) and never issues another request; `weeksDone` rows and coverage remain; the in-flight block wrote nothing (row count for its days = count before the run). The same bound holds (a) with the Redis command queue blocked by a stalled JOIN handler, (b) with the nudge dropped, (c) for a leave instead of a cancel, and (d) during a retry or cooldown wait — no further request in any case (Worker.Tests with a stubbed archive counting requests; LAN check for (a)). (e) Cancel while `paused`: the row flips to `cancelled` at once, the loop never re-claims it and no request is made when the pause would have ended (D44).
+9. Cancel while `queued`: immediate `cancelled`, no worker action, audit entry `backfill.cancel`.
+10. Worker restart mid-run (`docker compose restart worker`): row goes `queued` → `running`, resumes at `weeksDone`, completes; no duplicated days.
+11. Disclosure (B7): the usage page of a channel with **any** imported day for the viewed set shows the caption naming the imported range and a link to `https://logs.cyex.app/` (`target=_blank`, `rel=noopener`) — including after a failed run that covered 3 of 27 weeks (caption names those 21 days) and after a cancelled run whose covered weeks are not adjacent to the counting start (caption names them, with "with gaps" when the covered days are not consecutive); a channel without imported data shows the unchanged sentence; a set view without imported days of its own shows no import sentence even if another set has imports. Contiguity (one rule, D34/D49): the "range starts before tracking" banner does not appear for a range starting on or after `contiguousFrom` when a covered stretch ends at the tracked-since date — also when an older gap exists further back (the §3 example: warning only before Jun 1, trend eligible inside Jun 1–); it does appear, and the trend stays suppressed, for the non-adjacent case (no covered day next to the counting start); a channel that left and rejoined keeps the gap banner (`importedTo < trackedSince`). The caption's "with gaps" and the warning are independent statements.
+12. Settings tab (flag on): visible for broadcaster/mod/global admin; `GET …/backfill` → 403 and no tab for a 7TV editor who is not a mod (`mockChannelPermissions` with `canManage: false, canViewUsageStats: true` in E2E; filter matrix in Api.Tests).
+13. An option whose window has `days ≤ 0` (e.g. 1 month for a channel counting for 60 days) is rendered disabled with the `no_days_before_counting` reason; the API answers 409 `backfill_window_empty` for the same request.
+14. Flag off: all three routes 404 `backfill_disabled` for a manager, 403 for a non-manager; the Settings tab is absent for everyone and `/channels/x/settings` redirects like a denied manage guard.
+15. `backfill.progress` arrives on `GET /api/channels/{channel}/live` for that channel only; the settings page updates `weeksDone` without reload (E2E via `__emitLive`).
+16. Account deletion of the requester pseudonymises `RequestedBy*` on the run row; channel purge removes the rows; the retention pass deletes a finished run older than 365 days and keeps a younger one (integration tests).
+17. `dotnet test EmotePurge.slnx`, `npm --prefix web test -- --watch=false`, `npm --prefix web run e2e` green; `node scripts/coverage-local.mjs` ≥ 80 % on new code; `dotnet format` and `npm run lint`/`format` clean.
+18. Harness unchanged — **deterministic**: `HarnessRunnerTests` replay the pinned recorded day fixture through `ReadDayAsync` before and after the client change and the day lines are byte-identical (the archive is mutable, so live byte-identity is not a gate). **Observational**: `docker compose --profile harness run … zokka --days 3 --diagnostic` still completes against the live archive and its report has the expected shape.
+19. Picker: on a channel with sets A (active) and B, the Settings page preselects A and lists B; choosing B and starting a 1-month run produces imported rows only under B's id; the usage page under set B shows them (rows badged archived where B is not active), under set A shows none; the run object reports B's id and name.
+20. Second run for set A over a window that overlaps B's import: the Settings page shows the replace warning naming set B and the overlapping range before start and in the confirm dialog; after the run, every imported day in A's window belongs to A (no `Source = 1` row with B's id in that window; coverage rows say A), B's imported days outside the window are untouched.
+21. Never-active set: set C was never active since the join; starting a run for C creates one archived `Emote` row per C member missing from the channel (`IsArchived = true`, `ArchivedAt IS NULL`, `FirstSeenAt = addedAt`, `LastEnteredSetAtUtc = now`); the match cache, slot count and active-set usage view do not change; after activating C in 7TV and one resync, those rows are un-archived in place (same `Emote.Id`, no new row, `Name` = C's alias, `FirstSeenAt` corrected) — integration test through `SevenTvSyncService.ReconcileAsync`, plus a live check on the LAN stack.
+22. 7TV unreadable at request (preview mocked 503 / provider budget exhausted / membership says not a member): no run row, no snapshot, no `Emote` row is written; the response is 503 `foreign_channel_seventv_unavailable` or 404 `emote_set_not_found` respectively; a truncated preview answers 409 `backfill_set_truncated`.
+23. Excluded channel: enqueue answers 409 `channel_excluded`; a run queued before the id was added, followed by a worker restart with the new `EXCLUDED_CHANNEL_IDS`, ends `failed`/`channel_excluded` with zero archive requests and no channel name in the worker log.
+24. A range body of 50 MB without a single newline (generated stream, never materialised) ends with `LineTooLong` after at most `MaxLineBytes` + 1 KiB were buffered (asserted on the scanner's peak buffer), the run fails `malformed_response`; the worker container stays under its memory limit during the handofblood run (AC 2, `docker stats` sampled).
+25. Enqueue races: with the 7TV preview blocked (TaskCompletionSource), (a) an account deletion of the requester committing meanwhile makes the enqueue answer 401 and write nothing; (b) a leave committing meanwhile answers 409 `channel_not_joined` and writes nothing; (c) a concurrent second enqueue for the same channel loses on the partial unique index and answers 409 `backfill_already_active`; (d) a purge followed by a fresh join under the same login answers 404 `channel_not_found` and writes nothing against the new row; (e) a login handover (the captured `TwitchChannelId` no longer matches the row) answers 409 `backfill_channel_identity_changed` and writes nothing.
+26. Preview with the same 7TV emote id under two aliases: one snapshot row with the **last** alias (and one `Emote` row); `ReconcileAsync` on the same list stores the same name (#341 rule).
+27. Placeholder rows: a never-active set's created rows have `IsPlaceholder = true`; a REST resync of the active set 31 minutes later (credibility window elapsed) writes **no** `EmoteSetLeaveObservation` for them and discards no tag placement; after the set becomes active, the un-archive clears the flag and a later real leave is observed normally (integration test through `ReconcileAsync` twice; the vote-session precedent's rows pass the same test after the migration backfill).
+28. Counters survive restarts and resets: a run paused for the 3rd time, worker restarted, resumed and throttled again → `PauseCount = 4` and the pause length follows 4 (480 s), not 1; same for `BlockAttempts` across a restart between two transport failures; **and** resume → block committed → 429 on the next block pauses **60 s** (counters reset by the commit, delay computed from the row).
+30. Provider cooldown: a 429 on run A, then cancel of A, then a queued run B — B issues no request before A's `PausedUntilUtc`; a worker restart during the cooldown keeps waiting; a leave or purge of A's channel does not lift it (integration + Worker.Tests).
+31. Cache schema: a cached pre-change `ForeignEmoteSet` payload (no `SchemaVersion`) is not used by the enqueue — it refetches and persists `AddedToSetDay` from the fresh payload; a v2 payload with `AddedAt == null` yields a snapshot row with `AddedToSetDay = NULL` (no gate).
+32. Rollback cleanup: on a database holding (i) a backfill-created placeholder (`CreatedRow = true`, no votes, no live usage), (ii) a vote-session placeholder that a later backfill snapshotted (`CreatedRow = false`), (iii) a legacy archived emote with whole-channel votes, (iv) a backfill-created placeholder that later gained a vote, (v) a backfill-created placeholder whose run row retention already deleted — the documented cleanup deletes exactly (i); (v) stays (stated narrowing); every vote row survives.
+33. Single loop: two `ChatLogBackfillWorker` loops against one database — only the lock holder resets, claims and commits; the other logs the warning and makes no archive request; after the holder's connection drops, the other acquires the lock within `IdlePollSeconds` (integration test with two hosted-service instances).
+34. Archive identity: a run enqueued with `ArchiveBaseUrl = A` on a worker configured with `B` fails `archive_mismatch` without a request; coverage rows carry the host; the import-coverage read's `sources` lists the stored host(s), not the current configuration (integration + Api tests).
+35. Block result mapping: `RunNotActive`, `LiveRowConflict` and `ChannelGone` each stop the worker without a further request and only `LiveRowConflict` records an error code (Worker.Tests with a substituted service).
+29. `Down` migration on a database holding one `Source = 1` row raises and leaves the schema in place; after the documented cleanup it succeeds.
+
+## Testing Plan
+
+**Infrastructure.Tests (Testcontainers Postgres)** — `Integration/ChatLogBackfillServiceTests.cs`: enqueue window math incl. zero-day rejection; partial unique index rejects a second active run; enqueue persists the snapshot from a substituted `IForeignEmoteSetService`/`ITrackedEmoteSetMembershipService` (alias per set, `AddedToSetDay`, `EmoteSetName`, `OrderBy(EmoteId)`), creates archived `Emote` rows for missing members and leaves existing active/archived rows byte-identical, refuses `SetNotMember`/`SetEmpty`/`SetTruncated`/`SevenTvUnavailable` without writing anything; `GetSnapshotAsync` returns the snapshot unchanged after the channel's set and emotes were modified; a created row is un-archived in place by `SevenTvSyncService.ReconcileAsync` when the set becomes active (reuse `SevenTvSyncServiceTests` fixtures); the replace delete is channel-scoped across set ids (OD-A) and writes coverage days in the same transaction; replace-block transaction (delete+insert+coverage+progress) and its rollback when the row was cancelled; `GetCoverageAsync` per scope (set vs. `AllSets`; adjacent days from two sets are two scopes' coverage; gapped, failed-run-partial, rejoin-gap cases; `contiguousFrom` vs. `importedFrom`; `RunId SET NULL` after run deletion); lock by id against purge/recreate and login handover (AC 25 d/e); the provider-state write in the pause transition and its survival across cancel/leave/purge (AC 30); pause delay computed from the row after a commit reset (AC 28); the schema-versioned cache miss (AC 31); the rollback cleanup statement (AC 32); enqueue under locks against a concurrent deletion/leave/second enqueue with a blocked preview (AC 25); excluded-channel refusal at enqueue; duplicate-id dedupe (AC 26); placeholder rows excluded from delayed-leave detection and cleared on un-archive/restore (AC 27, `ReconcileAsync` and `EmoteService` restore); migration backfill of `IsPlaceholder` on seeded vote-session-shaped rows and the refusing `Down` (AC 29); `PauseAsync`/`RecordBlockAttemptAsync` transitions returning status+counters and refusing on a cancelled row; an aggregate for a deleted emote id is dropped, not failed; `live_row_conflict` on a seeded live row; completed/failed/paused transitions; `importedFrom`; leave cancels; cascade on purge; `Integration/AccountDeletionServiceTests.cs` + `DataRetentionServiceTests.cs` extended for D15. `Unit/SevenTvApiClientTests` (existing fixture style): the preview query selects `added_at` and maps it to `AddedAt` (absent/null → null; no plausibility validation, §2.1). `Unit/ChatLogArchiveClientTests.cs` extended: range path/format, `to` exclusive formatting, 404 → `NoLogDay`, 429 with/without `Retry-After` (seconds and HTTP-date), brotli body decoded, `RangeBodyTimeout`, byte cap, `LineTooLong` on a generated 50 MB newline-free stream with the scanner's peak buffer asserted ≤ `MaxLineBytes` + 1 KiB (AC 24). `Integration/UsageStatQueryServiceTests` (new or extended): every read (`GetUsageContextAsync`, `GetChannelSeriesAsync`, `GetDailySeriesAsync`, totals) includes `Source = 1` rows unchanged.
+
+**Worker.Tests (container-free)** — `ChatLogBackfillBlockPlannerTests` (183 days → 27 blocks, last = 1 day; exact `[from,to)` edges; 7 days → 1 block), `ChatLogBackfillBlockCounterTests` (classification order equals `ReplayDayCounterTests` cases: exclusion is the caller's, shared-chat before bot, bot bucket, `AddedToSetDay` gate incl. null, per-message dedup, out-of-block day dropped, no chatter ids retained), `ChatLogBackfillRetryPolicyTests` (delays, caps, `rate_limited` threshold computed from persisted counters only, reset semantics), `ChatLogBackfillWorkerTests` with a substituted service: FIFO head paused blocks claims (D31), claim fails an excluded channel without a request (AC 23), persisted counters drive the 4th pause after a simulated restart (AC 28), a non-running transition stops the loop before the next request, the status monitor cancels the in-flight CTS within `CancelPollSeconds` with the command queue blocked / the nudge dropped / a leave (AC 8), the cooldown read blocks a younger run (AC 30), the three non-committed block results stop the loop (AC 35), the loop lock (AC 33), `archive_mismatch` at claim (AC 34), `WorkerServiceRegistrationTests` (hosted service registered), a `Worker.cs` dispatch test for `BACKFILL:` setting the signal.
+
+**Api.Tests (`WebApplicationFactory`)** — `AuthFilterMatrixTests`: the three backfill routes × {401, 400 invalid name, 403 non-manager, 200/202/204 manager} and the import-coverage read × {401, 400, 403 for a non-viewer, 200 for a 7TV editor}; `ApiFactory` gets `IChatLogBackfillService` substitute; `ChatLogBackfillEndpointsTests`: 400/401/404/409/503 mapping of every `EnqueueResult` (set codes, `channel_excluded`, `RequesterGone` → 401, `Retry-After` on 503), 400 `invalid_emote_set_id` for a malformed body id, 404 `backfill_disabled` when the flag is off (factory with `ChatLogBackfill:Enabled=false`), `/permissions.chatLogBackfillEnabled`, `activeEmoteSetId`/`emoteSetName`/`emoteCount` on the wire, `TrackedEmoteSetPreview` policy on POST (`RateLimitPolicyBudgetTests` style).
+
+**Vitest** — `backfill.service.spec.ts` (`HttpTestingController`), `backfill-section.spec.ts` (computed decisions: `replacedIntervals` per option/set and the warning sentences, `canStart` incl. no-set-selected and list-not-loaded, `preselectedSetId` from `activeEmoteSetId` incl. empty, personal sets filtered out, `canCancel`, option disabled + reason, status key per state, progress fraction, `setLabel` name/id fallback, cancel confirm output with the chosen set id), `channel-settings.guard.spec.ts` (`TestBed.runInInjectionContext`: manage + flag → true, either false → redirect), `channel-workspace-layout.spec.ts` (tab needs both signals), `usage-stats-page.spec.ts` additions (caption key choice incl. the gaps variant whenever `importedFrom` is set, `coverageStart` only from `contiguousFrom` + matching `importedTo`, `rangeStartsBeforeTracking` for gapped/non-adjacent/rejoin cases, per-set refetch on set switch), `import-coverage.service.spec.ts`, `api-error-locales.spec.ts` (automatic), `audit-actions` label mapping.
+
+**Playwright (mocked `/api/**`)** — `web/e2e/channel-settings.e2e.spec.ts`: tab visible for manager, absent for `canManage:false`; option list with one disabled + reason; start → 202 → progress rendered; `__emitLive({type:'backfill.progress', channel})` → refetch shows new `weeksDone`; cancel dialog → `DELETE`; picker preselects the active set from a mocked `/emote-sets`, choosing another set sends its id in the `POST` body, a 503 on the list disables the picker and start; a mocked `coverage` held by another set renders the replace warning and the dialog repeats it; flag off (`mockChannelPermissions` with `chatLogBackfillEnabled: false`): no tab, direct navigation redirects; `usage-atlas.e2e.spec.ts` addition: caption with link. New mocks `mockBackfillStatus`, `mockBackfillStart`, `mockBackfillCancel` in `web/e2e/support/mocks.ts`.
+
+**Live verification (rule 16, D24)** — LAN stack (`docs/Operations.md` "Testing on device"), flag on, real archive: `zokka` 1 month (expect 404 blocks on weekend-free weeks to be fine), then `handofblood` 6 months (AC 2); then the restart (AC 10), cancel latency (AC 8), excluded-id restart (AC 23) and memory (AC 24) probes on further runs; a non-active and a never-active set on the operator's own test channel (AC 19–21, incl. the activation round-trip); record wall time, bytes, 429 count and the 7TV requests spent per start in the PR. The changed preview query is probed live by hand (`curl`) before the fixture is updated (§2.1). Live runs are **observational** (the archive mutates; D24): their numbers go into the PR as measurements with tolerance; every pass/fail gate runs on pinned fixtures (AC 2, 18).
+
+**"Fertig" gates** per `CLAUDE.md` Arbeitsweise: all three suites, coverage script, plus Codex Sol review before merge of each child.
+
+## Rollback Plan
+
+- **Switch**: `ChatLogBackfill:Enabled=false` on Api and Worker → routes 404, worker loop exits after logging; queued/paused rows stay as they are (visible in the settings tab as their last state after the flag is on again). To freeze mid-run, cancel via UI first, then flip.
+- **Minimum rollback image = child 1's image (D42).** Its `IsPlaceholder` migration is never reverted; rolling the worker back further would revive the false-leave bug on every retained placeholder (ballot-created ones carry votes and cannot be removed).
+- **Migration `AddChatLogBackfill`** is additive (`Source` with default, four new tables); images from child 1 on ignore them. **But** an image without caption support would show imported numbers with no disclosure (D40): before deploying such an image, run the cleanup below.
+- **Delete imported data** (operator, psql, documented in Operations.md): per channel `DELETE FROM "UsageStats" u USING "Emotes" e WHERE u."EmoteId" = e."Id" AND e."ChannelId" = '<id>' AND u."Source" = 1;` or globally `DELETE FROM "UsageStats" WHERE "Source" = 1;`, then `DELETE FROM "ChatLogBackfillCoverage";` (or per channel) and `UPDATE "ChatLogBackfillRuns" SET "Status"='cancelled', "FinishedAtUtc"=now(), "ErrorCode"='worker_error' WHERE "Status" IN ('queued','running','paused');`. Order: flag off on Api **and** Worker and recreate both (quiesces every writer), cancel/verify no `running` row, then the SQL. The caption disappears with the coverage rows.
+- **Backfill placeholders** (D41, run **before** the run rows are cancelled/deleted, because the snapshot is the provenance): `DELETE FROM "Emotes" e WHERE e."IsPlaceholder" AND EXISTS (SELECT 1 FROM "ChatLogBackfillRunEmotes" r WHERE r."EmoteId" = e."Id" AND r."CreatedRow") AND NOT EXISTS (SELECT 1 FROM "Votes" v WHERE v."EmoteId" = e."Id") AND NOT EXISTS (SELECT 1 FROM "VoteSessionEmotes" s WHERE s."EmoteId" = e."Id") AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."EmoteId" = e."Id" AND u."Source" = 0);` — documented, optional, never run automatically; `Vote.Emote` cascades (`AppDbContext.cs:244-247`), which is exactly why the vote predicates are there. Vote-session placeholders (even when a backfill snapshotted them, `CreatedRow = false`) and legacy archived rows are never touched; rows whose run was already removed by retention are no longer identifiable and stay (AC 32).
+- **Full revert**: `dotnet ef database update <previous>` — `Down` **refuses** while `Source = 1` usage rows or coverage rows exist (D40), so it only succeeds after the cleanup above; it then drops `Source` and the four backfill tables; `IsPlaceholder` stays (D42).
+
+## Effort Estimate
+
+| Component | Days |
+|---|---|
+| Child 1 — `IsPlaceholder` marker: column + backfill migration, shared `ArchivedEmoteRowUpsert`, clearing in un-archive/restore, reconcile skips, tests, DECISIONS | 1.5 |
+| Child 2 — backfill schema (`Source`, runs, snapshot, coverage, provider state, refusing `Down`), archive `ReadRangeAsync` with bounded line scanner, UA/brotli, 7TV preview `addedAt` (live-probed) with versioned cache, contracts (options, command prefix, event type, audit actions), leave/deletion/retention hooks | 3 |
+| Child 3 — `IChatLogBackfillService`: id-locked enqueue with membership + 7TV read + dedupe + placeholder rows + snapshot, channel-scoped replace with coverage, transitions/counters with in-transition pause delay and provider cooldown, per-scope `GetCoverageAsync`, integration tests | 3 |
+| Child 4 — worker (FIFO loop with persisted cooldown, planner, counter, persisted-counter policy, status-monitor cancellation, excluded-channel claim check, signal, command, events), Worker.Tests, live verification | 3.5 |
+| Child 5 — Api routes (incl. set id validation, the 7TV error ladder, `channel_excluded`/identity/401 mapping, `coverage` payload, the import-coverage read), error codes, frontend audit map + labels + spec, permissions flag, Api.Tests | 2 |
+| Child 6 — Settings tab + guard, `BackfillService`, section with explanations, set picker, window options and start, i18n, Vitest, E2E | 2.5 |
+| Child 7 — progress, queue position, pause/cooldown display, cancel dialog, replace warning, last-run block, i18n, Vitest, E2E | 2 |
+| Child 8 — caption from per-set coverage (disclosure unconditional, contiguity for warning/trend), docs (Operations incl. cleanup procedure and minimum rollback image, DECISIONS incl. D27, Feature-Ideen, CLAUDE.md), compose/env, acceptance run | 2 |
+| **Total** | **20** (rows sum to 19.5, +0.5 for the additional PR cycle of the 6/7 split) |
+
+## Files Reference
+
+Per child (each child body repeats its own list):
+
+- **Child 1** — `src/EmotePurge.Core/Entities/Emote.cs`, `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs`, migration `AddEmotePlaceholderMarker`, `src/EmotePurge.Infrastructure/Services/ArchivedEmoteRowUpsert.cs` (new), `…/Services/{VoteSessionService,SevenTvSyncService,EmoteService}.cs`, `docs/DECISIONS.md`; tests `Integration/{SevenTvSyncServicePlaceholderTests,AddEmotePlaceholderMarkerMigrationTests}.cs` + extensions of `VoteSessionServiceTests`/`EmoteServiceTests`.
+- **Child 2** — `src/EmotePurge.Core/Entities/{UsageStat,UsageStatSource,ChatLogBackfillRun,ChatLogBackfillRunEmote,ChatLogBackfillCoverageDay,ChatLogBackfillProviderState,AuditLogEntry}.cs`, `src/EmotePurge.Infrastructure/SevenTv/ForeignEmoteSetCache.cs` (versioned keys/payload), `src/EmotePurge.Infrastructure/Services/{ChannelDeactivation,AccountDeletionService,DataRetentionService}.cs` + `src/EmotePurge.Worker/RetentionRunSummaryFormatter.cs` (hooks), `src/EmotePurge.Core/Services/{IAuditLogQueryService,RetentionPolicy,IForeignEmoteSetService}.cs`, `src/EmotePurge.Core/ChatLogArchive/{IChatLogArchiveClient,ChatLogArchiveModels}.cs`, `src/EmotePurge.Core/Messaging/{BotCommands,LiveEvents}.cs`, `src/EmotePurge.Core/SevenTv/SevenTvModels.cs`, `src/EmotePurge.Infrastructure/ChatLogArchive/{ChatLogArchiveClient,ChatLogArchiveOptions,BoundedLineScanner}.cs`, `src/EmotePurge.Infrastructure/SevenTv/{SevenTvApiClient,SevenTvApiDtos}.cs`, `src/EmotePurge.Infrastructure/Services/{ChatLogBackfillOptions,ForeignEmoteSetService}.cs`, `AppDbContext.cs`, migration `AddChatLogBackfill`, `ServiceCollectionExtensions.cs`; tests `Integration/AddChatLogBackfillMigrationTests.cs`, `Unit/{ChatLogArchiveClientTests,BoundedLineScannerTests,SevenTvApiClientTests}.cs`.
+- **Child 3** — `src/EmotePurge.Core/Services/IChatLogBackfillService.cs` (+ DTO/result records), `src/EmotePurge.Infrastructure/Services/{ChatLogBackfillService (new),ChannelService (LeaveAsync lock)}.cs`, `src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` (`LockChannelByIdAsync`), `ServiceCollectionExtensions.cs`; tests `Integration/ChatLogBackfillServiceTests.cs` + extension of `UsageStatQueryServiceTests`.
+- **Child 4** — `src/EmotePurge.Worker/ChatLogBackfill/{ChatLogBackfillWorker,ChatLogBackfillBlockPlanner,ChatLogBackfillBlockCounter,ChatLogBackfillRetryPolicy,ChatLogBackfillSignal}.cs` (new), `src/EmotePurge.Worker/{Worker,WorkerServiceRegistration}.cs`, `CLAUDE.md` (hosted-service list); tests `tests/EmotePurge.Worker.Tests/ChatLogBackfill*Tests.cs`, `WorkerServiceRegistrationTests.cs`.
+- **Child 5** — `src/EmotePurge.Api/Endpoints/{ChannelEndpoints,UsageStatsEndpoints}.cs`, `src/EmotePurge.Api/Validation/ApiErrorCodes.cs`, `web/src/app/core/i18n/api-error.ts`, `web/public/i18n/{de,en}.json` (`errors.api.*`, `audit.actions.backfill.*`, `backfillMonths` detail), `web/src/app/core/channels/channel.model.ts`, `web/src/app/shared/audit/audit-actions.ts` + `.spec.ts`, `web/e2e/support/mocks.ts` (permissions default); tests `tests/EmotePurge.Api.Tests/{AuthFilterMatrixTests,ApiFactory,ChatLogBackfillEndpointsTests,ImportCoverageEndpointTests}.cs`.
+- **Child 6** — `web/src/app/core/channels/{backfill.service,backfill.model,backfill.service.spec,channel-settings.guard,channel-settings.guard.spec}.ts` (new), `web/src/app/features/channel-workspace/{channel-settings-page,backfill-section,backfill-section.spec}.ts` (+ `.html`, new), `web/src/app/app.routes.ts`, `web/src/app/features/channel-workspace/channel-workspace-layout.ts`, `web/src/app/core/live/live-event.model.ts`, `web/public/i18n/{de,en}.json` (`backfill.*` start half, `channelWorkspace.tabs.settings`), `web/e2e/channel-settings.e2e.spec.ts` (new), `web/e2e/support/mocks.ts`.
+- **Child 7** — `web/src/app/features/channel-workspace/{backfill-section,backfill-section.spec,backfill-run-status (new)}.ts` (+ `.html`), `web/public/i18n/{de,en}.json` (`backfill.*` progress/cancel/warning/last-run half, `backfill.errors.*`), `web/e2e/channel-settings.e2e.spec.ts`, `web/e2e/support/mocks.ts`.
+- **Child 8** — `web/src/app/core/usage/import-coverage.service.ts` (+ `.spec`, new), `web/src/app/core/usage/import-coverage.model.ts`, `web/src/app/features/usage-stats/usage-stats-page.{ts,html}`, `web/public/i18n/{de,en}.json` (`usageStats.trackedSinceWithImport`, `…Gaps`), `docs/Operations.md`, `docs/DECISIONS.md`, `docs/Feature-Ideen-2026-08-01.md`, `CLAUDE.md`, `docker-compose.yml`, `docker-compose.prod.yml`, `.env.example`; tests `usage-stats-page.spec.ts`, `import-coverage.service.spec.ts`, `usage-atlas.e2e.spec.ts`.
+
+## Out of Scope
+
+- Automatic backfill on join, or any backfill without a manager's explicit request.
+- Filling mid-period gaps (leave/rejoin, worker downtime) after the counting start.
+- Emote name history, rename tracking, or matching against anything but the chosen set's members as 7TV lists them at request time.
+- Matching several sets in one run (one run = one chosen set; a second set is a second run).
+- Sets outside the channel's 7TV account (the membership ladder refuses them) and personal sets.
+- Changing the archived badge's wording in a non-active set's view (follow-up candidate, D27).
+- Any change to vote sessions or ballots: ballot usage columns include imported days without a source line (operator decision OD-C, D30).
+- Other archives, fallbacks, or multi-source merging; the harness's own archive choice beyond the default URL.
+- Per-row/per-cell marking of imported numbers in the grid, curve or export.
+- Changes to harness counting, report format or exit codes.
+- The privacy statement text (operator-owned markdown outside the repo).
+- Retroactive `ChannelLiveDay` rows (live-hour metrics stay "no data" for imported days).
+- Windows beyond 6 months; a per-user or per-channel rate limit on requests beyond the one-active-run rule.
+- A global admin view of the queue (the run rows are queryable; a UI is a later issue).
+
+## Related
+
+- #69 (closed; binding verdict variant (i) — this issue is the deferred product decision, not a reversal)
+- #73 (shared chat column; `SharedChatRule`), #243 (self-deletion; D15), #260 (exclusion list in the harness; B9), #200/#205 (`EmoteSetId` on `UsageStat`; set views; K6 archived ballot rows = the precedent for D27), #220 (tracked set preview route and membership ladder reused by the picker/POST), #252 (objection gate), #247 (legal pages; B12 prerequisite)
+- `docs/designs/Chat-Log-Backfill-69-2026-09-05.md:222-225` (operator constraints reproduced in B1, B6/B7, B10)
+
+## Child issues
+
+| # | Title | Depends on | Days |
+|---|---|---|---|
+| 1 | `Emotes.IsPlaceholder`: mark never-observed emote rows and keep them out of delayed-leave detection | — | 1.5 |
+| 2 | Backfill schema and archive range client (incl. provider-state table, versioned preview cache, leave/deletion/retention hooks) | — (independent of 1; the hooks touch only the new entities) | 3 |
+| 3 | `IChatLogBackfillService`: locked enqueue with 7TV snapshot, block replace with coverage, run transitions | 1, 2 | 3 (at the limit after moving the D15/D16/retention hooks to child 2) |
+| 4 | `ChatLogBackfillWorker`: sequential queue, block replay, 429/transport policy, SSE progress | 2, 3 | 3.5 (exceeds 3 d by the live verification on two channels, which cannot be shortened — the handofblood run alone is 10 min wall plus restart/cancel/exclusion/memory probes; splitting the worker from its live proof would merge an unverified worker, against rule 16) |
+| 5 | Backfill API: status/start/cancel routes, error codes, audit, permissions flag | 3 | 2 |
+| 6 | Settings tab, guard, `BackfillService` and set picker (start a run) | 5 (contract), 4 (live check only) | 2.5 |
+| 7 | Backfill progress, cancel, replace warning and last-run display | 6 | 2 |
+| 8 | Provenance caption from per-set coverage, docs, compose wiring, acceptance run | 1–7 | 2 |
+
+```
+1 ──┐
+    ├─► 3 ──► 4 ───────────┐
+2 ──┘   └──► 5 ──► 6 ──► 7 ─┤
+                            └─► 8   (8 merges last; needs 4–7 for the acceptance run)
+```
+
+Sequencing rationale: 1 is a standalone fix that is useful without the feature and must be in before 3 creates placeholder rows; 2 fixes every contract the others code against (entities, archive result, options, command/event/audit constants) and merges behind nothing because nothing reaches it; 1 and 2 are independent and can run in parallel; 3 is the only consumer of both and the one child near the 3-day limit; 4 and 5 are independent consumers of 3 and run in parallel; 6 needs only 5's wire contract (mocked in E2E), so it starts once 5's DTOs are merged, and ships a tab that can start a run (behind the flag); 7 adds the running/finished half of the section on top of 6; 8 is the integration tail: it is where AC 2, 10, 11, 18 are actually run and where the docs state what shipped. Every child passes all three suites on its own: constants and their consumers' tests travel together (child 5 owns the frontend audit map, labels and spec; child 2's event type only has `Contains` assertions in `LiveEventTests`; error codes and their locale entries are one child).
+
+# Child 1: `Emotes.IsPlaceholder` — mark never-observed emote rows and keep them out of delayed-leave detection
+
+Labels: `fix`, `infrastructure`, `migration`
+Part of: EPIC "Chat-log backfill" (D27 helper, D37). **Mergeable and useful on its own, before any backfill code**, and the first PR of the epic.
+
+## Why this stands alone, and why it needs no feature flag
+
+Today a set-session's ballot creates archived `Emote` rows for members without a row and stamps `LastEnteredSetAtUtc = now` only to hold the delayed-leave detection off for one 30-minute window (`src/EmotePurge.Infrastructure/Services/VoteSessionService.cs:478-483`). After that window every REST resync of the **active** set treats such a row as a credible leave (`IsCredibleRestLeave`, `SevenTvSyncService.cs:1049-1050`; window `:43`), sends it through the post-check (`:935-938`) and writes an `EmoteSetLeaveObservation` for the active set (`:940-957`) — for an emote that was never in that set. `EmoteTagService.Holds` then discards a tag placement registered before that observation (`EmoteTagService.cs:559-564`, `:936-946`). The marker fixes this latent case for the rows that exist today and for every row the backfill will create later. It is additive (column default `false`), touches no read model, API or UI, and only suppresses observations that are false by construction — there is no behaviour an operator could want to switch back on, so a flag would protect nothing.
+
+## Scope
+
+1. `Emote.IsPlaceholder` (`boolean NOT NULL DEFAULT false`, `Emote.cs` comment explaining the meaning) + `AppDbContext` mapping; migration `AddEmotePlaceholderMarker` whose `Up` backfills `true` for `"IsArchived" AND "ArchivedAt" IS NULL AND "LastEnteredSetAtUtc" IS NOT NULL` (the one combination only the vote-session insert produces: every sync/`EmoteService` archive stamps `ArchivedAt` — `SevenTvSyncService.cs:310-311, :925-926`, `EmoteService.cs:272-273` — and rows older than the `LastEnteredSetAtUtc` column have it null); `Down` drops the column.
+2. `ArchivedEmoteRowUpsert.EnsureRowsAsync(db, channelId, rows, now, ct)` (Infrastructure, shared helper) extracted from `VoteSessionService.UpsertSetSessionEmotesAsync` (`:450-500`): same `INSERT … ON CONFLICT ("ChannelId","SevenTvEmoteId") DO NOTHING`, now writing `"IsPlaceholder" = true` and taking an optional `FirstSeenAt` per row; the vote-session caller passes `null` and keeps its behaviour byte-for-byte (its read path has no date).
+3. Clearing: `UpsertEmote`'s un-archive branch (`SevenTvSyncService.cs:969-1020`) and `EmoteService`'s restore path (`EmoteService.cs:272-280`) set `IsPlaceholder = false` together with `LastEnteredSetAtUtc`; nothing ever sets it back to `true`.
+4. Skipping: `ReconcileAsync`'s b2 branch (`:935-938`) and `IsCredibleRestLeave` (`:1049-1050`) exclude `IsPlaceholder` rows; the b1 branch needs no change (a placeholder is already archived, so it never enters b1). `EmoteSetLeaveObservations.RecordAsync` is untouched.
+5. `docs/DECISIONS.md` entry (English): the marker, its backfill rule, and why the one-window hold-off was not enough (EPIC D37).
+
+## Acceptance criteria
+
+1. Migration: on a database seeded with (a) a vote-session-shaped row (`IsArchived, ArchivedAt NULL, LastEnteredSetAtUtc set`), (b) a sync-archived row (`ArchivedAt` set), (c) a pre-column archived row (both null), (d) an active row — only (a) ends with `IsPlaceholder = true`; `Down` drops the column cleanly.
+2. EPIC AC 27 for vote-session-created rows: a REST resync of the active set 31 minutes after creation writes **no** `EmoteSetLeaveObservation` for them and discards no tag placement; a formerly-active archived row in the same pass still yields its observation (regression guard).
+3. After `ReconcileAsync` un-archives a placeholder (set becomes active) or `EmoteService` restores it, `IsPlaceholder = false`; a later real leave after the credibility window is observed normally.
+4. `SevenTvSyncServiceDuplicateEmoteIdTests`, the existing vote-session tests and `EmoteServiceTests` stay green unchanged; `dotnet test EmotePurge.slnx` green; new code ≥ 80 % covered.
+
+## Tests
+
+`Integration/SevenTvSyncServicePlaceholderTests.cs` (next to `SevenTvSyncServiceDuplicateEmoteIdTests.cs`), `Integration/AddEmotePlaceholderMarkerMigrationTests.cs`, `Integration/VoteSessionServiceTests.cs` extension (helper path writes the flag), `Integration/EmoteServiceTests.cs` extension (restore clears it).
+
+## Files
+
+`src/EmotePurge.Core/Entities/Emote.cs`, `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs`, `src/EmotePurge.Infrastructure/Migrations/2026xxxx_AddEmotePlaceholderMarker.cs`, `src/EmotePurge.Infrastructure/Services/ArchivedEmoteRowUpsert.cs` (new), `…/Services/{VoteSessionService,SevenTvSyncService,EmoteService}.cs`, `docs/DECISIONS.md`.
+
+# Child 2: Backfill schema and archive range client
+
+Labels: `feature`, `infrastructure`, `migration`
+Part of: EPIC "Chat-log backfill" (§1, §2, §8 and D3–D6, D21, D25, D33, D34, D40 bind this issue). Pure contracts and plumbing: nothing here is reachable by a user, so it merges behind nothing.
+
+## Scope
+
+1. `UsageStatSource` enum + `UsageStat.Source` (§1); entities `ChatLogBackfillRun` (exact columns incl. `EmoteSetName`, `ArchiveBaseUrl`, CHECKs, three indexes), `ChatLogBackfillRunEmote` (PK `(RunId, EmoteId)`, `SevenTvEmoteId`, alias `Name`, `AddedToSetDay`, `CreatedRow`, cascade from the run, no FK to `Emotes` — D25/D41), `ChatLogBackfillCoverageDay` (PK `(ChannelId, Day)`, `EmoteSetId`, `ArchiveHost`, `RunId SET NULL`, D34/D45) and the single-row `ChatLogBackfillProviderState` seeded by the migration (D31); `AppDbContext` configuration; migration `AddChatLogBackfill` (the second of the two migrations, D42; it does not touch `IsPlaceholder`) with a `Down` that raises while `Source = 1` or coverage rows exist (D40). The live flush is not modified.
+2. `ChatLogArchiveOptions`: `BaseUrl` default `https://logs.cyex.app/`, new `RangeBodyTimeout` (5 min) and `MaxLineBytes` (16 KiB). `IChatLogArchiveClient.ReadRangeAsync` + `ChatLogRangeResult` with `RetryAfter` (§2), `ChatLogDayStatus.LineTooLong`, `BoundedLineScanner` (D33); typed-client registration: UA `EmotePurge (+https://emotepurge.app)`, `AutomaticDecompression = All`. `ReadDayAsync` unchanged.
+3. 7TV preview carries `added_at` (§2.1): query string change probed live by hand first, fixture second; `SevenTvEmoteSetPreviewItem.AddedAt`, `ForeignEmoteRow.AddedAt` (trailing optional, null = 7TV reported none, no bounds invented), `ForeignEmoteSetService` mapping; `ForeignEmoteSet.SchemaVersion = 2` and the `7tvforeign:v2:` key prefixes in `ForeignEmoteSetCache`, a payload below v2 read as a miss (D43).
+5. Hooks that touch no backfill logic but the new entities: `ChannelDeactivation.DeactivateAsync` cancels an active run with `channel_left` in the same save (D16); `AccountDeletionService` pseudonymises `RequestedBy*` (D15); `DataRetentionService` step "backfill runs" after the audit-log step, same dry-run/enforce semantics; `RetentionRunSummaryFormatter` gets the count. (Moved here from child 3 to keep that one at 3 days.)
+4. `ChatLogBackfillOptions` (§8, `MaxBlockMegabytes` default 256) bound from `ChatLogBackfill`, validated, singleton; `BotCommands.BackfillPrefix`; `LiveEvents.BackfillProgress` in `ChannelTypes`; `AuditActions.BackfillRequest/BackfillCancel`, `AuditLogDetail.Kinds.BackfillMonths`; `RetentionPolicy.ChatLogBackfillRun = 365 d` (the constants the next children code against; the frontend audit map and labels come with child 5).
+
+## Acceptance criteria
+
+1. Migration applies forward and backward on an empty database and on one seeded with live rows; `Source = 0` on all existing rows (EPIC AC 1); a seeded `Source = 1` row or a coverage row makes `Down` raise and leave the schema in place (EPIC AC 29); a direct insert of a second active run for one channel violates `IX_ChatLogBackfillRuns_ChannelId_Active`.
+2. `ReadRangeAsync` requests `channelid/{id}?from=2026-04-09T00:00:00Z&to=2026-04-16T00:00:00Z&raw`, maps 404 → `NoLogDay`, 429 + `Retry-After: 120` → `RateLimited` with `RetryAfter = 120 s`, 429 without header → `RetryAfter = null`, decodes a brotli body, enforces `maxBytes` and `RangeBodyTimeout`; a generated 50 MB newline-free stream ends `LineTooLong` with the scanner's peak buffer ≤ `MaxLineBytes` + 1 KiB (EPIC AC 24, unit part).
+3. The preview query selects `added_at` and maps it to `AddedAt` (absent/null → null, no further validation); the recorded live answer is the fixture; a cached pre-v2 payload is a miss and a v2 payload round-trips `AddedAt` (EPIC AC 31, cache half).
+3a. Leave cancels an active run with `ErrorCode = channel_left` in the same transaction as the deactivation; account deletion of the requester rewrites `RequestedByTwitchUserId/Login` to `deleted-user`; retention deletes a finished run with `FinishedAtUtc` 366 days old and keeps one 364 days old (dry-run counts only); the provider-state row exists after `Up` and is dropped by `Down`.
+4. `docker compose --profile harness run … zokka --days 3 --diagnostic` produces day lines byte-identical to a run from before this child on the same days (EPIC AC 18).
+5. `dotnet test EmotePurge.slnx` green; new code ≥ 80 % covered.
+
+## Tests
+
+`Integration/AddChatLogBackfillMigrationTests.cs` (backfill-free; refusing `Down`, partial unique index, provider-state seed), `Unit/ChatLogArchiveClientTests.cs` extensions, `Unit/BoundedLineScannerTests.cs`, `Unit/SevenTvApiClientTests` extension (preview `added_at`), `Integration/ForeignEmoteSetCacheTests.cs` extension (versioned keys), `Integration/AccountDeletionServiceTests.cs` + `Integration/DataRetentionServiceTests.cs` + `Integration/ChannelServiceTests.cs` extensions (hooks, with seeded run rows).
+
+## Files
+
+`src/EmotePurge.Core/Entities/{UsageStat,UsageStatSource,ChatLogBackfillRun,ChatLogBackfillRunEmote,ChatLogBackfillCoverageDay,AuditLogEntry}.cs`, `src/EmotePurge.Core/Services/{IAuditLogQueryService,RetentionPolicy}.cs`, `src/EmotePurge.Core/ChatLogArchive/{IChatLogArchiveClient,ChatLogArchiveModels}.cs`, `src/EmotePurge.Core/Messaging/{BotCommands,LiveEvents}.cs`, `src/EmotePurge.Core/SevenTv/SevenTvModels.cs`, `src/EmotePurge.Core/Services/IForeignEmoteSetService.cs`, `src/EmotePurge.Infrastructure/ChatLogArchive/{ChatLogArchiveClient,ChatLogArchiveOptions,BoundedLineScanner}.cs`, `src/EmotePurge.Infrastructure/SevenTv/{SevenTvApiClient,SevenTvApiDtos}.cs`, `src/EmotePurge.Infrastructure/Services/{ChatLogBackfillOptions,ForeignEmoteSetService,ChannelDeactivation,AccountDeletionService,DataRetentionService}.cs`, `src/EmotePurge.Infrastructure/SevenTv/ForeignEmoteSetCache.cs`, `src/EmotePurge.Worker/RetentionRunSummaryFormatter.cs`, `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs`, `src/EmotePurge.Infrastructure/Migrations/2026xxxx_AddChatLogBackfill.cs`, `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`.
+
+# Child 3: `IChatLogBackfillService` — locked enqueue with 7TV snapshot, block replace with coverage, run transitions
+
+Labels: `feature`, `infrastructure`
+Part of: EPIC "Chat-log backfill" (§3 in full, §4.1, D1, D2, D7, D10–D14, D25–D28, D31, D32, D34–D38, D43 bind this issue; depends on children 1 and 2).
+
+## Scope
+
+1. `IChatLogBackfillService` (Core) + `ChatLogBackfillService` (Infrastructure) with every method of §3 including `GetSnapshotAsync`, `IsRunActiveAsync` and `GetCoverageAsync`; the window math of §4.1 (`todayUtc` is a parameter so tests pin it).
+2. `EnqueueAsync` running the check order of §3: excluded-channel pre-check (D32), membership via `ITrackedEmoteSetMembershipService`, 7TV read via `IForeignEmoteSetService` (a pre-v2 cached payload is refetched, D43), deduplicating preview items last-wins (D36), then the final transaction under the channel lock **by captured id** (`LockChannelByIdAsync`, new in `ChannelQueries`) and the user `FOR SHARE` lock with re-validation incl. `ChannelGone`/`ChannelIdentityChanged` (D35; `LeaveAsync` moved to a `FOR UPDATE` loader), creating missing placeholder rows through child 1's `ArchivedEmoteRowUpsert` with `FirstSeenAt = addedAt` (D27) and persisting the snapshot (D10/D11/D25); refusing `SetNotMember`/`SetEmpty`/`SetTruncated`/`SevenTvUnavailable`/`RequesterGone`/`ChannelExcluded` without writes; publishing `BACKFILL:` + `backfill.progress` after the commit.
+3. The one-transaction channel-scoped `ReplaceBlockAsync` that also writes coverage days (with `ArchiveHost`) and returns the closed `ChatLogBackfillBlockResult` (`Committed(transition with reset counters)` / `RunNotActive` / `LiveRowConflict` / `ChannelGone`, D28/D34/D38/D48), `FailAsync` booking bytes (D47), `TryAcquireLoopLockAsync` (D46), `GetCoverageAsync(channelId, scope)` with the per-set and contiguity rules (D34), conditional status/counter transitions returning status + counters — `PauseAsync` computing the delay from the row and writing the provider cooldown in the same transaction (D31/D38), `RecordBlockAttemptAsync`, `FailAsync`, `ClaimNextAsync` strict FIFO, `ResetInterruptedRunsAsync`, `IsRunActiveAsync`, `GetCooldownUntilAsync` — `CancelAsync`, `GetStatusAsync` (options, `activeEmoteSetId`, `coverage`, `importedFrom`/`importedTo`/`importedContiguous`, `cooldownUntilUtc`).
+
+## Acceptance criteria
+
+1. Second `EnqueueAsync` for a channel with an active run returns `AlreadyActive` (pre-check and, under a concurrent race, the index).
+2. `EnqueueAsync` with `CreatedAt` = today − 60 days, `months = 1` → `WindowEmpty`; `months = 3` → window `[today−3M, today−60d)`; `months = 6` → 27 or fewer weeks as computed by the planner rule.
+3. `EnqueueAsync` for set B whose preview lists 5 members of which 2 have rows (one active, one archived) and 3 have none: persists 5 snapshot rows with B's aliases and `AddedToSetDay`, `EmoteSetName` = the preview's name; creates exactly 3 placeholder rows (`IsArchived = true`, `IsPlaceholder = true`, `ArchivedAt IS NULL`, `FirstSeenAt = addedAt`, `LastSyncedAt = LastEnteredSetAtUtc = now`, `Name` = alias, `ImageUrl` = preview url) with `CreatedRow = true` on their snapshot rows and `CreatedRow = false` on the 2 existing ones, stores `ArchiveBaseUrl`, and leaves the 2 existing rows byte-identical; renaming/archiving emotes and switching `ActiveEmoteSetId` afterwards leaves `GetSnapshotAsync` unchanged; `SetNotMember`, `SetEmpty`, `SetTruncated`, `SevenTvUnavailable`, `ChannelExcluded` and `RequesterGone` each write nothing (run, snapshot, emotes all unchanged).
+4. A row created by 3 is found and un-archived in place by `SevenTvSyncService.ReconcileAsync` when B's members are passed as the live set (same `Emote.Id`, `IsArchived = false`, `IsPlaceholder = false`, `Name` overwritten, `FirstSeenAt` corrected from `AddedToSetAt`, `LastEnteredSetAtUtc` restamped); the `(ChannelId, SevenTvEmoteId)` index still holds one row.
+5. `ReplaceBlockAsync` on a run that was cancelled between fetch and commit returns `RunNotActive` and leaves zero rows and zero coverage days for the block; a seeded live row yields `LiveRowConflict` with nothing written; a vanished channel yields `ChannelGone`; on a running run it returns `Committed` with counters (0, 0), deletes every previous imported row of the channel in the block (other set ids included, OD-A), inserts the aggregates with `Source = 1` and the run's chosen `EmoteSetId`, upserts one coverage day per block day with that set id and the run's archive host, persists `messages` as `MessagesRead` and `bytes` as `BytesReceived`, drops an aggregate whose emote id no longer exists (warning, not failure), increments `WeeksDone`, resets `PauseCount`/`BlockAttempts`, and sets `completed` + `FinishedAtUtc` when `isLastBlock`.
+6. A seeded **live** row for an imported day makes `ReplaceBlockAsync` return `LiveRowConflict` without writing anything (EPIC D3/D48).
+7. `GetCoverageAsync`: per set vs. `AllSets` (adjacent days covered by two different sets give each set its own range and the channel one contiguous range), gapped, failed-run-partial and rejoin-gap cases yield the `importedFrom`/`importedTo`/`hasGaps`/`contiguousFrom` of D34; `RunId` is `NULL` after the run row is deleted and the coverage stays.
+8. EPIC AC 23 (enqueue side), 25 (a–e), 26, 28 (incl. the 60 s pause after a commit reset) and 30 (service side: the cooldown is written in the pause transaction and survives cancel/leave/purge of the run) pass.
+9. `dotnet test EmotePurge.slnx` green; new code ≥ 80 % covered.
+
+## Tests
+
+`Integration/ChatLogBackfillServiceTests.cs` (own database like `DataRetentionServiceTests`, fixed clock; incl. the lock races with a blocked preview via `TaskCompletionSource` substitutes), `Integration/AccountDeletionServiceTests.cs` + `Integration/DataRetentionServiceTests.cs` extensions, `Integration/UsageStatQueryServiceTests.cs` for every existing read including `Source = 1` rows.
+
+## Files
+
+`src/EmotePurge.Core/Services/IChatLogBackfillService.cs` (+ DTO/result records), `src/EmotePurge.Infrastructure/Services/{ChatLogBackfillService (new),ChannelService (LeaveAsync lock),ChannelDeactivation,AccountDeletionService,DataRetentionService}.cs`, `src/EmotePurge.Worker/RetentionRunSummaryFormatter.cs`, `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`.
+
+## Effort note
+
+3 days — at the limit the operator set; the D15/D16/retention hooks were moved to child 2 to make room for the id lock, the in-transition pause delay and the provider cooldown.
+
+# Child 4: ChatLogBackfillWorker — sequential queue, block replay, 429/transport policy, SSE progress
+
+Labels: `feature`, `worker`
+Part of: EPIC "Chat-log backfill" (§4 in full, §6, D7–D13, D31–D33, D38, D39; depends on children 2 and 3).
+
+## Scope
+
+1. `src/EmotePurge.Worker/ChatLogBackfill/`: `ChatLogBackfillWorker` (§4.2 loop: advisory loop lock before any reset/claim (D46), strict FIFO head, `RunAsync` returning on pause (D44), persisted provider cooldown read before every request and claim (D31), `archive_mismatch` check at claim (D45), block-result mapping per D48, bytes/messages booking per D47, excluded-channel check at claim with the worker's own filter (D32), counters always taken from the last transition (D38), per-run status monitor (`CancelPollSeconds`) cancelling the run-scoped CTS plus `IsRunActiveAsync` before every request (D39), nudge as accelerator only; waits on `BootRecoveryGate.Completed`; exits after one log line when `ChatLogBackfill:Enabled` is false), `ChatLogBackfillBlockPlanner`, `ChatLogBackfillBlockCounter` (§4.4 rule, no chatter ids retained), `ChatLogBackfillRetryPolicy` (§4.5), `ChatLogBackfillSignal`.
+2. `Worker.cs`: `BACKFILL:` branch sets the signal (§4.8); `WorkerServiceRegistration.cs`: hosted service + signal singleton.
+3. Snapshot per §4.3: loaded from the run's persisted rows via `GetSnapshotAsync`, never from `Emotes`/`Channel`; `AddedToSetDay` gate from the snapshot; reloaded unchanged after pause/restart; one archive client instance per run; worker-side spacing `RequestDelaySeconds`.
+4. Exclusion gate in the archive callback before `Count` (same placement as `HarnessRunner.cs:488-491`).
+5. Events: `backfill.progress` on claim/commit/pause/resume/complete/fail; `usage.flushed` on commit (via `LiveEventPublisher`-style helper).
+6. Logging: one Information line per block (channel, block range, lines, bytes, status), Warning on pause/retry, Error on fail with `ErrorCode`; never message text or chatter ids.
+7. CLAUDE.md hosted-service enumeration updated (eleven services).
+
+## Acceptance criteria
+
+1. Planner: 183 days → 27 blocks with the last `[2026-10-07, 2026-10-08)`; 7 days → 1 block; 8 days → 2 blocks (7 + 1).
+2. Counter reproduces `ReplayDayCounter` categories on the shared test cases (own human, own bot by badge, own bot by id, foreign room, indeterminate markers), discards a hit on a day before `AddedToSetDay`, counts a null-`AddedToSetDay` emote on every day, dedups per message, drops a message dated outside the block, and exposes no user id after `Aggregates()`.
+3. Retry policy: 3 attempts per block with 30 s before the 2nd and 120 s before the 3rd, then `transport_failure`; 429 pauses 60 s, 120 s, …, cap 900 s, `Retry-After` honoured up to the cap; 10 pauses tolerated, the 11th consecutive 429 → `rate_limited`; a committed block resets both counters — the worker only ever uses the last transition's counters, a simulated restart between pauses continues the series, and resume → commit → 429 pauses 60 s (EPIC AC 28). The persisted cooldown blocks a younger queued run from making any request even after the head was cancelled, and survives a restart (EPIC AC 30). The status monitor stops the run within `CancelPollSeconds` with the command queue blocked, the nudge dropped, or a leave (EPIC AC 8); a claim for an excluded channel fails without a request (EPIC AC 23).
+4. Live (rule 16, LAN stack, flag on): `zokka` 1 month completes; `handofblood` 6 months completes in < 10 min with 27 blocks (EPIC AC 2); restart mid-run resumes at `weeksDone` (AC 10); cancel mid-run discards only the in-flight block (AC 8); excluded chatter yields zero counts (AC 6); a run seeded for a non-active set writes rows only under that set id and leaves another set's imports untouched (AC 19–20, via a seeded run row + snapshot until child 5 lands).
+5. `docker compose --profile harness run … zokka --days 3 --diagnostic` produces day lines byte-identical to a run from before this child on the same days (AC 18).
+6. `dotnet test EmotePurge.slnx` green; Worker.Tests cover planner, counter, policy, signal and the dispatch branch.
+
+## Tests
+
+`tests/EmotePurge.Worker.Tests/ChatLogBackfillBlockPlannerTests.cs`, `ChatLogBackfillBlockCounterTests.cs`, `ChatLogBackfillRetryPolicyTests.cs`, `WorkerServiceRegistrationTests.cs` extension, `WorkerBootSequenceTests.cs`/dispatch test for the new prefix.
+
+# Child 5: Backfill API — status/start/cancel routes, error codes, audit, permissions flag
+
+Labels: `feature`, `api`
+Part of: EPIC "Chat-log backfill" (§5 incl. §5.6, D14, D17, D26, D32, D35; depends on child 3).
+
+## Scope
+
+1. `ChannelEndpoints.cs`: `GET/POST/DELETE /{channelName}/backfill` exactly as §5.1–5.3 (verbs, policies incl. `TrackedEmoteSetPreview` on POST — D29, `ChannelManagementAuthorizationFilter`, 202/204 semantics, `{ errorCode }` bodies). Handlers are thin: validate `emoteSetId` with `EmoteSetIdValidation.IsValid` (400 `invalid_emote_set_id`), parse `months`, build `AuditActor` via `TryBuildAuditActor`, call `IChatLogBackfillService`, map results incl. the 7TV ladder (404 `emote_set_not_found`, 503 `foreign_channel_seventv_unavailable` + `Retry-After`), `ChannelExcluded` → 409 `channel_excluded`, `ChannelGone` → 404 `channel_not_found`, `ChannelIdentityChanged` → 409 `backfill_channel_identity_changed`, `RequesterGone` → 401; `GET` carries `coverage`, `importedFrom`/`importedTo`/`importedContiguous` and `cooldownUntilUtc`.
+1a. `GET /api/channels/{channelName}/usage-stats/import-coverage` (§5.6) in `UsageStatsEndpoints.cs` behind `UsageStatsAccessAuthorizationFilter`, not behind the flag. `todayUtc = DateOnly.FromDateTime(DateTime.UtcNow)` is computed in the handler and passed down.
+2. Flag off → 404 `backfill_disabled` after the filters (D17).
+3. `ApiErrorCodes`: the nine new codes of §5.5 (three existing ones reused); `web/src/app/core/i18n/api-error.ts` + `errors.api.*` in de/en (rule 7; the locale spec enforces the last two steps).
+4. `ChannelPermissionsDto.ChatLogBackfillEnabled` + `ChannelPermissions.chatLogBackfillEnabled` (§5.4); E2E mock default `true` in `mockChannelPermissions`.
+5. Audit, complete in this child so every suite stays green on its own (Fix 10): `ACTION_KEYS` entries for `backfill.request`/`backfill.cancel` in `web/src/app/shared/audit/audit-actions.ts` (`:48-49` filter list derives from it), the de/en labels `audit.actions.backfill.*` ("Backfill requested" / "Backfill angefordert", "Backfill cancelled" / "Backfill abgebrochen"), the `backfillMonths` detail kind label ("{{count}} months" / "{{count}} Monate", `{ one, other }` pair per the #255 rule) and the `audit-actions.spec.ts` expectations (`:44-46` enumerate `ACTION_KEYS` against both locales).
+
+## Acceptance criteria
+
+1. Filter matrix (`AuthFilterMatrixTests`): for each of the three routes — 401 unauthenticated, 400 `invalid_channel_name` before any access check, 403 when `CanManageChannelAsync` is false (and `CanViewUsageStatsAsync` true — editors are excluded), success code when true; `CanViewUsageStatsAsync` is never consulted.
+2. Mapping tests: every `EnqueueResult` → the status/code of §5.2; `CancelResult` → §5.3; `GetStatusAsync` null → 404 `channel_not_found`; flag off → 404 `backfill_disabled` on all three for a manager.
+3. Response JSON of `GET` matches §5.1 field names (camelCase), dates as `yyyy-MM-dd`, timestamps ISO UTC with `Z` (wire-format test like `ChannelUsageSeriesWireFormatTests`).
+4. `/permissions` carries `chatLogBackfillEnabled` reflecting the option.
+5. `api-error-locales.spec.ts` and `audit-actions.spec.ts` green with the new codes/actions; `dotnet test` green; the import-coverage read answers per scope with the §5.6 shape, 200 for a 7TV editor, 403 for a stranger, and is unaffected by the flag.
+6. `GET` carries `activeEmoteSetId` and each run's `emoteSetId`/`emoteSetName`/`emoteCount`; `POST` requires `emoteSetId` in the body.
+
+## Tests
+
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` (three routes added, `ApiFactory` gets `IChatLogBackfillService` substitute + a factory variant with the flag off), new `ChatLogBackfillEndpointsTests.cs`; `web/src/app/core/i18n/api-error-locales.spec.ts` (existing).
+
+# Child 6: Settings tab, guard, BackfillService and set picker — start a run
+
+Labels: `feature`, `web`
+Part of: EPIC "Chat-log backfill" (§5.1 contract, §6, §7 start half, B8, D17–D18, D26; depends on child 5; E2E runs fully mocked, so it does not wait for child 4). Mergeable behind the flag: a manager can start a run; the running/finished half of the section comes in child 7.
+
+## Scope
+
+1. Route `settings` behind the new `channelSettingsGuard` (manage **and** `chatLogBackfillEnabled`), tab "Settings"/"Einstellungen" after Activity under `@if (canManage() && chatLogBackfillEnabled())` (`channel-workspace-layout.ts:80`, both from the one `/permissions` read at `:200-202`); `channelWorkspace.tabs.settings` in de/en; layout comment noting the flag condition goes once a second settings section exists (D17).
+2. `BackfillService` + models (`core/channels/`) for `getStatus`, `start`, `cancel`; `ChannelSettingsPage` + `BackfillSection` (`features/channel-workspace/`) per §7: explanations with the archive link from the status payload (`archive.url`, `archive.name`), the set picker before the window choice (list via `SevenTvEmoteSetService.listChannelEmoteSets`, preselected `activeEmoteSetId`, personal sets filtered, disabled + sentence on 503, the `backfill.setNote` line), option radios with window/days and disabled reason, start button (sends `{ emoteSetId, months }`); while a run exists (`activeRun`) the section shows only a one-line "a run is active" sentence and the disabled start — the full status block is child 7.
+3. Flag off (`permissions.chatLogBackfillEnabled === false`): no tab, guard redirects, no status request (D17).
+4. `LIVE_EVENT_TYPES.backfillProgress` constant; `liveReload(channelLiveUrl, { accept: [backfillProgress], debounceMs: 500 })` → refetch status (so the start button re-enables when a run ends).
+5. i18n namespace `backfill.*` (start half: heading, explanations, set note, option labels, reasons, start button); the visual language follows `docs/UI-Designsprache.md`.
+
+## Acceptance criteria
+
+1. Tab visible for a manager with the flag on, absent for `canManage: false` and absent for `chatLogBackfillEnabled: false` (E2E; EPIC AC 12, 14); direct navigation to `/channels/x/settings` is redirected by the guard in both denied cases.
+2. Option disabled with reason text when `available: false`; start button disabled while `activeRun` exists or no available option/set is selected (Vitest on `computed()`s).
+3. Picker: preselects the active set from the mocked `/emote-sets`, lists the other non-personal sets by name, sends the chosen id in the `POST` body; a 503 on the list disables picker and start with the sentence (E2E; EPIC AC 19, picker half).
+4. Start → `POST {emoteSetId, months}` → 202 → the section shows the "run is active" sentence; `__emitLive({type:'backfill.progress', channel:'x'})` → refetch (E2E; AC 15, refetch half).
+5. `npm test`, `npm run e2e`, `lint`, `format` green.
+
+## Tests
+
+`backfill.service.spec.ts`, `backfill-section.spec.ts` (start half), `channel-settings.guard.spec.ts`, `channel-workspace-layout.spec.ts` (tab condition), `web/e2e/channel-settings.e2e.spec.ts` with new mocks `mockBackfillStatus/Start` in `web/e2e/support/mocks.ts`.
+
+# Child 7: Backfill progress, cancel, replace warning and last-run display
+
+Labels: `feature`, `web`
+Part of: EPIC "Chat-log backfill" (§5.1 contract, §6, §7 status half, B8, B11, D28, D31; depends on child 6).
+
+## Scope
+
+1. `BackfillRunStatus` component inside `BackfillSection`: progress (`<progress>` + `role="status"` text "{{weeksDone}} of {{weeksTotal}} weeks"), queue position, paused-until / cooldown-until ("the archive asked us to wait until …", also for a queued run while `cooldownUntilUtc` is set), the set used (`emoteSetName ?? emoteSetId`, `emoteCount`), requested by; last run block with status, window, weeks, finished time, set, translated `backfill.errors.*` (§4.6 vocabulary).
+2. Cancel with confirm dialog (same `DialogActionRow` pattern) while queued/running/paused → `DELETE`; `canCancel` computed.
+3. The OD-A replace warning derived from `coverage` (`replacedIntervals(option, setId)`, sentence per interval naming set and range, repeated in the confirm-before-start dialog, `backfill.replaceWarning`).
+4. i18n namespace `backfill.*` (status half: statuses `queued|running|paused|completed|failed|cancelled`, errors, cancel dialog, warning).
+
+## Acceptance criteria
+
+1. `replacedIntervals` names exactly the coverage intervals inside the window held by another set; the rendered warning and the dialog text match (Vitest + E2E; EPIC AC 20).
+2. Progress renders `weeksDone/weeksTotal`; `__emitLive({type:'backfill.progress'})` → refetch → `weeksDone` updated without reload (E2E; AC 15).
+3. Cancel opens the confirm dialog; confirm → `DELETE`; cancel button absent for terminal runs; a queued run under a provider cooldown shows the wait sentence.
+4. The active/last run shows `emoteSetName ?? emoteSetId` and `emoteCount`; every error code of §4.6 has a de/en sentence (Vitest over the vocabulary list).
+5. `npm test`, `npm run e2e`, `lint`, `format` green.
+
+## Tests
+
+`backfill-section.spec.ts` (status half), `backfill-run-status.spec.ts`, `web/e2e/channel-settings.e2e.spec.ts` extensions with `mockBackfillCancel` and coverage fixtures in `web/e2e/support/mocks.ts`.
+
+# Child 8: Provenance caption from per-set coverage, docs, compose wiring, acceptance run
+
+Labels: `feature`, `web`, `docs`, `ops`
+Part of: EPIC "Chat-log backfill" (B7, B13, §5.6, §7 caption, §8–§9, D19–D22, D24, D34, D40–D42; depends on 1–7 for the acceptance run).
+
+## Scope
+
+1. `ImportCoverageService` + model (`core/usage/`) over `GET …/usage-stats/import-coverage?emoteSetId=` (§5.6, child 5), called by the usage page per selected set (and `all` for the set-agnostic view), refetched on `backfill.progress`.
+2. Usage page: `usageStats.trackedSinceWithImport` (+ `…Gaps`) with the link as its own `<a target="_blank" rel="noopener">` showing `sourceName` — shown **whenever** the viewed set has any imported day (B7, D34), naming `importedFrom`–`importedTo` (inclusive end for display) and "with gaps" when `hasGaps`; `coverageStart` (= `contiguousFrom` only when it exists and `importedTo` equals the tracked-since date, else the live start) replaces `trackedSince` in `rangeStartsBeforeTracking` and `trendFor`; the rejoin-gap banner is kept; `emote-context.ts` unchanged (it receives `coverageStart` as `trackedSince`).
+3. `docker-compose.yml`, `docker-compose.prod.yml`, `.env.example`: `ChatLogBackfill__Enabled=${CHAT_LOG_BACKFILL_ENABLED:-false}`, `ChatLogBackfill__RequestDelaySeconds=${CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS:-10}` on **api and worker**, `ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}` on **api, worker and harness** (D45); the worker service keeps `replicas` at one with a comment pointing at D46.
+4. `docs/Operations.md` section "Chat-log backfill" (§9) incl. the quiesce-and-cleanup procedure before a migration revert or a deploy of an image without caption support (D40), the restricted placeholder cleanup statement (D41), the minimum rollback image (D42), retention table row; `docs/DECISIONS.md` entry (English); `docs/Feature-Ideen-2026-08-01.md` row `A17` + idea section, status ✅ with date in the same commit (D22); `CLAUDE.md` Umsetzungsstand row for the feature.
+5. Acceptance run on the LAN stack against the real archive: EPIC AC 2, 3, 4, 5, 10, 11, 18 recorded in the PR (wall time, bytes, blocks, 429 count, before/after live-row digest).
+
+## Acceptance criteria
+
+1. Caption shows the imported range and the link whenever `importedFrom` is set for the viewed set — partial, cancelled and gapped coverage included, with the gaps variant when `hasGaps`; a set without own imported days shows none even if another set has imports; switching the set dropdown refetches (Vitest on the key choice; E2E on the rendered link and the per-set switch, `usage-atlas.e2e.spec.ts`; EPIC AC 11).
+2. `rangeStartsBeforeTracking` is false for a range starting on `contiguousFrom` when a covered stretch ends at the tracked-since date — including the §3 example with an older gap further back — and true for one starting before it; with no covered day adjacent to the counting start, or `importedTo` earlier than the tracked-since date, the live start governs, the gap banner shows and the trend stays suppressed (Vitest; EPIC AC 11, D49).
+3. Operations section lists every key of §8 with its default and the privacy prerequisite in the first paragraph; the rollback procedure (imported rows + coverage, restricted placeholder cleanup, minimum image) present and executed once against the LAN database to prove it (imported row count → 0, caption gone, every vote row still present — EPIC AC 32).
+4. All EPIC acceptance criteria pass; the PR body links the measurements.
+5. All three suites + coverage script green; Codex Sol review done before merge.
+
+## Tests
+
+`usage-stats-page.spec.ts` additions, `import-coverage.service.spec.ts`, `usage-atlas.e2e.spec.ts` addition.
