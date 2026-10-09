@@ -778,21 +778,21 @@ WHERE e."IsArchived" AND e."ArchivedAt" IS NULL AND e."LastEnteredSetAtUtc" IS N
 
 ## Chat-log backfill
 
+**Before you switch it on, update the privacy statement.** The backfill reads chat messages of third
+parties from an archive the operator does not run. Add the archive as a data source to the
+operator-owned `privacy.de.md` / `privacy.en.md` first (see "Legal pages"); no repository commit is
+needed. The flag stays `false` on production until that text is live.
+
 A channel manager (global admin, broadcaster or live moderator) can fill the days **before** a channel's
 counting start from a public chat archive (`https://logs.cyex.app/` by default). A run covers 1, 3 or
 6 months, matches the names of one chosen 7TV set, and writes the counts as `UsageStats` rows with
 `Source = 1`. It never touches a live-counted day, and the usage page names the imported range and links
 the archive wherever the numbers are shown. The feature is off by default.
 
-**Before you switch it on, update the privacy statement.** The backfill reads chat messages of third
-parties from an archive the operator does not run. Add the archive as a data source to the
-operator-owned `privacy.de.md` / `privacy.en.md` first (see "Legal pages"); no repository commit is
-needed. The flag stays `false` on production until that text is live.
-
 ### Configuration
 
-Section `ChatLogBackfill` (and `ChatLogArchive`). Only the first three keys have a compose variable;
-the others are tuning knobs you set as `ChatLogBackfill__<Key>` / `ChatLogArchive__<Key>` environment
+Section `ChatLogBackfill` (and `ChatLogArchive`). Only three keys have a compose variable (`Enabled`,
+`RequestDelaySeconds` and `ChatLogArchive:BaseUrl`); the others are tuning knobs you set as `ChatLogBackfill__<Key>` / `ChatLogArchive__<Key>` environment
 variables on the service if you ever need them. Every value is validated at startup; a typo stops the
 container with a readable message.
 
@@ -853,10 +853,13 @@ FROM "ChatLogBackfillRuns" ORDER BY "Id" DESC LIMIT 20;
 
 ### Rolling back
 
-**Switching it off is cheap.** `ChatLogBackfill:Enabled=false` on api **and** worker, recreate both: the
-routes answer 404, the tab disappears, the worker loop exits. Queued and paused rows stay as they are.
-To freeze a run first, cancel it in the UI, then flip the flag. Imported data stays and is still shown
-with its disclosure, because the usage caption does not depend on the flag.
+**Switching it off is cheap, but cancel first.** `ChatLogBackfill:Enabled=false` on api **and** worker,
+recreate both: the routes answer 404 `backfill_disabled` (including the cancel route), the tab
+disappears, the worker loop logs `Chat-log backfill disabled.` and exits. Queued and paused rows stay
+as they are, and a run stopped mid-block keeps its row on `running` on purpose: the worker only resets
+interrupted runs while the flag is on. So cancel in the UI **before** you flip the flag; afterwards
+there is no route left to do it. Imported data stays and is still shown with its disclosure, because
+the usage caption does not depend on the flag.
 
 **Going back to an image without caption support needs the cleanup below first**, even though the
 schema stays: such an image would show imported numbers with no indication where they came from. The
@@ -871,10 +874,22 @@ placeholders carry votes and cannot be removed. Every rollback stops there.
 Run these through the SSH tunnel, as for the migration; psql prompts for the password. The order
 matters:
 
-1. **Flag off on api and worker, and recreate both.** This quiesces every writer. Check the worker log
-   for `Chat-log backfill disabled.`
-2. **Cancel active runs in the UI and confirm no run is `running`** (the monitoring query above). A
-   `running` row means a writer is still alive; stop here until it is not.
+1. **Cancel active runs in the UI, while the flag is still on.** Wait until the Settings tab shows
+   them cancelled (the worker notices within `CancelPollSeconds`). With the flag off the cancel route
+   answers 404 `backfill_disabled` and the worker no longer resets interrupted runs, so this step
+   cannot be done afterwards.
+2. **Flag off on api and worker, and recreate both.** The proof that no writer is left is the new
+   worker's log line `Chat-log backfill disabled.`, optionally together with this query returning 0
+   (it looks for the session advisory lock the backfill loop holds):
+
+   ```sql
+   SELECT count(*) AS lock_holders FROM pg_locks
+   WHERE locktype = 'advisory' AND objsubid = 1 AND granted
+     AND classid::bigint = (hashtext('emotepurge:chatlog-backfill')::bigint >> 32) & 4294967295
+     AND objid::bigint = hashtext('emotepurge:chatlog-backfill')::bigint & 4294967295;
+   ```
+
+   A row left on `running` is expected after this and is harmless: step 5 closes it.
 3. **Remove the placeholder rows the backfill created (optional, restricted).** This runs **before**
    the run rows are cancelled or deleted, because the run's snapshot is the only proof which rows the
    backfill created (`CreatedRow`). It deletes exactly the rows that are placeholders, were created by

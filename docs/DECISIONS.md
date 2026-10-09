@@ -17,10 +17,15 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md` ·
 `src/EmotePurge.Core/Entities/UsageStat.cs` · `src/EmotePurge.Core/Entities/ChatLogBackfillRun.cs` ·
 `src/EmotePurge.Core/Entities/ChatLogBackfillCoverageDay.cs` ·
+`src/EmotePurge.Core/Entities/ChatLogBackfillRunEmote.cs` ·
+`src/EmotePurge.Infrastructure/ChatLogArchive/ChatLogArchiveOptions.cs` ·
+`src/EmotePurge.Worker/ChatLogBackfill/ChatLogBackfillWorker.cs` ·
+`src/EmotePurge.Api/Endpoints/UsageStatsEndpoints.cs` ·
 `src/EmotePurge.Infrastructure/Services/ChatLogBackfillService.cs` ·
 `src/EmotePurge.Infrastructure/Migrations/*_AddChatLogBackfill.cs` ·
 `web/src/app/core/usage/import-coverage.model.ts` · `web/src/app/core/usage/import-coverage.service.ts` ·
-`web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/features/usage-stats/usage-stats-page.html`
+`web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
 The product decision itself (a manager-triggered backfill from `logs.cyex.app`, after #69's verdict)
 is in the entry "Chat-log backfill becomes a product feature" below; the marker for never-observed emote rows is #347's entry, and
@@ -62,6 +67,16 @@ the suppressed trend. An older gap in front of a contiguous stretch does not dis
 drilldown dialog receives `coverageStart` in the place of `trackedSince`, so its trend agrees with the
 grid's.
 
+**"All time" starts at the first imported day (operator decision, 2026-10-09).** For the viewed set the
+preset begins at `min(importedFrom, tracking-start date)`, so the default view shows the imported
+stretch instead of hiding it behind the live start. Without imports, while the coverage is unknown, or
+when the coverage read failed, it starts at the tracking start as before. The grid is requested only
+after the coverage has answered (or failed) for the scope on screen, otherwise it would be asked twice,
+once per start; a set switch under "all time" therefore holds the old rows until the new set's coverage
+is in and then asks once. The range warning names `coverageStart` rather than the tracking start, and
+when imported days lie before it, it says the numbers there have gaps (the archive does not cover
+every day) instead of claiming nothing was counted.
+
 **The archive is part of the run's identity.** `ChatLogArchive:BaseUrl` now defaults to
 `https://logs.cyex.app/` (the previous default went offline on 2026-10-08), is required on api,
 worker and harness (compose passes one `CHAT_LOG_ARCHIVE_BASE_URL` to all three), is stored on each
@@ -75,10 +90,15 @@ the link appears on the usage caption and the Settings tab. Completion and failu
 `ChatLogBackfill:Enabled` defaults to `false` and is read by api and worker, both of which must be
 recreated to change it; on production it stays off until the operator has added the archive to the
 privacy statement. The `Down` of `AddChatLogBackfill` raises while imported rows or coverage exist,
-and `docs/Operations.md` ("Chat-log backfill") fixes the order for going back: flag off and recreate,
-cancel runs, remove backfill-created placeholders (before the run rows go), delete imported rows and
-coverage, only then an older image or the revert. An image without caption support would show
-imported numbers with no source, so the cleanup is required for an image-only rollback too. The
+and `docs/Operations.md` ("Chat-log backfill") fixes the order for going back: cancel the runs in the
+UI **while the flag is still on** (with it off the routes answer 404 `backfill_disabled`, and a worker
+stopped mid-block leaves its row on `running` on purpose, because interrupted runs are only reset
+while the flag is on), then flag off and recreate both, with the new worker's `Chat-log backfill
+disabled.` line (optionally an empty `pg_locks` check for the loop's advisory lock) as the proof that
+no writer is left; then remove backfill-created placeholders (before the run rows go), delete imported
+rows and coverage, close the leftover `running` rows, only then an older image or the revert. An image
+without caption support would show imported numbers with no source, so the cleanup is required for an
+image-only rollback too. The
 oldest image to roll back to is the one that first shipped `AddEmotePlaceholderMarker`. The
 supported deployment is exactly one worker replica (`container_name` pins it in compose; an advisory
 lock keeps a second one harmless).

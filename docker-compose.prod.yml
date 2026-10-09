@@ -133,7 +133,7 @@ services:
     stop_grace_period: 60s
     # Exactly one worker replica is the supported deployment (D46 in the chat-log backfill spec;
     # docs/Operations.md "Chat-log backfill"). The backfill loop holds a Postgres advisory lock, so
-    # a second replica would be harmless but useless; container_name below pins it to one anyway.
+    # a second replica would be harmless but useless; container_name above pins it to one anyway.
     deploy:
       replicas: 1
       resources:
