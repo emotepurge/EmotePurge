@@ -244,6 +244,39 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.True(joined.IsBotActive);
     }
 
+    [Fact]
+    public async Task LeaveAsync_AgainstAnotherTransactionHoldingTheChannelRow_TakesTheChannelLockBeforeTheRunLock()
+    {
+        // Lock order channel -> run. A holds the channel row FOR UPDATE (as the identity reconcile's
+        // passes do) and then cancels the run through StageAsync; B is a manager's leave. If B cancelled
+        // the run before locking the channel it would hold the run row while waiting for the channel
+        // row, A would wait for the run row, and Postgres would abort one side with 40P01.
+        await using var seedDb = fixture.CreateDbContext();
+        var joined = await JoinChannelAsync(CreateService(seedDb), "bflockorder");
+        var run = await BackfillRunSeed.AddRunAsync(seedDb, joined.Id, ChatLogBackfillRunStatus.Running);
+
+        await using var dbA = fixture.CreateDbContext();
+        await using var txA = await dbA.Database.BeginTransactionAsync();
+        await dbA.Database.ExecuteSqlAsync($"""SELECT 1 FROM "Channels" WHERE "Id" = {joined.Id} FOR UPDATE""");
+        var channelA = await dbA.Channels.SingleAsync(c => c.Id == joined.Id);
+
+        await using var dbB = fixture.CreateTaggedDbContext("bflockorder-b");
+        var leaveB = Task.Run(() => CreateService(dbB).LeaveAsync(joined.ChannelName, Actor));
+        await fixture.WaitUntilBlockedOnLockAsync("bflockorder-b", leaveB);
+
+        await ChannelDeactivation.StageAsync(
+            dbA, Substitute.For<IChannelEmoteSetObservationService>(), channelA, Actor, ChannelDeactivationReason.Locked, CancellationToken.None);
+        await dbA.SaveChangesAsync();
+        await txA.CommitAsync();
+        await leaveB;
+
+        await using var verify = fixture.CreateDbContext();
+        var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
+        Assert.Equal(ChatLogBackfillRunStatus.Cancelled, after.Status);
+        Assert.Equal("channel_left", after.ErrorCode);
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == joined.Id)).IsBotActive);
+    }
+
     private sealed class FailEverySaveInterceptor : SaveChangesInterceptor
     {
         public override ValueTask<InterceptionResult<int>> SavingChangesAsync(

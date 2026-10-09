@@ -50,6 +50,12 @@ internal enum ChannelDeactivationReason
 /// <see cref="DeactivateAsync"/> composes them for the callers that open no transaction.
 /// </para>
 /// <para>
+/// <b>Lock order:</b> the channel row first, then any <c>ChatLogBackfillRuns</c> row. <see cref="DeactivateAsync"/>
+/// takes the channel lock itself before <see cref="StageAsync"/> cancels the run; a caller using
+/// <see cref="StageAsync"/> directly must already hold the channel row <c>FOR UPDATE</c> in its
+/// transaction.
+/// </para>
+/// <para>
 /// A plain static helper, not a shared service, and deliberately not <c>IChannelService</c> injected
 /// into <see cref="ChannelIdentityService"/>: <see cref="ChannelService"/> already depends on
 /// <see cref="IChannelIdentityService"/> for <c>LookupByLoginAsync</c>, so the reverse dependency
@@ -94,6 +100,14 @@ internal static class ChannelDeactivation
 
         await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
         {
+            // Lock order: the channel row before any backfill run row. This is the order every other
+            // deactivation path (the identity reconcile's locked/unresolvable passes lock the channel
+            // FOR UPDATE and then cancel the run) and the backfill's block commit (FK inserts lock the
+            // channel before the run update) already follow; cancelling the run first here would invert
+            // it and could deadlock (40P01). A raw statement rather than ChannelQueries.LockAsync,
+            // because the entity may already be changed by the caller, which LockAsync refuses.
+            await db.Database.ExecuteSqlAsync(
+                $"""SELECT 1 FROM "Channels" WHERE "Id" = {channel.Id} FOR UPDATE""", cancellationToken);
             await StageAsync(db, emoteSetObservationService, channel, actor, reason, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
