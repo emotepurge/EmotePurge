@@ -274,7 +274,7 @@ export class ChannelWorkspaceLayout {
           this.channelService.purgeOwnData(channelName, expectedTwitchUserId).subscribe({
             next: () => {
               this.purgeInProgress.set(false);
-              this.router.navigateByUrl('/');
+              void this.router.navigateByUrl('/');
             },
             error: (error: HttpErrorResponse) => {
               // Only the deletion can have committed behind a lost answer; the summary is a read.
