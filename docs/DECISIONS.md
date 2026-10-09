@@ -10,6 +10,14 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-09 — Tab bars never wrap; a bar wider than the viewport scrolls horizontally (#352)
+
+**Betrifft:** `web/src/app/shared/ui/tab-link.ts` · `web/src/app/features/channel-workspace/channel-workspace-layout.ts` · `web/src/app/features/admin/admin-layout.ts` · `docs/UI-Designsprache.md` §8.1, §8.5
+
+The fifth channel tab ("Settings", managers only, while the backfill switch is on) made the bar wider than a 393 px phone. The labels wrapped to two lines, grew past the bar's `h-10` and covered the usage grid: five touch E2E cases timed out on "element intercepts pointer events". `TabLink` now carries `shrink-0 whitespace-nowrap`, and both nav bars (channel workspace and admin) carry `overflow-x-auto`. Because that clips the outset focus ring (§8.5), the tab's ring is inset (`focus-visible:-outline-offset-2` in `TabLink`) — the one documented exception to the outset ring. Alternatives rejected: shortening labels (German "Einstellungen" is the long one and the fix would have to be repeated per language), collapsing tabs into a menu (a second navigation pattern for one bar), and a smaller tab padding (saves 40 px, still overflows).
+
+---
+
 ### 2026-10-09 — The leave and the backfill enqueue lock the channel row `FOR NO KEY UPDATE`, not `FOR UPDATE` (#349)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` ·

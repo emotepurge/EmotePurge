@@ -20,6 +20,8 @@ export const LIVE_EVENT_TYPES = {
   liveChanged: 'live.changed',
   workerHealth: 'worker.health',
   workerRoster: 'worker.roster',
+  /** Chat-log backfill run changed (enqueue, claim, block, pause, end, cancel); refetch the status. */
+  backfillProgress: 'backfill.progress',
   /** Heartbeat, swallowed by LiveUpdateService — never reaches a consumer. */
   ping: 'ping',
 } as const;

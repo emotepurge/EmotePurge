@@ -87,7 +87,9 @@ const LOCKED_BY_BROADCASTER_KEY = 'errors.api.channel_locked_by_broadcaster';
 
       <!-- Sticky under the h-14 shell header; h-10 is a contract — filter toolbars pin at
            top-24 (= 14 + 10). Links are flex/items-center so the fixed height carries exactly. -->
-      <nav class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 border-b border-border">
+      <nav
+        class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 overflow-x-auto border-b border-border"
+      >
         @if (canViewUsageStats()) {
           <app-tab-link link="usage-stats" [label]="'channelWorkspace.tabs.usage' | transloco" />
           <!-- Same visibility as the usage tab: the tags page has the same route guard (spec 9.3). -->
@@ -99,6 +101,12 @@ const LOCKED_BY_BROADCASTER_KEY = 'errors.api.channel_locked_by_broadcaster';
              check as its own guard, so hiding the tab is visibility only. -->
         @if (canManage()) {
           <app-tab-link link="activity" [label]="'channelWorkspace.tabs.activity' | transloco" />
+        }
+        <!-- Temporary condition (backfill spec D17): the tab holds only the backfill section, so it
+             follows the operator's switch too. Once a second settings section exists the tab
+             becomes canManage alone and the switch hides just the backfill section. -->
+        @if (canManage() && chatLogBackfillEnabled()) {
+          <app-tab-link link="settings" [label]="'channelWorkspace.tabs.settings' | transloco" />
         }
       </nav>
 
@@ -127,6 +135,7 @@ export class ChannelWorkspaceLayout {
   protected readonly canManage = signal(false);
   protected readonly canViewUsageStats = signal(false);
   protected readonly canPurgeAsBroadcaster = signal(false);
+  protected readonly chatLogBackfillEnabled = signal(false);
   protected readonly purgeInProgress = signal(false);
 
   // Without this a deactivated channel offered no way back in: leaving keeps the row (see
@@ -310,6 +319,7 @@ export class ChannelWorkspaceLayout {
         this.canViewUsageStats.set(permissions.canViewUsageStats);
         this.isBotActive.set(permissions.isBotActive);
         this.canPurgeAsBroadcaster.set(permissions.canPurgeAsBroadcaster);
+        this.chatLogBackfillEnabled.set(permissions.chatLogBackfillEnabled);
       },
       // Only reachable for a logged-out user (the interceptor already redirects) or a server error —
       // hide everything privileged rather than guess.
@@ -317,6 +327,7 @@ export class ChannelWorkspaceLayout {
         this.canManage.set(false);
         this.canViewUsageStats.set(false);
         this.canPurgeAsBroadcaster.set(false);
+        this.chatLogBackfillEnabled.set(false);
       },
     });
   }

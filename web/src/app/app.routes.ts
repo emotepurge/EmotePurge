@@ -4,6 +4,7 @@ import { adminGuard } from './core/auth/admin.guard';
 import { authGuard } from './core/auth/auth.guard';
 import { homeGuard } from './core/auth/home.guard';
 import { channelManageGuard } from './core/channels/channel-manage.guard';
+import { channelSettingsGuard } from './core/channels/channel-settings.guard';
 import { usageStatsAccessGuard } from './core/channels/usage-stats-access.guard';
 import { voteSessionAccessGuard } from './core/voting/vote-session-access.guard';
 import { LoginPage } from './features/login/login-page';
@@ -138,6 +139,16 @@ export const routes: Routes = [
                 (m) => m.ChannelActivityPage,
               ),
             canActivate: [channelManageGuard],
+          },
+          {
+            // canManage AND the operator's backfill switch — with the switch off the tab is not
+            // there and a direct visit lands on the fallback (spec 2026-10-09, D17).
+            path: 'settings',
+            loadComponent: () =>
+              import('./features/channel-workspace/channel-settings-page').then(
+                (m) => m.ChannelSettingsPage,
+              ),
+            canActivate: [channelSettingsGuard],
           },
           {
             // Requires login AND being part of this specific session's target audience

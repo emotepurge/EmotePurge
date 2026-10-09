@@ -280,7 +280,13 @@ describe('ChannelWorkspaceLayout — tabs', () => {
           langs: {
             de: {
               channelWorkspace: {
-                tabs: { usage: 'Nutzung', tags: 'Tags', voting: 'Votings', activity: 'Aktivität' },
+                tabs: {
+                  usage: 'Nutzung',
+                  tags: 'Tags',
+                  voting: 'Votings',
+                  activity: 'Aktivität',
+                  settings: 'Einstellungen',
+                },
               },
             },
           },
@@ -314,6 +320,29 @@ describe('ChannelWorkspaceLayout — tabs', () => {
     expect(tabLabels({ ...PERMISSIONS, canManage: false, canViewUsageStats: false })).toEqual([
       'Votings',
     ]);
+  });
+
+  // D17: the tab holds only the backfill section, so it needs the manager right and the switch.
+  it('shows the settings tab after activity for a manager while the backfill switch is on', () => {
+    expect(tabLabels({ ...PERMISSIONS, chatLogBackfillEnabled: true })).toEqual([
+      'Nutzung',
+      'Tags',
+      'Votings',
+      'Aktivität',
+      'Einstellungen',
+    ]);
+  });
+
+  it('hides the settings tab while the backfill switch is off', () => {
+    expect(tabLabels({ ...PERMISSIONS, chatLogBackfillEnabled: false })).not.toContain(
+      'Einstellungen',
+    );
+  });
+
+  it('hides the settings tab from a non-manager even with the switch on', () => {
+    expect(
+      tabLabels({ ...PERMISSIONS, canManage: false, chatLogBackfillEnabled: true }),
+    ).not.toContain('Einstellungen');
   });
 });
 

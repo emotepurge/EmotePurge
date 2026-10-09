@@ -270,7 +270,8 @@
       "usage": "Usage",
       "tags": "Tags",
       "voting": "Voting",
-      "activity": "Activity"
+      "activity": "Activity",
+      "settings": "Settings"
     },
     "activity": {
       "title": "Activity log",
@@ -294,6 +295,9 @@
       "rejoinFailed": "Could not reactivate the bot.",
       "purgeOwnDataFailed": "The channel data could not be deleted. Nothing has changed, you can try again.",
       "purgeOwnDataUnconfirmed": "It is unclear whether the channel data was deleted — the answer never arrived. Reload the page: if the channel is gone, it was deleted."
+    },
+    "settings": {
+      "title": "Settings"
     }
   },
   "broadcasterLock": {
@@ -2000,6 +2004,44 @@
       "backfill_set_empty": "This emote set has no emotes, so there is nothing to look for.",
       "backfill_set_truncated": "This emote set is too large to read completely, so the backfill cannot be started for it.",
       "backfill_channel_identity_changed": "The channel changed while your request was running. Please reload and try again."
+    }
+  },
+  "backfill": {
+    "title": "Backfill from the chat archive",
+    "explain": {
+      "source": "The backfilled numbers come from the public chat archive",
+      "inaccurate": "They may be inaccurate: the archive is not ours and can be incomplete or wrong.",
+      "namesOnly": "Only the names as they are in the chosen set right now can be matched. An emote that was in the chat under another name or in another set is not found.",
+      "renamed": "Renamed emotes lose their hits under the old names.",
+      "gaps": "Gaps in the archive cannot be told apart from quiet days.",
+      "oneSetPerDay": "Each imported day belongs to exactly one set: a run replaces earlier imports for the days in its window, even ones counted against another set, and counts those days against the chosen set as it is now."
+    },
+    "setLabel": "Emote set",
+    "setPlaceholder": "Choose a set",
+    "setActiveMarker": "active",
+    "setCapacity": "{{ count }} slots",
+    "setNote": "Only sets of this channel's 7TV account are listed; the run matches the names as they are in the chosen set right now.",
+    "windowLabel": "Time range",
+    "option": {
+      "months": {
+        "one": "{{ count }} month",
+        "other": "{{ count }} months"
+      },
+      "range": "{{ from }} – {{ to }}",
+      "days": {
+        "one": "{{ count }} day",
+        "other": "{{ count }} days"
+      }
+    },
+    "reasons": {
+      "noDaysBeforeCounting": "There are no days in this range before we started counting this channel.",
+      "unknown": "This range is not available."
+    },
+    "runActive": "A backfill is already queued or running for this channel.",
+    "statusRefreshFailed": "The status could not be refreshed. This is the last known state.",
+    "start": "Start backfill",
+    "errors": {
+      "channel_excluded": "This channel is excluded from tracking, so no backfill can run for it."
     }
   }
 }
