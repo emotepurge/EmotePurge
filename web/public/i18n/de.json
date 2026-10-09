@@ -2045,7 +2045,7 @@
       "transport_failure": "Das Archiv war nicht erreichbar oder lieferte wiederholt Fehler, daher wurde der Lauf beendet. Bereits nachgetragene Wochen bleiben bestehen.",
       "rate_limited": "Das Archiv hat uns immer wieder gebeten, langsamer zu machen, daher hat der Lauf aufgegeben. Bereits nachgetragene Wochen bleiben bestehen.",
       "malformed_response": "Das Archiv hat Daten geschickt, die wir nicht lesen konnten, daher wurde der Lauf beendet.",
-      "block_too_large": "Eine Woche des Archivs war größer, als wir annehmen, daher wurde der Lauf beendet.",
+      "block_too_large": "Eine Woche des Archivs war größer, als wir verarbeiten können, daher wurde der Lauf beendet.",
       "snapshot_missing": "Die Namen des gewählten Sets standen dem Lauf nicht zur Verfügung, daher wurde er beendet.",
       "channel_not_active": "Dieser Channel wird nicht mehr erfasst, daher wurde der Lauf beendet.",
       "archive_mismatch": "Das auf dem Server eingestellte Archiv hat sich nach der Anforderung geändert, daher wurde der Lauf beendet.",
@@ -2076,10 +2076,16 @@
       "other": "Set: {{ set }} ({{ count }} Emotes)"
     },
     "requestedBy": "Angefordert von {{ login }}",
-    "finishedAt": "Beendet {{ time }}",
+    "finishedAt": "Beendet am {{ time }}",
     "cancel": "Backfill abbrechen",
     "cancelConfirm": "Diesen Backfill abbrechen? Bereits nachgetragene Wochen bleiben bestehen; die Woche, die gerade läuft, wird verworfen.",
     "replaceWarning": "Dieser Lauf ersetzt die nachgetragenen Tage {{ from }} – {{ to }}, die derzeit für {{ set }} gezählt werden.",
-    "startConfirm": "Backfill trotzdem starten?"
+    "startConfirm": "Backfill starten?",
+    "announce": {
+      "active": "Backfill {{ status }}: {{ done }} von {{ total }} Wochen.",
+      "completed": "Backfill abgeschlossen.",
+      "failed": "Backfill fehlgeschlagen.",
+      "cancelled": "Backfill abgebrochen."
+    }
   }
 }

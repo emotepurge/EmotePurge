@@ -2045,7 +2045,7 @@
       "transport_failure": "The archive could not be reached or kept failing, so the run stopped. Weeks already imported stay.",
       "rate_limited": "The archive kept asking us to slow down, so the run gave up. Weeks already imported stay.",
       "malformed_response": "The archive sent data we could not read, so the run stopped.",
-      "block_too_large": "A week of the archive was larger than we accept, so the run stopped.",
+      "block_too_large": "A week of the archive was larger than we can process, so the run stopped.",
       "snapshot_missing": "The names of the chosen set were not available to the run, so it stopped.",
       "channel_not_active": "This channel is no longer tracked, so the run stopped.",
       "archive_mismatch": "The archive configured on the server changed after the run was requested, so it stopped.",
@@ -2080,6 +2080,12 @@
     "cancel": "Cancel backfill",
     "cancelConfirm": "Cancel this backfill? Weeks already imported stay; the week in progress is discarded.",
     "replaceWarning": "This run replaces the imported days {{ from }} – {{ to }}, currently counted against {{ set }}.",
-    "startConfirm": "Start the backfill anyway?"
+    "startConfirm": "Start the backfill?",
+    "announce": {
+      "active": "Backfill {{ status }}: {{ done }} of {{ total }} weeks.",
+      "completed": "Backfill completed.",
+      "failed": "Backfill failed.",
+      "cancelled": "Backfill cancelled."
+    }
   }
 }

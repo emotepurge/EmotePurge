@@ -16,7 +16,7 @@ import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { EmoteSetListResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import en from '../../../../public/i18n/en.json';
-import { BackfillSection, backfillStartErrorKey } from './backfill-section';
+import { BackfillSection, backfillAnnouncement, backfillStartErrorKey } from './backfill-section';
 
 class FakeEventSource {
   onmessage: ((event: MessageEvent) => void) | null = null;
@@ -559,6 +559,54 @@ describe('BackfillSection', () => {
       }
     });
 
+    it('opens the dialog with the action, then one line per interval', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN()] })));
+      const fixture = await create();
+
+      const warned = fixture.componentInstance.replaceWarning().length;
+      (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+
+      const lines = (openDialog.mock.calls[0][1].data as { message: string }).message.split('\n');
+      expect(lines[0]).toBe(en.backfill.startConfirm);
+      expect(lines).toHaveLength(1 + warned);
+      expect(warned).toBeGreaterThan(0);
+    });
+
+    it('shows no warning while a run exists, even over imported days', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN()], activeRun: RUN })));
+      const fixture = await create();
+
+      expect(fixture.componentInstance.replaceWarning()).toEqual([]);
+    });
+
+    it('does not send when the picks changed while the dialog was open', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN()] })));
+      const fixture = await create();
+      const closed = new Subject<boolean>();
+      openDialog.mockReturnValue({ closed });
+
+      (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+      fixture.componentInstance['selectedMonthsChoice'].set(3);
+      closed.next(true);
+
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it('does not send when the coverage behind the dialog changed', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN()] })));
+      const fixture = await create();
+      const closed = new Subject<boolean>();
+      openDialog.mockReturnValue({ closed });
+
+      (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+      getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN({ to: '2026-09-15' })] })));
+      fixture.componentInstance['statusResource'].reload();
+      await fixture.whenStable();
+      closed.next(true);
+
+      expect(start).not.toHaveBeenCalled();
+    });
+
     it('starts after the confirmation and not after a dismissal', async () => {
       getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN()] })));
       const fixture = await create();
@@ -625,6 +673,22 @@ describe('BackfillSection', () => {
       expect(cancel).toHaveBeenCalledWith('sensitron');
       expect(getStatus).toHaveBeenCalledTimes(2);
       expect(fixture.componentInstance['cancelErrorKey']()).toBeNull();
+    });
+
+    it('takes the run out of the status at once on 204, so no second DELETE can follow', async () => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      const fixture = await create();
+      getStatus.mockReturnValue(new Subject<BackfillStatus>());
+
+      cancelButton(fixture)?.click();
+      fixture.detectChanges();
+
+      const section = fixture.componentInstance;
+      expect(section['status']()?.activeRun).toBeNull();
+      expect(section['status']()?.lastRun).toMatchObject({ id: 5, status: 'cancelled' });
+      expect(section.canCancel()).toBe(false);
+      expect(cancelButton(fixture)).toBeNull();
+      expect(cancel).toHaveBeenCalledTimes(1);
     });
 
     it('sends nothing when the dialog is dismissed or declined', async () => {
@@ -799,5 +863,103 @@ describe('backfillStartErrorKey', () => {
     );
     expect(backfillStartErrorKey(httpError(503))).toBe('errors.status.server');
     expect(backfillStartErrorKey(httpError(0))).toBe('errors.status.offline');
+  });
+});
+
+describe('backfillAnnouncement', () => {
+  const ACTIVE = { ...RUN, id: 5, status: 'running', weeksDone: 3, weeksTotal: 14 } as BackfillRun;
+
+  it('says nothing without a status or a run', () => {
+    expect(backfillAnnouncement(null, null, null)).toBeNull();
+    expect(backfillAnnouncement(status(), null, null)).toBeNull();
+  });
+
+  it('reports the progress of the active run', () => {
+    expect(backfillAnnouncement(status({ activeRun: ACTIVE }), null, null)).toEqual({
+      runId: 5,
+      key: 'backfill.announce.active',
+      statusKey: 'backfill.status.running',
+      done: 3,
+      total: 14,
+    });
+  });
+
+  it.each(['completed', 'failed', 'cancelled'] as const)(
+    'reports the outcome (%s) of the run that just left activeRun',
+    (outcome) => {
+      const before = status({ activeRun: ACTIVE });
+      const after = status({ lastRun: { ...ACTIVE, status: outcome } });
+
+      expect(backfillAnnouncement(after, before, null)?.key).toBe(`backfill.announce.${outcome}`);
+    },
+  );
+
+  it('does not announce a last run it never saw running', () => {
+    const old = status({ lastRun: { ...ACTIVE, status: 'completed' } });
+
+    expect(backfillAnnouncement(old, null, null)).toBeNull();
+    expect(backfillAnnouncement(old, old, null)).toBeNull();
+  });
+
+  it('keeps the outcome through later refetches of the same last run', () => {
+    const before = status({ activeRun: ACTIVE });
+    const after = status({ lastRun: { ...ACTIVE, status: 'failed' } });
+    const outcome = backfillAnnouncement(after, before, null);
+
+    expect(backfillAnnouncement({ ...after }, after, outcome)).toBe(outcome);
+  });
+});
+
+describe('BackfillSection live region', () => {
+  it('is mounted before any run exists and speaks the progress and then the outcome', async () => {
+    const active = {
+      ...RUN,
+      id: 5,
+      status: 'running',
+      weeksDone: 3,
+      weeksTotal: 14,
+    } as BackfillRun;
+    const first = new Subject<BackfillStatus>();
+    const getStatus = vi.fn((): Observable<BackfillStatus> => first);
+    TestBed.configureTestingModule({
+      imports: [
+        BackfillSection,
+        TranslocoTestingModule.forRoot({
+          langs: { en },
+          translocoConfig: { availableLangs: ['en'], defaultLang: 'en' },
+        }),
+      ],
+      providers: [
+        { provide: BackfillService, useValue: { getStatus, start: vi.fn(), cancel: vi.fn() } },
+        { provide: Dialog, useValue: { open: vi.fn() } },
+        {
+          provide: SevenTvEmoteSetService,
+          useValue: { listChannelEmoteSets: () => of(LIST) },
+        },
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: () => new FakeEventSource() as unknown as EventSource,
+        },
+      ],
+    });
+    const fixture = TestBed.createComponent(BackfillSection);
+    fixture.componentRef.setInput('channelName', 'sensitron');
+    fixture.detectChanges();
+    const region = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
+    expect(region).not.toBeNull();
+    expect(region?.textContent?.trim()).toBe('');
+
+    first.next(status({ activeRun: active }));
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(region?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'Backfill Running: 3 of 14 weeks.',
+    );
+
+    getStatus.mockReturnValue(of(status({ lastRun: { ...active, status: 'completed' } })));
+    fixture.componentInstance['statusResource'].reload();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(region?.textContent?.trim()).toBe('Backfill completed.');
   });
 });
