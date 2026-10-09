@@ -32,7 +32,7 @@ public sealed class ChatLogBackfillService(
     ChatLogBackfillOptions backfillOptions,
     ChatLogArchiveOptions archiveOptions,
     TimeProvider timeProvider,
-    ILogger<ChatLogBackfillService> logger) : IChatLogBackfillService, IAsyncDisposable
+    ILogger<ChatLogBackfillService> logger) : IChatLogBackfillService, IAsyncDisposable, IDisposable
 {
     /// <summary>The partial unique index that allows one active run per channel (B10).</summary>
     public const string ActiveRunIndexName = "IX_ChatLogBackfillRuns_ChannelId_Active";
@@ -109,8 +109,8 @@ public sealed class ChatLogBackfillService(
             options,
             channel.ActiveEmoteSetId,
             intervals,
-            activeRun is null ? null : await ToDtoAsync(activeRun, cancellationToken),
-            lastRun is null ? null : await ToDtoAsync(lastRun, cancellationToken),
+            activeRun is null ? null : await ToDtoAsync(activeRun, await CountSnapshotAsync(activeRun.Id, cancellationToken), cancellationToken),
+            lastRun is null ? null : await ToDtoAsync(lastRun, await CountSnapshotAsync(lastRun.Id, cancellationToken), cancellationToken),
             allSets.ImportedFrom,
             allSets.ImportedTo,
             allSets.ImportedFrom is not null && !allSets.HasGaps,
@@ -212,11 +212,18 @@ public sealed class ChatLogBackfillService(
         }
 
         var outcome = await EnqueueUnderLocksAsync(
-            channel.Id, capturedTwitchChannelId, emoteSetId, preview.EmoteSetName, months, window, members, actor, cancellationToken);
-        if (outcome.Status != ChatLogBackfillEnqueueStatus.Enqueued)
+            channel.Id, capturedTwitchChannelId, channel.ChannelName, emoteSetId, preview.EmoteSetName, months, window, members, actor,
+            cancellationToken);
+        if (outcome.Run is not { } run)
         {
             return ChatLogBackfillEnqueueResult.Failed(outcome.Status);
         }
+
+        // The answer is built from what this call wrote, never by reading the row back: a purge
+        // committing right after this commit cascades the run away, and the request must still report
+        // the run it stored rather than fail after the fact. The queue position is a count and needs
+        // no row of its own.
+        var dto = await ToDtoAsync(run, run.Emotes.Count, cancellationToken);
 
         // Committed before announced (the order TriggerResyncAsync uses). Both messages are
         // accelerators only: the worker's idle poll finds the queued row anyway (D8) and the settings
@@ -224,8 +231,7 @@ public sealed class ChatLogBackfillService(
         await PublishSafelyAsync(BotCommands.Channel, $"{BotCommands.BackfillPrefix}{outcome.ChannelName}", cancellationToken);
         await PublishProgressAsync(outcome.ChannelName!, cancellationToken);
 
-        var run = await db.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == outcome.RunId, cancellationToken);
-        return ChatLogBackfillEnqueueResult.Enqueued(await ToDtoAsync(run, cancellationToken));
+        return ChatLogBackfillEnqueueResult.Enqueued(dto);
     }
 
     public async Task<ChatLogBackfillCancelResult> CancelAsync(
@@ -394,12 +400,25 @@ public sealed class ChatLogBackfillService(
 
         var run = await db.ChatLogBackfillRuns.AsNoTracking()
             .Where(r => r.Id == runId)
-            .Select(r => new { r.ChannelId, r.EmoteSetId, r.ArchiveBaseUrl })
+            .Select(r => new { r.ChannelId, r.EmoteSetId, r.ArchiveBaseUrl, r.WindowFrom, r.WindowTo, r.WeeksTotal })
             .SingleOrDefaultAsync(cancellationToken);
         if (run is null)
         {
             // Only a purge deletes a run that is still being worked on (retention takes finished runs only).
             return new ChatLogBackfillBlockResult.ChannelGone();
+        }
+
+        // The block must be the run's own next block: aligned on the 7-day plan from WindowFrom, ending
+        // where the plan ends it (7 days or at WindowTo), and isLastBlock true exactly for the last one.
+        // The progress update below checks WeeksDone against the block index, so a block committed
+        // twice, out of order or past the window writes nothing (RunNotActive: the conditional update
+        // did not apply).
+        if (!IsPlannedBlock(run.WindowFrom, run.WindowTo, run.WeeksTotal, blockFrom, blockToExclusive, isLastBlock, out var blockIndex))
+        {
+            logger.LogWarning(
+                "Chat-log backfill run {RunId}: block {From:yyyy-MM-dd}..{To:yyyy-MM-dd} is not a block of its plan — nothing written.",
+                runId, blockFrom, blockToExclusive);
+            return new ChatLogBackfillBlockResult.RunNotActive();
         }
 
         var now = UtcNow();
@@ -489,9 +508,9 @@ public sealed class ChatLogBackfillService(
                  "MessagesRead" = "MessagesRead" + {messages},
                  "PauseCount" = 0,
                  "BlockAttempts" = 0,
-                 "Status" = CASE WHEN {isLastBlock} THEN 'completed' ELSE 'running' END,
-                 "FinishedAtUtc" = CASE WHEN {isLastBlock} THEN {now} ELSE "FinishedAtUtc" END
-             WHERE "Id" = {runId} AND "Status" = 'running'
+                 "Status" = CASE WHEN "WeeksDone" + 1 >= "WeeksTotal" THEN 'completed' ELSE 'running' END,
+                 "FinishedAtUtc" = CASE WHEN "WeeksDone" + 1 >= "WeeksTotal" THEN {now} ELSE "FinishedAtUtc" END
+             WHERE "Id" = {runId} AND "Status" = 'running' AND "WeeksDone" = {blockIndex}
              """,
             cancellationToken);
         if (advanced == 0)
@@ -639,6 +658,14 @@ public sealed class ChatLogBackfillService(
         return false;
     }
 
+    // Both disposals: a DI scope disposed synchronously throws for a service that is only
+    // IAsyncDisposable, and an advisory lock left on an open connection would outlive its loop.
+    public void Dispose()
+    {
+        loopLockConnection?.Dispose();
+        loopLockConnection = null;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (loopLockConnection is not null)
@@ -654,9 +681,10 @@ public sealed class ChatLogBackfillService(
     /// The final transaction of the enqueue (D35, §3.1): locks, re-validation, placeholder rows, run,
     /// snapshot, audit — committed together or not at all.
     /// </summary>
-    private async Task<(ChatLogBackfillEnqueueStatus Status, long RunId, string? ChannelName)> EnqueueUnderLocksAsync(
+    private async Task<(ChatLogBackfillEnqueueStatus Status, ChatLogBackfillRun? Run, string? ChannelName)> EnqueueUnderLocksAsync(
         string channelId,
         string capturedTwitchChannelId,
+        string capturedChannelName,
         string emoteSetId,
         string? emoteSetName,
         int months,
@@ -673,12 +701,15 @@ public sealed class ChatLogBackfillService(
         var channel = await db.LockChannelByIdAsync(channelId, cancellationToken);
         if (channel is null)
         {
-            return (ChatLogBackfillEnqueueStatus.ChannelGone, 0, null);
+            return (ChatLogBackfillEnqueueStatus.ChannelGone, null, null);
         }
 
-        if (!string.Equals(channel.TwitchChannelId, capturedTwitchChannelId, StringComparison.Ordinal))
+        // The identity the 7TV read was made for: the same Twitch id under the same login. A rename or
+        // a merge handover meanwhile changes one of them; the request named the old pair.
+        if (!string.Equals(channel.TwitchChannelId, capturedTwitchChannelId, StringComparison.Ordinal)
+            || !string.Equals(channel.ChannelName, capturedChannelName, StringComparison.Ordinal))
         {
-            return (ChatLogBackfillEnqueueStatus.ChannelIdentityChanged, 0, null);
+            return (ChatLogBackfillEnqueueStatus.ChannelIdentityChanged, null, null);
         }
 
         // FOR SHARE: waits for a running account deletion (which takes FOR UPDATE) and blocks one
@@ -686,23 +717,23 @@ public sealed class ChatLogBackfillService(
         // written. Taken after the channel row: the deletion locks no channel row, so there is no cycle.
         if (await db.LockUserAsync(actor.TwitchUserId, UserRowLock.ForShare, cancellationToken) is null)
         {
-            return (ChatLogBackfillEnqueueStatus.RequesterGone, 0, null);
+            return (ChatLogBackfillEnqueueStatus.RequesterGone, null, null);
         }
 
         if (!channel.IsBotActive)
         {
-            return (ChatLogBackfillEnqueueStatus.NotActive, 0, null);
+            return (ChatLogBackfillEnqueueStatus.NotActive, null, null);
         }
 
         if (excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
         {
             logger.LogWarning("Chat-log backfill refused: the channel is on the excluded-channel list.");
-            return (ChatLogBackfillEnqueueStatus.ChannelExcluded, 0, null);
+            return (ChatLogBackfillEnqueueStatus.ChannelExcluded, null, null);
         }
 
         if (await HasActiveRunAsync(channel.Id, cancellationToken))
         {
-            return (ChatLogBackfillEnqueueStatus.AlreadyActive, 0, null);
+            return (ChatLogBackfillEnqueueStatus.AlreadyActive, null, null);
         }
 
         var now = UtcNow();
@@ -775,11 +806,11 @@ public sealed class ChatLogBackfillService(
         {
             // The index is the last word (B10): a run that slipped past the check above.
             db.ChangeTracker.Clear();
-            return (ChatLogBackfillEnqueueStatus.AlreadyActive, 0, null);
+            return (ChatLogBackfillEnqueueStatus.AlreadyActive, null, null);
         }
 
         await transaction.CommitAsync(cancellationToken);
-        return (ChatLogBackfillEnqueueStatus.Enqueued, run.Id, channel.ChannelName);
+        return (ChatLogBackfillEnqueueStatus.Enqueued, run, channel.ChannelName);
     }
 
     private Task<bool> HasActiveRunAsync(string channelId, CancellationToken cancellationToken) =>
@@ -918,10 +949,11 @@ public sealed class ChatLogBackfillService(
 
     // ---------------------------------------------------------------- Shared helpers
 
-    private async Task<ChatLogBackfillRunDto> ToDtoAsync(ChatLogBackfillRun run, CancellationToken cancellationToken)
-    {
-        var emoteCount = await db.ChatLogBackfillRunEmotes.CountAsync(e => e.RunId == run.Id, cancellationToken);
+    private Task<int> CountSnapshotAsync(long runId, CancellationToken cancellationToken) =>
+        db.ChatLogBackfillRunEmotes.CountAsync(e => e.RunId == runId, cancellationToken);
 
+    private async Task<ChatLogBackfillRunDto> ToDtoAsync(ChatLogBackfillRun run, int emoteCount, CancellationToken cancellationToken)
+    {
         // 1 = next to start (or the only run): every active run ahead of it in the global queue counts,
         // a paused head included (spec 5.1).
         int? queuePosition = run.Status == ChatLogBackfillRunStatus.Queued
@@ -968,6 +1000,26 @@ public sealed class ChatLogBackfillService(
     }
 
     private DateTime UtcNow() => timeProvider.GetUtcNow().UtcDateTime;
+
+    // The planner's rule (§4.4, D5): block n covers [WindowFrom + 7n, min(WindowFrom + 7(n + 1), WindowTo)).
+    private static bool IsPlannedBlock(
+        DateOnly windowFrom, DateOnly windowTo, int weeksTotal, DateOnly blockFrom, DateOnly blockToExclusive, bool isLastBlock, out int blockIndex)
+    {
+        var offset = blockFrom.DayNumber - windowFrom.DayNumber;
+        blockIndex = offset / ChatLogBackfillWindow.BlockDays;
+        if (offset < 0 || offset % ChatLogBackfillWindow.BlockDays != 0 || blockIndex >= weeksTotal)
+        {
+            return false;
+        }
+
+        var plannedTo = blockFrom.AddDays(ChatLogBackfillWindow.BlockDays);
+        if (plannedTo > windowTo)
+        {
+            plannedTo = windowTo;
+        }
+
+        return blockToExclusive == plannedTo && isLastBlock == (blockIndex + 1 == weeksTotal);
+    }
 
     // A block the worker hands in must stay inside itself: a cell outside would escape the delete and
     // the coverage of this block (and one on or after the counting start would collide with live rows).

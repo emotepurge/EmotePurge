@@ -13,6 +13,10 @@ namespace EmotePurge.Core.Services;
 /// counter across calls: it continues from the last <see cref="ChatLogBackfillTransition"/> it received
 /// (D38).
 /// </para>
+/// <para>
+/// An instance is not thread-safe; use one per task (it sits on one <c>AppDbContext</c>, and the loop
+/// lock belongs to the instance that took it).
+/// </para>
 /// </summary>
 public interface IChatLogBackfillService
 {
@@ -68,7 +72,10 @@ public interface IChatLogBackfillService
     /// Replaces one block in one transaction (D2): deletes every imported row of the channel in
     /// <c>[blockFrom, blockToExclusive)</c> whatever its set, inserts <paramref name="rows"/> as imported
     /// rows of the run's set, marks the block's days covered and advances the run. Rolls everything back
-    /// unless the run is still <c>running</c> when the progress update runs.
+    /// unless the run is still <c>running</c> when the progress update runs and the block is the run's
+    /// next planned block (<c>WindowFrom + 7·WeeksDone</c>, ending as the plan ends it, with
+    /// <paramref name="isLastBlock"/> matching the counters) — both cases answer
+    /// <see cref="ChatLogBackfillBlockResult.RunNotActive"/>.
     /// </summary>
     Task<ChatLogBackfillBlockResult> ReplaceBlockAsync(
         long runId,
