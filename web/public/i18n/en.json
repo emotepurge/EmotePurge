@@ -260,7 +260,7 @@
     "purgeOwnData": "Delete channel data",
     "purgeOwnDataDialog": {
       "title": "Delete channel data irreversibly",
-      "message": "All data of the channel #{{ channelName }} will be deleted:\n• Emotes: {{ emotes }}\n• Votings: {{ voteSessions }}\n• Live days: {{ liveDays }}\n• Your mod team’s tags: {{ tags }}\n\nThis cannot be undone. What is deleted is your channel under this name and, if we still hold it under your previous name after a rename, that entry too — each with everything attached to it; the numbers above count both. A legacy row from before a rename that can no longer be proven to be yours is removed automatically 180 days after its deactivation. Audit-log entries are kept for 12 months, backups for up to 60 days. Afterwards only you can add the channel back, not your moderators.",
+      "message": "All data of the channel #{{ channelName }} will be deleted:\n• Emotes: {{ emotes }}\n• Votings: {{ voteSessions }}\n• Live days: {{ liveDays }}\n• Your mod team’s tags: {{ tags }}\n\nThis cannot be undone. What is deleted is your channel under this name and, if we still hold it under your previous name after a rename, that entry too — each with everything attached to it; the numbers above count both. A legacy row from before a rename that can no longer be proven to be yours is removed automatically 180 days after its deactivation. Audit-log entries are kept for 12 months, backups for up to 90 days. Afterwards only you can add the channel back, not your moderators.",
       "inputLabel": "Enter the channel name to confirm",
       "confirm": "Delete channel data permanently"
     },
