@@ -357,6 +357,15 @@ public class SevenTvApiClientEmoteSetPreviewTests
         Assert.Contains("items { alias added_at: addedAt emote {", query, StringComparison.Ordinal);
     }
 
+    // The recorded answer still says page_count 43 (a 845-emote set); the stub would be asked for 42
+    // more pages that the five-item cut does not have, so the test sees it as the single page it is.
+    private static JsonNode LiveAddedAtFixture()
+    {
+        var payload = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Unit", "TestData", "emote-set-preview-added-at.json")))!;
+        payload["data"]!["emote_sets"]!["emote_set"]!["emotes"]!["page_count"] = 1;
+        return payload;
+    }
+
     /// <summary>
     /// #346, AC 3, against the recorded live answer: <c>emote-set-preview-added-at.json</c> is the
     /// unchanged response 7TV gave on 2026-10-09 to exactly this client's preview query (set
@@ -366,8 +375,7 @@ public class SevenTvApiClientEmoteSetPreviewTests
     [Fact]
     public async Task AddedAt_OfTheRecordedLiveAnswer_IsMappedToTheUtcInstant()
     {
-        var fixture = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Unit", "TestData", "emote-set-preview-added-at.json"));
-        var client = CreateClient(new PagedStubHandler(_ => fixture));
+        var client = CreateClient(new PagedStubHandler(_ => LiveAddedAtFixture().ToJsonString()));
 
         var result = await client.GetEmoteSetPreviewAsync(SetId);
 
@@ -391,7 +399,7 @@ public class SevenTvApiClientEmoteSetPreviewTests
     [Fact]
     public async Task AddedAt_NullAndAbsentField_AreMappedToNull_ConstructedFromTheRecordedAnswer()
     {
-        var payload = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Unit", "TestData", "emote-set-preview-added-at.json")))!;
+        var payload = LiveAddedAtFixture();
         var items = payload["data"]!["emote_sets"]!["emote_set"]!["emotes"]!["items"]!.AsArray();
         items[1]!["added_at"] = null;
         items[2]!.AsObject().Remove("added_at");
