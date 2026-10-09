@@ -73,6 +73,13 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/operations", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/placements", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("POST", "/api/channels/{channelName}/tags/{tagId:long}/placements/removed", RateLimitPolicyNames.Bookkeeping)]
+    // #346 chat-log backfill: the start costs the tracked set preview's reads (D29), so it draws on that
+    // bucket; the status read is navigation and the cancel is bookkeeping. The import-coverage read is
+    // navigation on its group's policy.
+    [InlineData("GET", "/api/channels/{channelName}/backfill", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("POST", "/api/channels/{channelName}/backfill", RateLimitPolicyNames.TrackedEmoteSetPreview)]
+    [InlineData("DELETE", "/api/channels/{channelName}/backfill", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("GET", "/api/channels/{channelName}/usage-stats/import-coverage", RateLimitPolicyNames.InteractiveRead)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)
     {
         // Resolving from Services boots the host; the endpoints exist only afterwards (same as

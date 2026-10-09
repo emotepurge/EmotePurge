@@ -217,6 +217,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// <summary>Substituted for the same reason as <see cref="AuditLogQuery"/>.</summary>
     public IAdminUserQueryService AdminUserQuery { get; } = Substitute.For<IAdminUserQueryService>();
 
+    /// <summary>
+    /// Substituted for the backfill routes (#351): the handlers take it before any filter runs, and the
+    /// real service sits on <c>AppDbContext</c> and 7TV. The flag is <b>on</b> in this factory (see
+    /// <see cref="ConfigureWebHost"/>); <see cref="WithBackfillDisabled"/> is the off variant.
+    /// </summary>
+    public IChatLogBackfillService ChatLogBackfill { get; } = Substitute.For<IChatLogBackfillService>();
+
     public ApiFactory()
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
@@ -240,6 +247,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=none;Username=none;Password=none");
         builder.UseSetting("Auth:AdminTwitchLogins", string.Empty);
         builder.UseSetting("Auth:AdminTwitchUserIds", string.Empty);
+
+        // On, so the filter matrix reaches the backfill handlers; the off variant overrides it.
+        builder.UseSetting("ChatLogBackfill:Enabled", "true");
 
         // Warnings and above still reach the console. A failing filter test reports only a status
         // code, and the difference between "the filter answered 500" and "the filter answered the
@@ -280,6 +290,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => TwitchAuth);
             services.AddScoped(_ => AuditLogQuery);
             services.AddScoped(_ => AdminUserQuery);
+            services.AddScoped(_ => ChatLogBackfill);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about
@@ -297,6 +308,10 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
                 .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
         });
     }
+
+    /// <summary>The same factory — same substitutes — with <c>ChatLogBackfill:Enabled</c> off, the production default.</summary>
+    public WebApplicationFactory<Program> WithBackfillDisabled() =>
+        WithWebHostBuilder(builder => builder.UseSetting("ChatLogBackfill:Enabled", "false"));
 
     private static IChannelEmoteSetObservationService CreateDefaultObservationService()
     {

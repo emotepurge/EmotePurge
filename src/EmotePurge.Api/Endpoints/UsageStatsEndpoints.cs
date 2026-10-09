@@ -8,6 +8,8 @@ namespace EmotePurge.Api.Endpoints;
 
 public static class UsageStatsEndpoints
 {
+    private const string AllScope = "all";
+
     public static void MapUsageStatsEndpoints(this WebApplication app)
     {
         // Rate limited at group level, on the app's ordinary-navigation budget: every endpoint here is
@@ -114,6 +116,57 @@ public static class UsageStatsEndpoints
 
             var series = await usageStatQueryService.GetChannelSeriesAsync(channelName, fromDate, toDate, emoteSetId, ct);
             return Results.Ok(series);
+        })
+        .AddEndpointFilter<EmoteSetIdValidationFilter>();
+
+        // What the chat-log backfill imported for the viewed set (#346, spec 5.6, B7/D34): the usage
+        // page's caption must reach everyone who sees the numbers, so this sits behind the wide
+        // usage-stats filter (7TV editors included) and — deliberately — not behind the backfill flag:
+        // imported rows outlive the flag, and so must their disclosure. Omitted emoteSetId = the
+        // channel's active set; "all" = every set (EmoteSetScope.AllSets). A real set id is 24 or 26
+        // characters, so the word cannot collide with one. Unknown channel = 404, as no row can have
+        // coverage.
+        group.MapGet("/import-coverage", async (
+            string channelName,
+            string? emoteSetId,
+            IChannelService channelService,
+            IChatLogBackfillService backfillService,
+            CancellationToken ct) =>
+        {
+            var channel = await channelService.GetByNameAsync(channelName, ct);
+            if (channel is null)
+            {
+                return Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound });
+            }
+
+            var scope = emoteSetId switch
+            {
+                null => EmoteSetScope.ActiveSet,
+                AllScope => EmoteSetScope.AllSets,
+                _ => EmoteSetScope.Set(emoteSetId),
+            };
+
+            var coverage = await backfillService.GetCoverageAsync(channel.Id, scope, ct);
+
+            // Attribution follows what was actually imported, not the current configuration (D45).
+            var sources = coverage.Intervals
+                .Select(i => i.ArchiveHost)
+                .Distinct(StringComparer.Ordinal)
+                .Select(host => new { name = host, url = $"https://{host}/" })
+                .ToList();
+
+            return Results.Ok(new
+            {
+                emoteSetId = coverage.EmoteSetId,
+                sources,
+                importedFrom = coverage.ImportedFrom,
+                importedTo = coverage.ImportedTo,
+                hasGaps = coverage.HasGaps,
+                contiguousFrom = coverage.ContiguousFrom,
+                intervals = coverage.Intervals
+                    .Select(i => new { from = i.From, to = i.To, archiveHost = i.ArchiveHost })
+                    .ToList(),
+            });
         })
         .AddEndpointFilter<EmoteSetIdValidationFilter>();
     }
