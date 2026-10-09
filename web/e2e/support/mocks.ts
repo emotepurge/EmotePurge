@@ -2280,3 +2280,40 @@ export async function mockBackfillStart(
   });
   return { bodies: () => bodies };
 }
+
+/** One `coverage` interval of the status payload (`to` is exclusive, like the window bounds). */
+export function backfillCoverageBody(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    from: '2026-08-01',
+    to: '2026-09-01',
+    emoteSetId: 'set-other',
+    emoteSetName: 'Halloween',
+    archiveHost: 'logs.cyex.app',
+    ...overrides,
+  };
+}
+
+/**
+ * DELETE /api/channels/{channelName}/backfill (#353). Counts the requests the UI really sent. A
+ * numeric `response` answers with that status and `{ errorCode }`; otherwise 204.
+ */
+export async function mockBackfillCancel(
+  page: Page,
+  channelName: string,
+  response: { status: number; errorCode: string } | 'accepted' = 'accepted',
+): Promise<{ requests: () => number }> {
+  let requests = 0;
+  await page.route(`**/api/channels/${channelName}/backfill`, (route) => {
+    if (route.request().method() !== 'DELETE') {
+      return route.fallback();
+    }
+    requests++;
+    if (response === 'accepted') {
+      return route.fulfill({ status: 204 });
+    }
+    return fulfillJson(route, response.status, { errorCode: response.errorCode });
+  });
+  return { requests: () => requests };
+}
