@@ -117,6 +117,35 @@ User-facing statements about backup retention now say "up to 90 days" (the self-
 dialog in both languages, the reference-deployment note in `Operations.md`). Earlier entries and
 the concept and plan documents that say 60 stay as written; they describe the state at their date.
 
+### 2026-10-09 — Parallel migration branches scaffold in merge order, and the test suite finds a migration's predecessor by name
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Migrations/*_AddChatLogBackfill.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AddChatLogBackfillMigrationTests.cs` ·
+`docs/plans/Plan-346-Chat-Log-Backfill.md`
+
+The chat-log backfill epic ships two migrations from two branches that are developed in parallel:
+`AddEmotePlaceholderMarker` (#347) and `AddChatLogBackfill` (#348). A migration's id is a timestamp,
+and `AppDbContextModelSnapshot` is the model *after the last scaffolded migration on that branch*. A
+branch that scaffolds before its sibling has merged therefore carries a snapshot without the
+sibling's changes and an id that sorts in front of it: locally the chain looks consistent, but
+production would apply the migrations in a different order than every test database, and the
+snapshot of whichever branch merges second would silently drop the other's model changes.
+
+The rule: **a migration branch may scaffold its migration provisionally to get its tests running, but
+the migration that is merged is always (re-)scaffolded after the branch was rebased onto the main
+that already contains every sibling migration.** Everything hand-written in a migration (seed
+statements, refusing `Down` guards, anything EF does not generate) is marked as such in the file so
+that it can be carried over to the re-scaffolded file verbatim. Gate before the pull request:
+`dotnet ef migrations list` shows the expected order, a fresh `migrations add` against the rebased
+branch produces no snapshot diff, and a local `database update <predecessor>` round trip succeeds
+(precedents: 2026-09-20 for `migrations list` as the gate of a migration an old image does not
+tolerate, 2026-09-01 for the "production order").
+
+The migration test of #348 does not hard-code its predecessor's id: it looks up the migration whose
+id ends in `_AddChatLogBackfill` in the `IMigrationsAssembly` and takes the one before it, so
+re-scaffolding behind another migration needs no test edit.
+
 ### 2026-10-09 — Chat-log backfill becomes a product feature, sourced from logs.cyex.app; its spec stays in English
 
 **Betrifft:** `docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md` ·
