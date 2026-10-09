@@ -541,21 +541,23 @@ describe('BackfillSection', () => {
       getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN()] })));
       const fixture = await create();
       const transloco = TestBed.inject(TranslocoService);
+      // Read before the click: the (synchronous) start patches the run in, which empties the warning.
+      const inline = fixture.componentInstance
+        .replaceWarning()
+        .map((sentence) => transloco.translate('backfill.replaceWarning', sentence));
+      expect(inline.length).toBeGreaterThan(0);
+      const banners = [
+        ...(fixture.nativeElement as HTMLElement).querySelectorAll('app-notice-banner'),
+      ].map((banner) => banner.textContent ?? '');
 
       (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
 
       expect(openDialog).toHaveBeenCalledTimes(1);
       const data = openDialog.mock.calls[0][1].data as { message: string };
-      const inline = fixture.componentInstance
-        .replaceWarning()
-        .map((sentence) => transloco.translate('backfill.replaceWarning', sentence));
       for (const sentence of inline) {
         expect(data.message).toContain(sentence);
-      }
-      // ...and the inline notice shows the very same sentences.
-      const notice = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
-      for (const sentence of inline) {
-        expect(notice?.textContent).toContain(sentence);
+        // ...and the inline notice shows the very same sentence.
+        expect(banners.some((text) => text.includes(sentence))).toBe(true);
       }
     });
 
@@ -689,6 +691,57 @@ describe('BackfillSection', () => {
       expect(section.canCancel()).toBe(false);
       expect(cancelButton(fixture)).toBeNull();
       expect(cancel).toHaveBeenCalledTimes(1);
+    });
+
+    describe('after the 204, until the refetch has settled', () => {
+      async function cancelled(): Promise<{
+        fixture: ComponentFixture<BackfillSection>;
+        reread: Subject<BackfillStatus>;
+      }> {
+        getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+        const fixture = await create();
+        const reread = new Subject<BackfillStatus>();
+        getStatus.mockReturnValue(reread);
+        cancelButton(fixture)?.click();
+        fixture.detectChanges();
+        return { fixture, reread };
+      }
+
+      it('keeps Start locked while the GET is pending', async () => {
+        const { fixture } = await cancelled();
+
+        expect(fixture.componentInstance['status']()?.activeRun).toBeNull();
+        expect(fixture.componentInstance.canStart()).toBe(false);
+      });
+
+      it('unlocks with the fresh coverage, and the warning reflects it', async () => {
+        const { fixture, reread } = await cancelled();
+        const coverage = [
+          {
+            from: '2026-08-01',
+            to: '2026-09-01',
+            emoteSetId: 'set-other',
+            emoteSetName: 'Halloween',
+            archiveHost: 'logs.cyex.app',
+          },
+        ];
+
+        reread.next(status({ coverage, lastRun: { ...RUNNING, status: 'cancelled' } }));
+        await fixture.whenStable();
+        fixture.componentInstance['selectedMonthsChoice'].set(3);
+
+        expect(fixture.componentInstance.canStart()).toBe(true);
+        expect(fixture.componentInstance.replaceWarning()).toHaveLength(1);
+      });
+
+      it('unlocks when the GET fails too', async () => {
+        const { fixture, reread } = await cancelled();
+
+        reread.error(httpError(503));
+        await fixture.whenStable();
+
+        expect(fixture.componentInstance.canStart()).toBe(true);
+      });
     });
 
     it('sends nothing when the dialog is dismissed or declined', async () => {
