@@ -18,6 +18,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Services/ChatLogBackfillService.cs` ·
 `src/EmotePurge.Infrastructure/Services/ArchivedEmoteRowUpsert.cs` ·
 `docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md` ·
+`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/ChatLogBackfillServiceTests.Races.cs`
 
 The chat-log backfill spec (D35) asked for two new channel-row locks so that a leave and a backfill
@@ -52,6 +53,14 @@ The backfill's block commit takes the channel `FOR KEY SHARE` as its first state
 commit held `KEY SHARE` on emote rows (its usage insert) when a purge locked the channel `FOR UPDATE`
 and waited for those rows, and the commit's coverage insert then waited for the channel (40P01,
 `LockRace_PurgeDuringABlockCommit_WaitsForTheCommit`).
+
+**Imported rows and the separation dates.** Every usage read includes imported rows unchanged (B6),
+with one exception: `GetEarliestBotUsageDateAsync` and `GetEarliestSharedChatUsageDateAsync` read live
+rows only. Both dates mean "since when our live counting separates bots / shared chat"
+(`IEmoteSetStatusService.BotsExcludedSince`, `SharedChatSeparatedSince`); an import counts bots and
+shared chat with today's rules for days we never counted, and taking its rows into the minimum would
+move the date back to a separation we did not perform. `bots-excluded-caption.ts` already chooses the
+direction of error — naming a date rather than reading as clean — and the live start keeps it.
 
 Every one of these locks has a race test whose mutation was run once by hand (stronger lock → 40P01,
 no lock → a queued run left on an inactive channel): `ChatLogBackfillServiceTests.Races.cs`, plus

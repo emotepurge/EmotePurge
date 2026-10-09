@@ -1539,8 +1539,37 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             [(imported, 4, 1, 2), (live, 3, 0, 0)],
             rows.Select(r => (r.Date, r.UseCount, r.BotUseCount, r.SharedChatUseCount)).ToArray());
 
-        Assert.Equal(imported, await service.GetEarliestBotUsageDateAsync(channel.Id));
-        Assert.Equal(imported, await service.GetEarliestSharedChatUsageDateAsync(channel.Id));
+        // The two earliest-separation dates read live rows only: the live row has no bot or shared
+        // usage, so neither date exists, whatever the import says.
+        Assert.Null(await service.GetEarliestBotUsageDateAsync(channel.Id));
+        Assert.Null(await service.GetEarliestSharedChatUsageDateAsync(channel.Id));
+    }
+
+    // #349: an earlier imported day with bot and shared-chat usage does not move the separation dates;
+    // the first live row with such usage does.
+    [Fact]
+    public async Task EarliestSeparationDates_IgnoreImportedRows_AndAnswerTheFirstLiveSighting()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "imported_separation", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Separated");
+        var liveDay = new DateOnly(2026, 7, 9);
+        db.UsageStats.AddRange(
+            new UsageStat
+            {
+                EmoteId = emote.Id,
+                EmoteSetId = ActiveSetId,
+                Date = new DateOnly(2026, 6, 1),
+                BotUseCount = 5,
+                SharedChatUseCount = 5,
+                Source = UsageStatSource.ChatLogArchive
+            },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = liveDay, UseCount = 1, BotUseCount = 2, SharedChatUseCount = 3 });
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        Assert.Equal(liveDay, await service.GetEarliestBotUsageDateAsync(channel.Id));
+        Assert.Equal(liveDay, await service.GetEarliestSharedChatUsageDateAsync(channel.Id));
     }
 
     private static async Task<Channel> SeedChannelAsync(AppDbContext db, string channelName, string activeEmoteSetId = "")
