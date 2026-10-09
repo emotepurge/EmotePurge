@@ -1,21 +1,30 @@
+import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Component, computed, inject, input, linkedSignal, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { BackfillOption, BackfillStatus } from '../../core/channels/backfill.model';
 import { BackfillService } from '../../core/channels/backfill.service';
+import {
+  formatIsoDay,
+  lastDayOf,
+  ReplacedInterval,
+  replacedIntervals,
+  backfillSetLabel,
+} from '../../core/channels/backfill-window';
 import { isUnknownOutcome } from '../../core/http/unknown-outcome';
 import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { pluralKey } from '../../core/i18n/plural';
-import { toLocale } from '../../core/i18n/locale';
 import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { liveReload } from '../../core/live/live-reload';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { Button } from '../../shared/ui/button';
+import { openConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
+import { BackfillRunStatusView } from './backfill-run-status';
 
 /** Same burst window the other live-reloading pages use. */
 const STATUS_RELOAD_DEBOUNCE_MS = 500;
@@ -27,20 +36,18 @@ const UNKNOWN_REASON_KEY = 'backfill.reasons.unknown';
 // Same vocabulary as the run errors (`backfill.errors.<snake_case ErrorCode>`, spec §4.6).
 const CHANNEL_EXCLUDED_KEY = 'backfill.errors.channel_excluded';
 
+function errorCodeOf(error: HttpErrorResponse): string | undefined {
+  return (error.error as { errorCode?: string } | null)?.errorCode;
+}
+
 /**
  * The translation key for a failed start. The generic mapping, except that `channel_excluded` gets a
  * sentence about the backfill instead of the join flow's "This channel cannot be added."
  */
 export function backfillStartErrorKey(error: HttpErrorResponse): string {
-  const code = (error.error as { errorCode?: string } | null)?.errorCode;
-  return code === 'channel_excluded' ? CHANNEL_EXCLUDED_KEY : apiErrorTranslationKey(error);
-}
-
-/** The day before an exclusive upper bound (`windowTo` is the day counting started). */
-export function lastDayOf(exclusiveEnd: string): string {
-  const date = new Date(`${exclusiveEnd}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() - 1);
-  return date.toISOString().slice(0, 10);
+  return errorCodeOf(error) === 'channel_excluded'
+    ? CHANNEL_EXCLUDED_KEY
+    : apiErrorTranslationKey(error);
 }
 
 interface OptionView {
@@ -56,6 +63,17 @@ interface OptionView {
   reasonKey: string | null;
 }
 
+/** The parameters of one `backfill.replaceWarning` sentence, already formatted for the reader. */
+interface ReplaceSentence {
+  set: string;
+  from: string;
+  /** Inclusive last day. */
+  to: string;
+}
+
+/** The statuses of a run that can still be cancelled (B11); the other three are final. */
+const CANCELLABLE_STATUSES: readonly string[] = ['queued', 'running', 'paused'];
+
 interface SetView {
   id: string;
   label: string;
@@ -64,13 +82,13 @@ interface SetView {
 }
 
 /**
- * The start half of the chat-log backfill (spec 2026-10-09, §7): what the numbers are, which of the
- * channel's 7TV sets to match against, how far back to go, and the start button. Progress, cancel
- * and the last run's result belong to the second half.
+ * The chat-log backfill section (spec 2026-10-09, §7): what the numbers are, which of the channel's
+ * 7TV sets to match against, how far back to go, the start button — and the running and the last
+ * run, with progress and cancel.
  */
 @Component({
   selector: 'app-backfill-section',
-  imports: [Button, NoticeBanner, SkeletonRows, TranslocoPipe],
+  imports: [BackfillRunStatusView, Button, NoticeBanner, SkeletonRows, TranslocoPipe],
   template: `
     <section class="flex flex-col gap-4" aria-labelledby="backfill-heading">
       <h3 id="backfill-heading" class="text-base font-semibold">
@@ -173,8 +191,35 @@ interface SetView {
           }
         </fieldset>
 
-        @if (status.activeRun) {
-          <p class="text-sm" role="status">{{ 'backfill.runActive' | transloco }}</p>
+        @if (replaceWarning().length > 0) {
+          <app-notice-banner variant="warning">
+            <ul class="flex flex-col gap-1">
+              @for (sentence of replaceWarning(); track sentence.from) {
+                <li>{{ 'backfill.replaceWarning' | transloco: sentence }}</li>
+              }
+            </ul>
+          </app-notice-banner>
+        }
+
+        @if (status.activeRun; as run) {
+          <p class="text-sm">{{ 'backfill.runActive' | transloco }}</p>
+          <app-backfill-run-status
+            kind="active"
+            [run]="run"
+            [cooldownUntilUtc]="status.cooldownUntilUtc"
+          />
+          @if (canCancel()) {
+            <div class="flex flex-col items-start gap-2">
+              <button type="button" appButton="danger" [disabled]="cancelling()" (click)="cancel()">
+                {{ 'backfill.cancel' | transloco }}
+              </button>
+              @if (cancelErrorKey(); as key) {
+                <app-notice-banner variant="error" class="block">{{
+                  key | transloco
+                }}</app-notice-banner>
+              }
+            </div>
+          }
         }
 
         <div class="flex flex-col items-start gap-2">
@@ -192,6 +237,10 @@ interface SetView {
             }}</app-notice-banner>
           }
         </div>
+
+        @if (status.lastRun; as run) {
+          <app-backfill-run-status kind="last" [run]="run" />
+        }
       } @else if (statusResource.error()) {
         <app-notice-banner variant="error">{{ statusErrorKey() | transloco }}</app-notice-banner>
       } @else {
@@ -206,6 +255,8 @@ export class BackfillSection {
   private readonly backfillService = inject(BackfillService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   private readonly languageService = inject(LanguageService);
+  private readonly transloco = inject(TranslocoService);
+  private readonly dialog = inject(Dialog);
 
   protected readonly statusResource = rxResource({
     params: () => this.channelName(),
@@ -241,6 +292,24 @@ export class BackfillSection {
     computation: () => null,
   });
 
+  /**
+   * The in-flight cancel, or `null`. A request token rather than a flag: a callback applies only
+   * while it still owns this signal, so the answer of a cancel for a run (or channel) the section
+   * has since left touches nothing. Keyed like the start error — on the channel and the run it
+   * targets — and primitive on purpose: an object would reset on every refetch.
+   */
+  private readonly cancelRequest = linkedSignal<string, object | null>({
+    source: computed(() => `${this.channelName()}|${this.status()?.activeRun?.id ?? ''}`),
+    computation: () => null,
+  });
+  protected readonly cancelling = computed(() => this.cancelRequest() !== null);
+
+  /** The translated error of a failed cancel; goes with the run and the channel, and on the next attempt. */
+  protected readonly cancelErrorKey = linkedSignal<string, string | null>({
+    source: computed(() => `${this.channelName()}|${this.status()?.activeRun?.id ?? ''}`),
+    computation: () => null,
+  });
+
   private readonly setListResource = rxResource({
     params: () => this.channelName(),
     stream: ({ params }) => this.emoteSetService.listChannelEmoteSets(params),
@@ -257,10 +326,15 @@ export class BackfillSection {
     source: this.channelName,
     computation: () => null,
   });
-  protected readonly starting = linkedSignal<string, boolean>({
+  /**
+   * The in-flight start, or `null` — a request token, not a flag, so a callback applies only while
+   * it still owns the signal. Comparing channel names let a stale answer through after A → B → A.
+   */
+  private readonly startRequest = linkedSignal<string, object | null>({
     source: this.channelName,
-    computation: () => false,
+    computation: () => null,
   });
+  protected readonly starting = computed(() => this.startRequest() !== null);
   protected readonly pluralKey = pluralKey;
 
   /** The active set, or `null` while no sync has completed (`""` on the wire). */
@@ -270,8 +344,8 @@ export class BackfillSection {
 
   /**
    * What the server accepts (`EmoteSetMembershipRule.BelongsToChannel`): the channel's `NORMAL`
-   * sets of its 7TV account plus the active set. Personal sets are not offered unless one is the active set. When the list
-   * does not name the active set (7TV's REST cache lags behind a set switch) a synthetic entry
+   * sets of its 7TV account plus the active set. Personal sets are not offered unless one is the
+   * active set. When the list does not name the active set (7TV's REST cache lags behind a set switch) a synthetic entry
    * keeps the preselection working. Empty until the list is on hand.
    */
   readonly offeredSets = computed<SetView[]>(() => {
@@ -336,6 +410,34 @@ export class BackfillSection {
       this.setListLoaded(),
   );
 
+  /** The running run may be cancelled while it is queued, running or paused. */
+  readonly canCancel = computed(() =>
+    CANCELLABLE_STATUSES.includes(this.status()?.activeRun?.status ?? ''),
+  );
+
+  /** The selected option's window, `[from, to)`, or `null` while there is no available pick. */
+  private readonly selectedWindow = computed(() => {
+    const months = this.selectedMonths();
+    const option = this.status()?.options.find((candidate) => candidate.months === months);
+    return option ? { from: option.windowFrom, to: option.windowTo } : null;
+  });
+
+  /**
+   * What a run with the current picks would replace, one sentence's parameters per interval — the
+   * one source of the inline notice and of the confirm dialog, so the two cannot differ.
+   */
+  readonly replaceWarning = computed<ReplaceSentence[]>(() => {
+    const window = this.selectedWindow();
+    const setId = this.selectedSetId();
+    const status = this.status();
+    if (window === null || setId === null || status === null) {
+      return [];
+    }
+    return replacedIntervals(status.coverage, window.from, window.to, setId).map((interval) =>
+      this.toSentence(interval),
+    );
+  });
+
   protected readonly statusErrorKey = computed(() => {
     const error = this.statusResource.error();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : 'errors.generic';
@@ -362,47 +464,124 @@ export class BackfillSection {
   }
 
   protected formatDay(isoDay: string): string {
-    return new Date(`${isoDay}T00:00:00Z`).toLocaleDateString(
-      toLocale(this.languageService.lang()),
-      { timeZone: 'UTC', day: '2-digit', month: '2-digit', year: 'numeric' },
-    );
+    return formatIsoDay(isoDay, this.languageService.lang());
   }
 
+  /** Starts at once, or — when the run would replace imported days — after the user confirmed it. */
   protected start(): void {
+    if (!this.canStart() || this.starting()) {
+      return;
+    }
+    const sentences = this.replaceWarning();
+    if (sentences.length === 0) {
+      this.sendStart();
+      return;
+    }
+    const message = [
+      ...sentences.map((sentence) => this.transloco.translate('backfill.replaceWarning', sentence)),
+      this.transloco.translate('backfill.startConfirm'),
+    ].join('\n');
+    openConfirmDialog(this.dialog, {
+      message,
+      confirmLabel: this.transloco.translate('backfill.start'),
+    }).closed.subscribe((confirmed) => {
+      if (confirmed) {
+        this.sendStart();
+      }
+    });
+  }
+
+  /** Cancels the running run after a confirmation. Completed weeks stay (B11). */
+  protected cancel(): void {
+    const run = this.status()?.activeRun;
+    if (!run || !this.canCancel() || this.cancelling()) {
+      return;
+    }
+    openConfirmDialog(this.dialog, {
+      message: this.transloco.translate('backfill.cancelConfirm'),
+      confirmLabel: this.transloco.translate('backfill.cancel'),
+    }).closed.subscribe((confirmed) => {
+      // The dialog was open for a while: DELETE ends whatever run is active, so it must still be
+      // the one the user was asked about.
+      if (confirmed && this.status()?.activeRun?.id === run.id) {
+        this.sendCancel();
+      }
+    });
+  }
+
+  private sendStart(): void {
     const emoteSetId = this.selectedSetId();
     const months = this.selectedMonths();
     if (!this.canStart() || this.starting() || emoteSetId === null || months === null) {
       return;
     }
-    const channel = this.channelName();
-    this.starting.set(true);
+    const request = {};
+    this.startRequest.set(request);
     this.startErrorKey.set(null);
-    this.backfillService.start(channel, emoteSetId, months).subscribe({
+    this.backfillService.start(this.channelName(), emoteSetId, months).subscribe({
       next: (run) => {
-        // The answer of a channel the user has left is none of this channel's business.
-        if (channel !== this.channelName()) {
+        // Not ours any more (another channel was on screen meanwhile): none of this state's business.
+        if (this.startRequest() !== request) {
           return;
         }
-        this.starting.set(false);
+        this.startRequest.set(null);
         // Until the refetch lands the status still says "no run": patch the retained status (the one
         // place that does) so the button stays locked and a second click cannot send a second POST.
         this.status.update((current) => current && { ...current, activeRun: run });
         this.statusResource.reload();
       },
       error: (error: HttpErrorResponse) => {
-        if (channel !== this.channelName()) {
+        if (this.startRequest() !== request) {
           return;
         }
-        this.starting.set(false);
+        this.startRequest.set(null);
         this.startErrorKey.set(backfillStartErrorKey(error));
-        const code = (error.error as { errorCode?: string } | null)?.errorCode;
         // A race lost to another manager, or an answer that may have been lost after the commit:
         // either way the status says what is really queued.
-        if (code === 'backfill_already_active' || isUnknownOutcome(error.status)) {
+        if (errorCodeOf(error) === 'backfill_already_active' || isUnknownOutcome(error.status)) {
           this.statusResource.reload();
         }
       },
     });
+  }
+
+  private sendCancel(): void {
+    const request = {};
+    this.cancelRequest.set(request);
+    this.cancelErrorKey.set(null);
+    this.backfillService.cancel(this.channelName()).subscribe({
+      next: () => {
+        if (this.cancelRequest() !== request) {
+          return;
+        }
+        this.cancelRequest.set(null);
+        this.statusResource.reload();
+      },
+      error: (error: HttpErrorResponse) => {
+        if (this.cancelRequest() !== request) {
+          return;
+        }
+        this.cancelRequest.set(null);
+        // The run ended on its own while the dialog was open: nothing went wrong, the status says so.
+        if (errorCodeOf(error) === 'backfill_no_active_run') {
+          this.statusResource.reload();
+          return;
+        }
+        this.cancelErrorKey.set(apiErrorTranslationKey(error));
+        // The outcome of a DELETE with no answer is unknown — the run may be gone after all.
+        if (isUnknownOutcome(error.status)) {
+          this.statusResource.reload();
+        }
+      },
+    });
+  }
+
+  private toSentence(interval: ReplacedInterval): ReplaceSentence {
+    return {
+      set: backfillSetLabel(interval),
+      from: this.formatDay(interval.from),
+      to: this.formatDay(lastDayOf(interval.to)),
+    };
   }
 
   private toOptionView(option: BackfillOption): OptionView {

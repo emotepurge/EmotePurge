@@ -1,15 +1,22 @@
+import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { TranslocoTestingModule } from '@jsverse/transloco';
+import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { Observable, of, Subject, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { BackfillOption, BackfillRun, BackfillStatus } from '../../core/channels/backfill.model';
+import {
+  BackfillCoverageInterval,
+  BackfillOption,
+  BackfillRun,
+  BackfillStatus,
+} from '../../core/channels/backfill.model';
 import { BackfillService } from '../../core/channels/backfill.service';
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { EmoteSetListResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
-import { BackfillSection, backfillStartErrorKey, lastDayOf } from './backfill-section';
+import en from '../../../../public/i18n/en.json';
+import { BackfillSection, backfillStartErrorKey } from './backfill-section';
 
 class FakeEventSource {
   onmessage: ((event: MessageEvent) => void) | null = null;
@@ -74,30 +81,56 @@ const LIST: EmoteSetListResponse = {
   ],
 };
 
-const RUN = { id: 1, status: 'queued' } as BackfillRun;
+const RUN: BackfillRun = {
+  id: 1,
+  status: 'queued',
+  requestedMonths: 3,
+  windowFrom: '2026-07-08',
+  windowTo: '2026-10-08',
+  weeksDone: 0,
+  weeksTotal: 14,
+  queuePosition: 1,
+  pausedUntilUtc: null,
+  requestedAtUtc: '2026-10-09T18:02:11Z',
+  startedAtUtc: null,
+  finishedAtUtc: null,
+  requestedByLogin: 'sensitron',
+  emoteSetId: 'set-other',
+  emoteSetName: 'Other',
+  emoteCount: 10,
+  errorCode: null,
+  errorHttpStatus: null,
+  bytesReceived: 0,
+  messagesRead: 0,
+};
 
 function httpError(status: number, errorCode?: string): HttpErrorResponse {
   return new HttpErrorResponse({ status, error: errorCode ? { errorCode } : null });
 }
 
-describe('BackfillSection (start half)', () => {
+describe('BackfillSection', () => {
   let getStatus: ReturnType<typeof vi.fn<(channel: string) => Observable<BackfillStatus>>>;
   let start: ReturnType<
     typeof vi.fn<(channel: string, setId: string, months: number) => Observable<BackfillRun>>
   >;
   let listSets: ReturnType<typeof vi.fn<(channel: string) => Observable<EmoteSetListResponse>>>;
+  let cancel: ReturnType<typeof vi.fn<(channel: string) => Observable<void>>>;
+  /** What the confirm dialog answers; `undefined` = dismissed. */
+  let dialogAnswer: boolean | undefined;
+  let openDialog: ReturnType<typeof vi.fn>;
 
   async function create(settle = true): Promise<ComponentFixture<BackfillSection>> {
     TestBed.configureTestingModule({
       imports: [
         BackfillSection,
         TranslocoTestingModule.forRoot({
-          langs: { de: {} },
-          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+          langs: { en },
+          translocoConfig: { availableLangs: ['en'], defaultLang: 'en' },
         }),
       ],
       providers: [
-        { provide: BackfillService, useValue: { getStatus, start } },
+        { provide: BackfillService, useValue: { getStatus, start, cancel } },
+        { provide: Dialog, useValue: { open: openDialog } },
         { provide: SevenTvEmoteSetService, useValue: { listChannelEmoteSets: listSets } },
         {
           provide: EVENT_SOURCE_FACTORY,
@@ -122,6 +155,9 @@ describe('BackfillSection (start half)', () => {
     getStatus = vi.fn(() => of(status()));
     start = vi.fn(() => of(RUN));
     listSets = vi.fn(() => of(LIST));
+    cancel = vi.fn(() => of(undefined));
+    dialogAnswer = true;
+    openDialog = vi.fn(() => ({ closed: of(dialogAnswer) }));
   });
 
   it('preselects the active set and offers every non-personal set', async () => {
@@ -411,6 +447,343 @@ describe('BackfillSection (start half)', () => {
     expect(section['status']()?.activeRun).toBeNull();
     expect(section['startErrorKey']()).toBeNull();
   });
+
+  describe('replace warning and the start confirmation', () => {
+    const HALLOWEEN = (over: Partial<BackfillCoverageInterval> = {}): BackfillCoverageInterval => ({
+      from: '2026-08-01',
+      to: '2026-09-01',
+      emoteSetId: 'set-other',
+      emoteSetName: 'Halloween',
+      archiveHost: 'logs.cyex.app',
+      ...over,
+    });
+
+    it('has nothing to replace without coverage', async () => {
+      const section = (await create()).componentInstance;
+
+      expect(section.replaceWarning()).toEqual([]);
+    });
+
+    it('names the intervals of other sets inside the selected window only', async () => {
+      getStatus.mockReturnValue(
+        of(
+          status({
+            coverage: [
+              HALLOWEEN(),
+              HALLOWEEN({ emoteSetId: 'set-active', emoteSetName: 'Normal' }),
+              HALLOWEEN({ from: '2026-01-01', to: '2026-02-01', emoteSetId: 'set-old' }),
+            ],
+          }),
+        ),
+      );
+      const section = (await create()).componentInstance;
+
+      // 1 month = the same default window in this fixture; only the Halloween interval is a
+      // replacement for the preselected active set.
+      expect(section.replaceWarning()).toHaveLength(1);
+      expect(section.replaceWarning()[0].set).toBe('Halloween');
+    });
+
+    it('names the set by id when its name is unknown and ends the range on the inclusive last day', async () => {
+      getStatus.mockReturnValue(
+        of(
+          status({
+            coverage: [HALLOWEEN({ emoteSetName: null, from: '2026-09-01', to: '2026-10-08' })],
+          }),
+        ),
+      );
+      const section = (await create()).componentInstance;
+
+      const [sentence] = section.replaceWarning();
+      expect(sentence.set).toBe('set-other');
+      expect(sentence.to).toBe(section['formatDay']('2026-10-07'));
+    });
+
+    it('follows the set the user picks: a set that holds the interval replaces nothing', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN()] })));
+      const fixture = await create();
+      const section = fixture.componentInstance;
+      expect(section.replaceWarning()).toHaveLength(1);
+
+      section['setChoice'].set('set-other');
+
+      expect(section.replaceWarning()).toEqual([]);
+    });
+
+    it('follows the window: a window that misses the interval replaces nothing', async () => {
+      getStatus.mockReturnValue(
+        of(
+          status({
+            options: [option(1, { windowFrom: '2026-09-08', days: 30 }), option(3), option(6)],
+            coverage: [HALLOWEEN({ from: '2026-07-08', to: '2026-08-20' })],
+          }),
+        ),
+      );
+      const section = (await create()).componentInstance;
+      expect(section.selectedMonths()).toBe(1);
+      expect(section.replaceWarning()).toEqual([]);
+
+      section['selectedMonthsChoice'].set(3);
+
+      expect(section.replaceWarning()).toHaveLength(1);
+    });
+
+    it('starts at once, without a dialog, when nothing would be replaced', async () => {
+      const fixture = await create();
+
+      (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+
+      expect(openDialog).not.toHaveBeenCalled();
+      expect(start).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks first when imported days would be replaced, and the dialog repeats the warning sentences', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN()] })));
+      const fixture = await create();
+      const transloco = TestBed.inject(TranslocoService);
+
+      (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+
+      expect(openDialog).toHaveBeenCalledTimes(1);
+      const data = openDialog.mock.calls[0][1].data as { message: string };
+      const inline = fixture.componentInstance
+        .replaceWarning()
+        .map((sentence) => transloco.translate('backfill.replaceWarning', sentence));
+      for (const sentence of inline) {
+        expect(data.message).toContain(sentence);
+      }
+      // ...and the inline notice shows the very same sentences.
+      const notice = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
+      for (const sentence of inline) {
+        expect(notice?.textContent).toContain(sentence);
+      }
+    });
+
+    it('starts after the confirmation and not after a dismissal', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: [HALLOWEEN()] })));
+      const fixture = await create();
+      const button = fixture.nativeElement.querySelector('button') as HTMLButtonElement;
+
+      dialogAnswer = undefined;
+      button.click();
+      dialogAnswer = false;
+      button.click();
+      expect(start).not.toHaveBeenCalled();
+
+      dialogAnswer = true;
+      button.click();
+      expect(start).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('cancel', () => {
+    const RUNNING = { ...RUN, id: 5, status: 'running' } as BackfillRun;
+
+    function cancelButton(fixture: ComponentFixture<BackfillSection>): HTMLButtonElement | null {
+      return (
+        ([...fixture.nativeElement.querySelectorAll('button')] as HTMLButtonElement[]).find(
+          (button) => button.textContent?.trim() === en.backfill.cancel,
+        ) ?? null
+      );
+    }
+
+    it.each([
+      ['queued', true],
+      ['running', true],
+      ['paused', true],
+      ['completed', false],
+      ['failed', false],
+      ['cancelled', false],
+    ] as const)('%s run: cancellable = %s', async (runStatus, expected) => {
+      getStatus.mockReturnValue(
+        of(status({ activeRun: { ...RUNNING, status: runStatus } as BackfillRun })),
+      );
+      const fixture = await create();
+
+      expect(fixture.componentInstance.canCancel()).toBe(expected);
+      expect(cancelButton(fixture) !== null).toBe(expected);
+    });
+
+    it('cannot be cancelled without a run, and the last run has no cancel button', async () => {
+      getStatus.mockReturnValue(
+        of(status({ lastRun: { ...RUNNING, status: 'completed' } as BackfillRun })),
+      );
+      const fixture = await create();
+
+      expect(fixture.componentInstance.canCancel()).toBe(false);
+      expect(cancelButton(fixture)).toBeNull();
+    });
+
+    it('asks first, sends DELETE after the confirmation and refetches the status', async () => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      const fixture = await create();
+
+      cancelButton(fixture)?.click();
+      await fixture.whenStable();
+
+      expect(openDialog).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledWith('sensitron');
+      expect(getStatus).toHaveBeenCalledTimes(2);
+      expect(fixture.componentInstance['cancelErrorKey']()).toBeNull();
+    });
+
+    it('sends nothing when the dialog is dismissed or declined', async () => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      const fixture = await create();
+
+      dialogAnswer = undefined;
+      cancelButton(fixture)?.click();
+      dialogAnswer = false;
+      cancelButton(fixture)?.click();
+
+      expect(cancel).not.toHaveBeenCalled();
+    });
+
+    it('sends nothing when the run the user was asked about has been replaced meanwhile', async () => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      const fixture = await create();
+      const closed = new Subject<boolean>();
+      openDialog.mockReturnValue({ closed });
+
+      cancelButton(fixture)?.click();
+      getStatus.mockReturnValue(of(status({ activeRun: { ...RUNNING, id: 6 } })));
+      fixture.componentInstance['statusResource'].reload();
+      await fixture.whenStable();
+      closed.next(true);
+
+      expect(cancel).not.toHaveBeenCalled();
+    });
+
+    it('treats 404 backfill_no_active_run as "the run ended meanwhile": a silent refetch, no error', async () => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      cancel.mockReturnValue(throwError(() => httpError(404, 'backfill_no_active_run')));
+      const fixture = await create();
+
+      cancelButton(fixture)?.click();
+      await fixture.whenStable();
+
+      expect(fixture.componentInstance['cancelErrorKey']()).toBeNull();
+      expect(getStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it('shows the translated error of any other failure and does not refetch after a rejection', async () => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      cancel.mockReturnValue(throwError(() => httpError(403)));
+      const fixture = await create();
+
+      cancelButton(fixture)?.click();
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance['cancelErrorKey']()).toBe('errors.status.forbidden');
+      expect(fixture.nativeElement.querySelector('[role="alert"]')).not.toBeNull();
+      expect(getStatus).toHaveBeenCalledTimes(1);
+      expect(fixture.componentInstance['cancelling']()).toBe(false);
+    });
+
+    it.each([0, 500, 503])('also refetches after an unknown outcome (%i)', async (code) => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      cancel.mockReturnValue(throwError(() => httpError(code)));
+      const fixture = await create();
+
+      cancelButton(fixture)?.click();
+      await fixture.whenStable();
+
+      expect(fixture.componentInstance['cancelErrorKey']()).not.toBeNull();
+      expect(getStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it('clears the error on the next attempt', async () => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      cancel.mockReturnValue(throwError(() => httpError(403)));
+      const fixture = await create();
+      cancelButton(fixture)?.click();
+      expect(fixture.componentInstance['cancelErrorKey']()).not.toBeNull();
+
+      cancel.mockReturnValue(new Subject<void>());
+      cancelButton(fixture)?.click();
+
+      expect(fixture.componentInstance['cancelErrorKey']()).toBeNull();
+      expect(fixture.componentInstance['cancelling']()).toBe(true);
+    });
+
+    it('locks the button while the DELETE is pending, so a double click sends one', async () => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      cancel.mockReturnValue(new Subject<void>());
+      const fixture = await create();
+
+      cancelButton(fixture)?.click();
+      fixture.detectChanges();
+      cancelButton(fixture)?.click();
+
+      expect(cancelButton(fixture)?.disabled).toBe(true);
+      expect(cancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores the answer of a cancel issued for a channel the user has since left', async () => {
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      const pending = new Subject<void>();
+      cancel.mockReturnValue(pending);
+      const fixture = await create();
+
+      cancelButton(fixture)?.click();
+      fixture.componentRef.setInput('channelName', 'other');
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const callsBefore = getStatus.mock.calls.length;
+      pending.error(httpError(403));
+
+      expect(fixture.componentInstance['cancelErrorKey']()).toBeNull();
+      expect(getStatus.mock.calls.length).toBe(callsBefore);
+    });
+  });
+
+  describe('start answers that arrive after a channel round trip', () => {
+    it('A → B → A while the POST is pending: the stale answer touches nothing', async () => {
+      const pending = new Subject<BackfillRun>();
+      start.mockReturnValue(pending);
+      const fixture = await create();
+      const section = fixture.componentInstance;
+
+      (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+      expect(section['starting']()).toBe(true);
+      fixture.componentRef.setInput('channelName', 'other');
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.componentRef.setInput('channelName', 'sensitron');
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const callsBefore = getStatus.mock.calls.length;
+
+      pending.next(RUN);
+      pending.complete();
+
+      expect(section['status']()?.activeRun).toBeNull();
+      expect(getStatus.mock.calls.length).toBe(callsBefore);
+    });
+
+    it('A → B → A: a stale error neither shows nor unlocks a newer start', async () => {
+      const first = new Subject<BackfillRun>();
+      const second = new Subject<BackfillRun>();
+      start.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      const fixture = await create();
+      const section = fixture.componentInstance;
+      const button = fixture.nativeElement.querySelector('button') as HTMLButtonElement;
+
+      button.click();
+      for (const name of ['other', 'sensitron']) {
+        fixture.componentRef.setInput('channelName', name);
+        fixture.detectChanges();
+        await fixture.whenStable();
+      }
+      button.click();
+      expect(section['starting']()).toBe(true);
+
+      first.error(httpError(409, 'backfill_already_active'));
+
+      expect(section['startErrorKey']()).toBeNull();
+      expect(section['starting']()).toBe(true);
+    });
+  });
 });
 
 describe('backfillStartErrorKey', () => {
@@ -426,13 +799,5 @@ describe('backfillStartErrorKey', () => {
     );
     expect(backfillStartErrorKey(httpError(503))).toBe('errors.status.server');
     expect(backfillStartErrorKey(httpError(0))).toBe('errors.status.offline');
-  });
-});
-
-describe('lastDayOf', () => {
-  it('turns the exclusive window end into the last imported day, across month and year ends', () => {
-    expect(lastDayOf('2026-10-08')).toBe('2026-10-07');
-    expect(lastDayOf('2026-10-01')).toBe('2026-09-30');
-    expect(lastDayOf('2027-01-01')).toBe('2026-12-31');
   });
 });
