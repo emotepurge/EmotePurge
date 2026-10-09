@@ -384,7 +384,7 @@ row writes a `channel.purge` audit entry with `{ "reason": "broadcasterRequest" 
 
 - Audit-log entries, for 12 months, like every audit entry.
 - Backups, for as long as your backup chain keeps them (`RETENTION_DAYS` locally; the reference
-  deployment's chain holds them for at most 60 days, which is also what the dialog tells the
+  deployment's chain holds them for at most 90 days (14 on the VPS, 30 on the NAS, 60 on OneDrive, plus up to 30 more in the OneDrive recycle bin, which Microsoft empties on its own schedule), which is also what the dialog tells the
   broadcaster; see [Database backup and restore](#database-backup-and-restore)).
 - Redis keys, until their TTL runs out: role caches, the resync cooldown, the foreign-channel and
   emote-set caches. None of them outlives its TTL.

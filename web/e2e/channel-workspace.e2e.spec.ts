@@ -338,7 +338,7 @@ test.describe('broadcaster self-purge and the broadcaster lock', () => {
     await expect(dialog.getByText(/Tags deines Mod-Teams: 7/)).toBeVisible();
     // The evidence limit and the retention promises have to be in the text, not only in the docs.
     await expect(dialog.getByText(/180 Tage nach ihrer Deaktivierung/)).toBeVisible();
-    await expect(dialog.getByText(/Backups bis zu 60 Tage/)).toBeVisible();
+    await expect(dialog.getByText(/Backups bis zu 90 Tage/)).toBeVisible();
     await expect(dialog.getByText(/deine Moderatoren nicht/)).toBeVisible();
 
     const confirm = dialog.getByRole('button', { name: 'Channel-Daten endgültig löschen' });

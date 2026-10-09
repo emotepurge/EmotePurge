@@ -10,6 +10,18 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-09 — Backup retention is stated as "up to 90 days", not 60
+
+**Betrifft:** `web/public/i18n/de.json` · `web/public/i18n/en.json` (`purgeOwnDataDialog.message`) ·
+`docs/Operations.md` (broadcaster self-purge, "What stays") · `web/e2e/channel-workspace.e2e.spec.ts`
+
+The documented backup chain is VPS 14 days, NAS 30 days, OneDrive 60 days. rclone deletions on a
+private OneDrive land in the recycle bin, which Microsoft empties only after 30 days, and the
+operator will not empty it by hand. An encrypted dump can therefore exist for up to about 90 days.
+User-facing statements about backup retention now say "up to 90 days" (the self-purge confirmation
+dialog in both languages, the reference-deployment note in `Operations.md`). Earlier entries and
+the concept and plan documents that say 60 stay as written; they describe the state at their date.
+
 ### 2026-10-09 — Chat-log backfill becomes a product feature, sourced from logs.cyex.app; its spec stays in English
 
 **Betrifft:** `docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md` ·
