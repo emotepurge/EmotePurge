@@ -104,7 +104,7 @@ public sealed class ChatLogBackfillWorker(
 
         try
         {
-            while (true)
+            while (!stoppingToken.IsCancellationRequested)
             {
                 // The loop's one service instance: it owns the advisory-lock connection, and disposing
                 // this scope at shutdown is what releases the lock.
@@ -141,9 +141,8 @@ public sealed class ChatLogBackfillWorker(
         var holdsLock = false;
         var warnedAboutLock = false;
 
-        while (true)
+        while (!stoppingToken.IsCancellationRequested)
         {
-            stoppingToken.ThrowIfCancellationRequested();
             try
             {
                 // Before every claim (D46): a lock lost with its connection is noticed here, before
