@@ -688,8 +688,9 @@ tag run against a tracked set pays the foreign-permit cost the earlier route has
 Migration `AddEmotePlaceholderMarker` adds `Emotes.IsPlaceholder` (`boolean NOT NULL DEFAULT false`).
 It marks emote rows created for an emote the channel has never been observed to have in its active
 set. Today only set-session ballots create such rows; the chat-log backfill will create them too. The
-7TV sync skips marked rows when it looks for emotes that left the active set, and it clears the marker
-once the emote really enters the active set. The reasoning is in `docs/DECISIONS.md` (2026-10-09,
+7TV sync skips marked rows that never got an archive date when it looks for emotes that left the
+active set. The marker is cleared once the emote really enters the active set, and also when an active
+row is archived. The reasoning is in `docs/DECISIONS.md` (2026-10-09,
 "Emotes.IsPlaceholder").
 
 **This migration is never reverted in production.** An image without the marker treats every marked
@@ -702,12 +703,17 @@ the oldest image you may roll back to.
 1. **Migration first, by hand**, as described under "Prod-Migration" in `CLAUDE.md`: tunnel,
    `dotnet ef migrations list` (expect `AddEmotePlaceholderMarker` as `(Pending)`; the one before it
    is `AddBroadcasterChannelLocks`), `dotnet ef database update`, then `list` again. The migration
-   adds the column and marks the existing ballot rows in the same step.
+   adds the column and, in the same step, marks the ballot rows that carry an entry stamp. Those are
+   rows created since 2026-10-05. Ballot rows created between 2026-09-22 and 2026-10-05 have no stamp,
+   so they look like legacy rows and stay unmarked on purpose. Query 6 below counts them; the reason is
+   in `docs/DECISIONS.md`.
 2. **Update api and worker together.** Both images change: the Api creates ballot rows with the
    marker, and the Worker skips and clears it. Check that the running revision is the merge commit.
 3. **Re-run the marking once, after step 2.** Between steps 1 and 2 the old Api keeps running and keeps
    creating ballot rows. It does not know the column, so those rows get the default `false`. Run the
-   statements below once the new revision is confirmed. Then no old writer is left.
+   statements below once the new revision is confirmed. Then no old writer is left. In the same window,
+   the old worker's sync and the old Api's restore report can un-archive a marked row without clearing
+   the marker. Queries 4 and 5 show what that left behind.
 
 The marking is safe to run any number of times. It only ever sets `true`, and only on rows that are
 archived, have no archive date and have an entry stamp. Only the ballot insert produces that
@@ -742,10 +748,31 @@ SELECT count(*) FILTER (WHERE NOT "IsPlaceholder") AS unmarked,
 FROM "Emotes"
 WHERE "IsArchived" AND "ArchivedAt" IS NULL AND "LastEnteredSetAtUtc" IS NOT NULL;
 
--- 4. Active rows still marked: the old worker un-archived them during the window without clearing
---    the marker. Expected 0 one resync tick after the redeploy (SevenTv:ResyncIntervalSeconds,
---    default 60), because the new sync clears the marker on every row the active set lists.
+-- 4. Active rows still marked: an old image un-archived them during the window without clearing
+--    the marker. Normally 0 one resync tick after the redeploy (SevenTv:ResyncIntervalSeconds,
+--    default 60): the new sync clears the marker on every active row the REST answer lists, and
+--    archiving an active row clears it too. Exceptions that are harmless: rows in a channel the
+--    sync refuses (excluded, or locked by its broadcaster) or cannot reach (a sync failure reason
+--    is set), and rows 7TV's lagging REST cache does not list yet. They keep the marker until their
+--    channel syncs; their leave is observed all the same.
 SELECT count(*) AS active_marked FROM "Emotes" WHERE "IsPlaceholder" AND NOT "IsArchived";
+
+-- 5. Marked rows with an archive date: an old image un-archived them and archived them again in the
+--    window. The new code never produces this (it clears the marker whenever it archives an active
+--    row). Usually 0. A non-zero count is harmless: the sync only skips marked rows WITHOUT an
+--    archive date, so these rows' leaves are observed normally. No action needed.
+SELECT count(*) AS marked_with_archive_date FROM "Emotes" WHERE "IsPlaceholder" AND "ArchivedAt" IS NOT NULL;
+
+-- 6. Read-only, for information: ballot rows from 2026-09-22 to 2026-10-05, which carry no entry
+--    stamp and stay unmarked on purpose. Legacy archived rows share the null stamps, but only a
+--    ballot row has a null FirstSeenAt AND a LastSyncedAt from that period: nothing writes
+--    LastSyncedAt on a row that stays archived. "still_on_a_ballot" narrows it further to rows a
+--    vote session still references (deleting a session removes its ballot rows).
+SELECT count(*) AS unstamped_ballot_rows,
+       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM "VoteSessionEmotes" s WHERE s."EmoteId" = e."Id")) AS still_on_a_ballot
+FROM "Emotes" e
+WHERE e."IsArchived" AND e."ArchivedAt" IS NULL AND e."LastEnteredSetAtUtc" IS NULL
+  AND e."FirstSeenAt" IS NULL AND e."LastSyncedAt" >= '2026-09-22';
 ```
 
 ## Database backup and restore

@@ -33,10 +33,11 @@ public class Emote
 
     // True on a row created for an emote this channel has never been observed to have in its active
     // set: the archived row a set-session ballot (and later a chat-log backfill) inserts only so that
-    // votes and usage rows have an Emote to point at. The sync's REST leave detection skips such rows,
-    // because missing from the active set is their normal state, not a leave. Cleared when the emote
-    // really enters the active set (the sync's un-archive, the set-centric restore) and never set back
-    // to true: an emote that leaves the set after that is an ordinary archived row.
+    // votes and usage rows have an Emote to point at. The sync's REST leave detection skips such rows
+    // while they have no ArchivedAt, because missing from the active set is their normal state, not a
+    // leave. Cleared when the emote really enters the active set (the sync's un-archive, the set-centric
+    // restore) and whenever an active row is archived; never set back to true. An emote that leaves the
+    // set after that is an ordinary archived row.
     public bool IsPlaceholder { get; set; }
 
     public Channel Channel { get; set; } = null!;

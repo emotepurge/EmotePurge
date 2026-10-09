@@ -184,6 +184,77 @@ public class SevenTvSyncServicePlaceholderTests(PostgresFixture fixture)
         Assert.NotNull(await LatestAsync(channel, "phstale1"));
     }
 
+    // Review P2 (a): an active row with a stale marker leaves inside the credibility window. (b1)
+    // archives it without an observation, as for any fresh entry; once the window is over, the post-check
+    // must still record the leave. Guarded twice: (b1) drops the marker, and (b2) only skips rows that
+    // never got an archive date.
+    [Fact]
+    public async Task ActiveRowWithAStaleMarker_LeavingInsideTheWindow_IsObservedOnceTheWindowIsOver()
+    {
+        var channel = await SeedChannelAsync("placeholder_stale_inside",
+            ("phkeep1", Archived: false, ArchivedAt: null, EnteredAtUtc: null),
+            ("phstale1", Archived: false, ArchivedAt: null, EnteredAtUtc: DateTime.UtcNow.AddMinutes(-5)));
+        await MarkAsync(channel, "phstale1");
+
+        await SyncAsync(channel, Live("phkeep1"));
+        Assert.Null(await LatestAsync(channel, "phstale1"));
+
+        await MoveEntryBackAsync(channel, "phstale1", TimeSpan.FromMinutes(31));
+        await SyncAsync(channel, Live("phkeep1"));
+
+        Assert.NotNull(await LatestAsync(channel, "phstale1"));
+    }
+
+    // Review P2 (b): the image older than the marker un-archived a marked row and archived it again
+    // itself (stamping ArchivedAt, keeping the marker), inside the window. The new sync must observe that
+    // leave once the window is over: the row was in the active set, its archive date proves it.
+    [Fact]
+    public async Task ArchivedRowWithAStaleMarkerAndAnArchiveDate_IsObservedOnceTheWindowIsOver()
+    {
+        var channel = await SeedChannelAsync("placeholder_stale_rearchived",
+            ("phkeep1", Archived: false, ArchivedAt: null, EnteredAtUtc: null),
+            ("phstale1", Archived: true, ArchivedAt: DateTime.UtcNow.AddMinutes(-2), EnteredAtUtc: DateTime.UtcNow.AddMinutes(-5)));
+        await MarkAsync(channel, "phstale1");
+
+        await SyncAsync(channel, Live("phkeep1"));
+        Assert.Null(await LatestAsync(channel, "phstale1"));
+
+        await MoveEntryBackAsync(channel, "phstale1", TimeSpan.FromMinutes(31));
+        await SyncAsync(channel, Live("phkeep1"));
+
+        Assert.NotNull(await LatestAsync(channel, "phstale1"));
+    }
+
+    // Review P2 (c): archiving an active row drops a stale marker, in the REST reconcile (b1) and in a
+    // dispatch's pull. The pull stays an ordinary Applied change: the archive itself is the change.
+    [Fact]
+    public async Task ArchivingAnActiveRowWithAStaleMarker_DropsTheMarker_InTheReconcileAndInADispatchPull()
+    {
+        var channel = await SeedChannelAsync("placeholder_stale_archive",
+            ("phkeep1", Archived: false, ArchivedAt: null, EnteredAtUtc: null),
+            ("phrest1", Archived: false, ArchivedAt: null, EnteredAtUtc: DateTime.UtcNow.AddMinutes(-5)),
+            ("phpull1", Archived: false, ArchivedAt: null, EnteredAtUtc: DateTime.UtcNow.AddMinutes(-5)));
+        await MarkAsync(channel, "phrest1");
+        await MarkAsync(channel, "phpull1");
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var result = await CreateService(db, RestAnswering(channel)).ApplyEmoteSetUpdateAsync(
+                channel.ChannelName, SetId, new SevenTvEmoteSetDelta([], [], ["phpull1"]));
+            Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
+        }
+
+        await SyncAsync(channel, Live("phkeep1"));
+
+        await using var verify = fixture.CreateDbContext();
+        foreach (var id in new[] { "phrest1", "phpull1" })
+        {
+            var row = await LoadEmoteAsync(verify, channel, id);
+            Assert.Equal((true, false), (row.IsArchived, row.IsPlaceholder));
+            Assert.NotNull(row.ArchivedAt);
+        }
+    }
+
     // The same stale marker on a row the REST answer still lists: listed in the active set means
     // observed there, so the resync clears it — without counting it as an inventory change.
     [Fact]

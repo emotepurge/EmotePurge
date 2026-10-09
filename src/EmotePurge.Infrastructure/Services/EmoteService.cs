@@ -285,15 +285,16 @@ public class EmoteService(
                 emote.IsArchived = archive;
                 emote.ArchivedAt = archive ? now : null;
                 emote.LastSyncedAt = now;
+                // D37: either way the row is no placeholder. A restore puts it into the channel's active
+                // set; a delete archives a row that was active, so a marker on it can only be stale (left
+                // by an image older than the marker). Never set back to true.
+                emote.IsPlaceholder = false;
                 if (!archive)
                 {
                     // E34: a restore is a fresh entry into the set, like the sync's un-archive. An
                     // existing leave observation stays: it is history, and the read-time rule compares
                     // it against registrations, not against this stamp.
                     emote.LastEnteredSetAtUtc = now;
-                    // D37: restored into the channel's active set, so no longer a placeholder (same
-                    // as the sync's un-archive); never set back to true.
-                    emote.IsPlaceholder = false;
                 }
             }
 

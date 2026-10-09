@@ -360,6 +360,8 @@ public class SevenTvSyncService(
                 emote.IsArchived = true;
                 emote.ArchivedAt = DateTime.UtcNow;
                 emote.LastSyncedAt = DateTime.UtcNow;
+                // D37: the row was active, so it is no placeholder, whatever a stale marker says.
+                emote.IsPlaceholder = false;
             }
         }
 
@@ -960,10 +962,10 @@ public class SevenTvSyncService(
     /// (counter-example 8). Observations are not inventory changes and never set the return value.
     /// </para>
     /// <para>
-    /// (b2) skips placeholder rows (<see cref="Emote.IsPlaceholder"/>, D37): they were created archived
-    /// for an emote never observed in the active set, so their absence from it is no leave. Only (b2):
-    /// a row that was active when this pass began was in the set, whatever its marker says, and (b1)
-    /// records its leave as before.
+    /// (b2) skips placeholder rows (<see cref="IsNeverActivePlaceholder"/>, D37): they were created
+    /// archived for an emote never observed in the active set, so their absence from it is no leave.
+    /// Only (b2): a row that was active when this pass began was in the set, whatever its marker says,
+    /// and (b1) records its leave as before and drops the marker.
     /// </para>
     /// </summary>
     private async Task<bool> ReconcileAsync(
@@ -1012,6 +1014,9 @@ public class SevenTvSyncService(
 
                 emote.IsArchived = true;
                 emote.ArchivedAt = DateTime.UtcNow;
+                // D37: the row was active, so it is no placeholder, whatever a stale marker says. Part
+                // of the same archive change, so no extra inventory change.
+                emote.IsPlaceholder = false;
                 changed = true;
 
                 // (b1)
@@ -1020,7 +1025,7 @@ public class SevenTvSyncService(
                     leaves.Add(sevenTvEmoteId);
                 }
             }
-            else if (!liveIds.Contains(sevenTvEmoteId) && !emote.IsPlaceholder && IsCredibleRestLeave(emote, credibleIfEnteredBefore))
+            else if (!liveIds.Contains(sevenTvEmoteId) && !IsNeverActivePlaceholder(emote) && IsCredibleRestLeave(emote, credibleIfEnteredBefore))
             {
                 // (b2) archived before this pass; decided after the loop with one read. A placeholder
                 // never was in the active set, so it has nothing to leave (D37).
@@ -1077,8 +1082,9 @@ public class SevenTvSyncService(
             }
 
             // An active row still marked as a placeholder can only be left over from an image older
-            // than the marker, which un-archives without clearing it (the window between a manual
-            // migration and the redeploy). Listed in the active set means observed there, so the
+            // than the marker, which un-archives without clearing it: the old worker's sync or the old
+            // Api's set-centric restore report, in the window between a manual migration and the
+            // redeploy. Listed in the active set means observed there, so the
             // marker goes. REST only and outside the change detection, for the same reasons as the
             // FirstSeenAt correction above; an archived placeholder is cleared by the un-archive below.
             if (!fromDispatch && emote.IsPlaceholder && !emote.IsArchived)
@@ -1146,6 +1152,14 @@ public class SevenTvSyncService(
             SqlState: PostgresErrorCodes.UniqueViolation,
             ConstraintName: EmoteKeyIndexName,
         };
+
+    // D37: a placeholder that never was in the active set. Both halves: a real placeholder is created
+    // archived without an archive date and never gets one, because every archive (sync, dispatch pull,
+    // set-centric report, in every image since ArchivedAt exists) only touches active rows and stamps
+    // ArchivedAt. A marked row WITH a date was active once, so its marker is stale (left by an image
+    // older than the marker) and its leave must be observed like any other.
+    private static bool IsNeverActivePlaceholder(Emote emote) =>
+        emote.IsPlaceholder && emote.ArchivedAt is null;
 
     // E34: a REST-observed leave counts only for a row that entered the set before the window, or
     // whose entry time is unknown (rows from before the column existed are certainly older).
