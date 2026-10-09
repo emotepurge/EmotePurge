@@ -797,6 +797,7 @@
     "botsExcludedSince": "Nachrichten bekannter Bots zählen seit dem {{ date }} nicht mit; Zahlen davor enthalten sie noch.",
     "sharedChatSeparatedSince": "Nutzung aus dem geteilten Chat anderer Kanäle zählt seit dem {{ date }} nicht mit; Zahlen davor enthalten sie noch.",
     "rangeBeforeTracking": "Der gewählte Zeitraum beginnt vor dem {{ date }} — davor haben wir für diesen Channel nichts gezählt. Die Zahlen sind für den früheren Teil nicht unvollständig, sondern gar nicht vorhanden.",
+    "rangeBeforeTrackingPatchy": "Der gewählte Zeitraum beginnt vor dem {{ date }} — davor sind die Zahlen lückenhaft: das Chat-Archiv deckt nicht jeden Tag ab.",
     "observationToday": "Neu · heute",
     "observationAge": {
       "one": "Neu · {{ days }} Tag",

@@ -1111,7 +1111,9 @@ test.describe('set view (#200, K4)', () => {
     await expect(page).toHaveURL(new RegExp(`[?&]emoteSetId=${HALLOWEEN_SET_ID}\\b`));
 
     await expect(page.getByRole('link', { name: 'logs.cyex.app' })).toHaveCount(0);
-    await expect(page.getByText(/Wir zählen für diesen Channel seit dem .*\.$/)).toBeVisible();
+    const caption = page.getByText(/Wir zählen für diesen Channel seit dem .*\.$/);
+    await expect(caption).toBeVisible();
+    await expect(caption).not.toContainText('Chat-Archiv');
   });
 
   test('an emoteSetId in the URL that the set list does not confirm — unknown, or a hidden kind — falls back to the active set and is removed from the URL (spec 8.1, §35)', async ({

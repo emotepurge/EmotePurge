@@ -181,7 +181,7 @@
         [(from)]="from"
         [(to)]="to"
         [(preset)]="rangePreset"
-        [earliest]="trackedSinceDate()"
+        [earliest]="allTimeEarliest()"
         [setObservedRange]="setObservedPresetRange()"
       />
       <!-- Only once there is an active set at all — before that the set list has nothing to offer,
@@ -482,7 +482,7 @@
           caption.leadKey
             | transloco
               : {
-                  date: formatDate(since),
+                  date: formatDate(trackedSinceDate()),
                   importedFrom: formatDate(coverage.importedFrom),
                   importedToInclusive: formatDate(importedToInclusiveDate()),
                 }
@@ -493,7 +493,8 @@
             target="_blank"
             rel="noopener"
             class="underline decoration-border-strong underline-offset-2 transition hover:text-fg hover:decoration-accent"
-            >{{ source.name }}</a
+            >{{ source.name
+            }}<span class="sr-only"> {{ 'common.opensInNewTab' | transloco }}</span></a
           >{{ last ? (caption.tailKey | transloco) : ', ' }}
         }
       } @else {
@@ -533,7 +534,7 @@
            silently empty leading stretch reads as "this emote is dead" instead of "we weren't
            counting yet". -->
       <app-notice-banner variant="warning">
-        {{ 'usageStats.rangeBeforeTracking' | transloco: { date: formatDate(since) } }}
+        {{ rangeBeforeTrackingKey() | transloco: { date: formatDate(coverageStart()) } }}
       </app-notice-banner>
     }
   } @else if (setViewCaptions().length > 0) {

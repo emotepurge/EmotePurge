@@ -71,7 +71,9 @@ import { CHANNEL_RELOAD_DEBOUNCE_MS, liveReload } from '../../core/live/live-rel
 import { ImportCoverageService } from '../../core/usage/import-coverage.service';
 import {
   ImportCoverage,
+  allTimeEarliestFor,
   coverageStartFor,
+  hasImportedDaysBefore,
   importCaptionFor,
   importedToInclusive,
 } from '../../core/usage/import-coverage.model';
@@ -612,6 +614,39 @@ export class UsageStatsPage {
     const start = coverageStartFor(this.importCoverage(), sinceDate);
     return start === sinceDate ? since : start;
   });
+
+  /**
+   * Whether the coverage question for the scope on screen has an answer, a failure included — or has
+   * none to wait for. "All time" waits for this (`rangeResolved`): its start depends on the viewed
+   * set's first imported day, and asking before would fetch the grid twice. Matches the answer's own
+   * channel/set (`importCoverage()`), so a set switch is unsettled until the new set answers; a
+   * failed first read settles it as "nothing imported" (the plain tracking start).
+   */
+  private readonly importCoverageSettled = computed(() => {
+    if (this.selectedEmoteSetId() === null) {
+      return true;
+    }
+    if (this.awaitingEmoteSetId()) {
+      return false;
+    }
+    return (
+      this.importCoverage() !== null ||
+      (this.importCoverageResource.status() === 'error' && !this.importCoverageResource.isLoading())
+    );
+  });
+
+  /** Where "all time" starts: the earliest imported day of the viewed set if before the tracking
+   *  start, else the tracking start. Date-only. */
+  protected readonly allTimeEarliest = computed(() =>
+    allTimeEarliestFor(this.importCoverage(), this.trackedSinceDate()),
+  );
+
+  /** The date the "range starts before" warning names, and whether imported days precede it. */
+  protected readonly rangeBeforeTrackingKey = computed(() =>
+    hasImportedDaysBefore(this.importCoverage(), this.coverageStart()?.slice(0, 10) ?? null)
+      ? 'usageStats.rangeBeforeTrackingPatchy'
+      : 'usageStats.rangeBeforeTracking',
+  );
 
   /** The last imported day itself (the wire's `importedTo` is exclusive). */
   protected readonly importedToInclusiveDate = computed(() => {
@@ -1800,7 +1835,10 @@ export class UsageStatsPage {
     }
     if (this.setStatusChannel() === this.channelName()) {
       // A channel with no tracking start keeps the placeholder, and this holds for it too.
-      return this.from() === allTimeStart(this.trackedSinceDate());
+      // The start also depends on the viewed set's imported days, so "resolved" waits for that
+      // answer too — otherwise the grid is asked once for the tracking start and again for the
+      // earlier import start.
+      return this.importCoverageSettled() && this.from() === allTimeStart(this.allTimeEarliest());
     }
     // A failed attempt never learns a tracking start, so nothing will ever correct the range for
     // this channel — treating it as resolved is what stops "all time" from waiting forever.
@@ -2425,9 +2463,9 @@ export class UsageStatsPage {
     // drilldown, export, vote-session prefill) inherits the corrected value. Re-selecting "all" in
     // the menu writes the same date again, which a signal treats as no change — so this cannot loop.
     effect(() => {
-      const trackedSinceDate = this.trackedSinceDate();
-      if (this.rangePreset() === 'all' && trackedSinceDate) {
-        this.from.set(allTimeStart(trackedSinceDate));
+      const earliest = this.allTimeEarliest();
+      if (this.rangePreset() === 'all' && earliest) {
+        this.from.set(allTimeStart(earliest));
       }
     });
 

@@ -797,6 +797,7 @@
     "botsExcludedSince": "Messages from known bots have not been counted since {{ date }}; numbers before that still include them.",
     "sharedChatSeparatedSince": "Usage from other channels' shared chat has not been counted since {{ date }}; numbers before that still include it.",
     "rangeBeforeTracking": "The selected range starts before {{ date }} — we counted nothing for this channel before then. For the earlier part the numbers aren't incomplete, they don't exist.",
+    "rangeBeforeTrackingPatchy": "The selected range starts before {{ date }} — before then the numbers have gaps: the chat archive does not cover every day.",
     "observationToday": "New · today",
     "observationAge": {
       "one": "New · {{ days }} day",

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  allTimeEarliestFor,
   coverageStartFor,
+  hasImportedDaysBefore,
   ImportCoverage,
   importCaptionFor,
   importedToInclusive,
@@ -98,5 +100,37 @@ describe('coverageStartFor', () => {
 
   it('has no start at all while the tracking start is unknown', () => {
     expect(coverageStartFor(coverage(), null)).toBeNull();
+  });
+});
+
+describe('allTimeEarliestFor', () => {
+  it('starts at the first imported day when it lies before the tracking start', () => {
+    expect(allTimeEarliestFor(coverage(), '2026-10-08')).toBe('2026-04-08');
+  });
+
+  it('keeps the tracking start without imports, without a coverage, or for a later import', () => {
+    expect(allTimeEarliestFor(EMPTY, '2026-10-08')).toBe('2026-10-08');
+    expect(allTimeEarliestFor(null, '2026-10-08')).toBe('2026-10-08');
+    expect(allTimeEarliestFor(coverage({ importedFrom: '2026-10-09' }), '2026-10-08')).toBe(
+      '2026-10-08',
+    );
+  });
+
+  it('has no start while the tracking start is unknown', () => {
+    expect(allTimeEarliestFor(coverage(), null)).toBeNull();
+  });
+});
+
+describe('hasImportedDaysBefore', () => {
+  it('is true only when an imported day precedes the given start', () => {
+    expect(hasImportedDaysBefore(coverage({ importedFrom: '2026-07-09' }), '2026-10-08')).toBe(
+      true,
+    );
+    expect(hasImportedDaysBefore(coverage({ importedFrom: '2026-04-08' }), '2026-04-08')).toBe(
+      false,
+    );
+    expect(hasImportedDaysBefore(EMPTY, '2026-10-08')).toBe(false);
+    expect(hasImportedDaysBefore(null, '2026-10-08')).toBe(false);
+    expect(hasImportedDaysBefore(coverage(), null)).toBe(false);
   });
 });

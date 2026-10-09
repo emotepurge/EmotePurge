@@ -70,6 +70,7 @@ import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { EmoteTagEntry, EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { ImportCoverage } from '../../core/usage/import-coverage.model';
+import { ImportCoverageService } from '../../core/usage/import-coverage.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -164,6 +165,35 @@ class FakeResizeObserver {
   disconnect(): void {
     /* no-op */
   }
+}
+
+/** What a channel without any imported day answers. */
+const NO_IMPORT: ImportCoverage = {
+  emoteSetId: null,
+  sources: [],
+  importedFrom: null,
+  importedTo: null,
+  hasGaps: false,
+  contiguousFrom: null,
+  intervals: [],
+};
+
+// "All time" waits for the import-coverage answer before it asks for the grid (its start can move to
+// the first imported day), so every block below that does not exercise the coverage itself gets the
+// answer for free: nothing imported, answered at once. The blocks about the coverage opt out and
+// drive the real HTTP route (`useRealImportCoverage`).
+function stubNoImportCoverage(): void {
+  TestBed.overrideProvider(ImportCoverageService, {
+    useValue: { getCoverage: () => of(NO_IMPORT) },
+  });
+}
+
+beforeEach(stubNoImportCoverage);
+
+function useRealImportCoverage(): void {
+  TestBed.overrideProvider(ImportCoverageService, {
+    useFactory: () => new ImportCoverageService(),
+  });
 }
 
 function setStatus(overrides: Partial<EmoteSetStatus>): EmoteSetStatus {
@@ -3254,6 +3284,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   function configure(): void {
     // Several tests open more than one view; each gets a fresh module, not a reconfigured one.
     TestBed.resetTestingModule();
+    stubNoImportCoverage();
     FakeEventSource.instances = [];
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
     TestBed.configureTestingModule({
@@ -5568,6 +5599,7 @@ describe('UsageStatsPage — export/import scope capture reads the shown set onc
    *  set-b view needs before the test drives a dialog open. */
   async function openHalloweenView(): Promise<void> {
     TestBed.resetTestingModule();
+    stubNoImportCoverage();
     FakeEventSource.instances = [];
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
     TestBed.configureTestingModule({
@@ -6351,6 +6383,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
 
   function configure(coarse: boolean, realTemplate = false): void {
     TestBed.resetTestingModule();
+    stubNoImportCoverage();
     FakeEventSource.instances = [];
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
     if (coarse) {
@@ -7186,7 +7219,10 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
   async function mount(options: {
     trackedSince?: string;
     coverage?: ImportCoverage | 'fail';
+    /** Stop after the coverage answer, leaving the grid requests it caused for the test to read. */
+    holdGrid?: boolean;
   }): Promise<void> {
+    useRealImportCoverage();
     FakeEventSource.instances = [];
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
     TestBed.configureTestingModule({
@@ -7238,11 +7274,23 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
     const [request, ...rest] = coverageRequests();
     expect(rest).toEqual([]);
     expect(request.request.params.get('emoteSetId')).toBe('set-a');
+    // "All time" starts at the first imported day, which only the coverage knows: no grid request
+    // may go out before it has answered.
+    expect(totalsRequests()).toEqual([]);
     if (options.coverage === 'fail') {
       request.flush({}, { status: 500, statusText: 'Server Error' });
     } else {
       request.flush(options.coverage ?? coverageBody());
     }
+    await settle();
+    if (options.holdGrid) {
+      return;
+    }
+    flushGrid();
+    await settle();
+  }
+
+  function flushGrid(): void {
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
     flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
       from: '2026-01-01',
@@ -7250,7 +7298,10 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
       liveDays: [],
       emotes: [],
     });
-    await settle();
+  }
+
+  function totalsRequests(): TestRequest[] {
+    return httpMock.match((req) => req.url === '/api/channels/a/usage-stats/totals');
   }
 
   function pickRange(from: string): void {
@@ -7352,6 +7403,90 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
     });
   });
 
+  describe('"all time" start', () => {
+    it('asks for the grid once, from the tracking start, when nothing is imported', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' }, holdGrid: true });
+
+      const requests = totalsRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0].request.params.get('from')).toBe('2026-10-08');
+      expect(component['from']()).toBe('2026-10-08');
+    });
+
+    it('asks for the grid once, from the first imported day, when it lies before the tracking start', async () => {
+      await mount({ holdGrid: true });
+
+      const requests = totalsRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0].request.params.get('from')).toBe('2026-04-08');
+      expect(component['allTimeEarliest']()).toBe('2026-04-08');
+    });
+
+    it('falls back to the tracking start, still with one request, when the coverage read fails', async () => {
+      await mount({ coverage: 'fail', holdGrid: true });
+
+      const requests = totalsRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0].request.params.get('from')).toBe('2026-10-08');
+    });
+
+    it('does not pull the start later than the tracking start for an import that lies after it', async () => {
+      await mount({
+        coverage: coverageBody({ importedFrom: '2026-10-09', importedTo: '2026-10-20' }),
+        holdGrid: true,
+      });
+
+      expect(component['from']()).toBe('2026-10-08');
+    });
+
+    it('moves the start with a set switch while the preset is "all", asking once for the new set', async () => {
+      await mount({});
+
+      component['onEmoteSetSelected']('set-b');
+      await settle();
+      // The old rows stay until the new set's coverage is in; no request for set-b yet.
+      expect(totalsRequests()).toEqual([]);
+      const [request] = coverageRequests();
+      expect(request.request.params.get('emoteSetId')).toBe('set-b');
+      request.flush(coverageBody({ emoteSetId: 'set-b', importedFrom: '2026-07-09' }));
+      await settle();
+
+      const requests = totalsRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(requests[0].request.params.get('from')).toBe('2026-07-09');
+    });
+  });
+
+  describe('range warning wording', () => {
+    it('names the counting start and says nothing was counted before it, without imports', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' } });
+
+      expect(component['rangeBeforeTrackingKey']()).toBe('usageStats.rangeBeforeTracking');
+    });
+
+    it('names the start of the covered stretch, not the tracking start, once imports reach it', async () => {
+      await mount({});
+
+      expect(component['coverageStart']()).toBe('2026-04-08');
+      expect(component['rangeBeforeTrackingKey']()).toBe('usageStats.rangeBeforeTracking');
+    });
+
+    it('calls the stretch before the counting start patchy when imported days lie before it', async () => {
+      await mount({
+        coverage: coverageBody({
+          importedFrom: '2026-07-09',
+          importedTo: '2026-07-23',
+          contiguousFrom: null,
+          hasGaps: false,
+        }),
+      });
+
+      expect(component['coverageStart']()).toBe('2026-10-08T09:30:00Z');
+      expect(component['rangeBeforeTrackingKey']()).toBe('usageStats.rangeBeforeTrackingPatchy');
+    });
+  });
+
   describe('counting start for the warning and the trend', () => {
     it('does not warn from the start of the covered stretch, and warns for a range before it', async () => {
       await mount({});
@@ -7386,6 +7521,18 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
 
       pickRange('2026-10-01');
       expect(component['rangeStartsBeforeTracking']()).toBe(true);
+    });
+
+    it('keeps the trend suppressed when the import does not reach the counting start', async () => {
+      await mount({
+        coverage: coverageBody({ importedTo: '2026-07-01', contiguousFrom: null, hasGaps: true }),
+      });
+      component['from'].set('2026-09-01');
+      component['to'].set('2026-09-30');
+
+      expect(
+        component['trendFor']({ totalUseCount: 20, previousWindowUseCount: 10, firstSeenAt: null }),
+      ).toBe('unknown');
     });
 
     it('lets the live start govern after a rejoin gap', async () => {

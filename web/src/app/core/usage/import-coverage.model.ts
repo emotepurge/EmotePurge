@@ -91,3 +91,31 @@ export function coverageStartFor(
   }
   return trackedSinceDate;
 }
+
+/**
+ * The earliest day "all time" may start at: the viewed set's first imported day when it lies before
+ * the tracking start, otherwise the tracking start itself (operator decision 2026-10-09). `coverage`
+ * is null while unknown or unreadable, which reads exactly like "nothing imported".
+ */
+export function allTimeEarliestFor(
+  coverage: ImportCoverage | null,
+  trackedSinceDate: string | null,
+): string | null {
+  if (trackedSinceDate === null) {
+    return null;
+  }
+  const importedFrom = coverage?.importedFrom ?? null;
+  return importedFrom !== null && importedFrom < trackedSinceDate ? importedFrom : trackedSinceDate;
+}
+
+/**
+ * True when imported days lie before `startDate` (the counting start the warning names): the stretch
+ * before it is then patchy rather than empty, and the warning must not say nothing was counted.
+ */
+export function hasImportedDaysBefore(
+  coverage: ImportCoverage | null,
+  startDate: string | null,
+): boolean {
+  const importedFrom = coverage?.importedFrom ?? null;
+  return importedFrom !== null && startDate !== null && importedFrom < startDate;
+}
