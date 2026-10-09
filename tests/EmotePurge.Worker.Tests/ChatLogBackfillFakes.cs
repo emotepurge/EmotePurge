@@ -17,7 +17,20 @@ namespace EmotePurge.Worker.Tests;
 /// <see cref="FakeBackfillService"/> instance the worker resolves — so a test can tell the loop's
 /// instance from the status monitor's and still see one consistent queue. The transitions follow the
 /// service's contract (spec section 3): conditional on <c>running</c>, the pause delay computed from
-/// the persisted <c>PauseCount</c>, the provider cooldown never shortened, a strict FIFO head.
+/// the persisted <c>PauseCount</c> (the eleventh pause failing the run with HTTP 429), the provider
+/// cooldown never shortened, a strict FIFO head, and a block commit that refuses a block outside the
+/// run's plan and validates its aggregates the way the service's private <c>ValidateBlock</c> does
+/// (mirrored here, since it is not accessible).
+/// <para>
+/// <b>Deliberately not mirrored:</b> the claim-time checks (channel no longer active, Twitch id unknown,
+/// channel excluded, archive mismatch — AC 23/34). The service fails such a head itself and never hands
+/// it to the worker; <c>ChatLogBackfillServiceTests.Worker.Claim_FailsHeadsThatNoLongerQualify_AndMovesOn</c>
+/// covers them against Postgres. The same goes for the real transaction and lock semantics.
+/// </para>
+/// <para>
+/// The <c>*Fault</c> hooks make single calls throw (a database error); <see cref="ReleaseLock"/> drops
+/// the loop lock as a dead connection would.
+/// </para>
 /// </summary>
 internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
 {
@@ -33,6 +46,18 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
 
     /// <summary>Throws from the next claims while it returns an exception.</summary>
     public Func<Exception?>? ClaimFault { get; set; }
+
+    /// <summary>Throws from <c>GetSnapshotAsync</c> while it returns an exception.</summary>
+    public Func<Exception?>? SnapshotFault { get; set; }
+
+    /// <summary>Throws from <c>FailAsync</c> while it returns an exception.</summary>
+    public Func<Exception?>? FailFault { get; set; }
+
+    /// <summary>Throws from <c>IsRunActiveAsync</c> on the given instance while it returns an exception.</summary>
+    public Func<FakeBackfillService, Exception?>? IsRunActiveFault { get; set; }
+
+    /// <summary>Throws from <c>TryAcquireLoopLockAsync</c> on the given instance while it returns an exception.</summary>
+    public Func<FakeBackfillService, Exception?>? LockFault { get; set; }
 
     public IReadOnlyList<FakeBackfillService> Instances
     {
@@ -174,6 +199,7 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
             return new ChatLogBackfillBlockResult.ChannelGone();
         }
 
+        ValidateBlock(from, to, rows);
         if (ReplaceOverride?.Invoke(run) is { } overridden)
         {
             return overridden;
@@ -211,6 +237,9 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
             {
                 run.Status = ChatLogBackfillRunStatus.Failed;
                 run.ErrorCode = ChatLogBackfillService.RateLimitedErrorCode;
+                run.ErrorHttpStatus = 429;
+                run.FinishedAtUtc = nowUtc;
+                run.PausedUntilUtc = null;
             }
             else
             {
@@ -245,11 +274,37 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
             run.Status = ChatLogBackfillRunStatus.Failed;
             run.ErrorCode = errorCode;
             run.ErrorHttpStatus = httpStatus;
+            run.FinishedAtUtc = DateTime.UtcNow;
+            run.PausedUntilUtc = null;
             run.BytesReceived += bytes;
         }
 
         return 0;
     });
+
+    // A mirror of ChatLogBackfillService.ValidateBlock (private there): the worker must never hand in
+    // an empty block, a cell outside it or two aggregates for one cell.
+    private static void ValidateBlock(DateOnly from, DateOnly to, IReadOnlyList<ChatLogBackfillAggregate> rows)
+    {
+        if (from >= to)
+        {
+            throw new ArgumentOutOfRangeException(nameof(to), "A block needs at least one day.");
+        }
+
+        var seen = new HashSet<(string, DateOnly)>();
+        foreach (var row in rows)
+        {
+            if (row.Date < from || row.Date >= to)
+            {
+                throw new ArgumentOutOfRangeException(nameof(rows), $"Aggregate day {row.Date:yyyy-MM-dd} lies outside the block.");
+            }
+
+            if (!seen.Add((row.EmoteId, row.Date)))
+            {
+                throw new ArgumentException("One aggregate per emote and day.", nameof(rows));
+            }
+        }
+    }
 }
 
 internal sealed class FakeRun
@@ -262,7 +317,7 @@ internal sealed class FakeRun
 
     public DateOnly WindowTo { get; init; }
 
-    public int WeeksTotal { get; init; }
+    public int WeeksTotal { get; set; }
 
     public int WeeksDone { get; set; }
 
@@ -275,6 +330,8 @@ internal sealed class FakeRun
     public DateTime? PausedUntilUtc { get; set; }
 
     public string? ErrorCode { get; set; }
+
+    public DateTime? FinishedAtUtc { get; set; }
 
     public int? ErrorHttpStatus { get; set; }
 
@@ -330,10 +387,18 @@ internal sealed class FakeBackfillService(FakeBackfillStore store) : IChatLogBac
         Record(nameof(ClaimNextAsync), () => store.Claim(nowUtc));
 
     public Task<bool> IsRunActiveAsync(long runId, CancellationToken cancellationToken = default) =>
-        Record(nameof(IsRunActiveAsync), () => store.Find(runId)?.Status == ChatLogBackfillRunStatus.Running);
+        Record(nameof(IsRunActiveAsync), () =>
+        {
+            ThrowIf(store.IsRunActiveFault?.Invoke(this));
+            return store.Find(runId)?.Status == ChatLogBackfillRunStatus.Running;
+        });
 
     public Task<ChatLogBackfillSnapshot> GetSnapshotAsync(long runId, CancellationToken cancellationToken = default) =>
-        Record(nameof(GetSnapshotAsync), () => new ChatLogBackfillSnapshot("set-1", store.Find(runId)?.Snapshot ?? []));
+        Record(nameof(GetSnapshotAsync), () =>
+        {
+            ThrowIf(store.SnapshotFault?.Invoke());
+            return new ChatLogBackfillSnapshot("set-1", store.Find(runId)?.Snapshot ?? []);
+        });
 
     public Task<ChatLogBackfillBlockResult> ReplaceBlockAsync(
         long runId, DateOnly blockFrom, DateOnly blockToExclusive, IReadOnlyList<ChatLogBackfillAggregate> rows, long bytes, long messages,
@@ -350,10 +415,19 @@ internal sealed class FakeBackfillService(FakeBackfillStore store) : IChatLogBac
         Record(nameof(RecordBlockAttemptAsync), () => store.RecordAttempt(runId, bytes));
 
     public Task FailAsync(long runId, string errorCode, int? httpStatus, long bytes, CancellationToken cancellationToken = default) =>
-        Record(nameof(FailAsync), () => { store.Fail(runId, errorCode, httpStatus, bytes); return 0; });
+        Record(nameof(FailAsync), () =>
+        {
+            ThrowIf(store.FailFault?.Invoke());
+            store.Fail(runId, errorCode, httpStatus, bytes);
+            return 0;
+        });
 
     public Task<bool> TryAcquireLoopLockAsync(CancellationToken cancellationToken = default) =>
-        Record(nameof(TryAcquireLoopLockAsync), () => store.TryLock(this));
+        Record(nameof(TryAcquireLoopLockAsync), () =>
+        {
+            ThrowIf(store.LockFault?.Invoke(this));
+            return store.TryLock(this);
+        });
 
     public ValueTask DisposeAsync()
     {
@@ -375,6 +449,14 @@ internal sealed class FakeBackfillService(FakeBackfillStore store) : IChatLogBac
         catch (Exception ex)
         {
             return Task.FromException<T>(ex);
+        }
+    }
+
+    private static void ThrowIf(Exception? fault)
+    {
+        if (fault is not null)
+        {
+            throw fault;
         }
     }
 }
@@ -474,6 +556,8 @@ internal sealed class RecordingLogger<T> : ILogger<T>
 /// </summary>
 internal sealed class BackfillRig : IAsyncDisposable
 {
+    public const string ExcludedChatter = "excluded-1";
+
     public static readonly DateTimeOffset Start = new(2026, 10, 9, 12, 0, 0, TimeSpan.Zero);
 
     private readonly List<string> _published = [];
@@ -503,11 +587,11 @@ internal sealed class BackfillRig : IAsyncDisposable
         excluded.IsExcluded(Arg.Any<string?>()).Returns(call => call.Arg<string?>() == ExcludedChatter);
 
         var services = new ServiceCollection();
-        services.AddScoped<IChatLogBackfillService>(_ => Store.NewInstance());
+        services.AddScoped<IChatLogBackfillService>(_ => ServiceResolutionFault?.Invoke() is { } fault ? throw fault : Store.NewInstance());
         services.AddScoped<IChatLogArchiveClient>(_ =>
         {
             Interlocked.Increment(ref _clientResolutions);
-            return Archive;
+            return ClientResolutionFault?.Invoke() is { } fault ? throw fault : Archive;
         });
 
         var gate = new BootRecoveryGate();
@@ -524,8 +608,6 @@ internal sealed class BackfillRig : IAsyncDisposable
             Clock);
     }
 
-    public const string ExcludedChatter = "excluded-1";
-
     /// <summary>Shared with the rig passed as <c>sharingWith</c>, like the store: two loops, one database.</summary>
     public FakeTimeProvider Clock { get; }
 
@@ -538,6 +620,12 @@ internal sealed class BackfillRig : IAsyncDisposable
     public ChatLogBackfillSignal Signal { get; } = new();
 
     public RecordingLogger<ChatLogBackfillWorker> Logger { get; } = new();
+
+    /// <summary>Makes resolving the backfill service throw while it returns an exception.</summary>
+    public Func<Exception?>? ServiceResolutionFault { get; set; }
+
+    /// <summary>Makes resolving the archive client throw while it returns an exception.</summary>
+    public Func<Exception?>? ClientResolutionFault { get; set; }
 
     public int ClientResolutions => Volatile.Read(ref _clientResolutions);
 
