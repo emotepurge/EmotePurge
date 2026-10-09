@@ -1200,9 +1200,15 @@ export class UsageStatsPage {
   // The selected range reaches back further than we have been counting, so its leading part is
   // silently empty. Saying so is the difference between "this emote is dead" and "we weren't here".
   protected readonly rangeStartsBeforeTracking = computed(() => {
-    // "All time" means "everything we have", not a range someone chose that happens to start too
-    // early — warning about its own definition would fire on every default page load.
-    if (this.rangePreset() === 'all') {
+    // "All time" is not a range someone chose that happens to start too early, so without imports
+    // it never warns about its own definition. With imports it starts at the first imported day, and
+    // a stretch of imported days before the counting start (not adjacent to it) leaves a real gap in
+    // the default view: warn then, and only then.
+    const allTime = this.rangePreset() === 'all';
+    if (
+      allTime &&
+      !hasImportedDaysBefore(this.importCoverage(), this.coverageStart()?.slice(0, 10) ?? null)
+    ) {
       return false;
     }
 

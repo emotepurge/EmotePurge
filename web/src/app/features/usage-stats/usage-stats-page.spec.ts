@@ -7472,6 +7472,34 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
       expect(component['rangeBeforeTrackingKey']()).toBe('usageStats.rangeBeforeTracking');
     });
 
+    it('warns under "all time" only for a gap: imports that do not reach the counting start', async () => {
+      await mount({
+        coverage: coverageBody({
+          importedFrom: '2026-07-09',
+          importedTo: '2026-07-23',
+          contiguousFrom: null,
+        }),
+      });
+
+      expect(component['rangePreset']()).toBe('all');
+      expect(component['from']()).toBe('2026-07-09');
+      expect(component['rangeStartsBeforeTracking']()).toBe(true);
+      expect(component['rangeBeforeTrackingKey']()).toBe('usageStats.rangeBeforeTrackingPatchy');
+    });
+
+    it('does not warn under "all time" when the import is adjacent to the counting start', async () => {
+      await mount({});
+
+      expect(component['from']()).toBe('2026-04-08');
+      expect(component['rangeStartsBeforeTracking']()).toBe(false);
+    });
+
+    it('does not warn under "all time" without imports', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' } });
+
+      expect(component['rangeStartsBeforeTracking']()).toBe(false);
+    });
+
     it('calls the stretch before the counting start patchy when imported days lie before it', async () => {
       await mount({
         coverage: coverageBody({
