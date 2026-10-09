@@ -289,6 +289,49 @@ public class ChatLogArchiveClientTests
         Assert.Null(result.HttpStatusCode);
     }
 
+    // ---- ReadDayAsync stays what the harness was measured with (EPIC AC 18, deterministic half) ------
+
+    [Fact]
+    public async Task ReadDayAsync_OnThePinnedFixture_YieldsTheRecordedDigestBytesAndCounts()
+    {
+        // Literals, not values recomputed from the fixture as the first test of this class does: the
+        // digest is the fixture's SHA-256 (sha256sum, taken independently of the client) and the
+        // counts those of its six messages and two non-PRIVMSG lines. The harness derives its day
+        // lines from exactly these fields, so pinning them is what makes "ReadDayAsync is unchanged"
+        // a deterministic check; the live archive is mutable and cannot be one.
+        var fixtureBytes = await File.ReadAllBytesAsync(FixturePath);
+        var client = CreateClient(new StreamStubHandler(HttpStatusCode.OK, () => new LineChunkedStream(fixtureBytes)), new ChatLogArchiveOptions());
+
+        var result = await client.ReadDayAsync("900000001", new DateOnly(2026, 1, 15), 10_000_000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.Complete, result.Status);
+        Assert.Equal("775e0711a58b58aed4522bdb7b576813f9f179a75f573d75c1e07a8e76a8618d", result.BodySha256Hex);
+        Assert.Equal(2587, result.BytesReceived);
+        Assert.Equal(6, result.MessageCount);
+        Assert.Equal(2, result.NonPrivmsgLines);
+        Assert.Equal(0, result.MalformedLines);
+    }
+
+    [Fact]
+    public async Task ReadDayAsync_OverACompressedResponse_YieldsTheSameDigestAndBytesAsAPlainOne()
+    {
+        // The registration now accepts compressed responses. The digest and the byte count are over the
+        // decompressed body, so a harness day line cannot change just because the archive started to
+        // compress (or stopped).
+        var plain = await File.ReadAllBytesAsync(FixturePath);
+        await using var server = await CompressedLoopbackServer.StartAsync(plain);
+        using var http = new HttpClient(ChatLogArchiveClient.CreatePrimaryHandler()) { BaseAddress = server.BaseAddress };
+        var client = new ChatLogArchiveClient(http, new ChatLogArchiveOptions(), new RecordingLogger<ChatLogArchiveClient>());
+
+        var result = await client.ReadDayAsync("900000001", new DateOnly(2026, 1, 15), 10_000_000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.True(server.CompressedLength < plain.Length);
+        Assert.Equal(ChatLogDayStatus.Complete, result.Status);
+        Assert.Equal("775e0711a58b58aed4522bdb7b576813f9f179a75f573d75c1e07a8e76a8618d", result.BodySha256Hex);
+        Assert.Equal(plain.Length, result.BytesReceived);
+        Assert.Equal(6, result.MessageCount);
+    }
+
     // ---- ReadRangeAsync (#346) ------------------------------------------------------------------
 
     private static readonly DateTime RangeFrom = new(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc);
@@ -562,51 +605,76 @@ public class ChatLogArchiveClientTests
         // The registration's decompression is real transport behaviour, so this goes over a loopback
         // socket: a stub handler would hand the client the already-decoded stream and prove nothing.
         var plain = await File.ReadAllBytesAsync(FixturePath);
-        byte[] compressed;
-        using (var buffer = new MemoryStream())
-        {
-            await using (var brotli = new System.IO.Compression.BrotliStream(buffer, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
-            {
-                await brotli.WriteAsync(plain);
-            }
-
-            compressed = buffer.ToArray();
-        }
-
-        Assert.True(compressed.Length < plain.Length);
-
-        var port = GetFreeTcpPort();
-        using var listener = new HttpListener();
-        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-        listener.Start();
-        var serve = Task.Run(async () =>
-        {
-            var context = await listener.GetContextAsync();
-            context.Response.AddHeader("Content-Encoding", "br");
-            context.Response.ContentLength64 = compressed.Length;
-            await context.Response.OutputStream.WriteAsync(compressed);
-            context.Response.Close();
-        });
-
-        using var http = new HttpClient(ChatLogArchiveClient.CreatePrimaryHandler()) { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+        await using var server = await CompressedLoopbackServer.StartAsync(plain);
+        using var http = new HttpClient(ChatLogArchiveClient.CreatePrimaryHandler()) { BaseAddress = server.BaseAddress };
         var client = new ChatLogArchiveClient(http, new ChatLogArchiveOptions(), new RecordingLogger<ChatLogArchiveClient>());
 
         var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 10_000_000, _ => ValueTask.CompletedTask, CancellationToken.None);
-        await serve;
 
+        Assert.True(server.CompressedLength < plain.Length);
         Assert.Equal(ChatLogDayStatus.Complete, result.Status);
         // BytesReceived counts the decompressed bytes the parser saw, not the smaller wire size.
         Assert.Equal(plain.Length, result.BytesReceived);
         Assert.Equal(6, result.MessageCount);
     }
 
-    private static int GetFreeTcpPort()
+    // One-shot loopback HTTP server that answers the first request with `body` brotli-compressed and
+    // Content-Encoding: br.
+    private sealed class CompressedLoopbackServer : IAsyncDisposable
     {
-        var probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-        return port;
+        private readonly HttpListener _listener;
+        private readonly Task _serve;
+
+        private CompressedLoopbackServer(HttpListener listener, Task serve, Uri baseAddress, int compressedLength)
+        {
+            _listener = listener;
+            _serve = serve;
+            BaseAddress = baseAddress;
+            CompressedLength = compressedLength;
+        }
+
+        public Uri BaseAddress { get; }
+
+        public int CompressedLength { get; }
+
+        public static async Task<CompressedLoopbackServer> StartAsync(byte[] body)
+        {
+            byte[] compressed;
+            using (var buffer = new MemoryStream())
+            {
+                await using (var brotli = new System.IO.Compression.BrotliStream(buffer, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+                {
+                    await brotli.WriteAsync(body);
+                }
+
+                compressed = buffer.ToArray();
+            }
+
+            var probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+            probe.Start();
+            var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            listener.Start();
+            var serve = Task.Run(async () =>
+            {
+                var context = await listener.GetContextAsync();
+                context.Response.AddHeader("Content-Encoding", "br");
+                context.Response.ContentLength64 = compressed.Length;
+                await context.Response.OutputStream.WriteAsync(compressed);
+                context.Response.Close();
+            });
+
+            return new CompressedLoopbackServer(listener, serve, new Uri($"http://127.0.0.1:{port}/"), compressed.Length);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _serve;
+            _listener.Close();
+        }
     }
 
     private static ChatLogArchiveClient CreateClient(HttpMessageHandler handler, ChatLogArchiveOptions options, TimeProvider? timeProvider = null)
