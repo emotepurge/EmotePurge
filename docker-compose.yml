@@ -98,6 +98,13 @@ services:
       # Emote tags: play-in and removal runs (#201 T-C). Off until the readiness check in
       # docs/Operations.md ("Emote tags: enabling play-in and removal runs") comes back empty.
       - Tags__RunsEnabled=${TAGS_RUNS_ENABLED:-false}
+      # Chat-log backfill (docs/Operations.md "Chat-log backfill"): off by default. Needs the same
+      # value on api AND worker, and both recreated, before the Settings tab appears and runs start.
+      # Set only after the privacy statement names the archive as a data source. The base URL is
+      # stored per run (shown as the next run's source) and must equal the worker's.
+      - ChatLogBackfill__Enabled=${CHAT_LOG_BACKFILL_ENABLED:-false}
+      - ChatLogBackfill__RequestDelaySeconds=${CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS:-10}
+      - ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}
     volumes:
       - dataprotection-keys:/keys
       - ./legal-content:/legal:ro
@@ -122,7 +129,11 @@ services:
     # UsageFlushWorker, which is registered second. 60 s covers the 30 s with margin, so the final
     # flush arrives predictably instead of being cut off by SIGKILL (Concept 4.6, G3).
     stop_grace_period: 60s
+    # Exactly one worker replica is the supported deployment (D46 in the chat-log backfill spec;
+    # docs/Operations.md "Chat-log backfill"). The backfill loop holds a Postgres advisory lock, so
+    # a second replica would be harmless but useless; container_name below pins it to one anyway.
     deploy:
+      replicas: 1
       resources:
         limits:
           cpus: "1.0"
@@ -152,6 +163,12 @@ services:
       # Data retention (#243/#244, DataRetentionWorker): false (the default) only counts and warns,
       # true actually deletes.
       - Retention__Enforce=${RETENTION_ENFORCE:-false}
+      # Chat-log backfill, see the api service. Spacing between archive requests is
+      # max(RequestDelaySeconds, ChatLogArchive:RequestDelay). BaseUrl must equal the api's: a run
+      # stored with another base URL fails with archive_mismatch.
+      - ChatLogBackfill__Enabled=${CHAT_LOG_BACKFILL_ENABLED:-false}
+      - ChatLogBackfill__RequestDelaySeconds=${CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS:-10}
+      - ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}
     networks:
       - emotepurge-network
     depends_on:
@@ -213,6 +230,8 @@ services:
       - Harness__OutputDirectory=/data/harness
       - Harness__MaxMegabytesPerRun=${HARNESS_MAX_MEGABYTES_PER_RUN:-200}
       - Harness__SharedChatCutover=${HARNESS_SHARED_CHAT_CUTOVER:-}
+      # Same archive as the backfill, from the same .env value (the code default is identical).
+      - ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}
     volumes:
       - ./harness-reports:/data/harness
     networks:
