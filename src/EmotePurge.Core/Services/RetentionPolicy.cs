@@ -40,4 +40,11 @@ public static class RetentionPolicy
     /// (<c>DeactivatedAtUtc</c>). Active channels and their statistics stay.
     /// </summary>
     public static readonly TimeSpan DeactivatedChannel = TimeSpan.FromDays(180);
+
+    /// <summary>
+    /// A finished chat-log backfill run (completed, failed or cancelled) is deleted 365 days after it
+    /// finished (<c>FinishedAtUtc</c>), with its snapshot rows. Coverage days and imported usage rows
+    /// stay (they are statistics, not the request record).
+    /// </summary>
+    public static readonly TimeSpan ChatLogBackfillRun = TimeSpan.FromDays(365);
 }

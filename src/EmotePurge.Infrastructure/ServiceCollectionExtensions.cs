@@ -303,6 +303,13 @@ public static class ServiceCollectionExtensions
         configuration.GetSection(RetentionOptions.SectionName).Bind(retentionOptions);
         retentionOptions.Validate();
         services.AddSingleton(retentionOptions);
+
+        // Chat-log backfill (#346): the flag and the worker's pacing. Bound and validated eagerly like
+        // the retention options; read by Api (flag) and Worker (everything).
+        var chatLogBackfillOptions = new ChatLogBackfillOptions();
+        configuration.GetSection(ChatLogBackfillOptions.SectionName).Bind(chatLogBackfillOptions);
+        chatLogBackfillOptions.Validate();
+        services.AddSingleton(chatLogBackfillOptions);
         services.TryAddSingleton(TimeProvider.System);
         services.AddScoped<IDataRetentionService, DataRetentionService>();
         services.AddScoped<ITwitchUserTokenService, TwitchUserTokenService>();

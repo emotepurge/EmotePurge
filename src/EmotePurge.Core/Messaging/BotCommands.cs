@@ -14,4 +14,10 @@ public static class BotCommands
     public const string JoinPrefix = "JOIN:";
     public const string LeavePrefix = "LEAVE:";
     public const string ResyncPrefix = "RESYNC:";
+
+    /// <summary>
+    /// Nudge for the chat-log backfill worker. The payload is a normalized channel name for the log
+    /// only; the worker never trusts it for identity (the queued run row is the truth).
+    /// </summary>
+    public const string BackfillPrefix = "BACKFILL:";
 }

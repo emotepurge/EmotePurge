@@ -40,6 +40,11 @@ public static class AuditActions
     public const string TagDelete = "tag.delete";
     public const string TagPlayedIn = "tag.playedIn";
     public const string TagRemoved = "tag.removed";
+
+    // Chat-log backfill (#346). The request carries the chosen set as the target and the month count
+    // as its only detail; the cancel carries nothing. Completion is deliberately not audited.
+    public const string BackfillRequest = "backfill.request";
+    public const string BackfillCancel = "backfill.cancel";
 }
 
 /// <summary>
