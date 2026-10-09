@@ -42,4 +42,22 @@ public sealed class ChatLogArchiveOptions
     /// <c>LineTooLong</c> so a delimiter-free body can never be buffered as one line.
     /// </summary>
     public int MaxLineBytes { get; set; } = 16 * 1024;
+
+    /// <summary>
+    /// Throws unless the values the range reader depends on are usable. Called during startup by
+    /// <c>AddEmotePurgeInfrastructure</c>: a zero line limit would reject every line and a zero deadline
+    /// would time out every body, which would look like an archive outage, not a typo.
+    /// </summary>
+    public void Validate()
+    {
+        if (MaxLineBytes <= 0)
+        {
+            throw new InvalidOperationException($"Invalid chat-log archive configuration: 'ChatLogArchive:MaxLineBytes' must be greater than 0, but is {MaxLineBytes}.");
+        }
+
+        if (RangeBodyTimeout <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException($"Invalid chat-log archive configuration: 'ChatLogArchive:RangeBodyTimeout' must be greater than 0, but is {RangeBodyTimeout}.");
+        }
+    }
 }

@@ -28,7 +28,15 @@ public readonly record struct BoundedLine(BoundedLineKind Kind, string? Text);
 /// Lines are split on the byte <c>0x0A</c> (which never occurs inside a UTF-8 multi-byte sequence, so
 /// splitting before decoding is safe) and decoded as UTF-8; a trailing <c>0x0D</c> is dropped, and a
 /// UTF-8 byte-order mark at the very start of the stream is skipped. A final line without a terminator
-/// is returned like any other. The limit counts raw bytes of the line without its terminator.
+/// is returned like any other.
+/// </para>
+/// <para>
+/// <b>Counting.</b> The limit counts raw bytes of the line without its <c>0x0A</c> terminator, so a
+/// <c>0x0D</c> in front of it counts (a line of exactly the limit plus a CR is too long). A bare
+/// <c>0x0D</c> is not a separator - unlike <c>StreamReader</c>, which also splits on it - and stays in
+/// the line unless it is the last byte before the terminator. A BOM split across the first read
+/// boundary is not recognised (it would need three bytes in the first read; a stream's first read of
+/// fewer than three bytes is not expected from a socket) and would surface as a malformed first line.
 /// </para>
 /// </summary>
 public sealed class BoundedLineScanner
@@ -41,7 +49,7 @@ public sealed class BoundedLineScanner
     private readonly Stream _stream;
     private readonly int _maxLineBytes;
     private readonly byte[] _readBuffer = new byte[ReadBufferBytes];
-    private byte[] _line = new byte[InitialLineCapacity];
+    private byte[] _line;
     private int _lineLength;
     private int _readPosition;
     private int _readLength;

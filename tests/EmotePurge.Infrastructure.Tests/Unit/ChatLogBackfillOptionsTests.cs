@@ -30,6 +30,39 @@ public class ChatLogBackfillOptionsTests
     }
 
     [Theory]
+    [InlineData("IdlePollSeconds", "ChatLogBackfill:IdlePollSeconds")]
+    [InlineData("CancelPollSeconds", "ChatLogBackfill:CancelPollSeconds")]
+    public void Validate_RejectsAZeroPollInterval_NamingTheKey(string property, string key)
+    {
+        var options = new ChatLogBackfillOptions();
+        typeof(ChatLogBackfillOptions).GetProperty(property)!.SetValue(options, 0);
+
+        var ex = Assert.Throws<InvalidOperationException>(options.Validate);
+
+        Assert.Contains(key, ex.Message);
+    }
+
+    [Fact]
+    public void ArchiveOptions_Validate_RejectsAnUnusableLineLimitOrDeadline_AndAcceptsTheDefaults()
+    {
+        new ChatLogArchiveOptions().Validate();
+
+        var line = Assert.Throws<InvalidOperationException>(new ChatLogArchiveOptions { MaxLineBytes = 0 }.Validate);
+        var timeout = Assert.Throws<InvalidOperationException>(new ChatLogArchiveOptions { RangeBodyTimeout = TimeSpan.Zero }.Validate);
+
+        Assert.Contains("ChatLogArchive:MaxLineBytes", line.Message);
+        Assert.Contains("ChatLogArchive:RangeBodyTimeout", timeout.Message);
+    }
+
+    [Fact]
+    public void Registration_FailsFastOnAnInvalidArchiveValue()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BuildProvider(new Dictionary<string, string?> { ["ChatLogArchive:MaxLineBytes"] = "0" }));
+        Assert.Contains("ChatLogArchive:MaxLineBytes", ex.Message);
+    }
+
+    [Theory]
     [InlineData(0, 256, 3, "ChatLogBackfill:RequestDelaySeconds")]
     [InlineData(10, 0, 3, "ChatLogBackfill:MaxBlockMegabytes")]
     [InlineData(10, 256, 0, "ChatLogBackfill:TransportRetries")]

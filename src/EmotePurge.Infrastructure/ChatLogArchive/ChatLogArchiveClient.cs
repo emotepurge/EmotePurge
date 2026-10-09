@@ -124,10 +124,10 @@ public class ChatLogArchiveClient(
         string twitchChannelId, DateTime fromUtc, DateTime toUtcExclusive, long maxBytes,
         Func<ChatLogMessage, ValueTask> onMessage, CancellationToken ct)
     {
+        var path = $"channelid/{twitchChannelId}?from={FormatInstant(fromUtc, nameof(fromUtc))}&to={FormatInstant(toUtcExclusive, nameof(toUtcExclusive))}&raw";
+
         await WaitForRequestSlotAsync(ct);
         _lastRequestStartedAtTicks = Environment.TickCount64;
-
-        var path = $"channelid/{twitchChannelId}?from={FormatInstant(fromUtc)}&to={FormatInstant(toUtcExclusive)}&raw";
 
         HttpResponseMessage response;
         try
@@ -233,6 +233,16 @@ public class ChatLogArchiveClient(
                     logger.LogWarning(ex, "Chat-log archive range transfer for channel {ChannelId} dropped mid-body.", twitchChannelId);
                     return Stopped(ChatLogDayStatus.TransportFailure);
                 }
+                // A body that claims Content-Encoding br/gzip but is not: the decompression stream
+                // throws InvalidOperationException (brotli) or InvalidDataException (gzip/deflate) out
+                // of the read. Scoped to this read only - the onMessage callback below is the caller's.
+                catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException)
+                {
+                    logger.LogWarning(
+                        "Chat-log archive range response for channel {ChannelId} has an undecodable content encoding ({Failure}).",
+                        twitchChannelId, ex.GetType().Name);
+                    return Stopped(ChatLogDayStatus.MalformedResponse);
+                }
 
                 // Before the end-of-body test, as in ScanLinesAsync: past the cap the stream reports
                 // end of body, so "no more lines" can mean "cap reached" as well as "done".
@@ -294,10 +304,6 @@ public class ChatLogArchiveClient(
             }
         }
     }
-
-    // Second precision in UTC is all a block boundary needs (the archive also accepts milliseconds).
-    private static string FormatInstant(DateTime utc) =>
-        utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
 
     // delta-seconds or HTTP-date, else null; an HTTP-date in the past is "retry now" (zero), never negative.
     private TimeSpan? ParseRetryAfter(RetryConditionHeaderValue? header)
@@ -430,7 +436,9 @@ public class ChatLogArchiveClient(
                 return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, new ChatLogDayResult(
                     ChatLogDayStatus.BodyTimeout, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode));
             }
-            catch (Exception ex) when (ex is HttpRequestException or IOException)
+            // An undecodable Content-Encoding (the decompression stream throws InvalidOperationException
+            // for brotli, InvalidDataException for gzip/deflate) is a broken transfer like any other.
+            catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or InvalidDataException)
             {
                 logger.LogWarning(ex, "Log-Archiv-Übertragung für Kanal {ChannelId}, Tag {Day} mitten im Body abgebrochen.", twitchChannelId, day);
                 return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, new ChatLogDayResult(
@@ -483,6 +491,14 @@ public class ChatLogArchiveClient(
             await Task.Delay(remaining, ct);
         }
     }
+
+    // Second precision in UTC is all a block boundary needs (the archive also accepts milliseconds).
+    // The kind is checked rather than converted: a Local or Unspecified instant would be formatted
+    // with a 'Z' it does not have, and silently shifting it is not this client's call.
+    private static string FormatInstant(DateTime utc, string paramName) =>
+        utc.Kind == DateTimeKind.Utc
+            ? utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)
+            : throw new ArgumentException("The instant must have DateTimeKind.Utc.", paramName);
 
     // Wraps the raw response stream to count bytes and feed them into the running SHA-256 exactly
     // as they are read off the wire, independent of however StreamReader chooses to buffer them —

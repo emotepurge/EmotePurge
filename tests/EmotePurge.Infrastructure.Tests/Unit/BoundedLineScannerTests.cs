@@ -60,6 +60,27 @@ public class BoundedLineScannerTests
     }
 
     [Fact]
+    public async Task ReadLineAsync_WithTheCarriageReturnAtTheEndOfOneReadAndTheNewlineAtTheStartOfTheNext_DropsTheCarriageReturn()
+    {
+        // 1023 bytes of text, CR at byte index 1023 (last byte of the first 1024-byte read), LF at 1024.
+        var body = Encoding.UTF8.GetBytes(new string('a', 1023) + "\r\nnext\n");
+        var scanner = new BoundedLineScanner(new MemoryStream(body), maxLineBytes: 4096);
+
+        Assert.Equal(new string('a', 1023), await ReadTextAsync(scanner));
+        Assert.Equal("next", await ReadTextAsync(scanner));
+    }
+
+    [Fact]
+    public async Task ReadLineAsync_CountsTheCarriageReturnAgainstTheLimit_AndDoesNotSplitOnABareOne()
+    {
+        var atLimitWithCr = Scanner(new string('a', 100) + "\r\n", maxLineBytes: 100);
+        Assert.Equal(BoundedLineKind.TooLong, (await atLimitWithCr.ReadLineAsync(CancellationToken.None)).Kind);
+
+        var bare = Scanner("one\rtwo\n", maxLineBytes: 100);
+        Assert.Equal("one\rtwo", await ReadTextAsync(bare));
+    }
+
+    [Fact]
     public async Task ReadLineAsync_AfterTooLong_StaysTooLong_AndReadsNothingFurther()
     {
         var source = new GeneratedStream(10_000_000);

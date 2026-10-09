@@ -264,6 +264,7 @@ public static class ServiceCollectionExtensions
 
         var chatLogArchiveOptions = new ChatLogArchiveOptions();
         configuration.GetSection("ChatLogArchive").Bind(chatLogArchiveOptions);
+        chatLogArchiveOptions.Validate();
         services.AddSingleton(chatLogArchiveOptions);
 
         // T3 (#69): read-only, sequential-by-contract client for the third-party chat-log archive

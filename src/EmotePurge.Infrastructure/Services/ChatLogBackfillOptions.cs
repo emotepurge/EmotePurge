@@ -52,6 +52,8 @@ public sealed class ChatLogBackfillOptions
         Require(nameof(RequestDelaySeconds), RequestDelaySeconds);
         Require(nameof(MaxBlockMegabytes), MaxBlockMegabytes);
         Require(nameof(TransportRetries), TransportRetries);
+        Require(nameof(IdlePollSeconds), IdlePollSeconds);
+        Require(nameof(CancelPollSeconds), CancelPollSeconds);
     }
 
     private static void Require(string key, int value)

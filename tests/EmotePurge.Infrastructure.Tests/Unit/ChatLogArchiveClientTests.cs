@@ -363,7 +363,7 @@ public class ChatLogArchiveClientTests
     }
 
     [Fact]
-    public async Task ReadRangeAsync_FormatsNonUtcInstantsAndMillisecondsAsPlainSecondPrecisionUtc()
+    public async Task ReadRangeAsync_FormatsMillisecondsAsPlainSecondPrecisionUtc()
     {
         var handler = new CapturingStreamHandler(() => new MemoryStream());
         var client = CreateClient(handler, new ChatLogArchiveOptions());
@@ -373,6 +373,66 @@ public class ChatLogArchiveClientTests
             1000, _ => ValueTask.CompletedTask, CancellationToken.None);
 
         Assert.Equal("/channelid/1?from=2026-04-09T23:59:59Z&to=2026-04-10T00:00:00Z&raw", handler.LastRequestPathAndQuery);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public async Task ReadRangeAsync_WithANonUtcInstant_Throws_BeforeAnyRequest(DateTimeKind kind)
+    {
+        var handler = new CapturingStreamHandler(() => new MemoryStream());
+        var client = CreateClient(handler, new ChatLogArchiveOptions());
+        var nonUtc = new DateTime(2026, 4, 9, 0, 0, 0, kind);
+
+        var fromEx = await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.ReadRangeAsync("1", nonUtc, RangeTo, 1000, _ => ValueTask.CompletedTask, CancellationToken.None));
+        var toEx = await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.ReadRangeAsync("1", RangeFrom, nonUtc, 1000, _ => ValueTask.CompletedTask, CancellationToken.None));
+
+        Assert.Equal("fromUtc", fromEx.ParamName);
+        Assert.Equal("toUtcExclusive", toEx.ParamName);
+        Assert.Null(handler.LastRequestPathAndQuery);
+    }
+
+    [Theory]
+    [InlineData("br")]
+    [InlineData("gzip")]
+    public async Task ReadRangeAsync_WithABodyThatIsNotWhatItsContentEncodingSays_ReturnsMalformedResponse(string encoding)
+    {
+        await using var server = await CompressedLoopbackServer.StartRawAsync(Encoding.UTF8.GetBytes("this is plain text, not a compressed stream at all"), encoding);
+        using var http = new HttpClient(ChatLogArchiveClient.CreatePrimaryHandler()) { BaseAddress = server.BaseAddress };
+        var client = new ChatLogArchiveClient(http, new ChatLogArchiveOptions(), new RecordingLogger<ChatLogArchiveClient>());
+
+        var result = await client.ReadRangeAsync("1", RangeFrom, RangeTo, 10_000_000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.MalformedResponse, result.Status);
+        Assert.Equal(0, result.MessageCount);
+    }
+
+    [Theory]
+    [InlineData("br")]
+    [InlineData("gzip")]
+    public async Task ReadDayAsync_WithABodyThatIsNotWhatItsContentEncodingSays_ReturnsTransportFailure(string encoding)
+    {
+        await using var server = await CompressedLoopbackServer.StartRawAsync(Encoding.UTF8.GetBytes("this is plain text, not a compressed stream at all"), encoding);
+        using var http = new HttpClient(ChatLogArchiveClient.CreatePrimaryHandler()) { BaseAddress = server.BaseAddress };
+        var client = new ChatLogArchiveClient(http, new ChatLogArchiveOptions(), new RecordingLogger<ChatLogArchiveClient>());
+
+        var result = await client.ReadDayAsync("1", new DateOnly(2026, 1, 15), 10_000_000, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ChatLogDayStatus.TransportFailure, result.Status);
+    }
+
+    [Fact]
+    public async Task ReadRangeAsync_WhenTheCallbackThrowsInvalidOperation_StillPropagatesIt()
+    {
+        // The corrupt-encoding catch is scoped to the body read; a caller's own InvalidOperationException
+        // must never be relabelled as a malformed response.
+        var fixtureBytes = await File.ReadAllBytesAsync(FixturePath);
+        var client = CreateClient(new CapturingStreamHandler(() => new LineChunkedStream(fixtureBytes)), new ChatLogArchiveOptions());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.ReadRangeAsync("1", RangeFrom, RangeTo, 10_000_000, _ => throw new InvalidOperationException("caller bug"), CancellationToken.None));
     }
 
     [Fact]
@@ -637,6 +697,9 @@ public class ChatLogArchiveClientTests
 
         public int CompressedLength { get; }
 
+        public static Task<CompressedLoopbackServer> StartRawAsync(byte[] wireBody, string contentEncoding) =>
+            StartListeningAsync(wireBody, contentEncoding);
+
         public static async Task<CompressedLoopbackServer> StartAsync(byte[] body)
         {
             byte[] compressed;
@@ -650,6 +713,11 @@ public class ChatLogArchiveClientTests
                 compressed = buffer.ToArray();
             }
 
+            return await StartListeningAsync(compressed, "br");
+        }
+
+        private static Task<CompressedLoopbackServer> StartListeningAsync(byte[] compressed, string contentEncoding)
+        {
             var probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
             probe.Start();
             var port = ((IPEndPoint)probe.LocalEndpoint).Port;
@@ -661,13 +729,13 @@ public class ChatLogArchiveClientTests
             var serve = Task.Run(async () =>
             {
                 var context = await listener.GetContextAsync();
-                context.Response.AddHeader("Content-Encoding", "br");
+                context.Response.AddHeader("Content-Encoding", contentEncoding);
                 context.Response.ContentLength64 = compressed.Length;
                 await context.Response.OutputStream.WriteAsync(compressed);
                 context.Response.Close();
             });
 
-            return new CompressedLoopbackServer(listener, serve, new Uri($"http://127.0.0.1:{port}/"), compressed.Length);
+            return Task.FromResult(new CompressedLoopbackServer(listener, serve, new Uri($"http://127.0.0.1:{port}/"), compressed.Length));
         }
 
         public async ValueTask DisposeAsync()
