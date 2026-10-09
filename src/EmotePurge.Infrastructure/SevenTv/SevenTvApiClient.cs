@@ -69,10 +69,10 @@ public class SevenTvApiClient(
     // paginated entries, so the assembled ForeignEmoteSet can carry the set's own name and slot
     // count without a second request.
     // added_at added 2026-10-09 (#346): the set entry's own date, the chat-log backfill's per-emote
-    // gate — the same `addedAt` field GqlSetEntriesQuery reads from the same v4 type. The rule on
-    // GqlEmoteSetListQuery below applies (live by hand with curl first, fixture second); the live
-    // answer for this query is still pending, so the fixture under Unit/TestData is provisional
-    // (".provisional.json") until the operator's recorded response replaces it.
+    // gate — the same `addedAt` field GqlSetEntriesQuery reads from the same v4 type. Run live by hand with
+    // curl on 2026-10-09 (no errors block, every item of the sample carried added_at as an ISO
+    // timestamp with milliseconds and a +00:00 offset); the recorded answer is the fixture
+    // Unit/TestData/emote-set-preview-added-at.json, per the rule on GqlEmoteSetListQuery below.
     private const string GqlEmoteSetPreviewQuery =
         "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { name capacity emotes(page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { alias added_at: addedAt emote { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } } } }";
 
