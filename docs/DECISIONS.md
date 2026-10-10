@@ -25,7 +25,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Migrations/*_AddChatLogBackfill.cs` ·
 `web/src/app/core/usage/import-coverage.model.ts` · `web/src/app/core/usage/import-coverage.service.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` ·
-`web/src/app/features/usage-stats/usage-stats-page.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+`web/src/app/core/usage/import-coverage.model.spec.ts` · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
 The product decision itself (a manager-triggered backfill from `logs.cyex.app`, after #69's verdict)
 is in the entry "Chat-log backfill becomes a product feature" below; the marker for never-observed emote rows is #347's entry, and
@@ -76,6 +76,8 @@ once per start; a set switch under "all time" therefore holds the old rows until
 is in and then asks once. The range warning names `coverageStart` rather than the tracking start, and
 when imported days lie before it, it says the numbers there have gaps (the archive does not cover
 every day) instead of claiming nothing was counted.
+
+The disclosure does not depend on the set status: with no readable tracking start the caption paragraph still opens for a set with imported days and names the import and the source (`usageStats.importedWithoutTrackingStart`), and `refresh()` re-reads the coverage, so a failed first read does not leave imported numbers unattributed until the next set switch.
 
 **The archive is part of the run's identity.** `ChatLogArchive:BaseUrl` now defaults to
 `https://logs.cyex.app/` (the previous default went offline on 2026-10-08), is required on api,

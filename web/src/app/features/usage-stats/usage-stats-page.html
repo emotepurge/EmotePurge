@@ -471,7 +471,10 @@
     }
   </div>
 
-  @if (trackedSince(); as since) {
+  @let since = trackedSince();
+  <!-- Also open without a tracking start (the set status could not be read) whenever imported days
+       are disclosed: numbers that came from an archive never go without their source (B7, B13). -->
+  @if (since || importCaption()) {
     <p class="text-xs text-fg-muted">
       @if (importCaption(); as caption) {
         @let coverage = importCoverage()!;
@@ -479,7 +482,7 @@
              The link is its own element, so the sentence is lead + link(s) + tail. The order of the
              sentences after it is unchanged (contract, below). -->
         {{
-          caption.leadKey
+          (since ? caption.leadKey : 'usageStats.importedWithoutTrackingStart')
             | transloco
               : {
                   date: formatDate(trackedSinceDate()),

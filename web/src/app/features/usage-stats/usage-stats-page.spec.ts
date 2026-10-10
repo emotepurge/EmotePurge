@@ -7595,3 +7595,267 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
     });
   });
 });
+
+describe('UsageStatsPage — imported numbers keep their source without a tracking start, and refresh heals the coverage read', () => {
+  const COVERAGE_PATH = '/api/channels/a/usage-stats/import-coverage';
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  const IMPORT: ImportCoverage = {
+    emoteSetId: 'set-b',
+    sources: [{ name: 'logs.cyex.app', url: 'https://logs.cyex.app/' }],
+    importedFrom: '2026-04-08',
+    importedTo: '2026-10-08',
+    hasGaps: false,
+    contiguousFrom: '2026-04-08',
+    intervals: [],
+  };
+  const NO_ROWS_IMPORTED: ImportCoverage = {
+    ...IMPORT,
+    sources: [],
+    importedFrom: null,
+    importedTo: null,
+    contiguousFrom: null,
+  };
+
+  function configure(realTemplate: boolean): void {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+    if (!realTemplate) {
+      TestBed.overrideComponent(UsageStatsPage, {
+        set: { template: '<div #sheet></div><div #stickyBar></div>' },
+      });
+    }
+    useRealImportCoverage();
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function text(): string {
+    return (fixture.nativeElement as HTMLElement).textContent ?? '';
+  }
+
+  /** A deep link to set-b while `/emotes/active-set` fails: the page has no tracking start. */
+  async function mountWithoutStatus(coverage: ImportCoverage): Promise<void> {
+    configure(true);
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush({}, { status: 503, statusText: 'Service Unavailable' });
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+        ]),
+      );
+    await settle();
+    flushByPath(httpMock, COVERAGE_PATH, coverage);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    httpMock
+      .match((request) => LIVE_LIST_URL.test(request.url))
+      .forEach((request) =>
+        request.flush(
+          { errorCode: 'foreign_channel_seventv_unavailable' },
+          { status: 503, statusText: 'Service Unavailable' },
+        ),
+      );
+    await settle();
+  }
+
+  describe('caption without a tracking start', () => {
+    it('names the import and links the archive, before the set-view sentences, without the tracked-since sentence', async () => {
+      await mountWithoutStatus(IMPORT);
+
+      expect(component['trackedSince']()).toBeNull();
+      const paragraph = fixture.nativeElement.querySelector('p.text-xs') as HTMLElement;
+      const content = paragraph.textContent ?? '';
+      expect(content).toContain('usageStats.importedWithoutTrackingStart');
+      expect(content).not.toMatch(/usageStats\.trackedSince(?!WithImport)/);
+      expect(content.indexOf('usageStats.importedWithoutTrackingStart')).toBeLessThan(
+        content.indexOf('usageStats.setView'),
+      );
+      const link = paragraph.querySelector('a') as HTMLAnchorElement;
+      expect(link.getAttribute('href')).toBe('https://logs.cyex.app/');
+      expect(link.getAttribute('target')).toBe('_blank');
+      expect(link.getAttribute('rel')).toBe('noopener');
+      // One paragraph carries it all: the fallback paragraph must not render a second set of sentences.
+      expect(text().split('usageStats.setView.membersUnavailable').length - 1).toBe(1);
+    });
+
+    it('shows no archive link when nothing is imported', async () => {
+      await mountWithoutStatus(NO_ROWS_IMPORTED);
+
+      expect(fixture.nativeElement.querySelector('a[href="https://logs.cyex.app/"]')).toBeNull();
+      expect(text()).not.toContain('usageStats.importedWithoutTrackingStart');
+    });
+
+    it('switches to the full lead with the date once a later status read succeeds, keeping the link', async () => {
+      await mountWithoutStatus(IMPORT);
+
+      FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+      await new Promise((resolve) => setTimeout(resolve, CHANNEL_RELOAD_DEBOUNCE_MS + 20));
+      flushByPath(
+        httpMock,
+        '/api/channels/a/emotes/active-set',
+        setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }),
+      );
+      await settle();
+
+      expect(text()).toContain('usageStats.trackedSinceWithImport');
+      expect(text()).not.toContain('usageStats.importedWithoutTrackingStart');
+      expect(
+        fixture.nativeElement.querySelector('a[href="https://logs.cyex.app/"]'),
+      ).not.toBeNull();
+    });
+  });
+
+  describe('refresh and the coverage read', () => {
+    async function mountActive(first: ImportCoverage | 'fail'): Promise<void> {
+      configure(false);
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      httpMock
+        .expectOne('/api/channels/a/emotes/active-set')
+        .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }));
+      fixture.detectChanges();
+      httpMock
+        .expectOne('/api/channels/a/emote-sets')
+        .flush(emoteSetList([emoteSet({ id: 'set-a', isActive: true })]));
+      await settle();
+      const [read] = httpMock.match((req) => req.url === COVERAGE_PATH);
+      if (first === 'fail') {
+        read.flush({}, { status: 503, statusText: 'Service Unavailable' });
+      } else {
+        read.flush(first);
+      }
+      await settle();
+      flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+      flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+        from: '2026-01-01',
+        to: '2026-10-09',
+        liveDays: [],
+        emotes: [],
+      });
+      await settle();
+    }
+
+    it('asks the coverage once more after a failed first read, and "all time" moves to the imported start', async () => {
+      await mountActive('fail');
+      expect(component['importCaption']()).toBeNull();
+      expect(component['from']()).toBe('2026-10-08');
+
+      component['refresh']();
+      await settle();
+      const reads = httpMock.match((req) => req.url === COVERAGE_PATH);
+      expect(reads).toHaveLength(1);
+      flushByPath(
+        httpMock,
+        '/api/channels/a/emotes/active-set',
+        setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }),
+      );
+      reads[0].flush({ ...IMPORT, emoteSetId: 'set-a' });
+      await settle();
+
+      expect(component['importCaption']()).not.toBeNull();
+      expect(component['from']()).toBe('2026-04-08');
+      // Accepted cost of the refresh: the direct load went out with the old start, the effect then
+      // asks again with the corrected one — the last request carries the imported start.
+      const totals = httpMock.match((req) => req.url === '/api/channels/a/usage-stats/totals');
+      expect(totals.at(-1)?.request.params.get('from')).toBe('2026-04-08');
+    });
+
+    it('makes no coverage request when no set is known', async () => {
+      configure(false);
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      httpMock
+        .expectOne('/api/channels/a/emotes/active-set')
+        .flush({}, { status: 503, statusText: 'Service Unavailable' });
+      fixture.detectChanges();
+      await settle();
+
+      component['refresh']();
+      await settle();
+
+      expect(httpMock.match((req) => req.url === COVERAGE_PATH)).toEqual([]);
+    });
+
+    it('keeps the caption when the refresh read is rate limited after a good one', async () => {
+      await mountActive({ ...IMPORT, emoteSetId: 'set-a' });
+      expect(component['importCaption']()).not.toBeNull();
+
+      component['refresh']();
+      await settle();
+      flushByPath(
+        httpMock,
+        '/api/channels/a/emotes/active-set',
+        setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }),
+      );
+      httpMock
+        .match((req) => req.url === COVERAGE_PATH)
+        .forEach((r) => r.flush({}, { status: 429, statusText: 'Too Many Requests' }));
+      await settle();
+
+      expect(component['importCaption']()).not.toBeNull();
+    });
+  });
+});

@@ -2726,6 +2726,14 @@ export class UsageStatsPage {
     // above only exists to stop a bare range correction from asking twice, and must not also
     // swallow the one deliberate retry a previously failed request needs.
     this.requestedSetStatusFor = null;
+    // A failed first coverage read leaves the resource in error with unchanged params, so nothing
+    // else would ask again. `reload()` is a no-op without params (no set known). It does not flip the
+    // loading state synchronously, so the direct load() below still goes out with the range as it is;
+    // if the coverage then moves "all time" to an earlier first imported day, the load effect asks
+    // the totals a second time with the corrected `from`. Accepted: a deliberate, rare user action,
+    // and the alternative (holding the refresh back on a state that has not changed yet) risks no
+    // request at all.
+    this.importCoverageResource.reload();
     // A loud reload (spec 8.3): the member list too, not just the numbers. No-op in the active view.
     this.reloadLiveMembers();
     this.load(
