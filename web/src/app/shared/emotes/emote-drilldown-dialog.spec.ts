@@ -135,6 +135,32 @@ describe('EmoteDrilldownDialog', () => {
     });
   });
 
+  describe('live days with imported days in the range (#366)', () => {
+    const live = ['2026-01-15', '2026-01-20', '2026-01-21'];
+
+    it('counts every live day and keeps the plain wording without a boundary', () => {
+      render(data(), of(series({ liveDays: live })));
+
+      expect(component['liveDays']()).toEqual(live);
+      expect(component['coverage']()).toEqual({ live: 3, unused: 3 });
+      expect(component['liveKey']()).toBe('usageStats.chart.unusedOnLiveDays.other');
+    });
+
+    it('counts only the live days since the boundary and chooses the dated wording', () => {
+      render(data({ liveKnownFrom: '2026-01-20' }), of(series({ liveDays: live })));
+
+      expect(component['liveDays']()).toEqual(['2026-01-20', '2026-01-21']);
+      expect(component['coverage']()).toEqual({ live: 2, unused: 2 });
+      expect(component['liveKey']()).toBe('usageStats.chart.since.unusedOnLiveDays.other');
+    });
+
+    it('says there is no live information when the boundary leaves no live day', () => {
+      render(data({ liveKnownFrom: '2026-01-22' }), of(series({ liveDays: live })));
+
+      expect(component['liveKey']()).toBe('usageStats.chart.noLiveInfoImported');
+    });
+  });
+
   describe('myVoteKey switch', () => {
     it('reports keep', () => {
       render(

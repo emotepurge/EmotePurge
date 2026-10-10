@@ -10,6 +10,25 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-10 — Usage page: live-day statements cover only the days live days are recorded for (#366)
+
+**Betrifft:** `web/src/app/core/usage/import-coverage.model.ts` ·
+`web/src/app/shared/emotes/usage-series.ts` · `web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` · `web/public/i18n/{en,de}.json` ·
+`docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md`
+
+Live days come from our own Helix poll and exist only from the tracking start; the backfill fills months
+before it, and for those months there is no live information (an imported day is never a live day). The
+usage page evaluated its live-day statements over the whole range, so one recorded live day read as "live
+on one day in six months". Decision: when the shown range contains imported days of the viewed scope, the
+caption count, the per-emote line (sidecar and drilldown dialog) and the curve bands cover only the days
+from the tracking start on (`liveKnownFromFor`; `importedTo` when the set status failed), and the wording
+names that date; without imported days in the range nothing changes. The dialog gets the boundary as its own
+field (`liveKnownFrom`), not through `trackedSince`. The vote page passes none (its range starts after the
+channel was joined). Known edge: after a rejoin `trackedSince` (`TrackingResumedAt`) is later than the
+`Channel.CreatedAt` the backfill ends at, so live days recorded between the two are not counted while
+imports are in range — the conservative direction.
+
 ### 2026-10-09 — Chat-log backfill: imported rows are marked, one set owns an imported day, coverage is disclosed unconditionally, the flag ships off (#354)
 
 **Betrifft:** `docker-compose.yml` · `docker-compose.prod.yml` · `.env.example` · `docs/Operations.md` ·

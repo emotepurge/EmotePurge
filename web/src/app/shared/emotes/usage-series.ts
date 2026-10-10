@@ -225,12 +225,29 @@ export function liveDayCoverage(
 export function liveDayCaptionKey(
   coverage: { live: number; unused: number },
   hasLiveDays: boolean,
+  clipped = false,
 ): string | null {
   if (coverage.live === 0) {
-    return hasLiveDays ? 'usageStats.chart.liveLegend' : null;
+    if (hasLiveDays) {
+      return clipped ? 'usageStats.chart.liveLegendSince' : 'usageStats.chart.liveLegend';
+    }
+    // Imported days in the range and no live day left after clipping: the curve is not silent about
+    // them — it says why there is nothing green.
+    return clipped ? 'usageStats.chart.noLiveInfoImported' : null;
   }
   const base = coverage.unused === 0 ? 'usedOnAllLiveDays' : 'unusedOnLiveDays';
-  return pluralKey(coverage.live, `usageStats.chart.${base}`);
+  return pluralKey(coverage.live, `usageStats.chart.${clipped ? 'since.' : ''}${base}`);
+}
+
+/**
+ * The live days that count when imported days share the range (#366): those from `liveKnownFrom` on.
+ * `null` = no clipping, the list comes back untouched. Plain string comparison, as everywhere here.
+ */
+export function liveDaysFrom(
+  liveDays: readonly string[],
+  liveKnownFrom: string | null,
+): readonly string[] {
+  return liveKnownFrom === null ? liveDays : liveDays.filter((day) => day >= liveKnownFrom);
 }
 
 /**

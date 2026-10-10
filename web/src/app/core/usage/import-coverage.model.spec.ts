@@ -7,6 +7,7 @@ import {
   ImportCoverage,
   importCaptionFor,
   importedToInclusive,
+  liveKnownFromFor,
 } from './import-coverage.model';
 
 function coverage(overrides: Partial<ImportCoverage> = {}): ImportCoverage {
@@ -132,5 +133,52 @@ describe('hasImportedDaysBefore', () => {
     expect(hasImportedDaysBefore(EMPTY, '2026-10-08')).toBe(false);
     expect(hasImportedDaysBefore(null, '2026-10-08')).toBe(false);
     expect(hasImportedDaysBefore(coverage(), null)).toBe(false);
+  });
+});
+
+describe('liveKnownFromFor', () => {
+  // Imports 2026-04-08 .. 2026-10-07 (importedTo exclusive), counting since 2026-10-08.
+  const SINCE = '2026-10-08';
+
+  it('does not clip without a coverage, without imported days, or when the read failed', () => {
+    expect(liveKnownFromFor(null, SINCE, '2026-04-01', '2026-10-09')).toBeNull();
+    expect(liveKnownFromFor(EMPTY, SINCE, '2026-04-01', '2026-10-09')).toBeNull();
+  });
+
+  it('clips to the tracking start when the range contains imported days', () => {
+    expect(liveKnownFromFor(coverage(), SINCE, '2026-04-08', '2026-10-09')).toBe(SINCE);
+    expect(liveKnownFromFor(coverage(), SINCE, '2026-09-01', '2026-10-09')).toBe(SINCE);
+  });
+
+  it('does not clip a range that starts at or after the tracking start', () => {
+    // importedTo is exclusive: the last imported day is 2026-10-07, the range starts the next day.
+    expect(liveKnownFromFor(coverage(), SINCE, '2026-10-08', '2026-10-20')).toBeNull();
+    expect(liveKnownFromFor(coverage(), SINCE, '2026-10-12', '2026-10-20')).toBeNull();
+  });
+
+  it('does not clip a range that ends before the first imported day', () => {
+    expect(liveKnownFromFor(coverage(), SINCE, '2026-03-01', '2026-04-07')).toBeNull();
+  });
+
+  it('clips a range lying entirely inside the imports to a boundary after it', () => {
+    expect(liveKnownFromFor(coverage(), SINCE, '2026-05-01', '2026-05-31')).toBe(SINCE);
+  });
+
+  it('uses the first day after the imports when the tracking start is unknown', () => {
+    expect(liveKnownFromFor(coverage(), null, '2026-04-08', '2026-10-09')).toBe('2026-10-08');
+  });
+
+  it('lets the intervals decide when the imports have gaps', () => {
+    const gappy = coverage({
+      hasGaps: true,
+      intervals: [
+        { from: '2026-04-08', to: '2026-05-01', archiveHost: 'logs.cyex.app' },
+        { from: '2026-09-01', to: '2026-10-08', archiveHost: 'logs.cyex.app' },
+      ],
+    });
+    // Wholly inside the gap: nothing imported is shown, nothing is clipped.
+    expect(liveKnownFromFor(gappy, SINCE, '2026-06-01', '2026-08-31')).toBeNull();
+    expect(liveKnownFromFor(gappy, SINCE, '2026-04-20', '2026-06-01')).toBe(SINCE);
+    expect(liveKnownFromFor(gappy, SINCE, '2026-08-01', '2026-09-01')).toBe(SINCE);
   });
 });

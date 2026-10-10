@@ -506,7 +506,7 @@
       <!-- The channel-wide live count, stated once here instead of on every emote. Without a
            denominator on purpose: a missing ChannelLiveDay row means "no data", never "offline". -->
       @if (liveDaysInRangeKey(); as liveKey) {
-        {{ liveKey | transloco: { live: liveDayDates().length } }}
+        {{ liveKey | transloco: { live: liveDayDates().length, date: liveKnownFromLabel() } }}
       }
       <!-- Two more sentences in the same caption, not banners: an honesty statement belongs with the
            other honesty statements it sits next to, not as a control of its own (E3). Each is absent
@@ -1038,7 +1038,7 @@
                     class="inline-block h-2 w-2 shrink-0 rounded-sm bg-success-dot"
                     aria-hidden="true"
                   ></span>
-                  {{ liveKey | transloco: inspectedCoverage() }}
+                  {{ liveKey | transloco: inspectedLiveParams() }}
                 </p>
               }
             </div>

@@ -710,7 +710,19 @@
         "one": "Used on the only live day",
         "other": "Used on all {{live}} live days"
       },
-      "liveLegend": "Green: the stream was live"
+      "liveLegend": "Green: the stream was live",
+      "liveLegendSince": "Green: the stream was live (live days recorded since {{date}})",
+      "noLiveInfoImported": "No live information for imported days",
+      "since": {
+        "unusedOnLiveDays": {
+          "one": "Live days recorded since {{date}}: unused on the only live day",
+          "other": "Live days recorded since {{date}}: unused on {{unused}} of {{live}}"
+        },
+        "usedOnAllLiveDays": {
+          "one": "Live days recorded since {{date}}: used on the only live day",
+          "other": "Live days recorded since {{date}}: used on all {{live}}"
+        }
+      }
     },
     "drilldown": {
       "openOnSevenTv": "Open on 7TV",
@@ -788,6 +800,10 @@
     "liveDaysInRange": {
       "one": "In the selected range the stream was live on one day.",
       "other": "In the selected range the stream was live on {{ live }} days."
+    },
+    "liveDaysInRangeSince": {
+      "one": "Live days are recorded since {{ date }}; imported days carry no live information. Since then the stream was live on one day in the selected range.",
+      "other": "Live days are recorded since {{ date }}; imported days carry no live information. Since then the stream was live on {{ live }} days in the selected range."
     },
     "autoSyncNote": "The emote set is synced with 7TV automatically at regular intervals. A newly added emote can take up to 30 minutes before 7TV reports it here.",
     "trackedSince": "We have been counting for this channel since {{ date }}.",

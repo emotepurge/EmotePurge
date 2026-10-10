@@ -23,6 +23,7 @@ import {
   fillDailySeries,
   liveDayCaptionKey,
   liveDayCoverage,
+  liveDaysFrom,
   seriesPeak,
 } from './usage-series';
 
@@ -54,6 +55,12 @@ export interface EmoteDrilldownData {
   firstSeenAt?: string | null;
   previousWindowUseCount?: number;
   trackedSince?: string | null;
+  /**
+   * Usage page only: the first day live days are known for, set when the shown range contains
+   * imported days (#366); `null`/absent = no clipping. Not `trackedSince`, which carries the trend's
+   * counting start and may reach back into the imports.
+   */
+  liveKnownFrom?: string | null;
   /** Vote page only. `null` inside = withheld (secret ballot) and simply not rendered. */
   vote?: {
     keepVotes: number | null;
@@ -130,7 +137,7 @@ export interface EmoteDrilldownData {
             <app-usage-sparkline
               class="block h-full min-w-0 flex-1"
               [points]="points()"
-              [liveDays]="series()!.liveDays"
+              [liveDays]="liveDays()"
               [drawFrom]="drawFrom()"
               [ariaLabel]="'usageStats.chart.label' | transloco"
             />
@@ -157,7 +164,7 @@ export interface EmoteDrilldownData {
                   class="inline-block h-2 w-2 rounded-sm bg-success-dot"
                   aria-hidden="true"
                 ></span>
-                {{ key | transloco: coverage() }}
+                {{ key | transloco: liveParams() }}
               </p>
             }
           </div>
@@ -297,13 +304,23 @@ export class EmoteDrilldownDialog {
   protected readonly peak = computed(() => seriesPeak(this.points(), this.drawFrom() ?? undefined));
   protected readonly yMax = computed(() => this.peak()?.useCount ?? 0);
 
+  /** Live days that count: with imported days in the range, only those since they are recorded. */
+  protected readonly liveDays = computed(() =>
+    liveDaysFrom(this.series()?.liveDays ?? [], this.data.liveKnownFrom ?? null),
+  );
+
   protected readonly coverage = computed(() =>
-    liveDayCoverage(this.points(), this.series()?.liveDays ?? [], this.drawFrom() ?? undefined),
+    liveDayCoverage(this.points(), this.liveDays(), this.drawFrom() ?? undefined),
   );
 
   protected readonly liveKey = computed(() =>
-    liveDayCaptionKey(this.coverage(), (this.series()?.liveDays.length ?? 0) > 0),
+    liveDayCaptionKey(this.coverage(), this.liveDays().length > 0, !!this.data.liveKnownFrom),
   );
+
+  protected readonly liveParams = computed(() => ({
+    ...this.coverage(),
+    date: this.data.liveKnownFrom ? this.formatDate(this.data.liveKnownFrom) : '',
+  }));
 
   /** Suppressed ('unknown') without the usage page's inputs — never guessed. */
   protected readonly trend = computed<UsageTrend>(() => {

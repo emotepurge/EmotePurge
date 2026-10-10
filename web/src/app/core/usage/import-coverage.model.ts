@@ -119,3 +119,40 @@ export function hasImportedDaysBefore(
   const importedFrom = coverage?.importedFrom ?? null;
   return importedFrom !== null && startDate !== null && importedFrom < startDate;
 }
+
+/**
+ * The first day live days can be known for (#366), or `null` = no clipping. Live days (`ChannelLiveDay`)
+ * come from our own Helix poll and exist only from the tracking start; an imported day carries chat
+ * counts and no live information. A live-day statement over a range that contains imported days must
+ * therefore start at the tracking start and say so — otherwise one recorded live day reads as "the
+ * channel was live on one day in six months" under a curve that spans the import.
+ *
+ * Clipping applies only when the shown range [from, to] (both inclusive) contains at least one
+ * imported day of the viewed scope; otherwise every live-day statement stays exactly as it was. The
+ * boundary is the tracking start date, or — when the set status could not be read — the first day after
+ * the imports (`importedTo`, exclusive on the wire). A boundary at or before `from` clips nothing.
+ *
+ * With gaps the individual intervals decide, so a range lying wholly in a gap between two imports is
+ * not treated as imported. All values are `yyyy-MM-dd` UTC dates.
+ */
+export function liveKnownFromFor(
+  coverage: ImportCoverage | null,
+  trackedSinceDate: string | null,
+  from: string,
+  to: string,
+): string | null {
+  if (coverage === null || coverage.importedFrom === null || coverage.importedTo === null) {
+    return null;
+  }
+  const spans =
+    coverage.intervals.length > 0
+      ? coverage.intervals.map((interval) => ({ from: interval.from, to: interval.to }))
+      : [{ from: coverage.importedFrom, to: coverage.importedTo }];
+  // `span.to` is exclusive: the range touches the span when its first day is before it.
+  const importedInRange = spans.some((span) => span.from <= to && span.to > from);
+  if (!importedInRange) {
+    return null;
+  }
+  const boundary = trackedSinceDate ?? coverage.importedTo;
+  return boundary > from ? boundary : null;
+}

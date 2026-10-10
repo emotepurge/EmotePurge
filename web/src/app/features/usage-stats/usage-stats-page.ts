@@ -73,6 +73,7 @@ import {
   ImportCoverage,
   allTimeEarliestFor,
   coverageStartFor,
+  liveKnownFromFor,
   hasImportedDaysBefore,
   importCaptionFor,
   importedToInclusive,
@@ -111,6 +112,7 @@ import {
   fillOffsetSeries,
   liveDayCaptionKey,
   liveDayCoverage,
+  liveDaysFrom,
   offsetsToDates,
   seriesPeak,
 } from '../../shared/emotes/usage-series';
@@ -1887,10 +1889,30 @@ export class UsageStatsPage {
       ),
   );
 
+  /**
+   * The first day live days are known for, when the shown range contains imported days (#366) —
+   * `null` = nothing is clipped. Read from the series' own range so it agrees with the live days it
+   * clips, not with a `from()`/`to()` that may already be moving.
+   */
+  protected readonly liveKnownFrom = computed(() => {
+    const series = this.channelSeries();
+    return series
+      ? liveKnownFromFor(this.importCoverage(), this.trackedSinceDate(), series.from, series.to)
+      : null;
+  });
+
   /** Channel-level, so converted once per response rather than per emote inspected. */
   protected readonly liveDayDates = computed(() => {
     const series = this.channelSeries();
-    return series ? offsetsToDates(series.liveDays, series.from) : [];
+    return series
+      ? liveDaysFrom(offsetsToDates(series.liveDays, series.from), this.liveKnownFrom())
+      : [];
+  });
+
+  /** The clipping date as the sentences name it; empty when nothing is clipped. */
+  protected readonly liveKnownFromLabel = computed(() => {
+    const date = this.liveKnownFrom();
+    return date ? this.formatDate(date) : '';
   });
 
   protected readonly inspectedPoints = computed(() => {
@@ -1935,14 +1957,31 @@ export class UsageStatsPage {
     ),
   );
 
+  protected readonly inspectedLiveParams = computed(() => ({
+    ...this.inspectedCoverage(),
+    date: this.liveKnownFromLabel(),
+  }));
+
   protected readonly inspectedLiveKey = computed(() =>
-    liveDayCaptionKey(this.inspectedCoverage(), this.liveDayDates().length > 0),
+    liveDayCaptionKey(
+      this.inspectedCoverage(),
+      this.liveDayDates().length > 0,
+      this.liveKnownFrom() !== null,
+    ),
   );
 
   /** Channel-wide and range-dependent, so it is stated once at the top rather than on every emote. */
   protected readonly liveDaysInRangeKey = computed(() => {
     const count = this.liveDayDates().length;
-    return count > 0 ? pluralKey(count, 'usageStats.liveDaysInRange') : null;
+    if (count === 0) {
+      return null;
+    }
+    return pluralKey(
+      count,
+      this.liveKnownFrom() === null
+        ? 'usageStats.liveDaysInRange'
+        : 'usageStats.liveDaysInRangeSince',
+    );
   });
 
   /** The single tab stop in the grid (WAI-ARIA grid pattern) — arrow keys move it. */
@@ -3214,6 +3253,7 @@ export class UsageStatsPage {
       firstSeenAt: emote.firstSeenAt,
       previousWindowUseCount: emote.previousWindowUseCount ?? undefined,
       trackedSince: this.coverageStart(),
+      liveKnownFrom: this.liveKnownFrom(),
     };
     openEmoteDrilldownDialog(this.dialog, data);
   }
