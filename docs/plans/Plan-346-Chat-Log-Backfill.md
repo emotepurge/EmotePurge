@@ -116,7 +116,7 @@ Caption-Unterstützung, auch wenn das Schema stehen bleibt: das ältere Image ze
 | mit dem Deploy von #354 (Compose-Wiring kommt dort) | `CHAT_LOG_BACKFILL_ENABLED` | `false` — explizit, damit der Schalter sichtbar existiert |
 | mit #354 | `CHAT_LOG_ARCHIVE_BASE_URL` | nur setzen, wenn vom Code-Default abgewichen wird; gilt für api, worker **und** harness (D45) — ein Wechsel relabelt alte Importe nicht, aber laufende Runs scheitern mit `archive_mismatch` |
 | mit #354, optional | `CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS` | nicht unter den Default 10 |
-| nach Datenschutztext **und** Abnahme **und** Nachweis, dass die laufende Api #354 enthält (Revision = `:<merge-sha>` von #354 oder später; `usageStats.trackedSinceWithImport` in `/i18n/de.json`) | `CHAT_LOG_BACKFILL_ENABLED` | `true`; api **und** worker neu erstellen (Operations „Chat-log backfill") |
+| nach Datenschutztext **und** Abnahme **und** Nachweis, dass die laufende Api #354 und #366 enthält (Schlüssel `usageStats.liveDaysInRangeFromStart` in `/i18n/de.json`; Revision = `:<merge-sha>` von #366 oder später) | `CHAT_LOG_BACKFILL_ENABLED` | `true`; api **und** worker neu erstellen (Operations „Chat-log backfill") |
 
 Vor #354 gibt es keine Compose-Verdrahtung; bis dahin gilt der Code-Default (`BaseUrl` → cyex ab #348, Flag `false`).
 
@@ -138,7 +138,7 @@ Vor #354 gibt es keine Compose-Verdrahtung; bis dahin gilt der Code-Default (`Ba
 6. **Nach Merge #354:** Publish abwarten, Deploy, Revision prüfen, Umgebungsvariablen laut Abschnitt 4 setzen (Flag bleibt `false`).
 7. **Vor dem Einschalten auf Prod:** Datenschutzerklärung ergänzen — operator-eigenes Markdown im read-only gemounteten
    `Legal:ContentPath`-Verzeichnis (`privacy.de.md`/`privacy.en.md`), Archiv als Datenquelle; kein Repo-Commit nötig.
-8. **Einschalten:** erst Nachweis, dass die laufende Api #354 enthält (Abschnitt 4), dann `CHAT_LOG_BACKFILL_ENABLED=true`, api
+8. **Einschalten:** erst Nachweis, dass die laufende Api #354 und #366 enthält (Schlüssel `usageStats.liveDaysInRangeFromStart` in `/i18n/de.json`, Abschnitt 4), dann `CHAT_LOG_BACKFILL_ENABLED=true`, api
    und worker neu erstellen; erster Prod-Run auf dem eigenen Testkanal mit 1 Monat als Rauchprobe, Caption und Link prüfen.
 
 ## 6. Wann das Epic fertig ist
