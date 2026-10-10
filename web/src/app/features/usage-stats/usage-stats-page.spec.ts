@@ -7689,6 +7689,7 @@ describe('UsageStatsPage — imported numbers keep their source without a tracki
       );
     await settle();
     flushByPath(httpMock, COVERAGE_PATH, coverage);
+    await settle();
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
       { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
     ]);
@@ -7756,6 +7757,84 @@ describe('UsageStatsPage — imported numbers keep their source without a tracki
     });
   });
 
+  describe('degraded path: status failed, no set in the URL', () => {
+    async function mountActiveScope(coverage: ImportCoverage): Promise<void> {
+      configure(true);
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      httpMock
+        .expectOne('/api/channels/a/emotes/active-set')
+        .flush({}, { status: 503, statusText: 'Service Unavailable' });
+      fixture.detectChanges();
+      httpMock
+        .expectOne('/api/channels/a/emote-sets')
+        .flush(emoteSetList([emoteSet({ id: 'set-a', isActive: true })]));
+      await settle();
+
+      // Exactly one read, for the active set: the parameter is left out.
+      const reads = httpMock.match((req) => req.url === COVERAGE_PATH);
+      expect(reads).toHaveLength(1);
+      expect(reads[0].request.params.has('emoteSetId')).toBe(false);
+      // The rows wait for it, as they do for an explicit set.
+      expect(httpMock.match((req) => req.url === '/api/channels/a/usage-stats/totals')).toEqual([]);
+      reads[0].flush({ ...coverage, emoteSetId: 'set-a' });
+      await settle();
+      flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+        { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+      ]);
+      flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+        from: '2026-01-01',
+        to: '2026-09-08',
+        liveDays: [],
+        emotes: [],
+      });
+      await settle();
+    }
+
+    it('reads the coverage of the active set without an id and discloses the import in the short form', async () => {
+      await mountActiveScope(IMPORT);
+
+      expect(component['trackedSince']()).toBeNull();
+      expect(text()).toContain('usageStats.importedWithoutTrackingStart');
+      expect(
+        fixture.nativeElement.querySelector('a[href="https://logs.cyex.app/"]'),
+      ).not.toBeNull();
+    });
+
+    it('shows no link when the active set has nothing imported', async () => {
+      await mountActiveScope(NO_ROWS_IMPORTED);
+
+      expect(fixture.nativeElement.querySelector('a[href="https://logs.cyex.app/"]')).toBeNull();
+    });
+
+    it('switches to the known set once the status succeeds, with the full lead', async () => {
+      await mountActiveScope(IMPORT);
+
+      FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+      await new Promise((resolve) => setTimeout(resolve, CHANNEL_RELOAD_DEBOUNCE_MS + 20));
+      flushByPath(
+        httpMock,
+        '/api/channels/a/emotes/active-set',
+        setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }),
+      );
+      await settle();
+      const reads = httpMock.match((req) => req.url === COVERAGE_PATH);
+      expect(reads).toHaveLength(1);
+      expect(reads[0].request.params.get('emoteSetId')).toBe('set-a');
+      reads[0].flush({ ...IMPORT, emoteSetId: 'set-a' });
+      await settle();
+
+      expect(text()).toContain('usageStats.trackedSinceWithImport');
+      expect(text()).not.toContain('usageStats.importedWithoutTrackingStart');
+    });
+  });
+
   describe('refresh and the coverage read', () => {
     async function mountActive(first: ImportCoverage | 'fail'): Promise<void> {
       configure(false);
@@ -7815,28 +7894,6 @@ describe('UsageStatsPage — imported numbers keep their source without a tracki
       // asks again with the corrected one — the last request carries the imported start.
       const totals = httpMock.match((req) => req.url === '/api/channels/a/usage-stats/totals');
       expect(totals.at(-1)?.request.params.get('from')).toBe('2026-04-08');
-    });
-
-    it('makes no coverage request when no set is known', async () => {
-      configure(false);
-      fixture = TestBed.createComponent(UsageStatsPage);
-      component = fixture.componentInstance;
-      httpMock = TestBed.inject(HttpTestingController);
-      fixture.componentRef.setInput('channelName', 'a');
-      fixture.detectChanges();
-      httpMock
-        .expectOne('/api/channels/a/permissions')
-        .flush({ canManage: true, canViewUsageStats: true });
-      httpMock
-        .expectOne('/api/channels/a/emotes/active-set')
-        .flush({}, { status: 503, statusText: 'Service Unavailable' });
-      fixture.detectChanges();
-      await settle();
-
-      component['refresh']();
-      await settle();
-
-      expect(httpMock.match((req) => req.url === COVERAGE_PATH)).toEqual([]);
     });
 
     it('keeps the caption when the refresh read is rate limited after a good one', async () => {

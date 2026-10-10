@@ -77,7 +77,7 @@ is in and then asks once. The range warning names `coverageStart` rather than th
 when imported days lie before it, it says the numbers there have gaps (the archive does not cover
 every day) instead of claiming nothing was counted.
 
-The disclosure does not depend on the set status: with no readable tracking start the caption paragraph still opens for a set with imported days and names the import and the source (`usageStats.importedWithoutTrackingStart`), and `refresh()` re-reads the coverage, so a failed first read does not leave imported numbers unattributed until the next set switch.
+The disclosure does not depend on the set status: with no readable tracking start the caption paragraph still opens for a set with imported days and names the import and the source (`usageStats.importedWithoutTrackingStart`), and `refresh()` re-reads the coverage, so a failed first read does not leave imported numbers unattributed until the next set switch. The same holds when the status failed and the URL names no set: `/totals` is then answered by the server's active-set fallback, so the page asks the coverage for the active set (the `emoteSetId` parameter omitted, §5.6) instead of treating the unknown set as an absent one, and switches to the known set once the status succeeds.
 
 **The archive is part of the run's identity.** `ChatLogArchive:BaseUrl` now defaults to
 `https://logs.cyex.app/` (the previous default went offline on 2026-10-08), is required on api,

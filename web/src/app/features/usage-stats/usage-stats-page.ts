@@ -236,6 +236,9 @@ interface CapturedExportScope {
 // Sorting a never-used emote needs a position, not a crash. It is the deadest thing in the list, so
 // it sorts as older than any real date: descending (most recent first) puts them at the very end,
 // ascending puts them at the front, and either way they stay together instead of scattering.
+/** Coverage scope marker for "the channel's active set, id unknown"; outside the set-id alphabet. */
+const ACTIVE_COVERAGE_SCOPE = '*active';
+
 const NEVER_USED_SORT_VALUE = Number.NEGATIVE_INFINITY;
 
 // Joining a channel does not fill it with emotes right away: POST /join only writes the channel row
@@ -563,16 +566,41 @@ export class UsageStatsPage {
    * known set: a channel without an active set has nothing imported to disclose. The scope is part of
    * the answer so that a stale one can never be read for another set.
    */
+  /**
+   * What the coverage is asked for: the dropdown's set, or — only on the degraded path — the channel's
+   * *active* set by leaving the parameter out (§5.6). That path is: the set status of this channel
+   * failed (so no active id is known), and the URL names no set, so `/totals` is answered through the
+   * server's own active-set fallback all the same. Without this, those numbers would show with no
+   * range and no source link while the coverage endpoint is healthy. As soon as the status succeeds
+   * the scope switches to the then-known set; there is never both. `null` = nothing to ask.
+   * The sentinel starts with `*`, outside the set-id alphabet, like `UsageStatService`'s markers.
+   */
+  private readonly importCoverageScope = computed<string | null>(() => {
+    const emoteSetId = this.selectedEmoteSetId();
+    if (this.awaitingEmoteSetId()) {
+      return emoteSetId;
+    }
+    if (emoteSetId === null && this.setStatusFailedChannel() === this.channelName()) {
+      return ACTIVE_COVERAGE_SCOPE;
+    }
+    return emoteSetId;
+  });
+
   private readonly importCoverageResource = rxResource({
     params: () => {
-      const emoteSetId = this.selectedEmoteSetId();
-      return emoteSetId === null || this.awaitingEmoteSetId()
+      const scope = this.importCoverageScope();
+      return scope === null || this.awaitingEmoteSetId()
         ? undefined
-        : { channelName: this.channelName(), emoteSetId };
+        : { channelName: this.channelName(), scope };
     },
     stream: ({ params }) =>
       this.importCoverageService
-        .getCoverage(params.channelName, { kind: 'set', emoteSetId: params.emoteSetId })
+        .getCoverage(
+          params.channelName,
+          params.scope === ACTIVE_COVERAGE_SCOPE
+            ? { kind: 'active' }
+            : { kind: 'set', emoteSetId: params.scope },
+        )
         .pipe(map((coverage) => ({ ...params, coverage }))),
   });
 
@@ -586,18 +614,16 @@ export class UsageStatsPage {
    */
   private readonly lastImportCoverage = signal<{
     readonly channelName: string;
-    readonly emoteSetId: string;
+    readonly scope: string;
     readonly coverage: ImportCoverage;
   } | null>(null);
 
   protected readonly importCoverage = computed<ImportCoverage | null>(() => {
-    const emoteSetId = this.selectedEmoteSetId();
+    const scope = this.importCoverageScope();
     const read = this.importCoverageResource.hasValue()
       ? this.importCoverageResource.value()
       : this.lastImportCoverage();
-    return read?.channelName === this.channelName() && read.emoteSetId === emoteSetId
-      ? read.coverage
-      : null;
+    return read?.channelName === this.channelName() && read.scope === scope ? read.coverage : null;
   });
 
   /** Wording keys of the first caption sentence, or `null` = the plain tracked-since sentence. */
@@ -623,7 +649,7 @@ export class UsageStatsPage {
    * failed first read settles it as "nothing imported" (the plain tracking start).
    */
   private readonly importCoverageSettled = computed(() => {
-    if (this.selectedEmoteSetId() === null) {
+    if (this.importCoverageScope() === null) {
       return true;
     }
     if (this.awaitingEmoteSetId()) {
@@ -1848,7 +1874,8 @@ export class UsageStatsPage {
     }
     // A failed attempt never learns a tracking start, so nothing will ever correct the range for
     // this channel — treating it as resolved is what stops "all time" from waiting forever.
-    return this.setStatusFailedChannel() === this.channelName();
+    // The coverage still has to answer: on the degraded path it is asked for the active set.
+    return this.setStatusFailedChannel() === this.channelName() && this.importCoverageSettled();
   });
 
   // Keyed by 7TV id (spec 6.5 step 1, 7.2): `/series` still carries `emoteId` beside it, but a set
