@@ -57,6 +57,8 @@ async function openAtlas(
   // A fourth positional parameter rather than an options object: reshaping the signature would
   // touch every existing caller for no gain here.
   sharedChatSeparatedSince: string | null = null,
+  // Imported days of the active set (chat-log backfill); none by default.
+  importedDays: { importedFrom: string; importedTo: string } | null = null,
 ): Promise<void> {
   await mockAuthMe(page, AUTH_USER);
   await mockWorkerHealth(page);
@@ -73,7 +75,7 @@ async function openAtlas(
     sharedChatSeparatedSince,
   });
   await mockUsageTotals(page, 'sensitron', emotes);
-  await mockImportCoverage(page, 'sensitron');
+  await mockImportCoverage(page, 'sensitron', importedDays ? { 'set-1': importedDays } : {});
 
   await page.goto('/channels/sensitron/usage-stats');
   await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
@@ -376,6 +378,29 @@ test.describe('emote atlas', () => {
 
     await expect(
       page.getByText(/Im gewählten Zeitraum war der Stream an 4 Tagen live\./),
+    ).toBeVisible();
+  });
+
+  test('with imported months in the range, live-day statements start at the tracking start and say so (#366)', async ({
+    page,
+  }) => {
+    // The range opens at the first imported day (2026-04-08), so offset 65 is the tracking start
+    // 2026-06-12. Live days before it cannot exist; the one inside the imports is a mock slip the
+    // page must not trust, and the three after it are the recorded ones.
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[70, 700]] }, [10, 65, 66, 70]);
+    await openAtlas(page, EMOTES, null, null, {
+      importedFrom: '2026-04-08',
+      importedTo: '2026-06-12',
+    });
+    const sidecar = page.getByRole('complementary');
+
+    await expect(sidecar).toContainText(
+      'Live-Tage erfasst seit 12.06.2026: an 2 von 3 nicht benutzt',
+    );
+    await expect(
+      page.getByText(
+        /Live-Tage werden seit dem 12\.06\.2026 erfasst; importierte Tage tragen keine Live-Information\. Seitdem war der Stream im gewählten Zeitraum an 3 Tagen live\./,
+      ),
     ).toBeVisible();
   });
 
