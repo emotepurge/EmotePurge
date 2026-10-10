@@ -5,6 +5,7 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { LanguageService } from '../../core/i18n/language.service';
 import { ImportRow } from '../../core/seven-tv/import-source';
 import { ResolutionDecisions, RowDecision, Violation } from './conflict-resolution';
 import {
@@ -72,6 +73,15 @@ const DE_TRANSLATIONS = {
         taken: 'Dieser Name ist im Zielset schon vergeben.',
         duplicate: 'Diesen Namen erzeugt auch eine andere Zeile.',
       },
+    },
+  },
+};
+
+const EN_TRANSLATIONS = {
+  import: {
+    resolve: {
+      bulk: { done: '{{ count }} set to “{{ action }}”' },
+      action: { replaceTarget: 'Replace target' },
     },
   },
 };
@@ -248,8 +258,8 @@ describe('ImportConflictResolutionStep', () => {
         imports: [
           ImportConflictResolutionStep,
           TranslocoTestingModule.forRoot({
-            langs: { de: DE_TRANSLATIONS },
-            translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+            langs: { de: DE_TRANSLATIONS, en: EN_TRANSLATIONS },
+            translocoConfig: { availableLangs: ['de', 'en'], defaultLang: 'de' },
           }),
         ],
       }).compileComponents();
@@ -889,6 +899,22 @@ describe('ImportConflictResolutionStep', () => {
         expect(bulkButton('Alle ersetzen').getAttribute('aria-disabled')).toBe('true');
       });
 
+      it('re-translates the status sentence after a language switch', async () => {
+        TestBed.inject(LanguageService).lang.set('de');
+        await render('nameCollision', twoCollisions());
+        bulkButton('Alle ersetzen').click();
+        fixture.detectChanges();
+        expect(statusText()).toBe('2 auf „Ziel ersetzen“ gesetzt');
+
+        const transloco = TestBed.inject(TranslocoService);
+        await firstValueFrom(transloco.load('en'));
+        transloco.setActiveLang('en');
+        TestBed.inject(LanguageService).lang.set('en');
+        fixture.detectChanges();
+
+        expect(statusText()).toBe('2 set to “Replace target”');
+      });
+
       it('keeps focus on the clicked button and makes a no-op click emit nothing', async () => {
         await render('nameCollision', twoCollisions());
         const replace = bulkButton('Alle ersetzen');
@@ -992,6 +1018,22 @@ describe('ImportConflictResolutionStep', () => {
 
         expect(animatedCellCount(rowElements()[0])).toBe(0);
         expect(animatedCellCount(rowElements()[1])).toBe(2);
+      });
+
+      it('stops animating the focused row once focus moves to a "for all" button', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], new Map()),
+        );
+        expectInitialFocusOnFirstRow();
+
+        rowElements()[1].focus();
+        fixture.detectChanges();
+        expect(animatedCellCount(rowElements()[1])).toBe(2);
+
+        host.querySelector<HTMLButtonElement>('[role="group"][aria-labelledby] button')!.focus();
+        fixture.detectChanges();
+        expect(animatedCellCount(rowElements()[1])).toBe(0);
       });
 
       it('falls back to the focused row once the pointer leaves', async () => {

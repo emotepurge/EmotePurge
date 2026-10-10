@@ -16,6 +16,7 @@ import {
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
+import { LanguageService } from '../../core/i18n/language.service';
 import { pluralKey } from '../../core/i18n/plural';
 import { EmoteSprite } from '../emotes/emote-sprite';
 import { EmoteSpriteAnimated } from '../emotes/emote-sprite-animated';
@@ -347,6 +348,7 @@ export function violationMessages(
             role="group"
             class="flex flex-wrap items-center gap-2"
             aria-labelledby="resolve-bulk-label"
+            (focusin)="onBulkFocusIn()"
           >
             <!-- aria-disabled, never the disabled attribute: the click that empties a button's work
                  would otherwise drop keyboard focus to the body, out of the dialog's tab order. -->
@@ -665,6 +667,7 @@ export class ImportConflictResolutionStep {
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly translate = inject(TranslocoService);
+  private readonly language = inject(LanguageService);
 
   protected readonly spritePx = SPRITE_PX;
   protected readonly spriteClass = SPRITE_CLASS;
@@ -741,6 +744,9 @@ export class ImportConflictResolutionStep {
     if (outcome === null) {
       return '';
     }
+    // `translate` reads the active language non-reactively; `lang()` flips once the new locale is
+    // loaded, so reading it here is what re-runs this sentence after a language switch.
+    this.language.lang();
     const parts = [
       this.translate.translate('import.resolve.bulk.done', {
         count: outcome.changed,
@@ -972,6 +978,12 @@ export class ImportConflictResolutionStep {
     }
     event.preventDefault();
     this.focusRow(next);
+  }
+
+  /** Focus on the "for all" buttons ends the focused row's playback: the toolbar sits inside the
+   *  container, so `onContainerFocusOut` alone would keep the row's key set. */
+  protected onBulkFocusIn(): void {
+    this.focusedKey.set(null);
   }
 
   protected onRowEnter(row: ConflictStepRow): void {
