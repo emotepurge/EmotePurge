@@ -27,6 +27,8 @@ import { liveEvents } from '../../core/live/live-reload';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
+import { ImportCoverage } from '../../core/usage/import-coverage.model';
+import { ImportCoverageService } from '../../core/usage/import-coverage.service';
 import { ALL_EMOTE_SETS } from '../../core/usage-stats/usage-stat.model';
 import { VoteStripIconMode, voteStripIconMode } from '../../core/voting/vote-strip-icon';
 import {
@@ -106,6 +108,9 @@ const RATIO_BAR_PX = 2;
 // window also collapses a `usage.flushed` that lands next to a vote into a single refetch.
 const VOTE_RELOAD_DEBOUNCE_MS = 500;
 
+/** Marks a reload burst that holds a locally cast vote (see the constructor's `seen` set). */
+const LOCAL_VOTE_BURST_MARK = 'vote.local';
+
 // Below this many distinct voters the results view carries a "thin participation" notice — a
 // handful of votes reads like a community verdict once it's sorted and scored, and it isn't one.
 const LOW_PARTICIPATION_THRESHOLD = 5;
@@ -144,6 +149,7 @@ export class VoteSessionDetailPage {
   private readonly languageService = inject(LanguageService);
   private readonly dialog = inject(Dialog);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
+  private readonly importCoverageService = inject(ImportCoverageService);
 
   /** See UsageStatsPage: no 7TV write access without a mouse. */
   protected readonly isCoarse = inject(PointerModeService).isCoarse;
@@ -255,6 +261,36 @@ export class VoteSessionDetailPage {
   // above does, if /permissions happens to resolve after /results.
   protected readonly canViewUsageStats = computed(
     () => this.permissionsResource.value()?.canViewUsageStats ?? false,
+  );
+
+  /**
+   * The import coverage of the scope the ballot's numbers are counted under: the session's own set,
+   * or every set for a null-session (the scope its `/daily` and `/series` reads use). The route
+   * sits behind the same filter as the series the drilldown reads (`UsageStatsAccessAuthorizationFilter`),
+   * so it is requested only for those who may view usage stats. A failed read leaves the drilldown
+   * unclipped — it never breaks the ballot.
+   */
+  // A primitive, like `sessionSetEmoteSetId`: `results()` is replaced wholesale on every reload and
+  // must not refetch the coverage each time. "all" cannot collide with a real set id (24/26 chars).
+  private readonly importCoverageScope = computed(() => {
+    const results = this.results();
+    return results && this.canViewUsageStats() ? (results.emoteSetId ?? 'all') : null;
+  });
+
+  private readonly importCoverageResource = rxResource({
+    params: () => {
+      const scope = this.importCoverageScope();
+      return scope === null ? undefined : { channelName: this.channelName(), scope };
+    },
+    stream: ({ params }) =>
+      this.importCoverageService.getCoverage(
+        params.channelName,
+        params.scope === 'all' ? { kind: 'all' } : { kind: 'set', emoteSetId: params.scope },
+      ),
+  });
+
+  private readonly importCoverage = computed<ImportCoverage | null>(() =>
+    this.importCoverageResource.hasValue() ? this.importCoverageResource.value() : null,
   );
 
   // Gates the usage column and the coarse-pointer drilldown only now (spec section 9, AK 81) — no
@@ -621,10 +657,20 @@ export class VoteSessionDetailPage {
       liveEvents(this.liveUrl, (event) => this.isRelevantLiveEvent(event)).pipe(
         tap((event) => seen.add(event.type)),
       ),
-      this.localVoteSuccess$,
+      // A sentinel, so a burst that holds a cast vote never reads as "nothing but backfill.progress".
+      this.localVoteSuccess$.pipe(tap(() => seen.add(LOCAL_VOTE_BURST_MARK))),
     )
       .pipe(debounceTime(VOTE_RELOAD_DEBOUNCE_MS), takeUntilDestroyed())
       .subscribe(() => {
+        // A backfill block moves the imported range the drilldown clips against; same reload the
+        // usage page does. The ballot itself has nothing to reload for it.
+        if (seen.has(LIVE_EVENT_TYPES.backfillProgress)) {
+          this.importCoverageResource.reload();
+        }
+        if ([...seen].every((type) => type === LIVE_EVENT_TYPES.backfillProgress)) {
+          seen.clear();
+          return;
+        }
         this.loadResults({ freeze: false });
         if (seen.has(LIVE_EVENT_TYPES.channelSynced)) {
           this.loadActiveEmoteSetId();
@@ -815,6 +861,9 @@ export class VoteSessionDetailPage {
   }
 
   protected refresh(): void {
+    // A coverage read that failed once is never retried otherwise, and the drilldown would stay
+    // unclipped for the whole visit.
+    this.importCoverageResource.reload();
     this.load();
   }
 
@@ -845,6 +894,9 @@ export class VoteSessionDetailPage {
         score: emote.score,
         myVote: emote.myVote,
       },
+      // No tracking start on this page: the clipping falls back to the first day after the imports.
+      importCoverage: this.importCoverage(),
+      trackedSinceDate: null,
     };
     openEmoteDrilldownDialog(this.dialog, data);
   }
@@ -1000,7 +1052,8 @@ export class VoteSessionDetailPage {
   private isRelevantLiveEvent(event: LiveEvent): boolean {
     if (
       event.type === LIVE_EVENT_TYPES.usageFlushed ||
-      event.type === LIVE_EVENT_TYPES.channelSynced
+      event.type === LIVE_EVENT_TYPES.channelSynced ||
+      event.type === LIVE_EVENT_TYPES.backfillProgress
     ) {
       return true;
     }

@@ -5,6 +5,7 @@ import { TranslocoTestingModule } from '@jsverse/transloco';
 import { Observable, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ImportCoverage } from '../../core/usage/import-coverage.model';
 import { ALL_EMOTE_SETS, EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { VoteType } from '../../core/voting/vote-session.model';
@@ -132,6 +133,60 @@ describe('EmoteDrilldownDialog', () => {
       // (20 - 5) / 5 = 3.0, well past usageTrend's rising threshold — proof the guard actually
       // delegated instead of returning 'unknown' by default.
       expect(component['trend']()).toBe('rising');
+    });
+  });
+
+  describe('live days with imported days in the range (#366)', () => {
+    // The dialog decides against its own range; the imports end 2026-08-10 (exclusive).
+    const live = ['2026-08-05', '2026-08-12', '2026-08-13'];
+    const imported: ImportCoverage = {
+      emoteSetId: 'SET',
+      sources: [],
+      importedFrom: '2026-06-01',
+      importedTo: '2026-08-10',
+      hasGaps: false,
+      contiguousFrom: '2026-06-01',
+      intervals: [],
+    };
+    const range = { from: '2026-07-01', to: '2026-08-20' };
+    const wide = series({ ...range, liveDays: live });
+
+    it('counts every live day and keeps the plain wording without coverage', () => {
+      render(data(range), of(wide));
+
+      expect(component['liveDays']()).toEqual(live);
+      expect(component['liveKey']()).toBe('usageStats.chart.unusedOnLiveDays.other');
+    });
+
+    it('counts only the live days since the boundary and chooses the dated wording', () => {
+      render(
+        data({ ...range, importCoverage: imported, trackedSinceDate: '2026-08-10' }),
+        of(wide),
+      );
+
+      expect(component['liveDays']()).toEqual(['2026-08-12', '2026-08-13']);
+      expect(component['liveKey']()).toBe('usageStats.chart.since.unusedOnLiveDays.other');
+    });
+
+    it('falls back to the first day after the imports without a tracking start', () => {
+      render(data({ ...range, importCoverage: imported }), of(wide));
+
+      expect(component['liveDays']()).toEqual(['2026-08-12', '2026-08-13']);
+    });
+
+    it('does not clip a range without imported days', () => {
+      render(data({ from: '2026-08-11', to: '2026-08-20', importCoverage: imported }), of(wide));
+
+      expect(component['liveDays']()).toEqual(live);
+    });
+
+    it('says there is no live information when clipping leaves no live day', () => {
+      render(
+        data({ ...range, importCoverage: imported, trackedSinceDate: '2026-08-10' }),
+        of(series({ ...range, liveDays: ['2026-08-05'] })),
+      );
+
+      expect(component['liveKey']()).toBe('usageStats.chart.noLiveInfoImported');
     });
   });
 

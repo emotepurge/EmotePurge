@@ -73,6 +73,8 @@ import {
   ImportCoverage,
   allTimeEarliestFor,
   coverageStartFor,
+  liveDaysCaptionBaseKey,
+  liveKnownFromFor,
   hasImportedDaysBefore,
   importCaptionFor,
   importedToInclusive,
@@ -111,6 +113,8 @@ import {
   fillOffsetSeries,
   liveDayCaptionKey,
   liveDayCoverage,
+  liveDaysFrom,
+  NO_LIVE_INFO_KEY,
   offsetsToDates,
   seriesPeak,
 } from '../../shared/emotes/usage-series';
@@ -1887,10 +1891,30 @@ export class UsageStatsPage {
       ),
   );
 
+  /**
+   * The first day live days are known for, when the shown range contains imported days (#366) —
+   * `null` = nothing is clipped. Read from the series' own range so it agrees with the live days it
+   * clips, not with a `from()`/`to()` that may already be moving.
+   */
+  protected readonly liveKnownFrom = computed(() => {
+    const series = this.channelSeries();
+    return series
+      ? liveKnownFromFor(this.importCoverage(), this.trackedSinceDate(), series.from, series.to)
+      : null;
+  });
+
   /** Channel-level, so converted once per response rather than per emote inspected. */
   protected readonly liveDayDates = computed(() => {
     const series = this.channelSeries();
-    return series ? offsetsToDates(series.liveDays, series.from) : [];
+    return series
+      ? liveDaysFrom(offsetsToDates(series.liveDays, series.from), this.liveKnownFrom())
+      : [];
+  });
+
+  /** The clipping date as the sentences name it; empty when nothing is clipped. */
+  protected readonly liveKnownFromLabel = computed(() => {
+    const date = this.liveKnownFrom();
+    return date ? this.formatDate(date) : '';
   });
 
   protected readonly inspectedPoints = computed(() => {
@@ -1935,14 +1959,26 @@ export class UsageStatsPage {
     ),
   );
 
+  protected readonly noLiveInfoKey = NO_LIVE_INFO_KEY;
+
+  protected readonly inspectedLiveParams = computed(() => ({
+    ...this.inspectedCoverage(),
+    date: this.liveKnownFromLabel(),
+  }));
+
   protected readonly inspectedLiveKey = computed(() =>
-    liveDayCaptionKey(this.inspectedCoverage(), this.liveDayDates().length > 0),
+    liveDayCaptionKey(
+      this.inspectedCoverage(),
+      this.liveDayDates().length > 0,
+      this.liveKnownFrom() !== null,
+    ),
   );
 
   /** Channel-wide and range-dependent, so it is stated once at the top rather than on every emote. */
   protected readonly liveDaysInRangeKey = computed(() => {
     const count = this.liveDayDates().length;
-    return count > 0 ? pluralKey(count, 'usageStats.liveDaysInRange') : null;
+    const base = liveDaysCaptionBaseKey(count, this.liveKnownFrom(), this.trackedSinceDate());
+    return base === null ? null : pluralKey(count, base);
   });
 
   /** The single tab stop in the grid (WAI-ARIA grid pattern) — arrow keys move it. */
@@ -3093,9 +3129,9 @@ export class UsageStatsPage {
       // switch started behind it must block the submit rather than create a session over the
       // active set while another set is chosen.
       lockReasonKey: this.voteLockReasonKey,
-      // The dialog turns this into the session's "count usage from" prefill. On the "all time"
-      // preset from() already equals the tracking start (the constructor effect keeps it there),
-      // so it is a date a human would recognise on every path.
+      // The dialog turns this into the session's "count usage from" prefill. Under "all time" with
+      // imported days from() is the first imported day, i.e. before the tracking start — a ballot
+      // started from it can reach into the imports, which the drilldown clips on its own.
       usageFromDate: this.from(),
     };
     openCreateVoteSessionDialog(this.dialog, data).closed.subscribe((created) => {
@@ -3214,6 +3250,8 @@ export class UsageStatsPage {
       firstSeenAt: emote.firstSeenAt,
       previousWindowUseCount: emote.previousWindowUseCount ?? undefined,
       trackedSince: this.coverageStart(),
+      importCoverage: this.importCoverage(),
+      trackedSinceDate: this.trackedSinceDate(),
     };
     openEmoteDrilldownDialog(this.dialog, data);
   }
