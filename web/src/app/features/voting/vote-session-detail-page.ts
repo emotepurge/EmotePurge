@@ -27,6 +27,8 @@ import { liveEvents } from '../../core/live/live-reload';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
+import { ImportCoverage } from '../../core/usage/import-coverage.model';
+import { ImportCoverageService } from '../../core/usage/import-coverage.service';
 import { ALL_EMOTE_SETS } from '../../core/usage-stats/usage-stat.model';
 import { VoteStripIconMode, voteStripIconMode } from '../../core/voting/vote-strip-icon';
 import {
@@ -144,6 +146,7 @@ export class VoteSessionDetailPage {
   private readonly languageService = inject(LanguageService);
   private readonly dialog = inject(Dialog);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
+  private readonly importCoverageService = inject(ImportCoverageService);
 
   /** See UsageStatsPage: no 7TV write access without a mouse. */
   protected readonly isCoarse = inject(PointerModeService).isCoarse;
@@ -255,6 +258,36 @@ export class VoteSessionDetailPage {
   // above does, if /permissions happens to resolve after /results.
   protected readonly canViewUsageStats = computed(
     () => this.permissionsResource.value()?.canViewUsageStats ?? false,
+  );
+
+  /**
+   * The import coverage of the scope the ballot's numbers are counted under: the session's own set,
+   * or every set for a null-session (the scope its `/daily` and `/series` reads use). The route
+   * sits behind the same filter as the series the drilldown reads (`UsageStatsAccessAuthorizationFilter`),
+   * so it is requested only for those who may view usage stats. A failed read leaves the drilldown
+   * unclipped — it never breaks the ballot.
+   */
+  // A primitive, like `sessionSetEmoteSetId`: `results()` is replaced wholesale on every reload and
+  // must not refetch the coverage each time. "all" cannot collide with a real set id (24/26 chars).
+  private readonly importCoverageScope = computed(() => {
+    const results = this.results();
+    return results && this.canViewUsageStats() ? (results.emoteSetId ?? 'all') : null;
+  });
+
+  private readonly importCoverageResource = rxResource({
+    params: () => {
+      const scope = this.importCoverageScope();
+      return scope === null ? undefined : { channelName: this.channelName(), scope };
+    },
+    stream: ({ params }) =>
+      this.importCoverageService.getCoverage(
+        params.channelName,
+        params.scope === 'all' ? { kind: 'all' } : { kind: 'set', emoteSetId: params.scope },
+      ),
+  });
+
+  private readonly importCoverage = computed<ImportCoverage | null>(() =>
+    this.importCoverageResource.hasValue() ? this.importCoverageResource.value() : null,
   );
 
   // Gates the usage column and the coarse-pointer drilldown only now (spec section 9, AK 81) — no
@@ -845,6 +878,9 @@ export class VoteSessionDetailPage {
         score: emote.score,
         myVote: emote.myVote,
       },
+      // No tracking start on this page: the clipping falls back to the first day after the imports.
+      importCoverage: this.importCoverage(),
+      trackedSinceDate: null,
     };
     openEmoteDrilldownDialog(this.dialog, data);
   }

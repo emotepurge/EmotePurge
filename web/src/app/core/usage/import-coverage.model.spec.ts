@@ -7,6 +7,8 @@ import {
   ImportCoverage,
   importCaptionFor,
   importedToInclusive,
+  liveDaysCaptionBaseKey,
+  LIVE_POLL_START,
   liveKnownFromFor,
 } from './import-coverage.model';
 
@@ -180,5 +182,41 @@ describe('liveKnownFromFor', () => {
     expect(liveKnownFromFor(gappy, SINCE, '2026-06-01', '2026-08-31')).toBeNull();
     expect(liveKnownFromFor(gappy, SINCE, '2026-04-20', '2026-06-01')).toBe(SINCE);
     expect(liveKnownFromFor(gappy, SINCE, '2026-08-01', '2026-09-01')).toBe(SINCE);
+  });
+
+  it('raises the boundary to the live poll start for a channel tracked since before it', () => {
+    expect(LIVE_POLL_START).toBe('2026-08-03');
+    expect(liveKnownFromFor(coverage(), '2026-07-20', '2026-04-08', '2026-10-09')).toBe(
+      LIVE_POLL_START,
+    );
+    expect(
+      liveKnownFromFor(coverage({ importedTo: '2026-07-20' }), null, '2026-04-08', '2026-07-20'),
+    ).toBe(LIVE_POLL_START);
+    // A range already starting at or after the poll start has nothing to clip.
+    expect(liveKnownFromFor(coverage(), '2026-07-20', '2026-08-03', '2026-10-09')).toBeNull();
+  });
+});
+
+describe('liveDaysCaptionBaseKey', () => {
+  it('stays silent without a live day', () => {
+    expect(liveDaysCaptionBaseKey(0, '2026-10-08', '2026-10-08')).toBeNull();
+    expect(liveDaysCaptionBaseKey(0, null, null)).toBeNull();
+  });
+
+  it('keeps the plain sentence when nothing is clipped', () => {
+    expect(liveDaysCaptionBaseKey(3, null, '2026-10-08')).toBe('usageStats.liveDaysInRange');
+  });
+
+  it('drops the date when it is the one the first sentence already names', () => {
+    expect(liveDaysCaptionBaseKey(3, '2026-10-08', '2026-10-08')).toBe(
+      'usageStats.liveDaysInRangeFromStart',
+    );
+  });
+
+  it('names the date when it differs, e.g. clamped to the poll start or without a tracking start', () => {
+    expect(liveDaysCaptionBaseKey(3, '2026-08-03', '2026-07-20')).toBe(
+      'usageStats.liveDaysInRangeSince',
+    );
+    expect(liveDaysCaptionBaseKey(3, '2026-10-08', null)).toBe('usageStats.liveDaysInRangeSince');
   });
 });

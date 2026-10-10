@@ -805,6 +805,10 @@
       "one": "Live-Tage werden seit dem {{ date }} erfasst; importierte Tage tragen keine Live-Information. Seitdem war der Stream im gewählten Zeitraum an einem Tag live.",
       "other": "Live-Tage werden seit dem {{ date }} erfasst; importierte Tage tragen keine Live-Information. Seitdem war der Stream im gewählten Zeitraum an {{ live }} Tagen live."
     },
+    "liveDaysInRangeFromStart": {
+      "one": "Live-Tage gibt es erst ab diesem Tag; im gewählten Zeitraum war der Stream an einem Tag live.",
+      "other": "Live-Tage gibt es erst ab diesem Tag; im gewählten Zeitraum war der Stream an {{ live }} Tagen live."
+    },
     "autoSyncNote": "Das Emote-Set wird regelmäßig automatisch mit 7TV abgeglichen. Neu hinzugefügte Emotes können bis zu 30 Minuten brauchen, bis 7TV sie hier meldet.",
     "trackedSince": "Wir zählen für diesen Channel seit dem {{ date }}.",
     "trackedSinceWithImport": "Wir zählen für diesen Channel seit dem {{ date }}; die Zahlen vom {{ importedFrom }} bis {{ importedToInclusive }} stammen aus dem Chat-Archiv",

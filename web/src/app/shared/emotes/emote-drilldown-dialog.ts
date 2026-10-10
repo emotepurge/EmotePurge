@@ -7,6 +7,7 @@ import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
+import { ImportCoverage, liveKnownFromFor } from '../../core/usage/import-coverage.model';
 import { DailySeriesSetScope, EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { VoteType } from '../../core/voting/vote-session.model';
@@ -24,6 +25,7 @@ import {
   liveDayCaptionKey,
   liveDayCoverage,
   liveDaysFrom,
+  NO_LIVE_INFO_KEY,
   seriesPeak,
 } from './usage-series';
 
@@ -56,11 +58,14 @@ export interface EmoteDrilldownData {
   previousWindowUseCount?: number;
   trackedSince?: string | null;
   /**
-   * Usage page only: the first day live days are known for, set when the shown range contains
-   * imported days (#366); `null`/absent = no clipping. Not `trackedSince`, which carries the trend's
-   * counting start and may reach back into the imports.
+   * The import coverage of the scope the numbers are counted under, and the channel's tracking start
+   * date (`yyyy-MM-dd`) when the host knows it. With imported days inside the dialog's own range the
+   * dialog clips its live-day statements to the days live days are recorded for (#366,
+   * `liveKnownFromFor`) — decided here against the range this dialog fetches, not by the host.
+   * Absent/`null` = nothing is clipped.
    */
-  liveKnownFrom?: string | null;
+  importCoverage?: ImportCoverage | null;
+  trackedSinceDate?: string | null;
   /** Vote page only. `null` inside = withheld (secret ballot) and simply not rendered. */
   vote?: {
     keepVotes: number | null;
@@ -160,10 +165,12 @@ export interface EmoteDrilldownData {
                  measured would be a false statement. -->
             @if (liveKey(); as key) {
               <p class="flex items-center gap-1.5 text-xs text-fg-muted">
-                <span
-                  class="inline-block h-2 w-2 rounded-sm bg-success-dot"
-                  aria-hidden="true"
-                ></span>
+                @if (key !== noLiveInfoKey) {
+                  <span
+                    class="inline-block h-2 w-2 rounded-sm bg-success-dot"
+                    aria-hidden="true"
+                  ></span>
+                }
                 {{ key | transloco: liveParams() }}
               </p>
             }
@@ -304,9 +311,21 @@ export class EmoteDrilldownDialog {
   protected readonly peak = computed(() => seriesPeak(this.points(), this.drawFrom() ?? undefined));
   protected readonly yMax = computed(() => this.peak()?.useCount ?? 0);
 
+  /** The first day live days are known for, when imported days lie in this dialog's range. */
+  private readonly liveKnownFrom = computed(() =>
+    liveKnownFromFor(
+      this.data.importCoverage ?? null,
+      this.data.trackedSinceDate ?? null,
+      this.data.from,
+      this.data.to,
+    ),
+  );
+
+  protected readonly noLiveInfoKey = NO_LIVE_INFO_KEY;
+
   /** Live days that count: with imported days in the range, only those since they are recorded. */
   protected readonly liveDays = computed(() =>
-    liveDaysFrom(this.series()?.liveDays ?? [], this.data.liveKnownFrom ?? null),
+    liveDaysFrom(this.series()?.liveDays ?? [], this.liveKnownFrom()),
   );
 
   protected readonly coverage = computed(() =>
@@ -314,12 +333,12 @@ export class EmoteDrilldownDialog {
   );
 
   protected readonly liveKey = computed(() =>
-    liveDayCaptionKey(this.coverage(), this.liveDays().length > 0, !!this.data.liveKnownFrom),
+    liveDayCaptionKey(this.coverage(), this.liveDays().length > 0, this.liveKnownFrom() !== null),
   );
 
   protected readonly liveParams = computed(() => ({
     ...this.coverage(),
-    date: this.data.liveKnownFrom ? this.formatDate(this.data.liveKnownFrom) : '',
+    date: this.liveKnownFrom() ? this.formatDate(this.liveKnownFrom()!) : '',
   }));
 
   /** Suppressed ('unknown') without the usage page's inputs — never guessed. */

@@ -213,6 +213,9 @@ export function liveDayCoverage(
   return { live: liveCount, unused };
 }
 
+/** The line that explains an absence rather than a green band — it carries no green dot. */
+export const NO_LIVE_INFO_KEY = 'usageStats.chart.noLiveInfoImported';
+
 /**
  * The transloco key for the line under the curve, or `null` when it must stay silent. Three forms,
  * because the honest sentence differs: some live days went unused, all of them were used, or none of
@@ -233,7 +236,7 @@ export function liveDayCaptionKey(
     }
     // Imported days in the range and no live day left after clipping: the curve is not silent about
     // them — it says why there is nothing green.
-    return clipped ? 'usageStats.chart.noLiveInfoImported' : null;
+    return clipped ? NO_LIVE_INFO_KEY : null;
   }
   const base = coverage.unused === 0 ? 'usedOnAllLiveDays' : 'unusedOnLiveDays';
   return pluralKey(coverage.live, `usageStats.chart.${clipped ? 'since.' : ''}${base}`);

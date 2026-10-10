@@ -121,16 +121,24 @@ export function hasImportedDaysBefore(
 }
 
 /**
+ * The day the live poll first wrote `ChannelLiveDay` rows (migration 20260803114737). A channel
+ * joined earlier has a tracking start before it, yet no live day can exist before this date.
+ */
+export const LIVE_POLL_START = '2026-08-03';
+
+/**
  * The first day live days can be known for (#366), or `null` = no clipping. Live days (`ChannelLiveDay`)
- * come from our own Helix poll and exist only from the tracking start; an imported day carries chat
- * counts and no live information. A live-day statement over a range that contains imported days must
- * therefore start at the tracking start and say so — otherwise one recorded live day reads as "the
- * channel was live on one day in six months" under a curve that spans the import.
+ * come from our own Helix poll and exist only from the tracking start (and never before
+ * `LIVE_POLL_START`); an imported day carries chat counts and no live information. A live-day statement
+ * over a range that contains imported days must therefore start there and say so — otherwise one
+ * recorded live day reads as "the channel was live on one day in six months".
  *
- * Clipping applies only when the shown range [from, to] (both inclusive) contains at least one
- * imported day of the viewed scope; otherwise every live-day statement stays exactly as it was. The
- * boundary is the tracking start date, or — when the set status could not be read — the first day after
- * the imports (`importedTo`, exclusive on the wire). A boundary at or before `from` clips nothing.
+ * Clipping applies only when the shown range [from, to] (both inclusive) contains at least one imported
+ * day of the viewed scope; otherwise every live-day statement stays exactly as it was. The boundary is
+ * the tracking start date, or — when it is unknown — the first day after the imports (`importedTo`,
+ * exclusive on the wire), raised to `LIVE_POLL_START`. A boundary at or before `from` clips nothing.
+ * While the coverage is unknown or unreadable nothing is clipped, like the caption's archive
+ * disclosure, which is absent then too.
  *
  * With gaps the individual intervals decide, so a range lying wholly in a gap between two imports is
  * not treated as imported. All values are `yyyy-MM-dd` UTC dates.
@@ -153,6 +161,28 @@ export function liveKnownFromFor(
   if (!importedInRange) {
     return null;
   }
-  const boundary = trackedSinceDate ?? coverage.importedTo;
+  const start = trackedSinceDate ?? coverage.importedTo;
+  const boundary = start > LIVE_POLL_START ? start : LIVE_POLL_START;
   return boundary > from ? boundary : null;
+}
+
+/**
+ * The caption's live-day sentence (`usageStats.liveDaysInRange*`), or `null` without a live day. When
+ * clipped, the dated variant is used only if the boundary differs from the date the caption's first
+ * sentence already names (`trackedSinceDate`) — the same date twice in a row reads as a stutter.
+ */
+export function liveDaysCaptionBaseKey(
+  liveCount: number,
+  liveKnownFrom: string | null,
+  trackedSinceDate: string | null,
+): string | null {
+  if (liveCount === 0) {
+    return null;
+  }
+  if (liveKnownFrom === null) {
+    return 'usageStats.liveDaysInRange';
+  }
+  return liveKnownFrom === trackedSinceDate
+    ? 'usageStats.liveDaysInRangeFromStart'
+    : 'usageStats.liveDaysInRangeSince';
 }

@@ -73,6 +73,7 @@ import {
   ImportCoverage,
   allTimeEarliestFor,
   coverageStartFor,
+  liveDaysCaptionBaseKey,
   liveKnownFromFor,
   hasImportedDaysBefore,
   importCaptionFor,
@@ -113,6 +114,7 @@ import {
   liveDayCaptionKey,
   liveDayCoverage,
   liveDaysFrom,
+  NO_LIVE_INFO_KEY,
   offsetsToDates,
   seriesPeak,
 } from '../../shared/emotes/usage-series';
@@ -1957,6 +1959,8 @@ export class UsageStatsPage {
     ),
   );
 
+  protected readonly noLiveInfoKey = NO_LIVE_INFO_KEY;
+
   protected readonly inspectedLiveParams = computed(() => ({
     ...this.inspectedCoverage(),
     date: this.liveKnownFromLabel(),
@@ -3132,9 +3136,9 @@ export class UsageStatsPage {
       // switch started behind it must block the submit rather than create a session over the
       // active set while another set is chosen.
       lockReasonKey: this.voteLockReasonKey,
-      // The dialog turns this into the session's "count usage from" prefill. On the "all time"
-      // preset from() already equals the tracking start (the constructor effect keeps it there),
-      // so it is a date a human would recognise on every path.
+      // The dialog turns this into the session's "count usage from" prefill. Under "all time" with
+      // imported days from() is the first imported day, i.e. before the tracking start — a ballot
+      // started from it can reach into the imports, which the drilldown clips on its own.
       usageFromDate: this.from(),
     };
     openCreateVoteSessionDialog(this.dialog, data).closed.subscribe((created) => {
@@ -3253,7 +3257,8 @@ export class UsageStatsPage {
       firstSeenAt: emote.firstSeenAt,
       previousWindowUseCount: emote.previousWindowUseCount ?? undefined,
       trackedSince: this.coverageStart(),
-      liveKnownFrom: this.liveKnownFrom(),
+      importCoverage: this.importCoverage(),
+      trackedSinceDate: this.trackedSinceDate(),
     };
     openEmoteDrilldownDialog(this.dialog, data);
   }

@@ -1034,10 +1034,12 @@
                    emote's lifetime — the bands span the whole range either way. -->
               @if (inspectedLiveKey(); as liveKey) {
                 <p class="flex items-center gap-1.5 font-mono text-[11px] text-fg-muted">
-                  <span
-                    class="inline-block h-2 w-2 shrink-0 rounded-sm bg-success-dot"
-                    aria-hidden="true"
-                  ></span>
+                  @if (liveKey !== noLiveInfoKey) {
+                    <span
+                      class="inline-block h-2 w-2 shrink-0 rounded-sm bg-success-dot"
+                      aria-hidden="true"
+                    ></span>
+                  }
                   {{ liveKey | transloco: inspectedLiveParams() }}
                 </p>
               }

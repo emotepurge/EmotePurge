@@ -17,17 +17,27 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/public/i18n/{en,de}.json` ·
 `docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md`
 
-Live days come from our own Helix poll and exist only from the tracking start; the backfill fills months
-before it, and for those months there is no live information (an imported day is never a live day). The
-usage page evaluated its live-day statements over the whole range, so one recorded live day read as "live
-on one day in six months". Decision: when the shown range contains imported days of the viewed scope, the
-caption count, the per-emote line (sidecar and drilldown dialog) and the curve bands cover only the days
-from the tracking start on (`liveKnownFromFor`; `importedTo` when the set status failed), and the wording
-names that date; without imported days in the range nothing changes. The dialog gets the boundary as its own
-field (`liveKnownFrom`), not through `trackedSince`. The vote page passes none (its range starts after the
-channel was joined). Known edge: after a rejoin `trackedSince` (`TrackingResumedAt`) is later than the
-`Channel.CreatedAt` the backfill ends at, so live days recorded between the two are not counted while
-imports are in range — the conservative direction.
+Live days come from our own Helix poll and exist only from the tracking start (and never before
+2026-08-03, when migration 20260803114737 introduced `ChannelLiveDay`); the backfill fills months before
+it, and for those months there is no live information (an imported day is never a live day). The usage page
+evaluated its live-day statements over the whole range, so one recorded live day read as "live on one day
+in six months". Decision: when the shown range contains imported days of the viewed scope, the caption
+count, the per-emote line (sidecar and drilldown dialog) and the curve bands cover only the days from
+`max(tracking start, 2026-08-03)` on (`liveKnownFromFor`; `importedTo` replaces an unknown tracking start),
+and the wording names that date (the caption drops it when it equals the date its first sentence already
+names). Without imported days in the range nothing changes. The drilldown dialog decides this itself against
+the range it fetches: its data carries the import coverage and the tracking start date, not a precomputed
+boundary. The usage page passes both; the vote page reads the coverage of the ballot's scope (the set, or
+every set for a null-session) through the same route — it sits behind the same filter as the series the
+drilldown reads, so every role that can open the drilldown can read it — and passes no tracking start. A
+ballot's range can reach into the imports, because a session's start may be any date up to 366 days back
+and the create dialog prefills it with the page's `from()`.
+
+Accepted consequences: while the coverage is unknown or unreadable nothing is clipped, consistent with the
+caption's archive disclosure being absent in that state. After a rejoin the boundary is
+`TrackingResumedAt`, so live days of the first tracking period are hidden while imports are in range (bands
+disappear when the range is widened into the imports); the conservative choice, because `importedTo` would
+be wrong when another set's imports reach later.
 
 ### 2026-10-09 — Chat-log backfill: imported rows are marked, one set owns an imported day, coverage is disclosed unconditionally, the flag ships off (#354)
 
