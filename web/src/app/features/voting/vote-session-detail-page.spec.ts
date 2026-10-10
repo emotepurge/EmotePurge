@@ -26,6 +26,7 @@ import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { VoteSessionResult, VoteSessionResults } from '../../core/voting/vote-session.model';
+import { ImportCoverage } from '../../core/usage/import-coverage.model';
 import { ALL_EMOTE_SETS } from '../../core/usage-stats/usage-stat.model';
 import { EmoteDrilldownData } from '../../shared/emotes/emote-drilldown-dialog';
 import { VoteSessionDetailPage } from './vote-session-detail-page';
@@ -653,6 +654,84 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
 
     const data = openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
     expect(data.emoteSetId).toBe(ALL_EMOTE_SETS);
+  });
+
+  describe('import coverage for the drilldown (#366)', () => {
+    const COVERAGE_PATH = `/api/channels/${CHANNEL}/usage-stats/import-coverage`;
+    const COVERAGE: ImportCoverage = {
+      emoteSetId: 'halloween-1',
+      sources: [],
+      importedFrom: '2026-04-08',
+      importedTo: '2026-10-08',
+      hasGaps: false,
+      contiguousFrom: '2026-04-08',
+      intervals: [],
+    };
+
+    function coverageRequests() {
+      return httpMock.match((req) => req.url === COVERAGE_PATH);
+    }
+
+    function openedData(): EmoteDrilldownData {
+      const openSpy = vi
+        .spyOn(TestBed.inject(Dialog), 'open')
+        .mockReturnValue({ closed: of(undefined) } as ReturnType<Dialog['open']>);
+      component['openDrilldown'](component['results']()!.emotes[0]);
+      expect(openSpy).toHaveBeenCalledTimes(1);
+      return openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
+    }
+
+    it("reads the coverage under the session's own set", async () => {
+      await mount(
+        results([resultEmote('a', { totalUseCount: 5 })], { emoteSetId: 'halloween-1' }),
+        true,
+      );
+
+      const [request, ...rest] = coverageRequests();
+      expect(rest).toEqual([]);
+      expect(request.request.params.get('emoteSetId')).toBe('halloween-1');
+    });
+
+    it('reads the coverage of every set for a session without a set', async () => {
+      await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+
+      const [request] = coverageRequests();
+      expect(request.request.params.get('emoteSetId')).toBe('all');
+    });
+
+    it('makes no coverage request without the right to view usage stats', async () => {
+      await mount(results([resultEmote('a', { totalUseCount: 5 })]), false);
+
+      expect(coverageRequests()).toEqual([]);
+    });
+
+    it('does not refetch the coverage when the results are replaced by a reload', async () => {
+      await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+      expect(coverageRequests()).toHaveLength(1);
+
+      component['results'].set(results([resultEmote('a', { totalUseCount: 6 })]));
+      await settle();
+
+      expect(coverageRequests()).toEqual([]);
+    });
+
+    it('hands the coverage to the drilldown, with no tracking start of its own', async () => {
+      await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+      coverageRequests()[0].flush(COVERAGE);
+      await settle();
+
+      const data = openedData();
+      expect(data.importCoverage).toEqual(COVERAGE);
+      expect(data.trackedSinceDate).toBeNull();
+    });
+
+    it('still opens the drilldown, unclipped, when the coverage read failed', async () => {
+      await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+      coverageRequests()[0].flush({}, { status: 403, statusText: 'Forbidden' });
+      await settle();
+
+      expect(openedData().importCoverage).toBeNull();
+    });
   });
 
   it("targets a set-session's own NON-active set with the real active set beside it, unlocked once its live membership read lands clean (K5's set-scoped sync-deleted lifted Ruling D)", async () => {
