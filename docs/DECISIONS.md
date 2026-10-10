@@ -10,6 +10,103 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-09 — Chat-log backfill: imported rows are marked, one set owns an imported day, coverage is disclosed unconditionally, the flag ships off (#354)
+
+**Betrifft:** `docker-compose.yml` · `docker-compose.prod.yml` · `.env.example` · `docs/Operations.md` ·
+`docs/Feature-Ideen-2026-08-01.md` · `CLAUDE.md` ·
+`docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md` ·
+`src/EmotePurge.Core/Entities/UsageStat.cs` · `src/EmotePurge.Core/Entities/ChatLogBackfillRun.cs` ·
+`src/EmotePurge.Core/Entities/ChatLogBackfillCoverageDay.cs` ·
+`src/EmotePurge.Core/Entities/ChatLogBackfillRunEmote.cs` ·
+`src/EmotePurge.Infrastructure/ChatLogArchive/ChatLogArchiveOptions.cs` ·
+`src/EmotePurge.Worker/ChatLogBackfill/ChatLogBackfillWorker.cs` ·
+`src/EmotePurge.Api/Endpoints/UsageStatsEndpoints.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChatLogBackfillService.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/*_AddChatLogBackfill.cs` ·
+`web/src/app/core/usage/import-coverage.model.ts` · `web/src/app/core/usage/import-coverage.service.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/core/usage/import-coverage.model.spec.ts` · `web/src/app/features/usage-stats/usage-stats-page.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+The product decision itself (a manager-triggered backfill from `logs.cyex.app`, after #69's verdict)
+is in the entry "Chat-log backfill becomes a product feature" below; the marker for never-observed emote rows is #347's entry, and
+the channel-row locks are #349's. This entry records the contracts the feature's remaining children
+(#348, #350–#354) settled, in one place, and the wiring that makes it deployable.
+
+**A cell is live or imported, never both.** `UsageStats.Source` (`0` live, `1` chat archive) is a
+column on the existing table, and the unique index stays `(EmoteId, EmoteSetId, Date)`. Every read
+path (grid, sort, curve, totals, trend) therefore includes imported days without any change, and a
+unique violation during an import means the invariant broke: the run fails (`live_row_conflict`)
+instead of merging. A separate table would have forced every read to union two tables. The two
+earliest-separation dates (`BotsExcludedSince`, `SharedChatSeparatedSince`) read live rows only
+(#349's entry).
+
+**One set owns an imported day.** A run matches the names of one chosen 7TV set and attributes all of
+its usage to that set's `EmoteSetId`. It replaces every imported row of the channel in its window
+(`Source = 1` only, any set id), per weekly block in one transaction, so an imported day belongs to
+exactly one set, the same shape a live day has outside a mid-day set switch. The Settings tab names
+the imported days another set currently holds before the run starts. The matching list is a snapshot
+of the chosen set as 7TV lists it at request time, fetched by the Api and persisted with the run
+(`ChatLogBackfillRunEmotes`, including the day each emote entered the set from the preview's
+`added_at`); the worker never asks 7TV. Members without an `Emote` row are created as placeholders
+through the shared upsert of #347, and the snapshot records which rows the backfill created, which
+is the only provenance the rollback cleanup has.
+
+**Coverage is its own table, and the caption discloses it unconditionally.**
+`ChatLogBackfillCoverage` records per channel and day which set and which archive host were imported,
+written only with a committed block and surviving the deletion of the run row. The usage page reads
+it per viewed set (`GET …/usage-stats/import-coverage`, not behind the flag, because imported rows
+outlive the flag). Whenever the viewed set has any covered day, the first sentence of the caption
+names the imported range and links the source, with "with gaps" when the days are not consecutive; a
+set without imported days of its own shows nothing, even when another set has. `importedTo` is the
+last covered day plus one (exclusive, like every other interval end on the wire); the caption shows
+the day before it. Contiguity does not decide whether to disclose; it decides only where reliable
+counting starts, by one rule: `coverageStart` is `contiguousFrom` when a covered stretch ends at the
+tracked-since date (`importedTo` equals it), otherwise the live start, so a rejoin gap or a stretch
+that does not touch the counting start keeps the existing "range starts before tracking" banner and
+the suppressed trend. An older gap in front of a contiguous stretch does not disable it. The
+drilldown dialog receives `coverageStart` in the place of `trackedSince`, so its trend agrees with the
+grid's.
+
+**"All time" starts at the first imported day (operator decision, 2026-10-09).** For the viewed set the
+preset begins at `min(importedFrom, tracking-start date)`, so the default view shows the imported
+stretch instead of hiding it behind the live start. Without imports, while the coverage is unknown, or
+when the coverage read failed, it starts at the tracking start as before. The grid is requested only
+after the coverage has answered (or failed) for the scope on screen, otherwise it would be asked twice,
+once per start; a set switch under "all time" therefore holds the old rows until the new set's coverage
+is in and then asks once. The range warning names `coverageStart` rather than the tracking start, and
+when imported days lie before it, it says the numbers there have gaps (the archive does not cover
+every day) instead of claiming nothing was counted.
+
+The disclosure does not depend on the set status: with no readable tracking start the caption paragraph still opens for a set with imported days and names the import and the source (`usageStats.importedWithoutTrackingStart`), and `refresh()` re-reads the coverage, so a failed first read does not leave imported numbers unattributed until the next set switch. The same holds when the status failed and the URL names no set: `/totals` is then answered by the server's active-set fallback, so the page asks the coverage for the active set (the `emoteSetId` parameter omitted, §5.6) instead of treating the unknown set as an absent one, and switches to the known set once the status succeeds.
+
+**The archive is part of the run's identity.** `ChatLogArchive:BaseUrl` now defaults to
+`https://logs.cyex.app/` (the previous default went offline on 2026-10-08), is required on api,
+worker and harness (compose passes one `CHAT_LOG_ARCHIVE_BASE_URL` to all three), is stored on each
+run, and the worker fails a run whose stored value differs from its own (`archive_mismatch`).
+Attribution comes from the host stored per imported day, so a later URL change never relabels old
+imports. The vote-session ballots show imported days without a source line, an operator decision;
+the link appears on the usage caption and the Settings tab. Completion and failure are not audited
+(the run row is the record); only the request and the cancel are.
+
+**Off by default, rollback is documented and refuses silently-wrong states.** The flag
+`ChatLogBackfill:Enabled` defaults to `false` and is read by api and worker, both of which must be
+recreated to change it; on production it stays off until the operator has added the archive to the
+privacy statement. The `Down` of `AddChatLogBackfill` raises while imported rows or coverage exist,
+and `docs/Operations.md` ("Chat-log backfill") fixes the order for going back: cancel the runs in the
+UI **while the flag is still on** (with it off the routes answer 404 `backfill_disabled`, and a worker
+stopped mid-block leaves its row on `running` on purpose, because interrupted runs are only reset
+while the flag is on), then flag off and recreate both, with the new worker's `Chat-log backfill
+disabled.` line (optionally an empty `pg_locks` check for the loop's advisory lock) as the proof that
+no writer is left; then remove backfill-created placeholders (before the run rows go), delete imported
+rows and coverage, close the leftover `running` rows, only then an older image or the revert. An image
+without caption support would show imported numbers with no source, so the cleanup is required for an
+image-only rollback too. The
+oldest image to roll back to is the one that first shipped `AddEmotePlaceholderMarker`. The
+supported deployment is exactly one worker replica (`container_name` pins it in compose; an advisory
+lock keeps a second one harmless).
+
+---
+
 ### 2026-10-09 — Tab bars never wrap; a bar wider than the viewport scrolls horizontally (#352)
 
 **Betrifft:** `web/src/app/shared/ui/tab-link.ts` · `web/src/app/features/channel-workspace/channel-workspace-layout.ts` · `web/src/app/features/admin/admin-layout.ts` · `docs/UI-Designsprache.md` §8.1, §8.5

@@ -10,6 +10,7 @@ import {
   mockChannelEmoteSetList,
   mockChannelPermissions,
   mockChannelStatus,
+  mockImportCoverage,
   mockTrackedEmoteSetPreview,
   mockLegalAvailability,
   mockMyChannels,
@@ -72,6 +73,7 @@ async function openAtlas(
     sharedChatSeparatedSince,
   });
   await mockUsageTotals(page, 'sensitron', emotes);
+  await mockImportCoverage(page, 'sensitron');
 
   await page.goto('/channels/sensitron/usage-stats');
   await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
@@ -944,6 +946,7 @@ test.describe('set view (#200, K4)', () => {
     await mockChannelStatus(page, CHANNEL);
     await mockActiveEmoteSet(page, CHANNEL, ACTIVE_SET_ID, { capacity: 1000, occupiedSlots: 10 });
     await mockChannelEmoteSetList(page, CHANNEL, { activeEmoteSetId: ACTIVE_SET_ID, sets });
+    await mockImportCoverage(page, CHANNEL);
   }
 
   async function gotoSetView(page: Page, query = ''): Promise<void> {
@@ -1082,6 +1085,35 @@ test.describe('set view (#200, K4)', () => {
     await page.getByRole('radio', { name: 'Hauptset (aktiv)' }).click();
     await expect(page).not.toHaveURL(/emoteSetId=/);
     await expect(page.getByRole('button', { name: /^CatJAM ·/ })).toBeVisible();
+  });
+
+  test('the imported range and its source link show for a set with imported days, and not for another set without any of its own (chat-log backfill)', async ({
+    page,
+  }) => {
+    await mockSetViewChannel(page);
+    await mockUsageTotals(page, CHANNEL, []);
+    // Registered after the default, so it wins: only the active set has imported days.
+    await mockImportCoverage(page, CHANNEL, {
+      [ACTIVE_SET_ID]: { importedFrom: '2026-04-08', importedTo: '2026-06-12' },
+    });
+
+    await gotoSetView(page);
+
+    const link = page.getByRole('link', { name: 'logs.cyex.app' });
+    await expect(link).toHaveAttribute('href', 'https://logs.cyex.app/');
+    await expect(link).toHaveAttribute('target', '_blank');
+    await expect(link).toHaveAttribute('rel', 'noopener');
+    // The inclusive end: the server's importedTo is the day counting started (exclusive).
+    await expect(link.locator('xpath=..')).toContainText('vom 08.04.2026 bis 11.06.2026');
+
+    await setMenuTrigger(page).click();
+    await page.getByRole('radio', { name: 'Halloween' }).click();
+    await expect(page).toHaveURL(new RegExp(`[?&]emoteSetId=${HALLOWEEN_SET_ID}\\b`));
+
+    await expect(page.getByRole('link', { name: 'logs.cyex.app' })).toHaveCount(0);
+    const caption = page.getByText(/Wir zählen für diesen Channel seit dem .*\.$/);
+    await expect(caption).toBeVisible();
+    await expect(caption).not.toContainText('Chat-Archiv');
   });
 
   test('an emoteSetId in the URL that the set list does not confirm — unknown, or a hidden kind — falls back to the active set and is removed from the URL (spec 8.1, §35)', async ({

@@ -69,6 +69,8 @@ import { REFUSED_START_FEEDBACK_MS } from '../../core/seven-tv/seven-tv-run-arbi
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { EmoteTagEntry, EmoteTagSummary } from '../../core/tags/emote-tag.model';
+import { ImportCoverage } from '../../core/usage/import-coverage.model';
+import { ImportCoverageService } from '../../core/usage/import-coverage.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -163,6 +165,35 @@ class FakeResizeObserver {
   disconnect(): void {
     /* no-op */
   }
+}
+
+/** What a channel without any imported day answers. */
+const NO_IMPORT: ImportCoverage = {
+  emoteSetId: null,
+  sources: [],
+  importedFrom: null,
+  importedTo: null,
+  hasGaps: false,
+  contiguousFrom: null,
+  intervals: [],
+};
+
+// "All time" waits for the import-coverage answer before it asks for the grid (its start can move to
+// the first imported day), so every block below that does not exercise the coverage itself gets the
+// answer for free: nothing imported, answered at once. The blocks about the coverage opt out and
+// drive the real HTTP route (`useRealImportCoverage`).
+function stubNoImportCoverage(): void {
+  TestBed.overrideProvider(ImportCoverageService, {
+    useValue: { getCoverage: () => of(NO_IMPORT) },
+  });
+}
+
+beforeEach(stubNoImportCoverage);
+
+function useRealImportCoverage(): void {
+  TestBed.overrideProvider(ImportCoverageService, {
+    useFactory: () => new ImportCoverageService(),
+  });
 }
 
 function setStatus(overrides: Partial<EmoteSetStatus>): EmoteSetStatus {
@@ -3253,6 +3284,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   function configure(): void {
     // Several tests open more than one view; each gets a fresh module, not a reconfigured one.
     TestBed.resetTestingModule();
+    stubNoImportCoverage();
     FakeEventSource.instances = [];
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
     TestBed.configureTestingModule({
@@ -5567,6 +5599,7 @@ describe('UsageStatsPage — export/import scope capture reads the shown set onc
    *  set-b view needs before the test drives a dialog open. */
   async function openHalloweenView(): Promise<void> {
     TestBed.resetTestingModule();
+    stubNoImportCoverage();
     FakeEventSource.instances = [];
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
     TestBed.configureTestingModule({
@@ -6350,6 +6383,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
 
   function configure(coarse: boolean, realTemplate = false): void {
     TestBed.resetTestingModule();
+    stubNoImportCoverage();
     FakeEventSource.instances = [];
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
     if (coarse) {
@@ -7139,5 +7173,746 @@ describe('UsageStatsPage — the locked header transfer button explains itself',
     expect(reasonId).not.toBeNull();
     const reason = (fixture.nativeElement as HTMLElement).querySelector(`#${reasonId}`);
     expect(reason?.textContent?.trim()).toBe('usageStats.setView.importLock.statusUnavailable');
+  });
+});
+
+describe('UsageStatsPage — imported coverage: caption wording, scope and counting start (chat-log backfill)', () => {
+  const COVERAGE_PATH = '/api/channels/a/usage-stats/import-coverage';
+
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  function coverageBody(overrides: Partial<ImportCoverage> = {}): ImportCoverage {
+    return {
+      emoteSetId: 'set-a',
+      sources: [{ name: 'logs.cyex.app', url: 'https://logs.cyex.app/' }],
+      importedFrom: '2026-04-08',
+      importedTo: '2026-10-08',
+      hasGaps: false,
+      contiguousFrom: '2026-04-08',
+      intervals: [],
+      ...overrides,
+    };
+  }
+
+  const NOTHING_IMPORTED: ImportCoverage = {
+    emoteSetId: 'set-b',
+    sources: [],
+    importedFrom: null,
+    importedTo: null,
+    hasGaps: false,
+    contiguousFrom: null,
+    intervals: [],
+  };
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  function coverageRequests(): TestRequest[] {
+    return httpMock.match((req) => req.url === COVERAGE_PATH);
+  }
+
+  /** Mounts the page on channel `a` up to the point where the coverage read is out, and flushes it. */
+  async function mount(options: {
+    trackedSince?: string;
+    coverage?: ImportCoverage | 'fail';
+    /** Stop after the coverage answer, leaving the grid requests it caused for the test to read. */
+    holdGrid?: boolean;
+  }): Promise<void> {
+    useRealImportCoverage();
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        trackedSince: options.trackedSince ?? '2026-10-08T09:30:00Z',
+      }),
+    );
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        ]),
+      );
+    await settle();
+
+    const [request, ...rest] = coverageRequests();
+    expect(rest).toEqual([]);
+    expect(request.request.params.get('emoteSetId')).toBe('set-a');
+    // "All time" starts at the first imported day, which only the coverage knows: no grid request
+    // may go out before it has answered.
+    expect(totalsRequests()).toEqual([]);
+    if (options.coverage === 'fail') {
+      request.flush({}, { status: 500, statusText: 'Server Error' });
+    } else {
+      request.flush(options.coverage ?? coverageBody());
+    }
+    await settle();
+    if (options.holdGrid) {
+      return;
+    }
+    flushGrid();
+    await settle();
+  }
+
+  function flushGrid(): void {
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-10-09',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  function totalsRequests(): TestRequest[] {
+    return httpMock.match((req) => req.url === '/api/channels/a/usage-stats/totals');
+  }
+
+  function pickRange(from: string): void {
+    component['rangePreset'].set('custom');
+    component['from'].set(from);
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  describe('caption wording', () => {
+    it('names the import with the plain tail while the covered days are consecutive', async () => {
+      await mount({});
+
+      expect(component['importCaption']()).toEqual({
+        leadKey: 'usageStats.trackedSinceWithImport',
+        tailKey: 'usageStats.trackedSinceWithImportEnd',
+      });
+    });
+
+    it('takes the gaps tail whenever the coverage has gaps', async () => {
+      await mount({ coverage: coverageBody({ hasGaps: true }) });
+
+      expect(component['importCaption']()?.tailKey).toBe('usageStats.trackedSinceWithImportGaps');
+    });
+
+    it('keeps the plain sentence when nothing is imported', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' } });
+
+      expect(component['importCaption']()).toBeNull();
+    });
+
+    it('discloses an import that does not reach the counting start', async () => {
+      await mount({
+        coverage: coverageBody({ importedTo: '2026-07-01', contiguousFrom: null, hasGaps: true }),
+      });
+
+      expect(component['importCaption']()).not.toBeNull();
+    });
+
+    it('keeps the plain sentence when the first read fails', async () => {
+      await mount({ coverage: 'fail' });
+
+      expect(component['importCaption']()).toBeNull();
+    });
+  });
+
+  describe('scope', () => {
+    it('refetches for the chosen set, and a set without imports of its own shows no import sentence', async () => {
+      await mount({});
+      expect(component['importCaption']()).not.toBeNull();
+
+      component['onEmoteSetSelected']('set-b');
+      await settle();
+
+      // The previous set's answer is never read for the new set, not even while the request is out.
+      expect(component['importCaption']()).toBeNull();
+      const [request, ...rest] = coverageRequests();
+      expect(rest).toEqual([]);
+      expect(request.request.params.get('emoteSetId')).toBe('set-b');
+      request.flush(NOTHING_IMPORTED);
+      await settle();
+
+      expect(component['importCaption']()).toBeNull();
+    });
+
+    it('refetches the disclosure on backfill.progress, but not the rows', async () => {
+      await mount({});
+
+      FakeEventSource.instances[0].emit({
+        type: LIVE_EVENT_TYPES.backfillProgress,
+        channel: 'a',
+      });
+      await new Promise((resolve) => setTimeout(resolve, CHANNEL_RELOAD_DEBOUNCE_MS + 20));
+      fixture.detectChanges();
+
+      const [request, ...rest] = coverageRequests();
+      expect(rest).toEqual([]);
+      httpMock.expectNone((req) => req.url === '/api/channels/a/usage-stats/totals');
+      request.flush(coverageBody({ importedTo: '2026-10-08', hasGaps: true }));
+      await settle();
+
+      expect(component['importCaption']()?.tailKey).toBe('usageStats.trackedSinceWithImportGaps');
+    });
+
+    it('keeps serving the last good coverage when a refetch of the same scope fails', async () => {
+      await mount({});
+
+      FakeEventSource.instances[0].emit({
+        type: LIVE_EVENT_TYPES.backfillProgress,
+        channel: 'a',
+      });
+      await new Promise((resolve) => setTimeout(resolve, CHANNEL_RELOAD_DEBOUNCE_MS + 20));
+      coverageRequests()[0].flush({}, { status: 429, statusText: 'Too Many Requests' });
+      await settle();
+
+      expect(component['importCaption']()).not.toBeNull();
+    });
+  });
+
+  describe('"all time" start', () => {
+    it('asks for the grid once, from the tracking start, when nothing is imported', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' }, holdGrid: true });
+
+      const requests = totalsRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0].request.params.get('from')).toBe('2026-10-08');
+      expect(component['from']()).toBe('2026-10-08');
+    });
+
+    it('asks for the grid once, from the first imported day, when it lies before the tracking start', async () => {
+      await mount({ holdGrid: true });
+
+      const requests = totalsRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0].request.params.get('from')).toBe('2026-04-08');
+      expect(component['allTimeEarliest']()).toBe('2026-04-08');
+    });
+
+    it('falls back to the tracking start, still with one request, when the coverage read fails', async () => {
+      await mount({ coverage: 'fail', holdGrid: true });
+
+      const requests = totalsRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0].request.params.get('from')).toBe('2026-10-08');
+    });
+
+    it('does not pull the start later than the tracking start for an import that lies after it', async () => {
+      await mount({
+        coverage: coverageBody({ importedFrom: '2026-10-09', importedTo: '2026-10-20' }),
+        holdGrid: true,
+      });
+
+      expect(component['from']()).toBe('2026-10-08');
+    });
+
+    it('moves the start with a set switch while the preset is "all", asking once for the new set', async () => {
+      await mount({});
+
+      component['onEmoteSetSelected']('set-b');
+      await settle();
+      // The old rows stay until the new set's coverage is in; no request for set-b yet.
+      expect(totalsRequests()).toEqual([]);
+      const [request] = coverageRequests();
+      expect(request.request.params.get('emoteSetId')).toBe('set-b');
+      request.flush(coverageBody({ emoteSetId: 'set-b', importedFrom: '2026-07-09' }));
+      await settle();
+
+      const requests = totalsRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(requests[0].request.params.get('from')).toBe('2026-07-09');
+    });
+  });
+
+  describe('range warning wording', () => {
+    it('names the counting start and says nothing was counted before it, without imports', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' } });
+
+      expect(component['rangeBeforeTrackingKey']()).toBe('usageStats.rangeBeforeTracking');
+    });
+
+    it('names the start of the covered stretch, not the tracking start, once imports reach it', async () => {
+      await mount({});
+
+      expect(component['coverageStart']()).toBe('2026-04-08');
+      expect(component['rangeBeforeTrackingKey']()).toBe('usageStats.rangeBeforeTracking');
+    });
+
+    it('warns under "all time" only for a gap: imports that do not reach the counting start', async () => {
+      await mount({
+        coverage: coverageBody({
+          importedFrom: '2026-07-09',
+          importedTo: '2026-07-23',
+          contiguousFrom: null,
+        }),
+      });
+
+      expect(component['rangePreset']()).toBe('all');
+      expect(component['from']()).toBe('2026-07-09');
+      expect(component['rangeStartsBeforeTracking']()).toBe(true);
+      expect(component['rangeBeforeTrackingKey']()).toBe('usageStats.rangeBeforeTrackingPatchy');
+    });
+
+    it('does not warn under "all time" when the import is adjacent to the counting start', async () => {
+      await mount({});
+
+      expect(component['from']()).toBe('2026-04-08');
+      expect(component['rangeStartsBeforeTracking']()).toBe(false);
+    });
+
+    it('does not warn under "all time" without imports', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' } });
+
+      expect(component['rangeStartsBeforeTracking']()).toBe(false);
+    });
+
+    it('calls the stretch before the counting start patchy when imported days lie before it', async () => {
+      await mount({
+        coverage: coverageBody({
+          importedFrom: '2026-07-09',
+          importedTo: '2026-07-23',
+          contiguousFrom: null,
+          hasGaps: false,
+        }),
+      });
+
+      expect(component['coverageStart']()).toBe('2026-10-08T09:30:00Z');
+      expect(component['rangeBeforeTrackingKey']()).toBe('usageStats.rangeBeforeTrackingPatchy');
+    });
+  });
+
+  describe('counting start for the warning and the trend', () => {
+    it('does not warn from the start of the covered stretch, and warns for a range before it', async () => {
+      await mount({});
+
+      pickRange('2026-04-08');
+      expect(component['rangeStartsBeforeTracking']()).toBe(false);
+
+      pickRange('2026-04-07');
+      expect(component['rangeStartsBeforeTracking']()).toBe(true);
+    });
+
+    it('anchors at the contiguous suffix when an older gap lies further back (spec example)', async () => {
+      await mount({
+        coverage: coverageBody({
+          importedFrom: '2026-04-01',
+          hasGaps: true,
+          contiguousFrom: '2026-06-01',
+        }),
+      });
+
+      pickRange('2026-06-01');
+      expect(component['rangeStartsBeforeTracking']()).toBe(false);
+
+      pickRange('2026-05-31');
+      expect(component['rangeStartsBeforeTracking']()).toBe(true);
+    });
+
+    it('lets the live start govern when no covered day is adjacent to the counting start', async () => {
+      await mount({
+        coverage: coverageBody({ importedTo: '2026-07-01', contiguousFrom: null, hasGaps: true }),
+      });
+
+      pickRange('2026-10-01');
+      expect(component['rangeStartsBeforeTracking']()).toBe(true);
+    });
+
+    it('keeps the trend suppressed when the import does not reach the counting start', async () => {
+      await mount({
+        coverage: coverageBody({ importedTo: '2026-07-01', contiguousFrom: null, hasGaps: true }),
+      });
+      component['from'].set('2026-09-01');
+      component['to'].set('2026-09-30');
+
+      expect(
+        component['trendFor']({ totalUseCount: 20, previousWindowUseCount: 10, firstSeenAt: null }),
+      ).toBe('unknown');
+    });
+
+    it('lets the live start govern after a rejoin gap', async () => {
+      await mount({ trackedSince: '2026-10-20T00:00:00Z' });
+
+      pickRange('2026-10-10');
+      expect(component['rangeStartsBeforeTracking']()).toBe(true);
+    });
+
+    it('does not change a channel without imports: the live timestamp stays the start', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' } });
+
+      expect(component['coverageStart']()).toBe('2026-10-08T09:30:00Z');
+    });
+
+    it('computes a trend across the imported stretch that the live start alone would suppress', async () => {
+      const row = {
+        totalUseCount: 20,
+        previousWindowUseCount: 10,
+        firstSeenAt: null,
+      };
+      await mount({});
+      component['from'].set('2026-09-01');
+      component['to'].set('2026-09-30');
+      expect(component['trendFor'](row)).toBe('rising');
+
+      TestBed.resetTestingModule();
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' } });
+      component['from'].set('2026-09-01');
+      component['to'].set('2026-09-30');
+      expect(component['trendFor'](row)).toBe('unknown');
+    });
+  });
+});
+
+describe('UsageStatsPage — imported numbers keep their source without a tracking start, and refresh heals the coverage read', () => {
+  const COVERAGE_PATH = '/api/channels/a/usage-stats/import-coverage';
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  const IMPORT: ImportCoverage = {
+    emoteSetId: 'set-b',
+    sources: [{ name: 'logs.cyex.app', url: 'https://logs.cyex.app/' }],
+    importedFrom: '2026-04-08',
+    importedTo: '2026-10-08',
+    hasGaps: false,
+    contiguousFrom: '2026-04-08',
+    intervals: [],
+  };
+  const NO_ROWS_IMPORTED: ImportCoverage = {
+    ...IMPORT,
+    sources: [],
+    importedFrom: null,
+    importedTo: null,
+    contiguousFrom: null,
+  };
+
+  function configure(realTemplate: boolean): void {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+    if (!realTemplate) {
+      TestBed.overrideComponent(UsageStatsPage, {
+        set: { template: '<div #sheet></div><div #stickyBar></div>' },
+      });
+    }
+    useRealImportCoverage();
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function text(): string {
+    return (fixture.nativeElement as HTMLElement).textContent ?? '';
+  }
+
+  /** A deep link to set-b while `/emotes/active-set` fails: the page has no tracking start. */
+  async function mountWithoutStatus(coverage: ImportCoverage): Promise<void> {
+    configure(true);
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush({}, { status: 503, statusText: 'Service Unavailable' });
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+        ]),
+      );
+    await settle();
+    flushByPath(httpMock, COVERAGE_PATH, coverage);
+    await settle();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    httpMock
+      .match((request) => LIVE_LIST_URL.test(request.url))
+      .forEach((request) =>
+        request.flush(
+          { errorCode: 'foreign_channel_seventv_unavailable' },
+          { status: 503, statusText: 'Service Unavailable' },
+        ),
+      );
+    await settle();
+  }
+
+  describe('caption without a tracking start', () => {
+    it('names the import and links the archive, before the set-view sentences, without the tracked-since sentence', async () => {
+      await mountWithoutStatus(IMPORT);
+
+      expect(component['trackedSince']()).toBeNull();
+      const paragraph = fixture.nativeElement.querySelector('p.text-xs') as HTMLElement;
+      const content = paragraph.textContent ?? '';
+      expect(content).toContain('usageStats.importedWithoutTrackingStart');
+      expect(content).not.toMatch(/usageStats\.trackedSince(?!WithImport)/);
+      expect(content.indexOf('usageStats.importedWithoutTrackingStart')).toBeLessThan(
+        content.indexOf('usageStats.setView'),
+      );
+      const link = paragraph.querySelector('a') as HTMLAnchorElement;
+      expect(link.getAttribute('href')).toBe('https://logs.cyex.app/');
+      expect(link.getAttribute('target')).toBe('_blank');
+      expect(link.getAttribute('rel')).toBe('noopener');
+      // One paragraph carries it all: the fallback paragraph must not render a second set of sentences.
+      expect(text().split('usageStats.setView.membersUnavailable').length - 1).toBe(1);
+    });
+
+    it('shows no archive link when nothing is imported', async () => {
+      await mountWithoutStatus(NO_ROWS_IMPORTED);
+
+      expect(fixture.nativeElement.querySelector('a[href="https://logs.cyex.app/"]')).toBeNull();
+      expect(text()).not.toContain('usageStats.importedWithoutTrackingStart');
+    });
+
+    it('switches to the full lead with the date once a later status read succeeds, keeping the link', async () => {
+      await mountWithoutStatus(IMPORT);
+
+      FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+      await new Promise((resolve) => setTimeout(resolve, CHANNEL_RELOAD_DEBOUNCE_MS + 20));
+      flushByPath(
+        httpMock,
+        '/api/channels/a/emotes/active-set',
+        setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }),
+      );
+      await settle();
+
+      expect(text()).toContain('usageStats.trackedSinceWithImport');
+      expect(text()).not.toContain('usageStats.importedWithoutTrackingStart');
+      expect(
+        fixture.nativeElement.querySelector('a[href="https://logs.cyex.app/"]'),
+      ).not.toBeNull();
+    });
+  });
+
+  describe('degraded path: status failed, no set in the URL', () => {
+    async function mountActiveScope(coverage: ImportCoverage): Promise<void> {
+      configure(true);
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      httpMock
+        .expectOne('/api/channels/a/emotes/active-set')
+        .flush({}, { status: 503, statusText: 'Service Unavailable' });
+      fixture.detectChanges();
+      httpMock
+        .expectOne('/api/channels/a/emote-sets')
+        .flush(emoteSetList([emoteSet({ id: 'set-a', isActive: true })]));
+      await settle();
+
+      // Exactly one read, for the active set: the parameter is left out.
+      const reads = httpMock.match((req) => req.url === COVERAGE_PATH);
+      expect(reads).toHaveLength(1);
+      expect(reads[0].request.params.has('emoteSetId')).toBe(false);
+      // The rows wait for it, as they do for an explicit set.
+      expect(httpMock.match((req) => req.url === '/api/channels/a/usage-stats/totals')).toEqual([]);
+      reads[0].flush({ ...coverage, emoteSetId: 'set-a' });
+      await settle();
+      flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+        { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+      ]);
+      flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+        from: '2026-01-01',
+        to: '2026-09-08',
+        liveDays: [],
+        emotes: [],
+      });
+      await settle();
+    }
+
+    it('reads the coverage of the active set without an id and discloses the import in the short form', async () => {
+      await mountActiveScope(IMPORT);
+
+      expect(component['trackedSince']()).toBeNull();
+      expect(text()).toContain('usageStats.importedWithoutTrackingStart');
+      expect(
+        fixture.nativeElement.querySelector('a[href="https://logs.cyex.app/"]'),
+      ).not.toBeNull();
+    });
+
+    it('shows no link when the active set has nothing imported', async () => {
+      await mountActiveScope(NO_ROWS_IMPORTED);
+
+      expect(fixture.nativeElement.querySelector('a[href="https://logs.cyex.app/"]')).toBeNull();
+    });
+
+    it('switches to the known set once the status succeeds, with the full lead', async () => {
+      await mountActiveScope(IMPORT);
+
+      FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+      await new Promise((resolve) => setTimeout(resolve, CHANNEL_RELOAD_DEBOUNCE_MS + 20));
+      flushByPath(
+        httpMock,
+        '/api/channels/a/emotes/active-set',
+        setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }),
+      );
+      await settle();
+      const reads = httpMock.match((req) => req.url === COVERAGE_PATH);
+      expect(reads).toHaveLength(1);
+      expect(reads[0].request.params.get('emoteSetId')).toBe('set-a');
+      reads[0].flush({ ...IMPORT, emoteSetId: 'set-a' });
+      await settle();
+
+      expect(text()).toContain('usageStats.trackedSinceWithImport');
+      expect(text()).not.toContain('usageStats.importedWithoutTrackingStart');
+    });
+  });
+
+  describe('refresh and the coverage read', () => {
+    async function mountActive(first: ImportCoverage | 'fail'): Promise<void> {
+      configure(false);
+      fixture = TestBed.createComponent(UsageStatsPage);
+      component = fixture.componentInstance;
+      httpMock = TestBed.inject(HttpTestingController);
+      fixture.componentRef.setInput('channelName', 'a');
+      fixture.detectChanges();
+      httpMock
+        .expectOne('/api/channels/a/permissions')
+        .flush({ canManage: true, canViewUsageStats: true });
+      httpMock
+        .expectOne('/api/channels/a/emotes/active-set')
+        .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }));
+      fixture.detectChanges();
+      httpMock
+        .expectOne('/api/channels/a/emote-sets')
+        .flush(emoteSetList([emoteSet({ id: 'set-a', isActive: true })]));
+      await settle();
+      const [read] = httpMock.match((req) => req.url === COVERAGE_PATH);
+      if (first === 'fail') {
+        read.flush({}, { status: 503, statusText: 'Service Unavailable' });
+      } else {
+        read.flush(first);
+      }
+      await settle();
+      flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+      flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+        from: '2026-01-01',
+        to: '2026-10-09',
+        liveDays: [],
+        emotes: [],
+      });
+      await settle();
+    }
+
+    it('asks the coverage once more after a failed first read, and "all time" moves to the imported start', async () => {
+      await mountActive('fail');
+      expect(component['importCaption']()).toBeNull();
+      expect(component['from']()).toBe('2026-10-08');
+
+      component['refresh']();
+      await settle();
+      const reads = httpMock.match((req) => req.url === COVERAGE_PATH);
+      expect(reads).toHaveLength(1);
+      flushByPath(
+        httpMock,
+        '/api/channels/a/emotes/active-set',
+        setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }),
+      );
+      reads[0].flush({ ...IMPORT, emoteSetId: 'set-a' });
+      await settle();
+
+      expect(component['importCaption']()).not.toBeNull();
+      expect(component['from']()).toBe('2026-04-08');
+      // Accepted cost of the refresh: the direct load went out with the old start, the effect then
+      // asks again with the corrected one — the last request carries the imported start.
+      const totals = httpMock.match((req) => req.url === '/api/channels/a/usage-stats/totals');
+      expect(totals.at(-1)?.request.params.get('from')).toBe('2026-04-08');
+    });
+
+    it('keeps the caption when the refresh read is rate limited after a good one', async () => {
+      await mountActive({ ...IMPORT, emoteSetId: 'set-a' });
+      expect(component['importCaption']()).not.toBeNull();
+
+      component['refresh']();
+      await settle();
+      flushByPath(
+        httpMock,
+        '/api/channels/a/emotes/active-set',
+        setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-10-08T09:30:00Z' }),
+      );
+      httpMock
+        .match((req) => req.url === COVERAGE_PATH)
+        .forEach((r) => r.flush({}, { status: 429, statusText: 'Too Many Requests' }));
+      await settle();
+
+      expect(component['importCaption']()).not.toBeNull();
+    });
   });
 });

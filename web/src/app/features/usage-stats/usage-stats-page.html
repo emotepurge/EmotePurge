@@ -181,7 +181,7 @@
         [(from)]="from"
         [(to)]="to"
         [(preset)]="rangePreset"
-        [earliest]="trackedSinceDate()"
+        [earliest]="allTimeEarliest()"
         [setObservedRange]="setObservedPresetRange()"
       />
       <!-- Only once there is an active set at all — before that the set list has nothing to offer,
@@ -471,9 +471,38 @@
     }
   </div>
 
-  @if (trackedSince(); as since) {
+  @let since = trackedSince();
+  <!-- Also open without a tracking start (the set status could not be read) whenever imported days
+       are disclosed: numbers that came from an archive never go without their source (B7, B13). -->
+  @if (since || importCaption()) {
     <p class="text-xs text-fg-muted">
-      {{ 'usageStats.trackedSince' | transloco: { date: formatDate(since) } }}
+      @if (importCaption(); as caption) {
+        @let coverage = importCoverage()!;
+        <!-- Imported days exist for this set: the first sentence names them and where they came from.
+             The link is its own element, so the sentence is lead + link(s) + tail. The order of the
+             sentences after it is unchanged (contract, below). -->
+        {{
+          (since ? caption.leadKey : 'usageStats.importedWithoutTrackingStart')
+            | transloco
+              : {
+                  date: formatDate(trackedSinceDate()),
+                  importedFrom: formatDate(coverage.importedFrom),
+                  importedToInclusive: formatDate(importedToInclusiveDate()),
+                }
+        }}
+        @for (source of coverage.sources; track source.url; let last = $last) {
+          <a
+            [href]="source.url"
+            target="_blank"
+            rel="noopener"
+            class="underline decoration-border-strong underline-offset-2 transition hover:text-fg hover:decoration-accent"
+            >{{ source.name
+            }}<span class="sr-only"> {{ 'common.opensInNewTab' | transloco }}</span></a
+          >{{ last ? (caption.tailKey | transloco) : ', ' }}
+        }
+      } @else {
+        {{ 'usageStats.trackedSince' | transloco: { date: formatDate(since) } }}
+      }
       <!-- The channel-wide live count, stated once here instead of on every emote. Without a
            denominator on purpose: a missing ChannelLiveDay row means "no data", never "offline". -->
       @if (liveDaysInRangeKey(); as liveKey) {
@@ -508,7 +537,7 @@
            silently empty leading stretch reads as "this emote is dead" instead of "we weren't
            counting yet". -->
       <app-notice-banner variant="warning">
-        {{ 'usageStats.rangeBeforeTracking' | transloco: { date: formatDate(since) } }}
+        {{ rangeBeforeTrackingKey() | transloco: { date: formatDate(coverageStart()) } }}
       </app-notice-banner>
     }
   } @else if (setViewCaptions().length > 0) {
