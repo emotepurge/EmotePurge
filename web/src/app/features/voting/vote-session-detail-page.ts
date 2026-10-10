@@ -108,6 +108,9 @@ const RATIO_BAR_PX = 2;
 // window also collapses a `usage.flushed` that lands next to a vote into a single refetch.
 const VOTE_RELOAD_DEBOUNCE_MS = 500;
 
+/** Marks a reload burst that holds a locally cast vote (see the constructor's `seen` set). */
+const LOCAL_VOTE_BURST_MARK = 'vote.local';
+
 // Below this many distinct voters the results view carries a "thin participation" notice — a
 // handful of votes reads like a community verdict once it's sorted and scored, and it isn't one.
 const LOW_PARTICIPATION_THRESHOLD = 5;
@@ -654,10 +657,20 @@ export class VoteSessionDetailPage {
       liveEvents(this.liveUrl, (event) => this.isRelevantLiveEvent(event)).pipe(
         tap((event) => seen.add(event.type)),
       ),
-      this.localVoteSuccess$,
+      // A sentinel, so a burst that holds a cast vote never reads as "nothing but backfill.progress".
+      this.localVoteSuccess$.pipe(tap(() => seen.add(LOCAL_VOTE_BURST_MARK))),
     )
       .pipe(debounceTime(VOTE_RELOAD_DEBOUNCE_MS), takeUntilDestroyed())
       .subscribe(() => {
+        // A backfill block moves the imported range the drilldown clips against; same reload the
+        // usage page does. The ballot itself has nothing to reload for it.
+        if (seen.has(LIVE_EVENT_TYPES.backfillProgress)) {
+          this.importCoverageResource.reload();
+        }
+        if ([...seen].every((type) => type === LIVE_EVENT_TYPES.backfillProgress)) {
+          seen.clear();
+          return;
+        }
         this.loadResults({ freeze: false });
         if (seen.has(LIVE_EVENT_TYPES.channelSynced)) {
           this.loadActiveEmoteSetId();
@@ -848,6 +861,9 @@ export class VoteSessionDetailPage {
   }
 
   protected refresh(): void {
+    // A coverage read that failed once is never retried otherwise, and the drilldown would stay
+    // unclipped for the whole visit.
+    this.importCoverageResource.reload();
     this.load();
   }
 
@@ -1036,7 +1052,8 @@ export class VoteSessionDetailPage {
   private isRelevantLiveEvent(event: LiveEvent): boolean {
     if (
       event.type === LIVE_EVENT_TYPES.usageFlushed ||
-      event.type === LIVE_EVENT_TYPES.channelSynced
+      event.type === LIVE_EVENT_TYPES.channelSynced ||
+      event.type === LIVE_EVENT_TYPES.backfillProgress
     ) {
       return true;
     }

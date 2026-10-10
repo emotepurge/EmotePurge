@@ -715,6 +715,74 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
       expect(coverageRequests()).toEqual([]);
     });
 
+    function resultsRequests() {
+      return httpMock.match(
+        (req) => req.url === `/api/channels/${CHANNEL}/vote-sessions/${SESSION_ID}/results`,
+      );
+    }
+
+    async function afterDebounce(): Promise<void> {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      fixture.detectChanges();
+    }
+
+    it('re-reads the coverage on backfill.progress without reloading the ballot', async () => {
+      await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+      coverageRequests()[0].flush(COVERAGE);
+      await settle();
+
+      FakeEventSource.instances[0].emit({
+        type: LIVE_EVENT_TYPES.backfillProgress,
+        channel: CHANNEL,
+      });
+      await afterDebounce();
+
+      expect(resultsRequests()).toEqual([]);
+      const second = coverageRequests();
+      expect(second).toHaveLength(1);
+      second[0].flush({ ...COVERAGE, importedTo: '2026-10-09' });
+      await settle();
+      expect(openedData().importCoverage?.importedTo).toBe('2026-10-09');
+    });
+
+    it('still reloads the ballot when backfill.progress shares a burst with a usage flush', async () => {
+      await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+      coverageRequests()[0].flush(COVERAGE);
+
+      const source = FakeEventSource.instances[0];
+      source.emit({ type: LIVE_EVENT_TYPES.backfillProgress, channel: CHANNEL });
+      source.emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: CHANNEL });
+      await afterDebounce();
+
+      expect(resultsRequests()).toHaveLength(1);
+      expect(coverageRequests()).toHaveLength(1);
+    });
+
+    it('does not re-read the coverage on a plain usage flush', async () => {
+      await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+      coverageRequests()[0].flush(COVERAGE);
+
+      FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: CHANNEL });
+      await afterDebounce();
+
+      expect(coverageRequests()).toEqual([]);
+    });
+
+    it('re-reads the coverage on refresh, also after a failed first read', async () => {
+      await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+      coverageRequests()[0].flush({}, { status: 403, statusText: 'Forbidden' });
+      await settle();
+
+      component['refresh']();
+      await settle();
+
+      const retry = coverageRequests();
+      expect(retry).toHaveLength(1);
+      retry[0].flush(COVERAGE);
+      await settle();
+      expect(openedData().importCoverage).toEqual(COVERAGE);
+    });
+
     it('hands the coverage to the drilldown, with no tracking start of its own', async () => {
       await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
       coverageRequests()[0].flush(COVERAGE);
