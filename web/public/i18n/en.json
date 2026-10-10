@@ -806,8 +806,8 @@
       "other": "Live days have been recorded since {{ date }}; imported days carry no live information. Since then the stream was live on {{ live }} days in the selected range."
     },
     "liveDaysInRangeFromStart": {
-      "one": "Live days exist only from that day on; in the selected range the stream was live on one day.",
-      "other": "Live days exist only from that day on; in the selected range the stream was live on {{ live }} days."
+      "one": "Live days exist only from the counting start on; in the selected range the stream was live on one day.",
+      "other": "Live days exist only from the counting start on; in the selected range the stream was live on {{ live }} days."
     },
     "autoSyncNote": "The emote set is synced with 7TV automatically at regular intervals. A newly added emote can take up to 30 minutes before 7TV reports it here.",
     "trackedSince": "We have been counting for this channel since {{ date }}.",
