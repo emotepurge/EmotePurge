@@ -348,13 +348,16 @@ export function violationMessages(
             class="flex flex-wrap items-center gap-2"
             aria-labelledby="resolve-bulk-label"
           >
+            <!-- aria-disabled, never the disabled attribute: the click that empties a button's work
+                 would otherwise drop keyboard focus to the body, out of the dialog's tab order. -->
             <span id="resolve-bulk-label" class="text-sm text-fg-secondary">
               {{ 'import.resolve.bulk.label' | transloco }}
             </span>
             <button
               type="button"
               appButton="outline"
-              [disabled]="skipAll().changed === 0"
+              class="aria-disabled:cursor-not-allowed aria-disabled:border-transparent aria-disabled:bg-surface-inset aria-disabled:text-fg-disabled"
+              [attr.aria-disabled]="skipAll().changed === 0 ? 'true' : null"
               (click)="applyBulk('skip')"
             >
               {{ 'import.resolve.bulk.skipAll' | transloco }}
@@ -362,7 +365,8 @@ export function violationMessages(
             <button
               type="button"
               appButton="outline"
-              [disabled]="replaceAll().changed === 0"
+              class="aria-disabled:cursor-not-allowed aria-disabled:border-transparent aria-disabled:bg-surface-inset aria-disabled:text-fg-disabled"
+              [attr.aria-disabled]="replaceAll().changed === 0 ? 'true' : null"
               (click)="applyBulk('replaceTarget')"
             >
               {{ 'import.resolve.bulk.replaceAll' | transloco }}

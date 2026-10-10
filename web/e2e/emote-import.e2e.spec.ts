@@ -393,13 +393,22 @@ test.describe('push flow: picker to confirmation dialog', () => {
     await expect(confirm.getByRole('status').filter({ hasText: 'gesetzt' })).toContainText(
       '2 auf „Ziel ersetzen“ gesetzt',
     );
-    await expect(confirm.getByRole('button', { name: 'Alle ersetzen' })).toBeDisabled();
+    // aria-disabled, not disabled: focus must stay on the button that was just used.
+    await expect(confirm.getByRole('button', { name: 'Alle ersetzen' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await expect(confirm.getByRole('button', { name: 'Alle ersetzen' })).toBeFocused();
 
     await confirm.getByRole('button', { name: 'Alle überspringen' }).click();
     await expect(replaceRadios.nth(0)).not.toBeChecked();
     await expect(replaceRadios.nth(1)).not.toBeChecked();
     await expect(confirm.getByRole('radio', { name: 'Überspringen' }).first()).toBeChecked();
-    await expect(confirm.getByRole('button', { name: 'Alle überspringen' })).toBeDisabled();
+    await expect(confirm.getByRole('button', { name: 'Alle überspringen' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await expect(confirm.getByRole('button', { name: 'Alle überspringen' })).toBeFocused();
   });
 
   /**

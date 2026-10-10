@@ -875,8 +875,8 @@ describe('ImportConflictResolutionStep', () => {
 
       it('disables a button that would change nothing', async () => {
         await render('nameCollision', twoCollisions());
-        expect(bulkButton('Alle überspringen').disabled).toBe(true);
-        expect(bulkButton('Alle ersetzen').disabled).toBe(false);
+        expect(bulkButton('Alle überspringen').getAttribute('aria-disabled')).toBe('true');
+        expect(bulkButton('Alle ersetzen').getAttribute('aria-disabled')).toBeNull();
 
         const replaced = new Map<string, RowDecision>([
           ['a', { kind: 'replaceTarget' }],
@@ -885,8 +885,23 @@ describe('ImportConflictResolutionStep', () => {
         fixture.componentRef.setInput('decisions', replaced);
         fixture.detectChanges();
 
-        expect(bulkButton('Alle überspringen').disabled).toBe(false);
-        expect(bulkButton('Alle ersetzen').disabled).toBe(true);
+        expect(bulkButton('Alle überspringen').getAttribute('aria-disabled')).toBeNull();
+        expect(bulkButton('Alle ersetzen').getAttribute('aria-disabled')).toBe('true');
+      });
+
+      it('keeps focus on the clicked button and makes a no-op click emit nothing', async () => {
+        await render('nameCollision', twoCollisions());
+        const replace = bulkButton('Alle ersetzen');
+        replace.focus();
+        replace.click();
+        fixture.componentRef.setInput('decisions', bulked[0]);
+        fixture.detectChanges();
+
+        expect(replace.getAttribute('aria-disabled')).toBe('true');
+        expect(document.activeElement).toBe(replace);
+
+        replace.click();
+        expect(bulked).toHaveLength(1);
       });
     });
 
