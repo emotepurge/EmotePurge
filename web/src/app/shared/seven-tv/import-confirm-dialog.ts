@@ -238,6 +238,7 @@ const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
           [reservedRem]="stepReservedRem()"
           [targetSetName]="resolveTargetSetName()"
           (decide)="onDecide($event)"
+          (decideMany)="onDecideMany($event)"
         />
       } @else {
         <!-- Branches on the computeds below, never on origin.kind: with a fourth origin
@@ -1281,6 +1282,10 @@ export class ImportConfirmDialog {
 
   protected onDecide(change: { key: string; decision: RowDecision }): void {
     this.draftDecisions.update((draft) => new Map(draft).set(change.key, change.decision));
+  }
+
+  protected onDecideMany(changes: ReadonlyMap<string, RowDecision>): void {
+    this.draftDecisions.update((draft) => new Map([...draft, ...changes]));
   }
 
   /** Commits this group's draft. A commit that changes nothing keeps the plan — and with it a

@@ -6,6 +6,7 @@ import {
   liveBands,
   liveDayCaptionKey,
   liveDayCoverage,
+  liveDaysFrom,
   offsetsToDates,
   seriesPeak,
   toPolylinePoints,
@@ -397,5 +398,50 @@ describe('liveDayCaptionKey', () => {
 
   it('stays silent when there are no live days at all', () => {
     expect(liveDayCaptionKey({ live: 0, unused: 0 }, false)).toBeNull();
+  });
+});
+
+describe('liveDayCaptionKey with imported days in the range', () => {
+  it('uses the "since" wording for the per-emote counts', () => {
+    expect(liveDayCaptionKey({ live: 1, unused: 1 }, true, true)).toBe(
+      'usageStats.chart.since.unusedOnLiveDays.one',
+    );
+    expect(liveDayCaptionKey({ live: 3, unused: 1 }, true, true)).toBe(
+      'usageStats.chart.since.unusedOnLiveDays.other',
+    );
+    expect(liveDayCaptionKey({ live: 3, unused: 0 }, true, true)).toBe(
+      'usageStats.chart.since.usedOnAllLiveDays.other',
+    );
+  });
+
+  it('names the date on the bands legend too', () => {
+    expect(liveDayCaptionKey({ live: 0, unused: 0 }, true, true)).toBe(
+      'usageStats.chart.liveLegendSince',
+    );
+  });
+
+  it('says there is no live information when clipping left no live day', () => {
+    expect(liveDayCaptionKey({ live: 0, unused: 0 }, false, true)).toBe(
+      'usageStats.chart.noLiveInfoImported',
+    );
+  });
+
+  it('is unchanged without clipping', () => {
+    expect(liveDayCaptionKey({ live: 3, unused: 1 }, true, false)).toBe(
+      'usageStats.chart.unusedOnLiveDays.other',
+    );
+    expect(liveDayCaptionKey({ live: 0, unused: 0 }, false, false)).toBeNull();
+  });
+});
+
+describe('liveDaysFrom', () => {
+  const live = ['2026-05-02', '2026-10-08', '2026-10-09'];
+
+  it('returns the list untouched without a boundary', () => {
+    expect(liveDaysFrom(live, null)).toBe(live);
+  });
+
+  it('drops the days before the boundary and keeps the boundary day', () => {
+    expect(liveDaysFrom(live, '2026-10-08')).toEqual(['2026-10-08', '2026-10-09']);
   });
 });

@@ -7,6 +7,7 @@ import {
   ResolutionValidation,
   RowDecision,
   ViolationRule,
+  applyBulkDecision,
   buildTransferPlan,
   sameDecisions,
   summarizeTransferPlan,
@@ -589,5 +590,83 @@ describe('withoutSkips and sameDecisions', () => {
     expect(
       sameDecisions(rename('One'), decisions([['b', { kind: 'renameSource', alias: 'One' }]])),
     ).toBe(false);
+  });
+});
+
+describe('applyBulkDecision', () => {
+  const rows = [
+    { key: 'a', replaceAvailable: true },
+    { key: 'b', replaceAvailable: true },
+    { key: 'c', replaceAvailable: false },
+    { key: 'd', replaceAvailable: true },
+  ];
+
+  it('reports only the changed rows, counting from the current decisions', () => {
+    const result = applyBulkDecision(
+      rows,
+      new Map<string, RowDecision>([['a', { kind: 'replaceTarget' }]]),
+      'replaceTarget',
+    );
+
+    expect(result.changes).toEqual(
+      new Map<string, RowDecision>([
+        ['b', { kind: 'replaceTarget' }],
+        ['d', { kind: 'replaceTarget' }],
+      ]),
+    );
+    expect(result.changed).toBe(2);
+    expect(result.replaceUnavailable).toBe(1);
+    expect(result.renamesKept).toBe(0);
+  });
+
+  it('keeps a rename and its typed alias untouched, for either target', () => {
+    const decisions = new Map<string, RowDecision>([
+      ['b', { kind: 'renameSource', alias: 'Mine' }],
+    ]);
+
+    for (const kind of ['skip', 'replaceTarget'] as const) {
+      const result = applyBulkDecision(rows, decisions, kind);
+      expect(result.changes.has('b')).toBe(false);
+      expect(result.renamesKept).toBe(1);
+    }
+  });
+
+  it('leaves a row whose replace is unavailable where it is, and counts it', () => {
+    const result = applyBulkDecision(rows, new Map(), 'replaceTarget');
+
+    expect(result.changes.has('c')).toBe(false);
+    expect(result.replaceUnavailable).toBe(1);
+    expect(result.changed).toBe(3);
+  });
+
+  it('skips every replace, including one that could not be chosen any more', () => {
+    const result = applyBulkDecision(
+      rows,
+      new Map<string, RowDecision>([
+        ['a', { kind: 'replaceTarget' }],
+        ['c', { kind: 'replaceTarget' }],
+      ]),
+      'skip',
+    );
+
+    expect(result.changes).toEqual(
+      new Map<string, RowDecision>([
+        ['a', { kind: 'skip' }],
+        ['c', { kind: 'skip' }],
+      ]),
+    );
+    expect(result.replaceUnavailable).toBe(0);
+  });
+
+  it('is idempotent: applying its own result again changes nothing', () => {
+    const first = applyBulkDecision(rows, new Map(), 'replaceTarget');
+    const second = applyBulkDecision(rows, first.changes, 'replaceTarget');
+
+    expect(second.changed).toBe(0);
+    expect(second.changes.size).toBe(0);
+  });
+
+  it('changes nothing when every row already skips', () => {
+    expect(applyBulkDecision(rows, new Map(), 'skip').changed).toBe(0);
   });
 });

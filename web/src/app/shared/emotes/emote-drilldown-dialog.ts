@@ -7,6 +7,7 @@ import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
+import { ImportCoverage, liveKnownFromFor } from '../../core/usage/import-coverage.model';
 import { DailySeriesSetScope, EmoteUsageSeries } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { VoteType } from '../../core/voting/vote-session.model';
@@ -23,6 +24,8 @@ import {
   fillDailySeries,
   liveDayCaptionKey,
   liveDayCoverage,
+  liveDaysFrom,
+  NO_LIVE_INFO_KEY,
   seriesPeak,
 } from './usage-series';
 
@@ -54,6 +57,15 @@ export interface EmoteDrilldownData {
   firstSeenAt?: string | null;
   previousWindowUseCount?: number;
   trackedSince?: string | null;
+  /**
+   * The import coverage of the scope the numbers are counted under, and the channel's tracking start
+   * date (`yyyy-MM-dd`) when the host knows it. With imported days inside the dialog's own range the
+   * dialog clips its live-day statements to the days live days are recorded for (#366,
+   * `liveKnownFromFor`) — decided here against the range this dialog fetches, not by the host.
+   * Absent/`null` = nothing is clipped.
+   */
+  importCoverage?: ImportCoverage | null;
+  trackedSinceDate?: string | null;
   /** Vote page only. `null` inside = withheld (secret ballot) and simply not rendered. */
   vote?: {
     keepVotes: number | null;
@@ -130,7 +142,7 @@ export interface EmoteDrilldownData {
             <app-usage-sparkline
               class="block h-full min-w-0 flex-1"
               [points]="points()"
-              [liveDays]="series()!.liveDays"
+              [liveDays]="liveDays()"
               [drawFrom]="drawFrom()"
               [ariaLabel]="'usageStats.chart.label' | transloco"
             />
@@ -153,11 +165,13 @@ export interface EmoteDrilldownData {
                  measured would be a false statement. -->
             @if (liveKey(); as key) {
               <p class="flex items-center gap-1.5 text-xs text-fg-muted">
-                <span
-                  class="inline-block h-2 w-2 rounded-sm bg-success-dot"
-                  aria-hidden="true"
-                ></span>
-                {{ key | transloco: coverage() }}
+                @if (key !== noLiveInfoKey) {
+                  <span
+                    class="inline-block h-2 w-2 rounded-sm bg-success-dot"
+                    aria-hidden="true"
+                  ></span>
+                }
+                {{ key | transloco: liveParams() }}
               </p>
             }
           </div>
@@ -297,13 +311,35 @@ export class EmoteDrilldownDialog {
   protected readonly peak = computed(() => seriesPeak(this.points(), this.drawFrom() ?? undefined));
   protected readonly yMax = computed(() => this.peak()?.useCount ?? 0);
 
+  /** The first day live days are known for, when imported days lie in this dialog's range. */
+  private readonly liveKnownFrom = computed(() =>
+    liveKnownFromFor(
+      this.data.importCoverage ?? null,
+      this.data.trackedSinceDate ?? null,
+      this.data.from,
+      this.data.to,
+    ),
+  );
+
+  protected readonly noLiveInfoKey = NO_LIVE_INFO_KEY;
+
+  /** Live days that count: with imported days in the range, only those since they are recorded. */
+  protected readonly liveDays = computed(() =>
+    liveDaysFrom(this.series()?.liveDays ?? [], this.liveKnownFrom()),
+  );
+
   protected readonly coverage = computed(() =>
-    liveDayCoverage(this.points(), this.series()?.liveDays ?? [], this.drawFrom() ?? undefined),
+    liveDayCoverage(this.points(), this.liveDays(), this.drawFrom() ?? undefined),
   );
 
   protected readonly liveKey = computed(() =>
-    liveDayCaptionKey(this.coverage(), (this.series()?.liveDays.length ?? 0) > 0),
+    liveDayCaptionKey(this.coverage(), this.liveDays().length > 0, this.liveKnownFrom() !== null),
   );
+
+  protected readonly liveParams = computed(() => ({
+    ...this.coverage(),
+    date: this.liveKnownFrom() ? this.formatDate(this.liveKnownFrom()!) : '',
+  }));
 
   /** Suppressed ('unknown') without the usage page's inputs — never guessed. */
   protected readonly trend = computed<UsageTrend>(() => {

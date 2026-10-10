@@ -823,8 +823,10 @@ If the link is ever removed from a place that shows imported numbers, the agreem
 ### Enabling it
 
 1. Privacy statement updated and live (above).
-2. The running api image already contains the caption: its `/i18n/de.json` has the key
-   `usageStats.trackedSinceWithImport`. Never switch the flag on while an older image is running.
+2. The running api image already contains the caption and the live-day fix: its `/i18n/de.json` has
+   the key `usageStats.liveDaysInRangeFromStart` (which implies `usageStats.trackedSinceWithImport`).
+   The second key proves that live-day statements no longer cover imported months, which have no live
+   information. Never switch the flag on while an older image is running.
 3. Set `CHAT_LOG_BACKFILL_ENABLED=true` and **recreate api and worker** (Portainer: update the stack
    with "Re-pull image and redeploy"). Both read the flag at startup; one without the other leaves the
    tab visible and the queue unprocessed, or the other way round.

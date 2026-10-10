@@ -710,6 +710,18 @@
         "one": "Am einzigen Live-Tag benutzt",
         "other": "An allen {{live}} Live-Tagen benutzt"
       },
+      "liveLegendSince": "Grün: der Stream war live (Live-Tage erfasst seit {{date}})",
+      "noLiveInfoImported": "Keine Live-Information für importierte Tage",
+      "since": {
+        "unusedOnLiveDays": {
+          "one": "Live-Tage erfasst seit {{date}}: am einzigen Live-Tag nicht benutzt",
+          "other": "Live-Tage erfasst seit {{date}}: an {{unused}} von {{live}} nicht benutzt"
+        },
+        "usedOnAllLiveDays": {
+          "one": "Live-Tage erfasst seit {{date}}: am einzigen Live-Tag benutzt",
+          "other": "Live-Tage erfasst seit {{date}}: an allen {{live}} benutzt"
+        }
+      },
       "liveLegend": "Grün: Stream war live"
     },
     "drilldown": {
@@ -788,6 +800,14 @@
     "liveDaysInRange": {
       "one": "Im gewählten Zeitraum war der Stream an einem Tag live.",
       "other": "Im gewählten Zeitraum war der Stream an {{ live }} Tagen live."
+    },
+    "liveDaysInRangeSince": {
+      "one": "Live-Tage werden seit dem {{ date }} erfasst; importierte Tage tragen keine Live-Information. Seitdem war der Stream im gewählten Zeitraum an einem Tag live.",
+      "other": "Live-Tage werden seit dem {{ date }} erfasst; importierte Tage tragen keine Live-Information. Seitdem war der Stream im gewählten Zeitraum an {{ live }} Tagen live."
+    },
+    "liveDaysInRangeFromStart": {
+      "one": "Live-Tage gibt es erst ab dem Zählbeginn; im gewählten Zeitraum war der Stream an einem Tag live.",
+      "other": "Live-Tage gibt es erst ab dem Zählbeginn; im gewählten Zeitraum war der Stream an {{ live }} Tagen live."
     },
     "autoSyncNote": "Das Emote-Set wird regelmäßig automatisch mit 7TV abgeglichen. Neu hinzugefügte Emotes können bis zu 30 Minuten brauchen, bis 7TV sie hier meldet.",
     "trackedSince": "Wir zählen für diesen Channel seit dem {{ date }}.",
@@ -1416,6 +1436,20 @@
       },
       "hintCollisions": "Der Name ist im Zielset schon vergeben. Umbenennen fügt das Emote unter einem neuen Namen hinzu, „Ziel ersetzen“ entfernt das Emote im Ziel und fügt dieses an seiner Stelle ein.",
       "hintMismatches": "Das Emote ist im Zielset schon vorhanden, heißt dort aber anders. „Namen übernehmen“ benennt es im Ziel um, fügt aber nichts hinzu.",
+      "bulk": {
+        "label": "Für alle:",
+        "skipAll": "Alle überspringen",
+        "replaceAll": "Alle ersetzen",
+        "done": "{{ count }} auf „{{ action }}“ gesetzt",
+        "renamesKept": {
+          "one": "{{ count }} Umbenennung bleibt",
+          "other": "{{ count }} Umbenennungen bleiben"
+        },
+        "replaceUnavailable": {
+          "one": "{{ count }} nicht ersetzbar, Ziel hat sich geändert",
+          "other": "{{ count }} nicht ersetzbar, Ziel hat sich geändert"
+        }
+      },
       "listLabelCollisions": "Namenskollisionen",
       "listLabelMismatches": "Abweichende Namen",
       "rowLabel": "Quelle: {{ source }}, Ziel: {{ target }}",

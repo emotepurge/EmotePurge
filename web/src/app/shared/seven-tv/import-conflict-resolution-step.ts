@@ -14,11 +14,22 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
+import { LanguageService } from '../../core/i18n/language.service';
+import { pluralKey } from '../../core/i18n/plural';
 import { EmoteSprite } from '../emotes/emote-sprite';
 import { EmoteSpriteAnimated } from '../emotes/emote-sprite-animated';
-import { ResolutionDecisions, RowDecision, Violation, ViolationRule } from './conflict-resolution';
+import { Button } from '../ui/button';
+import {
+  BulkDecisionKind,
+  BulkDecisionResult,
+  ResolutionDecisions,
+  RowDecision,
+  Violation,
+  ViolationRule,
+  applyBulkDecision,
+} from './conflict-resolution';
 import { AliasMismatchRow, NameCollisionRow, TargetOverlay } from './import-preview';
 
 /** Which of the confirm dialog's two conflict groups one opening of this step shows. */
@@ -63,6 +74,15 @@ export interface ViolationMessage {
   rows: string;
 }
 
+/** What the "for all" line last did, kept for its status sentence — see
+ *  `ImportConflictResolutionStep.bulkOutcome`. */
+interface BulkOutcome {
+  kind: BulkDecisionKind;
+  changed: number;
+  renamesKept: number;
+  replaceUnavailable: number;
+}
+
 /** Row heights in px: the wide layout puts source, target and actions side by side, the narrow one
  *  stacks them (source over target over actions). Measured in a real browser (Chromium,
  *  `[data-resolve-index] > div` scrollHeight, plus the row's own 16px vertical padding — `py-2`,
@@ -95,6 +115,9 @@ const SPRITE_PX = 40;
  *  `foreign-emote-grid.ts`'s `spriteClass`/`hiddenSpriteClass` (§7.3). */
 const SPRITE_CLASS = 'h-full w-full object-contain p-1';
 const HIDDEN_SPRITE_CLASS = `${SPRITE_CLASS} invisible`;
+
+/** Room the "for all" line takes above the table, in rem — one button row plus its gap. */
+const BULK_LINE_REM = 3;
 
 const OPTION_LABEL_KEYS: Record<RowDecision['kind'], string> = {
   skip: 'import.resolve.action.skip',
@@ -301,7 +324,7 @@ export function violationMessages(
  */
 @Component({
   selector: 'app-import-conflict-resolution-step',
-  imports: [EmoteSprite, EmoteSpriteAnimated, ScrollingModule, TranslocoPipe],
+  imports: [Button, EmoteSprite, EmoteSpriteAnimated, ScrollingModule, TranslocoPipe],
   template: `
     <div
       #container
@@ -315,6 +338,45 @@ export function violationMessages(
       (focusin)="onContainerFocusIn()"
       (focusout)="onContainerFocusOut($event)"
     >
+      <!-- "For all" sits above the table, outside the column header: that header is aria-hidden and
+           absent in the stacked layout, and this must work in both. Only the name-collision group
+           has it (adopting a name is never done in bulk), and only from two rows on. The status
+           region stays mounted so the result of a click is announced. -->
+      @if (showBulk()) {
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 pb-2">
+          <div
+            role="group"
+            class="flex flex-wrap items-center gap-2"
+            aria-labelledby="resolve-bulk-label"
+            (focusin)="onBulkFocusIn()"
+          >
+            <!-- aria-disabled, never the disabled attribute: the click that empties a button's work
+                 would otherwise drop keyboard focus to the body, out of the dialog's tab order. -->
+            <span id="resolve-bulk-label" class="text-sm text-fg-secondary">
+              {{ 'import.resolve.bulk.label' | transloco }}
+            </span>
+            <button
+              type="button"
+              appButton="outline"
+              class="aria-disabled:cursor-not-allowed aria-disabled:border-transparent aria-disabled:bg-surface-inset aria-disabled:text-fg-disabled"
+              [attr.aria-disabled]="skipAll().changed === 0 ? 'true' : null"
+              (click)="applyBulk('skip')"
+            >
+              {{ 'import.resolve.bulk.skipAll' | transloco }}
+            </button>
+            <button
+              type="button"
+              appButton="outline"
+              class="aria-disabled:cursor-not-allowed aria-disabled:border-transparent aria-disabled:bg-surface-inset aria-disabled:text-fg-disabled"
+              [attr.aria-disabled]="replaceAll().changed === 0 ? 'true' : null"
+              (click)="applyBulk('replaceTarget')"
+            >
+              {{ 'import.resolve.bulk.replaceAll' | transloco }}
+            </button>
+          </div>
+          <span role="status" class="text-sm text-fg-muted">{{ bulkStatus() }}</span>
+        </div>
+      }
       <!-- Column headers for the wide layout only — the stacked layout captions each cell instead
            (below), and every row already names both sides itself (rowLabel), so this row is
            decorative and hidden from assistive tech. Sits above the viewport, not inside it: it
@@ -599,8 +661,13 @@ export class ImportConflictResolutionStep {
   readonly targetSetName = input<string | null>(null);
 
   readonly decide = output<{ key: string; decision: RowDecision }>();
+  /** The "for all" line's one event: only the decisions it changes, so the host lays them over its
+   *  draft in a single update instead of once per row. */
+  readonly decideMany = output<ReadonlyMap<string, RowDecision>>();
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly translate = inject(TranslocoService);
+  private readonly language = inject(LanguageService);
 
   protected readonly spritePx = SPRITE_PX;
   protected readonly spriteClass = SPRITE_CLASS;
@@ -619,6 +686,9 @@ export class ImportConflictResolutionStep {
    *  is chosen, before the user did anything. Keyed like `typedAliases`, for the same reason: it
    *  must survive switching a row away from rename and back. */
   private readonly touchedRows = signal<ReadonlySet<string>>(new Set());
+  /** The last "for all" click's result, for the status sentence; cleared by any decision made on a
+   *  single row, since the sentence would no longer describe the table. */
+  private readonly bulkOutcome = signal<BulkOutcome | null>(null);
 
   /** The row the pointer rests on and the row holding keyboard focus, each ended only by its own
    *  events — same "pointerKey ?? focusKey" idea as `foreign-emote-grid.ts` §7.3. */
@@ -661,6 +731,49 @@ export class ImportConflictResolutionStep {
   protected readonly narrow = computed(() => this.containerWidth() < NARROW_BELOW_PX);
   protected readonly rowPx = computed(() => (this.narrow() ? ROW_NARROW_PX : ROW_WIDE_PX));
 
+  protected readonly showBulk = computed(
+    () => this.group() === 'nameCollision' && this.rows().length >= 2,
+  );
+  protected readonly skipAll = computed(() => this.bulkResult('skip'));
+  protected readonly replaceAll = computed(() => this.bulkResult('replaceTarget'));
+
+  /** The sentence announced after a "for all" click — the count that was set, then each remainder
+   *  that is above zero. Empty until the first click. */
+  protected readonly bulkStatus = computed(() => {
+    const outcome = this.bulkOutcome();
+    if (outcome === null) {
+      return '';
+    }
+    // `translate` reads the active language non-reactively; `lang()` flips once the new locale is
+    // loaded, so reading it here is what re-runs this sentence after a language switch.
+    this.language.lang();
+    const parts = [
+      this.translate.translate('import.resolve.bulk.done', {
+        count: outcome.changed,
+        action: this.translate.translate(OPTION_LABEL_KEYS[outcome.kind]),
+      }),
+    ];
+    if (outcome.renamesKept > 0) {
+      parts.push(
+        this.translate.translate(
+          pluralKey(outcome.renamesKept, 'import.resolve.bulk.renamesKept'),
+          {
+            count: outcome.renamesKept,
+          },
+        ),
+      );
+    }
+    if (outcome.replaceUnavailable > 0) {
+      parts.push(
+        this.translate.translate(
+          pluralKey(outcome.replaceUnavailable, 'import.resolve.bulk.replaceUnavailable'),
+          { count: outcome.replaceUnavailable },
+        ),
+      );
+    }
+    return parts.join(' · ');
+  });
+
   /** Which "Ziel …" label to show — with the set name once it is known, otherwise the plain form.
    *  Read by both the wide header row and the narrow layout's per-cell caption, so the two always
    *  agree. */
@@ -671,7 +784,8 @@ export class ImportConflictResolutionStep {
   /** See `foreign-emote-grid.ts`'s `viewportHeight` for why this is measured against `dvh`: the
    *  pane would otherwise scroll too, and two nested scrollbars over one list is the known defect. */
   protected readonly viewportHeight = computed(
-    () => `min(34rem, max(8rem, calc(100dvh - ${24 + this.reservedRem()}rem)))`,
+    () =>
+      `min(34rem, max(8rem, calc(100dvh - ${24 + this.reservedRem() + (this.showBulk() ? BULK_LINE_REM : 0)}rem)))`,
   );
 
   /** Field error per rename row, from the rules that concern a typed alias. */
@@ -808,12 +922,28 @@ export class ImportConflictResolutionStep {
     return consequence?.side === 'target' ? consequence : null;
   }
 
+  protected applyBulk(kind: BulkDecisionKind): void {
+    const result = kind === 'skip' ? this.skipAll() : this.replaceAll();
+    if (result.changed === 0) {
+      return;
+    }
+    this.bulkOutcome.set({
+      kind,
+      changed: result.changed,
+      renamesKept: result.renamesKept,
+      replaceUnavailable: result.replaceUnavailable,
+    });
+    this.decideMany.emit(result.changes);
+  }
+
   protected choose(row: ConflictStepRow, kind: RowDecision['kind']): void {
+    this.bulkOutcome.set(null);
     this.decide.emit({ key: row.key, decision: this.decisionFor(row, kind) });
   }
 
   protected rename(key: string, event: Event): void {
     const alias = (event.target as HTMLInputElement).value;
+    this.bulkOutcome.set(null);
     this.typedAliases.set(key, alias);
     this.touch(key);
     this.decide.emit({ key, decision: { kind: 'renameSource', alias } });
@@ -848,6 +978,12 @@ export class ImportConflictResolutionStep {
     }
     event.preventDefault();
     this.focusRow(next);
+  }
+
+  /** Focus on the "for all" buttons ends the focused row's playback: the toolbar sits inside the
+   *  container, so `onContainerFocusOut` alone would keep the row's key set. */
+  protected onBulkFocusIn(): void {
+    this.focusedKey.set(null);
   }
 
   protected onRowEnter(row: ConflictStepRow): void {
@@ -907,6 +1043,16 @@ export class ImportConflictResolutionStep {
 
   protected onTargetAnimationShown(row: ConflictStepRow): void {
     this.revealedTargetKey.set(row.key);
+  }
+
+  /** What a "for all" click would do right now — also what decides whether its button is enabled. */
+  private bulkResult(kind: BulkDecisionKind): BulkDecisionResult {
+    const rows = this.rows().map((row) => ({
+      key: row.key,
+      replaceAvailable:
+        row.options.find((option) => option.kind === 'replaceTarget')?.disabledReasonKey === null,
+    }));
+    return applyBulkDecision(rows, this.decisions(), kind);
   }
 
   private decisionFor(row: ConflictStepRow, kind: RowDecision['kind']): RowDecision {

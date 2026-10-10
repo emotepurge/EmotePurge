@@ -7221,6 +7221,8 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
     coverage?: ImportCoverage | 'fail';
     /** Stop after the coverage answer, leaving the grid requests it caused for the test to read. */
     holdGrid?: boolean;
+    /** Live days of the mocked series, as day offsets from its `from` (2026-01-01). */
+    liveDayOffsets?: number[];
   }): Promise<void> {
     useRealImportCoverage();
     FakeEventSource.instances = [];
@@ -7286,16 +7288,16 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
     if (options.holdGrid) {
       return;
     }
-    flushGrid();
+    flushGrid(options.liveDayOffsets ?? []);
     await settle();
   }
 
-  function flushGrid(): void {
+  function flushGrid(liveDays: number[] = []): void {
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
     flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
       from: '2026-01-01',
       to: '2026-10-09',
-      liveDays: [],
+      liveDays,
       emotes: [],
     });
   }
@@ -7311,6 +7313,31 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  describe('live-day caption sentence (#366)', () => {
+    // 2026-10-08 is day offset 280 of the mocked series (from 2026-01-01), 2026-08-03 is 214.
+    it('drops the date when the boundary is the date the first sentence already names', async () => {
+      await mount({ trackedSince: '2026-10-08T09:30:00Z', liveDayOffsets: [280, 281] });
+
+      expect(component['liveKnownFrom']()).toBe('2026-10-08');
+      expect(component['liveDaysInRangeKey']()).toBe('usageStats.liveDaysInRangeFromStart.other');
+    });
+
+    it('names the date when the boundary was clamped to the live poll start', async () => {
+      await mount({ trackedSince: '2026-07-20T09:30:00Z', liveDayOffsets: [214, 215] });
+
+      expect(component['liveKnownFrom']()).toBe('2026-08-03');
+      expect(component['liveDaysInRangeKey']()).toBe('usageStats.liveDaysInRangeSince.other');
+      expect(component['liveKnownFromLabel']()).not.toBe('');
+    });
+
+    it('keeps the plain sentence without imported days in the range', async () => {
+      await mount({ coverage: NOTHING_IMPORTED, liveDayOffsets: [280, 281] });
+
+      expect(component['liveKnownFrom']()).toBeNull();
+      expect(component['liveDaysInRangeKey']()).toBe('usageStats.liveDaysInRange.other');
+    });
   });
 
   describe('caption wording', () => {
