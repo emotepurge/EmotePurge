@@ -1436,6 +1436,20 @@
       },
       "hintCollisions": "Der Name ist im Zielset schon vergeben. Umbenennen fügt das Emote unter einem neuen Namen hinzu, „Ziel ersetzen“ entfernt das Emote im Ziel und fügt dieses an seiner Stelle ein.",
       "hintMismatches": "Das Emote ist im Zielset schon vorhanden, heißt dort aber anders. „Namen übernehmen“ benennt es im Ziel um, fügt aber nichts hinzu.",
+      "bulk": {
+        "label": "Für alle:",
+        "skipAll": "Alle überspringen",
+        "replaceAll": "Alle ersetzen",
+        "done": "{{ count }} auf „{{ action }}“ gesetzt",
+        "renamesKept": {
+          "one": "{{ count }} Umbenennung bleibt",
+          "other": "{{ count }} Umbenennungen bleiben"
+        },
+        "replaceUnavailable": {
+          "one": "{{ count }} nicht ersetzbar, Ziel hat sich geändert",
+          "other": "{{ count }} nicht ersetzbar, Ziel hat sich geändert"
+        }
+      },
       "listLabelCollisions": "Namenskollisionen",
       "listLabelMismatches": "Abweichende Namen",
       "rowLabel": "Quelle: {{ source }}, Ziel: {{ target }}",
