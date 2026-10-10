@@ -397,7 +397,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   and narrows again on the way back. Row order: a quiet explanation of the actions → **column
   headers** ("Source" → "Target · {set name}" | "Action", `label` micro type, `aria-hidden` — the
   wide layout only; the target's name is the dialog's own resolved `targetSetLabel`, so header and
-  title never disagree) → the virtualized table (source sprite and name, target sprite and
+  title never disagree), **preceded in the name-collision group, from two rows on, by a quiet "For all:" line** with two plain `outline` buttons "Skip all" / "Replace all" (not a radio group, not a mode, nothing for the alias-mismatch group; it sits outside the column header so it exists in the stacked layout too): each sets every row on skip or replace in one step, leaves rows on rename (typed name intact) and rows whose replace is disabled untouched, is disabled when it would change nothing, and reports the result in a polite `role="status"` line ("157 set to “Replace target” · 2 renames stay"), with no undo since nothing runs before "Apply" → the virtualized table (source sprite and name, target sprite and
   name(s) — both aliases for a #74 duplicate —, then a radio group per row named "Action for
   {source}") → "Back" / "Apply" in the action row, the lock reason beside "Apply" naming the rows
   by source name. Only the row under the pointer, or failing that the row holding keyboard focus,
