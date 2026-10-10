@@ -353,6 +353,55 @@ test.describe('push flow: picker to confirmation dialog', () => {
     await expect(confirm.getByRole('button', { name: 'Kopieren' })).toBeEnabled();
   });
 
+  test('the "for all" line in the name-collision step sets every row at once and resets it again', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    // Two names the selection also carries, under other ids: two collisions.
+    await mockEmoteList(page, TARGET_CHANNEL, [
+      { sevenTvEmoteId: 'target-a', name: 'CatJAM' },
+      { sevenTvEmoteId: 'target-b', name: 'KEKW' },
+    ]);
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await cell(page, 'KEKW').click({ modifiers: ['Shift'] });
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+
+    const replaceRadios = confirm.getByRole('radio', { name: 'Ziel ersetzen' });
+    await expect(replaceRadios).toHaveCount(2);
+
+    await confirm.getByRole('button', { name: 'Alle ersetzen' }).click();
+    await expect(replaceRadios.nth(0)).toBeChecked();
+    await expect(replaceRadios.nth(1)).toBeChecked();
+    await expect(confirm.getByRole('status').filter({ hasText: 'gesetzt' })).toContainText(
+      '2 auf „Ziel ersetzen“ gesetzt',
+    );
+    await expect(confirm.getByRole('button', { name: 'Alle ersetzen' })).toBeDisabled();
+
+    await confirm.getByRole('button', { name: 'Alle überspringen' }).click();
+    await expect(replaceRadios.nth(0)).not.toBeChecked();
+    await expect(replaceRadios.nth(1)).not.toBeChecked();
+    await expect(confirm.getByRole('radio', { name: 'Überspringen' }).first()).toBeChecked();
+    await expect(confirm.getByRole('button', { name: 'Alle überspringen' })).toBeDisabled();
+  });
+
   /**
    * The dock's second entry point into the same flow (#80, §8.7): same verb, but `forcedScope:
    * 'selection'` skips the scope question outright instead of merely defaulting to it. Proven two
