@@ -1977,15 +1977,8 @@ export class UsageStatsPage {
   /** Channel-wide and range-dependent, so it is stated once at the top rather than on every emote. */
   protected readonly liveDaysInRangeKey = computed(() => {
     const count = this.liveDayDates().length;
-    if (count === 0) {
-      return null;
-    }
-    return pluralKey(
-      count,
-      this.liveKnownFrom() === null
-        ? 'usageStats.liveDaysInRange'
-        : 'usageStats.liveDaysInRangeSince',
-    );
+    const base = liveDaysCaptionBaseKey(count, this.liveKnownFrom(), this.trackedSinceDate());
+    return base === null ? null : pluralKey(count, base);
   });
 
   /** The single tab stop in the grid (WAI-ARIA grid pattern) — arrow keys move it. */
