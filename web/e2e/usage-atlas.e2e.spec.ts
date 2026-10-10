@@ -381,13 +381,13 @@ test.describe('emote atlas', () => {
     ).toBeVisible();
   });
 
-  test('with imported months in the range, live-day statements start at the tracking start and say so (#366)', async ({
+  test('with imported months in the range, live-day statements start at the first recorded live day and say so (#366)', async ({
     page,
   }) => {
-    // The range opens at the first imported day (2026-04-08), so offset 65 is the tracking start
-    // 2026-06-12. Live days before it cannot exist; the one inside the imports is a mock slip the
-    // page must not trust, and the three after it are the recorded ones.
-    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[70, 700]] }, [10, 65, 66, 70]);
+    // The range opens at the first imported day (2026-04-08). The mocked tracking start 2026-06-12
+    // predates the live poll (2026-08-03), so the statements start there: offset 117. The live day
+    // at offset 10 is a mock slip inside the imports that the page must not trust.
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[125, 700]] }, [10, 117, 118, 125]);
     await openAtlas(page, EMOTES, null, null, {
       importedFrom: '2026-04-08',
       importedTo: '2026-06-12',
@@ -395,11 +395,11 @@ test.describe('emote atlas', () => {
     const sidecar = page.getByRole('complementary');
 
     await expect(sidecar).toContainText(
-      'Live-Tage erfasst seit 12.06.2026: an 2 von 3 nicht benutzt',
+      'Live-Tage erfasst seit 03.08.2026: an 2 von 3 nicht benutzt',
     );
     await expect(
       page.getByText(
-        /Live-Tage werden seit dem 12\.06\.2026 erfasst; importierte Tage tragen keine Live-Information\. Seitdem war der Stream im gewählten Zeitraum an 3 Tagen live\./,
+        /Live-Tage werden seit dem 03\.08\.2026 erfasst; importierte Tage tragen keine Live-Information\. Seitdem war der Stream im gewählten Zeitraum an 3 Tagen live\./,
       ),
     ).toBeVisible();
   });
