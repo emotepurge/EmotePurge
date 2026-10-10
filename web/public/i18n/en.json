@@ -1436,6 +1436,20 @@
       },
       "hintCollisions": "The name is already taken in the target set. Rename adds the emote under a new name; “Replace target” removes the emote in the target and adds this one in its place.",
       "hintMismatches": "The emote is already in the target set, but under a different name. “Adopt name” renames it in the target and adds nothing.",
+      "bulk": {
+        "label": "For all:",
+        "skipAll": "Skip all",
+        "replaceAll": "Replace all",
+        "done": "{{ count }} set to “{{ action }}”",
+        "renamesKept": {
+          "one": "{{ count }} rename stays",
+          "other": "{{ count }} renames stay"
+        },
+        "replaceUnavailable": {
+          "one": "{{ count }} not replaceable, target changed",
+          "other": "{{ count }} not replaceable, target changed"
+        }
+      },
       "listLabelCollisions": "Name collisions",
       "listLabelMismatches": "Differing names",
       "rowLabel": "Source: {{ source }}, target: {{ target }}",

@@ -52,6 +52,20 @@ const DE_TRANSLATIONS = {
         nameTaken: 'Name im Zielset vergeben',
         duplicateTarget: 'im Ziel doppelt vorhanden',
       },
+      bulk: {
+        label: 'Für alle:',
+        skipAll: 'Alle überspringen',
+        replaceAll: 'Alle ersetzen',
+        done: '{{ count }} auf „{{ action }}“ gesetzt',
+        renamesKept: {
+          one: '{{ count }} Umbenennung bleibt',
+          other: '{{ count }} Umbenennungen bleiben',
+        },
+        replaceUnavailable: {
+          one: '{{ count }} nicht ersetzbar, Ziel hat sich geändert',
+          other: '{{ count }} nicht ersetzbar, Ziel hat sich geändert',
+        },
+      },
       renameLabel: 'Neuer Name',
       fieldError: {
         invalid: 'Diesen Namen nimmt 7TV nicht an.',
@@ -224,10 +238,12 @@ describe('ImportConflictResolutionStep', () => {
     let fixture: ComponentFixture<ImportConflictResolutionStep>;
     let host: HTMLElement;
     let decided: { key: string; decision: RowDecision }[];
+    let bulked: ReadonlyMap<string, RowDecision>[];
 
     beforeEach(async () => {
       vi.stubGlobal('ResizeObserver', FakeResizeObserver);
       decided = [];
+      bulked = [];
       await TestBed.configureTestingModule({
         imports: [
           ImportConflictResolutionStep,
@@ -241,6 +257,7 @@ describe('ImportConflictResolutionStep', () => {
       fixture = TestBed.createComponent(ImportConflictResolutionStep);
       host = fixture.nativeElement;
       fixture.componentInstance.decide.subscribe((change) => decided.push(change));
+      fixture.componentInstance.decideMany.subscribe((changes) => bulked.push(changes));
     });
 
     afterEach(() => vi.unstubAllGlobals());
@@ -487,7 +504,7 @@ describe('ImportConflictResolutionStep', () => {
         fixture.detectChanges();
         expect(field.getAttribute('aria-invalid')).toBe('true');
 
-        radio('Kappa', 'skip').click();
+        radio('Kappa', 'renameSource').click();
         fixture.componentRef.setInput('decisions', new Map([['a', { kind: 'skip' }]]));
         fixture.detectChanges();
 
@@ -760,6 +777,116 @@ describe('ImportConflictResolutionStep', () => {
         const described = ids.map((id) => host.querySelector(`#${id}`));
         expect(described.every((el) => el !== null)).toBe(true);
         expect(described.some((el) => el?.textContent?.trim() === 'wird entfernt')).toBe(true);
+      });
+    });
+
+    describe('"for all" line', () => {
+      function bulkButton(name: string): HTMLButtonElement {
+        const found = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+          (button) => button.textContent?.trim() === name,
+        );
+        if (!found) {
+          throw new Error(`no "${name}" button`);
+        }
+        return found;
+      }
+
+      function statusText(): string {
+        return host.querySelector('[role="status"]')?.textContent?.trim() ?? '';
+      }
+
+      function twoCollisions(): ConflictStepRow[] {
+        return collisionStepRows([collision('a', 'Kappa'), collision('b', 'Pog')], new Map());
+      }
+
+      it('is absent with a single row', async () => {
+        await render('nameCollision', collisionStepRows([collision('a', 'Kappa')], new Map()));
+        expect(host.querySelector('button')).toBeNull();
+      });
+
+      it('is absent for the alias-mismatch group', async () => {
+        await render(
+          'aliasMismatch',
+          mismatchStepRows([mismatch('a', 'Kappa'), mismatch('b', 'Pog')], new Map()),
+        );
+        expect(host.querySelector('button')).toBeNull();
+      });
+
+      it('emits one event carrying every changed row on "Alle ersetzen"', async () => {
+        await render('nameCollision', twoCollisions());
+
+        bulkButton('Alle ersetzen').click();
+
+        expect(bulked).toEqual([
+          new Map<string, RowDecision>([
+            ['a', { kind: 'replaceTarget' }],
+            ['b', { kind: 'replaceTarget' }],
+          ]),
+        ]);
+        expect(decided).toEqual([]);
+      });
+
+      it('leaves renames and unreplaceable rows alone, and says so', async () => {
+        const rows = collisionStepRows(
+          [
+            collision('a', 'Kappa'),
+            collision('b', 'Pog'),
+            collision('c', 'Sadge'),
+            collision('d', 'Lul'),
+          ],
+          // Row d's live target no longer holds the name: replace is disabled there.
+          new Map([['d', { aliases: ['Other'], hasAliaslessEntry: false }]]),
+        );
+        await render(
+          'nameCollision',
+          rows,
+          new Map<string, RowDecision>([['b', { kind: 'renameSource', alias: 'Pog2' }]]),
+        );
+
+        bulkButton('Alle ersetzen').click();
+        fixture.detectChanges();
+
+        expect(bulked).toEqual([
+          new Map<string, RowDecision>([
+            ['a', { kind: 'replaceTarget' }],
+            ['c', { kind: 'replaceTarget' }],
+          ]),
+        ]);
+        expect(statusText()).toBe(
+          '2 auf „Ziel ersetzen“ gesetzt · 1 Umbenennung bleibt · 1 nicht ersetzbar, Ziel hat sich geändert',
+        );
+      });
+
+      it('announces the result in a polite live region and clears it on a single-row change', async () => {
+        await render('nameCollision', twoCollisions());
+        const region = host.querySelector('[role="status"]');
+        expect(region).not.toBeNull();
+        expect(statusText()).toBe('');
+
+        bulkButton('Alle ersetzen').click();
+        fixture.detectChanges();
+        expect(host.querySelector('[role="status"]')).toBe(region);
+        expect(statusText()).toBe('2 auf „Ziel ersetzen“ gesetzt');
+
+        radio('Kappa', 'renameSource').click();
+        fixture.detectChanges();
+        expect(statusText()).toBe('');
+      });
+
+      it('disables a button that would change nothing', async () => {
+        await render('nameCollision', twoCollisions());
+        expect(bulkButton('Alle überspringen').disabled).toBe(true);
+        expect(bulkButton('Alle ersetzen').disabled).toBe(false);
+
+        const replaced = new Map<string, RowDecision>([
+          ['a', { kind: 'replaceTarget' }],
+          ['b', { kind: 'replaceTarget' }],
+        ]);
+        fixture.componentRef.setInput('decisions', replaced);
+        fixture.detectChanges();
+
+        expect(bulkButton('Alle überspringen').disabled).toBe(false);
+        expect(bulkButton('Alle ersetzen').disabled).toBe(true);
       });
     });
 

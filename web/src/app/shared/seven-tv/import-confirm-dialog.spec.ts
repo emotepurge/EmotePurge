@@ -159,6 +159,20 @@ const DE_TRANSLATIONS = {
       },
       hintCollisions: 'Der Name ist im Zielset schon vergeben.',
       hintMismatches: 'Das Emote ist im Zielset schon vorhanden, heißt dort aber anders.',
+      bulk: {
+        label: 'Für alle:',
+        skipAll: 'Alle überspringen',
+        replaceAll: 'Alle ersetzen',
+        done: '{{ count }} auf „{{ action }}“ gesetzt',
+        renamesKept: {
+          one: '{{ count }} Umbenennung bleibt',
+          other: '{{ count }} Umbenennungen bleiben',
+        },
+        replaceUnavailable: {
+          one: '{{ count }} nicht ersetzbar, Ziel hat sich geändert',
+          other: '{{ count }} nicht ersetzbar, Ziel hat sich geändert',
+        },
+      },
       listLabelCollisions: 'Namenskollisionen',
       listLabelMismatches: 'Abweichende Namen',
       rowLabel: '{{ source }}, im Ziel: {{ target }}',
@@ -1636,6 +1650,20 @@ describe('ImportConfirmDialog', () => {
       // Two buttons with the same visible text: the accessible name says which group each opens.
       expect(collisions?.getAttribute('aria-label')).toBe('Namenskollisionen auflösen');
       expect(mismatches?.getAttribute('aria-label')).toBe('Abweichende Namen auflösen');
+    });
+
+    it('lays a bulk replace over the draft in one update and commits it with Übernehmen', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+
+      dialog.button('Alle ersetzen').click();
+      dialog.detect();
+
+      expect(option(dialog, 'Collides', 'replaceTarget').checked).toBe(true);
+      expect(option(dialog, 'Dup', 'replaceTarget').checked).toBe(true);
+
+      apply(dialog);
+      expect(dialog.text()).toContain('Davon aufgelöst: 2');
     });
 
     it('re-translates the open step on a language switch', async () => {

@@ -220,6 +220,65 @@ export function sameDecisions(a: ResolutionDecisions, b: ResolutionDecisions): b
   return true;
 }
 
+/** One name-collision row as {@link applyBulkDecision} sees it: its key and whether "replace
+ *  target" can be chosen there at all (the step disables it when the live target no longer holds
+ *  the colliding name). */
+export interface BulkDecisionRow {
+  key: string;
+  replaceAvailable: boolean;
+}
+
+/** The action a bulk click sets — the two that can be applied to many rows at once. A bulk rename
+ *  does not exist: every rename needs its own typed name. */
+export type BulkDecisionKind = 'skip' | 'replaceTarget';
+
+/** {@link applyBulkDecision}'s result. */
+export interface BulkDecisionResult {
+  /** Only the entries that change, keyed like {@link ResolutionDecisions} — the caller lays them
+   *  over its decisions, so rows the bulk action does not touch never appear here. */
+  changes: ResolutionDecisions;
+  /** How many rows `changes` moves to the requested action. `0` means the action would do
+   *  nothing, which is what disables its button. */
+  changed: number;
+  /** Rows left on `renameSource` — a typed name is never overwritten in bulk. */
+  renamesKept: number;
+  /** Rows a bulk replace could not take because "replace target" is disabled there and the row is
+   *  not already on it. Always `0` for a bulk skip. */
+  replaceUnavailable: number;
+}
+
+/**
+ * Sets every name-collision row on `skip` or `replaceTarget` to `kind`, leaving the rest alone:
+ * a row on `renameSource` keeps its decision (and with it its typed alias), and a row whose
+ * "replace target" is unavailable stays where it is when `kind` is `replaceTarget`. Pure, so the
+ * step can run it with the current decisions both to compute a click's result and to tell whether
+ * the click would change anything (`changed === 0`).
+ */
+export function applyBulkDecision(
+  rows: readonly BulkDecisionRow[],
+  decisions: ResolutionDecisions,
+  kind: BulkDecisionKind,
+): BulkDecisionResult {
+  const changes = new Map<string, RowDecision>();
+  let renamesKept = 0;
+  let replaceUnavailable = 0;
+
+  for (const row of rows) {
+    const current = decisionFor(decisions, row.key);
+    if (current.kind === 'renameSource') {
+      renamesKept++;
+    } else if (current.kind === kind) {
+      continue;
+    } else if (kind === 'replaceTarget' && !row.replaceAvailable) {
+      replaceUnavailable++;
+    } else if (current.kind === 'skip' || current.kind === 'replaceTarget') {
+      changes.set(row.key, { kind });
+    }
+  }
+
+  return { changes, changed: changes.size, renamesKept, replaceUnavailable };
+}
+
 /** The summary numbers behind a confirm dialog and a run protocol — see {@link TransferPlanSummary}
  *  for what each field counts. */
 export function summarizeTransferPlan(plan: TransferPlan): TransferPlanSummary {
