@@ -1,22 +1,25 @@
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Redis;
 using NSubstitute;
+using StackExchange.Redis;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace EmotePurge.Worker.Tests;
 
 public class WorkerSystemLoadWorkloadSourceTests
 {
-    private static readonly DateTime PollAtUtc = new(2026, 10, 11, 12, 0, 0, DateTimeKind.Utc);
-
     [Fact]
     public async Task ReadsActiveAndLastPolledLiveChannelsWithSeparateIntervalCounters()
     {
+        var counterBaselines = new WorkerSystemLoadCounterBaselines();
+        var pollAtUtc = DateTime.UtcNow;
         var channelService = Substitute.For<IChannelService>();
         channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<string>>(["alpha", "beta"]));
         var liveReader = Substitute.For<ITwitchLiveStatusReader>();
-        liveReader.ReadAsync(Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<TwitchLiveStatusSnapshot?>(new TwitchLiveStatusSnapshot(PollAtUtc, ["alpha"])));
+        liveReader.ReadQuietlyAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<TwitchLiveStatusSnapshot?>(new TwitchLiveStatusSnapshot(pollAtUtc, ["alpha"])));
         var stats = new WorkerStats();
         stats.RecordChatLine();
         stats.RecordChatLine();
@@ -28,7 +31,7 @@ public class WorkerSystemLoadWorkloadSourceTests
             liveReader,
             stats,
             usageCounter,
-            new WorkerSystemLoadCounterBaselines());
+            counterBaselines);
 
         var first = await source.ReadAsync();
         source.ConfirmRecorded(first);
@@ -52,7 +55,7 @@ public class WorkerSystemLoadWorkloadSourceTests
         channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<string>>([]));
         var liveReader = Substitute.For<ITwitchLiveStatusReader>();
-        liveReader.ReadAsync(Arg.Any<CancellationToken>())
+        liveReader.ReadQuietlyAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<TwitchLiveStatusSnapshot?>(null));
         var source = new WorkerSystemLoadWorkloadSource(
             channelService,
@@ -65,5 +68,67 @@ public class WorkerSystemLoadWorkloadSourceTests
 
         Assert.Equal(0, result.ActiveChannels);
         Assert.Null(result.LiveChannels);
+    }
+
+    [Fact]
+    public async Task SnapshotFromBeforeThisProcessStartedStaysUnknown()
+    {
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<string>>([]));
+        var liveReader = Substitute.For<ITwitchLiveStatusReader>();
+        liveReader.ReadQuietlyAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<TwitchLiveStatusSnapshot?>(new TwitchLiveStatusSnapshot(
+                new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc), ["stale"])));
+        var source = new WorkerSystemLoadWorkloadSource(
+            channelService,
+            liveReader,
+            new WorkerStats(),
+            new EmoteUsageCounter(),
+            new WorkerSystemLoadCounterBaselines());
+
+        var result = await source.ReadAsync();
+
+        Assert.Null(result.LiveChannels);
+    }
+
+    [Fact]
+    public async Task RedisFailureOnWorkloadPathPropagatesWithoutLogging()
+    {
+        var multiplexer = Substitute.For<IConnectionMultiplexer>();
+        multiplexer.GetDatabase(Arg.Any<int>(), Arg.Any<object?>())
+            .Returns(_ => throw new RedisException("Redis is unavailable."));
+        var logger = new RecordingLogger<TwitchLiveStatusStore>();
+        var reader = new TwitchLiveStatusStore(multiplexer, logger);
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<string>>([]));
+        var source = new WorkerSystemLoadWorkloadSource(
+            channelService,
+            reader,
+            new WorkerStats(),
+            new EmoteUsageCounter(),
+            new WorkerSystemLoadCounterBaselines());
+
+        await Assert.ThrowsAsync<RedisException>(() => source.ReadAsync());
+
+        Assert.Empty(logger.Entries);
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 }

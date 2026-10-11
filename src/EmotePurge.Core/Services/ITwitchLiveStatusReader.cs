@@ -72,6 +72,12 @@ public interface ITwitchLiveStatusReader
     /// unreadable — which is itself the answer, not an error.
     /// </summary>
     Task<TwitchLiveStatusSnapshot?> ReadAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads the same snapshot without logging transient Redis failures. Transient Redis exceptions
+    /// propagate to high-frequency telemetry paths so their throttled failure reporting can handle them.
+    /// </summary>
+    Task<TwitchLiveStatusSnapshot?> ReadQuietlyAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>

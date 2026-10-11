@@ -40,7 +40,9 @@ public static class WorkerServiceRegistration
         // Set by Worker on a BACKFILL: command, awaited by ChatLogBackfillWorker (spec 4.8).
         services.AddSingleton<ChatLogBackfillSignal>();
         services.AddSingleton<WorkerStats>();
-        services.AddSingleton<WorkerSystemLoadCounterBaselines>();
+        // Construct eagerly while the process service graph is assembled: a Redis live snapshot from
+        // before this worker's first poll must not be treated as this process's own live count.
+        services.AddSingleton(new WorkerSystemLoadCounterBaselines());
         services.Replace(ServiceDescriptor.Scoped<ISystemLoadWorkloadSource, WorkerSystemLoadWorkloadSource>());
         services.AddSingleton<WorkerIdentity>();
         services.AddSingleton<SevenTvSubscriptionRegistry>();

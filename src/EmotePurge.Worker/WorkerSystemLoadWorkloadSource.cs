@@ -12,8 +12,10 @@ public sealed class WorkerSystemLoadWorkloadSource(
     public async Task<SystemLoadWorkloadSnapshot> ReadAsync(CancellationToken cancellationToken = default)
     {
         var activeChannels = await channelService.ListActiveChannelNamesAsync(cancellationToken);
-        var liveStatus = await liveStatusReader.ReadAsync(cancellationToken);
-        int? liveChannels = liveStatus is null ? null : liveStatus.LiveChannelLogins.Count;
+        var liveStatus = await liveStatusReader.ReadQuietlyAsync(cancellationToken);
+        int? liveChannels = liveStatus is null || liveStatus.GeneratedAtUtc < counterBaselines.ProcessStartedAtUtc
+            ? null
+            : liveStatus.LiveChannelLogins.Count;
         var chatLinesTotal = workerStats.TotalChatLines;
         var emoteMatchesTotal = usageCounter.TotalMatchedEmotes;
         var chatLines = counterBaselines.GetChatLineDelta(chatLinesTotal);
@@ -35,13 +37,21 @@ public sealed class WorkerSystemLoadWorkloadSource(
 }
 
 /// <summary>
-/// Holds only process-wide totals from the last successfully recorded workload interval. The source
-/// remains scoped because it also depends on scoped channel services backed by AppDbContext.
+/// Holds the process start time and totals from the last successfully recorded workload interval. The
+/// source remains scoped because it also depends on scoped channel services backed by AppDbContext.
 /// </summary>
 public sealed class WorkerSystemLoadCounterBaselines
 {
+    private readonly DateTime _processStartedAtUtc;
     private long _lastChatLines;
     private long _lastEmoteMatches;
+
+    public DateTime ProcessStartedAtUtc => _processStartedAtUtc;
+
+    public WorkerSystemLoadCounterBaselines()
+    {
+        _processStartedAtUtc = DateTime.UtcNow;
+    }
 
     public long GetChatLineDelta(long current) => Difference(current, Interlocked.Read(ref _lastChatLines));
 
