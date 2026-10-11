@@ -1154,7 +1154,8 @@ export class UsageStatsPage {
       if (!firstIntersecting) {
         sentences.push({ key: 'usageStats.setView.facts.notObserved' });
       } else if (Date.parse(firstIntersecting.fromUtc) > rangeStart) {
-        // The rangeStartsBeforeTracking idiom, with the interval's start in trackedSince's place.
+        // Unlike rangeStartsBeforeTracking this compares the precise start, not its day: the caption
+        // states a fact ("counted since"), it does not warn about a gap.
         sentences.push({
           key: 'usageStats.setView.facts.countedSince',
           params: { date: this.formatDate(firstIntersecting.fromUtc) },
@@ -1247,9 +1248,14 @@ export class UsageStatsPage {
       return false;
     }
 
-    const trackingStart = Date.parse(trackedSince);
-    const rangeStart = Date.parse(`${this.from()}T00:00:00Z`);
-    return !Number.isNaN(trackingStart) && !Number.isNaN(rangeStart) && rangeStart < trackingStart;
+    // Day against day: `from()` is an ISO day (UTC, see toIsoDate), while the counting start can be
+    // a precise timestamp. A range that starts ON the counting start's day loses nothing, so
+    // comparing it with the timestamp would warn falsely for every start later than 00:00Z.
+    const trackingStartDay = trackedSince.slice(0, 10);
+    // A cleared custom start field leaves `from` empty (not a day) — nothing to compare then.
+    const isDay = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const from = this.from();
+    return isDay(from) && isDay(trackingStartDay) && from < trackingStartDay;
   });
   protected readonly isLoading = signal(false);
   protected readonly skeletonCells = Array.from({ length: 48 }, (_, i) => i);
