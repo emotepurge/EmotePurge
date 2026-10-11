@@ -10,6 +10,30 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-11 — Admin dashboard: activity series, rate-limit trend and server-bucketed load ranges (#381)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IAdminDashboardQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AdminDashboardQueryService.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AdminDashboardQueryServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure}Tests.cs`
+
+The activity series counts, per UTC calendar day, the `ChannelLiveDays` rows with `LiveMinutes > 0`.
+The accepted ranges are `30d`, `90d` and `13mo` (ordinal, exact; anything else is rejected). The
+window is the last N UTC calendar days including the running, partial day (`TodayIsPartial` is always
+true); `13mo` starts on the first day of the month 13 months before the current month. The service
+returns one entry per day of the window, gap-free and ascending, and takes `nowUtc` from the caller
+(`DateTimeKind.Utc` enforced). A day without any `ChannelLiveDays` row is `null` (no observation), not
+zero, and is never interpolated; a day with rows that are all zero-minute is `0`. The query is one
+grouped scan of the table itself, with no join and no navigation, so rule 10 does not come into play.
+Purged channels leave gaps and old history is incomplete, so the curve is biased downward the further
+back it reaches; the ranges are display windows, not a statement about retention.
+
+The dashboard does not read `UsageStats` (operator decision 2026-10-11): the slot epic reshapes that
+table, and monthly workload comes from the system-load rollups instead. A container-free structure test
+(`AdminDashboardQueryServiceStructureTests`) fails the build if `AdminDashboardQueryService` mentions
+`UsageStat` or `UsageStats`.
+
 ### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)
 
 **Betrifft:** `web/src/app/shared/datetime/date-range-menu.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts` ·

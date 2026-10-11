@@ -97,6 +97,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ChannelIdentityWarningState>();
         services.AddScoped<IChannelIdentityService, ChannelIdentityService>();
         services.AddScoped<IAdminChannelQueryService, AdminChannelQueryService>();
+        services.AddScoped<IAdminDashboardQueryService, AdminDashboardQueryService>();
         services.AddScoped<IAdminUserQueryService, AdminUserQueryService>();
         // Read side only — audit entries are written by the services that perform the actions, into
         // those actions' own transactions (see AuditLogWrites).
