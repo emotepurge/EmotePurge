@@ -607,6 +607,13 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "dailytest_live1");
         var emote = await SeedEmoteAsync(db, channel.Id, "LiveAware");
+        // protects=live days are range-bounded, both boundary days in, both neighbours out;
+        // fails_when=a live day outside [from, to] is returned or a boundary day is dropped;
+        // no_claim=none beyond protects. Edited for the set-counts rule: the two in-range live days
+        // now carry a usage row, otherwise the rule would drop them.
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 1), UseCount = 1 },
+            new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 7), UseCount = 1 });
         db.ChannelLiveDays.AddRange(
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 6, 30), LiveMinutes = 120 }, // before range
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 1), LiveMinutes = 5 },    // first range day
@@ -770,6 +777,14 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "seriestest_live");
         var other = await SeedChannelAsync(db, "seriestest_live_other");
+        // protects=live days come back as offsets bounded by the range, other channels excluded;
+        // fails_when=an out-of-range or foreign live day is returned, or an offset is miscomputed;
+        // no_claim=none beyond protects. Edited for the set-counts rule: the two in-range live days
+        // now carry a usage row, otherwise the rule would drop them.
+        var liveEmote = await SeedEmoteAsync(db, channel.Id, "LiveCounted");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = liveEmote.Id, Date = new DateOnly(2026, 7, 1), UseCount = 1 },
+            new UsageStat { EmoteId = liveEmote.Id, Date = new DateOnly(2026, 7, 7), UseCount = 1 });
         db.ChannelLiveDays.AddRange(
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 6, 30), LiveMinutes = 120 }, // before
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 1), LiveMinutes = 5 },    // offset 0
@@ -1250,6 +1265,277 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
 
         var entry = Assert.Single(series.Emotes);
         Assert.Equal([[new DateOnly(2026, 7, 3).DayNumber - from.DayNumber, 4]], entry.Days);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_DropsALiveDayWithoutCountsUnderTheViewedSet()
+    {
+        // protects=liveDays holds only live days on which the viewed set has counts;
+        // fails_when=a live day with no counts at all (or only zero-use rows) is returned;
+        // no_claim=none beyond protects (fixture: one live day, one empty live day, one zero-use row).
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_drop", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        var from = new DateOnly(2026, 7, 1);
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 3 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 4), UseCount = 0, SharedChatUseCount = 5 });
+        db.ChannelLiveDays.AddRange(
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 2), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 4), LiveMinutes = 60 });
+        await db.SaveChangesAsync();
+
+        var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(channel.ChannelName, from, new DateOnly(2026, 7, 7));
+
+        Assert.Equal([1], series.LiveDays);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_KeepsACountedDayThatIsNotALiveDayOutOfLiveDays()
+    {
+        // protects=a counted day without a ChannelLiveDay row does not become a live day;
+        // fails_when=liveDays is built from the counts instead of intersected with ChannelLiveDays;
+        // no_claim=none beyond protects.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_nolive", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 3 });
+        await db.SaveChangesAsync();
+
+        var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
+
+        Assert.Empty(series.LiveDays);
+        Assert.Equal(new DateOnly(2026, 7, 2), series.FirstCountedDay);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_CountsUnderAnotherSetDoNotQualifyALiveDay()
+    {
+        // protects=the live-day rule is scoped to the viewed set;
+        // fails_when=counts under a different set qualify a day for the viewed one;
+        // no_claim=none beyond protects.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_otherset", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 2 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        db.ChannelLiveDays.AddRange(
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.SaveChangesAsync();
+        var service = new UsageStatQueryService(db);
+        var from = new DateOnly(2026, 7, 1);
+        var to = new DateOnly(2026, 7, 7);
+
+        var active = await service.GetChannelSeriesAsync(channel.ChannelName, from, to);
+        var previous = await service.GetChannelSeriesAsync(channel.ChannelName, from, to, PreviousSetId);
+
+        Assert.Equal([4], active.LiveDays);
+        Assert.Equal([2], previous.LiveDays);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_ADayWhoseOnlyCountsBelongToAnArchivedEmote_StillQualifiesAndSurvivesArchiving()
+    {
+        // protects=live days and counted-day bounds do not change when an emote is archived (AC 4);
+        // fails_when=the helper reads the already-loaded rows (which exclude archived emotes for the
+        // active set) instead of every emote of the channel;
+        // no_claim=none beyond protects (before/after comparison on one channel, archiving done in-test).
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_archived", ActiveSetId);
+        var kept = await SeedEmoteAsync(db, channel.Id, "Kept");
+        var leaving = await SeedEmoteAsync(db, channel.Id, "Leaving");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = kept.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 1 },
+            new UsageStat { EmoteId = leaving.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 9 });
+        db.ChannelLiveDays.AddRange(
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 2), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.SaveChangesAsync();
+        var from = new DateOnly(2026, 7, 1);
+        var to = new DateOnly(2026, 7, 7);
+
+        var before = await new UsageStatQueryService(db).GetChannelSeriesAsync(channel.ChannelName, from, to);
+        leaving.IsArchived = true;
+        await db.SaveChangesAsync();
+        var after = await new UsageStatQueryService(db).GetChannelSeriesAsync(channel.ChannelName, from, to);
+
+        Assert.Equal([1, 4], before.LiveDays);
+        Assert.Equal(before.LiveDays, after.LiveDays);
+        Assert.Equal(new DateOnly(2026, 7, 2), after.FirstCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 5), after.LastCountedDay);
+        Assert.Equal(before.FirstCountedDay, after.FirstCountedDay);
+        Assert.Equal(before.LastCountedDay, after.LastCountedDay);
+        Assert.DoesNotContain(after.Emotes, e => e.EmoteId == leaving.Id);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_CountedBounds_AreRangeScoped_AndNullWithoutCounts()
+    {
+        // protects=FirstCountedDay/LastCountedDay describe the requested range only, null when empty;
+        // fails_when=counts outside the range leak into the bounds, or an empty range yields a value;
+        // no_claim=none beyond protects.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_bounds", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 6, 20), UseCount = 1 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 1 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 6), UseCount = 1 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 8, 1), UseCount = 1 });
+        await db.SaveChangesAsync();
+        var service = new UsageStatQueryService(db);
+
+        var inRange = await service.GetChannelSeriesAsync(channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
+        var empty = await service.GetChannelSeriesAsync(channel.ChannelName, new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 7));
+
+        Assert.Equal(new DateOnly(2026, 7, 3), inRange.FirstCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 6), inRange.LastCountedDay);
+        Assert.Null(empty.FirstCountedDay);
+        Assert.Null(empty.LastCountedDay);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_ChannelFirstCountedDay_SpansEverySet_AndIsRangeScoped()
+    {
+        // protects=ChannelFirstCountedDay is the earliest counted day of ANY set within the range,
+        // equal to FirstCountedDay when only the viewed set counted, and null without counts;
+        // fails_when=it is filtered to the viewed set, leaks counts outside the range, or is non-null when empty;
+        // no_claim=nothing about live days.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_channelfirst", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 6, 20), UseCount = 1 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 2), UseCount = 1 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 1 });
+        await db.SaveChangesAsync();
+        var service = new UsageStatQueryService(db);
+        var from = new DateOnly(2026, 7, 1);
+        var to = new DateOnly(2026, 7, 31);
+
+        var active = await service.GetChannelSeriesAsync(channel.ChannelName, from, to);
+        var previous = await service.GetChannelSeriesAsync(channel.ChannelName, from, to, PreviousSetId);
+        var empty = await service.GetChannelSeriesAsync(channel.ChannelName, new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 7));
+
+        Assert.Equal(new DateOnly(2026, 7, 5), active.FirstCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 2), active.ChannelFirstCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 2), previous.FirstCountedDay);
+        Assert.Equal(previous.FirstCountedDay, previous.ChannelFirstCountedDay);
+        Assert.Null(empty.ChannelFirstCountedDay);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_AForeignChannelsRowsUnderTheSameSetId_NeitherQualifyADayNorMoveTheBounds()
+    {
+        // protects=the counted-day helper is scoped to the channel's own emotes;
+        // fails_when=rows of another channel's emote under the same set id qualify a live day or move a bound;
+        // no_claim=nothing about the foreign channel's own series.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_own", ActiveSetId);
+        var foreign = await SeedChannelAsync(db, "livecounts_foreign", ActiveSetId);
+        var ownEmote = await SeedEmoteAsync(db, channel.Id, "Own");
+        var foreignEmote = await SeedEmoteAsync(db, foreign.Id, "Foreign");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = ownEmote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 1 },
+            new UsageStat { EmoteId = foreignEmote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 9 });
+        db.ChannelLiveDays.AddRange(
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.SaveChangesAsync();
+
+        var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
+
+        Assert.Equal([4], series.LiveDays);
+        Assert.Equal(new DateOnly(2026, 7, 5), series.FirstCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 5), series.LastCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 5), series.ChannelFirstCountedDay);
+    }
+
+    [Fact]
+    public async Task GetDailySeriesAsync_LiveDaysMatchTheChannelSeries_AndAnUnusedQualifyingDayIsKept()
+    {
+        // protects=/daily and /series agree on liveDays for the same set, and the per-emote
+        // denominator is set-wide (AC 5);
+        // fails_when=/daily narrows the live days to the emote's own days, or ignores the set rule;
+        // no_claim=none beyond protects (agreement checked on one fixture, not property-based).
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_daily", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Rare");
+        var other = await SeedEmoteAsync(db, channel.Id, "Common");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 1 },
+            new UsageStat { EmoteId = other.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 5 },
+            new UsageStat { EmoteId = other.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 4), UseCount = 5 });
+        db.ChannelLiveDays.AddRange(
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 2), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 4), LiveMinutes = 60 });
+        await db.SaveChangesAsync();
+        var service = new UsageStatQueryService(db);
+        var from = new DateOnly(2026, 7, 1);
+        var to = new DateOnly(2026, 7, 7);
+
+        var channelSeries = await service.GetChannelSeriesAsync(channel.ChannelName, from, to);
+        var daily = await service.GetDailySeriesAsync(channel.ChannelName, emote.Id, from, to);
+
+        Assert.NotNull(daily);
+        Assert.Equal(channelSeries.LiveDays.Select(o => from.AddDays(o)), daily.LiveDays);
+        Assert.Equal([new DateOnly(2026, 7, 2), new DateOnly(2026, 7, 4)], daily.LiveDays);
+        Assert.DoesNotContain(daily.Days, d => d.Date == new DateOnly(2026, 7, 4));
+    }
+
+    [Fact]
+    public async Task GetDailySeriesAsync_ForANonActiveSet_UsesThatSetsCountedDays()
+    {
+        // protects=/daily with an explicit set takes the live days of that set, not the active one's;
+        // fails_when=the active set's (or channel-wide) days are used for a non-active set;
+        // no_claim=none beyond protects.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_daily_set", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 2 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        db.ChannelLiveDays.AddRange(
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.SaveChangesAsync();
+
+        var daily = await new UsageStatQueryService(db).GetDailySeriesAsync(
+            channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7), EmoteSetScope.Set(PreviousSetId));
+
+        Assert.NotNull(daily);
+        Assert.Equal([new DateOnly(2026, 7, 3)], daily.LiveDays);
+    }
+
+    [Fact]
+    public async Task GetDailySeriesAsync_WithSetScopeAll_QualifiesLiveDaysByCountsUnderAnySet()
+    {
+        // protects=setScope=all takes live days that have counts under any set of the channel (AC 6);
+        // fails_when=all-sets still filters on the active set, or a countless live day sneaks in;
+        // no_claim=none beyond protects.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_daily_all", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 2 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        db.ChannelLiveDays.AddRange(
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 4), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.SaveChangesAsync();
+
+        var daily = await new UsageStatQueryService(db).GetDailySeriesAsync(
+            channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7), EmoteSetScope.AllSets);
+
+        Assert.NotNull(daily);
+        Assert.Equal([new DateOnly(2026, 7, 3), new DateOnly(2026, 7, 5)], daily.LiveDays);
     }
 
     [Fact]

@@ -846,6 +846,10 @@ export async function mockUsageChannelSeries(
       from: url.searchParams.get('from') ?? '2026-07-01',
       to: url.searchParams.get('to') ?? '2026-07-28',
       liveDays,
+      // The server's range-scoped bounds; the e2e suite asserts no set-view caption on them.
+      firstCountedDay: null,
+      lastCountedDay: null,
+      channelFirstCountedDay: null,
       // Both fields, because the endpoint sends both (spec 6.5 step 1: `sevenTvEmoteId` added,
       // `emoteId` kept until follow-up issue 5). The mock mirrors the contract, not the reader: the
       // page no longer reads `emoteId`, so its value here only has to be a string.
@@ -1249,8 +1253,7 @@ export interface MockChannelEmoteSet extends MockEmoteSetTargetSet {
    *  the mock answers what the real route answers for a tracked channel (spec 4.3): the **active**
    *  set carries one open interval — opened by the first successful sync or seeded by the
    *  migration, here from {@link DEFAULT_TRACKED_SINCE} like `mockActiveEmoteSet`'s own default —
-   *  and every other set `[]` ("never observed"). Pass it to exercise the caption matrix (spec 8.4)
-   *  or the `'set-observed'` preset (8.5). */
+   *  and every other set `[]` ("never observed"). Pass it to exercise the caption matrix (spec 8.4). */
   observations?: { fromUtc: string; toUtc: string | null }[];
 }
 

@@ -23,6 +23,10 @@ public class ChannelUsageSeriesWireFormatTests
     [Fact]
     public void Days_SerializeAsPairsOfNumbers_NotObjects()
     {
+        // protects=day pairs stay number pairs, both identity fields stay on the entry, and the
+        // three bound properties are present (null) on the wire;
+        // fails_when=pairs become objects, an identity field disappears, or a bound is dropped or renamed;
+        // no_claim=nothing about the values of the bounds (the next cases and the service tests cover those).
         // Both identity fields are pinned here, not just the encoding. From #200 on an entry is
         // named by its 7TV id — the only key our own rows and 7TV's live membership list share —
         // and carries the Emote.Id guid alongside it for the length of one transition (spec 6.5,
@@ -37,19 +41,36 @@ public class ChannelUsageSeriesWireFormatTests
         var json = JsonSerializer.Serialize(dto, Options);
 
         Assert.Equal(
-            """{"from":"2026-07-01","to":"2026-07-07","liveDays":[0,6],"emotes":[{"sevenTvEmoteId":"01JB8QK3X0000000000000000","emoteId":"emote-1","days":[[0,3],[4,8]]}]}""",
+            """{"from":"2026-07-01","to":"2026-07-07","liveDays":[0,6],"emotes":[{"sevenTvEmoteId":"01JB8QK3X0000000000000000","emoteId":"emote-1","days":[[0,3],[4,8]]}],"firstCountedDay":null,"lastCountedDay":null,"channelFirstCountedDay":null}""",
             json);
     }
 
     [Fact]
     public void AnEmptyResponse_SerializesAsEmptyArrays_NotNull()
     {
+        // protects=an empty response carries empty arrays and null bounds, never null arrays;
+        // fails_when=an array turns null/omitted or a bound is dropped from the empty shape;
+        // no_claim=nothing about populated responses.
         // The unknown-channel answer. `null` here would reach the client as a missing property and
         // turn a legitimate "nothing to show" into a TypeError on `.map`.
         var dto = new ChannelUsageSeriesDto(new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7), [], []);
 
         var json = JsonSerializer.Serialize(dto, Options);
 
-        Assert.Equal("""{"from":"2026-07-01","to":"2026-07-07","liveDays":[],"emotes":[]}""", json);
+        Assert.Equal("""{"from":"2026-07-01","to":"2026-07-07","liveDays":[],"emotes":[],"firstCountedDay":null,"lastCountedDay":null,"channelFirstCountedDay":null}""", json);
+    }
+
+    [Fact]
+    public void CountedDayBounds_SerializeAsIsoDates()
+    {
+        // protects=the camelCase names and ISO form of the three bounds the frontend reads;
+        // fails_when=a property is renamed or the date format changes;
+        // no_claim=none beyond protects.
+        var dto = new ChannelUsageSeriesDto(
+            new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7), [], [], new DateOnly(2026, 7, 2), new DateOnly(2026, 7, 5), new DateOnly(2026, 7, 1));
+
+        var json = JsonSerializer.Serialize(dto, Options);
+
+        Assert.Contains(""""firstCountedDay":"2026-07-02","lastCountedDay":"2026-07-05","channelFirstCountedDay":"2026-07-01"""", json);
     }
 }

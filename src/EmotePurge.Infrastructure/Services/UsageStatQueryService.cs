@@ -196,11 +196,12 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         // Range-bounded unlike the bounds above: the consumer overlays these on exactly the
         // rendered window. LiveMinutes > 0 is defensive — the poll never writes a zero row.
         // Served by the covering index (ChannelId, Date) INCLUDE (LiveMinutes).
-        var liveDays = await db.ChannelLiveDays
-            .Where(l => l.ChannelId == emote.ChannelId && l.Date >= from && l.Date <= to && l.LiveMinutes > 0)
-            .OrderBy(l => l.Date)
-            .Select(l => l.Date)
-            .ToListAsync(cancellationToken);
+        // Narrowed to the days the viewed set has counts on (the same set predicate as the emote's
+        // own days above, none under AllSets): the live-day rule, shared with the channel series.
+        // The denominator stays set-wide — it is NOT the emote's own days, or every emote would
+        // read "used on all live days".
+        var countedDates = await LoadSetCountedDatesAsync(emote.ChannelId, allSets ? null : setId, from, to, cancellationToken);
+        var liveDays = await LoadQualifyingLiveDaysAsync(emote.ChannelId, countedDates, from, to, cancellationToken);
 
         return new EmoteUsageSeriesDto(
             emote.Id,
@@ -248,16 +249,27 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         var emoteIds = emotes.Select(e => e.Id).ToList();
         var sevenTvEmoteIdByEmoteId = emotes.ToDictionary(e => e.Id, e => e.SevenTvEmoteId, StringComparer.Ordinal);
 
-        var liveDays = await db.ChannelLiveDays
-            .Where(l => l.ChannelId == channel.Id && l.Date >= from && l.Date <= to && l.LiveMinutes > 0)
-            .OrderBy(l => l.Date)
-            .Select(l => l.Date)
-            .ToListAsync(cancellationToken);
+        // Loaded from the database for ALL emotes of the channel, archived included, and never
+        // derived from the rows below: those exclude archived emotes for the active set, so
+        // archiving an emote would retroactively change historical live days and the bounds.
+        // One query for every set at once: the viewed set's counted days and the channel-wide first
+        // counted day (any set) both fall out of the same (Date, EmoteSetId) pairs in memory.
+        var pairs = await LoadChannelCountedPairsAsync(channel.Id, from, to, cancellationToken);
+        var countedDates = pairs
+            .Where(p => string.Equals(p.EmoteSetId, setId, StringComparison.Ordinal))
+            .Select(p => p.Date)
+            .Distinct()
+            .Order()
+            .ToList();
+        DateOnly? channelFirstCountedDay = pairs.Count > 0 ? pairs.Min(p => p.Date) : null;
+        var liveDays = await LoadQualifyingLiveDaysAsync(channel.Id, countedDates, from, to, cancellationToken);
         var liveDayOffsets = liveDays.Select(d => d.DayNumber - from.DayNumber).ToList();
+        DateOnly? firstCountedDay = countedDates.Count > 0 ? countedDates[0] : null;
+        DateOnly? lastCountedDay = countedDates.Count > 0 ? countedDates[^1] : null;
 
         if (emoteIds.Count == 0)
         {
-            return new ChannelUsageSeriesDto(from, to, liveDayOffsets, []);
+            return new ChannelUsageSeriesDto(from, to, liveDayOffsets, [], firstCountedDay, lastCountedDay, channelFirstCountedDay);
         }
 
         // One scan over the whole channel, then grouped in memory. Deliberately not a GroupBy in
@@ -286,7 +298,69 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
                 g.Select(r => new[] { r.Date.DayNumber - from.DayNumber, r.UseCount }).ToList()))
             .ToList();
 
-        return new ChannelUsageSeriesDto(from, to, liveDayOffsets, entries);
+        return new ChannelUsageSeriesDto(from, to, liveDayOffsets, entries, firstCountedDay, lastCountedDay, channelFirstCountedDay);
+    }
+
+    /// <summary>
+    /// The distinct days in [from, to] on which at least one emote of the channel — archived ones
+    /// included — has a row with own usage (<c>UseCount &gt; 0</c>) under the given set; every set
+    /// when <paramref name="setId"/> is null. Ascending. This is what makes a live day count for a
+    /// set: a day the set shows no evidence of is not one of its live days.
+    /// </summary>
+    private async Task<List<DateOnly>> LoadSetCountedDatesAsync(
+        string channelId, string? setId, DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        var query = db.UsageStats
+            .Where(u => db.Emotes.Where(e => e.ChannelId == channelId).Select(e => e.Id).Contains(u.EmoteId)
+                && u.Date >= from && u.Date <= to && u.UseCount > 0);
+
+        // Branched rather than "(allSets || set = @p)": a bool parameter in the predicate would keep
+        // the set filter in the SQL text and let the planner reuse a plan for the wrong shape.
+        if (setId is not null)
+        {
+            query = query.Where(u => u.EmoteSetId == setId);
+        }
+
+        return await query
+            .Select(u => u.Date)
+            .Distinct()
+            .OrderBy(d => d)
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The distinct (day, set) pairs in [from, to] with own usage on any emote of the channel,
+    /// archived ones included. Rows of emotes of other channels are excluded by the emote subquery,
+    /// even when they carry the same set id.
+    /// </summary>
+    private async Task<List<CountedPair>> LoadChannelCountedPairsAsync(
+        string channelId, DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        return await db.UsageStats
+            .Where(u => db.Emotes.Where(e => e.ChannelId == channelId).Select(e => e.Id).Contains(u.EmoteId)
+                && u.Date >= from && u.Date <= to && u.UseCount > 0)
+            .Select(u => new CountedPair(u.Date, u.EmoteSetId))
+            .Distinct()
+            .ToListAsync(cancellationToken);
+    }
+
+    private async Task<List<DateOnly>> LoadQualifyingLiveDaysAsync(
+        string channelId, List<DateOnly> countedDates, DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        if (countedDates.Count == 0)
+        {
+            return [];
+        }
+
+        // LiveMinutes > 0 is defensive — the poll never writes a zero row. Served by the covering
+        // index (ChannelId, Date) INCLUDE (LiveMinutes).
+        var liveDays = await db.ChannelLiveDays
+            .Where(l => l.ChannelId == channelId && l.Date >= from && l.Date <= to && l.LiveMinutes > 0)
+            .OrderBy(l => l.Date)
+            .Select(l => l.Date)
+            .ToListAsync(cancellationToken);
+        var counted = countedDates.ToHashSet();
+        return liveDays.Where(counted.Contains).ToList();
     }
 
     public async Task<IReadOnlyDictionary<string, int>> GetTotalsByEmoteIdsAsync(
@@ -498,4 +572,6 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
 
         return result;
     }
+
+    private sealed record CountedPair(DateOnly Date, string EmoteSetId);
 }

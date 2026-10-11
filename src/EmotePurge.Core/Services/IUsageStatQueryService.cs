@@ -150,11 +150,25 @@ public record EmoteSeriesEntryDto(string SevenTvEmoteId, string EmoteId, IReadOn
 /// knows about but does not find here has no own usage in the window — the same statement the
 /// omitted days inside an entry make, one level up.
 /// </param>
+/// <param name="FirstCountedDay">
+/// Earliest day in the range with own usage under the requested set from any emote of the channel,
+/// archived ones included — so it can precede every day in <paramref name="Emotes"/>. Null when the
+/// set has no counts in the range.
+/// </param>
+/// <param name="LastCountedDay">Latest such day; same rules as <paramref name="FirstCountedDay"/>.</param>
+/// <param name="ChannelFirstCountedDay">
+/// Earliest day in the range with own usage under ANY set of the channel; null when no set has
+/// counts in the range. Lets the consumer tell a real set change (another set counted before the
+/// viewed set's first day) from a channel that was merely quiet on the range's first days.
+/// </param>
 public record ChannelUsageSeriesDto(
     DateOnly From,
     DateOnly To,
     IReadOnlyList<int> LiveDays,
-    IReadOnlyList<EmoteSeriesEntryDto> Emotes);
+    IReadOnlyList<EmoteSeriesEntryDto> Emotes,
+    DateOnly? FirstCountedDay = null,
+    DateOnly? LastCountedDay = null,
+    DateOnly? ChannelFirstCountedDay = null);
 
 /// <summary>
 /// One emote's lifetime bounds for the chat-log backfill harness (issue #69). Not a usage context —
