@@ -23,7 +23,12 @@ public class WorkerSystemLoadWorkloadSourceTests
         var usageCounter = new EmoteUsageCounter();
         usageCounter.Increment("one", "set", UsageCategory.Human);
         usageCounter.Increment("two", "set", UsageCategory.Bot);
-        var source = new WorkerSystemLoadWorkloadSource(channelService, liveReader, stats, usageCounter);
+        var source = new WorkerSystemLoadWorkloadSource(
+            channelService,
+            liveReader,
+            stats,
+            usageCounter,
+            new WorkerSystemLoadCounterBaselines());
 
         var first = await source.ReadAsync();
         usageCounter.DrainAndReset();
@@ -48,7 +53,12 @@ public class WorkerSystemLoadWorkloadSourceTests
         var liveReader = Substitute.For<ITwitchLiveStatusReader>();
         liveReader.ReadAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<TwitchLiveStatusSnapshot?>(null));
-        var source = new WorkerSystemLoadWorkloadSource(channelService, liveReader, new WorkerStats(), new EmoteUsageCounter());
+        var source = new WorkerSystemLoadWorkloadSource(
+            channelService,
+            liveReader,
+            new WorkerStats(),
+            new EmoteUsageCounter(),
+            new WorkerSystemLoadCounterBaselines());
 
         var result = await source.ReadAsync();
 

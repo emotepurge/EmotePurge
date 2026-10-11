@@ -40,6 +40,7 @@ public static class WorkerServiceRegistration
         // Set by Worker on a BACKFILL: command, awaited by ChatLogBackfillWorker (spec 4.8).
         services.AddSingleton<ChatLogBackfillSignal>();
         services.AddSingleton<WorkerStats>();
+        services.AddSingleton<WorkerSystemLoadCounterBaselines>();
         services.Replace(ServiceDescriptor.Scoped<ISystemLoadWorkloadSource, WorkerSystemLoadWorkloadSource>());
         services.AddSingleton<WorkerIdentity>();
         services.AddSingleton<SevenTvSubscriptionRegistry>();

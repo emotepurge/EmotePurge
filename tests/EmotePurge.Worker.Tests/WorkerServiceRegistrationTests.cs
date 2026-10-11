@@ -72,6 +72,55 @@ public class WorkerServiceRegistrationTests
     }
 
     [Fact]
+    public async Task AddWorkerCore_WorkloadSource_PreservesCounterDeltasAcrossScopes()
+    {
+        var configuration = Configuration();
+        var services = new ServiceCollection();
+        services.AddWorkerCore(configuration);
+
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<string>>([]));
+        services.AddSingleton(channelService);
+
+        var liveStatusReader = Substitute.For<ITwitchLiveStatusReader>();
+        liveStatusReader.ReadAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<TwitchLiveStatusSnapshot?>(null));
+        services.AddSingleton(liveStatusReader);
+
+        using var provider = services.BuildServiceProvider();
+        var stats = provider.GetRequiredService<WorkerStats>();
+        var usageCounter = provider.GetRequiredService<IEmoteUsageCounter>();
+
+        stats.RecordChatLine();
+        stats.RecordChatLine();
+        usageCounter.Increment("one", "set", UsageCategory.Human);
+        usageCounter.Increment("two", "set", UsageCategory.Bot);
+        var first = await ReadInScopeAsync(provider);
+
+        usageCounter.DrainAndReset();
+        stats.RecordChatLine();
+        usageCounter.Increment("three", "set", UsageCategory.SharedChat);
+        var second = await ReadInScopeAsync(provider);
+
+        usageCounter.DrainAndReset();
+        var third = await ReadInScopeAsync(provider);
+
+        Assert.Equal(2, first.ChatLines);
+        Assert.Equal(2, first.EmoteMatches);
+        Assert.Equal(1, second.ChatLines);
+        Assert.Equal(1, second.EmoteMatches);
+        Assert.Equal(0, third.ChatLines);
+        Assert.Equal(0, third.EmoteMatches);
+    }
+
+    private static async Task<SystemLoadWorkloadSnapshot> ReadInScopeAsync(ServiceProvider provider)
+    {
+        using var scope = provider.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<ISystemLoadWorkloadSource>().ReadAsync();
+    }
+
+    [Fact]
     public void AddHarness_ResolvesTheRunnerWithItsWholeDependencyGraph()
     {
         using var provider = BuildProvider();
