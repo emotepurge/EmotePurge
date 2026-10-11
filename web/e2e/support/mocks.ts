@@ -195,9 +195,13 @@ export async function mockAdminRoster(page: Page, overrides: MockAdminRoster = {
   );
 }
 
-/** Counts how often a mocked endpoint was hit; `ranges` records the `range` query where relevant. */
+/** Counts how often a mocked endpoint was hit. */
 export interface MockCallLog {
   count: number;
+}
+
+/** The activity endpoint additionally records each requested `range`, in order. */
+export interface MockActivityCallLog extends MockCallLog {
   ranges: string[];
 }
 
@@ -241,7 +245,7 @@ export async function mockAdminRateLimits(
   page: Page,
   overrides: MockAdminRateLimits = {},
 ): Promise<MockCallLog> {
-  const log: MockCallLog = { count: 0, ranges: [] };
+  const log: MockCallLog = { count: 0 };
   const available = overrides.telemetryAvailable ?? true;
   const policies = overrides.policies ?? QUIET_RATE_LIMIT_POLICIES;
   const providers = overrides.providers ?? [];
@@ -316,7 +320,7 @@ export async function mockAdminRateLimitsTrend(
   page: Page,
   overrides: MockRateLimitsTrend = {},
 ): Promise<MockCallLog> {
-  const log: MockCallLog = { count: 0, ranges: [] };
+  const log: MockCallLog = { count: 0 };
   const available = overrides.telemetryAvailable ?? true;
   await page.route(
     (url) => url.pathname === '/api/admin/rate-limits/trend',
@@ -364,8 +368,8 @@ export interface MockDashboardActivity {
 export async function mockAdminDashboardActivity(
   page: Page,
   overrides: MockDashboardActivity = {},
-): Promise<MockCallLog> {
-  const log: MockCallLog = { count: 0, ranges: [] };
+): Promise<MockActivityCallLog> {
+  const log: MockActivityCallLog = { count: 0, ranges: [] };
   const value = overrides.value ?? ((index: number) => 20 + (index % 9));
   await page.route(
     (url) => url.pathname === '/api/admin/dashboard/activity',

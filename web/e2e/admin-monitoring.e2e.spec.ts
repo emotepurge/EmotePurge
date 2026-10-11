@@ -36,6 +36,20 @@ const activityChart = (page: Page) =>
 const activityAlternative = (page: Page) =>
   page.locator('app-admin-activity-section').getByTestId('chart-alternative');
 
+// The route handlers that count requests run in Node, a round trip behind the browser: a negative
+// assertion ("nothing was requested") is only meaningful after this real-time pause.
+const settle = (page: Page) => page.waitForTimeout(400);
+
+// Time on the page's (faked) clock.
+const clockNow = (page: Page) => page.evaluate(() => Date.now());
+
+async function advanceTo(page: Page, target: number): Promise<void> {
+  const now = await clockNow(page);
+  if (target > now) {
+    await page.clock.runFor(target - now);
+  }
+}
+
 test.describe('admin monitoring dashboard', () => {
   test.beforeEach(async ({ page }) => {
     await adminPage(page);
@@ -92,10 +106,23 @@ test.describe('admin monitoring dashboard', () => {
     });
     await page.getByRole('radio', { name: '90 Tage' }).click();
 
-    await expect(page.getByText('Ungültiger Zeitraum für das Dashboard.')).toHaveCount(1);
-    // The other sections keep working, and the chart keeps its last series instead of vanishing.
-    await expect(page.getByRole('heading', { name: 'Rate-Limit-Ausnahmen' })).toBeVisible();
+    // Exactly one banner on the whole page, and it sits in the activity area: below the page
+    // header, above the activity heading, with the rate-limit section after that.
+    const banner = page.locator('app-notice-banner');
+    await expect(banner).toHaveCount(1);
+    await expect(banner).toHaveText(/Ungültiger Zeitraum für das Dashboard\./);
+    const activityHeading = page.getByRole('heading', { name: 'Aktivitätsverlauf' });
+    const rateLimitHeading = page.getByRole('heading', { name: 'Rate-Limit-Ausnahmen' });
+    await expect(rateLimitHeading).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Twitch-IRC' })).toBeVisible();
+    const [bannerBox, activityBox, rateLimitBox] = await Promise.all([
+      banner.boundingBox(),
+      activityHeading.boundingBox(),
+      rateLimitHeading.boundingBox(),
+    ]);
+    expect(bannerBox!.y).toBeLessThan(activityBox!.y);
+    expect(activityBox!.y).toBeLessThan(rateLimitBox!.y);
+    // The chart keeps its last series instead of vanishing.
     await expect(activityChart(page)).toBeVisible();
     expect(activity.count).toBe(1);
   });
@@ -179,7 +206,7 @@ test.describe('admin monitoring dashboard', () => {
   test('the 60 s poll refreshes the numbers without any live event', async ({ page }) => {
     await mockAdminDashboardActivity(page);
     await mockAdminRateLimitsTrend(page);
-    await mockAdminRateLimits(page, {
+    const rateLimits = await mockAdminRateLimits(page, {
       policies: [{ name: 'Voting', acceptedLast24Hours: 88, rejectedLast24Hours: 12 }],
     });
 
@@ -187,23 +214,35 @@ test.describe('admin monitoring dashboard', () => {
     await page.clock.install({ time: start });
     await page.goto('/admin/monitoring');
     await expect(page.getByText('12 von 100 Entscheidungen abgewiesen')).toBeVisible();
-    // install() lets time run on; stop it so only runFor() below moves the clock.
+    // install() lets time run on; stop it so only runFor()/advanceTo() below move the clock.
     await page.clock.pauseAt(start + 5_000);
+    await settle(page);
+    expect(rateLimits.count).toBe(1);
 
-    await mockAdminRateLimits(page, {
+    // A new registration answers from now on and counts on its own log.
+    const updated = await mockAdminRateLimits(page, {
       policies: [{ name: 'Voting', acceptedLast24Hours: 60, rejectedLast24Hours: 40 }],
     });
-    await page.clock.runFor(60_000);
 
-    // The answer arrives in real time, but Angular schedules its render on requestAnimationFrame
-    // and setTimeout, which the paused clock only fires when it is advanced: nudge it while waiting.
+    // The poll was armed after `start`, so its first tick is at least 60 s after `start`: at
+    // start + 59 s nothing may have happened yet. A 30 s cadence would already have fired.
+    await advanceTo(page, start + 59_000);
+    await settle(page);
+    expect(updated.count).toBe(0);
+    await expect(page.getByText('12 von 100 Entscheidungen abgewiesen')).toBeVisible();
+
+    // ... and it was armed no later than the pause, so by start + 65 s it has fired once. The
+    // answer arrives in real time, but Angular schedules its render on requestAnimationFrame and
+    // setTimeout, which the paused clock only fires when advanced: nudge it while waiting.
+    await advanceTo(page, start + 65_000);
     await expect(async () => {
-      await page.clock.runFor(100);
+      await page.clock.runFor(20);
       await expect(page.getByText('40 von 100 Entscheidungen abgewiesen')).toBeVisible({
         timeout: 300,
       });
-    }).toPass();
+    }).toPass({ timeout: 10_000 });
     await expect(page.getByText('12 von 100 Entscheidungen abgewiesen')).toHaveCount(0);
+    expect(updated.count).toBe(1);
   });
 
   test('a hidden tab stops polling and one immediate refresh follows the return', async ({
@@ -239,25 +278,42 @@ test.describe('admin monitoring dashboard', () => {
     await page.goto('/admin/monitoring');
     await expect(activityChart(page)).toBeVisible();
     await page.clock.pauseAt(start + 5_000);
+    await settle(page);
     expect(counts()).toEqual([1, 1, 1]);
 
     await setHidden(true);
     await page.clock.runFor(180_000);
+    await settle(page);
     expect(counts()).toEqual([1, 1, 1]);
 
-    // The visibility effect and the response handling run on the (paused) clock's timers and
-    // animation frames, so advance it in small steps until the refresh went out.
+    // The visibility effect and the response handling run on the paused clock's timers and
+    // animation frames, so advance it in small steps until the refresh went out — and bound the
+    // virtual time that takes: a regular 60 s tick must not be what delivers it.
+    const returnedAt = await clockNow(page);
     await setHidden(false);
     await expect(async () => {
-      await page.clock.runFor(100);
-      expect(counts()).toEqual([2, 2, 2]);
-    }).toPass();
+      await page.clock.runFor(20);
+      expect(counts().every((count) => count >= 2)).toBe(true);
+    }).toPass({ timeout: 10_000 });
+    expect((await clockNow(page)) - returnedAt).toBeLessThan(5_000);
+    await settle(page);
+    expect(counts()).toEqual([2, 2, 2]);
 
-    // Back on the normal cadence afterwards, no burst of catch-up requests.
-    await page.clock.runFor(60_000);
+    // Cadence restarts at the return: quiet until a minute after it, then exactly one more.
+    await advanceTo(page, returnedAt + 59_000);
+    await settle(page);
+    expect(counts()).toEqual([2, 2, 2]);
+    await advanceTo(page, returnedAt + 65_000);
     await expect(async () => {
-      await page.clock.runFor(100);
-      expect(counts()).toEqual([3, 3, 3]);
-    }).toPass();
+      await page.clock.runFor(20);
+      expect(counts().every((count) => count >= 3)).toBe(true);
+    }).toPass({ timeout: 10_000 });
+    await settle(page);
+    expect(counts()).toEqual([3, 3, 3]);
+
+    // No burst of catch-up requests afterwards.
+    await page.clock.runFor(30_000);
+    await settle(page);
+    expect(counts()).toEqual([3, 3, 3]);
   });
 });
