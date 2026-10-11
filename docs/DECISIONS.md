@@ -25,7 +25,11 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Services/AdminDashboardReader.cs` ·
 `web/src/app/core/i18n/api-error.ts` · `web/public/i18n/{de,en}.json` ·
 `tests/EmotePurge.Api.Tests/{ApiFactory,AuthFilterMatrixTests,AdminDashboardActivityEndpointTests,AdminRateLimitsTrendEndpointTests}.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Unit/{AdminDashboardReaderTests,LiveEventTests}.cs`
+`tests/EmotePurge.Infrastructure.Tests/Unit/{AdminDashboardReaderTests,LiveEventTests}.cs` ·
+`web/src/app/shared/charts/{line-chart,chart-series}.ts` ·
+`web/src/app/core/live/poll-while-visible.ts` · `web/src/app/core/page-visibility/page-visibility.ts` ·
+`web/src/app/features/admin/{admin-monitoring-page,admin-activity-section,admin-rate-limit-details-dialog}.ts` ·
+`docs/UI-Designsprache.md` (2.6)
 
 The activity series counts, per UTC calendar day, the `ChannelLiveDays` rows with `LiveMinutes > 0`.
 The accepted ranges are `30d`, `90d` and `13mo` (ordinal, exact; anything else is rejected). The
@@ -70,8 +74,8 @@ stream in `LiveEventTests`), so the dashboard adds no stream traffic and no new 
 of the activity query and both telemetry reads, and `GET /api/admin/rate-limits` now goes through it
 with a byte-identical response. The caches are per Api instance, with single-flight: 60 s per range
 for the activity series, 30 s for the rate-limit snapshot and 30 s for the trend. Concurrent readers
-share one fill, which runs under its own token so one navigating browser cannot cancel it for the
-others. Expiry is counted from the end of the fill, and a failed fill is expired at once and therefore
+share one fill, which runs without any caller's token (`CancellationToken.None`), so one navigating browser cannot
+cancel it for the others. Expiry is counted from the end of the fill, and a failed fill is expired at once and therefore
 never cached; the next request retries. The clock is the injected `TimeProvider`, and the same value is
 the `nowUtc` passed to the query service. There is no cross-instance sharing or invalidation: with
 more than one Api replica each holds its own copy for at most one TTL.
@@ -79,6 +83,20 @@ more than one Api replica each holds its own copy for at most one TTL.
 `GET /api/admin/roster` gains `ceilings.maxActiveChannels`, the value of `Channels:MaxActiveChannels`
 (the admission cap, default 80), next to the two Twitch constants. The field is additive; existing
 clients ignore it.
+
+Web side. `shared/charts/line-chart.ts` (with `chart-series.ts`) is the app's one chart primitive, and
+its conventions are binding (UI-Designsprache 2.6): one unit per small multiple; `null` is a gap and is
+never interpolated or drawn as 0; colour only through the tone (neutral by default, `danger` only for
+real rejections or data errors), same-tone series told apart by a dash pattern; fixed-pixel drawing
+with fixed-size text; a reading cursor with an `aria-live` line instead of a tooltip, plus a text
+alternative. The activity line carries day markers up to 90 buckets (30d, 90d), the 13-month window
+is the line only. `core/live/poll-while-visible.ts` with `core/page-visibility/page-visibility.ts`
+runs the 60-second poll only while the page is visible and reloads once immediately on return
+(spec section 8). The rate-limit detail (all policies, caches, providers, last rejection) lives in a
+details dialog; the page itself shows exceptions only (spec section 4.2). Each independent section
+(activity, rate limits, worker health) renders its own error banner inside itself. In practice a
+quiet day and a poller outage both read as a gap: the poller credits minutes only to channels it saw
+live and never writes zero-minute `ChannelLiveDays` rows, so `0` is reachable only in principle.
 
 ### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)
 
