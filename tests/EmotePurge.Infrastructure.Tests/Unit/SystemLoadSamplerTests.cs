@@ -79,6 +79,10 @@ public class SystemLoadSamplerTests
     {
         public Task<SystemLoadWorkloadSnapshot> ReadAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(new SystemLoadWorkloadSnapshot(null, null, null, null));
+
+        public void ConfirmRecorded(SystemLoadWorkloadSnapshot workload)
+        {
+        }
     }
 
     private sealed class FlakySamplingService : ISystemLoadSamplingService

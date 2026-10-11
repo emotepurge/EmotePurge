@@ -31,6 +31,7 @@ public class WorkerSystemLoadWorkloadSourceTests
             new WorkerSystemLoadCounterBaselines());
 
         var first = await source.ReadAsync();
+        source.ConfirmRecorded(first);
         usageCounter.DrainAndReset();
         stats.RecordChatLine();
         usageCounter.Increment("three", "set", UsageCategory.SharedChat);

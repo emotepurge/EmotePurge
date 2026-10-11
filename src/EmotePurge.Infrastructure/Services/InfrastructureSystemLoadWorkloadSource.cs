@@ -10,4 +10,9 @@ public sealed class InfrastructureSystemLoadWorkloadSource(IChannelService chann
         var activeChannels = await channelService.ListActiveChannelNamesAsync(cancellationToken);
         return new SystemLoadWorkloadSnapshot(activeChannels.Count, null, null, null);
     }
+
+    public void ConfirmRecorded(SystemLoadWorkloadSnapshot workload)
+    {
+        // The Api reports a channel gauge and has no cumulative counters to acknowledge.
+    }
 }

@@ -14,15 +14,28 @@ public sealed class WorkerSystemLoadWorkloadSource(
         var activeChannels = await channelService.ListActiveChannelNamesAsync(cancellationToken);
         var liveStatus = await liveStatusReader.ReadAsync(cancellationToken);
         int? liveChannels = liveStatus is null ? null : liveStatus.LiveChannelLogins.Count;
-        var chatLines = counterBaselines.ReadChatLineDelta(workerStats.TotalChatLines);
-        var emoteMatches = counterBaselines.ReadEmoteMatchDelta(usageCounter.TotalMatchedEmotes);
+        var chatLinesTotal = workerStats.TotalChatLines;
+        var emoteMatchesTotal = usageCounter.TotalMatchedEmotes;
+        var chatLines = counterBaselines.GetChatLineDelta(chatLinesTotal);
+        var emoteMatches = counterBaselines.GetEmoteMatchDelta(emoteMatchesTotal);
 
-        return new SystemLoadWorkloadSnapshot(activeChannels.Count, liveChannels, chatLines, emoteMatches);
+        return new SystemLoadWorkloadSnapshot(
+            activeChannels.Count,
+            liveChannels,
+            chatLines,
+            emoteMatches,
+            chatLinesTotal,
+            emoteMatchesTotal);
+    }
+
+    public void ConfirmRecorded(SystemLoadWorkloadSnapshot workload)
+    {
+        counterBaselines.Confirm(workload.ChatLinesTotal, workload.EmoteMatchesTotal);
     }
 }
 
 /// <summary>
-/// Holds only the process-wide previous values needed to calculate workload intervals. The source
+/// Holds only process-wide totals from the last successfully recorded workload interval. The source
 /// remains scoped because it also depends on scoped channel services backed by AppDbContext.
 /// </summary>
 public sealed class WorkerSystemLoadCounterBaselines
@@ -30,13 +43,22 @@ public sealed class WorkerSystemLoadCounterBaselines
     private long _lastChatLines;
     private long _lastEmoteMatches;
 
-    public long ReadChatLineDelta(long current) => Difference(current, ref _lastChatLines);
+    public long GetChatLineDelta(long current) => Difference(current, Interlocked.Read(ref _lastChatLines));
 
-    public long ReadEmoteMatchDelta(long current) => Difference(current, ref _lastEmoteMatches);
+    public long GetEmoteMatchDelta(long current) => Difference(current, Interlocked.Read(ref _lastEmoteMatches));
 
-    private static long Difference(long current, ref long previous)
+    public void Confirm(long? chatLinesTotal, long? emoteMatchesTotal)
     {
-        var prior = Interlocked.Exchange(ref previous, current);
-        return current >= prior ? current - prior : current;
+        if (chatLinesTotal.HasValue)
+        {
+            Interlocked.Exchange(ref _lastChatLines, chatLinesTotal.Value);
+        }
+
+        if (emoteMatchesTotal.HasValue)
+        {
+            Interlocked.Exchange(ref _lastEmoteMatches, emoteMatchesTotal.Value);
+        }
     }
+
+    private static long Difference(long current, long previous) => current >= previous ? current - previous : current;
 }

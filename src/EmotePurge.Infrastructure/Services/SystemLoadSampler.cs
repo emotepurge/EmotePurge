@@ -39,12 +39,12 @@ public sealed class SystemLoadSampler(
         {
             var snapshot = await snapshotSource.ReadAsync(cancellationToken);
             await using var scope = scopeFactory.CreateAsyncScope();
-            var workload = await scope.ServiceProvider
-                .GetRequiredService<ISystemLoadWorkloadSource>()
-                .ReadAsync(cancellationToken);
+            var workloadSource = scope.ServiceProvider.GetRequiredService<ISystemLoadWorkloadSource>();
+            var workload = await workloadSource.ReadAsync(cancellationToken);
             await scope.ServiceProvider
                 .GetRequiredService<ISystemLoadSamplingService>()
                 .RecordAsync(source, _processInstanceId, snapshot, workload, cancellationToken);
+            workloadSource.ConfirmRecorded(workload);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
