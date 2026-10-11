@@ -34,5 +34,10 @@ public class UsageStat
     // either live or imported, never both; the flush never names this column and gets the default 0.
     public UsageStatSource Source { get; set; }
 
+    // The slot this row's usage belongs to (emote slots spec section 4.2). Nullable until the key
+    // switch: writers that predate it still insert rows without it. No navigation on purpose — no
+    // reader needs one yet.
+    public string? SlotId { get; set; }
+
     public Emote Emote { get; set; } = null!;
 }

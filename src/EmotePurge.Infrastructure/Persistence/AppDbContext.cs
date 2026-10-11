@@ -7,6 +7,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 {
     public DbSet<Channel> Channels => Set<Channel>();
     public DbSet<Emote> Emotes => Set<Emote>();
+    public DbSet<EmoteSlot> EmoteSlots => Set<EmoteSlot>();
     public DbSet<UsageStat> UsageStats => Set<UsageStat>();
     public DbSet<ChannelLiveDay> ChannelLiveDays => Set<ChannelLiveDay>();
     public DbSet<BroadcasterChannelLock> BroadcasterChannelLocks => Set<BroadcasterChannelLock>();
@@ -54,6 +55,32 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<EmoteSlot>(entity =>
+        {
+            // Identity of an authoritative slot (Name only breaks a tie on the same date). The slot
+            // sync's conflict detection refers to this index by name.
+            entity.HasIndex(s => new { s.EmoteId, s.AddedAt, s.Name })
+                .HasDatabaseName("IX_EmoteSlots_EmoteId_AddedAt_Name_Authoritative")
+                .IsUnique()
+                .HasFilter("\"AddedAtFromRest\"");
+
+            // FK index, and the name binding of provisional slots. Deliberately not unique: 7TV
+            // swaps two aliases within one reconcile.
+            entity.HasIndex(s => new { s.EmoteId, s.Name })
+                .HasDatabaseName("IX_EmoteSlots_EmoteId_Name");
+
+            // Database defaults like Emote.IsPlaceholder: an image that does not name the column
+            // lands on false.
+            entity.Property(s => s.AddedAtFromRest).HasDefaultValue(false);
+            entity.Property(s => s.IsArchived).HasDefaultValue(false);
+            entity.Property(s => s.SeedUnsettled).HasDefaultValue(false);
+
+            entity.HasOne(s => s.Emote)
+                .WithMany(e => e.Slots)
+                .HasForeignKey(s => s.EmoteId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<UsageStat>(entity =>
         {
             // One aggregated row per emote per emote set per UTC day (#200, spec section 4.1): the
@@ -74,6 +101,17 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.HasOne(u => u.Emote)
                 .WithMany(e => e.UsageStats)
                 .HasForeignKey(u => u.EmoteId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Slot key, not yet unique (the key switch is a later migration); the unique index above
+            // stays authoritative until then.
+            entity.HasIndex(u => new { u.SlotId, u.EmoteSetId, u.Date })
+                .IncludeProperties(u => u.UseCount);
+
+            // No navigation on either side: nothing reads one yet.
+            entity.HasOne<EmoteSlot>()
+                .WithMany()
+                .HasForeignKey(u => u.SlotId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
@@ -353,6 +391,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         {
             entity.HasKey(e => new { e.RunId, e.EmoteId });
             entity.Property(e => e.CreatedRow).HasDefaultValue(false);
+            entity.Property(e => e.CreatedSlot).HasDefaultValue(false);
             entity.HasIndex(e => new { e.RunId, e.SevenTvEmoteId });
 
             // No FK to Emotes on purpose (see the entity's remarks); only the run owns these rows.
