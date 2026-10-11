@@ -301,10 +301,18 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
     private async Task<List<DateOnly>> LoadSetCountedDatesAsync(
         string channelId, string? setId, DateOnly from, DateOnly to, CancellationToken cancellationToken)
     {
-        var allSets = setId is null;
-        return await db.UsageStats
+        var query = db.UsageStats
             .Where(u => db.Emotes.Where(e => e.ChannelId == channelId).Select(e => e.Id).Contains(u.EmoteId)
-                && (allSets || u.EmoteSetId == setId) && u.Date >= from && u.Date <= to && u.UseCount > 0)
+                && u.Date >= from && u.Date <= to && u.UseCount > 0);
+
+        // Branched rather than "(allSets || set = @p)": a bool parameter in the predicate would keep
+        // the set filter in the SQL text and let the planner reuse a plan for the wrong shape.
+        if (setId is not null)
+        {
+            query = query.Where(u => u.EmoteSetId == setId);
+        }
+
+        return await query
             .Select(u => u.Date)
             .Distinct()
             .OrderBy(d => d)
