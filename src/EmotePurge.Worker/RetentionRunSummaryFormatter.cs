@@ -16,6 +16,12 @@ public static class RetentionRunSummaryFormatter
         var accounts = summary.Accounts;
         var voteSessions = summary.VoteSessions;
         var channels = summary.Channels;
+        var rawSamples = summary.SystemLoadRawSamplesFailed
+            ? "system-load raw samples: failed (counts unknown)"
+            : $"system-load raw samples deleted: {summary.SystemLoadRawSamplesDeleted}, retained pending hourly rollup: {summary.SystemLoadRawSamplesWithoutHourlyRow}";
+        var hourlyRows = summary.SystemLoadHourlyRowsFailed
+            ? "hourly rows: failed (count unknown)"
+            : $"hourly rows deleted: {summary.SystemLoadHourlyRowsDeleted}";
 
         return
             $"tokens cleared: {summary.TokensCleared}; " +
@@ -27,13 +33,11 @@ public static class RetentionRunSummaryFormatter
             $"ballot entries deleted: {voteSessions.BallotEntriesDeleted}; " +
             $"audit log entries deleted: {summary.AuditEntriesDeleted}; " +
             $"backfill runs deleted: {summary.ChatLogBackfillRunsDeleted}; " +
-            $"system-load raw samples deleted: {summary.SystemLoadRawSamplesDeleted}, " +
-            $"retained pending hourly rollup: {summary.SystemLoadRawSamplesWithoutHourlyRow}, " +
-            $"hourly rows deleted: {summary.SystemLoadHourlyRowsDeleted}; " +
             $"channels restamped: {channels.Restamped}, purged: {channels.Purged}, " +
             $"still active: {channels.StillActive}, not found: {channels.NotFound}, failed: {channels.Failed}, " +
             $"emotes deleted: {channels.EmotesDeleted}, usage rows deleted: {channels.UsageRowsDeleted}, " +
             $"live days deleted: {channels.LiveDaysDeleted}, vote sessions deleted: {channels.VoteSessionsDeleted}, " +
-            $"votes deleted: {channels.VotesDeleted}, observation intervals deleted: {channels.ObservationsDeleted}";
+            $"votes deleted: {channels.VotesDeleted}, observation intervals deleted: {channels.ObservationsDeleted}; " +
+            $"{rawSamples}, {hourlyRows}";
     }
 }

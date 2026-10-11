@@ -536,7 +536,7 @@ only proof of being alive, so a Warning is the safety net against a `Retention:E
 gets deployed once and then forgotten for a year:
 
 ```
-Retention dry run: nothing was deleted, Retention:Enforce is false. tokens cleared: 3; accounts deleted: 0, still active: 0, not found: 0, failed: 0, cap reached: False, votes deleted: 12 (4 in open sessions), audit entries pseudonymised: 5; vote sessions deleted: 2, votes deleted: 34, ballot entries deleted: 2; audit log entries deleted: 118; backfill runs deleted: 0; system-load raw samples deleted: 0, retained pending hourly rollup: 0, hourly rows deleted: 0; channels restamped: 1, purged: 0, still active: 0, not found: 0, failed: 0, emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, votes deleted: 0, observation intervals deleted: 0
+Retention dry run: nothing was deleted, Retention:Enforce is false. tokens cleared: 3; accounts deleted: 0, still active: 0, not found: 0, failed: 0, cap reached: False, votes deleted: 12 (4 in open sessions), audit entries pseudonymised: 5; vote sessions deleted: 2, votes deleted: 34, ballot entries deleted: 2; audit log entries deleted: 118; backfill runs deleted: 0; channels restamped: 1, purged: 0, still active: 0, not found: 0, failed: 0, emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, votes deleted: 0, observation intervals deleted: 0; system-load raw samples deleted: 0, retained pending hourly rollup: 0, hourly rows deleted: 0
 ```
 
 An enforced pass logs the identical set of fields at `Information` instead, prefixed
@@ -555,6 +555,11 @@ up on the next pass. The raw-sample count `retained pending hourly rollup` repor
 days old that cannot yet be deleted because their own hour, or the immediate successor hour for the
 same source and process identity, has no rollup. Retention leaves them intact so the Worker can catch
 up later; this applies in dry-run and enforced mode.
+
+The pass completes the personal-data categories, including channel restamping and purge, before it
+starts system-load retention. Raw-sample and hourly-row retention are isolated from each other. If one
+fails, the pass logs the exception, marks that category's counts unknown in the summary, and continues
+with the other telemetry category.
 
 **Recommended procedure:** deploy with the default (`RETENTION_ENFORCE` unset or `false`), watch
 a handful of daily dry-run lines, and sanity-check the numbers against what you expect for your
@@ -590,7 +595,7 @@ both services:
 | Environment variable | Configuration key | Default | Meaning |
 |---|---|---:|---|
 | `SYSTEM_LOAD_ENABLED` | `SystemLoad:Enabled` | `true` | Enables or disables sampling in both hosts. |
-| `SYSTEM_LOAD_INTERVAL_SECONDS` | `SystemLoad:IntervalSeconds` | `30` | Sampling cadence. |
+| `SYSTEM_LOAD_INTERVAL_SECONDS` | `SystemLoad:IntervalSeconds` | `30` | Sampling cadence, from 1 through 3600 seconds. |
 | `SYSTEM_LOAD_ROLLUP_GRACE_MINUTES` | `SystemLoad:RollupGraceMinutes` | `5` | Lateness allowance before an hour is closed. |
 
 Before deploying images containing this feature, apply the additive schema migration against the
@@ -610,6 +615,8 @@ behaviour through the Worker rollup and retention count logs.
 Sampling contains no personal identifiers. It records process and host resource measurements and
 aggregate worker activity counts, so these periods do not change the personal-data retention list
 or require an addition to the privacy statement.
+The Worker's live-channel count is unknown until its first successful poll after each process start;
+Redis snapshots left by the previous process are ignored.
 
 ### Account deletion on request
 

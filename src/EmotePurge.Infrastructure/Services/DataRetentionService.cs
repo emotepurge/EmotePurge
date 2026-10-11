@@ -11,7 +11,7 @@ namespace EmotePurge.Infrastructure.Services;
 /// <summary>
 /// One retention pass (data-retention plan, "Der Job") — see <see cref="IDataRetentionService"/> for
 /// the contract. The categories run in a fixed order, each in its own transaction(s), and never inside
-/// an outer one: tokens → accounts → ended vote sessions → audit log → chat-log backfill runs → system load → channels.
+/// an outer one: tokens → accounts → ended vote sessions → audit log → chat-log backfill runs → channels → system load.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -59,26 +59,28 @@ public class DataRetentionService(
     private const int AuditLogBatchSize = 5_000;
     private const int BackfillRunBatchSize = 500;
     private const int SystemLoadBatchSize = 5_000;
+    private const string SystemLoadSampleImmediateSuccessorJoin = """
+        LEFT JOIN LATERAL (
+            SELECT s2."SampledAtUtc"
+            FROM "SystemLoadSamples" AS s2
+            WHERE s2."Source" = candidate."Source"
+              AND s2."ProcessInstanceId" = candidate."ProcessInstanceId"
+              AND s2."SampledAtUtc" > candidate."SampledAtUtc"
+            ORDER BY s2."SampledAtUtc"
+            LIMIT 1
+        ) AS succ ON true
+        """;
     private const string SystemLoadSampleReadyForDeletion = """
         EXISTS (
             SELECT 1 FROM "SystemLoadHourly" AS hourly
             WHERE hourly."Source" = candidate."Source"
               AND hourly."HourUtc" = date_trunc('hour', candidate."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
-        AND NOT EXISTS (
-            SELECT 1 FROM "SystemLoadSamples" AS successor
-            WHERE successor."Source" = candidate."Source"
-              AND successor."ProcessInstanceId" = candidate."ProcessInstanceId"
-              AND successor."SampledAtUtc" > candidate."SampledAtUtc"
-              AND NOT EXISTS (
-                  SELECT 1 FROM "SystemLoadSamples" AS between_sample
-                  WHERE between_sample."Source" = candidate."Source"
-                    AND between_sample."ProcessInstanceId" = candidate."ProcessInstanceId"
-                    AND between_sample."SampledAtUtc" > candidate."SampledAtUtc"
-                    AND between_sample."SampledAtUtc" < successor."SampledAtUtc")
-              AND NOT EXISTS (
-                  SELECT 1 FROM "SystemLoadHourly" AS successor_hourly
-                  WHERE successor_hourly."Source" = successor."Source"
-                    AND successor_hourly."HourUtc" = date_trunc('hour', successor."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))
+        AND (
+            succ."SampledAtUtc" IS NULL
+            OR EXISTS (
+                SELECT 1 FROM "SystemLoadHourly" AS successor_hourly
+                WHERE successor_hourly."Source" = candidate."Source"
+                  AND successor_hourly."HourUtc" = date_trunc('hour', succ."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))
         """;
 
     public async Task<RetentionRunSummary> RunAsync(bool enforce, CancellationToken cancellationToken = default)
@@ -93,16 +95,40 @@ public class DataRetentionService(
         var voteSessions = await RunVoteSessionsAsync(enforce, sessionCutoff, removedAccountIds, cancellationToken);
         var auditEntriesDeleted = await RunAuditLogAsync(enforce, now - RetentionPolicy.AuditLogEntry, cancellationToken);
         var backfillRunsDeleted = await RunChatLogBackfillRunsAsync(enforce, now - RetentionPolicy.ChatLogBackfillRun, cancellationToken);
-        var (systemLoadRawDeleted, systemLoadRawWithoutHourly) = await RunSystemLoadRawSamplesAsync(
-            enforce, now - RetentionPolicy.SystemLoadSample, cancellationToken);
-        var systemLoadHourlyDeleted = await RunSystemLoadHourliesAsync(
-            enforce, now.AddMonths(-RetentionPolicy.SystemLoadHourlyMonths), cancellationToken);
         var channels = await RunChannelsAsync(
             enforce, now, now - RetentionPolicy.DeactivatedChannel, sessionCutoff, removedAccountIds, cancellationToken);
 
+        var systemLoadRawDeleted = 0;
+        var systemLoadRawWithoutHourly = 0;
+        var systemLoadRawFailed = false;
+        try
+        {
+            (systemLoadRawDeleted, systemLoadRawWithoutHourly) = await RunSystemLoadRawSamplesAsync(
+                enforce, now - RetentionPolicy.SystemLoadSample, cancellationToken);
+        }
+        catch (Exception exception) when (!IsCancellation(exception, cancellationToken))
+        {
+            systemLoadRawFailed = true;
+            logger.LogWarning(exception, "System-load raw-sample retention failed; category counts are unknown for this pass.");
+        }
+
+        var systemLoadHourlyDeleted = 0;
+        var systemLoadHourlyFailed = false;
+        try
+        {
+            systemLoadHourlyDeleted = await RunSystemLoadHourliesAsync(
+                enforce, now.AddMonths(-RetentionPolicy.SystemLoadHourlyMonths), cancellationToken);
+        }
+        catch (Exception exception) when (!IsCancellation(exception, cancellationToken))
+        {
+            systemLoadHourlyFailed = true;
+            logger.LogWarning(exception, "System-load hourly-row retention failed; category count is unknown for this pass.");
+        }
+
         return new RetentionRunSummary(
             enforce, now, tokensCleared, accounts, voteSessions, auditEntriesDeleted, channels, backfillRunsDeleted,
-            systemLoadRawDeleted, systemLoadRawWithoutHourly, systemLoadHourlyDeleted);
+            systemLoadRawDeleted, systemLoadRawWithoutHourly, systemLoadHourlyDeleted,
+            systemLoadRawFailed, systemLoadHourlyFailed);
     }
 
     /// <summary>
@@ -384,6 +410,7 @@ public class DataRetentionService(
                 WHERE sample."Id" IN (
                     SELECT candidate."Id"
                     FROM "SystemLoadSamples" AS candidate
+                    {{SystemLoadSampleImmediateSuccessorJoin}}
                     WHERE candidate."SampledAtUtc" < @cutoff
                       AND ({{SystemLoadSampleReadyForDeletion}})
                     ORDER BY candidate."SampledAtUtc", candidate."Id"
@@ -429,6 +456,7 @@ public class DataRetentionService(
         var sql = $$"""
             SELECT COUNT(*)::int AS "Value"
             FROM "SystemLoadSamples" AS candidate
+            {{SystemLoadSampleImmediateSuccessorJoin}}
             WHERE candidate."SampledAtUtc" < @cutoff
               AND {{readiness}}
             """;
