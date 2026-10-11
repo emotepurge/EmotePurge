@@ -12,7 +12,10 @@ import {
   mockActiveEmoteSet,
   mockAdminChannelDetail,
   mockAdminChannelList,
+  mockAdminDashboardActivity,
   mockAdminHealth,
+  mockAdminRateLimits,
+  mockAdminRateLimitsTrend,
   mockAdminRoster,
   mockAdminUsers,
   mockAuditLog,
@@ -38,6 +41,7 @@ import {
   mockUsageDaily,
   mockUsageTotals,
   mockWorkerHealth,
+  trendBursts,
 } from '../support/mocks';
 
 // ---------------------------------------------------------------------------
@@ -266,6 +270,24 @@ async function authedShell(page: Page): Promise<void> {
 async function adminShell(page: Page): Promise<void> {
   await mockAuthMe(page, { ...AUTH_USER, isGlobalAdmin: true });
   await mockWorkerHealth(page, 'connected');
+}
+
+/**
+ * The dashboard endpoints of /admin/monitoring (activity series, rate-limit snapshot and 24 h
+ * trend). Without them the page would render its error banners and the scenarios below would
+ * measure those instead of the layout under audit.
+ */
+async function adminDashboard(
+  page: Page,
+  options: {
+    activity?: Parameters<typeof mockAdminDashboardActivity>[1];
+    rateLimits?: Parameters<typeof mockAdminRateLimits>[1];
+    trend?: Parameters<typeof mockAdminRateLimitsTrend>[1];
+  } = {},
+): Promise<void> {
+  await mockAdminDashboardActivity(page, options.activity);
+  await mockAdminRateLimits(page, options.rateLimits);
+  await mockAdminRateLimitsTrend(page, options.trend);
 }
 
 async function channelWorkspace(
@@ -717,6 +739,7 @@ const SCENARIOS: Scenario[] = [
       await adminShell(page);
       await mockAdminHealth(page);
       await mockAdminRoster(page);
+      await adminDashboard(page);
     },
   },
   {
@@ -738,6 +761,10 @@ const SCENARIOS: Scenario[] = [
         missingFromIrc: ['sensitron', 'olaf_olaf_son'],
         missingFromSevenTv: ['sensitron'],
       });
+      await adminDashboard(page, {
+        rateLimits: { telemetryAvailable: false },
+        trend: { telemetryAvailable: false },
+      });
     },
   },
   {
@@ -752,6 +779,72 @@ const SCENARIOS: Scenario[] = [
         sevenTv: { desiredSubscriptionCount: 430, desiredChannelCount: 215 },
       });
       await mockAdminRoster(page, { trackedChannelCount: 18 });
+      await adminDashboard(page);
+    },
+  },
+  {
+    // Rejections everywhere: the longest German policy and provider names, the acute badge, and a
+    // 1,440-point trend with a local series plus three provider series (a text legend).
+    slug: 'admin-monitoring-rejections',
+    path: '/admin/monitoring',
+    setup: async (page) => {
+      await adminShell(page);
+      await mockAdminHealth(page);
+      await mockAdminRoster(page, { trackedChannelCount: 62 });
+      await adminDashboard(page, {
+        activity: { value: (index) => (index % 11 === 0 ? null : 30 + ((index * 7) % 40)) },
+        rateLimits: {
+          policies: [
+            {
+              name: 'TrackedEmoteSetPreview',
+              acceptedLast24Hours: 12_480,
+              rejectedLast24Hours: 3_207,
+              rejectedLastMinute: 14,
+            },
+            { name: 'ForeignEmoteLookup', acceptedLast24Hours: 900, rejectedLast24Hours: 31 },
+            { name: 'InteractiveRead', acceptedLast24Hours: 0, rejectedLast24Hours: 1 },
+          ],
+          providers: [
+            {
+              providerName: 'seventv',
+              callSource: 'seventv-foreign-preview',
+              rateLimitedLast24Hours: 212,
+              rateLimitedLastMinute: 3,
+            },
+            { providerName: 'twitch', callSource: 'twitch-auth', rateLimitedLast24Hours: 4 },
+          ],
+        },
+        trend: {
+          localRejections: trendBursts(9),
+          providers: [
+            {
+              providerName: 'seventv',
+              callSource: 'seventv-foreign-preview',
+              rateLimited: trendBursts(3),
+            },
+            { providerName: 'twitch', callSource: 'twitch-auth', rateLimited: trendBursts(1) },
+            {
+              providerName: 'seventv',
+              callSource: 'seventv-leaderboard',
+              rateLimited: trendBursts(2),
+            },
+          ],
+        },
+      });
+    },
+  },
+  {
+    slug: 'admin-monitoring-telemetry-down',
+    path: '/admin/monitoring',
+    setup: async (page) => {
+      await adminShell(page);
+      await mockAdminHealth(page);
+      await mockAdminRoster(page);
+      await adminDashboard(page, {
+        activity: { value: () => null },
+        rateLimits: { telemetryAvailable: false },
+        trend: { telemetryAvailable: false },
+      });
     },
   },
   {

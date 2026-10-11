@@ -195,6 +195,209 @@ export async function mockAdminRoster(page: Page, overrides: MockAdminRoster = {
   );
 }
 
+/** Counts how often a mocked endpoint was hit; `ranges` records the `range` query where relevant. */
+export interface MockCallLog {
+  count: number;
+  ranges: string[];
+}
+
+export interface MockRateLimitPolicy {
+  name: string;
+  acceptedLastMinute?: number;
+  rejectedLastMinute?: number;
+  acceptedLast24Hours?: number;
+  rejectedLast24Hours?: number;
+}
+
+export interface MockRateLimitProvider {
+  providerName: string;
+  callSource: string;
+  requestsLast24Hours?: number;
+  rateLimitedLastMinute?: number;
+  rateLimitedLast24Hours?: number;
+}
+
+export interface MockAdminRateLimits {
+  telemetryAvailable?: boolean;
+  policies?: MockRateLimitPolicy[];
+  providers?: MockRateLimitProvider[];
+}
+
+/** Four registered policies, none rejecting anything: the "quiet" snapshot (exceptions list empty). */
+export const QUIET_RATE_LIMIT_POLICIES: MockRateLimitPolicy[] = [
+  { name: 'InteractiveRead', acceptedLastMinute: 14, acceptedLast24Hours: 5200 },
+  { name: 'Voting', acceptedLastMinute: 2, acceptedLast24Hours: 410 },
+  { name: 'Bookkeeping', acceptedLastMinute: 5, acceptedLast24Hours: 980 },
+  { name: 'PublicHealth', acceptedLastMinute: 3, acceptedLast24Hours: 4320 },
+];
+
+/**
+ * GET /api/admin/rate-limits — the snapshot behind the rate-limit exceptions list and the details
+ * dialog. Defaults to a healthy, quiet system. Registering the route again replaces the answer
+ * (Playwright tries the most recently added matching route first), which is how a test changes the
+ * numbers between two polls. The returned log counts the requests.
+ */
+export async function mockAdminRateLimits(
+  page: Page,
+  overrides: MockAdminRateLimits = {},
+): Promise<MockCallLog> {
+  const log: MockCallLog = { count: 0, ranges: [] };
+  const available = overrides.telemetryAvailable ?? true;
+  const policies = overrides.policies ?? QUIET_RATE_LIMIT_POLICIES;
+  const providers = overrides.providers ?? [];
+  await page.route(
+    (url) => url.pathname === '/api/admin/rate-limits',
+    (route) => {
+      log.count++;
+      return fulfillJson(route, 200, {
+        telemetryAvailable: available,
+        policies: policies.map((p) => ({
+          name: p.name,
+          type: 'token-bucket',
+          capacity: 60,
+          tokensPerPeriod: 30,
+          replenishmentPeriodSeconds: 10,
+          windowSeconds: null,
+          partition: 'user',
+          queueLimit: 0,
+          acceptedLastMinute: available ? (p.acceptedLastMinute ?? 0) : 0,
+          rejectedLastMinute: available ? (p.rejectedLastMinute ?? 0) : 0,
+          acceptedLast24Hours: available ? (p.acceptedLast24Hours ?? 0) : 0,
+          rejectedLast24Hours: available ? (p.rejectedLast24Hours ?? 0) : 0,
+        })),
+        lastLocalRejection: null,
+        caches: available
+          ? [
+              {
+                cacheName: 'subscriber-check',
+                hitsLastMinute: 8,
+                missesLastMinute: 1,
+                hitsLast24Hours: 900,
+                missesLast24Hours: 60,
+              },
+            ]
+          : [],
+        providers: available
+          ? providers.map((p) => ({
+              providerName: p.providerName,
+              callSource: p.callSource,
+              requestsLastMinute: 4,
+              requestsLast24Hours: p.requestsLast24Hours ?? 700,
+              rateLimitedLastMinute: p.rateLimitedLastMinute ?? 0,
+              rateLimitedLast24Hours: p.rateLimitedLast24Hours ?? 0,
+              lastRetryAfterSeconds: null,
+              lastRateLimitedAtUtc: null,
+              lastHeaderSample: null,
+            }))
+          : [],
+      });
+    },
+  );
+  return log;
+}
+
+export interface MockRateLimitsTrend {
+  telemetryAvailable?: boolean;
+  /** Per-minute local rejections; defaults to 1,440 zeros. */
+  localRejections?: number[];
+  providers?: { providerName: string; callSource: string; rateLimited: number[] }[];
+}
+
+const TREND_MINUTES = 1440;
+const TREND_START_MS = Date.UTC(2026, 9, 10, 12, 0, 0);
+
+/** A 1,440-minute series with a few rejection bursts, so the chart has something to draw. */
+export function trendBursts(peak: number): number[] {
+  return Array.from({ length: TREND_MINUTES }, (_, i) => (i % 240 < 6 ? peak : 0));
+}
+
+/** GET /api/admin/rate-limits/trend — the last 24 h in UTC minute buckets (column-oriented). */
+export async function mockAdminRateLimitsTrend(
+  page: Page,
+  overrides: MockRateLimitsTrend = {},
+): Promise<MockCallLog> {
+  const log: MockCallLog = { count: 0, ranges: [] };
+  const available = overrides.telemetryAvailable ?? true;
+  await page.route(
+    (url) => url.pathname === '/api/admin/rate-limits/trend',
+    (route) => {
+      log.count++;
+      if (!available) {
+        return fulfillJson(route, 200, {
+          telemetryAvailable: false,
+          fromUtc: new Date(TREND_START_MS).toISOString(),
+          toUtc: new Date(TREND_START_MS + TREND_MINUTES * 60_000).toISOString(),
+          minuteStartsUtc: [],
+          localRejections: [],
+          providers: [],
+        });
+      }
+      return fulfillJson(route, 200, {
+        telemetryAvailable: true,
+        fromUtc: new Date(TREND_START_MS).toISOString(),
+        toUtc: new Date(TREND_START_MS + TREND_MINUTES * 60_000).toISOString(),
+        minuteStartsUtc: Array.from({ length: TREND_MINUTES }, (_, i) =>
+          new Date(TREND_START_MS + i * 60_000).toISOString(),
+        ),
+        localRejections: overrides.localRejections ?? new Array<number>(TREND_MINUTES).fill(0),
+        providers: overrides.providers ?? [],
+      });
+    },
+  );
+  return log;
+}
+
+const ACTIVITY_RANGE_DAYS: Record<string, number> = { '30d': 30, '90d': 90, '13mo': 396 };
+const ACTIVITY_LAST_DAY_MS = Date.UTC(2026, 9, 11);
+
+export interface MockDashboardActivity {
+  /** Value for the day at `index` of `count` (0 = oldest); `null` = nobody observed that day. */
+  value?: (index: number, count: number) => number | null;
+  /** Answer every request with this status and `{ errorCode }` instead of a series. */
+  failWith?: { status: number; errorCode: string };
+}
+
+/**
+ * GET /api/admin/dashboard/activity?range=… — live channels per UTC day. The log records each
+ * requested `range` in order. Registering the route again replaces the answer.
+ */
+export async function mockAdminDashboardActivity(
+  page: Page,
+  overrides: MockDashboardActivity = {},
+): Promise<MockCallLog> {
+  const log: MockCallLog = { count: 0, ranges: [] };
+  const value = overrides.value ?? ((index: number) => 20 + (index % 9));
+  await page.route(
+    (url) => url.pathname === '/api/admin/dashboard/activity',
+    (route) => {
+      const range = new URL(route.request().url()).searchParams.get('range') ?? '';
+      log.count++;
+      log.ranges.push(range);
+      if (overrides.failWith) {
+        return fulfillJson(route, overrides.failWith.status, {
+          errorCode: overrides.failWith.errorCode,
+        });
+      }
+      const count = ACTIVITY_RANGE_DAYS[range] ?? 30;
+      const days = Array.from({ length: count }, (_, i) => ({
+        date: new Date(ACTIVITY_LAST_DAY_MS - (count - 1 - i) * 86_400_000)
+          .toISOString()
+          .slice(0, 10),
+        liveChannels: value(i, count),
+      }));
+      return fulfillJson(route, 200, {
+        range,
+        fromDate: days[0].date,
+        toDate: days[count - 1].date,
+        todayIsPartial: true,
+        generatedAtUtc: '2026-10-11T12:00:00Z',
+        days,
+      });
+    },
+  );
+  return log;
+}
+
 /** GET/POST /api/auth/twitch/login — the real endpoint is a full OAuth redirect; here it just
  *  proves the browser actually navigated there, without needing a live Twitch app. */
 export async function mockTwitchLoginRedirect(page: Page): Promise<void> {
