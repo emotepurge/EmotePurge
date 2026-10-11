@@ -1,7 +1,7 @@
 # Plan #371 — Emote-Slots, Kind 1: M1 `AddEmoteSlots` (additives Schema + Seeds)
 
 Erstellt am 2026-10-11 im Worktree `EmotePurge-slots` (Branch `feat/371-emote-slot-schema`, Basis `origin/main` @ `32a46f73`).
-**Status: Entwurf, noch nicht freigegeben.** Quelle und einzige Vertragsquelle: [die Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md)
+**Status: vom Betreiber freigegeben (2026-10-11, R1/R2 entschieden) und umgesetzt.** Quelle und einzige Vertragsquelle: [die Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md)
 (§4 Datenmodell, §11.1 M1, §11.2 Fenster, §12.2 Rollback, §13 AK 1–4 und AK 44, §15 Tests, §16 Kind 1), Issue #371, Epic #365.
 Formatvorlage: [Plan-346](Plan-346-Chat-Log-Backfill.md) (Aufbau, nicht Umfang).
 
