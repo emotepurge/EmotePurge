@@ -508,7 +508,8 @@ public static class AdminEndpoints
         twitchConcurrentChannelLimit = WorkerCapacity.TwitchConcurrentChannelLimit,
         twitchJoinBudgetChannels = WorkerCapacity.TwitchJoinBudgetChannels,
         // The admission cap Channels:MaxActiveChannels (configurable, unlike the two Twitch constants);
-        // additive field for the dashboard's capacity gauge.
+        // additive field for the dashboard: the configured admission limit for normal users, shown as a
+        // context value next to the tracked-channel count, not as a capacity measure.
         maxActiveChannels = channelCapacity.MaxActiveChannels,
     };
 
