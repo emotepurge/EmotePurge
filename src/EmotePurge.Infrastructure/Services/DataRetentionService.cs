@@ -59,6 +59,27 @@ public class DataRetentionService(
     private const int AuditLogBatchSize = 5_000;
     private const int BackfillRunBatchSize = 500;
     private const int SystemLoadBatchSize = 5_000;
+    private const string SystemLoadSampleReadyForDeletion = """
+        EXISTS (
+            SELECT 1 FROM "SystemLoadHourly" AS hourly
+            WHERE hourly."Source" = candidate."Source"
+              AND hourly."HourUtc" = date_trunc('hour', candidate."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+        AND NOT EXISTS (
+            SELECT 1 FROM "SystemLoadSamples" AS successor
+            WHERE successor."Source" = candidate."Source"
+              AND successor."ProcessInstanceId" = candidate."ProcessInstanceId"
+              AND successor."SampledAtUtc" > candidate."SampledAtUtc"
+              AND NOT EXISTS (
+                  SELECT 1 FROM "SystemLoadSamples" AS between_sample
+                  WHERE between_sample."Source" = candidate."Source"
+                    AND between_sample."ProcessInstanceId" = candidate."ProcessInstanceId"
+                    AND between_sample."SampledAtUtc" > candidate."SampledAtUtc"
+                    AND between_sample."SampledAtUtc" < successor."SampledAtUtc")
+              AND NOT EXISTS (
+                  SELECT 1 FROM "SystemLoadHourly" AS successor_hourly
+                  WHERE successor_hourly."Source" = successor."Source"
+                    AND successor_hourly."HourUtc" = date_trunc('hour', successor."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))
+        """;
 
     public async Task<RetentionRunSummary> RunAsync(bool enforce, CancellationToken cancellationToken = default)
     {
@@ -346,8 +367,9 @@ public class DataRetentionService(
     }
 
     /// <summary>
-    /// Deletes old raw samples only when their source/hour summary exists. Old rows without a summary
-    /// remain available for catch-up and are reported as a count-only warning.
+    /// Deletes old raw samples only when their own and their immediate successor's source/hour summaries
+    /// exist. Rows needed to roll up an unclosed successor hour remain available for catch-up and are
+    /// reported as a count-only warning.
     /// </summary>
     private async Task<(int Deleted, int WithoutHourly)> RunSystemLoadRawSamplesAsync(
         bool enforce,
@@ -357,37 +379,39 @@ public class DataRetentionService(
         var deleted = 0;
         if (enforce)
         {
+            var sql = $$"""
+                DELETE FROM "SystemLoadSamples" AS sample
+                WHERE sample."Id" IN (
+                    SELECT candidate."Id"
+                    FROM "SystemLoadSamples" AS candidate
+                    WHERE candidate."SampledAtUtc" < @cutoff
+                      AND ({{SystemLoadSampleReadyForDeletion}})
+                    ORDER BY candidate."SampledAtUtc", candidate."Id"
+                    LIMIT @batchSize)
+                """;
             int batch;
             do
             {
-                batch = await db.Database.ExecuteSqlInterpolatedAsync(
-                    $"""
-                    DELETE FROM "SystemLoadSamples" AS sample
-                    WHERE sample."Id" IN (
-                        SELECT candidate."Id"
-                        FROM "SystemLoadSamples" AS candidate
-                        WHERE candidate."SampledAtUtc" < {cutoffUtc}
-                          AND EXISTS (
-                              SELECT 1 FROM "SystemLoadHourly" AS hourly
-                              WHERE hourly."Source" = candidate."Source"
-                                AND hourly."HourUtc" = date_trunc('hour', candidate."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
-                        ORDER BY candidate."SampledAtUtc", candidate."Id"
-                        LIMIT {SystemLoadBatchSize})
-                    """,
+                batch = await db.Database.ExecuteSqlRawAsync(
+                    sql,
+                    [
+                        new NpgsqlParameter("cutoff", cutoffUtc),
+                        new NpgsqlParameter("batchSize", SystemLoadBatchSize),
+                    ],
                     cancellationToken);
                 deleted += batch;
             } while (batch == SystemLoadBatchSize);
         }
         else
         {
-            deleted = await CountSystemLoadSamplesAsync(cutoffUtc, hourlyMustExist: true, cancellationToken);
+            deleted = await CountSystemLoadSamplesAsync(cutoffUtc, readyForDeletion: true, cancellationToken);
         }
 
-        var withoutHourly = await CountSystemLoadSamplesAsync(cutoffUtc, hourlyMustExist: false, cancellationToken);
+        var withoutHourly = await CountSystemLoadSamplesAsync(cutoffUtc, readyForDeletion: false, cancellationToken);
         if (withoutHourly > 0)
         {
             logger.LogWarning(
-                "System-load retention kept {Count} raw samples older than seven days because their hourly rows are missing.",
+                "System-load retention kept {Count} raw samples older than seven days because a required hourly row is missing.",
                 withoutHourly);
         }
 
@@ -396,18 +420,17 @@ public class DataRetentionService(
 
     private async Task<int> CountSystemLoadSamplesAsync(
         DateTime cutoffUtc,
-        bool hourlyMustExist,
+        bool readyForDeletion,
         CancellationToken cancellationToken)
     {
-        var existence = hourlyMustExist ? "EXISTS" : "NOT EXISTS";
-        var sql = $"""
+        var readiness = readyForDeletion
+            ? $"({SystemLoadSampleReadyForDeletion})"
+            : $"NOT ({SystemLoadSampleReadyForDeletion})";
+        var sql = $$"""
             SELECT COUNT(*)::int AS "Value"
-            FROM "SystemLoadSamples" AS sample
-            WHERE sample."SampledAtUtc" < @cutoff
-              AND {existence} (
-                  SELECT 1 FROM "SystemLoadHourly" AS hourly
-                  WHERE hourly."Source" = sample."Source"
-                    AND hourly."HourUtc" = date_trunc('hour', sample."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+            FROM "SystemLoadSamples" AS candidate
+            WHERE candidate."SampledAtUtc" < @cutoff
+              AND {{readiness}}
             """;
         return await db.Database.SqlQueryRaw<int>(sql, new Npgsql.NpgsqlParameter("cutoff", cutoffUtc))
             .SingleAsync(cancellationToken);

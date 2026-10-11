@@ -28,7 +28,7 @@ public static class RetentionRunSummaryFormatter
             $"audit log entries deleted: {summary.AuditEntriesDeleted}; " +
             $"backfill runs deleted: {summary.ChatLogBackfillRunsDeleted}; " +
             $"system-load raw samples deleted: {summary.SystemLoadRawSamplesDeleted}, " +
-            $"retained without hourly row: {summary.SystemLoadRawSamplesWithoutHourlyRow}, " +
+            $"retained pending hourly rollup: {summary.SystemLoadRawSamplesWithoutHourlyRow}, " +
             $"hourly rows deleted: {summary.SystemLoadHourlyRowsDeleted}; " +
             $"channels restamped: {channels.Restamped}, purged: {channels.Purged}, " +
             $"still active: {channels.StillActive}, not found: {channels.NotFound}, failed: {channels.Failed}, " +

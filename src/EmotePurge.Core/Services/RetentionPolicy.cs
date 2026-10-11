@@ -49,7 +49,9 @@ public static class RetentionPolicy
     /// </summary>
     public static readonly TimeSpan ChatLogBackfillRun = TimeSpan.FromDays(365);
 
-    /// <summary>Raw system-load samples remain for seven days and only after their hour was rolled up.</summary>
+    /// <summary>
+    /// Raw samples remain for seven days and until their own and any immediate successor hour has rolled up.
+    /// </summary>
     public static readonly TimeSpan SystemLoadSample = TimeSpan.FromDays(7);
 
     /// <summary>Hourly system-load summaries remain for thirteen calendar months.</summary>

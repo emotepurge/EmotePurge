@@ -27,7 +27,7 @@ public class RetentionRunSummaryFormatterTests
             "vote sessions deleted: 0, votes deleted: 0, ballot entries deleted: 0; " +
             "audit log entries deleted: 0; " +
             "backfill runs deleted: 0; " +
-            "system-load raw samples deleted: 0, retained without hourly row: 0, hourly rows deleted: 0; " +
+            "system-load raw samples deleted: 0, retained pending hourly rollup: 0, hourly rows deleted: 0; " +
             "channels restamped: 0, purged: 0, still active: 0, not found: 0, failed: 0, " +
             "emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, " +
             "votes deleted: 0, observation intervals deleted: 0",
@@ -78,7 +78,7 @@ public class RetentionRunSummaryFormatterTests
             "vote sessions deleted: 9, votes deleted: 10, ballot entries deleted: 11; " +
             "audit log entries deleted: 12; " +
             "backfill runs deleted: 24; " +
-            "system-load raw samples deleted: 25, retained without hourly row: 26, hourly rows deleted: 27; " +
+            "system-load raw samples deleted: 25, retained pending hourly rollup: 26, hourly rows deleted: 27; " +
             "channels restamped: 13, purged: 14, still active: 15, not found: 16, failed: 17, " +
             "emotes deleted: 18, usage rows deleted: 19, live days deleted: 20, vote sessions deleted: 21, " +
             "votes deleted: 22, observation intervals deleted: 23",

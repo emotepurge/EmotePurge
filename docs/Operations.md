@@ -500,7 +500,7 @@ stand:
 | Audit log entry | deleted 365 days after it occurred | `OccurredAtUtc` |
 | Channel after "leave" | deleted with its whole history 180 days after it was deactivated | `DeactivatedAtUtc` |
 | Chat-log backfill run (the run row; its snapshot goes with it) | deleted 365 days after it finished | `FinishedAtUtc` |
-| Raw system-load sample | deleted after 7 days, only after its hourly rollup exists | sample hour and source match `SystemLoadHourly` |
+| Raw system-load sample | deleted after 7 days, only after its own and its immediate successor's hourly rollups exist | sample hour and source match `SystemLoadHourly`; when a later sample exists for the same process identity and source, its hour must also match |
 | Hourly system-load row | deleted after 13 calendar months | `HourUtc` |
 
 "Last activity" is the later of a login and the daily "last seen" stamp `OnValidatePrincipal`
@@ -536,7 +536,7 @@ only proof of being alive, so a Warning is the safety net against a `Retention:E
 gets deployed once and then forgotten for a year:
 
 ```
-Retention dry run: nothing was deleted, Retention:Enforce is false. tokens cleared: 3; accounts deleted: 0, still active: 0, not found: 0, failed: 0, cap reached: False, votes deleted: 12 (4 in open sessions), audit entries pseudonymised: 5; vote sessions deleted: 2, votes deleted: 34, ballot entries deleted: 2; audit log entries deleted: 118; backfill runs deleted: 0; system-load raw samples deleted: 0, retained without hourly row: 0, hourly rows deleted: 0; channels restamped: 1, purged: 0, still active: 0, not found: 0, failed: 0, emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, votes deleted: 0, observation intervals deleted: 0
+Retention dry run: nothing was deleted, Retention:Enforce is false. tokens cleared: 3; accounts deleted: 0, still active: 0, not found: 0, failed: 0, cap reached: False, votes deleted: 12 (4 in open sessions), audit entries pseudonymised: 5; vote sessions deleted: 2, votes deleted: 34, ballot entries deleted: 2; audit log entries deleted: 118; backfill runs deleted: 0; system-load raw samples deleted: 0, retained pending hourly rollup: 0, hourly rows deleted: 0; channels restamped: 1, purged: 0, still active: 0, not found: 0, failed: 0, emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, votes deleted: 0, observation intervals deleted: 0
 ```
 
 An enforced pass logs the identical set of fields at `Information` instead, prefixed
@@ -551,9 +551,10 @@ outcomes that do not stop the rest of the category (a login won a race against a
 deletion, a row already gone, or a transient failure — the item is retried on the next day's
 pass). `cap reached: True` on the accounts category means `Retention:MaxAccountsPerRun` was hit
 for this tick; the remaining overdue accounts are not lost, they are simply the first ones picked
-up on the next pass. The raw-sample count `retained without hourly row` reports samples over seven
-days old that cannot yet be deleted because their `(Source, HourUtc)` rollup is absent. Retention
-leaves them intact so the Worker can catch up later; this applies in dry-run and enforced mode.
+up on the next pass. The raw-sample count `retained pending hourly rollup` reports samples over seven
+days old that cannot yet be deleted because their own hour, or the immediate successor hour for the
+same source and process identity, has no rollup. Retention leaves them intact so the Worker can catch
+up later; this applies in dry-run and enforced mode.
 
 **Recommended procedure:** deploy with the default (`RETENTION_ENFORCE` unset or `false`), watch
 a handful of daily dry-run lines, and sanity-check the numbers against what you expect for your

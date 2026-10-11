@@ -167,6 +167,35 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
     }
 
     [Fact]
+    public async Task RetentionKeepsBoundaryPredecessorUntilItsSuccessorHourIsRolledUp()
+    {
+        await using var db = CreateDbContext();
+        var processInstanceId = Guid.NewGuid();
+        var predecessorAtUtc = NowUtc.AddDays(-8).Date.AddHours(12).AddMinutes(59).AddSeconds(45);
+        var successorAtUtc = predecessorAtUtc.AddSeconds(30);
+        db.SystemLoadSamples.AddRange(
+            Sample(predecessorAtUtc, processInstanceId, 0),
+            Sample(successorAtUtc, processInstanceId, 150_000_000));
+        db.SystemLoadHourlies.Add(Hourly(predecessorAtUtc));
+        await db.SaveChangesAsync();
+
+        var firstPass = await RunRetentionAsync(db, enforce: true);
+
+        Assert.Equal(0, firstPass.SystemLoadRawSamplesDeleted);
+        Assert.Equal(2, await db.SystemLoadSamples.CountAsync());
+
+        await new SystemLoadRollupService(db)
+            .RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
+        var successorHour = await db.SystemLoadHourlies.SingleAsync(hourly => hourly.HourUtc == FloorHour(successorAtUtc));
+        Assert.Equal(0.5, successorHour.ProcessCpuRateMean);
+
+        var secondPass = await RunRetentionAsync(db, enforce: true);
+
+        Assert.Equal(2, secondPass.SystemLoadRawSamplesDeleted);
+        Assert.Equal(0, await db.SystemLoadSamples.CountAsync());
+    }
+
+    [Fact]
     public async Task RetentionKeepsRawSamplesWhenTheirHourHasNoHourlyRow()
     {
         await using var db = CreateDbContext();

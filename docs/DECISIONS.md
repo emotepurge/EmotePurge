@@ -41,9 +41,14 @@ instance, belong to the later sample's hour, and are discarded across gaps longe
 intervals. Gauges are still summarized when no rate pair is available.
 
 Raw samples are eligible for deletion after seven days only when their `(Source, HourUtc)` hourly row
-exists. Older unrolled samples are retained and reported by count, so retention cannot race catch-up.
-Hourly rows expire after thirteen calendar months. These measurements contain no personal data, so
-they are not added to the privacy statement or the personal-data retention list.
+exists and, when a later sample exists for the same source and process instance, that immediate
+successor's hourly row exists too. The predecessor can be needed to calculate a rate in the
+successor's hour across an hour boundary. Older samples needed by either rollup are retained and
+reported by count, so retention cannot race catch-up. The rollup selects candidate hours in the
+database and loads only their samples plus one predecessor per process, keeping hourly work bounded
+when raw retention enforcement is disabled. Hourly rows expire after thirteen calendar months. These
+measurements contain no personal data, so they are not added to the privacy statement or the
+personal-data retention list.
 
 ### 2026-10-10 — Usage page: live-day statements cover only the days live days are recorded for (#366)
 

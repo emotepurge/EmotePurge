@@ -50,7 +50,7 @@ public interface IDataRetentionService
 /// and optional so every existing construction keeps compiling; the step runs after the audit-log one.
 /// </param>
 /// <param name="SystemLoadRawSamplesDeleted">Old raw samples deleted, or due samples in a dry run.</param>
-/// <param name="SystemLoadRawSamplesWithoutHourlyRow">Old raw samples retained because their hour is not rolled up.</param>
+/// <param name="SystemLoadRawSamplesWithoutHourlyRow">Old raw samples retained because their hour or immediate successor's hour is not rolled up.</param>
 /// <param name="SystemLoadHourlyRowsDeleted">Hourly summaries older than thirteen calendar months deleted, or due rows in a dry run.</param>
 public sealed record RetentionRunSummary(
     bool Enforced,
