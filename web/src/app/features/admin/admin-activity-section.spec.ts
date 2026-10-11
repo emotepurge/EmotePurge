@@ -108,4 +108,46 @@ describe('AdminActivitySection', () => {
     // Two buckets; the filling last one is a hollow ring, so one marker remains.
     expect(root.querySelectorAll('[data-testid="chart-point"]')).toHaveLength(1);
   });
+  it('shows the first-load skeleton instead of a chart while nothing has loaded yet', () => {
+    const root = setup({ range: '30d', activity: undefined, loading: true });
+    expect(root.querySelector('app-line-chart')).toBeNull();
+    expect(root.querySelector('app-skeleton-sections')).not.toBeNull();
+  });
+
+  it('shows neither chart nor skeleton when nothing loaded and nothing is loading', () => {
+    const root = setup({ range: '30d', activity: undefined, loading: false });
+    expect(root.querySelector('app-line-chart')).toBeNull();
+    expect(root.querySelector('app-skeleton-sections')).toBeNull();
+  });
+
+  it('states the channel context and the cap hint only once both counts are known', () => {
+    const root = setup({ range: '30d', activity: activity('30d'), trackedChannelCount: 12 });
+    expect(fixture.componentInstance['contextParams']()).toBeNull();
+    const helpOnly = root.querySelectorAll('p').length;
+
+    fixture.componentRef.setInput('maxActiveChannels', 80);
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance['contextParams']()).toEqual({ tracked: '12', max: '80' });
+    // The context line in the heading plus the cap hint among the help lines.
+    expect(root.querySelectorAll('p').length).toBe(helpOnly + 2);
+  });
+
+  it('writes the chosen range back to its model when a radio is clicked', () => {
+    const root = setup({ range: '30d', activity: activity('30d') });
+    const radios = root.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+    expect(radios).toHaveLength(3);
+    expect(radios[0].getAttribute('aria-checked')).toBe('true');
+
+    radios[1].click();
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.range()).toBe('90d');
+  });
+
+  it('ignores a range value that is not one of the offered options', () => {
+    setup({ range: '30d' });
+    fixture.componentInstance['onRangeChange']('7d');
+    expect(fixture.componentInstance.range()).toBe('30d');
+  });
 });
