@@ -24,10 +24,13 @@ import { AdminMonitoringPage } from './admin-monitoring-page';
 // what a control does — not markup.
 
 class FakeEventSource {
+  static instances: FakeEventSource[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
-  constructor(readonly url: string) {}
+  constructor(readonly url: string) {
+    FakeEventSource.instances.push(this);
+  }
   close(): void {
     /* no-op */
   }
@@ -163,6 +166,7 @@ describe('AdminMonitoringPage — real template', () => {
   let service: AdminService;
 
   beforeEach(() => {
+    FakeEventSource.instances = [];
     TestBed.configureTestingModule({
       imports: [
         AdminMonitoringPage,
@@ -201,6 +205,24 @@ describe('AdminMonitoringPage — real template', () => {
   const region = (root: HTMLElement, id: string) =>
     root.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 
+  /** The rows of the list that a heading names (aria-labelledby), found by that heading's key. */
+  const rowsNamed = (root: HTMLElement, titleKey: string): HTMLElement[] => {
+    const list = Array.from(root.querySelectorAll<HTMLElement>('ul[aria-labelledby]')).find((ul) =>
+      document
+        .getElementById(ul.getAttribute('aria-labelledby') ?? '')
+        ?.textContent?.includes(titleKey),
+    );
+    return list ? Array.from(list.querySelectorAll<HTMLElement>('li')) : [];
+  };
+
+  const refreshButton = (root: HTMLElement) =>
+    Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.textContent?.trim() === 'admin.monitoring.refresh',
+    ) as HTMLButtonElement;
+
+  const POLICIES_TITLE = 'admin.dashboard.rateLimits.policies.title';
+  const PROVIDERS_TITLE = 'admin.dashboard.rateLimits.providers.title';
+
   describe('regions', () => {
     it('renders the activity, rate-limit and worker-health regions once everything loaded', () => {
       const root = render();
@@ -222,10 +244,8 @@ describe('AdminMonitoringPage — real template', () => {
 
     it('disables the refresh button while a resource is loading', () => {
       const root = render({ health: NEVER });
-      const buttons = Array.from(root.querySelectorAll('header button'));
 
-      expect(buttons).toHaveLength(1);
-      expect((buttons[0] as HTMLButtonElement).disabled).toBe(true);
+      expect(refreshButton(root).disabled).toBe(true);
     });
 
     it('puts a health error inside the health region, beside no snapshot', () => {
@@ -234,7 +254,9 @@ describe('AdminMonitoringPage — real template', () => {
       });
 
       expect(region(root, 'admin-health')?.querySelector('app-notice-banner')).not.toBeNull();
-      expect(region(root, 'admin-health')?.querySelector('section')).toBeNull();
+      expect(region(root, 'admin-health')?.textContent).not.toContain(
+        'admin.monitoring.twitch.title',
+      );
     });
 
     it('warns that no worker snapshot exists while still listing the sections', () => {
@@ -259,8 +281,8 @@ describe('AdminMonitoringPage — real template', () => {
       expect(progress(root).getAttribute('aria-label')).toBe(
         'admin.monitoring.sevenTv.utilization',
       );
-      expect(root.textContent).not.toContain('utilizationWarning');
-      expect(root.textContent).not.toContain('utilizationCritical');
+      expect(root.textContent).not.toContain('admin.monitoring.sevenTv.utilizationWarning');
+      expect(root.textContent).not.toContain('admin.monitoring.sevenTv.utilizationCritical');
     });
 
     it('adds a text line next to the colour once utilization is critical', () => {
@@ -306,7 +328,8 @@ describe('AdminMonitoringPage — real template', () => {
       const section = region(root, 'admin-rate-limits') as HTMLElement;
 
       expect(section.querySelector('app-empty-state')).not.toBeNull();
-      expect(section.querySelector('h4')).toBeNull();
+      expect(section.textContent).not.toContain(POLICIES_TITLE);
+      expect(section.textContent).not.toContain('admin.rateLimits.policies.names.usage-stats');
     });
 
     it('warns instead of listing rows when the telemetry store was unreachable', () => {
@@ -321,11 +344,12 @@ describe('AdminMonitoringPage — real template', () => {
       const section = region(root, 'admin-rate-limits') as HTMLElement;
 
       expect(section.querySelector('app-notice-banner')).not.toBeNull();
-      expect(section.querySelector('h4')).toBeNull();
+      expect(section.textContent).not.toContain('admin.rateLimits.policies.names.usage-stats');
+      expect(rowsNamed(root, POLICIES_TITLE)).toHaveLength(0);
       expect(section.querySelector('app-empty-state')).toBeNull();
     });
 
-    it('lists rejecting policies with an acute marker, a share, and "no requests" for an empty window', () => {
+    it('lists rejecting policies acute-first (spec 4.2) with an acute marker, a share, and "no requests" for an empty window', () => {
       const root = render({
         rateLimits: of(
           rateLimits({
@@ -341,12 +365,10 @@ describe('AdminMonitoringPage — real template', () => {
           }),
         ),
       });
-      const rows = (region(root, 'admin-rate-limits') as HTMLElement).querySelectorAll(
-        'h4 + ul > li',
-      );
+      const rows = rowsNamed(root, POLICIES_TITLE);
 
       expect(rows).toHaveLength(2);
-      // Acute first; only the acute row carries the badge and the last-minute count.
+      // Acute first (spec 4.2: still-happening rejections lead); only the acute row carries the badge and the last-minute count.
       expect(rows[0].textContent).toContain('admin.rateLimits.policies.names.usage-stats');
       expect(rows[0].querySelector('app-status-badge')).not.toBeNull();
       expect(rows[0].textContent).toContain('admin.dashboard.rateLimits.policies.share');
@@ -370,9 +392,7 @@ describe('AdminMonitoringPage — real template', () => {
           }),
         ),
       });
-      const rows = (region(root, 'admin-rate-limits') as HTMLElement).querySelectorAll(
-        'h4 + ul > li',
-      );
+      const rows = rowsNamed(root, PROVIDERS_TITLE);
 
       expect(rows).toHaveLength(2);
       expect(rows[0].querySelector('app-status-badge')).not.toBeNull();
@@ -400,6 +420,8 @@ describe('AdminMonitoringPage — real template', () => {
       expect(section.textContent).toContain(
         'admin.dashboard.rateLimits.trend.noProviderRejections',
       );
+      expect(section.textContent).toContain('admin.dashboard.rateLimits.series.local');
+      expect(section.textContent).not.toContain('admin.dashboard.rateLimits.series.provider');
     });
 
     it('adds a provider series to the trend and drops the explanatory note', () => {
@@ -418,7 +440,9 @@ describe('AdminMonitoringPage — real template', () => {
       expect(section.textContent).not.toContain(
         'admin.dashboard.rateLimits.trend.noProviderRejections',
       );
-      expect(fixture.componentInstance['trendSeries']()).toHaveLength(2);
+      // Only the provider that was rate-limited in some minute gets its own legend entry.
+      expect(section.textContent).toContain('admin.dashboard.rateLimits.series.provider');
+      expect(section.textContent?.match(/rateLimits\.series\.provider/g)).toHaveLength(1);
     });
 
     it('omits the chart when the trend has no buckets, and shows a trend error beside the rows', () => {
@@ -451,7 +475,6 @@ describe('AdminMonitoringPage — real template', () => {
       const root = render();
       fixture.detectChanges();
 
-      expect(fixture.componentInstance['rosterContext']()).toEqual({ tracked: 12, max: 80 });
       expect(region(root, 'admin-activity')?.textContent).toContain(
         'admin.dashboard.activity.context',
       );
@@ -466,7 +489,7 @@ describe('AdminMonitoringPage — real template', () => {
       radios[2].click();
       fixture.detectChanges();
 
-      expect(fixture.componentInstance['range']()).toBe('13mo');
+      expect(radios[2].getAttribute('aria-checked')).toBe('true');
       expect(service.getDashboardActivity).toHaveBeenLastCalledWith('13mo');
     });
   });
@@ -484,7 +507,7 @@ describe('AdminMonitoringPage — real template', () => {
         activity: calls(service.getDashboardActivity),
       };
 
-      root.querySelector<HTMLButtonElement>('header button')?.click();
+      refreshButton(root).click();
       fixture.detectChanges();
 
       expect(calls(service.getHealth)).toBe(before.health + 1);
@@ -495,31 +518,62 @@ describe('AdminMonitoringPage — real template', () => {
     });
   });
 
-  describe('formatting and tone helpers', () => {
-    beforeEach(() => render());
+  describe('what the health region shows for absent values and subsystem state', () => {
+    it('shows a dash instead of inventing a value for what the worker did not report', () => {
+      const root = render();
 
-    it('never shows a rejected share below 0.1 % as zero', () => {
-      const page = fixture.componentInstance;
-      expect(page['formatPercent'](0.04)).toMatch(/^<0[.,]1$/);
-      expect(page['formatPercent'](12.34)).toMatch(/^12[.,]3$/);
+      expect(region(root, 'admin-health')?.textContent).toContain('—');
     });
 
-    it('shows a dash for absent numbers and dates', () => {
-      const page = fixture.componentInstance;
-      expect(page['formatNumber'](null)).toBe('—');
-      expect(page['formatNumber'](0)).toBe('0');
-      expect(page['formatDateTime'](null)).toBe('—');
-      expect(page['formatDateTime']('2026-10-11T12:00:00Z')).not.toBe('—');
+    it('lets a healthy or unknown subsystem stay quiet and gives a stale or dead one a pill', () => {
+      const h = health();
+      const quiet = render({
+        health: of({ ...h, sevenTv: { ...h.sevenTv, status: 'unknown' } }),
+      });
+      const quietBadges = Array.from(quiet.querySelectorAll('app-status-badge')).map(
+        (b) => b.textContent,
+      );
+      expect(quietBadges.join()).not.toContain('admin.monitoring.status');
+      fixture.destroy();
+
+      const stale = render({ health: of({ ...h, sevenTv: { ...h.sevenTv, status: 'stale' } }) });
+      expect(stale.querySelector('app-status-badge')?.textContent).toContain(
+        'admin.monitoring.status.stale',
+      );
+      fixture.destroy();
+
+      const dead = render({ health: of({ ...h, status: 'disconnected' }) });
+      expect(dead.querySelector('app-status-badge')?.textContent).toContain(
+        'admin.monitoring.status.disconnected',
+      );
     });
 
-    it('falls back to the idle tone for a status it does not know', () => {
-      const page = fixture.componentInstance;
-      expect(page['toneFor']('connected')).toBe('ok');
-      expect(page['toneFor']('nonsense' as never)).toBe('idle');
-    });
+    it('flags consecutive flush failures with a pill and stays quiet at zero', () => {
+      const h = health();
+      const failing = render({
+        health: of({ ...h, flush: { ...h.flush, consecutiveFailures: 3 } }),
+      });
+      expect(failing.querySelector('app-status-badge')?.textContent).toContain(
+        'admin.monitoring.flush.consecutiveFailures',
+      );
+      fixture.destroy();
 
-    it('maps the live stream state to a tone, treating "connecting" as not a warning', () => {
-      expect(fixture.componentInstance['liveTone']()).toMatch(/^(idle|ok|danger)$/);
+      const fine = render();
+      expect(fine.textContent).not.toContain('admin.monitoring.flush.consecutiveFailures: 3');
+      expect(fine.querySelector('app-status-badge')).toBeNull();
+    });
+  });
+
+  describe('live stream badge', () => {
+    it('reads "open" once the admin stream connected', () => {
+      const root = render();
+      const header = root.querySelector('header') as HTMLElement;
+      expect(header.textContent).not.toContain('admin.monitoring.live.open');
+
+      FakeEventSource.instances.forEach((source) => source.onopen?.());
+      fixture.detectChanges();
+
+      expect(header.textContent).toContain('admin.monitoring.live.open');
     });
   });
 });

@@ -15,7 +15,8 @@ const EN = {
         shownRange: 'Still showing: {{ range }}',
         range: { label: 'Range', '30d': '30 days', '90d': '90 days', '13mo': '13 months' },
         series: { liveChannels: 'Live channels' },
-        help: { poller: 'p', purge: 'u', today: 't', cap: 'c' },
+        help: { poller: 'p', purge: 'u', today: 't', cap: 'Cap hint' },
+        context: 'Tracking {{ tracked }} of {{ max }}',
       },
       chart: {
         noData: 'no data',
@@ -122,15 +123,14 @@ describe('AdminActivitySection', () => {
 
   it('states the channel context and the cap hint only once both counts are known', () => {
     const root = setup({ range: '30d', activity: activity('30d'), trackedChannelCount: 12 });
-    expect(fixture.componentInstance['contextParams']()).toBeNull();
-    const helpOnly = root.querySelectorAll('p').length;
+    expect(root.textContent).not.toContain('Tracking');
+    expect(root.textContent).not.toContain('Cap hint');
 
     fixture.componentRef.setInput('maxActiveChannels', 80);
     fixture.detectChanges();
 
-    expect(fixture.componentInstance['contextParams']()).toEqual({ tracked: '12', max: '80' });
-    // The context line in the heading plus the cap hint among the help lines.
-    expect(root.querySelectorAll('p').length).toBe(helpOnly + 2);
+    expect(root.textContent).toContain('Tracking 12 of 80');
+    expect(root.textContent).toContain('Cap hint');
   });
 
   it('writes the chosen range back to its model when a radio is clicked', () => {
@@ -145,6 +145,8 @@ describe('AdminActivitySection', () => {
     expect(fixture.componentInstance.range()).toBe('90d');
   });
 
+  // Not reachable through the DOM (the control only offers the three options); this pins the
+  // guard that keeps a foreign value out of the typed model.
   it('ignores a range value that is not one of the offered options', () => {
     setup({ range: '30d' });
     fixture.componentInstance['onRangeChange']('7d');

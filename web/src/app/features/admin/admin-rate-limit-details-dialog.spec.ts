@@ -95,8 +95,17 @@ describe('AdminRateLimitDetailsDialog — rendered with its real template', () =
     TestBed.configureTestingModule({
       imports: [
         TranslocoTestingModule.forRoot({
-          langs: { de: {} },
+          langs: {
+            de: {
+              admin: {
+                rateLimits: {
+                  providers: { headerSampleValue: 'limit {{limit}} remaining {{remaining}}' },
+                },
+              },
+            },
+          },
           translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+          preloadLangs: true,
         }),
       ],
       providers: [
@@ -234,47 +243,47 @@ describe('AdminRateLimitDetailsDialog — rendered with its real template', () =
 
     expect(closeSpy).toHaveBeenCalledOnce();
   });
-});
 
-describe('AdminRateLimitDetailsDialog — formatting helpers', () => {
-  let dialog: AdminRateLimitDetailsDialog;
-
-  beforeEach(() => {
-    TestBed.configureTestingModule({
-      imports: [
-        TranslocoTestingModule.forRoot({
-          langs: { de: {} },
-          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
-        }),
-      ],
-      providers: [
-        { provide: DIALOG_DATA, useValue: { snapshot: {} } },
-        { provide: DialogRef, useValue: { close: () => undefined } },
-      ],
-    });
-    dialog = TestBed.createComponent(AdminRateLimitDetailsDialog).componentInstance;
-  });
-
-  it('shows a dash for absent numbers, dates and retry-after values', () => {
-    expect(dialog['formatNumber'](null)).toBe('—');
-    expect(dialog['formatDateTime'](null)).toBe('—');
-    expect(dialog['formatRetryAfterSeconds'](null)).toBe('—');
-  });
-
-  it('formats real values, including a real zero', () => {
-    expect(dialog['formatNumber'](0)).toBe('0');
-    expect(dialog['formatRetryAfterSeconds'](0)).toBe('0 s');
-    expect(dialog['formatDateTime']('2026-10-11T12:00:00Z')).not.toBe('—');
-  });
-
-  it('fills missing header-sample fields with a dash', () => {
-    expect(
-      dialog['headerSampleParams']({
-        observedAtUtc: '2026-10-11T12:00:00Z',
-        limit: '800',
-        remaining: null,
-        reset: null,
+  it('shows a dash for every provider value that was never observed, and real values otherwise', () => {
+    const root = render(
+      snapshot({
+        providers: [
+          {
+            providerName: 'twitch',
+            callSource: 'live-poll',
+            requestsLastMinute: 10,
+            requestsLast24Hours: 14400,
+            rateLimitedLastMinute: 0,
+            rateLimitedLast24Hours: 2,
+            lastRetryAfterSeconds: 0,
+            lastRateLimitedAtUtc: '2026-10-11T11:00:00Z',
+            lastHeaderSample: {
+              observedAtUtc: '2026-10-11T11:59:00Z',
+              limit: '800',
+              remaining: null,
+              reset: '12',
+            },
+          },
+          {
+            providerName: 'seven-tv',
+            callSource: 'resync',
+            requestsLastMinute: 0,
+            requestsLast24Hours: 0,
+            rateLimitedLastMinute: 0,
+            rateLimitedLast24Hours: 0,
+            lastRetryAfterSeconds: null,
+            lastRateLimitedAtUtc: null,
+            lastHeaderSample: null,
+          },
+        ],
       }),
-    ).toMatchObject({ limit: '800', remaining: '—', reset: '—' });
+    );
+    const [observed, silent] = Array.from(root.querySelectorAll<HTMLElement>('li'));
+
+    expect(observed.textContent).toContain('0 s');
+    expect(observed.textContent).toContain('limit 800 remaining —');
+    // Everything but the counters is present, so the only dashes are the missing header field.
+    expect(observed.textContent?.match(/—/g)).toHaveLength(1);
+    expect(silent.textContent?.match(/—/g)).toHaveLength(2);
   });
 });

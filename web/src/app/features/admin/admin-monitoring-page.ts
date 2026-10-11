@@ -170,10 +170,13 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
             } @else {
               @if (policyRows().length) {
                 <div class="flex flex-col gap-2">
-                  <h4 class="text-sm font-medium text-fg-body">
+                  <h4 id="rate-limit-policies-title" class="text-sm font-medium text-fg-body">
                     {{ 'admin.dashboard.rateLimits.policies.title' | transloco }}
                   </h4>
-                  <ul class="-mx-3 divide-y divide-border border-y border-border">
+                  <ul
+                    class="-mx-3 divide-y divide-border border-y border-border"
+                    aria-labelledby="rate-limit-policies-title"
+                  >
                     @for (row of policyRows(); track row.name) {
                       <li class="flex flex-col gap-1 px-3 py-3">
                         <div
@@ -218,10 +221,13 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
 
               @if (providerRows().length) {
                 <div class="flex flex-col gap-2">
-                  <h4 class="text-sm font-medium text-fg-body">
+                  <h4 id="rate-limit-providers-title" class="text-sm font-medium text-fg-body">
                     {{ 'admin.dashboard.rateLimits.providers.title' | transloco }}
                   </h4>
-                  <ul class="-mx-3 divide-y divide-border border-y border-border">
+                  <ul
+                    class="-mx-3 divide-y divide-border border-y border-border"
+                    aria-labelledby="rate-limit-providers-title"
+                  >
                     @for (row of providerRows(); track row.providerName + '|' + row.callSource) {
                       <li class="flex flex-col gap-1 px-3 py-3">
                         <div
