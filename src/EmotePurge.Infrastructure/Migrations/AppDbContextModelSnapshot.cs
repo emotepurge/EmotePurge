@@ -605,6 +605,201 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.ToTable("EmoteTagPlacements");
                 });
 
+            modelBuilder.Entity("EmotePurge.Core.Entities.SystemLoadHourly", b =>
+                {
+                    b.Property<string>("Source")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTime>("HourUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("ActiveChannelsMax")
+                        .HasColumnType("integer");
+
+                    b.Property<double?>("ActiveChannelsMean")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("CgroupCpuRateMax")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("CgroupCpuRateMean")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("CgroupCpuRateP95")
+                        .HasColumnType("double precision");
+
+                    b.Property<long?>("CgroupMemoryCurrentMaxBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<double?>("CgroupMemoryCurrentMeanBytes")
+                        .HasColumnType("double precision");
+
+                    b.Property<long?>("CgroupMemoryCurrentP95Bytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("ChatLines")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("EmoteMatches")
+                        .HasColumnType("bigint");
+
+                    b.Property<double?>("HostCpuBusyMax")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("HostCpuBusyMean")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("HostCpuBusyP95")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("HostLoadAverage1Max")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("HostLoadAverage1Mean")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("HostLoadAverage1P95")
+                        .HasColumnType("double precision");
+
+                    b.Property<long?>("HostMemoryUsedMaxBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<double?>("HostMemoryUsedMeanBytes")
+                        .HasColumnType("double precision");
+
+                    b.Property<long?>("HostMemoryUsedP95Bytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("LastCgroupMemoryMaxBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("LastCpuPeriodMicroseconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("LastCpuQuotaMicroseconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("LastHostMemoryTotalBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("LiveChannelsMax")
+                        .HasColumnType("integer");
+
+                    b.Property<double?>("LiveChannelsMean")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("ProcessCpuRateMax")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("ProcessCpuRateMean")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("ProcessCpuRateP95")
+                        .HasColumnType("double precision");
+
+                    b.Property<int>("SampleCount")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Source", "HourUtc");
+
+                    b.ToTable("SystemLoadHourly", (string)null);
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.SystemLoadSample", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int?>("ActiveChannels")
+                        .HasColumnType("integer");
+
+                    b.Property<long?>("CgroupCpuPeriodMicroseconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("CgroupCpuQuotaMicroseconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("CgroupCpuUsageMicroseconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("CgroupMemoryCurrentBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("CgroupMemoryMaxBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("ChatLines")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("EmoteMatches")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("HostCpuBusyJiffies")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("HostCpuIowaitJiffies")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("HostCpuStealJiffies")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("HostCpuTotalJiffies")
+                        .HasColumnType("bigint");
+
+                    b.Property<double?>("HostLoadAverage1")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("HostLoadAverage15")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("HostLoadAverage5")
+                        .HasColumnType("double precision");
+
+                    b.Property<long?>("HostMemoryAvailableBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("HostMemoryTotalBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("HostSwapFreeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("HostSwapTotalBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("LiveChannels")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("PreviousSampledAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("ProcessCpuTimeTicks")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("ProcessInstanceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("SampledAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Source", "SampledAtUtc");
+
+                    b.HasIndex("Source", "ProcessInstanceId", "SampledAtUtc");
+
+                    b.ToTable("SystemLoadSamples", (string)null);
+                });
+
             modelBuilder.Entity("EmotePurge.Core.Entities.UsageStat", b =>
                 {
                     b.Property<long>("Id")

@@ -6,6 +6,7 @@ namespace EmotePurge.Worker;
 public class EmoteUsageCounter : IEmoteUsageCounter
 {
     private ConcurrentDictionary<UsageCounterKey, EmoteUsageCounts> _counts = new();
+    private long _totalMatchedEmotes;
 
     // The TArg overload of AddOrUpdate is used deliberately: a plain closure over `category` would
     // allocate on every call, and this runs once per matched emote per chat message. Passing
@@ -13,7 +14,8 @@ public class EmoteUsageCounter : IEmoteUsageCounter
     // beyond the dictionary's own first insert per key — UsageCategory is a value type and does
     // not box across the generic TArg.
     public void Increment(string emoteId, string emoteSetId, UsageCategory category)
-        => _counts.AddOrUpdate(
+    {
+        _counts.AddOrUpdate(
             new UsageCounterKey(emoteId, emoteSetId),
             static (_, cat) => cat switch
             {
@@ -28,6 +30,10 @@ public class EmoteUsageCounter : IEmoteUsageCounter
                 _ => current with { Human = current.Human + 1 },
             },
             category);
+        Interlocked.Increment(ref _totalMatchedEmotes);
+    }
+
+    public long TotalMatchedEmotes => Interlocked.Read(ref _totalMatchedEmotes);
 
     public void Merge(IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts> counts)
     {

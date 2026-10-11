@@ -1065,6 +1065,8 @@ public class TwitchChatManager(
             return Task.CompletedTask;
         }
 
+        stats.RecordChatLine();
+
         // Sentinel for the TwitchLib double-read-loop defect (#114): warn and count, never drop —
         // the line still carries a real message and must be classified and matched like any other.
         // Reads RawIrcMessage, not UndocumentedTags (E6, see IrcLineSpliceRule). Hot path: one

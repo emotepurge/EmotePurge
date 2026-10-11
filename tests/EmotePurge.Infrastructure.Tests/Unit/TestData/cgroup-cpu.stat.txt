@@ -1,0 +1,6 @@
+usage_usec 12345678
+user_usec 10123456
+system_usec 2222222
+nr_periods 42
+nr_throttled 3
+throttled_usec 98765

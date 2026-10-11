@@ -10,6 +10,41 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-11 — System-load sampling is process and host telemetry with hourly rollups (#380)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/SystemLoad{Sample,Hourly,Source}.cs` ·
+`src/EmotePurge.Core/Services/ISystemLoad*.cs` · `src/EmotePurge.Core/Services/RetentionPolicy.cs` ·
+`src/EmotePurge.Infrastructure/Services/{CgroupV2Parser,ProcFileParser,LinuxSystemLoadSnapshotSource,InfrastructureSystemLoadWorkloadSource,SystemLoad*}.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/*_AddSystemLoadSampling.cs` ·
+`src/EmotePurge.Worker/{SystemLoadRollupWorker,WorkerSystemLoadWorkloadSource,WorkerStats,EmoteUsageCounter,TwitchChatManager,RetentionRunSummaryFormatter}.cs` ·
+`src/EmotePurge.Worker/WorkerServiceRegistration.cs` · `src/EmotePurge.Api/Program.cs` ·
+`src/EmotePurge.Infrastructure/Services/DataRetentionService.cs` · `docs/Architectur.md` ·
+`docs/Operations.md` · `CLAUDE.md` · `.env.example` · `docker-compose*.yml` ·
+`tests/EmotePurge.Infrastructure.Tests/{Unit,Integration}/SystemLoad*.cs` ·
+`tests/EmotePurge.Worker.Tests/*SystemLoad*.cs`
+
+Api and Worker write separate `SystemLoadSamples` rows every 30 seconds, identified by source and a
+process-instance GUID. The samples contain process CPU time, cgroup v2 counters and limits, host
+`/proc` values, and workload counts; absent or unsupported operating-system values stay null. Worker
+chat-line and emote-match counters are independent monotone counters, so sampling never drains or
+changes `UsageFlushWorker`'s buffer. The Worker recomputes closable hours at startup and hourly,
+independent of `Retention:Enforce`; it applies a five-minute lateness grace, recomputes the most recent
+three hours, and fills older missing hours that still have raw rows. `(Source, HourUtc)` is the hourly
+upsert key.
+
+Hourly rows store rates for cumulative CPU counters rather than means or percentiles of their raw
+values. Process CPU and cgroup CPU means divide the sum of valid counter deltas by the sum of their
+wall intervals; host busy mean divides summed busy jiffies by summed total jiffies. Max and p95 use the
+individual valid-pair rates (p95 uses nearest rank). Pairs require the same source and process
+instance, belong to the later sample's hour, and are discarded across gaps longer than 2.5 sampling
+intervals. Gauges are still summarized when no rate pair is available.
+
+Raw samples are eligible for deletion after seven days only when their `(Source, HourUtc)` hourly row
+exists. Older unrolled samples are retained and reported by count, so retention cannot race catch-up.
+Hourly rows expire after thirteen calendar months. These measurements contain no personal data, so
+they are not added to the privacy statement or the personal-data retention list.
+
 ### 2026-10-10 — Usage page: live-day statements cover only the days live days are recorded for (#366)
 
 **Betrifft:** `web/src/app/core/usage/import-coverage.model.ts` ·

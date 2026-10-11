@@ -1,9 +1,9 @@
 namespace EmotePurge.Core.Services;
 
 /// <summary>
-/// One retention pass over the six categories of <see cref="RetentionPolicy"/>, in a fixed order:
+/// One retention pass over the categories of <see cref="RetentionPolicy"/>, in a fixed order:
 /// Twitch tokens, inactive accounts, ended vote sessions, audit log entries, finished chat-log backfill
-/// runs, deactivated channels.
+/// runs, system-load rows, and deactivated channels.
 /// Called by the worker's retention job once per tick.
 /// </summary>
 /// <remarks>
@@ -49,6 +49,9 @@ public interface IDataRetentionService
 /// Finished chat-log backfill runs older than their period, with their snapshot rows (#346). Trailing
 /// and optional so every existing construction keeps compiling; the step runs after the audit-log one.
 /// </param>
+/// <param name="SystemLoadRawSamplesDeleted">Old raw samples deleted, or due samples in a dry run.</param>
+/// <param name="SystemLoadRawSamplesWithoutHourlyRow">Old raw samples retained because their hour is not rolled up.</param>
+/// <param name="SystemLoadHourlyRowsDeleted">Hourly summaries older than thirteen calendar months deleted, or due rows in a dry run.</param>
 public sealed record RetentionRunSummary(
     bool Enforced,
     DateTime ReferenceTimeUtc,
@@ -57,7 +60,10 @@ public sealed record RetentionRunSummary(
     VoteSessionRetentionCounts VoteSessions,
     int AuditEntriesDeleted,
     ChannelRetentionCounts Channels,
-    int ChatLogBackfillRunsDeleted = 0);
+    int ChatLogBackfillRunsDeleted = 0,
+    int SystemLoadRawSamplesDeleted = 0,
+    int SystemLoadRawSamplesWithoutHourlyRow = 0,
+    int SystemLoadHourlyRowsDeleted = 0);
 
 /// <summary>The inactive-account category of a <see cref="RetentionRunSummary"/>.</summary>
 /// <param name="Deleted">Accounts deleted through <see cref="IAccountDeletionService"/>.</param>

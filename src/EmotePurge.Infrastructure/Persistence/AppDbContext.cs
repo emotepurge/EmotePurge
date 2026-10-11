@@ -26,6 +26,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ChatLogBackfillRunEmote> ChatLogBackfillRunEmotes => Set<ChatLogBackfillRunEmote>();
     public DbSet<ChatLogBackfillCoverageDay> ChatLogBackfillCoverage => Set<ChatLogBackfillCoverageDay>();
     public DbSet<ChatLogBackfillProviderState> ChatLogBackfillProviderState => Set<ChatLogBackfillProviderState>();
+    public DbSet<SystemLoadSample> SystemLoadSamples => Set<SystemLoadSample>();
+    public DbSet<SystemLoadHourly> SystemLoadHourlies => Set<SystemLoadHourly>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -382,6 +384,21 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // Exactly one row; the migration seeds it. Never generated: the id is the constant 1.
             entity.Property(s => s.Id).ValueGeneratedNever();
             entity.ToTable(t => t.HasCheckConstraint("CK_ChatLogBackfillProviderState_SingleRow", "\"Id\" = 1"));
+        });
+
+        modelBuilder.Entity<SystemLoadSample>(entity =>
+        {
+            entity.ToTable("SystemLoadSamples");
+            entity.Property(sample => sample.Source).HasConversion<string>().HasMaxLength(16);
+            entity.HasIndex(sample => new { sample.Source, sample.SampledAtUtc });
+            entity.HasIndex(sample => new { sample.Source, sample.ProcessInstanceId, sample.SampledAtUtc });
+        });
+
+        modelBuilder.Entity<SystemLoadHourly>(entity =>
+        {
+            entity.ToTable("SystemLoadHourly");
+            entity.HasKey(hourly => new { hourly.Source, hourly.HourUtc });
+            entity.Property(hourly => hourly.Source).HasConversion<string>().HasMaxLength(16);
         });
     }
 }

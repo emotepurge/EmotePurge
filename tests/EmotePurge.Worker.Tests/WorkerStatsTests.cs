@@ -14,6 +14,19 @@ public class WorkerStatsTests
         Assert.Equal(0, stats.ConsecutiveFlushFailures);
         Assert.Null(stats.LastFlushSuccessUtc);
         Assert.Null(stats.LastFlushRowCount);
+        Assert.Equal(0, stats.TotalChatLines);
+    }
+
+    [Fact]
+    public void ChatLineCount_IsMonotoneAndReadWithoutResetting()
+    {
+        var stats = new WorkerStats();
+
+        stats.RecordChatLine();
+        stats.RecordChatLine();
+
+        Assert.Equal(2, stats.TotalChatLines);
+        Assert.Equal(2, stats.TotalChatLines);
     }
 
     [Fact]

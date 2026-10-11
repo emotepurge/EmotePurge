@@ -1,10 +1,11 @@
 namespace EmotePurge.Core.Services;
 
 /// <summary>
-/// The retention periods decided on 2026-09-23 (#243/#244), as the one place in the code where the
-/// numbers stand. They are constants, not configuration, on purpose: the privacy policy states them
-/// (#247), and an environment variable that silently changed one would turn that text into a lie.
-/// What is configurable is only whether the job writes and how often it runs (<c>Retention:*</c>).
+/// Retention periods as the one place in the code where the numbers stand. Periods for personal data
+/// mirror the privacy policy (#247); system-load samples are non-personal operational telemetry and
+/// have separate periods. They are constants, not configuration, so an environment variable cannot
+/// silently change the retention contract. What is configurable is only whether the job writes and
+/// how often it runs (<c>Retention:*</c>).
 /// </summary>
 /// <remarks>
 /// "Twelve months" is 365 days — a fixed span, not a calendar month count, so a cutoff is one
@@ -47,4 +48,10 @@ public static class RetentionPolicy
     /// stay (they are statistics, not the request record).
     /// </summary>
     public static readonly TimeSpan ChatLogBackfillRun = TimeSpan.FromDays(365);
+
+    /// <summary>Raw system-load samples remain for seven days and only after their hour was rolled up.</summary>
+    public static readonly TimeSpan SystemLoadSample = TimeSpan.FromDays(7);
+
+    /// <summary>Hourly system-load summaries remain for thirteen calendar months.</summary>
+    public const int SystemLoadHourlyMonths = 13;
 }

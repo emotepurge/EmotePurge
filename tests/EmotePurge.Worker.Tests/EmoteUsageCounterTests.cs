@@ -53,6 +53,23 @@ public class EmoteUsageCounterTests
     }
 
     [Fact]
+    public void TotalMatchedEmotes_IsMonotoneAndIndependentOfFlushDrains()
+    {
+        var counter = new EmoteUsageCounter();
+        counter.Increment("a", SetA, UsageCategory.Human);
+        counter.Increment("a", SetA, UsageCategory.Human);
+        var drained = counter.DrainAndReset();
+        counter.Merge(drained);
+
+        Assert.Equal(2, counter.TotalMatchedEmotes);
+        counter.DrainAndReset();
+        Assert.Equal(2, counter.TotalMatchedEmotes);
+
+        counter.Increment("b", SetA, UsageCategory.Bot);
+        Assert.Equal(3, counter.TotalMatchedEmotes);
+    }
+
+    [Fact]
     public void Merge_RestoresThePendingCount()
     {
         // The requeue path after a failed flush: the monitoring page must show the backlog again,

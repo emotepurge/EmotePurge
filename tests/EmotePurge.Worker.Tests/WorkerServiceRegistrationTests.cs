@@ -31,14 +31,15 @@ public class WorkerServiceRegistrationTests
     }
 
     [Fact]
-    public void AddWorkerHostedServices_RegistersExactlyTheElevenOfTheWorker()
+    public void AddWorkerHostedServices_RegistersExactlyTheThirteenOfTheWorker()
     {
         var services = new ServiceCollection();
         services.AddWorkerCore(Configuration());
         services.AddWorkerHostedServices();
 
-        Assert.Equal(11, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Equal(13, services.Count(d => d.ServiceType == typeof(IHostedService)));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(ChatLogBackfillWorker));
+        Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(SystemLoadRollupWorker));
     }
 
     // #350: the backfill loop and its wake-up resolve with the worker's own graph, and Worker and the

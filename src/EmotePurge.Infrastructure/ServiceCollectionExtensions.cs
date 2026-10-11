@@ -308,6 +308,15 @@ public static class ServiceCollectionExtensions
         retentionOptions.Validate();
         services.AddSingleton(retentionOptions);
 
+        var systemLoadOptions = new SystemLoadOptions();
+        configuration.GetSection(SystemLoadOptions.SectionName).Bind(systemLoadOptions);
+        systemLoadOptions.Validate();
+        services.AddSingleton(systemLoadOptions);
+        services.AddSingleton<ISystemLoadSnapshotSource, LinuxSystemLoadSnapshotSource>();
+        services.AddScoped<ISystemLoadWorkloadSource, InfrastructureSystemLoadWorkloadSource>();
+        services.AddScoped<ISystemLoadSamplingService, SystemLoadSamplingService>();
+        services.AddScoped<ISystemLoadRollupService, SystemLoadRollupService>();
+
         // Chat-log backfill (#346): the flag and the worker's pacing. Bound and validated eagerly like
         // the retention options; read by Api (flag) and Worker (everything).
         var chatLogBackfillOptions = new ChatLogBackfillOptions();
