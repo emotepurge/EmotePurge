@@ -1154,7 +1154,8 @@ export class UsageStatsPage {
       if (!firstIntersecting) {
         sentences.push({ key: 'usageStats.setView.facts.notObserved' });
       } else if (Date.parse(firstIntersecting.fromUtc) > rangeStart) {
-        // The rangeStartsBeforeTracking idiom, with the interval's start in trackedSince's place.
+        // Unlike rangeStartsBeforeTracking this compares the precise start, not its day: the caption
+        // states a fact ("counted since"), it does not warn about a gap.
         sentences.push({
           key: 'usageStats.setView.facts.countedSince',
           params: { date: this.formatDate(firstIntersecting.fromUtc) },
