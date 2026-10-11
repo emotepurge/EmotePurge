@@ -3251,7 +3251,14 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   let httpMock: HttpTestingController;
   let router: Router;
 
-  const SERIES = { from: '2026-01-01', to: '2026-09-08', liveDays: [], emotes: [] };
+  const SERIES = {
+    from: '2026-01-01',
+    to: '2026-09-08',
+    liveDays: [],
+    firstCountedDay: null,
+    lastCountedDay: null,
+    emotes: [],
+  };
 
   function member(sevenTvEmoteId: string, name: string): ForeignEmoteRow {
     return {
@@ -3330,6 +3337,10 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     members?: ForeignEmoteSetResponse | 'unavailable';
     observations?: EmoteSetSummary['observations'];
     extraSets?: EmoteSetSummary[];
+    /** What `/series` answers: the server's range-scoped counted-day bounds, `'pending'` to leave the
+     *  request unanswered, `'failed'` for a 500. Omitted: no counts in the range. */
+    series?:
+      { firstCountedDay: string | null; lastCountedDay: string | null } | 'pending' | 'failed';
     // addendum N2: a run already settled in the service before the page's constructor ever
     // runs — `watchRunSettle`'s `seen` captures it as the starting point, so it must not replay.
     presettledRestoreRun?: RestoreRunInfo;
@@ -3384,7 +3395,16 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     await settle();
 
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', options.totals);
-    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    if (options.series === 'failed') {
+      httpMock
+        .match((req) => req.url === '/api/channels/a/usage-stats/series')
+        .forEach((request) => request.flush({}, { status: 500, statusText: 'Error' }));
+    } else if (options.series !== 'pending') {
+      flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+        ...SERIES,
+        ...options.series,
+      });
+    }
     if (options.members === 'unavailable') {
       liveListRequests().forEach((request) =>
         request.flush(
@@ -4326,46 +4346,125 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     return component['setViewCaptions']().map((sentence) => sentence.key);
   }
 
-  it('not observed and no counts: B− then Z− (AK 60, case 1)', async () => {
-    await openView({
-      emoteSetId: 'set-b',
-      totals: [],
-      members: memberList([member('7tv-x', 'PumpkinX')]),
-      observations: [],
-    });
-
-    expect(captionKeys()).toEqual([
-      'usageStats.setView.facts.notObserved',
-      'usageStats.setView.facts.noCounts',
-    ]);
-  });
-
-  it('not observed but with counts: B− alone, nothing said about the numbers (AK 60, case 2 — the migration/rejoin case)', async () => {
+  it('a non-active set with counts on several days of the range names the counted span (countedRange)', async () => {
+    // protects=the range-scoped count sentence of a non-active set view;
+    // fails_when=the sentence is missing, names a single day, or formats the bounds unlike other captions;
+    // no_claim=that the bounds are range-scoped — the server computes them, the mock only supplies them.
     await openView({
       emoteSetId: 'set-b',
       totals: [emote('a', 'Alpha', 12)],
       members: memberList([member('7tv-a', 'Alpha')]),
-      observations: [],
+      series: { firstCountedDay: '2026-03-01', lastCountedDay: '2026-03-20' },
     });
 
-    expect(captionKeys()).toEqual(['usageStats.setView.facts.notObserved']);
+    expect(captionKeys()).toEqual(['usageStats.setView.facts.countedRange']);
+    expect(component['setViewCaptions']()[0].params).toEqual({
+      from: component['formatDate']('2026-03-01'),
+      to: component['formatDate']('2026-03-20'),
+    });
   });
 
-  it('observed from inside the range: B~ with the interval start; plus Z− when there are no counts (AK 60, case 3)', async () => {
+  it('a non-active set counted on one day only says so (countedOn)', async () => {
+    // protects=the single-day variant of the count sentence;
+    // fails_when=first == last still renders a "from … to …" range;
+    // no_claim=none beyond protects.
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 3)],
+      members: memberList([member('7tv-a', 'Alpha')]),
+      series: { firstCountedDay: '2026-03-05', lastCountedDay: '2026-03-05' },
+    });
+
+    expect(captionKeys()).toEqual(['usageStats.setView.facts.countedOn']);
+    expect(component['setViewCaptions']()[0].params).toEqual({
+      date: component['formatDate']('2026-03-05'),
+    });
+  });
+
+  it('a non-active set whose counts all lie outside the range gets noCounts alone (no countedOn, no countedRange)', async () => {
+    // protects=that the series bounds, which the server scopes to the requested range, are the only
+    // source of the count sentences — counts elsewhere in the set's history never leak in;
+    // fails_when=a count sentence appears although the series reports no counted day in the range;
+    // no_claim=the server's range scoping itself (integration tests), and the series stands in for it here.
     await openView({
       emoteSetId: 'set-b',
       totals: [emote('a', 'Alpha', 0)],
       members: memberList([member('7tv-a', 'Alpha')]),
-      observations: [{ fromUtc: '2026-03-01T12:00:00Z', toUtc: null }],
+      series: { firstCountedDay: null, lastCountedDay: null },
     });
 
+    expect(captionKeys()).toEqual(['usageStats.setView.facts.noCounts']);
+  });
+
+  it('the active set whose first count lies after the range start says when counting begins (countedFrom)', async () => {
+    // protects=the late-start sentence of the active set;
+    // fails_when=the sentence is missing or names the wrong day;
+    // no_claim=none beyond protects (the range start is the series echo '2026-01-01').
+    await openView({
+      totals: [emote('a', 'Alpha', 4)],
+      series: { firstCountedDay: '2026-03-01', lastCountedDay: '2026-09-01' },
+    });
+
+    expect(component['isNonActiveView']()).toBe(false);
+    expect(captionKeys()).toEqual(['usageStats.setView.facts.countedFrom']);
+    expect(component['setViewCaptions']()[0].params).toEqual({
+      date: component['formatDate']('2026-03-01'),
+    });
+  });
+
+  it('the active set counted since the range start gets no sentence, whatever the last counted day is', async () => {
+    // protects=that countedFrom is reserved for a late start;
+    // fails_when=a first counted day equal to the range start still produces a sentence;
+    // no_claim=none beyond protects.
+    await openView({
+      totals: [emote('a', 'Alpha', 4)],
+      series: { firstCountedDay: '2026-01-01', lastCountedDay: '2026-09-01' },
+    });
+
+    expect(captionKeys()).toEqual([]);
+  });
+
+  it('shows no count sentence while the series is pending, and the right one once it answers', async () => {
+    // protects=that no series-derived sentence appears before the series is there, while the
+    // totals-based noCounts still does;
+    // fails_when=a count sentence is built from a missing series, or noCounts waits for it;
+    // no_claim=none beyond protects (the held request is answered by the test itself).
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 0)],
+      members: memberList([member('7tv-a', 'Alpha')]),
+      series: 'pending',
+    });
+
+    expect(component['seriesPending']()).toBe(true);
+    expect(captionKeys()).toEqual(['usageStats.setView.facts.noCounts']);
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      ...SERIES,
+      firstCountedDay: '2026-03-01',
+      lastCountedDay: '2026-03-20',
+    });
+    await settle();
+
     expect(captionKeys()).toEqual([
-      'usageStats.setView.facts.countedSince',
+      'usageStats.setView.facts.countedRange',
       'usageStats.setView.facts.noCounts',
     ]);
-    expect(component['setViewCaptions']()[0].params).toEqual({
-      date: component['formatDate']('2026-03-01T12:00:00Z'),
+  });
+
+  it('shows no count sentence when the series failed, and keeps the totals-based noCounts', async () => {
+    // protects=that a failed secondary readout does not produce or hide set-view sentences wrongly;
+    // fails_when=a count sentence appears without a series, or noCounts disappears with it;
+    // no_claim=none beyond protects.
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 0)],
+      members: memberList([member('7tv-a', 'Alpha')]),
+      series: 'failed',
     });
+
+    expect(component['seriesFailed']()).toBe(true);
+    expect(captionKeys()).toEqual(['usageStats.setView.facts.noCounts']);
   });
 
   it('the active set with an open interval since tracking start: no set sentence at all, as today (AK 60, case 4)', async () => {
@@ -4375,7 +4474,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(captionKeys()).toEqual([]);
   });
 
-  // --- T4.4: locks (8.3, AK 62) and the preset (8.5) -------------------------------------------
+  // --- T4.4: locks (8.3, AK 62) -------------------------------------------
 
   it('shows the counted rows without a readable member list, says so, and locks deleting with that reason (AK 62)', async () => {
     await openView({
@@ -4418,26 +4517,6 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
     await openView({ totals: [emote('a', 'Alpha')] });
     expect(component['deleteLockReasonKey']()).toBeNull();
-  });
-
-  it("offers the 'set-observed' range of the chosen set only, and follows a set switch while that preset is on (8.5)", async () => {
-    await openView({
-      emoteSetId: 'set-b',
-      totals: [],
-      members: memberList([]),
-      observations: [],
-    });
-    expect(component['setObservedPresetRange']()).toBeNull();
-
-    component['onEmoteSetSelected']('set-a');
-    await settle();
-    expect(component['setObservedPresetRange']()).toMatchObject({ from: '2026-01-01' });
-
-    component['rangePreset'].set('set-observed');
-    component['onEmoteSetSelected']('set-b');
-    await settle();
-    // Halloween was never observed: the dates stay, the preset turns into what they now are.
-    expect(component['rangePreset']()).toBe('custom');
   });
 
   // --- K4 fix round (2026-09-22) ---------------------------------------------------------------
@@ -5417,6 +5496,8 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
       from: '2026-01-01',
       to: '2026-09-08',
       liveDays: [],
+      firstCountedDay: '2026-03-01',
+      lastCountedDay: '2026-03-20',
       emotes: [],
     });
     httpMock
@@ -5432,7 +5513,7 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
     expect(component['trackedSince']()).toBeNull();
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
     expect(text).toContain('usageStats.setView.membersUnavailable');
-    expect(text).toContain('usageStats.setView.facts.notObserved');
+    expect(text).toContain('usageStats.setView.facts.countedRange');
   });
 
   it('leaves the vote button without an aria-describedby in the active view, where nothing is locked', async () => {

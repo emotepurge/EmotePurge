@@ -204,8 +204,6 @@
     "preset7Days": "7 Tage",
     "preset30Days": "30 Tage",
     "presetAll": "Seit Beginn",
-    "presetSetObserved": "Während dieses Set beobachtet wurde",
-    "presetSetObservedShort": "beobachtet",
     "presetCustom": "Eigener Zeitraum",
     "from": "Von",
     "to": "Bis"
@@ -864,8 +862,9 @@
       "slots": "{{count}} Plätze im Set: {{aliases}}",
       "nameTwin": "Unter diesem Namen liegt in „{{sets}}“ ein anderes Emote.",
       "facts": {
-        "notObserved": "Dieses Set war im gewählten Zeitraum nicht als aktiv beobachtet.",
-        "countedSince": "Für dieses Set gezählt seit dem {{date}}.",
+        "countedRange": "Im gewählten Zeitraum liegen für dieses Set Zählungen vom {{from}} bis {{to}} vor.",
+        "countedOn": "Im gewählten Zeitraum liegen für dieses Set nur Zählungen vom {{date}} vor.",
+        "countedFrom": "Im gewählten Zeitraum liegen für dieses Set Zählungen ab dem {{date}} vor.",
         "noCounts": "Für dieses Set liegen im gewählten Zeitraum keine Zählungen vor."
       },
       "membersUnavailable": "Die Mitgliederliste dieses Sets ist gerade nicht verfügbar – gezeigt werden nur Emotes mit Zählungen.",

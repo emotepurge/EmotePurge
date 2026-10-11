@@ -204,8 +204,6 @@
     "preset7Days": "7 days",
     "preset30Days": "30 days",
     "presetAll": "All time",
-    "presetSetObserved": "While this set was observed",
-    "presetSetObservedShort": "observed",
     "presetCustom": "Custom range",
     "from": "From",
     "to": "To"
@@ -864,8 +862,9 @@
       "slots": "{{count}} slots in the set: {{aliases}}",
       "nameTwin": "Under this name, “{{sets}}” holds a different emote.",
       "facts": {
-        "notObserved": "This set was not observed as active in the selected range.",
-        "countedSince": "Counted for this set since {{date}}.",
+        "countedRange": "In the selected range, this set has counts from {{from}} to {{to}}.",
+        "countedOn": "In the selected range, this set only has counts from {{date}}.",
+        "countedFrom": "In the selected range, this set has counts from {{date}}.",
         "noCounts": "There are no counts for this set in the selected range."
       },
       "membersUnavailable": "This set’s member list is unavailable right now – only emotes with counts are shown.",

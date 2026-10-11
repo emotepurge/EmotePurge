@@ -90,7 +90,6 @@ import {
   DateRangeMenu,
   DateRangePreset,
   allTimeStart,
-  setObservedRange,
   toIsoDate,
 } from '../../shared/datetime/date-range-menu';
 import {
@@ -1122,45 +1121,50 @@ export class UsageStatsPage {
   );
 
   /**
-   * The honesty sentences a non-active view adds to the caption line under the sheet (spec 8.4 and
-   * 8.3), in this order: whether the set was observed in the range, whether any counts exist, then
-   * the member list's own caveat. Empty in the active view — "für das aktive Set … bleibt alles wie
-   * heute" (AK 60) — and while the view is still loading.
+   * The honesty sentences the set view adds to the caption line under the sheet, in this order: what
+   * the set has counted in the selected range, whether any counts exist at all, then the member
+   * list's own caveat. Empty while the view is still loading.
    *
-   * **Two independent statements, never one derived from the other** (8.4): *observed yes/no* comes
-   * from the shown set's `observations` against the loaded range alone, *counts yes/no* from the
-   * loaded `/totals` rows alone. A range with counts but without an observation interval is real
-   * (an inactive channel's rows backfilled onto a set id by the migration, then rejoined) and gets
-   * B− only — the numbers stand, nothing relativises them.
+   * **Range-scoped and count-based.** The first/last counted day come from the channel series, whose
+   * server-side bounds cover the requested range only (and archived emotes too), so a count outside
+   * the range never produces a sentence. A non-active set names its counted span (`countedRange`,
+   * or `countedOn` for a single day); the active set only says when its counts begin if that is
+   * later than the range start (`countedFrom`) — an active set counted since the range start keeps
+   * today's empty caption. While the series is pending or failed no series-derived sentence is
+   * shown; `noCounts` stays totals-based and independent of it.
    */
   protected readonly setViewCaptions = computed<CaptionSentence[]>(() => {
-    if (!this.isNonActiveView() || this.viewLoading() || this.viewSwitching()) {
+    if (this.viewLoading() || this.viewSwitching()) {
       return [];
     }
+    const nonActive = this.isNonActiveView();
     const sentences: CaptionSentence[] = [];
-    const summary = this.shownSetSummary();
-    const range = this.totalsRange();
-    if (summary && range) {
-      const rangeStart = Date.parse(`${range.from}T00:00:00Z`);
-      const rangeEnd = Date.parse(`${range.to}T23:59:59.999Z`);
-      const now = Date.now();
-      // Ascending by the Api's own contract (6.1); the first intersecting interval is therefore the
-      // one that decides whether counting began inside the range.
-      const firstIntersecting = summary.observations.find((interval) => {
-        const intervalStart = Date.parse(interval.fromUtc);
-        const intervalEnd = interval.toUtc === null ? now : Date.parse(interval.toUtc);
-        return intervalStart <= rangeEnd && intervalEnd >= rangeStart;
-      });
-      if (!firstIntersecting) {
-        sentences.push({ key: 'usageStats.setView.facts.notObserved' });
-      } else if (Date.parse(firstIntersecting.fromUtc) > rangeStart) {
-        // Unlike rangeStartsBeforeTracking this compares the precise start, not its day: the caption
-        // states a fact ("counted since"), it does not warn about a gap.
+
+    const series = this.channelSeries();
+    const first = series?.firstCountedDay ?? null;
+    const last = series?.lastCountedDay ?? null;
+    if (series && first && last) {
+      if (nonActive) {
+        sentences.push(
+          first === last
+            ? {
+                key: 'usageStats.setView.facts.countedOn',
+                params: { date: this.formatDate(first) },
+              }
+            : {
+                key: 'usageStats.setView.facts.countedRange',
+                params: { from: this.formatDate(first), to: this.formatDate(last) },
+              },
+        );
+      } else if (first > series.from) {
         sentences.push({
-          key: 'usageStats.setView.facts.countedSince',
-          params: { date: this.formatDate(firstIntersecting.fromUtc) },
+          key: 'usageStats.setView.facts.countedFrom',
+          params: { date: this.formatDate(first) },
         });
       }
+    }
+    if (!nonActive) {
+      return sentences;
     }
     if (!this.totalsRows().some((row) => row.totalUseCount > 0)) {
       sentences.push({ key: 'usageStats.setView.facts.noCounts' });
@@ -1177,14 +1181,6 @@ export class UsageStatsPage {
       });
     }
     return sentences;
-  });
-
-  /** What the date menu's `'set-observed'` preset selects for the chosen set (8.5), or `null` when
-   *  the set was never observed — which also keeps the preset out of the menu. */
-  protected readonly setObservedPresetRange = computed(() => {
-    const selected = this.selectedEmoteSetId();
-    const summary = this.emoteSetList()?.sets.find((set) => set.id === selected);
-    return summary ? setObservedRange(summary.observations) : null;
   });
 
   /** Date-only form, which is what the range menu and the vote-session ballot both speak. */
@@ -2493,25 +2489,6 @@ export class UsageStatsPage {
       if (this.selectionReconcilePending() && !this.liveMembersSettling()) {
         untracked(() => this.reconcileSelection());
       }
-    });
-
-    // The 'set-observed' preset (spec 8.5) describes the chosen set, so a set switch must move the
-    // range with it — otherwise the menu would keep claiming "while this set was observed" over the
-    // previous set's interval. A set that was never observed has no such range; the dates stay and
-    // the menu names them as a custom range instead of a preset they no longer are.
-    effect(() => {
-      const range = this.setObservedPresetRange();
-      untracked(() => {
-        if (this.rangePreset() !== 'set-observed') {
-          return;
-        }
-        if (range) {
-          this.from.set(range.from);
-          this.to.set(range.to);
-        } else {
-          this.rangePreset.set('custom');
-        }
-      });
     });
 
     // Keyed on channelName() alone, deliberately separate from load()'s effect above: that one also

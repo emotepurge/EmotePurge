@@ -148,6 +148,13 @@ export interface ChannelUsageSeries {
   to: string;
   /** Day offsets from `from` with live coverage — same "absent means unknown" caveat as above. */
   liveDays: number[];
+  /**
+   * First and last day (ISO `yyyy-MM-dd`) in the requested range with a count under the viewed set,
+   * archived emotes included; `null` when the range holds no count. Absent from an older Api
+   * response taken mid-deploy, which reads as `null`.
+   */
+  firstCountedDay: string | null;
+  lastCountedDay: string | null;
   emotes: EmoteSeriesEntry[];
 }
 
