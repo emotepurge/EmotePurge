@@ -106,22 +106,19 @@ test.describe('admin monitoring dashboard', () => {
     });
     await page.getByRole('radio', { name: '90 Tage' }).click();
 
-    // Exactly one banner on the whole page, and it sits in the activity area: below the page
-    // header, above the activity heading, with the rate-limit section after that.
-    const banner = page.locator('app-notice-banner');
+    // Exactly one banner on the whole page, and it is scoped to the activity section; no other
+    // section carries one.
+    await expect(page.locator('app-notice-banner')).toHaveCount(1);
+    const activitySection = page.getByTestId('admin-activity');
+    const banner = activitySection.locator('app-notice-banner');
     await expect(banner).toHaveCount(1);
     await expect(banner).toHaveText(/Ungültiger Zeitraum für das Dashboard\./);
-    const activityHeading = page.getByRole('heading', { name: 'Aktivitätsverlauf' });
-    const rateLimitHeading = page.getByRole('heading', { name: 'Rate-Limit-Ausnahmen' });
-    await expect(rateLimitHeading).toBeVisible();
+    await expect(page.getByTestId('admin-rate-limits').locator('app-notice-banner')).toHaveCount(0);
+    await expect(page.getByTestId('admin-health').locator('app-notice-banner')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Rate-Limit-Ausnahmen' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Twitch-IRC' })).toBeVisible();
-    const [bannerBox, activityBox, rateLimitBox] = await Promise.all([
-      banner.boundingBox(),
-      activityHeading.boundingBox(),
-      rateLimitHeading.boundingBox(),
-    ]);
-    expect(bannerBox!.y).toBeLessThan(activityBox!.y);
-    expect(activityBox!.y).toBeLessThan(rateLimitBox!.y);
+    // The old chart stays, and says which range it still shows.
+    await expect(activitySection.getByTestId('activity-shown-range')).toContainText('30 Tage');
     // The chart keeps its last series instead of vanishing.
     await expect(activityChart(page)).toBeVisible();
     expect(activity.count).toBe(1);

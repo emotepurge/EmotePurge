@@ -629,6 +629,7 @@
       "activity": {
         "title": "Activity history",
         "chartTitle": "Observed live channels per day",
+        "shownRange": "Still showing: {{ range }}",
         "series": {
           "liveChannels": "Observed live channels per day"
         },
@@ -642,7 +643,7 @@
         "help": {
           "poller": "Counts the distinct channels the live poller saw streaming at least once on that day. It is not a real-time figure and not a stream duration.",
           "purge": "Deleted channels are missing retroactively: the further back, the more the curve understates the count at the time.",
-          "today": "Today (UTC) is not finished yet and may still change. Days without an observation are unknown, not zero.",
+          "today": "Today (UTC) is not finished yet and may still change. Days without an observation are unknown, not zero – so a quiet day with no streams and a poller outage look the same: a gap.",
           "cap": "Tracked channels against the configured admission limit for normal users – not a server limit. Global admins may exceed it, and a simultaneous rush can overshoot it slightly."
         }
       },

@@ -629,6 +629,7 @@
       "activity": {
         "title": "Aktivitätsverlauf",
         "chartTitle": "Beobachtete Live-Channels pro Tag",
+        "shownRange": "Angezeigt wird noch: {{ range }}",
         "series": {
           "liveChannels": "Beobachtete Live-Channels pro Tag"
         },
@@ -642,7 +643,7 @@
         "help": {
           "poller": "Gezählt wird, an wie vielen verschiedenen Channels der Live-Poller an einem Tag mindestens einmal einen Stream erkannt hat. Das ist keine Echtzeitzahl und keine Streamdauer.",
           "purge": "Gelöschte Channels fehlen rückwirkend: je weiter zurück, desto stärker unterschätzt die Kurve den damaligen Stand.",
-          "today": "Der heutige Tag (UTC) ist noch nicht abgeschlossen und kann sich ändern. Tage ohne Beobachtung sind unbekannt, nicht null.",
+          "today": "Der heutige Tag (UTC) ist noch nicht abgeschlossen und kann sich ändern. Tage ohne Beobachtung sind unbekannt, nicht null – ein ruhiger Tag ohne Stream und ein Poller-Ausfall sehen daher gleich aus: als Lücke.",
           "cap": "Verfolgte Channels gegen die konfigurierte Admission-Grenze für normale Nutzer – kein Serverlimit. Globale Admins dürfen sie überschreiten, und ein gleichzeitiger Andrang kann sie knapp übersteigen."
         }
       },

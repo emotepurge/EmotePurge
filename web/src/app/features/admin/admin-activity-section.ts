@@ -6,6 +6,7 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { LineChart, LineChartSeries } from '../../shared/charts/line-chart';
 import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
+import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SkeletonSections } from '../../shared/ui/skeleton-sections';
 
 const RANGE_OPTIONS: SegmentedControlOption[] = [
@@ -22,9 +23,9 @@ const DAY_SECONDS = 86_400;
  */
 @Component({
   selector: 'app-admin-activity-section',
-  imports: [LineChart, SegmentedControl, SkeletonSections, TranslocoPipe],
+  imports: [LineChart, NoticeBanner, SegmentedControl, SkeletonSections, TranslocoPipe],
   template: `
-    <section class="flex flex-col gap-3 border-t border-border pt-4">
+    <section class="flex flex-col gap-3 border-t border-border pt-4" data-testid="admin-activity">
       <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
         <h3 class="text-base font-semibold">
           {{ 'admin.dashboard.activity.title' | transloco }}
@@ -36,6 +37,10 @@ const DAY_SECONDS = 86_400;
         }
       </div>
 
+      @if (errorKey(); as error) {
+        <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
+      }
+
       <app-segmented-control
         [options]="rangeOptions"
         [value]="range()"
@@ -44,7 +49,19 @@ const DAY_SECONDS = 86_400;
       />
 
       @if (activity(); as data) {
+        @if (rangeMismatch()) {
+          <p class="text-xs text-fg-muted" data-testid="activity-shown-range">
+            {{
+              'admin.dashboard.activity.shownRange'
+                | transloco: { range: 'admin.dashboard.activity.range.' + data.range | transloco }
+            }}
+          </p>
+        }
         <app-line-chart
+          class="transition-opacity"
+          [class.opacity-50]="busy()"
+          [attr.aria-busy]="busy()"
+          pointMarkers="auto"
           [series]="series()"
           [xStartsUtc]="xStartsUtc()"
           [bucketSeconds]="daySeconds"
@@ -70,16 +87,26 @@ const DAY_SECONDS = 86_400;
 export class AdminActivitySection {
   /** The last successfully loaded series; `undefined` only before the very first load. */
   readonly activity = input<AdminDashboardActivity | undefined>();
-  /** True only while the series has never loaded; after a failed first load nothing is shown. */
+  /** The activity resource is loading: the first load (skeleton) or a range switch (stale chart busy). */
   readonly loading = input(false);
   readonly trackedChannelCount = input<number | null>(null);
   readonly maxActiveChannels = input<number | null>(null);
+  /** Translation key of this section's own load error; the banner stands under the heading. */
+  readonly errorKey = input<string | null>(null);
   readonly range = model.required<AdminDashboardActivityRange>();
 
   private readonly languageService = inject(LanguageService);
 
   protected readonly rangeOptions = RANGE_OPTIONS;
   protected readonly daySeconds = DAY_SECONDS;
+
+  /** The chart on screen is still another range's than the selected one (loading or failed). */
+  protected readonly rangeMismatch = computed(() => {
+    const data = this.activity();
+    return data !== undefined && data.range !== this.range();
+  });
+
+  protected readonly busy = computed(() => this.rangeMismatch() && this.loading());
 
   protected readonly xStartsUtc = computed(() =>
     (this.activity()?.days ?? []).map((day) => `${day.date}T00:00:00Z`),

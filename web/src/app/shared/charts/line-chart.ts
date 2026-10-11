@@ -68,6 +68,12 @@ const TICK_FONT_SIZE = 12;
 /** Which number a legend entry shows: the latest value, the total or the maximum of the window. */
 export type LegendStat = 'last' | 'sum' | 'max';
 
+/** `auto` draws day markers on the line while the window is short enough to tell them apart. */
+export type PointMarkers = 'never' | 'auto' | 'always';
+
+/** With `auto`, markers are drawn up to this many buckets (90 days yes, 13 months no). */
+export const POINT_MARKER_MAX_BUCKETS = 90;
+
 /**
  * Colour carries meaning, not identity (spec section 10): capacity curves are neutral, colour marks
  * only real errors or real limit rejections. A series is therefore `neutral` unless the caller opts
@@ -123,6 +129,8 @@ let nextChartId = 0;
  */
 @Component({
   selector: 'app-line-chart',
+  // An inline host has no reliable box: getBoundingClientRect and ResizeObserver need a block.
+  host: { class: 'block' },
   template: `
     <div class="min-w-0 space-y-2">
       <p class="text-xs text-fg-muted">{{ unitCaption() }}</p>
@@ -202,6 +210,17 @@ let nextChartId = 0;
                     [attr.stroke-dasharray]="item.dash"
                     vector-effect="non-scaling-stroke"
                   />
+                  @if (showMarkers()) {
+                    @for (point of item.points; track point.x) {
+                      <circle
+                        [attr.cx]="point.x"
+                        [attr.cy]="point.y"
+                        r="2"
+                        fill="currentColor"
+                        data-testid="chart-point"
+                      />
+                    }
+                  }
                   @if (item.partialPath) {
                     <path
                       [attr.d]="item.partialPath"
@@ -304,6 +323,8 @@ export class LineChart {
   readonly partialLastBucket = input(false);
   /** The number each legend entry shows; `last` for gauges, `sum` for event counts per window. */
   readonly legendStat = input<LegendStat>('last');
+  /** Small markers on each known bucket of a line series; the partial bucket keeps its hollow ring. */
+  readonly pointMarkers = input<PointMarkers>('never');
 
   private readonly transloco = inject(TranslocoService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -505,6 +526,11 @@ export class LineChart {
         },
       ];
     });
+  });
+
+  protected readonly showMarkers = computed(() => {
+    const mode = this.pointMarkers();
+    return mode === 'always' || (mode === 'auto' && this.bucketCount() <= POINT_MARKER_MAX_BUCKETS);
   });
 
   protected readonly showLegend = computed(

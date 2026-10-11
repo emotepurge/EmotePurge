@@ -42,9 +42,9 @@ const NO_VALUE = '—';
         <!-- Effective configuration + accepted/rejected counts, one row per registered policy —
          always every policy from options, even one the counter store never saw traffic for. -->
         <div class="flex flex-col gap-2">
-          <h4 class="text-sm font-medium text-fg-body">
+          <h3 class="text-sm font-medium text-fg-body">
             {{ 'admin.rateLimits.policies.title' | transloco }}
-          </h4>
+          </h3>
           <ul class="-mx-3 divide-y divide-border border-y border-border">
             @for (policy of data.policies; track policy.name) {
               <li class="flex flex-col gap-2 px-3 py-3">
@@ -116,9 +116,9 @@ const NO_VALUE = '—';
 
         <!-- Last local rejection: one entry across all policies, overwritten each time. -->
         <div class="flex flex-col gap-2">
-          <h4 class="text-sm font-medium text-fg-body">
+          <h3 class="text-sm font-medium text-fg-body">
             {{ 'admin.rateLimits.lastRejection.title' | transloco }}
-          </h4>
+          </h3>
           @if (!data.telemetryAvailable) {
             <p class="text-sm text-fg-muted">
               {{ 'admin.rateLimits.lastRejection.unavailable' | transloco }}
@@ -176,9 +176,9 @@ const NO_VALUE = '—';
         <!-- Server-cache hit/miss counters. Numbers only while telemetry is available — with
          Redis unreachable, the counter store has no entries at all rather than zeroed ones. -->
         <div class="flex flex-col gap-2">
-          <h4 class="text-sm font-medium text-fg-body">
+          <h3 class="text-sm font-medium text-fg-body">
             {{ 'admin.rateLimits.caches.title' | transloco }}
-          </h4>
+          </h3>
           @if (!data.telemetryAvailable) {
             <p class="text-sm text-fg-muted">
               {{ 'admin.rateLimits.caches.unavailable' | transloco }}
@@ -228,9 +228,9 @@ const NO_VALUE = '—';
          deliberately no percentage anywhere in here (neither provider publishes a quota we
          could divide by). -->
         <div class="flex flex-col gap-2">
-          <h4 class="text-sm font-medium text-fg-body">
+          <h3 class="text-sm font-medium text-fg-body">
             {{ 'admin.rateLimits.providers.title' | transloco }}
-          </h4>
+          </h3>
           @if (!data.telemetryAvailable) {
             <p class="text-sm text-fg-muted">
               {{ 'admin.rateLimits.providers.unavailable' | transloco }}

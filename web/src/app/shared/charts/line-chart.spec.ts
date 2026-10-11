@@ -61,6 +61,7 @@ describe('LineChart', () => {
       starts?: string[];
       legendStat?: 'last' | 'sum' | 'max';
       bucketSeconds?: number;
+      pointMarkers?: 'never' | 'auto' | 'always';
     } = {},
   ): HTMLElement {
     fixture = TestBed.createComponent(LineChart);
@@ -68,6 +69,7 @@ describe('LineChart', () => {
     fixture.componentRef.setInput('xStartsUtc', extra.starts ?? STARTS);
     fixture.componentRef.setInput('bucketSeconds', extra.bucketSeconds ?? 3600);
     fixture.componentRef.setInput('legendStat', extra.legendStat ?? 'last');
+    fixture.componentRef.setInput('pointMarkers', extra.pointMarkers ?? 'never');
     fixture.componentRef.setInput('unit', 'count');
     fixture.componentRef.setInput('title', 'Live channels');
     fixture.componentRef.setInput('partialLastBucket', extra.partialLastBucket ?? false);
@@ -320,5 +322,45 @@ describe('LineChart', () => {
     const root = render([series('a', [1, 2, 3, 4])]);
 
     expect(root.querySelector('svg[role="img"]')?.getAttribute('viewBox')).toBe('0 0 640 176');
+  });
+
+  describe('point markers', () => {
+    const days = (count: number) =>
+      Array.from({ length: count }, (_, i) => new Date(Date.UTC(2026, 0, 1 + i)).toISOString());
+    const known = (count: number) => Array.from({ length: count }, (_, i) => i + 1);
+
+    function markers(root: HTMLElement): number {
+      return root.querySelectorAll('[data-testid="chart-point"]').length;
+    }
+
+    it('draws no markers by default', () => {
+      expect(markers(render([series('a', [1, 2, 3, 4])]))).toBe(0);
+    });
+
+    it('draws a marker per known bucket in auto mode up to 90 buckets', () => {
+      const root = render([series('a', known(90))], {
+        starts: days(90),
+        bucketSeconds: 86_400,
+        pointMarkers: 'auto',
+      });
+      expect(markers(root)).toBe(90);
+    });
+
+    it('draws the line only in auto mode beyond 90 buckets', () => {
+      const root = render([series('a', known(91))], {
+        starts: days(91),
+        bucketSeconds: 86_400,
+        pointMarkers: 'auto',
+      });
+      expect(markers(root)).toBe(0);
+    });
+
+    it('skips gaps and leaves the partial bucket to its hollow ring', () => {
+      const root = render([series('a', [1, null, 3, 4])], {
+        pointMarkers: 'always',
+        partialLastBucket: true,
+      });
+      expect(markers(root)).toBe(2);
+    });
   });
 });

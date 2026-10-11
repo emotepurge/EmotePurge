@@ -120,10 +120,8 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
         </div>
       </header>
 
-      @if (activityErrorMessage(); as error) {
-        <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
-      }
       <app-admin-activity-section
+        [errorKey]="activityErrorMessage()"
         [activity]="activity()"
         [loading]="activityLoading()"
         [trackedChannelCount]="rosterContext()?.tracked ?? null"
@@ -135,16 +133,15 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
            resources and its own error/loading state, independent of the worker-health snapshot
            below. Everything quiet (full policy list, caches, provider counters, last rejection)
            lives in the details dialog. -->
-      @if (rateLimitsErrorMessage(); as error) {
-        <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
-      }
-
       @if (showRateLimitsSkeleton()) {
         <app-skeleton-sections [count]="1" />
       } @else {
         <!-- The snapshot and the trend are independent: each part renders from its own last value,
              and a failure of one never hides the other. -->
-        <section class="flex flex-col gap-4 border-t border-border pt-4">
+        <section
+          class="flex flex-col gap-4 border-t border-border pt-4"
+          data-testid="admin-rate-limits"
+        >
           <div class="flex flex-wrap items-center justify-between gap-3">
             <h3 class="text-base font-semibold">
               {{ 'admin.dashboard.rateLimits.title' | transloco }}
@@ -155,6 +152,10 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
               </button>
             }
           </div>
+
+          @if (rateLimitsErrorMessage(); as error) {
+            <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
+          }
 
           @if (rateLimits(); as rl) {
             @if (!rl.telemetryAvailable) {
@@ -289,192 +290,197 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
         </section>
       }
 
-      @if (errorMessage(); as error) {
-        <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
-      }
-
-      @if (showSkeleton()) {
-        <app-skeleton-sections [count]="3" />
-      } @else if (health(); as data) {
-        @if (!data.snapshotAvailable) {
-          <app-notice-banner variant="warning">
-            {{ 'admin.monitoring.noSnapshot' | transloco }}
-          </app-notice-banner>
+      <!-- The worker-health area: its banner stands inside it, not beside the sections above. -->
+      <div class="flex flex-col gap-4" data-testid="admin-health">
+        @if (errorMessage(); as error) {
+          <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
         }
 
-        <!-- Twitch IRC.
+        @if (showSkeleton()) {
+          <app-skeleton-sections [count]="3" />
+        } @else if (health(); as data) {
+          @if (!data.snapshotAvailable) {
+            <app-notice-banner variant="warning">
+              {{ 'admin.monitoring.noSnapshot' | transloco }}
+            </app-notice-banner>
+          }
 
-             No card box around any of these, unlike before. A card is a boundary against a
-             *different* kind of neighbour, and on this page every neighbour is the same kind of
-             thing: one subsystem reporting on itself. Four bordered rectangles stacked in a column
-             separated nothing that a rule and a heading do not separate better — and the box was
-             competing with the only thing here that has to stand out, which is the one subsystem
-             that is not fine. -->
-        <section class="flex flex-col gap-3 border-t border-border pt-4">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <h3 class="text-base font-semibold">
-              {{ 'admin.monitoring.twitch.title' | transloco }}
-            </h3>
-            <app-health-marker
-              [tone]="toneFor(data.status)"
-              [label]="'admin.monitoring.status.' + data.status | transloco"
-            />
-          </div>
-          <dl class="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">
-                {{ 'admin.monitoring.twitch.lastMessage' | transloco }}
-              </dt>
-              <dd class="text-fg-body">{{ formatDateTime(data.lastMessageReceivedUtc) }}</dd>
-            </div>
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">
-                {{ 'admin.monitoring.twitch.connectAttempt' | transloco }}
-              </dt>
-              <dd class="text-fg-body">{{ formatDateTime(data.connectAttemptedUtc) }}</dd>
-            </div>
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">
-                {{ 'admin.monitoring.twitch.processStarted' | transloco }}
-              </dt>
-              <!-- Every counter on this page resets with the process, so its start time is what
-                   makes "0 failures" readable at all. -->
-              <dd class="text-fg-body">{{ formatDateTime(data.worker.processStartedUtc) }}</dd>
-            </div>
-          </dl>
-        </section>
+          <!-- Twitch IRC.
 
-        <!-- Roster: the worker's channels against the database's. Its own card because it is fed by
-             its own endpoint on its own cadence (see AdminRosterCard). -->
-        <app-admin-roster-card />
-
-        <!-- 7TV EventAPI -->
-        <section class="flex flex-col gap-3 border-t border-border pt-4">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <h3 class="text-base font-semibold">
-              {{ 'admin.monitoring.sevenTv.title' | transloco }}
-            </h3>
-            <app-health-marker
-              [tone]="toneFor(data.sevenTv.status)"
-              [label]="'admin.monitoring.status.' + data.sevenTv.status | transloco"
-            />
-          </div>
-
-          <div class="flex flex-col gap-1">
-            <div class="flex flex-wrap items-baseline justify-between gap-2 text-sm">
-              <span class="text-fg-muted">
-                {{ 'admin.monitoring.sevenTv.subscriptions' | transloco }}
-              </span>
-              <!-- The numbers are rendered as text as well, so the bar never carries meaning on its
-                   own (it is additionally an ARIA progressbar for assistive tech). -->
-              <span [class]="subscriptionTextClass()">
-                {{ formatNumber(data.sevenTv.desiredSubscriptionCount) }} /
-                {{ formatNumber(data.sevenTv.subscriptionLimit) }}
-              </span>
+               No card box around any of these, unlike before. A card is a boundary against a
+               *different* kind of neighbour, and on this page every neighbour is the same kind of
+               thing: one subsystem reporting on itself. Four bordered rectangles stacked in a column
+               separated nothing that a rule and a heading do not separate better — and the box was
+               competing with the only thing here that has to stand out, which is the one subsystem
+               that is not fine. -->
+          <section class="flex flex-col gap-3 border-t border-border pt-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <h3 class="text-base font-semibold">
+                {{ 'admin.monitoring.twitch.title' | transloco }}
+              </h3>
+              <app-health-marker
+                [tone]="toneFor(data.status)"
+                [label]="'admin.monitoring.status.' + data.status | transloco"
+              />
             </div>
-            <div
-              class="h-2 w-full overflow-hidden rounded-full bg-surface-inset"
-              role="progressbar"
-              [attr.aria-valuenow]="data.sevenTv.desiredSubscriptionCount"
-              aria-valuemin="0"
-              [attr.aria-valuemax]="data.sevenTv.subscriptionLimit"
-              [attr.aria-label]="'admin.monitoring.sevenTv.utilization' | transloco"
-            >
-              <div
-                class="h-full rounded-full"
-                [class]="subscriptionFillClass()"
-                [style.width.%]="utilizationPercent()"
-              ></div>
-            </div>
-            @if (subscriptionWarningKey(); as warningKey) {
-              <!-- The colour step alone must never carry the warning (WCAG 1.4.1). -->
-              <p class="text-xs" [class]="subscriptionTextClass()">
-                {{ warningKey | transloco: subscriptionWarningParams() }}
-              </p>
-            }
-          </div>
-
-          <dl class="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">
-                {{ 'admin.monitoring.sevenTv.channels' | transloco }}
-              </dt>
-              <dd class="text-fg-body">{{ formatNumber(data.sevenTv.desiredChannelCount) }}</dd>
-            </div>
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">
-                {{ 'admin.monitoring.sevenTv.unacknowledged' | transloco }}
-              </dt>
-              <dd class="text-fg-body">
-                @if (hasUnacknowledged()) {
-                  <app-status-badge tone="warning">
-                    {{ formatNumber(data.sevenTv.unacknowledgedCount) }}
-                  </app-status-badge>
-                } @else {
-                  {{ formatNumber(data.sevenTv.unacknowledgedCount) }}
-                }
-              </dd>
-            </div>
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">
-                {{ 'admin.monitoring.sevenTv.lastFrame' | transloco }}
-              </dt>
-              <dd class="text-fg-body">{{ formatDateTime(data.sevenTv.lastFrameUtc) }}</dd>
-            </div>
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">
-                {{ 'admin.monitoring.sevenTv.lastDispatch' | transloco }}
-              </dt>
-              <dd class="text-fg-body">{{ formatDateTime(data.sevenTv.lastDispatchUtc) }}</dd>
-            </div>
-            @if (restRequestRate(); as rate) {
+            <dl class="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
               <div class="flex justify-between gap-4 sm:block">
                 <dt class="text-fg-muted">
-                  {{ 'admin.monitoring.sevenTv.restRate' | transloco }}
+                  {{ 'admin.monitoring.twitch.lastMessage' | transloco }}
                 </dt>
-                <!-- Deliberately not a utilization bar: 7TV publishes no REST quota, so there is no
-                     honest denominator. A rate is what we actually know. -->
+                <dd class="text-fg-body">{{ formatDateTime(data.lastMessageReceivedUtc) }}</dd>
+              </div>
+              <div class="flex justify-between gap-4 sm:block">
+                <dt class="text-fg-muted">
+                  {{ 'admin.monitoring.twitch.connectAttempt' | transloco }}
+                </dt>
+                <dd class="text-fg-body">{{ formatDateTime(data.connectAttemptedUtc) }}</dd>
+              </div>
+              <div class="flex justify-between gap-4 sm:block">
+                <dt class="text-fg-muted">
+                  {{ 'admin.monitoring.twitch.processStarted' | transloco }}
+                </dt>
+                <!-- Every counter on this page resets with the process, so its start time is what
+                     makes "0 failures" readable at all. -->
+                <dd class="text-fg-body">{{ formatDateTime(data.worker.processStartedUtc) }}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <!-- Roster: the worker's channels against the database's. Its own card because it is fed by
+               its own endpoint on its own cadence (see AdminRosterCard). -->
+          <app-admin-roster-card />
+
+          <!-- 7TV EventAPI -->
+          <section class="flex flex-col gap-3 border-t border-border pt-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <h3 class="text-base font-semibold">
+                {{ 'admin.monitoring.sevenTv.title' | transloco }}
+              </h3>
+              <app-health-marker
+                [tone]="toneFor(data.sevenTv.status)"
+                [label]="'admin.monitoring.status.' + data.sevenTv.status | transloco"
+              />
+            </div>
+
+            <div class="flex flex-col gap-1">
+              <div class="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+                <span class="text-fg-muted">
+                  {{ 'admin.monitoring.sevenTv.subscriptions' | transloco }}
+                </span>
+                <!-- The numbers are rendered as text as well, so the bar never carries meaning on its
+                     own (it is additionally an ARIA progressbar for assistive tech). -->
+                <span [class]="subscriptionTextClass()">
+                  {{ formatNumber(data.sevenTv.desiredSubscriptionCount) }} /
+                  {{ formatNumber(data.sevenTv.subscriptionLimit) }}
+                </span>
+              </div>
+              <div
+                class="h-2 w-full overflow-hidden rounded-full bg-surface-inset"
+                role="progressbar"
+                [attr.aria-valuenow]="data.sevenTv.desiredSubscriptionCount"
+                aria-valuemin="0"
+                [attr.aria-valuemax]="data.sevenTv.subscriptionLimit"
+                [attr.aria-label]="'admin.monitoring.sevenTv.utilization' | transloco"
+              >
+                <div
+                  class="h-full rounded-full"
+                  [class]="subscriptionFillClass()"
+                  [style.width.%]="utilizationPercent()"
+                ></div>
+              </div>
+              @if (subscriptionWarningKey(); as warningKey) {
+                <!-- The colour step alone must never carry the warning (WCAG 1.4.1). -->
+                <p class="text-xs" [class]="subscriptionTextClass()">
+                  {{ warningKey | transloco: subscriptionWarningParams() }}
+                </p>
+              }
+            </div>
+
+            <dl class="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+              <div class="flex justify-between gap-4 sm:block">
+                <dt class="text-fg-muted">
+                  {{ 'admin.monitoring.sevenTv.channels' | transloco }}
+                </dt>
+                <dd class="text-fg-body">{{ formatNumber(data.sevenTv.desiredChannelCount) }}</dd>
+              </div>
+              <div class="flex justify-between gap-4 sm:block">
+                <dt class="text-fg-muted">
+                  {{ 'admin.monitoring.sevenTv.unacknowledged' | transloco }}
+                </dt>
                 <dd class="text-fg-body">
-                  {{ 'admin.monitoring.sevenTv.restRateValue' | transloco: rate }}
+                  @if (hasUnacknowledged()) {
+                    <app-status-badge tone="warning">
+                      {{ formatNumber(data.sevenTv.unacknowledgedCount) }}
+                    </app-status-badge>
+                  } @else {
+                    {{ formatNumber(data.sevenTv.unacknowledgedCount) }}
+                  }
                 </dd>
               </div>
-            }
-          </dl>
-        </section>
+              <div class="flex justify-between gap-4 sm:block">
+                <dt class="text-fg-muted">
+                  {{ 'admin.monitoring.sevenTv.lastFrame' | transloco }}
+                </dt>
+                <dd class="text-fg-body">{{ formatDateTime(data.sevenTv.lastFrameUtc) }}</dd>
+              </div>
+              <div class="flex justify-between gap-4 sm:block">
+                <dt class="text-fg-muted">
+                  {{ 'admin.monitoring.sevenTv.lastDispatch' | transloco }}
+                </dt>
+                <dd class="text-fg-body">{{ formatDateTime(data.sevenTv.lastDispatchUtc) }}</dd>
+              </div>
+              @if (restRequestRate(); as rate) {
+                <div class="flex justify-between gap-4 sm:block">
+                  <dt class="text-fg-muted">
+                    {{ 'admin.monitoring.sevenTv.restRate' | transloco }}
+                  </dt>
+                  <!-- Deliberately not a utilization bar: 7TV publishes no REST quota, so there is no
+                       honest denominator. A rate is what we actually know. -->
+                  <dd class="text-fg-body">
+                    {{ 'admin.monitoring.sevenTv.restRateValue' | transloco: rate }}
+                  </dd>
+                </div>
+              }
+            </dl>
+          </section>
 
-        <!-- Batch flush -->
-        <section class="flex flex-col gap-3 border-t border-border pt-4">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <h3 class="text-base font-semibold">
-              {{ 'admin.monitoring.flush.title' | transloco }}
-            </h3>
-            <app-health-marker
-              [tone]="hasFlushFailures() ? 'danger' : 'ok'"
-              [label]="
-                ('admin.monitoring.flush.consecutiveFailures' | transloco) +
-                ': ' +
-                formatNumber(data.flush.consecutiveFailures)
-              "
-            />
-          </div>
-          <dl class="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">{{ 'admin.monitoring.flush.lastSuccess' | transloco }}</dt>
-              <dd class="text-fg-body">{{ formatDateTime(data.flush.lastSuccessUtc) }}</dd>
+          <!-- Batch flush -->
+          <section class="flex flex-col gap-3 border-t border-border pt-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <h3 class="text-base font-semibold">
+                {{ 'admin.monitoring.flush.title' | transloco }}
+              </h3>
+              <app-health-marker
+                [tone]="hasFlushFailures() ? 'danger' : 'ok'"
+                [label]="
+                  ('admin.monitoring.flush.consecutiveFailures' | transloco) +
+                  ': ' +
+                  formatNumber(data.flush.consecutiveFailures)
+                "
+              />
             </div>
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">
-                {{ 'admin.monitoring.flush.lastRowCount' | transloco }}
-              </dt>
-              <dd class="text-fg-body">{{ formatNumber(data.flush.lastRowCount) }}</dd>
-            </div>
-            <div class="flex justify-between gap-4 sm:block">
-              <dt class="text-fg-muted">{{ 'admin.monitoring.flush.pending' | transloco }}</dt>
-              <dd class="text-fg-body">{{ formatNumber(data.flush.pendingEmoteCount) }}</dd>
-            </div>
-          </dl>
-        </section>
-      }
+            <dl class="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+              <div class="flex justify-between gap-4 sm:block">
+                <dt class="text-fg-muted">
+                  {{ 'admin.monitoring.flush.lastSuccess' | transloco }}
+                </dt>
+                <dd class="text-fg-body">{{ formatDateTime(data.flush.lastSuccessUtc) }}</dd>
+              </div>
+              <div class="flex justify-between gap-4 sm:block">
+                <dt class="text-fg-muted">
+                  {{ 'admin.monitoring.flush.lastRowCount' | transloco }}
+                </dt>
+                <dd class="text-fg-body">{{ formatNumber(data.flush.lastRowCount) }}</dd>
+              </div>
+              <div class="flex justify-between gap-4 sm:block">
+                <dt class="text-fg-muted">{{ 'admin.monitoring.flush.pending' | transloco }}</dt>
+                <dd class="text-fg-body">{{ formatNumber(data.flush.pendingEmoteCount) }}</dd>
+              </div>
+            </dl>
+          </section>
+        }
+      </div>
     </div>
   `,
 })

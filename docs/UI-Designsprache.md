@@ -130,7 +130,8 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **Legend statistic.** `legendStat` picks the number per legend entry: `last` (default, gauges), `sum` or `max` (event counts per window, e.g. the 24 h rate-limit trend uses `sum`). A non-default statistic shows the legend even for fewer than three series.
 - **A range without any known value says so** in the plot ("no data in this range"), with the axes still drawn so the layout does not jump.
 - **`null` is a gap.** An unknown value breaks the line; nothing bridges or interpolates it, and it is never drawn as 0. A day nobody observed and a day with zero channels look different.
-- **An incomplete last bucket** (`partialLastBucket`, e.g. the running UTC day) is drawn dashed with a hollow marker and named as incomplete in the text alternative.
+- **Day markers.** `pointMarkers` (`never` default, `auto`, `always`) draws small markers on each known bucket of a line series; `auto` does so up to 90 buckets, so the activity line shows its days over 30 and 90 days and is the plain line over 13 months. Markers keep the series tone.
+- **An incomplete last bucket** (`partialLastBucket`, e.g. the running UTC day) is drawn dashed with a hollow marker (instead of the filled day marker) and named as incomplete in the text alternative.
 - **Reading cursor instead of a tooltip.** The chart is one focusable group: the arrow keys (and the pointer) move a cursor, and an `aria-live="polite"` line under the plot states the bucket time and every series' value there — the same text for keyboard, pointer and screen reader.
 - **Time is UTC and says so.** Every time axis carries a caption ("times in UTC"); the unit is a visible caption above the plot, not only an axis label.
 - **Text alternative.** The `role="img"` SVG is named by the chart title and described by a generated summary per series (minimum, maximum, latest, known buckets of total).
