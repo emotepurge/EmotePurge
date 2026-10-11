@@ -356,7 +356,6 @@
       }
     },
     "rateLimits": {
-      "title": "Rate limits",
       "degraded": "The counter store is currently unreachable. Only the active configuration is shown, no numbers.",
       "policies": {
         "title": "Local policies",

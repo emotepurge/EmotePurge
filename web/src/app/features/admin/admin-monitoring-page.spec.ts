@@ -466,4 +466,86 @@ describe('AdminMonitoringPage', () => {
       expect(open.mock.calls[0][1]).toMatchObject({ data: { snapshot: degraded } });
     });
   });
+
+  describe('stability on errors and visibility', () => {
+    it('keeps the last snapshot and trend when a later poll fails', () => {
+      render(of(health()));
+      const service = TestBed.inject(AdminService);
+      const snapshotBefore = component['rateLimits']();
+      const trendBefore = component['trend']();
+      expect(snapshotBefore).toBeDefined();
+      expect(trendBefore).toBeDefined();
+
+      vi.mocked(service.getRateLimits).mockReturnValue(
+        throwError(() => new HttpErrorResponse({ status: 500, error: null })),
+      );
+      vi.mocked(service.getRateLimitTrend).mockReturnValue(
+        throwError(() => new HttpErrorResponse({ status: 500, error: null })),
+      );
+      component['reload']();
+      fixture.detectChanges();
+
+      expect(component['rateLimitsErrorMessage']()).toBe('errors.status.server');
+      expect(component['trendErrorMessage']()).toBe('errors.status.server');
+      expect(component['rateLimits']()).toBe(snapshotBefore);
+      expect(component['trend']()).toBe(trendBefore);
+    });
+
+    it('still has the trend when the snapshot failed on first load, and vice versa', () => {
+      render(
+        of(health()),
+        throwError(() => new HttpErrorResponse({ status: 500, error: null })),
+        of(activity()),
+        of(trend({ localRejections: [3] })),
+      );
+
+      expect(component['rateLimits']()).toBeUndefined();
+      expect(component['showRateLimitsSkeleton']()).toBe(false);
+      expect(component['trendSeries']()).toHaveLength(1);
+    });
+
+    it('shows no activity skeleton after a failed first load', () => {
+      render(
+        of(health()),
+        of(rateLimits()),
+        throwError(() => new HttpErrorResponse({ status: 500, error: null })),
+      );
+
+      expect(component['activity']()).toBeUndefined();
+      expect(component['activityLoading']()).toBe(false);
+    });
+
+    it('formats a tiny non-zero share as "<0.1", never as 0', () => {
+      render(of(health()));
+
+      expect(component['formatPercent'](0.04)).toMatch(/^<0[.,]1$/);
+      expect(component['formatPercent'](0)).toBe('0');
+      expect(component['formatPercent'](25)).toBe('25');
+    });
+
+    it('reloads the dashboard once when a page that opened hidden becomes visible', () => {
+      vi.useFakeTimers();
+      const setVisibility = (state: string) =>
+        Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+      try {
+        setVisibility('hidden');
+        render(of(health()));
+        const service = TestBed.inject(AdminService);
+        vi.advanceTimersByTime(1);
+        const before = vi.mocked(service.getDashboardActivity).mock.calls.length;
+
+        setVisibility('visible');
+        document.dispatchEvent(new Event('visibilitychange'));
+        fixture.detectChanges();
+        vi.advanceTimersByTime(1);
+
+        expect(vi.mocked(service.getDashboardActivity).mock.calls.length).toBe(before + 1);
+        expect(vi.mocked(service.getRateLimitTrend).mock.calls.length).toBe(2);
+        expect(vi.mocked(service.getRateLimits).mock.calls.length).toBe(2);
+      } finally {
+        setVisibility('visible');
+        vi.useRealTimers();
+      }
+    });
+  });
 });

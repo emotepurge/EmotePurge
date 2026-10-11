@@ -10,6 +10,7 @@ import {
   AdminDashboardActivity,
   AdminDashboardActivityRange,
   RateLimitTelemetrySnapshot,
+  RateLimitTelemetryTrend,
   SevenTvConnectionStatus,
   WorkerConnectionStatus,
 } from '../../core/admin/admin.model';
@@ -119,15 +120,12 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
         </div>
       </header>
 
-      @if (errorMessage(); as error) {
-        <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
-      }
-
       @if (activityErrorMessage(); as error) {
         <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
       }
       <app-admin-activity-section
         [activity]="activity()"
+        [loading]="activityLoading()"
         [trackedChannelCount]="rosterContext()?.tracked ?? null"
         [maxActiveChannels]="rosterContext()?.max ?? null"
         [(range)]="range"
@@ -143,112 +141,120 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
 
       @if (showRateLimitsSkeleton()) {
         <app-skeleton-sections [count]="1" />
-      } @else if (rateLimits(); as rl) {
+      } @else {
+        <!-- The snapshot and the trend are independent: each part renders from its own last value,
+             and a failure of one never hides the other. -->
         <section class="flex flex-col gap-4 border-t border-border pt-4">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <h3 class="text-base font-semibold">
               {{ 'admin.dashboard.rateLimits.title' | transloco }}
             </h3>
-            <button type="button" appButton="outline" (click)="openDetails(rl)">
-              {{ 'admin.dashboard.rateLimits.details.open' | transloco }}
-            </button>
+            @if (rateLimits(); as rl) {
+              <button type="button" appButton="outline" (click)="openDetails(rl)">
+                {{ 'admin.dashboard.rateLimits.details.open' | transloco }}
+              </button>
+            }
           </div>
 
-          @if (!rl.telemetryAvailable) {
-            <app-notice-banner variant="warning">
-              {{ 'admin.rateLimits.degraded' | transloco }}
-            </app-notice-banner>
-          } @else if (policyRows().length === 0 && providerRows().length === 0) {
-            <app-empty-state
-              [title]="'admin.dashboard.rateLimits.none.title' | transloco"
-              [description]="'admin.dashboard.rateLimits.none.description' | transloco"
-            />
-          } @else {
-            @if (policyRows().length) {
-              <div class="flex flex-col gap-2">
-                <h4 class="text-sm font-medium text-fg-body">
-                  {{ 'admin.dashboard.rateLimits.policies.title' | transloco }}
-                </h4>
-                <ul class="-mx-3 divide-y divide-border border-y border-border">
-                  @for (row of policyRows(); track row.name) {
-                    <li class="flex flex-col gap-1 px-3 py-3">
-                      <div
-                        class="flex flex-wrap items-center gap-2 text-sm font-medium text-fg-body"
-                      >
-                        {{ 'admin.rateLimits.policies.names.' + row.name | transloco }}
-                        @if (row.acute) {
-                          <app-status-badge tone="danger">
-                            {{ 'admin.dashboard.rateLimits.acute' | transloco }}
-                          </app-status-badge>
-                        }
-                      </div>
-                      <p class="text-xs text-fg-muted">
-                        @if (row.sharePercent === null) {
-                          {{ 'admin.dashboard.rateLimits.policies.noRequests' | transloco }}
-                        } @else {
-                          {{
-                            'admin.dashboard.rateLimits.policies.share'
-                              | transloco
-                                : {
-                                    rejected: formatNumber(row.rejectedLast24Hours),
-                                    decisions: formatNumber(
-                                      row.rejectedLast24Hours + row.acceptedLast24Hours
-                                    ),
-                                    percent: formatPercent(row.sharePercent),
-                                  }
-                          }}
-                        }
-                        @if (row.acute) {
-                          ·
-                          {{
-                            'admin.dashboard.rateLimits.lastMinute'
-                              | transloco: { count: formatNumber(row.rejectedLastMinute) }
-                          }}
-                        }
-                      </p>
-                    </li>
-                  }
-                </ul>
-              </div>
-            }
+          @if (rateLimits(); as rl) {
+            @if (!rl.telemetryAvailable) {
+              <app-notice-banner variant="warning">
+                {{ 'admin.rateLimits.degraded' | transloco }}
+              </app-notice-banner>
+            } @else if (policyRows().length === 0 && providerRows().length === 0) {
+              <app-empty-state
+                [title]="'admin.dashboard.rateLimits.none.title' | transloco"
+                [description]="'admin.dashboard.rateLimits.none.description' | transloco"
+              />
+            } @else {
+              @if (policyRows().length) {
+                <div class="flex flex-col gap-2">
+                  <h4 class="text-sm font-medium text-fg-body">
+                    {{ 'admin.dashboard.rateLimits.policies.title' | transloco }}
+                  </h4>
+                  <ul class="-mx-3 divide-y divide-border border-y border-border">
+                    @for (row of policyRows(); track row.name) {
+                      <li class="flex flex-col gap-1 px-3 py-3">
+                        <div
+                          class="flex flex-wrap items-center gap-2 text-sm font-medium text-fg-body"
+                        >
+                          {{ 'admin.rateLimits.policies.names.' + row.name | transloco }}
+                          @if (row.acute) {
+                            <app-status-badge tone="danger">
+                              {{ 'admin.dashboard.rateLimits.acute' | transloco }}
+                            </app-status-badge>
+                          }
+                        </div>
+                        <p class="text-xs text-fg-muted">
+                          @if (row.sharePercent === null) {
+                            {{ 'admin.dashboard.rateLimits.policies.noRequests' | transloco }}
+                          } @else {
+                            {{
+                              'admin.dashboard.rateLimits.policies.share'
+                                | transloco
+                                  : {
+                                      rejected: formatNumber(row.rejectedLast24Hours),
+                                      decisions: formatNumber(
+                                        row.rejectedLast24Hours + row.acceptedLast24Hours
+                                      ),
+                                      percent: formatPercent(row.sharePercent),
+                                    }
+                            }}
+                          }
+                          @if (row.acute) {
+                            ·
+                            {{
+                              'admin.dashboard.rateLimits.lastMinute'
+                                | transloco: { count: formatNumber(row.rejectedLastMinute) }
+                            }}
+                          }
+                        </p>
+                      </li>
+                    }
+                  </ul>
+                </div>
+              }
 
-            @if (providerRows().length) {
-              <div class="flex flex-col gap-2">
-                <h4 class="text-sm font-medium text-fg-body">
-                  {{ 'admin.dashboard.rateLimits.providers.title' | transloco }}
-                </h4>
-                <ul class="-mx-3 divide-y divide-border border-y border-border">
-                  @for (row of providerRows(); track row.providerName + '|' + row.callSource) {
-                    <li class="flex flex-col gap-1 px-3 py-3">
-                      <div
-                        class="flex flex-wrap items-center gap-2 text-sm font-medium text-fg-body"
-                      >
-                        {{ 'admin.rateLimits.providers.names.' + row.providerName | transloco }}
-                        ·
-                        {{ 'admin.rateLimits.providers.callSources.' + row.callSource | transloco }}
-                        @if (row.acute) {
-                          <app-status-badge tone="danger">
-                            {{ 'admin.dashboard.rateLimits.acute' | transloco }}
-                          </app-status-badge>
-                        }
-                      </div>
-                      <p class="text-xs text-fg-muted">
-                        {{
-                          'admin.dashboard.rateLimits.providers.count'
-                            | transloco: { count: formatNumber(row.rateLimitedLast24Hours) }
-                        }}
-                        @if (row.acute) {
+              @if (providerRows().length) {
+                <div class="flex flex-col gap-2">
+                  <h4 class="text-sm font-medium text-fg-body">
+                    {{ 'admin.dashboard.rateLimits.providers.title' | transloco }}
+                  </h4>
+                  <ul class="-mx-3 divide-y divide-border border-y border-border">
+                    @for (row of providerRows(); track row.providerName + '|' + row.callSource) {
+                      <li class="flex flex-col gap-1 px-3 py-3">
+                        <div
+                          class="flex flex-wrap items-center gap-2 text-sm font-medium text-fg-body"
+                        >
+                          {{ 'admin.rateLimits.providers.names.' + row.providerName | transloco }}
                           ·
                           {{
-                            'admin.dashboard.rateLimits.lastMinute'
-                              | transloco: { count: formatNumber(row.rateLimitedLastMinute) }
+                            'admin.rateLimits.providers.callSources.' + row.callSource | transloco
                           }}
-                        }
-                      </p>
-                    </li>
-                  }
-                </ul>
-              </div>
+                          @if (row.acute) {
+                            <app-status-badge tone="danger">
+                              {{ 'admin.dashboard.rateLimits.acute' | transloco }}
+                            </app-status-badge>
+                          }
+                        </div>
+                        <p class="text-xs text-fg-muted">
+                          {{
+                            'admin.dashboard.rateLimits.providers.count'
+                              | transloco: { count: formatNumber(row.rateLimitedLast24Hours) }
+                          }}
+                          @if (row.acute) {
+                            ·
+                            {{
+                              'admin.dashboard.rateLimits.lastMinute'
+                                | transloco: { count: formatNumber(row.rateLimitedLastMinute) }
+                            }}
+                          }
+                        </p>
+                      </li>
+                    }
+                  </ul>
+                </div>
+              }
             }
           }
 
@@ -280,6 +286,10 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
             <p>{{ 'admin.rateLimits.hints.policyFreeRoutes' | transloco }}</p>
           </div>
         </section>
+      }
+
+      @if (errorMessage(); as error) {
+        <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
       }
 
       @if (showSkeleton()) {
@@ -540,12 +550,19 @@ export class AdminMonitoringPage {
   // Same undefined-until-loaded / skeleton-on-first-load-only shape as the health resource above,
   // kept as its own trio rather than merged: the two resources load, error and reload
   // independently.
-  protected readonly rateLimits = computed(() =>
-    this.rateLimitsResource.hasValue() ? this.rateLimitsResource.value() : undefined,
-  );
+  // Last-value pattern: a failed 60 s poll keeps the previous snapshot on screen (the error banner
+  // stands beside it) instead of removing the section.
+  protected readonly rateLimits = linkedSignal<
+    RateLimitTelemetrySnapshot | undefined,
+    RateLimitTelemetrySnapshot | undefined
+  >({
+    source: () =>
+      this.rateLimitsResource.hasValue() ? this.rateLimitsResource.value() : undefined,
+    computation: (next, previous) => next ?? previous?.value,
+  });
 
   protected readonly showRateLimitsSkeleton = computed(
-    () => this.rateLimitsResource.status() === 'loading',
+    () => this.rateLimitsResource.status() === 'loading' && this.rateLimits() === undefined,
   );
 
   protected readonly rateLimitsErrorMessage = computed(() => {
@@ -566,21 +583,30 @@ export class AdminMonitoringPage {
     computation: (next, previous) => next ?? previous?.value,
   });
 
+  protected readonly activityLoading = computed(() => this.activityResource.status() === 'loading');
+
   protected readonly activityErrorMessage = computed(() => {
     const error = this.activityResource.error();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : null;
   });
 
-  protected readonly trend = computed(() =>
-    this.trendResource.hasValue() ? this.trendResource.value() : undefined,
-  );
+  protected readonly trend = linkedSignal<
+    RateLimitTelemetryTrend | undefined,
+    RateLimitTelemetryTrend | undefined
+  >({
+    source: () => (this.trendResource.hasValue() ? this.trendResource.value() : undefined),
+    computation: (next, previous) => next ?? previous?.value,
+  });
 
   protected readonly trendErrorMessage = computed(() => {
     const error = this.trendResource.error();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : null;
   });
 
-  /** Channel count for the activity heading, read from the roster card — no second /roster call. */
+  /**
+   * Channel count for the activity heading, read from the roster card — no second /roster call.
+   * Appears only once health has loaded: the card lives in the health branch (deliberate).
+   */
   protected readonly rosterContext = computed(() => {
     const roster = this.rosterCard()?.roster();
     return roster
@@ -716,8 +742,10 @@ export class AdminMonitoringPage {
 
     // Activity, rate-limit snapshot and trend share one visibility-aware 60 s timer. The first tick
     // (immediate, on a visible page) is skipped: the resources have just loaded themselves.
-    pollWhileVisible(DASHBOARD_POLL_INTERVAL_MS, pageVisible())
-      .pipe(skip(1))
+    // A page that opened hidden has not had that tick: its first emission is the return to visible.
+    const visible = pageVisible();
+    pollWhileVisible(DASHBOARD_POLL_INTERVAL_MS, visible)
+      .pipe(skip(visible() ? 1 : 0))
       .subscribe(() => this.reloadDashboard());
   }
 
@@ -757,9 +785,11 @@ export class AdminMonitoringPage {
   }
 
   protected formatPercent(value: number): string {
-    return new Intl.NumberFormat(toLocale(this.languageService.lang()), {
+    const format = new Intl.NumberFormat(toLocale(this.languageService.lang()), {
       maximumFractionDigits: 1,
-    }).format(value);
+    });
+    // The row exists because something was rejected: never show it as "0 %".
+    return value > 0 && value < 0.1 ? `<${format.format(0.1)}` : format.format(value);
   }
 
   private reloadDashboard(): void {

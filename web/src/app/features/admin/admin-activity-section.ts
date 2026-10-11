@@ -52,7 +52,7 @@ const DAY_SECONDS = 86_400;
           [title]="'admin.dashboard.activity.chartTitle' | transloco"
           [partialLastBucket]="data.todayIsPartial"
         />
-      } @else {
+      } @else if (loading()) {
         <app-skeleton-sections [count]="1" />
       }
 
@@ -70,6 +70,8 @@ const DAY_SECONDS = 86_400;
 export class AdminActivitySection {
   /** The last successfully loaded series; `undefined` only before the very first load. */
   readonly activity = input<AdminDashboardActivity | undefined>();
+  /** True only while the series has never loaded; after a failed first load nothing is shown. */
+  readonly loading = input(false);
   readonly trackedChannelCount = input<number | null>(null);
   readonly maxActiveChannels = input<number | null>(null);
   readonly range = model.required<AdminDashboardActivityRange>();

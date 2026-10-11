@@ -356,7 +356,6 @@
       }
     },
     "rateLimits": {
-      "title": "Rate Limits",
       "degraded": "Der Zähler-Store ist gerade nicht erreichbar. Es wird nur die aktive Konfiguration angezeigt, keine Zahlen.",
       "policies": {
         "title": "Lokale Policies",
