@@ -12,6 +12,14 @@ Betreiber-Entscheidungen D0–D33 werden nicht wieder aufgemacht.
 **Lesehinweis:** Zeilen mit **[E]** sind Planer-Entscheidungen, kein Spec-Text — der Betreiber kann jede einzeln kippen. Was nur er
 entscheiden kann, steht in Abschnitt 12.
 
+**Revision 2026-10-11** (nach Codex-Sol-Adversarial-Review und Betreiber-Entscheidungen; Erstfassung `0d31ce0c`): (1) E8 gestrichen —
+Seeds kopieren `IsArchived`/`ArchivedAt` 1:1 aus `Emotes` (Spec-Wortlaut; Codex-Befund 1, Betreiber); Test 3, Live-Check 7, Randfälle,
+DECISIONS-Nachtrag und Kind-2-Hinweis angepasst. (2) R2 entschieden: Prod-Kopie (AK 1) in Kind 9 für M1–M3 gemeinsam. (3) Codex-
+Befund 2: die Seed-Logik wird zur wiederverwendbaren, idempotenten Konstante `EmoteSlotSeedSql` (neu E17), die M1 **und** M2-`Up`
+fahren; die Behauptung „Prod ist von NULL-Zeilen ausgeschlossen" war falsch (§11.2 Schritt 4 erlaubt alte Images auf M1) und ist
+korrigiert; Tests 10–11 neu. (4) Codex-Befund 3: der Snapshot-Kollaps wird in Kind 1 auf simuliertem M3-Stand fixturiert (E14
+geändert, Test 12 neu). Aufgabenliste T2–T4 und T6 entsprechend.
+
 ## 1. Umfang
 
 ### 1.1 Drin (Spec §16 Zeile 1, D19)
@@ -27,7 +35,9 @@ entscheiden kann, steht in Abschnitt 12.
 5. Kaskaden-Nachweis: Purge (Admin, Retention, Broadcaster-Selbstbereinigung #245), Account-Löschung, Merge brauchen keine
    Änderung; Nachweis in diesem Kind.
 6. **Kein Schreiber ändert sich.** Flush, Zähler, Match-Map, Backfill-Insert, Snapshot-Erzeugung, `ArchivedEmoteRowUpsert`,
-   Ballot-Erzeugung bleiben byteidentisch. Sie schreiben nach M1 Zeilen mit `SlotId = NULL`; das ist im additiven Stand gewollt.
+   Ballot-Erzeugung bleiben byteidentisch. Sie schreiben nach M1 Zeilen mit `SlotId = NULL`; das ist im additiven Stand gewollt —
+   lokal immer, auf Prod nach einem abgebrochenen Fenster (§11.2 Schritt 4: alte Images laufen auf M1 weiter). Deshalb ist die
+   Seed-Logik eine wiederverwendbare Konstante (E17), die solche Zeilen später nachträglich anhängt.
 
 ### 1.2 Draußen (mit Besitzer)
 
@@ -95,19 +105,22 @@ Transaktion (EF-Migrator-Default; `SET LOCAL` ist deshalb transaktionslokal).
 | Schritt | Inhalt | Art |
 |---|---|---|
 | 1 | `SET LOCAL lock_timeout = '5s';` | Hand |
-| 1b | **[E5]** `LOCK TABLE "UsageStats" IN ACCESS EXCLUSIVE MODE` — das `ALTER TABLE` in Schritt 4 nimmt diese Sperre ohnehin; sie früher zu nehmen heißt, dass der Seed in Schritt 3 die endgültige Zeilenmenge sieht und kein Flush zwischen Seed und `ALTER` ein neues Paar einfügen kann. Mit `lock_timeout` 5 s scheitert eine vergessene psql-Sitzung schnell statt stumm zu warten. | Hand |
+| 1b | **[E5]** `LOCK TABLE "UsageStats" IN ACCESS EXCLUSIVE MODE` — das `ALTER TABLE` in Schritt 3 nimmt diese Sperre ohnehin; sie schon hier zu nehmen heißt, dass zwischen `CREATE TABLE`, `ALTER` und dem Seed (Schritt 4) kein Flush mehr schreibt und die Konstante die endgültige Zeilenmenge sieht. Mit `lock_timeout` 5 s scheitert eine vergessene psql-Sitzung schnell statt stumm zu warten. | Hand |
 | 2 | `CREATE TABLE "EmoteSlots"` samt FK und beiden Indizes | EF |
-| 3 | Seed: Hilfstabelle (`TEMP … ON COMMIT DROP`) mit `(SlotId, EmoteId, EmoteSetId)` je distinct Paar aus `UsageStats`, weil `EmoteSlots` das Set nicht trägt und alle drei Befüllungen dasselbe Paar→Slot-Mapping brauchen; daraus `INSERT INTO "EmoteSlots"` mit den Werten aus Abschnitt 3 (E6–E8) | Hand |
-| 4 | `ALTER TABLE "UsageStats" ADD COLUMN "SlotId" text NULL` → `UPDATE` aus der Hilfstabelle über `(EmoteId, EmoteSetId)` → **Abbruchprüfung** (unten) → FK anlegen (nach dem `UPDATE`, damit die FK-Validierung ein Durchlauf ist) | EF + Hand |
-| 5 | `CREATE INDEX "IX_UsageStats_SlotId_EmoteSetId_Date" … INCLUDE ("UseCount")` — nach der Befüllung, nicht davor | EF (umsortiert) |
-| 6 | `ChatLogBackfillRunEmotes`: `SlotId text NULL`, `CreatedSlot boolean NOT NULL DEFAULT false`; `UPDATE` über `ChatLogBackfillRuns.EmoteSetId` des Laufs und den Seed desselben `(EmoteId, EmoteSetId)`; Zeilen ohne Seed bleiben `NULL` (E9) | EF + Hand |
-| 7 | `VoteSessionEmotes`: `NamesAtCreation text[] NULL` | EF |
+| 3 | `ALTER TABLE "UsageStats" ADD COLUMN "SlotId" text NULL` | EF (umsortiert) |
+| 4 | **Seed + Anhängen = `EmoteSlotSeedSql.AttachUnslottedUsageRowsSql`** (E17, Abschnitt 2.6): auf der frischen Spalte ist jede Zeile `NULL` und kein Slot existiert, der Lauf ist also der vollständige Seed je distinct Paar mit den Werten aus Abschnitt 3 (E6/E7, Archivzustand 1:1) | Hand (Konstante) |
+| 5 | **Abbruchprüfung** (unten) → FK anlegen (nach dem Anhängen, damit die FK-Validierung ein Durchlauf ist) | Hand + EF |
+| 6 | `CREATE INDEX "IX_UsageStats_SlotId_EmoteSetId_Date" … INCLUDE ("UseCount")` — nach der Befüllung, nicht davor | EF (umsortiert) |
+| 7 | `ChatLogBackfillRunEmotes`: `SlotId text NULL`, `CreatedSlot boolean NOT NULL DEFAULT false`; `UPDATE` über `ChatLogBackfillRuns.EmoteSetId` des Laufs und den Slot, der die Zeilen desselben `(EmoteId, EmoteSetId)` trägt (nach Schritt 4 genau der Seed); Zeilen ohne Seed bleiben `NULL` (E9) | EF + Hand |
+| 8 | `VoteSessionEmotes`: `NamesAtCreation text[] NULL` | EF |
 
-**Abbruchprüfung (Schritt 4, `DO $$ … RAISE EXCEPTION`, englische Meldung mit Zählwerten wie in `AddChatLogBackfill`):**
+**Abbruchprüfung (Schritt 5, `DO $$ … RAISE EXCEPTION`, englische Meldung mit Zählwerten wie in `AddChatLogBackfill`):**
 (a) keine `UsageStats`-Zeile mit `SlotId IS NULL`; (b) keine Zeile, deren Slot ein anderes `EmoteId` trägt; (c) kein Slot, an dem
 Zeilen aus mehr als einem `EmoteSetId` hängen; (d) Zahl der Seeds = Zahl der distinct Paare. Auf einer konsistenten DB ist die Prüfung
 nicht auslösbar (FK `UsageStats → Emotes`, Sperre aus 1b) — sie ist der Gurt, kein Pfad. Scheitert sie, rollt die Transaktion
-alles zurück, die Migrationshistorie bleibt ohne Eintrag.
+alles zurück, die Migrationshistorie bleibt ohne Eintrag. Die Prüfung gehört zur **Migration**, nicht zur Konstante: (c) und (d)
+gelten nur auf der frischen Spalte; M2-`Up` (Kind 3) formuliert nach seinem Lauf der Konstante eine eigene Prüfung (mindestens (a)
+und (b)).
 
 **`Down`:** EF-generiert, kein Guard (Spec: „alles fällt"): FK und Index auf `UsageStats`, die vier Spalten, Tabelle `EmoteSlots`.
 Die Seed-Zuordnung geht damit verloren; ein erneutes `Up` seedet mit neuen Ids identisch (Test 8). Nach M2 ist M1-`Down` nur über
@@ -129,17 +142,48 @@ Inhalt als Absicht (die Spec sagt „Summen"; **[E11]** gemeint sind die drei Z�
   unberührt; ein zweiter Lauf ändert 0 Zeilen.
 - `ChatLogBackfillRunEmotes`: je `(RunId, EmoteId)` mit > 1 Zeile die Zeile des ältesten Slots (gleiche Ordnung) behalten.
 
+### 2.6 Seed-SQL, wiederverwendbar — `EmoteSlotSeedSql.AttachUnslottedUsageRowsSql`
+
+**[E17]** Eigene statische Klasse `EmoteSlotSeedSql` in `src/EmotePurge.Infrastructure/Migrations/`, Schwester von
+`EmoteSlotRollbackSql`, bewusst nicht dieselbe Klasse: Vorwärtspfad (M1-`Up`, M2-`Up`, Reparatur nach abgebrochenem Fenster) und
+Rückwärtspfad (Kollaps vor `Down`) dürfen in Operations.md und im Code nicht verwechselbar sein. Eine `public const string`, als
+**eine** Einheit ausführbar (ein `DO`-Block, oder Statements, die der Aufrufer in einer Transaktion fährt — der Test ruft sie über ein
+einzelnes `ExecuteSqlRawAsync` in einer Transaktion auf). Sonar schließt den Ordner aus; die Konstante ist über die Migrationstests
+gedeckt. Die Migration ruft die Konstante und enthält **keine** zweite Kopie der Seed-Logik.
+
+Vertrag (Absicht):
+
+1. **Eingabe** sind alle `UsageStats`-Zeilen mit `SlotId IS NULL`. Zeilen mit `SlotId` werden nie angefasst.
+2. **Ziel-Slot je Paar `(EmoteId, EmoteSetId)`:** trägt bereits mindestens ein Slot Zeilen dieses Paars (gleiches `EmoteId`,
+   gleiches `EmoteSetId`, `SlotId IS NOT NULL`), hängen die `NULL`-Zeilen an **diesen** Slot — nach Kind 2 ist das der gesettelte Seed
+   bzw. der autoritative Slot, an den das Settle die Set-Zeilen gebunden hat. Tragen mehrere Slots Zeilen des Paars, gewinnt der
+   **älteste nach D2-Ordnung**: kleinstes `AddedAt` (`NULLS LAST`), dann ordinal `Name` (`COLLATE "C"`), dann `Id`. Begründung: eine
+   `NULL`-Zeile stammt von einem Schreiber, der je Emote zählt — genau der Bestand, den D2 dem ältesten Slot des Sets zuweist; die Summe
+   je Paar bleibt erhalten, nur die Zuschreibung folgt D2. Abbruch verworfen: er bräuchte eine weitere Reparaturprozedur (Codex-Befund
+   2), während die Ordnung dieselbe wie im Kollaps-SQL ist, also keine neue Regel. Vor M2 ist der Fall ohnehin beweisbar
+   einelementig: Kind 2 schreibt keine Nutzungszeilen, das Settle bindet alle Zeilen eines Sets an genau einen Slot, neue Slots
+   beginnen bei 0.
+3. **Kein Slot mit Zeilen des Paars** → neuer unsettled Seed (`AddedAt NULL`, `AddedAtFromRest false`, `SeedUnsettled true`,
+   `Name`/`IsArchived`/`ArchivedAt` 1:1 aus `Emotes`, `LastSyncedAt = now()`), daran alle `NULL`-Zeilen des Paars (D12). Das gilt
+   auch für ein neues Set eines Emotes, dessen andere Sets längst gesettelt sind; der nächste Abgleich settelt den neuen Seed.
+4. **Idempotent:** ein zweiter Lauf ändert 0 Zeilen und legt 0 Seeds an.
+5. **Keine Indexverletzung:** vor M2 ist `(EmoteId, EmoteSetId, Date)` unique, eine `NULL`-Zeile an `(E, S, D)` existiert also nur,
+   wenn dort sonst keine Zeile liegt — das Anhängen kann den Slot-Index nicht doppelt belegen; nach M2 gibt es keine `NULL`-Zeilen
+   mehr (`NOT NULL`).
+6. Auf einer frisch angelegten Spalte (M1 Schritt 4) greift für jedes Paar Regel 3 — das ist der vollständige Seed aus Spec §11.1
+   Schritt 3/4.
+
 ## 3. Planer-Entscheidungen zu den offenen Fragen
 
 | # | Frage | Entscheidung | Begründung / verworfene Alternative |
 |---|---|---|---|
 | **[E6]** | `Name` des Seeds | `Emotes.Name` zum Migrationszeitpunkt | Der einzige Name, den wir je Emote haben; D11(a) macht ihn bis zum Settle zur Identität |
 | **[E7]** | `LastSyncedAt` | `now()` der Migrationstransaktion — alle Seeds tragen denselben Stempel | Spec: „gestempelt bei Anlage". `Emote.LastSyncedAt` verworfen: es würde einen Abgleich behaupten, der den Slot nie gesehen hat. Der gemeinsame Stempel ist zugleich ein brauchbares Erkennungsmerkmal der Seeds im Betrieb |
-| **[E8]** | `IsArchived` / `ArchivedAt` je Seed | `IsArchived = Emotes.IsArchived OR EmoteSetId ≠ Channels.ActiveEmoteSetId`; `ArchivedAt = Emotes.ArchivedAt`, wenn das Emote archiviert ist, sonst `NULL` | **Weicht vom Wortlaut „Archivzustand aus `Emotes`" ab** — siehe Rückfrage R1. Grund: mit Seeds je Set wäre der Seed eines alten Sets B nach dem Wortlaut „aktiv", obwohl der Kanal auf A steht; die aktive Ansicht (Kind 6) zeigte dann zwei gleichnamige Karten, und der erste Abgleich (6.2 Schritt 7) archivierte B mit `ArchivedAt = now`, einem falschen Datum. So ist B von Anfang an archiviert mit `ArchivedAt = NULL` („Zeitpunkt unbekannt"), was dem Endzustand entspricht, den Kind 5 für nicht aktive Sets ohnehin herstellt. Die Invariante 4.1 (aktiver Slot ⇒ aktives Emote) gilt in beiden Lesarten; Settle (6.3) ist vom Archivstatus unabhängig. Kanäle ohne `ActiveEmoteSetId` (leer) bekommen nur archivierte Seeds |
-| **[E9]** | Snapshot-Zeilen ohne Seed ihres Sets | `SlotId` bleibt `NULL`, `CreatedSlot = false`, kein Abbruch | D12 erlaubt Seeds nur für Paare mit Nutzung; einen Seed für ein Paar ohne Zeilen zu erfinden, änderte D12. Die Spec nennt die Abbruchprüfung nur für `UsageStats`. Auf Prod ist die Menge leer (Vorbedingung 3a: 0 Läufe). Folge für M3 steht in Abschnitt 11 |
+| ~~E8~~ → **Betreiber 2026-10-11** | `IsArchived` / `ArchivedAt` je Seed | **Spec-Wortlaut:** beide Werte **1:1 aus `Emotes`**, für jeden Seed des Emotes, unabhängig davon, ob sein Set das aktive ist. Keine Ableitung aus `ActiveEmoteSetId`, keine Sonderregel für Kanäle mit leerem Set | Ersetzt die frühere Planer-Entscheidung E8 (abgeleiteter Archivzustand je Set) nach Codex-Befund 1: die Spec ist nach R5 fertig, ein Kind darf einen Eingabewert des Abgleichs nicht umdeuten. Die Folge — ein aktiver Seed für ein nicht aktives Set eines aktiven Emotes — ist ein Risiko, das Kind 2 innerhalb der Spec auflöst (Abschnitt 11) |
+| **[E9]** | Snapshot-Zeilen ohne Seed ihres Sets | `SlotId` bleibt `NULL`, `CreatedSlot = false`, kein Abbruch | D12 erlaubt Seeds nur für Paare mit Nutzung; einen Seed für ein Paar ohne Zeilen zu erfinden, änderte D12. Die Spec nennt die Abbruchprüfung nur für `UsageStats`. Auf Prod ist die Menge zum Fensterbeginn leer (Vorbedingung 3a: 0 Läufe), und das Backfill-Flag bleibt bis nach dem Fenster aus — auch nach einem Abbruch mit alten Images entstehen dort keine Läufe. Folge für M3 steht in Abschnitt 11 |
 | **[E12]** | Id-Erzeugung im SQL | `gen_random_uuid()::text` | Postgres ≥ 13 (Dev und Prod: 16); liefert dieselbe 36-stellige, kleingeschriebene Bindestrich-Form wie `Guid.ToString()` — ein Leser kann Seed-Ids und Code-Ids nicht unterscheiden, und das soll so sein |
-| **[E13]** | AK 1/3/4 an der Kind-1-Grenze | **AK 2 vollständig** (Test + Live). **AK 1:** M1-Teil auf einer Kopie der lokalen Dev-DB (Abschnitt 7), `migrations list` ohne Pending auf der Kopie; M2/M3 und die Prod-Kopie → Kind 9 (R2). **AK 3:** M1-`Down` entfernt alles (Test 7) und das Kollaps-SQL hält die Summen (Test 9 auf simuliertem M2-Stand); M2-/M3-`Down`-Guards → Kinder 3/5. **AK 4:** getrennte Seeds A/B, Zeilen je Set, Summen je Set, Snapshot-Zeilen mit Seed, `CreatedSlot = false`, `NamesAtCreation NULL` (Tests 2/4); Settle → Kind 2; „M2/M3 darauf grün" → Kinder 3/5 | Aufzeichnung: der PR-Text trägt eine AK-Tabelle mit Stand je Teilaussage („erfüllt" / „Rest in #37x"); je ein Kommentar auf #373 und #375 nennt die Konstante und die Fixture, die dort wiederzuverwenden sind |
-| **[E14]** | Kollaps-Test ohne M2 | Der Test stellt den M2-Zustand her, soweit er fürs Kollaps-SQL zählt: nach `Up` wird im Scratch-Schema der unique `(EmoteId, EmoteSetId, Date)`-Index per Raw-SQL gelöscht, dann zwei Slot-Zeilen je Zelle eingefügt, das SQL gefahren, danach der Unique-Index wieder angelegt (das ist die Form des M2-`Down`-Guards) und M1-`Down` gefahren | Ohne den Index-Drop hat das SQL keinen Input. Der Snapshot-Kollaps ist in Kind 1 **nicht** fixturbar (PK `(RunId, EmoteId)` verbietet den Input bis M3) — Kind 5 testet ihn gegen den echten M3-Stand; Kind 3 fährt Test 9 zusätzlich gegen das echte M2-`Down` |
+| **[E13]** | AK 1/3/4 an der Kind-1-Grenze | **AK 2 vollständig** (Test + Live). **AK 1:** M1-Teil auf einer Kopie der lokalen Dev-DB (Abschnitt 7), `migrations list` ohne Pending auf der Kopie; M2/M3 und der Lauf auf der **Prod-Kopie → „Rest in #379"** (Betreiber 2026-10-11: Kind 9 fährt ihn für M1–M3 gemeinsam vor dem Fenster). **AK 3:** M1-`Down` entfernt alles (Test 7), das Kollaps-SQL hält die Summen (Test 9 auf simuliertem M2-Stand) und behält je `(RunId, EmoteId)` den ältesten Slot (Test 12 auf simuliertem M3-Stand); M2-/M3-`Down`-Guards → Kinder 3/5. **AK 4:** getrennte Seeds A/B, Zeilen je Set, Summen je Set, Snapshot-Zeilen mit Seed, `CreatedSlot = false`, `NamesAtCreation NULL` (Tests 2/4); Settle → Kind 2; „M2/M3 darauf grün" → Kinder 3/5 | Aufzeichnung: der PR-Text trägt eine AK-Tabelle mit Stand je Teilaussage („erfüllt" / „Rest in #37x"); je ein Kommentar auf #373 und #375 nennt die Konstanten und die Fixtures, die dort wiederzuverwenden sind |
+| **[E14]** | Kollaps-Tests ohne M2/M3 | Beide Konstanten werden in Kind 1 auf **simuliertem** Zielstand gefahren, hergestellt per Raw-SQL im Scratch-Schema nach `Up`. **UsageStats (Test 9):** unique `(EmoteId, EmoteSetId, Date)`-Index löschen → zwei Slot-Zeilen je Zelle → Konstante → Unique-Index wieder anlegen (Form des M2-`Down`-Guards) → M1-`Down`. **Snapshot (Test 12):** PK `(RunId, EmoteId)` durch `(RunId, SlotId)` ersetzen → mehrere Slot-Zeilen je `(RunId, EmoteId)` → Konstante → PK `(RunId, EmoteId)` wieder anlegen (Form des M3-`Down`-Guards) → M1-`Down` | Ohne die Simulation hat keines der beiden SQL Input. Die Simulation deckt genau die Schemaeigenschaft ab, die das SQL berührt (Eindeutigkeit bzw. PK), nicht `NOT NULL`. Kind 3 wiederholt Test 9 gegen das echte M2-`Down`, Kind 5 Test 12 gegen das echte M3-`Down` (Codex-Befund 3) |
 | **[E15]** | Slot-Zeilen in Purge-/Retention-Zählwerten | Nein | Spec 4.6: Purge, Retention, Account-Löschung „unverändert"; `CountChannelCascadeAsync` zählt `UsageRows` über `EmoteId`, das bleibt vollständig. Ein neuer Zählwert wäre ein neuer Vertrag im Trockenlauf-Log ohne Auftrag |
 
 ## 4. Randfälle
@@ -150,17 +194,18 @@ Inhalt als Absicht (die Spec sagt „Summen"; **[E11]** gemeint sind die drei Z�
 | Emote mit Nutzung in Sets A und B | zwei Seeds, Zeilen je Set getrennt, Summen je Set unverändert | Test 2, Live-Check 3–5 |
 | Archiviertes Emote mit `ArchivedAt` | Seed archiviert mit demselben `ArchivedAt` | Test 3 |
 | Platzhalter (`IsPlaceholder`, archiviert, `ArchivedAt NULL`) | Seed archiviert, `ArchivedAt NULL` („war nie drin"); nur möglich mit `Source = 1`-Zeilen | Test 3 |
-| Aktives Emote, Zeilen nur in nicht aktivem Set | Seed archiviert, `ArchivedAt NULL` (E8) | Test 3 |
+| Aktives Emote, Zeilen nur in nicht aktivem Set | Seed **aktiv** (`IsArchived`/`ArchivedAt` wie das Emote, Spec-Wortlaut); Umgang damit ist Risiko von Kind 2 (Abschnitt 11) | Test 3 |
 | Paar nur mit `Source = 1`-Zeilen / gemischt | Seed wie jedes andere Paar; `Source` bleibt je Zeile | Test 2 |
 | `Emote.FirstSeenAt` gesetzt | wird **nicht** übernommen; `AddedAt NULL` auf allen Seeds | Test 2, Live-Check 6 |
 | Snapshot-Zeile, deren Emote im Set des Laufs keine Nutzung hat | `SlotId NULL`, `CreatedSlot false` (E9) | Test 4 |
 | Snapshot-Zeile mit Nutzung im Set des Laufs | `SlotId` = Seed dieses Paars, auch wenn der Kanal inzwischen auf einem anderen Set steht | Test 4 |
 | `VoteSessionEmotes` | nur die Spalte; Bestandszeilen `NamesAtCreation NULL` | Test 4 |
 | Leere DB | alle Hand-Schritte sind No-ops; genau das tut `PostgresFixture` bei jedem Suite-Start | Test 1 |
-| Wiederholung | `Up` ist nicht idempotent und läuft durch den EF-Migrator genau einmal; `Up → Down → Up` liefert dieselbe Seed- und Zuordnungsstruktur mit neuen Ids | Test 8 |
+| Wiederholung | `Up` läuft durch den EF-Migrator genau einmal; `Up → Down → Up` liefert dieselbe Seed- und Zuordnungsstruktur mit neuen Ids; die Seed-Konstante selbst ist idempotent (E17) | Tests 8, 10 |
+| `NULL`-Zeilen alter Schreiber nach M1 (lokal immer; Prod nach abgebrochenem Fenster mit alten Images auf M1) | bleiben `NULL`, bis die Seed-Konstante läuft — in M2-`Up` (Kind 3, bindend) oder von Hand als Reparaturschritt; bestehendes Paar → der Slot, der dessen Zeilen trägt, neues Paar → neuer Seed | Tests 10, 11; Live-Check 12 |
 | `lock_timeout` reißt (fremde Sitzung hält `UsageStats`) | Fehler 55P03 nach ≤ 5 s, Transaktion zurückgerollt, keine Tabelle, keine Spalte, kein Historieneintrag; Betreiber sucht den Blocker in `pg_stat_activity` und wiederholt | Test 6 |
 | Zwei Kaskadenpfade in `UsageStats` | Löschen eines Emotes trifft eine Zeile über beide Pfade — Postgres löscht sie einmal, kein Fehler | Cascade-Test b |
-| Kanal ohne `ActiveEmoteSetId` | alle Seeds archiviert (E8); Settle beim Rejoin ist Kind-2-Sache | Test 3 (ein Kanal mit leerem Set) |
+| Kanal ohne `ActiveEmoteSetId` | keine Sonderregel; Seeds folgen dem Archivzustand des Emotes; Settle beim Rejoin ist Kind-2-Sache | Test 3 (ein Kanal mit leerem Set) |
 
 ## 5. Kaskaden-Nachweis
 
@@ -199,16 +244,20 @@ gemeinsamer Fixtures-Helfer für die Vorgängersuche ist erlaubt, kein Muss.
 |---|---|---|
 | 1 | `Up_RunsThroughOnAnEmptyDatabase_AndCreatesTheSchema` | Tabelle, vier neue Spalten, beide Slot-Indizes mit exakten Namen (partieller `WHERE` in der `indexdef`), `UsageStats`-Index mit `INCLUDE`, beide FKs mit `CASCADE`; 0 Seeds |
 | 2 | `Up_SeedsOneUnsettledSeedPerEmoteSetPair_AndAttachesOnlyThatSetsRows` | AK 2 + AK 4 erste Hälfte: X mit Zeilen in A und B (davon eine `Source = 1`), Y nur in A, Z ohne Nutzung; X hat `FirstSeenAt`; Erwartung: 2/1/0 Seeds, jede Zeile am Seed ihres Paars, `AddedAt NULL`, `AddedAtFromRest false`, `SeedUnsettled true`, Zeilenzahl und Summen je Paar vor/nach gleich |
-| 3 | `Up_CopiesNameAndArchiveState_AndArchivesSeedsOfNonActiveSets` | E6–E8: aktives Emote in A (Seed aktiv), archiviertes Emote mit `ArchivedAt` (übernommen), Platzhalter (archiviert, `NULL`), aktives Emote nur in B (archiviert, `NULL`), Kanal mit leerem `ActiveEmoteSetId`; `LastSyncedAt` auf allen Seeds identisch und ≥ Teststart |
+| 3 | `Up_CopiesNameAndArchiveStateFromTheEmote_ForEverySeed` | E6/E7 + Spec-Wortlaut: aktives Emote in A (Seed aktiv), archiviertes Emote mit `ArchivedAt` (beides übernommen), Platzhalter (archiviert, `ArchivedAt NULL`), aktives Emote mit Zeilen nur in B (Seed **aktiv**, nicht archiviert), Kanal mit leerem `ActiveEmoteSetId` (Seeds folgen dem Emote); `LastSyncedAt` auf allen Seeds identisch und ≥ Teststart |
 | 4 | `Up_FillsSnapshotSlotIdFromTheRunsSet_LeavesRowsWithoutSeedNull_AndAddsNamesAtCreation` | AK 4 zweite Hälfte + E9: Lauf auf B mit Snapshot-Zeilen für X (Seed B) und W (ohne Nutzung in B → `NULL`); `CreatedSlot false`; `NamesAtCreation NULL` auf einer Bestandszeile |
 | 5 | `Up_DoesNotChangeAnyEmoteRow` | `Emotes` vor/nach byteidentisch (insbesondere `FirstSeenAt`, `Name`, `IsArchived`) — AK 2 letzter Satz, negativ geprüft |
 | 6 | `Up_Aborts_WhenAnotherSessionHoldsUsageStats_AndLeavesNothingBehind` | zweite Verbindung hält `ACCESS EXCLUSIVE` auf `UsageStats` in offener Transaktion (`PostgresLockProbe` prüfen, sonst roher `NpgsqlConnection`); Fehlertext „lock timeout"; Tabelle, Spalten, Historieneintrag fehlen; Dauer ≈ 5 s ist akzeptiert |
 | 7 | `Down_RemovesEverything_AndKeepsRowsAndSums` | AK 3 M1-Teil: nach `Up` auf befüllter DB `Down` zum Vorgänger: Tabelle, Spalten, Index weg; `UsageStats`-Zahl und Summen je Paar unverändert; Snapshot- und Ballot-Zeilen intakt |
 | 8 | `UpDownUp_SeedsTheSameStructureAgain` | nach dem Rundlauf dieselbe Seed-Zahl und Paar-Zuordnung, Ids neu |
 | 9 | `CollapseUsageStatsSql_SumsOntoTheOldestSlot_RestoresUniqueness_AndIsIdempotent` | E14: nach `Up` Unique-Index gelöscht; Zellen: datiert vs. `NULL` (datiert gewinnt), zwei `NULL` (ordinal kleinerer Name gewinnt, `COLLATE "C"`: Großbuchstabe vor Kleinbuchstabe), `Source` 0+1 → 0 und 1+1 → 1, alle drei Zählspalten summiert, Einzelzeilen unberührt; zweiter Lauf 0 Zeilen; `CREATE UNIQUE INDEX` gelingt; danach M1-`Down` grün |
+| 10 | `SeedSql_AttachesLateRowsOfExistingAndNewPairs_AndIsIdempotent` | E17 Regeln 1, 3, 4: nach `Up` per Raw-SQL (so, wie der alte Flush schreibt: ohne `SlotId`) Zeilen für (i) ein bestehendes Paar an neuem Datum, (ii) ein neues Set eines bestehenden Emotes, (iii) ein neues Emote ohne jeden Slot; Konstante einmal: (i) hängt am vorhandenen Seed, (ii)/(iii) bekommen je einen neuen unsettled Seed mit Werten aus `Emotes`; keine Zeile mit `SlotId` wurde verändert; zweiter Lauf: 0 Zeilen, 0 Seeds |
+| 11 | `SeedSql_AttachesToTheSlotCarryingThePairsRows_AfterASimulatedSettle_AndPicksTheOldestWhenSeveralDo` | E17 Regel 2: (a) den Seed eines Paars per Raw-SQL so umschreiben, wie Kind 2 ihn settelt (`AddedAt` gesetzt, `AddedAtFromRest true`, `SeedUnsettled false`, neuer Name) → späte `NULL`-Zeile hängt an genau diesem Slot, kein neuer Seed; (b) ein zweiter Slot desselben Emotes trägt Zeilen desselben Sets an **anderen** Daten (kein Index-Drop nötig) → die `NULL`-Zeile geht an den D2-ältesten (`AddedAt` asc, `NULLS LAST`, dann `Name COLLATE "C"`), nicht an den jüngeren; Summe je Paar unverändert |
+| 12 | `CollapseBackfillSnapshotSql_KeepsTheOldestSlotsRow_PerRunAndEmote_AndRestoresThePrimaryKey` | E14 Snapshot-Teil: nach `Up` PK per Raw-SQL auf `(RunId, SlotId)` gesetzt; je `(RunId, EmoteId)` mehrere Zeilen mit verschiedenen Slots: datiert vs. `NULL` (datiert bleibt), zwei `NULL` (ordinal kleinerer Name bleibt), derselbe Emote in zwei Läufen (je Lauf eigene Entscheidung), Einzelzeilen unberührt; zweiter Lauf 0 Zeilen; PK `(RunId, EmoteId)` wieder anlegbar; danach M1-`Down` grün |
 
 Die Abbruchprüfung aus 2.4 bekommt keinen eigenen Fall: sie ist von außen auf einer konsistenten DB nicht auslösbar (Abschnitt 2.4);
-Test 2 deckt ihre positive Seite („keine NULL") ab. Das steht als Kommentar an der Prüfung.
+Test 2 deckt ihre positive Seite („keine NULL") ab. Das steht als Kommentar an der Prüfung. Zwölf Fälle in dieser Klasse plus die
+drei aus 6.2 — etwas über den „~10" der Spec, weil die Konstanten aus E10/E17 ihre eigenen Fixtures tragen (Codex-Befunde 2 und 3).
 
 ### 6.2 `EmoteSlotCascadeTests` — Abschnitt 5, Fälle (a)–(c).
 
@@ -236,16 +285,18 @@ Konfiguration neu). `dotnet ef` aus dem Worktree ist davon nicht berührt.
 4. **Nachher prüfen** (Absicht; der Umsetzer schreibt das SQL): (1) keine `UsageStats`-Zeile ohne `SlotId`; (2) jede Zeile zeigt auf einen
    Slot ihres `EmoteId`; (3) je Paar genau ein distinct `SlotId`, und jeder `SlotId` kommt in genau einem Paar vor; (4) Seed-Zahl =
    Paar-Zahl; (5) Zeilenzahl und Summen je Paar identisch zur CSV aus Schritt 2 (Diff leer); (6) alle Seeds `AddedAt NULL`,
-   `AddedAtFromRest false`, `SeedUnsettled true`, ein gemeinsamer `LastSyncedAt`; (7) Archivzustand je Seed entspricht E8 (Stichprobe:
-   ein aktives Emote mit altem Set, ein archiviertes); (8) Snapshot-Zeilen: `SlotId` passend zum Set des Laufs, Zahl der `NULL`-Zeilen
-   notieren; (9) `migrations list` ohne Pending; (10) `pg_indexes` zeigt beide Slot-Indizes mit `WHERE` bzw. `INCLUDE`; (11) beide FKs
-   mit `confdeltype = 'c'`.
+   `AddedAtFromRest false`, `SeedUnsettled true`, ein gemeinsamer `LastSyncedAt`; (7) `Name`, `IsArchived`, `ArchivedAt` jedes Seeds
+   sind **gleich** den Werten seines Emotes (Join-Vergleich über alle Seeds, 0 Abweichungen — kein Stichprobenurteil); (8)
+   Snapshot-Zeilen: `SlotId` passend zum Set des Laufs, Zahl der `NULL`-Zeilen notieren; (9) `migrations list` ohne Pending; (10)
+   `pg_indexes` zeigt beide Slot-Indizes mit `WHERE` bzw. `INCLUDE`; (11) beide FKs mit `confdeltype = 'c'`; (12) die Seed-Konstante
+   (E17) noch einmal auf der migrierten Kopie gefahren: 0 Zeilen, 0 Seeds (Idempotenz auf echten Daten).
 5. **`Down`:** `database update AddSystemLoadSampling` (bzw. der per `list` angezeigte Vorgänger); Tabelle/Spalten weg, Diff gegen die
    CSV leer, `list` zeigt `AddEmoteSlots` als Pending. Danach erneut `Up` (Rundlauf), dann die Kopie **löschen**.
 6. **Im PR festhalten:** Zeilenzahl, Paar-Zahl, Seed-Zahl, Mehr-Set-Emotes, Laufzeiten `Up`/`Down`, geprüfter SHA. Kein Hostname, kein
    Passwort, keine Kanalnamen außer dem Testkanal.
 
-Die Spec-Aussage „Kopie der Prod-Daten" (AK 1) ist damit **nicht** erfüllt — siehe R2.
+Die Spec-Aussage „Kopie der Prod-Daten" (AK 1) ist damit noch **nicht** erfüllt — Betreiber-Entscheidung 2026-10-11: dieser Lauf
+gehört zu Kind 9 (#379), für M1–M3 gemeinsam, vor dem Fenster. Die Schritte 2–5 oben gelten dort unverändert.
 
 ## 8. Gates („fertig" in diesem Repo)
 
@@ -268,8 +319,8 @@ Conventional Commits, englisch, in dieser Reihenfolge:
 
 1. `docs: add implementation plan for emote slots M1` — diese Datei (committet der Orchestrator nach Freigabe).
 2. `feat(core): add EmoteSlot entity and slot columns` — Entitäten, Navigationen, `AppDbContext`.
-3. `feat(infrastructure): add AddEmoteSlots migration with per-set seeds` — Migration, Designer, Snapshot, `EmoteSlotRollbackSql`,
-   **plus** der DECISIONS-Nachtrag (unten).
+3. `feat(infrastructure): add AddEmoteSlots migration with per-set seeds` — Migration, Designer, Snapshot, `EmoteSlotSeedSql`,
+   `EmoteSlotRollbackSql`, **plus** der DECISIONS-Nachtrag (unten).
 4. `test: cover AddEmoteSlots up, down, collapse and cascade paths` — beide Testklassen.
 5. Fixes aus Review/Codex als eigene `fix:`-/`test:`-Commits.
 
@@ -277,20 +328,21 @@ Conventional Commits, englisch, in dieser Reihenfolge:
 beschreibt Tabelle, Seeds je Paar und das Fenster bereits und nennt `EmoteSlot.cs` und `*_AddEmoteSlots.cs` in seiner
 `Betrifft`-Zeile; die Spec legt die finale Fassung in Kind 9. Regel 3 verlangt trotzdem, dass der Commit, der den Vertrag ins Schema
 schreibt, seinen Text mitbringt. Lösung: Commit 3 hängt an den Entwurfseintrag einen kurzen, datierten Absatz „Child 1 (M1)" mit den
-Punkten, die vom Entwurf abweichen oder ihn konkretisieren — E1 (Rollback-Ziel = Vorgänger laut `migrations list`), E7/E8 (Seed-Stempel
-und Archivzustand je Set, falls R1 bestätigt), E9 (Snapshot-Zeilen ohne Seed bleiben `NULL`), E10 (Ort des Kollaps-SQL). Kein zweiter
-Eintrag, keine Umformulierung des Bestands; Kind 9 macht den Eintrag final.
+Punkten, die vom Entwurf abweichen oder ihn konkretisieren — E1 (Rollback-Ziel = Vorgänger laut `migrations list`), E7 (Seed-Stempel
+`LastSyncedAt = now()`; Archivzustand 1:1 aus `Emotes` nach Spec), E9 (Snapshot-Zeilen ohne Seed bleiben `NULL`), E10 (Ort des
+Kollaps-SQL), E17 (Seed-Logik als idempotente Konstante, die M2-`Up` vor `SET NOT NULL` wiederholt; Regel für Paare mit mehreren
+Slots = D2-Ordnung). Kein zweiter Eintrag, keine Umformulierung des Bestands; Kind 9 macht den Eintrag final.
 
 ## 10. Aufgabenliste (je Aufgabe ein Subagent mit frischem Kontext; Modell explizit)
 
 | # | Aufgabe | Modell | Input | Deliverable | Fertig, wenn | Parallel |
 |---|---|---|---|---|---|---|
 | T1 | Entitäten + Mapping | sonnet | Abschnitte 2.1–2.3, E2–E4; `Emote.cs`, `UsageStat.cs`, `ChatLogBackfillRunEmote.cs`, `VoteSessionEmote.cs`, `AppDbContext.cs` | Commit 2 (unstaged, Orchestrator committet) | `dotnet build EmotePurge.slnx` grün; `CoreAssemblyReferenceTests` grün; ein Probe-Scaffold (`migrations add`, danach `migrations remove`) zeigt genau die erwarteten Operationen — Tabelle, zwei Slot-Indizes mit den Namen aus 2.3, vier Spalten, zwei FKs mit Cascade — und nichts darüber hinaus | — |
-| T2 | Migration `AddEmoteSlots` | **opus** | Abschnitte 1.3, 2.4, 3 (E5–E9, E12), Muster `AddUsageStatEmoteSetId` (Temp-Tabelle, `DO`-Blöcke, Klassendoku) und `AddChatLogBackfill` (Hand-Markierungen, Meldungen) | Migration + Designer + Snapshot | Scaffold, Hand-Blöcke markiert; `PostgresFixture`-Lauf auf leerer DB grün (irgendein Integrationstest); lokaler Rundlauf `update` → `update <Vorgänger>` → `update` auf einer Scratch-DB im Testcontainer oder der Kopie aus T5 | nach T1 |
-| T3 | `EmoteSlotRollbackSql` | sonnet | Abschnitt 2.5, E10/E11, `AddEmotePlaceholderMarker.BackfillSql` als Muster | statische Klasse mit zwei Konstanten, Doku-Kommentar nennt Operations.md (Kind 9) und M2/M3-`Down` als Konsumenten | kompiliert; Review-Lesung gegen §12.2 Wort für Wort | parallel zu T2 |
-| T4 | `AddEmoteSlotsMigrationTests` | sonnet | Abschnitt 6.1, E1, E14; die beiden Muster-Testklassen; `PostgresLockProbe` prüfen | Testklasse, Fälle 1–9 | alle neun grün, Laufzeit der Klasse notiert | nach T2 + T3; parallel zu T5/T6 |
+| T2 | Migration `AddEmoteSlots` **und** `EmoteSlotSeedSql` | **opus** | Abschnitte 1.3, 2.4, 2.6, 3 (E5–E7, E9, E12, E17), Muster `AddUsageStatEmoteSetId` (`DO`-Blöcke, Klassendoku) und `AddChatLogBackfill` (Hand-Markierungen, Meldungen), `AddEmotePlaceholderMarker.BackfillSql` (Konstante) | Konstante + Migration + Designer + Snapshot; die Migration ruft die Konstante, keine zweite Kopie der Seed-Logik | Scaffold, Hand-Blöcke markiert; `PostgresFixture`-Lauf auf leerer DB grün (irgendein Integrationstest); lokaler Rundlauf `update` → `update <Vorgänger>` → `update` auf einer Scratch-DB im Testcontainer oder der Kopie aus T6; Konstante zweimal hintereinander auf derselben DB → 0 Zeilen beim zweiten Lauf | nach T1 |
+| T3 | `EmoteSlotRollbackSql` | sonnet | Abschnitt 2.5, E10/E11, `AddEmotePlaceholderMarker.BackfillSql` als Muster | statische Klasse mit zwei Konstanten, Doku-Kommentar nennt Operations.md (Kind 9) und M2/M3-`Down` als Konsumenten | kompiliert; Review-Lesung gegen §12.2 Wort für Wort; die Ordnung (`AddedAt NULLS LAST`, `Name COLLATE "C"`, Id) ist dieselbe wie in E17 Regel 2 | parallel zu T2 |
+| T4 | `AddEmoteSlotsMigrationTests` | sonnet | Abschnitt 6.1, E1, E14, E17; die beiden Muster-Testklassen; `PostgresLockProbe` prüfen | Testklasse, Fälle 1–12 | alle zwölf grün, Laufzeit der Klasse notiert | nach T2 + T3; parallel zu T5/T6 |
 | T5 | `EmoteSlotCascadeTests` + „0 geändert"-Beleg | sonnet | Abschnitt 5, `ChannelRetentionPurgeTests` als Konstruktionsmuster | Testklasse (a)–(c); `git diff --stat origin/main -- tests/` ohne die fünf Lösch-Testklassen | grün; die fünf Klassen grün und unverändert | nach T2; parallel zu T4/T6 |
-| T6 | Live-Verifikation | sonnet | Abschnitt 7 vollständig; Memory-Fallen (Worktree/Compose, `.env`, CRLF) | Messprotokoll im Scratchpad + Kurzfassung für den PR-Text | alle elf Nachher-Checks grün, `Down`-Diff leer, Kopie gelöscht | nach T2; parallel zu T4/T5 |
+| T6 | Live-Verifikation | sonnet | Abschnitt 7 vollständig; Memory-Fallen (Worktree/Compose, `.env`, CRLF) | Messprotokoll im Scratchpad + Kurzfassung für den PR-Text | alle zwölf Nachher-Checks grün, `Down`-Diff leer, Kopie gelöscht | nach T2; parallel zu T4/T5 |
 | T7 | Review + Gates + PR | **opus** (Review); Codex Sol | gesamter Branch, Abschnitte 8–9, AK-Tabelle (E13) | Review-Befund; DECISIONS-Nachtrag (E16) im Migrations-Commit; PR mit AK-Tabelle, Messwerten, Abweichung 1.3; Kommentare auf #373/#375 | drei Suiten grün, Scaffold-Gate, Coverage ≥ 80 %, Codex-Befund vorgelegt; **Merge durch den Nutzer** | nach T4–T6 |
 
 Reihenfolge: T1 → (T2 ∥ T3) → (T4 ∥ T5 ∥ T6) → T7. T6 darf nicht parallel zu einem Testcontainers-Lauf auf derselben Box laufen,
@@ -298,24 +350,30 @@ wenn Speicherdruck sichtbar wird (`/proc/pressure/memory`), sonst ist die Reihen
 
 ## 11. Hinweise an die folgenden Kinder (im PR-Text wiederholen)
 
-- **Kind 2:** Seeds haben `LastSyncedAt` = Migrationsstempel und (bei R1 = ja) sind Seeds nicht aktiver Sets archiviert mit
-  `ArchivedAt NULL`; 6.2 Schritt 7 darf sie nicht als „verbleibende aktive Slots" sehen. Das Settle (6.3) findet den Seed über die
-  angehängten Zeilen des aktiven Sets, nicht über `IsArchived`.
-- **Kind 3 (M2):** Zwischen M1 und M2 schreiben die unveränderten Writer `UsageStats`-Zeilen mit `SlotId NULL` (lokal real, auf Prod
-  durch das Fenster ausgeschlossen). M2-`Up` muss vor `SET NOT NULL` entweder diese Zeilen wie M1 an den Seed ihres Paars hängen
-  (gleiche Hilfstabellen-Logik, neue Seeds für neue Paare) oder mit Zählwert abbrechen. Test 9 gegen das echte M2-`Down` wiederholen.
-- **Kind 5 (M3):** Snapshot-Zeilen mit `SlotId NULL` aus M1 (E9) existieren lokal; M3 `SET NOT NULL` braucht dafür eine Regel. Der
-  Snapshot-Kollaps (`CollapseBackfillSnapshotSql`) ist dort erstmals fixturbar.
-- **Kind 9:** Rollback-Ziel = Vorgänger laut `migrations list` (E1); Operations-Block = Konstante aus `EmoteSlotRollbackSql` (E10);
-  Fußnote in §12.2 der Spec; DECISIONS final.
+- **Kind 2 (Risiko, innerhalb der Spec aufzulösen — keine Entscheidung dieses Plans):** Seeds kopieren den Archivzustand 1:1 vom
+  Emote. Ein aktives Emote mit Nutzung in einem **nicht** aktiven Set B hat deshalb nach M1 einen **aktiven** Seed für B, bis Kind 2 ihn
+  behandelt. Zwei Fallen: 6.2 Schritt 7 („verbleibende aktive Slots dieses Abgleichs archivieren") darf diesem Seed kein irreführendes
+  `ArchivedAt = now` stempeln, und er darf nicht als aktiver Slot des aktiven Sets erscheinen (aktive Ansicht Kind 6, `OccupiedSlots`
+  D27; die Match-Map D15 lässt unsettled Seeds ohnehin aus). Das Settle (6.3) findet den Seed über die angehängten Zeilen des
+  aktiven Sets, nicht über `IsArchived`. Seeds tragen `LastSyncedAt` = Migrationsstempel.
+- **Kind 3 (M2), bindend:** Zwischen M1 und M2 schreiben die unveränderten Writer `UsageStats`-Zeilen mit `SlotId NULL` — lokal immer,
+  auf Prod nach einem abgebrochenen Fenster, in dem die alten Images auf M1 weiterlaufen (§11.2 Schritt 4). **M2-`Up` fährt vor
+  `SET NOT NULL` die Konstante `EmoteSlotSeedSql.AttachUnslottedUsageRowsSql`** (E17) statt abzubrechen: bestehende Paare hängen an den
+  Slot, der ihre Zeilen trägt (nach Kind 2 der gesettelte Seed), neue Paare bekommen einen neuen unsettled Seed, den der nächste
+  Abgleich settelt; danach die eigene Abbruchprüfung (keine `NULL`, kein fremdes `EmoteId`). Fixture in Kind 3: M1 → Zeilen des alten
+  Writers (Raw-Insert ohne `SlotId`) → Settle durch Kind-2-Code → M2-`Up` grün, Summen je Paar unverändert, bestehende Paare und neue
+  Paare je ein Fall. Test 9 gegen das echte M2-`Down` wiederholen.
+- **Kind 5 (M3):** Snapshot-Zeilen mit `SlotId NULL` aus M1 (E9) existieren lokal; M3 `SET NOT NULL` braucht dafür eine Regel. Test 12
+  (`CollapseBackfillSnapshotSql`) gegen das echte M3-`Down` wiederholen.
+- **Kind 9:** Rollback-Ziel = Vorgänger laut `migrations list` (E1); Operations-Blöcke = Konstanten aus `EmoteSlotRollbackSql` (E10)
+  und, als Reparaturschritt nach einem abgebrochenen Fenster vor dem zweiten Versuch, `EmoteSlotSeedSql` (E17); Prod-Kopie-Lauf für
+  M1–M3 (AK 1); Fußnote in §12.2 der Spec; DECISIONS final.
 
-## 12. Rückfragen an den Betreiber
+## 12. Rückfragen an den Betreiber — alle entschieden (2026-10-11)
 
-- **R1 — Archivzustand der Seeds (E8).** Die Spec sagt „Name/Archivzustand aus `Emotes`". Wörtlich hieße das: ein Seed für ein nicht
-  aktives Set B eines aktiven Emotes ist aktiv. Der Plan setzt stattdessen `IsArchived = true` für jeden Seed, dessen Set nicht das
-  `ActiveEmoteSetId` des Kanals ist (Begründung in E8). **Bitte bestätigen oder auf den Wortlaut zurücksetzen.** Beides ist in M1 eine
-  Zeile; der Unterschied zeigt sich erst in Kind 2 (Schritt 7) und Kind 6 (aktive Ansicht).
-- **R2 — AK 1 „Kopie der Prod-Daten".** Kind 1 kann nur eine Kopie der lokalen Dev-DB fahren (Abschnitt 7); eine Prod-Kopie setzt
-  einen Backup-Transfer voraus, den die Session nicht selbst anstößt (kein eigener Zugriff auf `vps`/`nas`). Vorschlag: der Lauf auf der
-  Prod-Kopie gehört zu Kind 9 vor dem Fenster, dann gleich für M1–M3 zusammen. Soll er stattdessen schon jetzt stattfinden, bitte das
-  Backup lokal bereitstellen; die Befehle aus Abschnitt 7 gelten dann unverändert.
+Keine offenen Fragen mehr.
+
+- **R1 — Archivzustand der Seeds:** Spec-Wortlaut. `IsArchived`/`ArchivedAt` 1:1 aus `Emotes`; die frühere Planer-Entscheidung E8 ist
+  gestrichen (Abschnitt 3). Die Folge für Seeds nicht aktiver Sets ist ein Risiko von Kind 2 (Abschnitt 11).
+- **R2 — AK 1 „Kopie der Prod-Daten":** gehört zu Kind 9 (#379), für M1–M3 gemeinsam vor dem Fenster; in der AK-Tabelle des PR als
+  „Rest in #379" (E13).
