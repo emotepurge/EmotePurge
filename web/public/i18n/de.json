@@ -621,6 +621,59 @@
           "cores": "Kerne",
           "tasks": "Tasks"
         }
+      },
+      "activity": {
+        "title": "Aktivitätsverlauf",
+        "chartTitle": "Beobachtete Live-Channels pro Tag",
+        "series": {
+          "liveChannels": "Beobachtete Live-Channels pro Tag"
+        },
+        "range": {
+          "label": "Zeitraum",
+          "30d": "30 Tage",
+          "90d": "90 Tage",
+          "13mo": "13 Monate"
+        },
+        "context": "Verfolgt: {{tracked}} / {{max}}",
+        "help": {
+          "poller": "Gezählt wird, an wie vielen verschiedenen Channels der Live-Poller an einem Tag mindestens einmal einen Stream erkannt hat. Das ist keine Echtzeitzahl und keine Streamdauer.",
+          "purge": "Gelöschte Channels fehlen rückwirkend: je weiter zurück, desto stärker unterschätzt die Kurve den damaligen Stand.",
+          "today": "Der heutige Tag (UTC) ist noch nicht abgeschlossen und kann sich ändern. Tage ohne Beobachtung sind unbekannt, nicht null.",
+          "cap": "Verfolgte Channels gegen die konfigurierte Admission-Grenze für normale Nutzer – kein Serverlimit. Globale Admins dürfen sie überschreiten, und ein gleichzeitiger Andrang kann sie knapp übersteigen."
+        }
+      },
+      "rateLimits": {
+        "title": "Rate-Limit-Ausnahmen",
+        "acute": "aktuell",
+        "lastMinute": "{{count}} in der letzten Minute",
+        "none": {
+          "title": "Keine Ablehnungen in 24 Stunden",
+          "description": "Weder eine lokale Policy noch ein Provider hat in den letzten 24 Stunden abgewiesen. Die vollständige Konfiguration steht unter „Details“."
+        },
+        "policies": {
+          "title": "Lokale Policies mit Ablehnungen",
+          "share": "{{rejected}} von {{decisions}} Entscheidungen abgewiesen ({{percent}} %) in 24 h",
+          "noRequests": "keine Requests"
+        },
+        "providers": {
+          "title": "Provider-429",
+          "count": "{{count}} × HTTP 429 in 24 h"
+        },
+        "series": {
+          "local": "Lokale Ablehnungen",
+          "provider": "{{provider}} · {{source}}"
+        },
+        "trend": {
+          "title": "Ablehnungen pro Minute, letzte 24 Stunden",
+          "noProviderRejections": "Kein Provider hat in den letzten 24 Stunden mit HTTP 429 geantwortet."
+        },
+        "help": {
+          "share": "Der Anteil ist die Quote abgewiesener Entscheidungen einer Policy über alle Partitionen – kein Füllstand eines einzelnen Buckets. Keine Ablehnung heißt nicht, dass niemand nahe am Limit war."
+        },
+        "details": {
+          "open": "Details",
+          "title": "Rate-Limit-Details"
+        }
       }
     }
   },

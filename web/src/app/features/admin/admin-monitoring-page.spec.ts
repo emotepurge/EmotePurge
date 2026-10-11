@@ -1,14 +1,17 @@
+import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoTestingModule } from '@jsverse/transloco';
-import { Observable, of, throwError } from 'rxjs';
+import { Observable, NEVER, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  AdminDashboardActivity,
   AdminHealth,
   FlushHealth,
   RateLimitPolicySnapshot,
   RateLimitTelemetrySnapshot,
+  RateLimitTelemetryTrend,
   SevenTvHealth,
 } from '../../core/admin/admin.model';
 import { AdminService } from '../../core/admin/admin.service';
@@ -102,6 +105,30 @@ function policy(overrides: Partial<RateLimitPolicySnapshot> = {}): RateLimitPoli
   };
 }
 
+function activity(overrides: Partial<AdminDashboardActivity> = {}): AdminDashboardActivity {
+  return {
+    range: '30d',
+    fromDate: '2026-09-12',
+    toDate: '2026-10-11',
+    todayIsPartial: true,
+    generatedAtUtc: '2026-10-11T12:00:00Z',
+    days: [{ date: '2026-10-11', liveChannels: 4 }],
+    ...overrides,
+  };
+}
+
+function trend(overrides: Partial<RateLimitTelemetryTrend> = {}): RateLimitTelemetryTrend {
+  return {
+    telemetryAvailable: true,
+    fromUtc: '2026-10-10T12:00:00Z',
+    toUtc: '2026-10-11T12:00:00Z',
+    minuteStartsUtc: ['2026-10-11T11:59:00Z'],
+    localRejections: [0],
+    providers: [],
+    ...overrides,
+  };
+}
+
 describe('AdminMonitoringPage', () => {
   let fixture: ComponentFixture<AdminMonitoringPage>;
   let component: AdminMonitoringPage;
@@ -139,9 +166,14 @@ describe('AdminMonitoringPage', () => {
   function render(
     healthStream: Observable<AdminHealth>,
     rateLimitsStream: Observable<RateLimitTelemetrySnapshot> = of(rateLimits()),
+    activityStream: Observable<AdminDashboardActivity> = of(activity()),
+    trendStream: Observable<RateLimitTelemetryTrend> = of(trend()),
   ): void {
-    vi.spyOn(TestBed.inject(AdminService), 'getHealth').mockReturnValue(healthStream);
-    vi.spyOn(TestBed.inject(AdminService), 'getRateLimits').mockReturnValue(rateLimitsStream);
+    const service = TestBed.inject(AdminService);
+    vi.spyOn(service, 'getHealth').mockReturnValue(healthStream);
+    vi.spyOn(service, 'getRateLimits').mockReturnValue(rateLimitsStream);
+    vi.spyOn(service, 'getDashboardActivity').mockReturnValue(activityStream);
+    vi.spyOn(service, 'getRateLimitTrend').mockReturnValue(trendStream);
     fixture = TestBed.createComponent(AdminMonitoringPage);
     component = fixture.componentInstance;
     fixture.detectChanges();
@@ -326,29 +358,112 @@ describe('AdminMonitoringPage', () => {
     });
   });
 
-  describe('refillDescriptionKey / refillParams — token-bucket vs. fixed-window are mutually exclusive', () => {
-    it('picks the token-bucket key and params', () => {
+  describe('activity range', () => {
+    it('loads the 30 day series first and reloads with the new range when the menu changes', () => {
       render(of(health()));
+      const getActivity = vi.mocked(TestBed.inject(AdminService).getDashboardActivity);
+      expect(getActivity).toHaveBeenLastCalledWith('30d');
 
-      expect(component['refillDescriptionKey'](policy({ type: 'token-bucket' }))).toBe(
-        'admin.rateLimits.policies.refillTokenBucket',
-      );
-      expect(
-        component['refillParams'](
-          policy({ type: 'token-bucket', tokensPerPeriod: 40, replenishmentPeriodSeconds: 60 }),
-        ),
-      ).toEqual({ tokensPerPeriod: '40', periodSeconds: '60' });
+      component['range'].set('90d');
+      fixture.detectChanges();
+
+      expect(getActivity).toHaveBeenLastCalledWith('90d');
     });
 
-    it('picks the fixed-window key and params', () => {
+    it('keeps the last series on screen while the next range loads', () => {
       render(of(health()));
+      const first = component['activity']();
+      expect(first?.days).toHaveLength(1);
 
-      expect(
-        component['refillDescriptionKey'](policy({ type: 'fixed-window', windowSeconds: 10 })),
-      ).toBe('admin.rateLimits.policies.refillFixedWindow');
-      expect(
-        component['refillParams'](policy({ type: 'fixed-window', windowSeconds: 10 })),
-      ).toEqual({ windowSeconds: '10' });
+      vi.mocked(TestBed.inject(AdminService).getDashboardActivity).mockReturnValue(NEVER);
+      component['range'].set('13mo');
+      fixture.detectChanges();
+
+      expect(component['activity']()).toBe(first);
+    });
+
+    it('surfaces an activity failure without hiding the health snapshot', () => {
+      render(
+        of(health()),
+        of(rateLimits()),
+        throwError(
+          () =>
+            new HttpErrorResponse({ status: 400, error: { errorCode: 'invalid_dashboard_range' } }),
+        ),
+      );
+
+      expect(component['activityErrorMessage']()).toBe('errors.api.invalid_dashboard_range');
+      expect(component['health']()).toBeDefined();
+      expect(component['errorMessage']()).toBeNull();
+      expect(component['activity']()).toBeUndefined();
+    });
+  });
+
+  describe('rate-limit exception sections', () => {
+    it('orders policy rows acute first and then by 24 h rejections', () => {
+      render(
+        of(health()),
+        of(
+          rateLimits({
+            policies: [
+              policy({ name: 'Voting', rejectedLast24Hours: 50, acceptedLast24Hours: 50 }),
+              policy({ name: 'Bookkeeping', rejectedLastMinute: 1, rejectedLast24Hours: 1 }),
+              policy({ name: 'PublicHealth', acceptedLast24Hours: 99 }),
+            ],
+          }),
+        ),
+      );
+
+      expect(component['policyRows']().map((r) => r.name)).toEqual(['Bookkeeping', 'Voting']);
+    });
+
+    it('draws a local series plus one danger series per rejecting dimension', () => {
+      render(
+        of(health()),
+        of(rateLimits()),
+        of(activity()),
+        of(
+          trend({
+            providers: [
+              { providerName: 'seventv', callSource: 'sync', rateLimited: [2] },
+              { providerName: 'seventv', callSource: 'search', rateLimited: [1] },
+              { providerName: 'twitch', callSource: 'api', rateLimited: [4] },
+              { providerName: 'twitch', callSource: 'helix', rateLimited: [0] },
+            ],
+          }),
+        ),
+      );
+
+      const series = component['trendSeries']();
+      expect(series).toHaveLength(4);
+      expect(new Set(series.map((s) => s.id)).size).toBe(4);
+      expect(series.every((s) => s.tone === 'danger')).toBe(true);
+    });
+
+    it('keeps the snapshot and the empty exception list when telemetry is unavailable', () => {
+      render(
+        of(health()),
+        of(
+          rateLimits({ telemetryAvailable: false, policies: [policy({ rejectedLast24Hours: 9 })] }),
+        ),
+        of(activity()),
+        of(trend({ telemetryAvailable: false, minuteStartsUtc: [], localRejections: [] })),
+      );
+
+      expect(component['rateLimits']()?.telemetryAvailable).toBe(false);
+      expect(component['policyRows']()).toEqual([]);
+      expect(component['trendSeries']()).toEqual([]);
+    });
+
+    it('opens the details dialog with the snapshot even when telemetry is unavailable', () => {
+      const degraded = rateLimits({ telemetryAvailable: false });
+      render(of(health()), of(degraded));
+      const open = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({} as never);
+
+      component['openDetails'](degraded);
+
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(open.mock.calls[0][1]).toMatchObject({ data: { snapshot: degraded } });
     });
   });
 });

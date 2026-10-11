@@ -621,6 +621,59 @@
           "cores": "cores",
           "tasks": "tasks"
         }
+      },
+      "activity": {
+        "title": "Activity history",
+        "chartTitle": "Observed live channels per day",
+        "series": {
+          "liveChannels": "Observed live channels per day"
+        },
+        "range": {
+          "label": "Time range",
+          "30d": "30 days",
+          "90d": "90 days",
+          "13mo": "13 months"
+        },
+        "context": "Tracked: {{tracked}} / {{max}}",
+        "help": {
+          "poller": "Counts the distinct channels the live poller saw streaming at least once on that day. It is not a real-time figure and not a stream duration.",
+          "purge": "Deleted channels are missing retroactively: the further back, the more the curve understates the count at the time.",
+          "today": "Today (UTC) is not finished yet and may still change. Days without an observation are unknown, not zero.",
+          "cap": "Tracked channels against the configured admission limit for normal users – not a server limit. Global admins may exceed it, and a simultaneous rush can overshoot it slightly."
+        }
+      },
+      "rateLimits": {
+        "title": "Rate-limit exceptions",
+        "acute": "now",
+        "lastMinute": "{{count}} in the last minute",
+        "none": {
+          "title": "No rejections in 24 hours",
+          "description": "Neither a local policy nor a provider rejected anything in the last 24 hours. The full configuration is under “Details”."
+        },
+        "policies": {
+          "title": "Local policies with rejections",
+          "share": "{{rejected}} of {{decisions}} decisions rejected ({{percent}} %) in 24 h",
+          "noRequests": "no requests"
+        },
+        "providers": {
+          "title": "Provider 429s",
+          "count": "{{count}} × HTTP 429 in 24 h"
+        },
+        "series": {
+          "local": "Local rejections",
+          "provider": "{{provider}} · {{source}}"
+        },
+        "trend": {
+          "title": "Rejections per minute, last 24 hours",
+          "noProviderRejections": "No provider answered with HTTP 429 in the last 24 hours."
+        },
+        "help": {
+          "share": "The share is a policy's rate of rejected decisions across all partitions – not the fill level of a single bucket. No rejection does not mean nobody was close to the limit."
+        },
+        "details": {
+          "open": "Details",
+          "title": "Rate-limit details"
+        }
       }
     }
   },

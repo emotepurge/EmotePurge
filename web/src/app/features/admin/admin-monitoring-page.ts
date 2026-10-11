@@ -1,13 +1,15 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject, viewChild } from '@angular/core';
-import { rxResource, takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { TranslocoPipe } from '@jsverse/transloco';
-import { interval } from 'rxjs';
+import { Dialog } from '@angular/cdk/dialog';
+import { Component, computed, inject, linkedSignal, signal, viewChild } from '@angular/core';
+import { rxResource } from '@angular/core/rxjs-interop';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
+import { skip } from 'rxjs';
 
 import { AdminService } from '../../core/admin/admin.service';
 import {
-  ProviderRateLimitHeaderSample,
-  RateLimitPolicySnapshot,
+  AdminDashboardActivity,
+  AdminDashboardActivityRange,
+  RateLimitTelemetrySnapshot,
   SevenTvConnectionStatus,
   WorkerConnectionStatus,
 } from '../../core/admin/admin.model';
@@ -16,13 +18,20 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { ADMIN_LIVE_URL, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { liveEvents } from '../../core/live/live-reload';
+import { pollWhileVisible } from '../../core/live/poll-while-visible';
+import { pageVisible } from '../../core/page-visibility/page-visibility';
 import { LiveStatus, LiveUpdateService } from '../../core/live/live-update.service';
+import { LineChart, LineChartSeries } from '../../shared/charts/line-chart';
 import { Button } from '../../shared/ui/button';
+import { EmptyState } from '../../shared/ui/empty-state';
 import { HealthMarker, HealthTone } from '../../shared/ui/health-marker';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SkeletonSections } from '../../shared/ui/skeleton-sections';
 import { StatusBadge } from '../../shared/ui/status-badge';
 import { UtilizationTone, utilizationTone } from '../../shared/ui/utilization-tone';
+import { AdminActivitySection } from './admin-activity-section';
+import { openRateLimitDetailsDialog } from './admin-rate-limit-details-dialog';
+import { policyExceptions, providerExceptions, trendSeriesSpecs } from './admin-rate-limit-view';
 import { AdminRosterCard } from './admin-roster-card';
 
 /** Bar fills are small meaning-carrying graphics — the `dot` tokens owe 3:1, not 4.5:1. */
@@ -58,11 +67,10 @@ const LIVE_TONES: Record<LiveStatus, HealthTone> = {
 /** Shown when a value is absent — an older worker's snapshot simply lacks the newer detail fields. */
 const NO_VALUE = '—';
 
-// The rate-limit snapshot has no SSE event of its own (design 4 of the #33 architecture doc is
-// explicit that this round adds no new push mechanism), so it follows the same
-// resource-plus-reload shape the SSE-driven health resource below uses, just triggered by a timer
-// instead of a live event — "the page's existing 30 s cadence" the plan asks for, not a second one.
-const RATE_LIMITS_POLL_INTERVAL_MS = 30_000;
+// Neither the rate-limit snapshot/trend nor the activity series has an SSE event of its own (the
+// admin stream carries no `usage.flushed`, spec section 9), so they follow a 60 s timer that pauses
+// while the tab is hidden and fires once on return (spec section 8).
+const DASHBOARD_POLL_INTERVAL_MS = 60_000;
 
 /**
  * Read-only operational view of the worker, fed by the admin-only GET /api/admin/health (Z1 split:
@@ -73,9 +81,12 @@ const RATE_LIMITS_POLL_INTERVAL_MS = 30_000;
 @Component({
   selector: 'app-admin-monitoring-page',
   imports: [
+    AdminActivitySection,
     AdminRosterCard,
     Button,
+    EmptyState,
     HealthMarker,
+    LineChart,
     NoticeBanner,
     SkeletonSections,
     StatusBadge,
@@ -110,6 +121,165 @@ const RATE_LIMITS_POLL_INTERVAL_MS = 30_000;
 
       @if (errorMessage(); as error) {
         <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
+      }
+
+      @if (activityErrorMessage(); as error) {
+        <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
+      }
+      <app-admin-activity-section
+        [activity]="activity()"
+        [trackedChannelCount]="rosterContext()?.tracked ?? null"
+        [maxActiveChannels]="rosterContext()?.max ?? null"
+        [(range)]="range"
+      />
+
+      <!-- Rate limits, exception-first: only what rejected something, plus the 24 h trend. Its own
+           resources and its own error/loading state, independent of the worker-health snapshot
+           below. Everything quiet (full policy list, caches, provider counters, last rejection)
+           lives in the details dialog. -->
+      @if (rateLimitsErrorMessage(); as error) {
+        <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
+      }
+
+      @if (showRateLimitsSkeleton()) {
+        <app-skeleton-sections [count]="1" />
+      } @else if (rateLimits(); as rl) {
+        <section class="flex flex-col gap-4 border-t border-border pt-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h3 class="text-base font-semibold">
+              {{ 'admin.dashboard.rateLimits.title' | transloco }}
+            </h3>
+            <button type="button" appButton="outline" (click)="openDetails(rl)">
+              {{ 'admin.dashboard.rateLimits.details.open' | transloco }}
+            </button>
+          </div>
+
+          @if (!rl.telemetryAvailable) {
+            <app-notice-banner variant="warning">
+              {{ 'admin.rateLimits.degraded' | transloco }}
+            </app-notice-banner>
+          } @else if (policyRows().length === 0 && providerRows().length === 0) {
+            <app-empty-state
+              [title]="'admin.dashboard.rateLimits.none.title' | transloco"
+              [description]="'admin.dashboard.rateLimits.none.description' | transloco"
+            />
+          } @else {
+            @if (policyRows().length) {
+              <div class="flex flex-col gap-2">
+                <h4 class="text-sm font-medium text-fg-body">
+                  {{ 'admin.dashboard.rateLimits.policies.title' | transloco }}
+                </h4>
+                <ul class="-mx-3 divide-y divide-border border-y border-border">
+                  @for (row of policyRows(); track row.name) {
+                    <li class="flex flex-col gap-1 px-3 py-3">
+                      <div
+                        class="flex flex-wrap items-center gap-2 text-sm font-medium text-fg-body"
+                      >
+                        {{ 'admin.rateLimits.policies.names.' + row.name | transloco }}
+                        @if (row.acute) {
+                          <app-status-badge tone="danger">
+                            {{ 'admin.dashboard.rateLimits.acute' | transloco }}
+                          </app-status-badge>
+                        }
+                      </div>
+                      <p class="text-xs text-fg-muted">
+                        @if (row.sharePercent === null) {
+                          {{ 'admin.dashboard.rateLimits.policies.noRequests' | transloco }}
+                        } @else {
+                          {{
+                            'admin.dashboard.rateLimits.policies.share'
+                              | transloco
+                                : {
+                                    rejected: formatNumber(row.rejectedLast24Hours),
+                                    decisions: formatNumber(
+                                      row.rejectedLast24Hours + row.acceptedLast24Hours
+                                    ),
+                                    percent: formatPercent(row.sharePercent),
+                                  }
+                          }}
+                        }
+                        @if (row.acute) {
+                          ·
+                          {{
+                            'admin.dashboard.rateLimits.lastMinute'
+                              | transloco: { count: formatNumber(row.rejectedLastMinute) }
+                          }}
+                        }
+                      </p>
+                    </li>
+                  }
+                </ul>
+              </div>
+            }
+
+            @if (providerRows().length) {
+              <div class="flex flex-col gap-2">
+                <h4 class="text-sm font-medium text-fg-body">
+                  {{ 'admin.dashboard.rateLimits.providers.title' | transloco }}
+                </h4>
+                <ul class="-mx-3 divide-y divide-border border-y border-border">
+                  @for (row of providerRows(); track row.providerName + '|' + row.callSource) {
+                    <li class="flex flex-col gap-1 px-3 py-3">
+                      <div
+                        class="flex flex-wrap items-center gap-2 text-sm font-medium text-fg-body"
+                      >
+                        {{ 'admin.rateLimits.providers.names.' + row.providerName | transloco }}
+                        ·
+                        {{ 'admin.rateLimits.providers.callSources.' + row.callSource | transloco }}
+                        @if (row.acute) {
+                          <app-status-badge tone="danger">
+                            {{ 'admin.dashboard.rateLimits.acute' | transloco }}
+                          </app-status-badge>
+                        }
+                      </div>
+                      <p class="text-xs text-fg-muted">
+                        {{
+                          'admin.dashboard.rateLimits.providers.count'
+                            | transloco: { count: formatNumber(row.rateLimitedLast24Hours) }
+                        }}
+                        @if (row.acute) {
+                          ·
+                          {{
+                            'admin.dashboard.rateLimits.lastMinute'
+                              | transloco: { count: formatNumber(row.rateLimitedLastMinute) }
+                          }}
+                        }
+                      </p>
+                    </li>
+                  }
+                </ul>
+              </div>
+            }
+          }
+
+          @if (trendErrorMessage(); as error) {
+            <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
+          }
+          @if (trend(); as trendData) {
+            @if (trendSeries().length) {
+              <div class="flex flex-col gap-2">
+                <app-line-chart
+                  [series]="trendSeries()"
+                  [xStartsUtc]="trendData.minuteStartsUtc"
+                  [bucketSeconds]="60"
+                  unit="count"
+                  [title]="'admin.dashboard.rateLimits.trend.title' | transloco"
+                />
+                @if (trendSeries().length === 1) {
+                  <p class="text-xs text-fg-muted">
+                    {{ 'admin.dashboard.rateLimits.trend.noProviderRejections' | transloco }}
+                  </p>
+                }
+              </div>
+            }
+          }
+
+          <div class="flex flex-col gap-1 text-xs text-fg-muted">
+            <p>{{ 'admin.dashboard.rateLimits.help.share' | transloco }}</p>
+            <p>{{ 'admin.rateLimits.hints.clientSevenTv' | transloco }}</p>
+            <p>{{ 'admin.rateLimits.hints.policyFreeRoutes' | transloco }}</p>
+          </div>
+        </section>
       }
 
       @if (showSkeleton()) {
@@ -294,315 +464,6 @@ const RATE_LIMITS_POLL_INTERVAL_MS = 30_000;
           </dl>
         </section>
       }
-
-      <!-- Rate limits: its own resource and its own error/loading state, independent of the
-           worker-health snapshot above (GET /api/admin/rate-limits, design 4 of the #33
-           architecture doc). -->
-      @if (rateLimitsErrorMessage(); as error) {
-        <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
-      }
-
-      @if (showRateLimitsSkeleton()) {
-        <app-skeleton-sections [count]="1" />
-      } @else if (rateLimits(); as rl) {
-        <section class="flex flex-col gap-4 border-t border-border pt-4">
-          <h3 class="text-base font-semibold">{{ 'admin.rateLimits.title' | transloco }}</h3>
-
-          @if (!rl.telemetryAvailable) {
-            <app-notice-banner variant="warning">
-              {{ 'admin.rateLimits.degraded' | transloco }}
-            </app-notice-banner>
-          }
-
-          <!-- Effective configuration + accepted/rejected counts, one row per registered policy —
-               always every policy from options, even one the counter store never saw traffic for. -->
-          <div class="flex flex-col gap-2">
-            <h4 class="text-sm font-medium text-fg-body">
-              {{ 'admin.rateLimits.policies.title' | transloco }}
-            </h4>
-            <ul class="-mx-3 divide-y divide-border border-y border-border">
-              @for (policy of rl.policies; track policy.name) {
-                <li class="flex flex-col gap-2 px-3 py-3">
-                  <div class="text-sm font-medium text-fg-body">
-                    {{ 'admin.rateLimits.policies.names.' + policy.name | transloco }}
-                  </div>
-                  <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
-                    <div class="flex justify-between gap-2 sm:block">
-                      <dt class="text-fg-muted">
-                        {{ 'admin.rateLimits.policies.capacity' | transloco }}
-                      </dt>
-                      <dd class="text-fg-body">{{ formatNumber(policy.capacity) }}</dd>
-                    </div>
-                    <div class="flex justify-between gap-2 sm:block">
-                      <dt class="text-fg-muted">
-                        {{ 'admin.rateLimits.policies.refill' | transloco }}
-                      </dt>
-                      <dd class="text-fg-body">
-                        {{ refillDescriptionKey(policy) | transloco: refillParams(policy) }}
-                      </dd>
-                    </div>
-                    <div class="flex justify-between gap-2 sm:block">
-                      <dt class="text-fg-muted">
-                        {{ 'admin.rateLimits.policies.partition' | transloco }}
-                      </dt>
-                      <dd class="text-fg-body">{{ policy.partition }}</dd>
-                    </div>
-                    <div class="flex justify-between gap-2 sm:block">
-                      <dt class="text-fg-muted">
-                        {{ 'admin.rateLimits.policies.queueLimit' | transloco }}
-                      </dt>
-                      <dd class="text-fg-body">{{ formatNumber(policy.queueLimit) }}</dd>
-                    </div>
-                    @if (rl.telemetryAvailable) {
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.policies.acceptedMinute' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">{{ formatNumber(policy.acceptedLastMinute) }}</dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.policies.rejectedMinute' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">{{ formatNumber(policy.rejectedLastMinute) }}</dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.policies.accepted24h' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">
-                          {{ formatNumber(policy.acceptedLast24Hours) }}
-                        </dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.policies.rejected24h' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">
-                          {{ formatNumber(policy.rejectedLast24Hours) }}
-                        </dd>
-                      </div>
-                    }
-                  </dl>
-                </li>
-              }
-            </ul>
-          </div>
-
-          <!-- Last local rejection: one entry across all policies, overwritten each time. -->
-          <div class="flex flex-col gap-2">
-            <h4 class="text-sm font-medium text-fg-body">
-              {{ 'admin.rateLimits.lastRejection.title' | transloco }}
-            </h4>
-            @if (!rl.telemetryAvailable) {
-              <p class="text-sm text-fg-muted">
-                {{ 'admin.rateLimits.lastRejection.unavailable' | transloco }}
-              </p>
-            } @else if (rl.lastLocalRejection; as rejection) {
-              <dl class="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-                <div class="flex justify-between gap-4 sm:block">
-                  <dt class="text-fg-muted">
-                    {{ 'admin.rateLimits.lastRejection.observedAt' | transloco }}
-                  </dt>
-                  <dd class="text-fg-body">{{ formatDateTime(rejection.observedAtUtc) }}</dd>
-                </div>
-                <div class="flex justify-between gap-4 sm:block">
-                  <dt class="text-fg-muted">
-                    {{ 'admin.rateLimits.lastRejection.method' | transloco }}
-                  </dt>
-                  <dd class="text-fg-body">{{ rejection.httpMethod }}</dd>
-                </div>
-                <div class="flex justify-between gap-4 sm:block">
-                  <dt class="text-fg-muted">
-                    {{ 'admin.rateLimits.lastRejection.route' | transloco }}
-                  </dt>
-                  <dd class="text-fg-body">{{ rejection.routeTemplate }}</dd>
-                </div>
-                <div class="flex justify-between gap-4 sm:block">
-                  <dt class="text-fg-muted">
-                    {{ 'admin.rateLimits.lastRejection.policy' | transloco }}
-                  </dt>
-                  <dd class="text-fg-body">
-                    {{ 'admin.rateLimits.policies.names.' + rejection.policyName | transloco }}
-                  </dd>
-                </div>
-                <div class="flex justify-between gap-4 sm:block">
-                  <dt class="text-fg-muted">
-                    {{ 'admin.rateLimits.lastRejection.partition' | transloco }}
-                  </dt>
-                  <dd class="text-fg-body">{{ rejection.partition }}</dd>
-                </div>
-                <div class="flex justify-between gap-4 sm:block">
-                  <dt class="text-fg-muted">
-                    {{ 'admin.rateLimits.lastRejection.retryAfter' | transloco }}
-                  </dt>
-                  <dd class="text-fg-body">
-                    {{ formatRetryAfterSeconds(rejection.retryAfterSeconds) }}
-                  </dd>
-                </div>
-              </dl>
-            } @else {
-              <p class="text-sm text-fg-muted">
-                {{ 'admin.rateLimits.lastRejection.none' | transloco }}
-              </p>
-            }
-          </div>
-
-          <!-- Server-cache hit/miss counters. Numbers only while telemetry is available — with
-               Redis unreachable, the counter store has no entries at all rather than zeroed ones. -->
-          <div class="flex flex-col gap-2">
-            <h4 class="text-sm font-medium text-fg-body">
-              {{ 'admin.rateLimits.caches.title' | transloco }}
-            </h4>
-            @if (!rl.telemetryAvailable) {
-              <p class="text-sm text-fg-muted">
-                {{ 'admin.rateLimits.caches.unavailable' | transloco }}
-              </p>
-            } @else if (rl.caches.length) {
-              <ul class="-mx-3 divide-y divide-border border-y border-border">
-                @for (cache of rl.caches; track cache.cacheName) {
-                  <li class="flex flex-col gap-2 px-3 py-3">
-                    <div class="text-sm font-medium text-fg-body">
-                      {{ 'admin.rateLimits.caches.names.' + cache.cacheName | transloco }}
-                    </div>
-                    <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.caches.hitsMinute' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">{{ formatNumber(cache.hitsLastMinute) }}</dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.caches.missesMinute' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">{{ formatNumber(cache.missesLastMinute) }}</dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.caches.hits24h' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">{{ formatNumber(cache.hitsLast24Hours) }}</dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.caches.misses24h' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">{{ formatNumber(cache.missesLast24Hours) }}</dd>
-                      </div>
-                    </dl>
-                  </li>
-                }
-              </ul>
-            } @else {
-              <p class="text-sm text-fg-muted">{{ 'admin.rateLimits.caches.empty' | transloco }}</p>
-            }
-          </div>
-
-          <!-- Real provider 429s per (provider, call-source) pair, plus the Twitch header sample —
-               deliberately no percentage anywhere in here (neither provider publishes a quota we
-               could divide by). -->
-          <div class="flex flex-col gap-2">
-            <h4 class="text-sm font-medium text-fg-body">
-              {{ 'admin.rateLimits.providers.title' | transloco }}
-            </h4>
-            @if (!rl.telemetryAvailable) {
-              <p class="text-sm text-fg-muted">
-                {{ 'admin.rateLimits.providers.unavailable' | transloco }}
-              </p>
-            } @else if (rl.providers.length) {
-              <ul class="-mx-3 divide-y divide-border border-y border-border">
-                @for (
-                  provider of rl.providers;
-                  track provider.providerName + '|' + provider.callSource
-                ) {
-                  <li class="flex flex-col gap-2 px-3 py-3">
-                    <div class="text-sm font-medium text-fg-body">
-                      {{ 'admin.rateLimits.providers.names.' + provider.providerName | transloco }}
-                      ·
-                      {{
-                        'admin.rateLimits.providers.callSources.' + provider.callSource | transloco
-                      }}
-                    </div>
-                    <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.providers.requestsMinute' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">
-                          {{ formatNumber(provider.requestsLastMinute) }}
-                        </dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.providers.requests24h' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">
-                          {{ formatNumber(provider.requestsLast24Hours) }}
-                        </dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.providers.rateLimitedMinute' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">
-                          {{ formatNumber(provider.rateLimitedLastMinute) }}
-                        </dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.providers.rateLimited24h' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">
-                          {{ formatNumber(provider.rateLimitedLast24Hours) }}
-                        </dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.providers.lastRateLimitedAt' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">
-                          {{ formatDateTime(provider.lastRateLimitedAtUtc) }}
-                        </dd>
-                      </div>
-                      <div class="flex justify-between gap-2 sm:block">
-                        <dt class="text-fg-muted">
-                          {{ 'admin.rateLimits.providers.retryAfter' | transloco }}
-                        </dt>
-                        <dd class="text-fg-body">
-                          {{ formatRetryAfterSeconds(provider.lastRetryAfterSeconds) }}
-                        </dd>
-                      </div>
-                    </dl>
-                    @if (provider.lastHeaderSample; as sample) {
-                      <p class="text-xs text-fg-muted">
-                        <span class="font-medium">
-                          {{ 'admin.rateLimits.providers.headerSample' | transloco }}:
-                        </span>
-                        {{
-                          'admin.rateLimits.providers.headerSampleValue'
-                            | transloco: headerSampleParams(sample)
-                        }}
-                      </p>
-                    }
-                  </li>
-                }
-              </ul>
-            } @else {
-              <p class="text-sm text-fg-muted">
-                {{ 'admin.rateLimits.providers.empty' | transloco }}
-              </p>
-            }
-          </div>
-
-          <!-- The two structural gaps every count above has, called out plainly rather than
-               implied — a missing number here would otherwise read as zero requests. -->
-          <div class="flex flex-col gap-1 text-xs text-fg-muted">
-            <p>{{ 'admin.rateLimits.hints.clientSevenTv' | transloco }}</p>
-            <p>{{ 'admin.rateLimits.hints.policyFreeRoutes' | transloco }}</p>
-          </div>
-        </section>
-      }
     </div>
   `,
 })
@@ -610,6 +471,8 @@ export class AdminMonitoringPage {
   private readonly adminService = inject(AdminService);
   private readonly languageService = inject(LanguageService);
   private readonly liveUpdateService = inject(LiveUpdateService);
+  private readonly dialog = inject(Dialog);
+  private readonly transloco = inject(TranslocoService);
 
   // The roster lives in its own card on its own endpoint and its own cadence, so refreshing it is
   // its own call — the refresh button used to reload the health snapshot only, which left the one
@@ -629,6 +492,20 @@ export class AdminMonitoringPage {
     stream: () => this.adminService.getRateLimits(),
   });
 
+  // Its own resource as well: the 24 h minute buckets come from a separate endpoint and a failure
+  // there must not blank the snapshot or the health cards.
+  private readonly trendResource = rxResource({
+    stream: () => this.adminService.getRateLimitTrend(),
+  });
+
+  // The range menu drives `params`; a change reloads the series (status 'loading', value cleared).
+  protected readonly range = signal<AdminDashboardActivityRange>('30d');
+
+  private readonly activityResource = rxResource({
+    params: () => this.range(),
+    stream: ({ params }) => this.adminService.getDashboardActivity(params),
+  });
+
   // Service-wide, so with two concurrent streams the last writer wins — harmless here because both
   // subscriptions on this page point at the same endpoint and therefore share a fate.
   protected readonly liveStatus = this.liveUpdateService.status;
@@ -642,7 +519,11 @@ export class AdminMonitoringPage {
 
   /** Drives the refresh button's disabled state only — never a content swap. */
   protected readonly isLoading = computed(
-    () => this.healthResource.isLoading() || this.rateLimitsResource.isLoading(),
+    () =>
+      this.healthResource.isLoading() ||
+      this.rateLimitsResource.isLoading() ||
+      this.trendResource.isLoading() ||
+      this.activityResource.isLoading(),
   );
 
   // Skeleton on the *first* load only. Every later load is a reload (status 'reloading', see
@@ -670,6 +551,76 @@ export class AdminMonitoringPage {
   protected readonly rateLimitsErrorMessage = computed(() => {
     const error = this.rateLimitsResource.error();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : null;
+  });
+
+  /**
+   * The last series that loaded. A range change or a failed reload keeps it on screen instead of
+   * blanking the chart (no layout jumps); `undefined` only before the very first load, which is
+   * the only time the section shows a skeleton.
+   */
+  protected readonly activity = linkedSignal<
+    AdminDashboardActivity | undefined,
+    AdminDashboardActivity | undefined
+  >({
+    source: () => (this.activityResource.hasValue() ? this.activityResource.value() : undefined),
+    computation: (next, previous) => next ?? previous?.value,
+  });
+
+  protected readonly activityErrorMessage = computed(() => {
+    const error = this.activityResource.error();
+    return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : null;
+  });
+
+  protected readonly trend = computed(() =>
+    this.trendResource.hasValue() ? this.trendResource.value() : undefined,
+  );
+
+  protected readonly trendErrorMessage = computed(() => {
+    const error = this.trendResource.error();
+    return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : null;
+  });
+
+  /** Channel count for the activity heading, read from the roster card — no second /roster call. */
+  protected readonly rosterContext = computed(() => {
+    const roster = this.rosterCard()?.roster();
+    return roster
+      ? { tracked: roster.trackedChannelCount, max: roster.ceilings.maxActiveChannels }
+      : null;
+  });
+
+  protected readonly policyRows = computed(() => policyExceptions(this.rateLimits()));
+  protected readonly providerRows = computed(() => providerExceptions(this.rateLimits()));
+
+  /**
+   * Local rejections plus one series per rejecting provider dimension. All are real rejections, so
+   * all carry the danger tone; the dash pattern and the legend tell them apart.
+   */
+  protected readonly trendSeries = computed<LineChartSeries[]>(() => {
+    // Re-evaluates on a language switch: the provider names are translated here, not in the chart.
+    this.languageService.lang();
+    return trendSeriesSpecs(this.trend()).map((spec) =>
+      spec.kind === 'local'
+        ? {
+            id: spec.id,
+            labelKey: 'admin.dashboard.rateLimits.series.local',
+            values: spec.values,
+            tone: 'danger',
+          }
+        : {
+            id: spec.id,
+            labelKey: 'admin.dashboard.rateLimits.series.provider',
+            labelParams: {
+              provider: this.transloco.translate(
+                `admin.rateLimits.providers.names.${spec.providerName}`,
+              ),
+              source: this.transloco.translate(
+                `admin.rateLimits.providers.callSources.${spec.callSource}`,
+              ),
+            },
+            values: spec.values,
+            tone: 'danger',
+          },
+    );
   });
 
   /** Capped at 100 so a future over-limit state can't overflow the bar out of its track. */
@@ -763,13 +714,11 @@ export class AdminMonitoringPage {
       this.healthResource.reload(),
     );
 
-    // Rate-limit telemetry has no SSE event of its own — the spec asks for "on open, manually, and
-    // every 30 s" rather than a push, so this is a timer driving the same reload() the other
-    // resources use, not a second poll mechanism (WorkerHealthService uses the identical
-    // interval-plus-reload shape).
-    interval(RATE_LIMITS_POLL_INTERVAL_MS)
-      .pipe(takeUntilDestroyed())
-      .subscribe(() => this.rateLimitsResource.reload());
+    // Activity, rate-limit snapshot and trend share one visibility-aware 60 s timer. The first tick
+    // (immediate, on a visible page) is skipped: the resources have just loaded themselves.
+    pollWhileVisible(DASHBOARD_POLL_INTERVAL_MS, pageVisible())
+      .pipe(skip(1))
+      .subscribe(() => this.reloadDashboard());
   }
 
   // Undefined while the first load still shows the skeleton — the roster card renders inside the
@@ -777,7 +726,11 @@ export class AdminMonitoringPage {
   protected reload(): void {
     this.healthResource.reload();
     this.rosterCard()?.reload();
-    this.rateLimitsResource.reload();
+    this.reloadDashboard();
+  }
+
+  protected openDetails(snapshot: RateLimitTelemetrySnapshot): void {
+    openRateLimitDetailsDialog(this.dialog, snapshot);
   }
 
   protected toneFor(status: SevenTvConnectionStatus | WorkerConnectionStatus): HealthTone {
@@ -803,34 +756,15 @@ export class AdminMonitoringPage {
     return new Intl.NumberFormat(toLocale(this.languageService.lang())).format(value);
   }
 
-  protected formatRetryAfterSeconds(value: number | null): string {
-    return value === null ? NO_VALUE : `${this.formatNumber(value)} s`;
+  protected formatPercent(value: number): string {
+    return new Intl.NumberFormat(toLocale(this.languageService.lang()), {
+      maximumFractionDigits: 1,
+    }).format(value);
   }
 
-  // A token bucket has a refill rate, a fixed window has a reset period — the two never coexist on
-  // one policy (RateLimitPolicyDescriptor in AdminEndpoints.cs), so the key picks the one that
-  // applies instead of the template guessing from which fields happen to be non-null.
-  protected refillDescriptionKey(policy: RateLimitPolicySnapshot): string {
-    return policy.type === 'token-bucket'
-      ? 'admin.rateLimits.policies.refillTokenBucket'
-      : 'admin.rateLimits.policies.refillFixedWindow';
-  }
-
-  protected refillParams(policy: RateLimitPolicySnapshot): Record<string, string> {
-    return policy.type === 'token-bucket'
-      ? {
-          tokensPerPeriod: this.formatNumber(policy.tokensPerPeriod),
-          periodSeconds: this.formatNumber(policy.replenishmentPeriodSeconds),
-        }
-      : { windowSeconds: this.formatNumber(policy.windowSeconds) };
-  }
-
-  protected headerSampleParams(sample: ProviderRateLimitHeaderSample): Record<string, string> {
-    return {
-      limit: sample.limit ?? NO_VALUE,
-      remaining: sample.remaining ?? NO_VALUE,
-      reset: sample.reset ?? NO_VALUE,
-      observedAt: this.formatDateTime(sample.observedAtUtc),
-    };
+  private reloadDashboard(): void {
+    this.rateLimitsResource.reload();
+    this.trendResource.reload();
+    this.activityResource.reload();
   }
 }
