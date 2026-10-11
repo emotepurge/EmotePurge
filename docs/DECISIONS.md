@@ -10,6 +10,45 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)
+
+**Betrifft:** `web/src/app/shared/datetime/date-range-menu.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs` · `src/EmotePurge.Core/Services/IUsageStatQueryService.cs`
+
+This supersedes the preset sentence of the 2026-09-21 entry "A row of the set view is identified by
+its 7TV id ..." (the date preset that followed the viewed set's youngest observation interval). The
+`'set-observed'` preset ("beobachtet") is gone; "Seit Beginn" is the only whole-history preset.
+Usage has been counted per set since #200 (`UsageStat.EmoteSetId`, every read filters on it), so "all
+time" already is exactly the set's own history and the second preset only trimmed empty days off its
+edges, which the operator could not explain. It was also wrong in practice: it read the youngest
+observation interval, and that history is unreliable (a 1.5 s fake interval from the set flap
+reduced the HandOfBlood main set to "10.10. only, zero counts for all emotes", and tracking began
+two months after the counting start). The observation table and `EmoteSetSummaryDto.Observations`
+stay; the frontend just stops reading them.
+
+What the preset did better was live-day context: a set active on 4 of 64 live days made zero counts
+look like a dead emote. That is now solved on the server, for every consumer at once (page caption,
+sidecar chart, drilldown, chart bands): `/usage-stats/series` and `/usage-stats/daily` return a
+`ChannelLiveDay` (`LiveMinutes > 0`) only if the viewed set has at least one row with `UseCount > 0`
+on that date. The rule is set-wide and counts every emote of the channel, archived ones included,
+via one shared query (`LoadSetCountedDatesAsync`) that is deliberately not derived from the rows the
+channel series has already loaded; those exclude archived emotes for the active set, so archiving
+an emote would otherwise change historical live days and make `/series` disagree with `/daily`.
+`/daily` uses the same set as the emote's own counts (every set under `setScope = all`), and its
+per-emote denominator stays set-wide, otherwise every emote would read "used on all live days".
+Accepted edge: a live day on which nobody used any emote of the set does not count. A count booked
+under a false set during a flap still qualifies that day; repairing such rows belongs to #390.
+
+`ChannelUsageSeriesDto` gains `FirstCountedDay` / `LastCountedDay` (nullable, JSON
+`firstCountedDay` / `lastCountedDay`): the first and last day of the requested range with counts
+under the viewed set, archived emotes included. The set view's facts are now count-based and
+describe the selected range only, never the set's lifetime: `countedRange`, `countedOn` and
+`countedFrom` replace the observation-based `notObserved` and `countedSince`, and no
+series-derived sentence is shown while the series is pending or failed. The facts are as fresh as
+the curve: like `channelSeries` they update on a range or set change, not on live usage events. In
+practice only the active set gains counts live, so `countedFrom` can be stale only until the next
+range or set change after a set's very first count; this is accepted.
+
 ### 2026-10-11 — System-load sampling is process and host telemetry with hourly rollups (#380)
 
 **Betrifft:** `src/EmotePurge.Core/Entities/SystemLoad{Sample,Hourly,Source}.cs` ·
