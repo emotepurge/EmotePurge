@@ -42,4 +42,5 @@ public class Emote
 
     public Channel Channel { get; set; } = null!;
     public ICollection<UsageStat> UsageStats { get; set; } = new List<UsageStat>();
+    public ICollection<EmoteSlot> Slots { get; set; } = new List<EmoteSlot>();
 }

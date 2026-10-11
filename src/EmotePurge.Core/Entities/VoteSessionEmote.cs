@@ -17,6 +17,10 @@ public class VoteSessionEmote
     public string? NameAtCreation { get; set; }
     public string? ImageUrlAtCreation { get; set; }
 
+    // Every alias the emote had in the session's set at creation, ordered by addedAt;
+    // NameAtCreation stays the first element. Null where NameAtCreation is.
+    public string[]? NamesAtCreation { get; set; }
+
     public VoteSession VoteSession { get; set; } = null!;
     public Emote Emote { get; set; } = null!;
 }

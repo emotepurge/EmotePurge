@@ -30,5 +30,11 @@ public class ChatLogBackfillRunEmote
     // True iff this enqueue created the Emote row (creation provenance for the rollback cleanup).
     public bool CreatedRow { get; set; }
 
+    // The slot this snapshot row counts for. No foreign key, for the same reason as EmoteId.
+    public string? SlotId { get; set; }
+
+    // True iff this enqueue created the EmoteSlot (creation provenance for the rollback cleanup).
+    public bool CreatedSlot { get; set; }
+
     public ChatLogBackfillRun Run { get; set; } = null!;
 }

@@ -380,12 +380,20 @@ namespace EmotePurge.Infrastructure.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(false);
 
+                    b.Property<bool>("CreatedSlot")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<string>("SevenTvEmoteId")
                         .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SlotId")
                         .HasColumnType("text");
 
                     b.HasKey("RunId", "EmoteId");
@@ -463,6 +471,56 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.HasKey("ChannelId", "SevenTvEmoteId", "SevenTvEmoteSetId");
 
                     b.ToTable("EmoteSetLeaveObservations");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteSlot", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("AddedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("AddedAtFromRest")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime?>("ArchivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EmoteId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsArchived")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime>("LastSyncedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("SeedUnsettled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmoteId", "Name")
+                        .HasDatabaseName("IX_EmoteSlots_EmoteId_Name");
+
+                    b.HasIndex("EmoteId", "AddedAt", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("IX_EmoteSlots_EmoteId_AddedAt_Name_Authoritative")
+                        .HasFilter("\"AddedAtFromRest\"");
+
+                    b.ToTable("EmoteSlots");
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTag", b =>
@@ -825,6 +883,9 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<int>("SharedChatUseCount")
                         .HasColumnType("integer");
 
+                    b.Property<string>("SlotId")
+                        .HasColumnType("text");
+
                     b.Property<int>("Source")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
@@ -839,6 +900,10 @@ namespace EmotePurge.Infrastructure.Migrations
                         .IsUnique();
 
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("EmoteId", "EmoteSetId", "Date"), new[] { "UseCount" });
+
+                    b.HasIndex("SlotId", "EmoteSetId", "Date");
+
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("SlotId", "EmoteSetId", "Date"), new[] { "UseCount" });
 
                     b.ToTable("UsageStats");
                 });
@@ -977,6 +1042,9 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<string>("NameAtCreation")
                         .HasColumnType("text");
 
+                    b.PrimitiveCollection<string[]>("NamesAtCreation")
+                        .HasColumnType("text[]");
+
                     b.HasKey("VoteSessionId", "EmoteId");
 
                     b.HasIndex("EmoteId");
@@ -1066,6 +1134,17 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Navigation("Channel");
                 });
 
+            modelBuilder.Entity("EmotePurge.Core.Entities.EmoteSlot", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Emote", "Emote")
+                        .WithMany("Slots")
+                        .HasForeignKey("EmoteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Emote");
+                });
+
             modelBuilder.Entity("EmotePurge.Core.Entities.EmoteTag", b =>
                 {
                     b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
@@ -1134,6 +1213,11 @@ namespace EmotePurge.Infrastructure.Migrations
                         .HasForeignKey("EmoteId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("EmotePurge.Core.Entities.EmoteSlot", null)
+                        .WithMany()
+                        .HasForeignKey("SlotId")
+                        .OnDelete(DeleteBehavior.Cascade);
 
                     b.Navigation("Emote");
                 });
@@ -1207,6 +1291,8 @@ namespace EmotePurge.Infrastructure.Migrations
 
             modelBuilder.Entity("EmotePurge.Core.Entities.Emote", b =>
                 {
+                    b.Navigation("Slots");
+
                     b.Navigation("UsageStats");
                 });
 
