@@ -1,8 +1,8 @@
 # Plan #372 — Emote-Slots, Kind 2: REST-Abgleich je Slot mit Datums-Identität und Wiederaufnahme
 
 Erstellt am 2026-10-11 im Worktree `EmotePurge-slots` (Branch `feat/372-slot-reconcile`, Basis `origin/main` @ `38e640c8`).
-**Status: Revision 1 (12.10.) nach dem adversarialen Review (Codex Sol) und den Betreiberentscheidungen R1–R3; keine offenen
-Rückfragen.** Quelle und einzige Vertragsquelle: [die Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md)
+**Status: Revision 2 (12.10.) nach dem zweiten adversarialen Review (Codex Sol); Revision 1 nach dem ersten Review und den
+Betreiberentscheidungen R1–R3; keine offenen Rückfragen.** Quelle und einzige Vertragsquelle: [die Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md)
 (§6.2–6.5, §4.1, §5.4, §10, §13 AK 5–13, 27, 29, 32, 47–50, §15, §16 Kind 2), Issue #372 samt Übergabekommentar aus #371, Epic #365.
 Formatvorlage: [Plan-371](Plan-371-Emote-Slots-M1.md).
 
@@ -25,6 +25,16 @@ Fund wird gemeldet. D0–D33 werden nicht wieder aufgemacht.
 | Live-Prüfung freigegeben (R2), Testkanal `olaf_olaf_son`, Set-Änderungen per 7TV-Schreib-API mit Token des Betreibers, Handweg als Rückfall (7) | R2 (Betreiber 12.10.) |
 | Aufgabenliste: Flag in T1, eigene Aufgabe T5 für den Berichtspfad; `SevenTvSyncServiceDuplicateEmoteIdTests` bleibt als Aus-Nachweis | Folge |
 
+### Revision 2 (12.10.) — was sich geändert hat
+
+Alle drei Befunde des zweiten Reviews sind am Code bestätigt; keiner wird zurückgewiesen.
+
+| Änderung | beantwortet |
+|---|---|
+| **Bericht ↔ Admin-Purge.** Am Code geprüft: `ChannelService.PurgeAsync` sperrt nichts vorab, sondern löscht die Kanalzeile mit einem einzigen kaskadierenden `DELETE` in der impliziten Transaktion von `SaveChanges` (Kanal-Zeilensperre, danach Kaskade auf `Emotes`, `EmoteSetLeaveObservations` u. a.), ohne Deadlock-Erholung, und veröffentlicht `LEAVE` **vor** dem Speichern. Der Bericht ist ein Fan-out über alle Trefferkanäle des Sets; die Leave-Zeile hat einen FK auf `Channels`. Mit E25 aus Revision 1 (Emote zuerst) entstünde der beschriebene Zyklus. **Neu E25:** der Bericht sperrt bei Flag an zuerst die betroffenen Kanalzeilen (sortiert, ein Statement), dann die Emote-Zeilen, dann Leave; ein inzwischen gelöschter Trefferkanal löst die bestehende Ganz-Wiederholung aus (2.9). Zyklus Z6 neu in 2.2a, Fan-out-Reihenfolge definiert, Rest-Zyklus Z7 (Identitäts-Merge) benannt. Tests 6.5 (9) mit echtem `PurgeAsync`, beiden Startreihenfolgen, Rollback-Variante und zwei Trefferkanälen; 6.5 (4) ebenfalls auf echtes `PurgeAsync` umgestellt (die Revision-1-Beschreibung „Kanal `FOR UPDATE`, dann Emote-Löschung" traf den Code nicht). **Grenze:** „LEAVE vor dem Speichern" und die fehlende Wiederholung im Purge sind Bestand (DECISIONS 2026-09-01) und bleiben; ebenso die Bestands-Zyklen Purge ↔ Sync/Bericht im Aus-Zustand (2.2a, „Bestand"). #372 schließt nur, was es selbst einführt, und hält bei Flag an Purge aus jedem Zyklus mit Sync und Bericht heraus | Sol R2 P2 (1) |
+| **Cache-Identität vor jedem Reload.** Am Code geprüft: `LockChannelByIdAsync` lädt eine schon getrackte Instanz per `ReloadAsync` neu, und `loaded` in `SyncChannelAsync` ist dieselbe Referenz — eine Umbenennung während des 7TV-Aufrufs überschriebe den alten Login, die Aufräumprüfung sähe zweimal den neuen Namen. Zusätzlich gefunden: `LockAsync` wirft bei einer schon geänderten Instanz, und `ApplyAndSaveAsync` ändert die Kanalzeile vor der Transaktion — der Helfer wäre an dieser Stelle ohnehin unbrauchbar. **Neu:** E23 sperrt die Kanalzeile mit einem reinen Sperr-Statement über den Kanal-Einstieg des Helfers (E6), das keine Entität lädt; **E28** verlangt eine unveränderliche Momentaufnahme `(ChannelId, CacheName)` vor jedem Reload, die alle Cache-Aufräumpfade verwenden. Test 6.5 (10): Umbenennung während REST bei Flag an, mit nicht leerem aufgewärmtem Cache und ohne LEAVE-Aufräumen | Sol R2 P2 (2) |
+| **Deckungs-Neustart ab Schritt 1.** Am Code geprüft: `RecordObservedSetAsync` stellt beim ersten Sync das neue Beobachtungsintervall nur in den ChangeTracker; das Leeren vor einem Neustart ab Schritt 2 verwürfe es (der bestehende E10-Retry läuft deshalb schon heute ab `RecordObservedSetAsync`). **Neu:** E24 und E17 starten ab Schritt 1 neu (ganzes `ApplyAndSaveAsync` auf neu gelesener Zeile), Zähler bleibt bei höchstens zwei Neustarts; Test 6.5 (2) startet ohne Beobachtungsintervall und prüft genau ein offenes Intervall nach dem Commit | Sol R2 P2 (3) |
+
 ## 1. Umfang
 
 ### 1.1 Drin (Spec §16 Zeile 2)
@@ -35,8 +45,9 @@ Fund wird gemeldet. D0–D33 werden nicht wieder aufgemacht.
 4. **Settle** nur des Seeds des aktiven Sets (§6.3, D12), einschließlich des #371-Randfalls „Seed neben REST-Slot".
 5. **Sperre**: Kanalzeile, dann owning `Emote`-Zeilen in der Abgleichstransaktion, danach Slotgruppen neu lesen und Deckung prüfen
    (§6.5); `IsSlotKeyConflict`; Wiederholungspfad.
-6. **Legacy-Bericht** `EmoteService.MarkInSetAsync`: Sperrreihenfolge an den Abgleich angleichen (Flag an) und Erholung der ganzen
-   Transaktion bei Deadlock (beide Zustände).
+6. **Legacy-Bericht** `EmoteService.MarkInSetAsync`: Sperrreihenfolge an den Abgleich angleichen (Flag an: betroffene Kanalzeilen, dann
+   Emote-Zeilen, dann Leave) und Erholung der ganzen Transaktion bei Deadlock (beide Zustände) bzw. bei einem inzwischen gelöschten
+   Trefferkanal (Flag an).
 7. **`ArchivedSlotUpsert`** (neu, §18) als Baustein für Kind 3/5.
 8. **Leser über Slots** (Flag an): `OccupiedSlots`, `DuplicateNames` (D27, D15; AK 32 vorgezogen) und der Namenskollisions-Tracker.
 9. **Keine Migration.** Zähl-Map, Zähler, Flush und Backfill-Block bleiben auf dem Emote-Schlüssel (D19); die Map wird weiter aus
@@ -105,9 +116,13 @@ Fund wird gemeldet. D0–D33 werden nicht wieder aufgemacht.
 
 Ablauf in `ApplyAndSaveAsync`, eine Transaktion je Speicherversuch:
 
-1. `RecordObservedSetAsync` wie heute vor der Transaktion.
-2. **[E23] Erste Anweisung: Kanalzeile `FOR NO KEY UPDATE`** (bestehender `ChannelQueries.LockChannelByIdAsync` oder ein reines
-   Sperr-Statement; die Kanalzeile wird ohnehin am Ende aktualisiert). Keine Zeile → bestehender „row vanished"-Ausgang. Damit nimmt der
+1. `RecordObservedSetAsync` wie heute vor der Transaktion, danach die heutigen In-Memory-Zuweisungen an die Kanalzeile.
+2. **[E23] Erste Anweisung: Kanalzeile `FOR NO KEY UPDATE`** — **ausschließlich als reines Sperr-Statement** über den Kanal-Einstieg des
+   Sperr-Helfers (E6), das keine `Channel`-Entität materialisiert und keine getrackte Instanz neu lädt (Revision 2). **Nicht**
+   `ChannelQueries.LockChannelByIdAsync`: dessen `LockAsync` lädt eine getrackte Instanz per `ReloadAsync` neu (überschriebe den Login
+   für das Cache-Aufräumen, E28) und wirft bei einer schon geänderten Instanz — und die Kanalzeile ist hier nach Schritt 1 geändert. Die
+   Kanalzeile wird am Ende ohnehin über die geänderten Spalten aktualisiert; eine Umbenennung, die vor der Sperre committet hat, berührt
+   diese Spalten nicht (wie heute). Leere Rückgabe → bestehender „row vanished"-Ausgang. Damit nimmt der
    Sync die Kanalzeile in derselben Reihenfolge wie Purge, Merge, Join, Identitätsabgleich, Tag-Bericht und Backfill-Enqueue (alle
    Kanal → Emote); verträglich mit dem `KEY SHARE` von Flush und `ReplaceBlockAsync`.
 3. **Emote-Sperre** der Zeilen, die dieser Abgleich schreiben kann — **[E3]** alle Zeilen des Kanals, deren `SevenTvEmoteId` in der
@@ -117,8 +132,11 @@ Ablauf in `ApplyAndSaveAsync`, eine Transaktion je Speicherversuch:
    des Kanals im Tick-Kontext: vorher lösen oder zusichern, dass keine getrackt sind).
 5. **[E24] Deckungsprüfung (Sol P1):** das Prädikat aus Schritt 3 wird auf dem gelesenen Stand neu ausgewertet; jede persistierte Zeile,
    die es erfüllt, muss in der Menge der gesperrten Ids liegen. Fehlt eine (ein paralleler Schreiber hat zwischen 3 und 4 eine Eltern-Zeile
-   angelegt oder un-archiviert), wird die Transaktion zurückgerollt, der ChangeTracker geleert, die Kanalzeile neu gelesen und ab Schritt 2
-   neu begonnen — **höchstens zwei Neustarts**, je eine englische Warnzeile; danach propagiert der Fehler wie ein zweiter Fehlschlag (der
+   angelegt oder un-archiviert), wird die Transaktion zurückgerollt, der ChangeTracker geleert, die Kanalzeile als neue Instanz neu gelesen
+   (verschwunden → „row vanished") und **ab Schritt 1** neu begonnen, also das ganze `ApplyAndSaveAsync` einschließlich
+   `RecordObservedSetAsync` und der Zuweisungen (Revision 2: beim ersten Sync steht das neue Beobachtungsintervall nur im ChangeTracker; ein
+   Neustart ab Schritt 2 verlöre es — dieselbe Begründung trägt schon den heutigen E10-Retry). **Höchstens zwei Neustarts** (Zähler über die
+   Neustarts hinweg gehalten, nicht je Versuch neu), je eine englische Warnzeile; danach propagiert der Fehler wie ein zweiter Fehlschlag (der
    nächste Tick versucht es erneut). Zusätzlich vor `SaveChanges` eine Zusicherung: geänderte `Emote`-Einträge ⊆ gesperrt ∪ in diesem
    Versuch neu angelegt; ein Verstoß ist ein Programmierfehler (Ausnahme, kein Retry). Diese Zusicherung trägt die Zyklusfreiheit aus Z1.
 6. Settle-Zuordnung (welcher unsettled Seed gehört zum aktiven Set) mit **einer** Abfrage über `UsageStats` der Seeds dieses Kanals.
@@ -130,19 +148,41 @@ Ablauf in `ApplyAndSaveAsync`, eine Transaktion je Speicherversuch:
 Leave-Schreiber desselben Kanals nie gegenläufig sperren. Der Kommentar zur Lock-Reihenfolge in `ApplyAndSaveAsync` wird neu geschrieben.
 Neue Emotes haben noch keine Zeile zum Sperren: ein paralleler Anleger trifft den Emote-Unique-Index (E10-Pfad) oder die Deckungsprüfung.
 
-**Sperr-Helfer [E6]:** statische Erweiterung in `Infrastructure/Persistence` (Muster `ChannelQueries`) mit zwei Einstiegen — nach
-Emote-Ids (Bericht, Kind 5/6) und für den Abgleich nach Kanal + Live-IDs (Prädikat aus Schritt 3) — gleicher Modus, gleiche Sortierung,
-Rückgabe der gesperrten Ids. Das ist die Sperrkonvention, die D28/D32 voraussetzen.
+**Sperr-Helfer [E6]:** statische Erweiterung in `Infrastructure/Persistence` (Muster `ChannelQueries`) mit drei Einstiegen — Emote-Zeilen
+nach Emote-Ids (Bericht, Kind 5/6), Emote-Zeilen für den Abgleich nach Kanal + Live-IDs (Prädikat aus Schritt 3) und **Kanalzeilen nach
+Kanal-Ids** (Revision 2; Sync mit einer Id, Bericht mit den betroffenen Kanälen, 2.9) — gleicher Modus (E1), je ein Statement, Sortierung
+nach `Id` ordinal (`COLLATE "C"`, unabhängig von der Datenbank-Kollation; `Id` ist bei beiden Tabellen ein String), Rückgabe der
+gesperrten Ids, **keine Entitäten** (nichts wird getrackt oder neu geladen). Alle Einstiege verlangen eine offene Transaktion (wie
+`LockAsync`). Das ist die Sperrkonvention, die D28/D32 voraussetzen. **Mehrere Tabellen in einer Transaktion: immer `Channels` vor
+`Emotes` vor `EmoteSetLeaveObservations`**, innerhalb jeder Tabelle in der Sortierung des Helfers bzw. ordinal (Leave, 2.2).
+
+**[E28] Cache-Identität als Momentaufnahme (Revision 2, beide Zustände, im Aus-Zustand verhaltensneutral):** `SyncChannelAsync` hält vor
+`SaveSyncAsync` einen unveränderlichen Wert aus Kanal-Id und dem Login, unter dem das Aufwärmen den Cache befüllt hat (heute
+`loaded.ChannelName`). Alle Aufräumpfade — `RemoveOldNameCacheEntryAsync`, `AbandonVanishedRowAsync`, der abschließende Namensvergleich nach
+dem Speichern — lesen diesen Wert und nie eine `Channel`-Instanz, die ein Reload, ein Retry oder ein Sperr-Helfer inzwischen verändert
+haben kann. Begründung: heute ist `loaded` eine Referenz auf die getrackte Instanz; jedes spätere `ReloadAsync` darauf überschriebe den
+alten Login und ließe den Cache unter dem abgelösten Login stehen, wenn dessen LEAVE schon gelaufen oder ausgefallen ist.
 
 ### 2.2a Sperrzyklen und Erholung (Betreiber 12.10., R1)
 
 | Zyklus | Auflösung | Erholung, falls er doch eintritt | Nachweis |
 |---|---|---|---|
-| **Z1** Sync (an: Emote → Leave) vs. Legacy-Bericht (heute Leave → Emote), beide an | **ausgerichtet:** Bericht sperrt bei Flag an seine Emote-Zeilen vorab (E25); Leave-Upserts beider Seiten sortiert; Sync schreibt nur gesperrte Emotes (E24) | Sync E17, Bericht 2.9 | 6.5 (5): beide Reihenfolgen warten statt 40P01 |
+| **Z1** Sync (an: Emote → Leave) vs. Legacy-Bericht (heute Leave → Emote), beide an | **ausgerichtet:** beide nehmen bei Flag an zuerst die Kanalzeile(n), dann die Emote-Zeilen (E23, E25); Leave-Upserts beider Seiten sortiert; Sync schreibt nur gesperrte Emotes (E24) | Sync E17, Bericht 2.9 | 6.5 (5): beide Reihenfolgen warten statt 40P01 |
 | **Z2** Umschaltfenster: Worker an / Api aus und umgekehrt | **unvermeidbar** (verschiedene Reihenfolgen je Zustand) | beide Seiten wiederholen die ganze Transaktion einmal (Sync E17, Bericht 2.9, je in beiden Zuständen, E27) | 6.5 (6): vier echte Deadlocks, jede Seite einmal Opfer |
 | **Z3** Sync (Emote → Kanal-Update) vs. Purge/Merge/Join/Identität/Tag-Bericht (Kanal → Emote) | **ausgerichtet:** Sync nimmt die Kanalzeile zuerst (E23) | Sync E17; Purge endet für den Sync im bestehenden „row vanished" | 6.5 (4): beide Reihenfolgen ohne 40P01 |
 | **Z4** Settle-`UPDATE` vs. Backfill-`ReplaceBlockAsync`-`DELETE` auf `UsageStats` (M1-geseedete Importzeilen; statement-interne Zeilenreihenfolge) | **nicht ausrichtbar** ohne den Backfill zu ändern (D19) | Sync E17; Backfill: 40P01 ist `IsTransient` → Lauf pausiert und setzt am Block fort (bestehender Pfad im `ChatLogBackfillWorker`) | 6.5 (7): Sync als Opfer eines echten 40P01 im Settle-Schritt; Zusicherung, dass Npgsql 40P01 als transient meldet. Ein Nachstellen *innerhalb* zweier Statements ist nicht deterministisch möglich — im PR so benannt |
 | **Z5** Settle vs. Flush auf `UsageStats` | praktisch nur am M1-Tag: Settle bewegt nur Zeilen mit `SlotId = Seed` (Datum ≤ M1-Tag), Flush schreibt nur den laufenden Tag und neue Zeilen mit `SlotId NULL` | Sync E17; Flush: bestehendes Requeue der Zählwerte | 6.6 (2) (FK wartet nicht); kein eigener Deadlock-Test |
+| **Z6** (Revision 2) Bericht an vs. Admin-`PurgeAsync`: das kaskadierende `DELETE` hält die Kanalzeile und wartet in der Kaskade auf eine vom Bericht gesperrte Emote-Zeile, der Leave-Insert des Berichts braucht `KEY SHARE` auf genau diese Kanalzeile | **ausgerichtet:** der Bericht sperrt bei Flag an zuerst die betroffenen Kanalzeilen (E25); `NO KEY UPDATE` und das `FOR UPDATE` des `DELETE` schließen sich aus, also wartet eine Seite vollständig auf die andere | Purge hat **keine** Erholung und braucht bei Flag an keine: er ist in keinem Zyklus mit Sync (E23) oder Bericht (E25). Bericht: gelöschter Trefferkanal → Ganz-Wiederholung (2.9) | 6.5 (9): beide Startreihenfolgen, Rollback-Variante, zwei Trefferkanäle, kein 40P01, Purge gelingt ohne Ausnahme |
+| **Z7** (Revision 2) Bericht an (mehrere Trefferkanäle, sortiert nach `Id`) vs. Identitäts-Merge bzw. Join-Umbenennung (zwei Kanalzeilen `FOR UPDATE`, Twitch-Id-Zeile zuerst, nicht nach `Id`) | **nicht ausrichtbar** ohne den Merge zu ändern; tritt nur ein, wenn beide Zeilen derselben Twitch-Id aktiv sind **und** dasselbe aktive Set tragen. Dieselbe Form besteht heute schon über den `KEY SHARE` der Leave-Inserts (kein neuer Zyklus, nur ein anderer Sperrmodus) | Bericht 2.9; Merge: nächster Tick des Identitätsabgleichs, Join: Fehler wie bei jedem DB-Fehler heute, der Nutzer wiederholt | kein eigener Test (Zustand nur künstlich herstellbar); im PR und in DECISIONS benannt |
+
+**Bestand, nicht durch #372 eingeführt (Revision 2, Grenze):** (a) `PurgeAsync` veröffentlicht `LEAVE` vor dem Speichern und wiederholt
+nicht (bewusst so, DECISIONS 2026-09-01) — ein zurückgerollter Purge lässt den Kanal bis zum nächsten Join bzw. Boot ungezählt. (b) Im
+Aus-Zustand (heutiger Code) kann Purge mit Sync bzw. Bericht zyklisch warten, wenn die Leave-Zeile schon existiert (Upsert ohne FK-Prüfung
+hält die Leave-Zeile, die Kaskade erreicht je nach Trigger-Reihenfolge erst `Emotes`, dann `EmoteSetLeaveObservations`); dann kann Purge das
+Opfer sein und (a) greift. #372 ändert beides nicht: bei Flag an ist Purge aus jedem Zyklus mit Sync und Bericht heraus (Z3, Z6), im
+Aus-Zustand bleibt es beim heutigen Verhalten; mit dem Rückbau der Aus-Zweige (Kind 9) entfällt (b). **[E] autonom, bitte prüfen:** (a)
+und (b) werden als eine Zeile „bekannte Grenze" im Index von Epic #365 geführt (T8), kein eigenes Issue — (a) ist eine dokumentierte
+Bestandsentscheidung, (b) verschwindet mit Kind 9.
 
 ### 2.3 Abgleich je `SevenTvEmoteId`-Gruppe *G* (§6.2) — Flag an
 
@@ -224,8 +264,9 @@ Einschalten exakt wie im Aus-Zustand.
   Indexname als Konstante, geteilt von `AppDbContext` (String gleich → kein Snapshot-Diff) und Prädikat; Ort neben dem Sperr-Helfer.
 - **[E17]** `SaveSyncAsync` behandelt `IsEmoteKeyConflict`, `IsSlotKeyConflict` (nur Flag an relevant) und Deadlock (SqlState 40P01, als
   `DbUpdateException` aus `SaveChanges` **oder** als nackte `PostgresException` aus Sperr-/Bulk-/Leave-Statement) gleich: **eine**
-  Wiederholung der ganzen Transaktion mit geleertem ChangeTracker und neu gelesener Kanalzeile, je eine englische Warnzeile; der zweite
-  Fehlschlag propagiert wie heute. Die Deadlock-Erholung gilt in beiden Flag-Zuständen (E27). Die Neustarts der Deckungsprüfung (E24)
+  Wiederholung der ganzen Transaktion mit geleertem ChangeTracker und neu gelesener Kanalzeile, **ab Schritt 1 aus 2.2** (ganzes
+  `ApplyAndSaveAsync`, wie der heutige E10-Retry; Revision 2), je eine englische Warnzeile; der zweite Fehlschlag propagiert wie heute.
+  Alle Aufräumpfade dabei über die Momentaufnahme aus E28. Die Deadlock-Erholung gilt in beiden Flag-Zuständen (E27). Die Neustarts der Deckungsprüfung (E24)
   zählen getrennt.
 
 ### 2.7 Inventaränderung, Logs
@@ -249,21 +290,34 @@ nicht hinein. In #372 ohne Produktivaufrufer.
 
 ### 2.9 Legacy-Bericht `EmoteService.MarkInSetAsync` (Betreiber 12.10., R1)
 
-- **[E25] Flag an:** erste Anweisung der Transaktion ist die Sperre der Emote-Zeilen, die `SaveChanges` ändern wird (Ids der geänderten
-  getrackten `Emote`-Einträge, Helfer nach Ids, gleicher Modus, sortiert); danach Leave-Upsert (sortiert, 2.2) und `SaveChanges`. Damit
-  gleiche Reihenfolge wie der Sync (Z1). Das Lesen bleibt wie heute vor der Sperre — bekannte, unveränderte Grenze; Kind 6 stellt auf
-  Sperre-dann-Lesen um.
-- **Flag aus:** heutige Reihenfolge.
+- **[E25] Flag an (Revision 2: Kanal zuerst):** die Transaktion nimmt ihre Sperren in der Reihenfolge aus E6:
+  1. **Kanalzeilen der betroffenen Kanäle** — betroffen = Trefferkanäle mit mindestens einer gefundenen Emote-Zeile (nur diese erhalten
+     Emote-Änderungen, Leave-Zeilen oder einen Kanal-Audit-Eintrag; Kanäle ohne Fund berührt der Bericht nicht) — über den Kanal-Einstieg
+     des Helfers, **ein Statement, sortiert nach `Id`**, Modus E1. Das ist die Fan-out-Reihenfolge: nie Kanal für Kanal in Trefferreihenfolge
+     (die ist nach `ChannelName` sortiert und wäre mit einem zweiten Bericht über andere Kanalnamen nicht konsistent). Fehlt in der Rückgabe
+     ein betroffener Kanal (ein Purge hat inzwischen committet), ist der vor der Transaktion gelesene Stand für diesen Kanal hinfällig: der
+     Versuch wird zurückgerollt und die **Ganz-Wiederholung** unten läuft (der zweite Durchlauf liest die Treffer neu, der gelöschte Kanal
+     ist keiner mehr). Ohne betroffene Kanäle entfällt der Schritt.
+  2. **Emote-Zeilen**, die `SaveChanges` ändern wird (Ids der geänderten getrackten `Emote`-Einträge über alle Kanäle, Helfer nach Ids, ein
+     Statement, sortiert).
+  3. Leave-Upserts (Kanäle in Trefferreihenfolge, je Kanal ordinal sortiert, 2.2), dann `SaveChanges`.
+
+  Damit gleiche Reihenfolge wie der Sync (Z1) und wie Purge (Z6): ein Purge, der zuerst kommt, lässt den Bericht an der Kanalsperre warten;
+  ein Bericht, der zuerst kommt, lässt das `DELETE` des Purge an der Kanalzeile warten, bevor dessen Kaskade eine Emote-Zeile anfordert.
+  Das Lesen bleibt wie heute vor der Sperre — bekannte, unveränderte Grenze (ein zwischen Lesen und Sperre deaktivierter oder auf ein
+  anderes Set gewechselter Kanal wird wie heute noch geschrieben); Kind 6 stellt auf Sperre-dann-Lesen um.
+- **Flag aus:** heutige Reihenfolge, keine Kanalsperren (Bestand, 2.2a „Bestand").
 - **Beide Zustände (E27): Erholung der ganzen Transaktion** bei 40P01 (`DbUpdateException` mit innerer `PostgresException` oder nackte
-  `PostgresException`): ChangeTracker leeren, die Methode von ihren ersten Lesezugriffen bis zum Commit einmal neu durchlaufen (Audit-
-  Einträge entstehen dadurch genau einmal, weil der erste Versuch zurückgerollt ist), englische Warnzeile; der zweite Fehlschlag propagiert
-  wie heute (500). Nichts, was nach dem Commit kommt, läuft doppelt.
+  `PostgresException`) und — nur Flag an — bei einem gelöschten betroffenen Kanal (Schritt 1): ChangeTracker leeren, die Methode von ihren
+  ersten Lesezugriffen bis zum Commit einmal neu durchlaufen (Audit-Einträge entstehen dadurch genau einmal, weil der erste Versuch
+  zurückgerollt ist), englische Warnzeile; **eine** Wiederholung insgesamt, gleich aus welchem der beiden Gründe; der zweite Fehlschlag
+  propagiert wie heute (500). Nichts, was nach dem Commit kommt, läuft doppelt.
 
 ## 3. Auflösung der offenen Punkte aus der Zuarbeit (U1–U17)
 
 U1 → E13 · U2 → Inhalt steht in AK 13 selbst, der Test bildet ihn ab, der PR nennt den toten Verweis „Beispiel iv" · U3 → E11 · U5 →
 E15; „Seeds ausgelassen" gehört zur Map, also Kind 3 · U6 → Abschnitt 5 · U7 → E20 · U8 → E1 (Betreiber 12.10.), E3–E6, E17, E23–E25,
-E27 · U9 → keine Metriken (E19) · U10 → E12 · U11 → E7 · U12 → E8 · U13 → E18 · U14 → überall ordinal, case-sensitiv · U15 → E2 · U16 →
+E27, E28 · U9 → keine Metriken (E19) · U10 → E12 · U11 → E7 · U12 → E8 · U13 → E18 · U14 → überall ordinal, case-sensitiv · U15 → E2 · U16 →
 K1-Kommentar bleibt im Aus-Zweig, Nachtrag am Entwurfseintrag (Abschnitt 9) · U17 → keine Planfolge.
 
 **[E21] U4 — Map auf Emote-Schlüssel nach D13:** hingenommen. Bei Flag an zählt die unveränderte Map bis Kind 3 den **ältesten** Namen (bei
@@ -299,6 +353,10 @@ der provisorische bleibt archiviert. Eine Rückkehr während eines Ausfalls kann
 | Eltern-Zeile entsteht zwischen Sperre und Lesen | Deckungsprüfung → Neustart, zweiter Versuch sperrt sie mit | 6.5 (2) |
 | Paralleler Anleger desselben Emotes | E10-Retry oder Deckungs-Neustart | bestehende E10-Tests, 6.5 (2) |
 | Purge während des Syncs | Sync wartet auf die Kanalzeile bzw. Purge auf den Sync; „row vanished" | 6.5 (4) |
+| Purge während des Berichts (Flag an), beide Reihenfolgen | Purge zuerst: Bericht wartet an der Kanalsperre, findet den Kanal nicht mehr, wiederholt einmal ohne ihn; Bericht zuerst: Purge wartet am `DELETE`, läuft danach durch; nie 40P01, nie ein zurückgerollter Purge | 6.5 (9) |
+| Purge wird zurückgerollt, während der Bericht wartet | Bericht läuft mit dem unveränderten Kanal normal durch | 6.5 (9) |
+| Umbenennung während des 7TV-Aufrufs, Cache aufgewärmt, LEAVE des alten Logins schon gelaufen oder ausgefallen (Flag an) | Cache unter dem alten Login entfernt (Momentaufnahme E28), Cache nur unter dem neuen Login | 6.5 (10) |
+| Erster Sync eines Kanals (kein offenes Beobachtungsintervall) mit Deckungs-Neustart | Neustart ab Schritt 1 stellt das Intervall erneut bereit; genau ein offenes Intervall nach dem Commit | 6.5 (2) |
 | Deadlock mit Backfill-Block | Sync wiederholt, Backfill setzt am Block fort | 6.5 (7) |
 | Flush schreibt während des Settle | `NO KEY UPDATE` blockiert die FK-Prüfung nicht; neue Zeilen `SlotId NULL` bis M2 | 6.6 (2) |
 | Implausibler Wipe | Wächter unverändert vor dem Schreiben | bestehende Tests |
@@ -352,15 +410,20 @@ Spalten), `UsageStats.SlotId` unverändert, Emote-Ergebnis = heutige Erwartung (
    dritte nimmt deren Sperre über den Helfer und legt A(t) an (konkurrierende Alias-Beobachtung), noch offen. Abgleich mit Live `[C(t)]`
    weiter → Deckungsprüfung schlägt an, Neustart, wartet auf die dritte, liest A(t) und benennt um. Erwartet: **genau ein** autoritativer
    Slot `(E, t)`, eine Neustart-Warnzeile. Der Testkommentar begründet, warum ohne Prüfung zwei Slots entstünden (kein Testschalter im
-   Produktivcode).
+   Produktivcode). **Revision 2:** der Kanal startet **ohne** Beobachtungsintervall (erster Sync), damit das Intervall im ersten Versuch nur
+   getrackt ist; zusätzlich erwartet: nach dem Commit **genau ein** offenes `ChannelEmoteSetObservations`-Intervall für das gemeldete Set,
+   und der Neustart lief ab Schritt 1 (der Interceptor sieht die Beobachtungsabfrage und das Kanal-Sperr-Statement je zweimal).
 3. **`IsSlotKeyConflict`-Pfad:** `SaveChanges`-Interceptor legt beim ersten Speichern einen kollidierenden autoritativen Slot über eine zweite
    Verbindung an → eine Wiederholung, ein Slot.
-4. **Z3 Purge:** Purge-Seite über dieselben Statements wie `PurgeAsync` (Kanal `FOR UPDATE`, dann Emote-Löschung). (a) Purge hält den
-   Kanal → Sync blockiert an seiner Kanalsperre, endet nach dem Commit im „row vanished"-Ausgang; (b) Sync hält → Purge wartet, läuft danach
-   durch. Beide ohne 40P01.
+4. **Z3 Purge (Revision 2: echter `PurgeAsync`):** der echte `ChannelService.PurgeAsync` (Redis-Publisher als Substitut), kein
+   nachgebautes Statement — er sperrt nicht vorab, sondern löscht per kaskadierendem `DELETE`. (a) Purge zuerst: die Testseite öffnet auf
+   dem Purge-Kontext eine Transaktion und ruft `PurgeAsync` (das `DELETE` läuft in ihr, die Sperren bleiben bis zum Commit) → Sync
+   blockiert an seiner Kanalsperre (Probe), nach dem Commit „row vanished"-Ausgang; (b) Sync zuerst: Interceptor hält den Sync nach seiner
+   Emote-Sperre an, `PurgeAsync` blockiert am `DELETE` (Probe), nach Freigabe gelingt der Sync, danach der Purge ohne Ausnahme. Beide ohne
+   40P01.
 5. **Z1 ausgerichtet (beide an):** echter `MarkInSetAsync` und echter Sync auf demselben Emote mit Leave; je ein Interceptor hält die erste
-   Seite nach ihrer Emote-Sperre an → die zweite blockiert (Probe), nach Freigabe beide erfolgreich, kein 40P01, Endzustand wie seriell.
-   Beide Reihenfolgen.
+   Seite nach ihrer Emote-Sperre an → die zweite blockiert (Probe; seit Revision 2 schon an der Kanalsperre), nach Freigabe beide
+   erfolgreich, kein 40P01, Endzustand wie seriell. Beide Reihenfolgen.
 6. **Z2 Umschaltfenster — vier echte Deadlocks:** Fenster A (Sync an, Bericht aus) und Fenster B (Sync aus, Bericht an). Die Seite mit
    Leave-zuerst wird nach ihrem Leave-Upsert angehalten, die andere läuft bis zum Warten auf die Leave-Zeile, dann Freigabe → echter 40P01.
    **Opfer deterministisch** über ein sitzungsweites `deadlock_timeout` (kurz beim gewünschten Opfer, lang bei der anderen Seite; der
@@ -372,12 +435,36 @@ Spalten), `UsageStats.SlotId` unverändert, Emote-Ergebnis = heutige Erwartung (
    (b) Gegen-Transaktion Opfer → Sync gelingt ohne Wiederholung. Zusätzlich: die gefangene Ausnahme meldet `IsTransient == true` (Basis der
    Backfill-Fortsetzung).
 8. **Grenzen:** zweiter Fehlschlag propagiert (hier darf ein injizierter 40P01 per Interceptor den Zweig treffen; alle Erholungsnachweise
-   oben sind echt); Deckungsprüfung gibt nach zwei Neustarts auf.
+   oben sind echt); Deckungsprüfung gibt nach zwei Neustarts auf; im Bericht teilen sich 40P01 und „betroffener Kanal gelöscht" **eine**
+   Wiederholung (ein injizierter 40P01 nach einer echten Kanal-Wiederholung propagiert).
+9. **Z6 Bericht ↔ Admin-Purge (Revision 2, Flag an, echter `MarkDeletedInSetAsync` und echter `PurgeAsync`):** Set mit **zwei**
+   Trefferkanälen K1, K2; das gemeldete Emote existiert in beiden, für K2 gibt es **noch keine** Leave-Zeile (der Fall, in dem der
+   Leave-Insert `KEY SHARE` auf die Kanalzeile braucht); gelöscht wird K2. Die Ids sind so gewählt, dass K2 in der Sperrreihenfolge vor
+   K1 liegt, die Trefferreihenfolge (Name) aber umgekehrt ist. (a) **Bericht zuerst:** Interceptor hält den Bericht nach seiner
+   Emote-Sperre an; `PurgeAsync` (K2) in eigenem Kontext blockiert am `DELETE` (Probe); Freigabe → Bericht committet (beide Kanäle
+   archiviert, Leave-Zeilen für beide, Audit je einmal), danach gelingt `PurgeAsync` ohne Ausnahme mit `true`; K2 samt Emotes und
+   Leave-Zeilen weg, K1 wie vom Bericht geschrieben; kein 40P01. (b) **Purge zuerst:** die Testseite öffnet auf dem Purge-Kontext eine
+   Transaktion, `PurgeAsync` (K2) führt das `DELETE` aus; der Bericht startet und blockiert an der Kanalsperre (Probe); Commit des Purge →
+   der Bericht findet K2 nicht mehr, wiederholt einmal (Warnzeile) und gelingt: nur K1 im Ergebnis und im Audit, keine Leave-Zeile für K2,
+   kein 23503, kein 500. (c) **Rollback:** wie (b), aber die Testseite rollt den Purge zurück → der Bericht läuft ohne Wiederholung durch,
+   beide Kanäle archiviert. In (a) und (b) endet kein Purge mit Ausnahme — der Bestandsfall „LEAVE veröffentlicht, Purge zurückgerollt"
+   tritt also in keiner Startreihenfolge auf; der Publisher hat genau ein `LEAVE` je `PurgeAsync`-Aufruf erhalten (hält das heutige
+   Verhalten fest, ist nicht Prüfgegenstand). Keine Gegenprobe mit Flag aus (Bestand, 2.2a).
+10. **Cache-Identität bei Flag an (Revision 2, E28):** Variante von
+    `SevenTvSyncServiceInFlightWriterTests.SyncChannel_RenamedWhileTheSevenTvCallIsInFlight_CachesUnderTheNewLoginOnly` mit Flag an:
+    Kanal mit persistierten aktiven Emote-Zeilen, damit das Aufwärmen den Cache unter dem alten Login **nicht leer** befüllt (vor der
+    Umbenennung zugesichert); während des blockierten 7TV-Aufrufs committet eine zweite Verbindung die Umbenennung; niemand ruft ein
+    LEAVE-Aufräumen auf. Erwartet: Ergebnis unter dem neuen Login, der alte Login nicht mehr im Cache, Einträge nur unter dem neuen.
+    Dazu die übrigen In-Flight-Fälle derselben Klasse (deaktiviert, gelöscht, alter Login von einer anderen aktiven Zeile gehalten) als
+    Theorie über beide Flag-Zustände. Ergänzend ein Fall mit E17-Wiederholung (40P01 per Interceptor im ersten Versuch) plus Umbenennung
+    davor: auch nach Retry und Neu-Lesen wird unter dem alten Login aufgeräumt.
 
 **6.6 Sperr-Helfer und `ArchivedSlotUpsert` (Integration):** (1) zwei Sperrer desselben Emotes serialisieren, Reihenfolge nach `Id`;
 (2) ein `UsageStats`-Insert für ein gesperrtes Emote wartet **nicht** (E1; Kommentar: mit `FOR UPDATE` würde er warten); (3) Upsert legt an,
 ist beim zweiten Aufruf No-op, lässt vorhandenen aktiven Slot unverändert, meldet nur Angelegtes; (4) `IsSlotKeyConflict` (Unit,
-positiv/negativ).
+positiv/negativ); (5) **Kanal-Einstieg (Revision 2):** sperrt mehrere Kanäle in `Id`-Reihenfolge (zweiter Sperrer mit umgekehrter
+Eingabe wartet statt 40P01), meldet einen fehlenden Kanal durch Abwesenheit in der Rückgabe, verlangt eine offene Transaktion, trackt keine
+Entität und lässt eine schon getrackte, geänderte `Channel`-Instanz samt `ChannelName` unverändert (Gegenstück zu `LockAsync`).
 
 **6.7 `EmoteSetStatusServiceTests`:** bestehende Fälle unverändert (Aus). Flag an: +2 AK 32 (zwei Slots eines Emotes = 2 Plätze, kein
 Duplikat; Kollision zweier Emotes über Slot-Namen inkl. Zweitname); +1 Virtuell-Regel (Emote ohne Slot zählt 1, unsettled Seed nicht
@@ -471,10 +558,10 @@ fertigen Befehl liefert der Orchestrator nach T1; der PR nennt Datum und Set-ID,
 ## 9. Commits und DECISIONS
 
 Conventional Commits, englisch: (1) `docs: add implementation plan for slot-aware reconcile`, (1b) `docs: revise slot reconcile plan after
-adversarial review` (diese Datei); (2) `feat: add the SevenTv:SlotReconcile:Enabled feature flag, default off` (Options, appsettings,
+adversarial review`, (1c) `docs: close remaining lock and restart gaps in slot reconcile plan` (diese Datei); (2) `feat: add the SevenTv:SlotReconcile:Enabled feature flag, default off` (Options, appsettings,
 Compose, `.env.example`, Operations) **plus DECISIONS-Absatz (Flag-Vertrag)**; (3) `feat(infrastructure): key the v4 set-entry overlay by
-emote id and alias` (+ Fixture, Tests); (4) `feat(infrastructure): add emote row lock, slot key conflict detection and ArchivedSlotUpsert`
-(inkl. sortierter Leave-Upserts); (5) `feat(infrastructure): reconcile REST entries per slot with date identity, resumption and per-set
+emote id and alias` (+ Fixture, Tests); (4) `feat(infrastructure): add emote and channel row locks, slot key conflict detection and
+ArchivedSlotUpsert` (inkl. sortierter Leave-Upserts); (5) `feat(infrastructure): reconcile REST entries per slot with date identity, resumption and per-set
 settle` **plus DECISIONS (Sperrvertrag, Deckung, Zyklen)**; (6) `feat(infrastructure): align the legacy in-set report with the emote lock
 order and retry it on deadlock` **plus DECISIONS (Bericht)**; (7) `feat(infrastructure): read occupied slots, duplicate names and the
 collision tracker from slots`; danach `fix:`/`test:` aus Review. Tests reisen im Commit ihres Features.
@@ -482,7 +569,9 @@ collision tracker from slots`; danach `fix:`/`test:` aus Review. Tests reisen im
 **DECISIONS [E22]:** wie #371 ein datierter Absatz „Child 2 (slot reconcile), <Datum>" direkt hinter „Child 1 (M1)" im Entwurfseintrag
 von 2026-10-10, englisch; er wächst mit den Commits (Regel 3: jeder Commit, der einen Vertrag ändert, trägt seinen Teil). Inhalt: Flag
 (E26, Aus-Semantik 2.0, E27); E1 als **dokumentierte Abweichung vom Spec-Wortlaut, Betreiberentscheidung 12.10.**, mit Begründung (FK-
-`KEY SHARE`, D19); E23–E25 und die Zyklentabelle 2.2a (verbleibend Z2, Z4, Z5 und wer sich erholt); E3–E6 (Helfer als Konvention für Kind
+`KEY SHARE`, D19); E23–E25 (Kanal vor Emote in Sync und Bericht, Fan-out-Reihenfolge nach `Id`) und die Zyklentabelle 2.2a (verbleibend Z2, Z4, Z5, Z7 und
+wer sich erholt; Z6 ausgerichtet; die Bestands-Grenze zu `PurgeAsync`); E28 (Cache-Identität als Momentaufnahme); E24/E17 Neustart ab
+Schritt 1; E3–E6 (Helfer als Konvention für Kind
 4–6); E7/E8; E11/E12; E14; E17; E18; E21; E2; D13 strikt für `FirstSeenAt` (die Regel „null never overwrites" wandert bei Flag an auf die
 Slot-Ebene). Die `Betrifft`-Zeile bekommt `EmoteSetStatusService.cs`, `EmoteService.cs`, `EmoteSetLeaveObservations.cs`,
 `ArchivedSlotUpsert.cs`, die Datei des Sperr-Helfers, den Options-Typ und die Compose-Dateien. Kind 9 macht final.
@@ -495,13 +584,13 @@ dateidisjunkt und dürfen parallel implementiert werden, ihre Testläufe nur nac
 | # | Aufgabe | Modell | Input | Fertig, wenn |
 |---|---|---|---|---|
 | T1 | Flag-Verdrahtung + Overlay | sonnet | 2.0, 2.1, E2, E26, 6.1; `SevenTvApiClient.cs`, `SevenTvApiDtos.cs`, beide `appsettings.json`, Compose-Dateien, `.env.example`, Operations | 6.1 grün (beide Zustände) mit vorläufiger, strukturgleicher Fixture; Verdrahtung vollständig (Gate); AK-29-Befehl im Abschlussbericht; Commits (2) und (3) mit DECISIONS-Teil |
-| T2 | Sperr-Helfer, Indexkonstante, `IsSlotKeyConflict`, `ArchivedSlotUpsert`, sortierte Leave-Upserts | sonnet | 2.2 (E3, E4, E6), 2.6 (E16), 2.8, 6.6; `ChannelQueries`, `ArchivedEmoteRowUpsert`, `EmoteSetLeaveObservations`, `PostgresLockProbe` | 6.6 grün; kein Snapshot-Diff; bestehende Leave-Tests grün |
+| T2 | Sperr-Helfer mit drei Einstiegen (Emote nach Ids, Emote für den Abgleich, **Kanal nach Ids**), Indexkonstante, `IsSlotKeyConflict`, `ArchivedSlotUpsert`, sortierte Leave-Upserts | sonnet | 2.2 (E3, E4, E6), 2.6 (E16), 2.8, 6.6; `ChannelQueries` (insbesondere `LockAsync` als Gegenbeispiel: der Kanal-Einstieg lädt nichts neu), `ArchivedEmoteRowUpsert`, `EmoteSetLeaveObservations`, `PostgresLockProbe` | 6.6 (1)–(5) grün; kein Snapshot-Diff; bestehende Leave-Tests grün |
 | T3 | **Entscheidungsklasse** | **opus** | 2.3 (inkl. Schritt 8 strikt), 2.4, 2.7 (E18), Abschnitt 3 „Wenn Daten fehlen", 6.2 | 6.2 grün; jede Regel trägt im Code den Spec-Verweis |
-| T4 | **Integration in `SevenTvSyncService`** (Flag-Zweig, Kanal- und Emote-Sperre, Deckungsprüfung, Settle-Umbindung, Wiederholung) | **opus** | 2.0, 2.2–2.7, 2.2a, E17, E19, E23, E24, E27, Abschnitt 4; Ergebnis T1–T3 | 6.3, 6.4, 6.5 (1)–(4), (7), (8) grün; bestehende Sync-Klassen unverändert grün; ganze Infrastructure-Suite grün; Commit (5) mit DECISIONS-Teil |
-| T5 | **Legacy-Bericht `MarkInSetAsync`** (Vorabsperre bei an, Erholung in beiden Zuständen) | **opus** | 2.9, 2.2a (Z1, Z2), E25, E27, 6.5 (5)–(6); Ergebnis T2/T4 | 6.5 (5)–(6) grün, je Seite einmal echtes Opfer; bestehende EmoteService-Tests grün; Commit (6) mit DECISIONS-Teil |
+| T4 | **Integration in `SevenTvSyncService`** (Flag-Zweig, Kanalsperre als reines Statement, Emote-Sperre, Deckungsprüfung mit Neustart ab Schritt 1, Settle-Umbindung, Wiederholung, Momentaufnahme E28) | **opus** | 2.0, 2.2–2.7, 2.2a, E17, E19, E23, E24, E27, E28, Abschnitt 4; `ChannelEmoteSetObservationService` (getracktes Erst-Intervall), `SevenTvSyncServiceInFlightWriterTests`, `ChannelService.PurgeAsync`; Ergebnis T1–T3 | 6.3, 6.4, 6.5 (1)–(4), (7), (8), (10) grün; bestehende Sync-Klassen unverändert grün; ganze Infrastructure-Suite grün; Commit (5) mit DECISIONS-Teil |
+| T5 | **Legacy-Bericht `MarkInSetAsync`** (bei an: Kanalsperren der betroffenen Kanäle, dann Emote-Sperre; Wiederholung bei gelöschtem Kanal; Deadlock-Erholung in beiden Zuständen) | **opus** | 2.9, 2.2a (Z1, Z2, Z6, Z7, Bestand), E25, E27, 6.5 (5), (6), (8), (9); `ChannelService.PurgeAsync`; Ergebnis T2/T4 | 6.5 (5), (6), (9) und der Berichtsteil von (8) grün, je Seite einmal echtes Opfer in (6); bestehende EmoteService-Tests grün; Commit (6) mit DECISIONS-Teil |
 | T6 | Leser über Slots | sonnet | 2.5 (E14, E15), 2.0 (Aus-Zweig), 6.7; `EmoteSetStatusService`, `RefreshMatchCacheAsync` | 6.7 grün (beide Zustände); Logtexte englisch; Commit (7) |
 | T7 | Live-Verifikation | sonnet | Abschnitt 7 vollständig; Token des Betreibers im Scratchpad; Rückfall Handweg abgestimmt | alle Prüfungen aus 7.5–7.7 protokolliert, Set wiederhergestellt, Abbau erledigt, kein Token in Protokoll/Repo |
-| T8 | Review, Gates, PR | **opus** (Review); Codex Sol | Branch, Abschnitte 5, 8, 9, 11 | drei Suiten grün, Coverage ≥ 80 %, Codex-Befund vorgelegt, PR mit AK-Tabelle, Abweichungen 1.3 und Flag-Hinweis; Kommentare auf #373–#376 und #379 mit Abschnitt 11 |
+| T8 | Review, Gates, PR | **opus** (Review); Codex Sol | Branch, Abschnitte 5, 8, 9, 11, 2.2a „Bestand" | drei Suiten grün, Coverage ≥ 80 %, Codex-Befund vorgelegt, PR mit AK-Tabelle, Abweichungen 1.3 und Flag-Hinweis; Kommentare auf #373–#376 und #379 mit Abschnitt 11; Zeile „bekannte Grenze" (2.2a Bestand) im Index von Epic #365 |
 
 Reihenfolge: (T1 ∥ T2 ∥ T3) → T4 → T5 → T6 → T7 → T8 (T5 und T6 sind dateidisjunkt, Testläufe aber nacheinander). AK 29 (Betreiber) jederzeit
 nach T1, vor T8. Ob T3 oder ein Review von T3/T4/T5 zusätzlich an Fable geht, entscheidet der Orchestrator (Identitäts- und Sperrlogik sind
@@ -516,16 +605,20 @@ hochgehebelt).
   das Settle über `SyncChannelAsync` mit gefaktem 7TV-Client und Flag an. E21 endet mit Kind 3.
 - **Kind 4 (#374):** Der Delta-Pfad schreibt in #372 keine Slots; sobald er es tut, nur bei Flag an, mit Kanal-zuerst und demselben
   Sperr-Helfer (Api-Schreiber laufen parallel). E14 bleibt das Netz.
-- **Kind 5 (#375):** Sperr-Helfer (Modus E1), Kanal → Emote-Reihenfolge, Deckungsprüfung nach dem Reload (E24), `IsSlotKeyConflict`,
+- **Kind 5 (#375):** Sperr-Helfer (Modus E1; Kanalzeilen über den Kanal-Einstieg, nie über `LockChannelByIdAsync`, wenn eine getrackte
+  Instanz später noch als alter Stand gebraucht wird — E28), Kanal → Emote-Reihenfolge, Deckungsprüfung nach dem Reload mit Neustart ab dem
+  ersten Schritt, der getrackte Zustände erzeugt (E24), `IsSlotKeyConflict`,
   `ArchivedSlotUpsert` (nur datiert) und die Entscheidungsklasse wiederverwenden. Schreibt das Enqueue `UsageStats`-Zeilen um, gehört es zu
   Zyklus Z4 und braucht dieselbe Erholung.
-- **Kind 6 (#376):** Entries-Berichte nehmen die Emote-Sperre **vor** dem Leave-Upsert und lesen danach (Sperre-dann-Lesen); der Legacy-Pfad
-  hat seit #372 die Vorabsperre bei Flag an und die Deadlock-Erholung — beides beim Umbau erhalten. `/totals` aktiv braucht für Emotes ohne
+- **Kind 6 (#376):** Entries-Berichte nehmen erst die Kanalsperren der betroffenen Kanäle (sortiert, ein Statement), dann die Emote-Sperre,
+  beide **vor** dem Leave-Upsert, und lesen danach (Sperre-dann-Lesen); der Legacy-Pfad hat seit #372 genau diese Vorabsperren bei Flag an,
+  die Wiederholung bei gelöschtem Trefferkanal und die Deadlock-Erholung — alles beim Umbau erhalten (Z6: sonst Zyklus mit dem Admin-Purge). `/totals` aktiv braucht für Emotes ohne
   eigenen Slot die Virtuell-Regel oder eine bewusste Alternative. AK 32 ist hier schon getestet.
 - **Kind 9 (#379):** **Schaltet `SEVENTV_SLOT_RECONCILE_ENABLED=true` auf Prod ein** (Api und Worker zusammen neu starten; das kurze
   Mischfenster deckt Z2). Davor der Prod-Kopie-Lauf mit Flag an (Abschnitt 7 wiederverwendbar, inkl. der Aus-Prüfsumme), danach Nachkontrolle
   §11.2 Schritt 6 (a) über „{Channel}: settle deferred …". DECISIONS final inkl. E1 und Flag; Rückbau der Aus-Zweige erst nach bewährtem
-  Prod-Betrieb (eigener Folgeschritt).
+  Prod-Betrieb (eigener Folgeschritt) — mit ihm entfallen die Bestands-Zyklen Purge ↔ Sync/Bericht im Aus-Zustand (2.2a „Bestand" (b)); die
+  Epic-Zeile dazu dann schließen bzw. auf (a) kürzen.
 
 ## 12. Rückfragen an den Betreiber
 
