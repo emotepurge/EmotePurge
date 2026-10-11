@@ -98,6 +98,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IChannelIdentityService, ChannelIdentityService>();
         services.AddScoped<IAdminChannelQueryService, AdminChannelQueryService>();
         services.AddScoped<IAdminDashboardQueryService, AdminDashboardQueryService>();
+        // Per-instance TTL caches with single-flight in front of the dashboard reads (#381); singleton
+        // so the cache outlives requests, scope-opening for the scoped query service.
+        services.AddSingleton<IAdminDashboardReader, AdminDashboardReader>();
         services.AddScoped<IAdminUserQueryService, AdminUserQueryService>();
         // Read side only — audit entries are written by the services that perform the actions, into
         // those actions' own transactions (see AuditLogWrites).

@@ -19,7 +19,13 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure}Tests.cs` ·
 `src/EmotePurge.Core/Services/IRateLimitTelemetryReader.cs` ·
 `src/EmotePurge.Infrastructure/Redis/RateLimitTelemetryStore.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/RateLimitTelemetryStoreTests.cs`
+`tests/EmotePurge.Infrastructure.Tests/Integration/RateLimitTelemetryStoreTests.cs` ·
+`src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Core/Services/IAdminDashboardReader.cs` ·
+`src/EmotePurge.Infrastructure/Services/AdminDashboardReader.cs` ·
+`web/src/app/core/i18n/api-error.ts` · `web/public/i18n/{de,en}.json` ·
+`tests/EmotePurge.Api.Tests/{ApiFactory,AuthFilterMatrixTests,AdminDashboardActivityEndpointTests,AdminRateLimitsTrendEndpointTests}.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/{AdminDashboardReaderTests,LiveEventTests}.cs`
 
 The activity series counts, per UTC calendar day, the `ChannelLiveDays` rows with `LiveMinutes > 0`.
 The accepted ranges are `30d`, `90d` and `13mo` (ordinal, exact; anything else is rejected). The
@@ -45,6 +51,34 @@ instead of summed. A missing bucket is `0`, meaning no rejection, because every 
 bucket; this deliberately differs from the system-load series, where a gap is `null` (not measured).
 Like the snapshot, the read is fail-open: an unreachable Redis yields
 `RateLimitTelemetryTrend.Unavailable` with empty lists, never an exception.
+
+Two read-only routes in the global-admin group serve the dashboard: `GET /api/admin/dashboard/activity`
+and `GET /api/admin/rate-limits/trend`. A missing or empty `range` on the activity route selects `30d`
+(a default, not an error); every other value must parse exactly, so `7d`, `30D`, a leading or trailing
+space and a whitespace-only value all answer `400 { errorCode: "invalid_dashboard_range" }`. Only a
+truly empty `?range=` counts as empty. The error code goes through the full rule-7 chain
+(`ApiErrorCodes`, `api-error.ts`, `errors.api.invalid_dashboard_range` in both locales) in the same
+commit. `date` serializes as `YYYY-MM-DD` (the default `DateOnly` format), `liveChannels` as a number or
+`null`. The trend route has no error code: an unreachable Redis is `200` with
+`telemetryAvailable=false` and empty lists.
+
+The dashboard polls these routes over REST every 60 seconds instead of listening to an admin event:
+`AdminTypes` stays unchanged (`usage.flushed` is a per-channel event and is pinned out of the admin
+stream in `LiveEventTests`), so the dashboard adds no stream traffic and no new event type.
+
+`IAdminDashboardReader` (Core) with the singleton `AdminDashboardReader` (Infrastructure) sits in front
+of the activity query and both telemetry reads, and `GET /api/admin/rate-limits` now goes through it
+with a byte-identical response. The caches are per Api instance, with single-flight: 60 s per range
+for the activity series, 30 s for the rate-limit snapshot and 30 s for the trend. Concurrent readers
+share one fill, which runs under its own token so one navigating browser cannot cancel it for the
+others. Expiry is counted from the end of the fill, and a failed fill is expired at once and therefore
+never cached; the next request retries. The clock is the injected `TimeProvider`, and the same value is
+the `nowUtc` passed to the query service. There is no cross-instance sharing or invalidation: with
+more than one Api replica each holds its own copy for at most one TTL.
+
+`GET /api/admin/roster` gains `ceilings.maxActiveChannels`, the value of `Channels:MaxActiveChannels`
+(the admission cap, default 80), next to the two Twitch constants. The field is additive; existing
+clients ignore it.
 
 ### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)
 

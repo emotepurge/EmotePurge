@@ -78,6 +78,10 @@ public class LiveEventTests
         Assert.Contains(LiveEvents.WorkerHealth, LiveEvents.AdminTypes);
         Assert.Contains(LiveEvents.ChannelSynced, LiveEvents.AdminTypes);
 
+        // The dashboard polls over REST (60 s) instead of listening to the admin stream: a flush is a
+        // per-channel event and must not start flooding admin streams (#381, assumption A-4).
+        Assert.DoesNotContain(LiveEvents.UsageFlushed, LiveEvents.AdminTypes);
+
         Assert.Contains(LiveEvents.UsageFlushed, LiveEvents.ChannelTypes);
         Assert.Contains(LiveEvents.VoteChanged, LiveEvents.ChannelTypes);
         Assert.Contains(LiveEvents.ChannelSynced, LiveEvents.ChannelTypes);
