@@ -120,6 +120,19 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **What the numbers of the sheet do *not* contain is stated as a sentence in the caption beneath it — not as a control, not as a banner, not as a second number on the cell.** The honesty sentences share **one** `<p>` under the sheet, in a fixed order: counting start → live days → bots → shared chat. That is the order in which the exclusions came about; a new one queues up at the back, it does not push in between and displaces none. Each sentence appears only if there is something to explain for this channel — its date is the **first sighting** of that kind of usage, not the start of the separation, and a missing date means "there was nothing to separate here", never "nothing is separated here". A toggle that shows the excluded usage again is explicitly **not** an option: the first visit should not have to keep two notions of the numbers in mind (DECISIONS 2026-09-01 and 2026-09-08). Reference: `web/src/app/core/emotes/bots-excluded-caption.ts` and `shared-chat-separated-caption.ts`.
 - **Reference:** `web/src/app/shared/emotes/usage-bands.ts` (+ `usage-bands.spec.ts`), `usage-series.ts`, `usage-sparkline.ts`, `web/src/styles.css` (`.app-sprite-cell*`, `.app-dock`), `web/src/app/features/usage-stats/usage-stats-page.html`; flow test `web/e2e/usage-atlas.e2e.spec.ts`.
 
+### 2.6 Small multiples (`app-line-chart`)
+
+`web/src/app/shared/charts/line-chart.ts` is the app's one chart primitive (inline SVG, no chart library; geometry and formatting in `chart-series.ts`). It draws **small multiples**: one chart carries n series of **one unit** on one shared x axis. A second unit is a second chart with its own y axis and its own unit caption; there are no dual axes, no donuts, no stacked areas, and no card frame around a chart (2.1).
+
+- **Colour carries meaning, not identity.** A series is `neutral` unless its caller opts it into `accent` or `danger`. Growth and capacity curves stay neutral. `danger` is allowed only for real errors or real limit rejections (rate-limit rejections, provider 429s) — never for "high". Series of the same tone are told apart by a dash pattern that follows their position, and from three series on a text legend with the last value stands under the plot, so no meaning rides on colour alone. Only semantic tokens, never the raw palette.
+- **`null` is a gap.** An unknown value breaks the line; nothing bridges or interpolates it, and it is never drawn as 0. A day nobody observed and a day with zero channels look different.
+- **An incomplete last bucket** (`partialLastBucket`, e.g. the running UTC day) is drawn dashed with a hollow marker and named as incomplete in the text alternative.
+- **Reading cursor instead of a tooltip.** The chart is one focusable group: the arrow keys (and the pointer) move a cursor, and an `aria-live="polite"` line under the plot states the bucket time and every series' value there — the same text for keyboard, pointer and screen reader.
+- **Time is UTC and says so.** Every time axis carries a caption ("times in UTC"); the unit is a visible caption above the plot, not only an axis label.
+- **Text alternative.** The `role="img"` SVG is named by the chart title and described by a generated summary per series (minimum, maximum, latest, known buckets of total).
+- **Count axes use whole-number ticks** (`unit="count"`), so a chart of 0–3 rejections never shows 1.5.
+- **Reference:** `web/src/app/shared/charts/` (`line-chart.ts`, `chart-series.ts` + spec); in use on the admin monitoring page (`admin-activity-section.ts`, the rate-limit trend in `admin-monitoring-page.ts`).
+
 ## 3. Typographic hierarchy
 
 - **What applies:** Four levels, fixed class chains:
