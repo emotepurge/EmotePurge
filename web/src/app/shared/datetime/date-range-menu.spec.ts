@@ -7,12 +7,9 @@ import { describe, expect, it } from 'vitest';
 import {
   DateRangeMenu,
   DateRangePreset,
-  IsoDateRange,
   MAX_RANGE_DAYS,
   allTimeStart,
-  dateRangePresetOptions,
   daysAgo,
-  setObservedRange,
   toIsoDate,
 } from './date-range-menu';
 
@@ -53,50 +50,7 @@ describe('allTimeStart', () => {
   });
 });
 
-describe("the 'set-observed' preset (spec #200, 8.5, AK 61)", () => {
-  it('is offered only when the chosen set has at least one observation interval', () => {
-    const withoutInterval = setObservedRange([], '2026-10-20');
-    const withInterval = setObservedRange(
-      [{ fromUtc: '2026-10-01T00:00:00Z', toUtc: null }],
-      '2026-10-20',
-    );
-
-    expect(withoutInterval).toBeNull();
-    expect(
-      dateRangePresetOptions(withoutInterval !== null).map((option) => option.value),
-    ).not.toContain('set-observed');
-    expect(dateRangePresetOptions(withInterval !== null).map((option) => option.value)).toEqual([
-      '0',
-      '7',
-      '30',
-      'all',
-      'set-observed',
-      'custom',
-    ]);
-  });
-
-  it('selects the youngest interval, open end meaning today, whatever order the intervals arrive in', () => {
-    const intervals = [
-      { fromUtc: '2026-10-01T18:00:00Z', toUtc: null },
-      { fromUtc: '2026-07-20T09:00:00Z', toUtc: '2026-08-02T12:00:00Z' },
-    ];
-
-    expect(setObservedRange(intervals, '2026-10-20')).toEqual({
-      from: '2026-10-01',
-      to: '2026-10-20',
-    });
-    expect(setObservedRange([...intervals].reverse(), '2026-10-20')).toEqual({
-      from: '2026-10-01',
-      to: '2026-10-20',
-    });
-    // A closed youngest interval ends where it ended, not today.
-    expect(
-      setObservedRange([{ fromUtc: '2026-07-20T09:00:00Z', toUtc: '2026-08-02T12:00:00Z' }]),
-    ).toEqual({ from: '2026-07-20', to: '2026-08-02' });
-  });
-});
-
-// --- Trigger label for 'set-observed' (operator decision 2026-09-22) --------------------------
+// --- Trigger label ------------------------------------------------------------------------------
 //
 // The real German strings, same convention as usage-range-menu.spec.ts: a selector built from them
 // reads as the sentence the user gets.
@@ -108,8 +62,6 @@ const DE_TRANSLATIONS = {
     preset7Days: '7 Tage',
     preset30Days: '30 Tage',
     presetAll: 'Seit Beginn',
-    presetSetObserved: 'Während dieses Set beobachtet wurde',
-    presetSetObservedShort: 'beobachtet',
     presetCustom: 'Eigener Zeitraum',
     from: 'Von',
     to: 'Bis',
@@ -121,20 +73,12 @@ const DE_TRANSLATIONS = {
 
 @Component({
   imports: [DateRangeMenu],
-  template: `
-    <app-date-range-menu
-      [(from)]="from"
-      [(to)]="to"
-      [(preset)]="preset"
-      [setObservedRange]="observedRange()"
-    />
-  `,
+  template: ` <app-date-range-menu [(from)]="from" [(to)]="to" [(preset)]="preset" /> `,
 })
 class Host {
   readonly from = signal('2026-09-01');
   readonly to = signal('2026-09-20');
   readonly preset = signal<DateRangePreset>('7');
-  readonly observedRange = signal<IsoDateRange | null>({ from: '2026-08-01', to: '2026-09-20' });
 }
 
 /** Accessible-name computation: visible text with `aria-hidden` descendants (the dropdown caret,
@@ -172,23 +116,27 @@ describe('DateRangeMenu trigger label', () => {
     return group ? Array.from(group.querySelectorAll<HTMLButtonElement>('[role="radio"]')) : [];
   }
 
-  it('shortens only the set-observed trigger label; the option keeps the full sentence', async () => {
+  it('offers exactly Heute, 7 Tage, 30 Tage, Seit Beginn and Eigener Zeitraum', async () => {
+    // protects=the option list of the date menu (no whole-history preset besides Seit Beginn);
+    // fails_when=an extra or missing preset appears in the radio group;
+    // no_claim=what selecting an option does; the real German strings stand in for the app's i18n.
     const { fixture, host } = await render();
-    fixture.componentInstance.preset.set('set-observed');
-    fixture.detectChanges();
-
-    // Short form on the trigger — this is the whole point: the full sentence would push the
-    // neighbouring "Set: …" control out of the toolbar.
-    expect(accessibleName(trigger(host))).toBe('Zeitraum: beobachtet');
-
     trigger(host).click();
     fixture.detectChanges();
 
-    const option = radios(host).find((r) => accessibleName(r).includes('beobachtet'))!;
-    expect(accessibleName(option)).toBe('Während dieses Set beobachtet wurde');
+    expect(radios(host).map(accessibleName)).toEqual([
+      'Heute',
+      '7 Tage',
+      '30 Tage',
+      'Seit Beginn',
+      'Eigener Zeitraum',
+    ]);
   });
 
-  it('leaves every other preset unchanged: trigger and option read the same text', async () => {
+  it('names the chosen preset on the trigger with the same text as its option', async () => {
+    // protects=the trigger label for each preset;
+    // fails_when=a trigger shows a different text than the option it was chosen from;
+    // no_claim=the layout of the toolbar.
     const { fixture, host } = await render();
 
     for (const [preset, expected] of [
