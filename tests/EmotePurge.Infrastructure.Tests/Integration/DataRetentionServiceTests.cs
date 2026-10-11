@@ -77,8 +77,9 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
             """
             DROP TRIGGER IF EXISTS retention_test_fail_user ON "Users";
             DROP TRIGGER IF EXISTS retention_test_fail_channel ON "Channels";
+            DROP TRIGGER IF EXISTS retention_test_fail_system_load ON "SystemLoadSamples";
             TRUNCATE "Votes", "VoteSessionEmotes", "VoteSessions", "UsageStats", "ChannelLiveDays", "Emotes",
-                "Channels", "Users", "AuditLogEntries" RESTART IDENTITY CASCADE;
+                "Channels", "Users", "AuditLogEntries", "SystemLoadSamples", "SystemLoadHourly" RESTART IDENTITY CASCADE;
             """);
     }
 
@@ -398,6 +399,104 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
         _logs.AssertNamesNone(
             "chanfails", "chanrejoined", "chanvanished", "chanplain",
             "retention-channel-1", "retention-channel-2", "retention-channel-3", "retention-channel-4");
+    }
+
+    [Fact]
+    public async Task SystemLoadRetentionFailureDoesNotSkipPersonalDataOrTheSummary()
+    {
+        await SeedAuditAsync(AuditCutoff.AddSeconds(-1), AuditActor.System.TwitchUserId, AuditActor.System.Login);
+        await SeedChannelWithHistoryAsync("chan-slfail", ChannelCutoff.AddDays(-1));
+        var sampleId = await SeedOldSystemLoadSampleAsync();
+        await InstallFailureTriggerAsync("SystemLoadSamples", "retention_test_fail_system_load", sampleId.ToString());
+
+        var summary = await RunAsync(enforce: true);
+
+        Assert.Equal(1, summary.AuditEntriesDeleted);
+        Assert.Equal(1, summary.Channels.Purged);
+        Assert.True(summary.SystemLoadRawSamplesFailed);
+        Assert.False(summary.SystemLoadHourlyRowsFailed);
+        Assert.Equal(0, summary.SystemLoadRawSamplesDeleted);
+        Assert.Equal(0, summary.SystemLoadRawSamplesWithoutHourlyRow);
+        Assert.Equal(1, summary.SystemLoadHourlyRowsDeleted);
+
+        await using var db = CreateDbContext();
+        Assert.Equal(
+            [AuditActions.ChannelPurge],
+            await db.AuditLogEntries.Select(entry => entry.Action).ToListAsync());
+        Assert.Empty(await db.Channels.ToListAsync());
+        Assert.True(await db.SystemLoadSamples.AnyAsync(sample => sample.Id == sampleId));
+        Assert.Equal(1, await db.SystemLoadHourlies.CountAsync());
+        var remainingHourly = await db.SystemLoadHourlies.SingleAsync();
+        var rawSampleHour = _now.AddDays(-8);
+        Assert.Equal(rawSampleHour.Ticks - rawSampleHour.Ticks % TimeSpan.TicksPerHour, remainingHourly.HourUtc.Ticks);
+
+        var warning = Assert.Single(_logs.Entries, entry => entry.Level == LogLevel.Warning);
+        Assert.Contains("system-load raw-sample retention failed", warning.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("injected retention test failure", warning.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RawSampleRetentionMatchesImmediateSuccessorReadinessAcrossProcessesAndGaps()
+    {
+        var day = DateTime.SpecifyKind(_now.AddDays(-8).Date, DateTimeKind.Utc);
+        var firstProcess = Guid.NewGuid();
+        var gappedProcess = Guid.NewGuid();
+        var oldIdentity = Guid.NewGuid();
+        var newIdentity = Guid.NewGuid();
+        var sharedProcessIdAcrossSources = Guid.NewGuid();
+
+        SystemLoadSample Sample(DateTime sampledAtUtc, SystemLoadSource source, Guid processInstanceId) => new()
+        {
+            SampledAtUtc = sampledAtUtc,
+            Source = source,
+            ProcessInstanceId = processInstanceId,
+        };
+
+        var firstHourPredecessor = Sample(day.AddHours(10).AddMinutes(59).AddSeconds(30), SystemLoadSource.Api, firstProcess);
+        var firstHourSuccessor = Sample(day.AddHours(11), SystemLoadSource.Api, firstProcess);
+        var gappedPredecessor = Sample(day.AddHours(12), SystemLoadSource.Api, gappedProcess);
+        var gappedSuccessor = Sample(day.AddHours(13), SystemLoadSource.Api, gappedProcess);
+        var beforeIdentityChange = Sample(day.AddHours(14), SystemLoadSource.Api, oldIdentity);
+        var afterIdentityChange = Sample(day.AddHours(14).AddMinutes(30), SystemLoadSource.Api, newIdentity);
+        var apiSample = Sample(day.AddHours(15), SystemLoadSource.Api, sharedProcessIdAcrossSources);
+        var workerSample = Sample(day.AddHours(15).AddMinutes(30), SystemLoadSource.Worker, sharedProcessIdAcrossSources);
+        var samples = new[]
+        {
+            firstHourPredecessor, firstHourSuccessor, gappedPredecessor, gappedSuccessor,
+            beforeIdentityChange, afterIdentityChange, apiSample, workerSample,
+        };
+
+        await using (var db = CreateDbContext())
+        {
+            db.SystemLoadSamples.AddRange(samples);
+            db.SystemLoadHourlies.AddRange(
+                new SystemLoadHourly { Source = SystemLoadSource.Api, HourUtc = day.AddHours(10) },
+                new SystemLoadHourly { Source = SystemLoadSource.Api, HourUtc = day.AddHours(11) },
+                new SystemLoadHourly { Source = SystemLoadSource.Api, HourUtc = day.AddHours(12) },
+                new SystemLoadHourly { Source = SystemLoadSource.Api, HourUtc = day.AddHours(14) },
+                new SystemLoadHourly { Source = SystemLoadSource.Api, HourUtc = day.AddHours(15) });
+            await db.SaveChangesAsync();
+        }
+
+        var expectedReadyIds = new[]
+        {
+            firstHourPredecessor.Id, firstHourSuccessor.Id, beforeIdentityChange.Id, afterIdentityChange.Id, apiSample.Id,
+        }.Order().ToArray();
+        var expectedNotReadyIds = new[] { gappedPredecessor.Id, gappedSuccessor.Id, workerSample.Id }.Order().ToArray();
+
+        var dry = await RunAsync(enforce: false);
+
+        Assert.Equal(expectedReadyIds.Length, dry.SystemLoadRawSamplesDeleted);
+        Assert.Equal(expectedNotReadyIds.Length, dry.SystemLoadRawSamplesWithoutHourlyRow);
+
+        var enforced = await RunAsync(enforce: true);
+
+        Assert.Equal(expectedReadyIds.Length, enforced.SystemLoadRawSamplesDeleted);
+        Assert.Equal(expectedNotReadyIds.Length, enforced.SystemLoadRawSamplesWithoutHourlyRow);
+        await using var remainingDb = CreateDbContext();
+        Assert.Equal(
+            expectedNotReadyIds,
+            await remainingDb.SystemLoadSamples.OrderBy(sample => sample.Id).Select(sample => sample.Id).ToArrayAsync());
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -741,6 +840,33 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
         db.AuditLogEntries.Add(entry);
         await db.SaveChangesAsync();
         return entry.Id;
+    }
+
+    private async Task<long> SeedOldSystemLoadSampleAsync()
+    {
+        await using var db = CreateDbContext();
+        var sampledAtUtc = _now.AddDays(-8);
+        var sample = new SystemLoadSample
+        {
+            SampledAtUtc = sampledAtUtc,
+            Source = SystemLoadSource.Api,
+            ProcessInstanceId = Guid.NewGuid(),
+        };
+        db.SystemLoadSamples.Add(sample);
+        db.SystemLoadHourlies.Add(new SystemLoadHourly
+        {
+            Source = SystemLoadSource.Api,
+            HourUtc = new DateTime(sampledAtUtc.Ticks - sampledAtUtc.Ticks % TimeSpan.TicksPerHour, DateTimeKind.Utc),
+        });
+        // This fixture uses a wall-clock reference time; keep the marker older than its cutoff on every run.
+        var oldHourlyAt = _now.AddMonths(-RetentionPolicy.SystemLoadHourlyMonths - 1);
+        db.SystemLoadHourlies.Add(new SystemLoadHourly
+        {
+            Source = SystemLoadSource.Api,
+            HourUtc = new DateTime(oldHourlyAt.Ticks - oldHourlyAt.Ticks % TimeSpan.TicksPerHour, DateTimeKind.Utc),
+        });
+        await db.SaveChangesAsync();
+        return sample.Id;
     }
 
     private async Task<(Channel Channel, long Open, long Ended, string Emote)> SeedChannelWithSessionsAsync(string name)

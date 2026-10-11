@@ -28,6 +28,8 @@ public sealed class WorkerStats
     // once per 30s flush. A single long needs no torn-read protection of its own.
     private long _indeterminateSharedChatMessages;
 
+    private long _chatLines;
+
     // Same pattern as the counter above: one increment per matched line in
     // TwitchChatManager.OnMessageReceived (issue #114), no lock needed for a single long.
     private long _splicedIrcLines;
@@ -90,6 +92,11 @@ public sealed class WorkerStats
     /// #68, Task 2). Same never-reset contract as <see cref="TwitchRebuildCount"/>.
     /// </summary>
     public long TwitchRebuildAttemptFailureCount => Interlocked.Read(ref _twitchRebuildAttemptFailureCount);
+
+    /// <summary>Total accepted chat lines since process start; reading it does not reset the counter.</summary>
+    public long TotalChatLines => Interlocked.Read(ref _chatLines);
+
+    public void RecordChatLine() => Interlocked.Increment(ref _chatLines);
 
     /// <param name="rows">Number of emote counters written by the flush that just succeeded.</param>
     public void RecordFlushSuccess(int rows, DateTime nowUtc)

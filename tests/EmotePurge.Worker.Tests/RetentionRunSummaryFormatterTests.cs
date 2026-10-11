@@ -29,7 +29,8 @@ public class RetentionRunSummaryFormatterTests
             "backfill runs deleted: 0; " +
             "channels restamped: 0, purged: 0, still active: 0, not found: 0, failed: 0, " +
             "emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, " +
-            "votes deleted: 0, observation intervals deleted: 0",
+            "votes deleted: 0, observation intervals deleted: 0; " +
+            "system-load raw samples deleted: 0, retained pending hourly rollup: 0, hourly rows deleted: 0",
             line);
     }
 
@@ -63,7 +64,10 @@ public class RetentionRunSummaryFormatterTests
                 VoteSessionsDeleted: 21,
                 VotesDeleted: 22,
                 ObservationsDeleted: 23),
-            ChatLogBackfillRunsDeleted: 24);
+            ChatLogBackfillRunsDeleted: 24,
+            SystemLoadRawSamplesDeleted: 25,
+            SystemLoadRawSamplesWithoutHourlyRow: 26,
+            SystemLoadHourlyRowsDeleted: 27);
 
         var line = RetentionRunSummaryFormatter.Format(summary);
 
@@ -76,7 +80,39 @@ public class RetentionRunSummaryFormatterTests
             "backfill runs deleted: 24; " +
             "channels restamped: 13, purged: 14, still active: 15, not found: 16, failed: 17, " +
             "emotes deleted: 18, usage rows deleted: 19, live days deleted: 20, vote sessions deleted: 21, " +
-            "votes deleted: 22, observation intervals deleted: 23",
+            "votes deleted: 22, observation intervals deleted: 23; " +
+            "system-load raw samples deleted: 25, retained pending hourly rollup: 26, hourly rows deleted: 27",
             line);
     }
+
+    [Fact]
+    public void Format_MarksFailedRawSampleCountsAsUnknown()
+    {
+        var summary = CreateSummary() with { SystemLoadRawSamplesFailed = true };
+
+        var line = RetentionRunSummaryFormatter.Format(summary);
+
+        Assert.Contains("system-load raw samples: failed (counts unknown)", line, StringComparison.Ordinal);
+        Assert.Contains("hourly rows deleted: 0", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Format_MarksFailedHourlyCountsAsUnknown()
+    {
+        var summary = CreateSummary() with { SystemLoadHourlyRowsFailed = true };
+
+        var line = RetentionRunSummaryFormatter.Format(summary);
+
+        Assert.Contains("system-load raw samples deleted: 0, retained pending hourly rollup: 0", line, StringComparison.Ordinal);
+        Assert.Contains("hourly rows: failed (count unknown)", line, StringComparison.Ordinal);
+    }
+
+    private static RetentionRunSummary CreateSummary() => new(
+        Enforced: true,
+        ReferenceTimeUtc: DateTime.UtcNow,
+        TokensCleared: 0,
+        Accounts: new AccountRetentionCounts(0, 0, 0, 0, false, 0, 0, 0),
+        VoteSessions: new VoteSessionRetentionCounts(0, 0, 0),
+        AuditEntriesDeleted: 0,
+        Channels: new ChannelRetentionCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
 }

@@ -5,6 +5,7 @@ using EmotePurge.Api.Auth;
 using EmotePurge.Api.Endpoints;
 using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
+using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure;
 using EmotePurge.Infrastructure.Services;
@@ -33,6 +34,7 @@ if (builder.Configuration.GetValue<bool>("EMOTEPURGE_LAN"))
 builder.Services.AddOpenApi();
 
 builder.Services.AddEmotePurgeInfrastructure(builder.Configuration);
+builder.Services.AddSystemLoadSampler(SystemLoadSource.Api);
 
 // Without a shared key ring every container restart invalidates every auth cookie, and two API
 // replicas would reject each other's logins outright. Only enabled when a path is configured

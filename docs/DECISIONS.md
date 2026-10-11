@@ -10,6 +10,61 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-11 — System-load sampling is process and host telemetry with hourly rollups (#380)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/SystemLoad{Sample,Hourly,Source}.cs` ·
+`src/EmotePurge.Core/Services/ISystemLoad*.cs` · `src/EmotePurge.Core/Services/{IDataRetentionService,ITwitchLiveStatusReader}.cs` · `src/EmotePurge.Core/Services/RetentionPolicy.cs` ·
+`src/EmotePurge.Infrastructure/Services/{CgroupV2Parser,ProcFileParser,LinuxSystemLoadSnapshotSource,InfrastructureSystemLoadWorkloadSource,SystemLoad*}.cs` ·
+`src/EmotePurge.Infrastructure/Redis/TwitchLiveStatusStore.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/*_AddSystemLoadSampling.cs` ·
+`src/EmotePurge.Worker/{SystemLoadRollupWorker,WorkerSystemLoadWorkloadSource,WorkerStats,EmoteUsageCounter,TwitchChatManager,RetentionRunSummaryFormatter}.cs` ·
+`src/EmotePurge.Worker/WorkerServiceRegistration.cs` · `src/EmotePurge.Api/Program.cs` ·
+`src/EmotePurge.Infrastructure/Services/DataRetentionService.cs` · `docs/Architectur.md` ·
+`docs/Operations.md` · `CLAUDE.md` · `.env.example` · `docker-compose*.yml` ·
+`tests/EmotePurge.Infrastructure.Tests/{Unit,Integration}/SystemLoad*.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/TwitchLiveStatusStoreFailureTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/DataRetentionServiceTests.cs` ·
+`tests/EmotePurge.Worker.Tests/{*SystemLoad*,RetentionRunSummaryFormatterTests}.cs`
+
+Api and Worker write separate `SystemLoadSamples` rows every 30 seconds, identified by source and a
+process-instance GUID. The samples contain process CPU time, cgroup v2 counters and limits, host
+`/proc` values, and workload counts; absent or unsupported operating-system values stay null. Worker
+chat-line and emote-match counters are independent monotone counters, so sampling never drains or
+changes `UsageFlushWorker`'s buffer. The Worker recomputes closable hours at startup and hourly,
+independent of `Retention:Enforce`; it applies a five-minute lateness grace, recomputes the most recent
+three hours, and fills older missing hours that still have raw rows. `(Source, HourUtc)` is the hourly
+upsert key.
+
+Hourly rows store rates for cumulative CPU counters rather than means or percentiles of their raw
+values. Process CPU and cgroup CPU means divide the sum of valid counter deltas by the sum of their
+wall intervals; host busy mean divides summed busy jiffies by summed total jiffies. Max and p95 use the
+individual valid-pair rates (p95 uses nearest rank). Pairs require the same source and process
+instance, belong to the later sample's hour, and are discarded across gaps longer than 2.5 sampling
+intervals. Gauges are still summarized when no rate pair is available.
+
+Raw samples are eligible for deletion after seven days only when their `(Source, HourUtc)` hourly row
+exists and, when a later sample exists for the same source and process instance, that immediate
+successor's hourly row exists too. The predecessor can be needed to calculate a rate in the
+successor's hour across an hour boundary. Older samples needed by either rollup are retained and
+reported by count, so retention cannot race catch-up. The rollup selects candidate hours in the
+database and loads only their samples plus one predecessor per process, keeping hourly work bounded
+when raw retention enforcement is disabled. Hourly rows expire after thirteen calendar months. These
+measurements contain no personal data, so they are not added to the privacy statement or the
+personal-data retention list.
+
+The Worker's live-channel count accepts only a snapshot generated since this process started. The
+Redis key can outlive a short restart, so the count remains unknown until this process completes its
+first successful poll.
+
+The daily retention pass runs every personal-data category through channel restamping and purge before
+it runs either system-load category. Raw-sample and hourly-row retention each have their own failure
+boundary: a failure logs the exception, leaves that category's counts marked unknown in the summary,
+and does not skip another telemetry category or the personal-data pass. This keeps telemetry
+maintenance from postponing the channel cleanup promised by the privacy statement.
+
+---
+
 ### 2026-10-10 — The counting unit is the set entry (slot), not the 7TV emote id: one card, one count and one add date per name (#365, draft)
 
 **Betrifft:** `docs/superpowers/specs/2026-10-10-emote-slots-spec.md` ·

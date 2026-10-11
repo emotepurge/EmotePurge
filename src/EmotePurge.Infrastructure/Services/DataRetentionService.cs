@@ -11,7 +11,7 @@ namespace EmotePurge.Infrastructure.Services;
 /// <summary>
 /// One retention pass (data-retention plan, "Der Job") — see <see cref="IDataRetentionService"/> for
 /// the contract. The categories run in a fixed order, each in its own transaction(s), and never inside
-/// an outer one: tokens → accounts → ended vote sessions → audit log → chat-log backfill runs → channels.
+/// an outer one: tokens → accounts → ended vote sessions → audit log → chat-log backfill runs → channels → system load.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -58,6 +58,30 @@ public class DataRetentionService(
     private const int VoteSessionBatchSize = 500;
     private const int AuditLogBatchSize = 5_000;
     private const int BackfillRunBatchSize = 500;
+    private const int SystemLoadBatchSize = 5_000;
+    private const string SystemLoadSampleImmediateSuccessorJoin = """
+        LEFT JOIN LATERAL (
+            SELECT s2."SampledAtUtc"
+            FROM "SystemLoadSamples" AS s2
+            WHERE s2."Source" = candidate."Source"
+              AND s2."ProcessInstanceId" = candidate."ProcessInstanceId"
+              AND s2."SampledAtUtc" > candidate."SampledAtUtc"
+            ORDER BY s2."SampledAtUtc"
+            LIMIT 1
+        ) AS succ ON true
+        """;
+    private const string SystemLoadSampleReadyForDeletion = """
+        EXISTS (
+            SELECT 1 FROM "SystemLoadHourly" AS hourly
+            WHERE hourly."Source" = candidate."Source"
+              AND hourly."HourUtc" = date_trunc('hour', candidate."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+        AND (
+            succ."SampledAtUtc" IS NULL
+            OR EXISTS (
+                SELECT 1 FROM "SystemLoadHourly" AS successor_hourly
+                WHERE successor_hourly."Source" = candidate."Source"
+                  AND successor_hourly."HourUtc" = date_trunc('hour', succ."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))
+        """;
 
     public async Task<RetentionRunSummary> RunAsync(bool enforce, CancellationToken cancellationToken = default)
     {
@@ -74,8 +98,37 @@ public class DataRetentionService(
         var channels = await RunChannelsAsync(
             enforce, now, now - RetentionPolicy.DeactivatedChannel, sessionCutoff, removedAccountIds, cancellationToken);
 
+        var systemLoadRawDeleted = 0;
+        var systemLoadRawWithoutHourly = 0;
+        var systemLoadRawFailed = false;
+        try
+        {
+            (systemLoadRawDeleted, systemLoadRawWithoutHourly) = await RunSystemLoadRawSamplesAsync(
+                enforce, now - RetentionPolicy.SystemLoadSample, cancellationToken);
+        }
+        catch (Exception exception) when (!IsCancellation(exception, cancellationToken))
+        {
+            systemLoadRawFailed = true;
+            logger.LogWarning(exception, "System-load raw-sample retention failed; category counts are unknown for this pass.");
+        }
+
+        var systemLoadHourlyDeleted = 0;
+        var systemLoadHourlyFailed = false;
+        try
+        {
+            systemLoadHourlyDeleted = await RunSystemLoadHourliesAsync(
+                enforce, now.AddMonths(-RetentionPolicy.SystemLoadHourlyMonths), cancellationToken);
+        }
+        catch (Exception exception) when (!IsCancellation(exception, cancellationToken))
+        {
+            systemLoadHourlyFailed = true;
+            logger.LogWarning(exception, "System-load hourly-row retention failed; category count is unknown for this pass.");
+        }
+
         return new RetentionRunSummary(
-            enforce, now, tokensCleared, accounts, voteSessions, auditEntriesDeleted, channels, backfillRunsDeleted);
+            enforce, now, tokensCleared, accounts, voteSessions, auditEntriesDeleted, channels, backfillRunsDeleted,
+            systemLoadRawDeleted, systemLoadRawWithoutHourly, systemLoadHourlyDeleted,
+            systemLoadRawFailed, systemLoadHourlyFailed);
     }
 
     /// <summary>
@@ -337,6 +390,86 @@ public class DataRetentionService(
         }
 
         return deleted;
+    }
+
+    /// <summary>
+    /// Deletes old raw samples only when their own and their immediate successor's source/hour summaries
+    /// exist. Rows needed to roll up an unclosed successor hour remain available for catch-up and are
+    /// reported as a count-only warning.
+    /// </summary>
+    private async Task<(int Deleted, int WithoutHourly)> RunSystemLoadRawSamplesAsync(
+        bool enforce,
+        DateTime cutoffUtc,
+        CancellationToken cancellationToken)
+    {
+        var deleted = 0;
+        if (enforce)
+        {
+            var sql = $$"""
+                DELETE FROM "SystemLoadSamples" AS sample
+                WHERE sample."Id" IN (
+                    SELECT candidate."Id"
+                    FROM "SystemLoadSamples" AS candidate
+                    {{SystemLoadSampleImmediateSuccessorJoin}}
+                    WHERE candidate."SampledAtUtc" < @cutoff
+                      AND ({{SystemLoadSampleReadyForDeletion}})
+                    ORDER BY candidate."SampledAtUtc", candidate."Id"
+                    LIMIT @batchSize)
+                """;
+            int batch;
+            do
+            {
+                batch = await db.Database.ExecuteSqlRawAsync(
+                    sql,
+                    [
+                        new NpgsqlParameter("cutoff", cutoffUtc),
+                        new NpgsqlParameter("batchSize", SystemLoadBatchSize),
+                    ],
+                    cancellationToken);
+                deleted += batch;
+            } while (batch == SystemLoadBatchSize);
+        }
+        else
+        {
+            deleted = await CountSystemLoadSamplesAsync(cutoffUtc, readyForDeletion: true, cancellationToken);
+        }
+
+        var withoutHourly = await CountSystemLoadSamplesAsync(cutoffUtc, readyForDeletion: false, cancellationToken);
+        if (withoutHourly > 0)
+        {
+            logger.LogWarning(
+                "System-load retention kept {Count} raw samples older than seven days because a required hourly row is missing.",
+                withoutHourly);
+        }
+
+        return (deleted, withoutHourly);
+    }
+
+    private async Task<int> CountSystemLoadSamplesAsync(
+        DateTime cutoffUtc,
+        bool readyForDeletion,
+        CancellationToken cancellationToken)
+    {
+        var readiness = readyForDeletion
+            ? $"({SystemLoadSampleReadyForDeletion})"
+            : $"NOT ({SystemLoadSampleReadyForDeletion})";
+        var sql = $$"""
+            SELECT COUNT(*)::int AS "Value"
+            FROM "SystemLoadSamples" AS candidate
+            {{SystemLoadSampleImmediateSuccessorJoin}}
+            WHERE candidate."SampledAtUtc" < @cutoff
+              AND {{readiness}}
+            """;
+        return await db.Database.SqlQueryRaw<int>(sql, new Npgsql.NpgsqlParameter("cutoff", cutoffUtc))
+            .SingleAsync(cancellationToken);
+    }
+
+    private async Task<int> RunSystemLoadHourliesAsync(bool enforce, DateTime cutoffUtc, CancellationToken cancellationToken)
+    {
+        var due = db.SystemLoadHourlies.Where(hourly => hourly.HourUtc < cutoffUtc);
+        return enforce
+            ? await due.ExecuteDeleteAsync(cancellationToken)
+            : await due.CountAsync(cancellationToken);
     }
 
     /// <summary>

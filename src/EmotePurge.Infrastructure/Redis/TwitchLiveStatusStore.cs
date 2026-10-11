@@ -12,7 +12,19 @@ namespace EmotePurge.Infrastructure.Redis;
 /// </summary>
 public class TwitchLiveStatusStore(IConnectionMultiplexer connectionMultiplexer, ILogger<TwitchLiveStatusStore> logger) : ITwitchLiveStatusReader, ITwitchLiveStatusWriter
 {
-    public async Task<TwitchLiveStatusSnapshot?> ReadAsync(CancellationToken cancellationToken = default)
+    public Task<TwitchLiveStatusSnapshot?> ReadAsync(CancellationToken cancellationToken = default) =>
+        ReadCoreAsync(logFailures: true);
+
+    public Task<TwitchLiveStatusSnapshot?> ReadQuietlyAsync(CancellationToken cancellationToken = default) =>
+        ReadCoreAsync(logFailures: false);
+
+    public async Task PublishAsync(TwitchLiveStatusSnapshot snapshot, TimeSpan timeToLive, CancellationToken cancellationToken = default)
+    {
+        var payload = JsonSerializer.Serialize(snapshot, JsonSerializerOptions.Web);
+        await connectionMultiplexer.GetDatabase().StringSetAsync(TwitchLiveStatusKeys.LiveChannels, payload, timeToLive);
+    }
+
+    private async Task<TwitchLiveStatusSnapshot?> ReadCoreAsync(bool logFailures)
     {
         RedisValue value;
         try
@@ -21,10 +33,14 @@ public class TwitchLiveStatusStore(IConnectionMultiplexer connectionMultiplexer,
         }
         catch (Exception ex) when (ex is RedisException or TimeoutException)
         {
-            // A missing key and an unreachable Redis both mean the same thing to every consumer here
-            // (MyChannelsService derives "unknown" live state): "no statement right now" — so an outage
-            // collapses into the identical null a missing/expired key already produces, not a new case.
-            logger.LogWarning(ex, "Lesen des Live-Status-Caches fehlgeschlagen — behandle als fehlenden Key.");
+            // The logged read maps an outage to the same unknown state as a missing key. The quiet read
+            // lets high-frequency callers propagate it to their own throttled failure handling.
+            if (!logFailures)
+            {
+                throw;
+            }
+
+            logger.LogWarning(ex, "Reading the live-status cache failed; treating it as a missing key.");
             return null;
         }
 
@@ -34,12 +50,6 @@ public class TwitchLiveStatusStore(IConnectionMultiplexer connectionMultiplexer,
         }
 
         return JsonSerializer.Deserialize<TwitchLiveStatusSnapshot>(value.ToString(), JsonSerializerOptions.Web);
-    }
-
-    public async Task PublishAsync(TwitchLiveStatusSnapshot snapshot, TimeSpan timeToLive, CancellationToken cancellationToken = default)
-    {
-        var payload = JsonSerializer.Serialize(snapshot, JsonSerializerOptions.Web);
-        await connectionMultiplexer.GetDatabase().StringSetAsync(TwitchLiveStatusKeys.LiveChannels, payload, timeToLive);
     }
 }
 

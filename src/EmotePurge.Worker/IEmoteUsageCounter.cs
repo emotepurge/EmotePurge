@@ -14,6 +14,9 @@ public interface IEmoteUsageCounter
 
     IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts> DrainAndReset();
 
+    /// <summary>Cumulative matched emotes since process start; independent of flush drains.</summary>
+    long TotalMatchedEmotes { get; }
+
     // Number of *distinct (EmoteId, EmoteSetId) keys* currently buffered, not the sum of their hit
     // counts — the sum would mean walking the whole dictionary on every health publish, while the
     // entry count is a cheap O(1)-ish read. As a health signal the two say the same thing: a number

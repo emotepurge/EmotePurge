@@ -484,8 +484,8 @@ The deploy follows the merge on its own schedule; it does not wait for any other
 
 Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,
 in-database mechanism that deletes or clears user and channel data on a schedule, independent of
-whether any backup exists. `DataRetentionWorker`, the tenth hosted service in `EmotePurge.Worker`,
-enforces it once a day by default.
+whether any backup exists. `DataRetentionWorker` in `EmotePurge.Worker` enforces it once a day by
+default.
 
 ### The periods
 
@@ -500,6 +500,8 @@ stand:
 | Audit log entry | deleted 365 days after it occurred | `OccurredAtUtc` |
 | Channel after "leave" | deleted with its whole history 180 days after it was deactivated | `DeactivatedAtUtc` |
 | Chat-log backfill run (the run row; its snapshot goes with it) | deleted 365 days after it finished | `FinishedAtUtc` |
+| Raw system-load sample | deleted after 7 days, only after its own and its immediate successor's hourly rollups exist | sample hour and source match `SystemLoadHourly`; when a later sample exists for the same process identity and source, its hour must also match |
+| Hourly system-load row | deleted after 13 calendar months | `HourUtc` |
 
 "Last activity" is the later of a login and the daily "last seen" stamp `OnValidatePrincipal`
 writes at most once per 24 hours — without it, a user who never logs out again (the session
@@ -507,10 +509,11 @@ cookie slides for 14 days) but never re-authenticates either would look inactive
 alone. Active channels and their statistics are never touched. A channel's emote tags (#201)
 have no period of their own: the six tables behind them (tags, entries, placements, activations,
 operations and the sync's leave observations) go with the channel's purge, through the
-foreign-key cascades. These periods are deliberately **not configurable** — a privacy
-policy quotes them (issue #247), and an environment variable that could silently change one
-would turn that text into a lie. What is configurable is only
-whether the job writes and how often it runs (below).
+foreign-key cascades. The personal-data periods are deliberately **not configurable** — the privacy
+policy quotes them (issue #247), and an environment variable that could silently change one would
+turn that text into a lie. System-load telemetry has separate operational periods and no personal
+data retention statement. All periods remain code constants; what is configurable is only whether
+the job writes and how often it runs (below).
 
 **Migration backfill.** The migration that introduced `LastSeenAtUtc` and `DeactivatedAtUtc`
 (`AddRetentionTimestamps`) backfills both columns to the migration's own timestamp for existing
@@ -533,7 +536,7 @@ only proof of being alive, so a Warning is the safety net against a `Retention:E
 gets deployed once and then forgotten for a year:
 
 ```
-Retention dry run: nothing was deleted, Retention:Enforce is false. tokens cleared: 3; accounts deleted: 0, still active: 0, not found: 0, failed: 0, cap reached: False, votes deleted: 12 (4 in open sessions), audit entries pseudonymised: 5; vote sessions deleted: 2, votes deleted: 34, ballot entries deleted: 2; audit log entries deleted: 118; channels restamped: 1, purged: 0, still active: 0, not found: 0, failed: 0, emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, votes deleted: 0
+Retention dry run: nothing was deleted, Retention:Enforce is false. tokens cleared: 3; accounts deleted: 0, still active: 0, not found: 0, failed: 0, cap reached: False, votes deleted: 12 (4 in open sessions), audit entries pseudonymised: 5; vote sessions deleted: 2, votes deleted: 34, ballot entries deleted: 2; audit log entries deleted: 118; backfill runs deleted: 0; channels restamped: 1, purged: 0, still active: 0, not found: 0, failed: 0, emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, votes deleted: 0, observation intervals deleted: 0; system-load raw samples deleted: 0, retained pending hourly rollup: 0, hourly rows deleted: 0
 ```
 
 An enforced pass logs the identical set of fields at `Information` instead, prefixed
@@ -548,7 +551,15 @@ outcomes that do not stop the rest of the category (a login won a race against a
 deletion, a row already gone, or a transient failure — the item is retried on the next day's
 pass). `cap reached: True` on the accounts category means `Retention:MaxAccountsPerRun` was hit
 for this tick; the remaining overdue accounts are not lost, they are simply the first ones picked
-up on the next pass.
+up on the next pass. The raw-sample count `retained pending hourly rollup` reports samples over seven
+days old that cannot yet be deleted because their own hour, or the immediate successor hour for the
+same source and process identity, has no rollup. Retention leaves them intact so the Worker can catch
+up later; this applies in dry-run and enforced mode.
+
+The pass completes the personal-data categories, including channel restamping and purge, before it
+starts system-load retention. Raw-sample and hourly-row retention are isolated from each other. If one
+fails, the pass logs the exception, marks that category's counts unknown in the summary, and continues
+with the other telemetry category.
 
 **Recommended procedure:** deploy with the default (`RETENTION_ENFORCE` unset or `false`), watch
 a handful of daily dry-run lines, and sanity-check the numbers against what you expect for your
@@ -572,6 +583,40 @@ change what it does, and changing them needs a rebuilt image:
 | `Retention:IntervalHours` | `24` | Hours between two passes. |
 | `Retention:StartupDelayMinutes` | `10` | Minutes the job waits after the worker's boot recovery before its first pass, so a restart loop does not begin every start with a pass. |
 | `Retention:MaxAccountsPerRun` | `100` | Ceiling on account deletions per pass; bounds how long the first enforced pass can run against an existing database. The rest follow on later passes, see `cap reached` above. |
+
+### System-load sampling
+
+Both Api and Worker collect a source-tagged sample every 30 seconds by default. The Worker
+recomputes hourly summaries at startup and hourly, independently of `Retention:Enforce`; a five
+minute grace allows late samples to arrive before an hour closes. It also fills older missing
+hours that still have raw rows. Configure these values in the `.env` file; Compose passes them to
+both services:
+
+| Environment variable | Configuration key | Default | Meaning |
+|---|---|---:|---|
+| `SYSTEM_LOAD_ENABLED` | `SystemLoad:Enabled` | `true` | Enables or disables sampling in both hosts. |
+| `SYSTEM_LOAD_INTERVAL_SECONDS` | `SystemLoad:IntervalSeconds` | `30` | Sampling cadence, from 1 through 3600 seconds. |
+| `SYSTEM_LOAD_ROLLUP_GRACE_MINUTES` | `SystemLoad:RollupGraceMinutes` | `5` | Lateness allowance before an hour is closed. |
+
+Before deploying images containing this feature, apply the additive schema migration against the
+production database. It must run once before either the Api or Worker image starts, because both
+write samples and the Worker also reads and writes hourly rows:
+
+```sh
+dotnet ef database update --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api
+```
+
+Run the command from the checked-out release containing the migration, with the production
+connection string set. Do not start the new images before it succeeds. The migration was created
+with `dotnet ef migrations add AddSystemLoadSampling --project src/EmotePurge.Infrastructure
+--startup-project src/EmotePurge.Api`. The first cut has no endpoint or UI; inspect operational
+behaviour through the Worker rollup and retention count logs.
+
+Sampling contains no personal identifiers. It records process and host resource measurements and
+aggregate worker activity counts, so these periods do not change the personal-data retention list
+or require an addition to the privacy statement.
+The Worker's live-channel count is unknown until its first successful poll after each process start;
+Redis snapshots left by the previous process are ignored.
 
 ### Account deletion on request
 
