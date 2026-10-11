@@ -796,16 +796,16 @@
       }
     },
     "liveDaysInRange": {
-      "one": "Im gewählten Zeitraum war der Stream an einem Tag live.",
-      "other": "Im gewählten Zeitraum war der Stream an {{ live }} Tagen live."
+      "one": "Im gewählten Zeitraum war der Stream an einem Tag mit diesem Set live.",
+      "other": "Im gewählten Zeitraum war der Stream an {{ live }} Tagen mit diesem Set live."
     },
     "liveDaysInRangeSince": {
-      "one": "Live-Tage werden seit dem {{ date }} erfasst; importierte Tage tragen keine Live-Information. Seitdem war der Stream im gewählten Zeitraum an einem Tag live.",
-      "other": "Live-Tage werden seit dem {{ date }} erfasst; importierte Tage tragen keine Live-Information. Seitdem war der Stream im gewählten Zeitraum an {{ live }} Tagen live."
+      "one": "Live-Tage werden seit dem {{ date }} erfasst; importierte Tage tragen keine Live-Information. Seitdem war der Stream im gewählten Zeitraum an einem Tag mit diesem Set live.",
+      "other": "Live-Tage werden seit dem {{ date }} erfasst; importierte Tage tragen keine Live-Information. Seitdem war der Stream im gewählten Zeitraum an {{ live }} Tagen mit diesem Set live."
     },
     "liveDaysInRangeFromStart": {
-      "one": "Live-Tage gibt es erst ab dem Zählbeginn; im gewählten Zeitraum war der Stream an einem Tag live.",
-      "other": "Live-Tage gibt es erst ab dem Zählbeginn; im gewählten Zeitraum war der Stream an {{ live }} Tagen live."
+      "one": "Live-Tage gibt es erst ab dem Zählbeginn; im gewählten Zeitraum war der Stream an einem Tag mit diesem Set live.",
+      "other": "Live-Tage gibt es erst ab dem Zählbeginn; im gewählten Zeitraum war der Stream an {{ live }} Tagen mit diesem Set live."
     },
     "autoSyncNote": "Das Emote-Set wird regelmäßig automatisch mit 7TV abgeglichen. Neu hinzugefügte Emotes können bis zu 30 Minuten brauchen, bis 7TV sie hier meldet.",
     "trackedSince": "Wir zählen für diesen Channel seit dem {{ date }}.",

@@ -377,7 +377,7 @@ test.describe('emote atlas', () => {
     await openAtlas(page);
 
     await expect(
-      page.getByText(/Im gewählten Zeitraum war der Stream an 4 Tagen live\./),
+      page.getByText(/Im gewählten Zeitraum war der Stream an 4 Tagen mit diesem Set live\./),
     ).toBeVisible();
   });
 
@@ -399,7 +399,7 @@ test.describe('emote atlas', () => {
     );
     await expect(
       page.getByText(
-        /Live-Tage werden seit dem 03\.08\.2026 erfasst; importierte Tage tragen keine Live-Information\. Seitdem war der Stream im gewählten Zeitraum an 3 Tagen live\./,
+        /Live-Tage werden seit dem 03\.08\.2026 erfasst; importierte Tage tragen keine Live-Information\. Seitdem war der Stream im gewählten Zeitraum an 3 Tagen mit diesem Set live\./,
       ),
     ).toBeVisible();
   });
@@ -417,7 +417,7 @@ test.describe('emote atlas', () => {
     // sentence in the same place, not a replacement.
     await expect(page.getByText(/Wir zählen für diesen Channel seit dem/)).toBeVisible();
     await expect(
-      page.getByText(/Im gewählten Zeitraum war der Stream an 4 Tagen live\./),
+      page.getByText(/Im gewählten Zeitraum war der Stream an 4 Tagen mit diesem Set live\./),
     ).toBeVisible();
   });
 
@@ -444,7 +444,7 @@ test.describe('emote atlas', () => {
     // queues up behind them rather than displacing one (Designsprache §2.5).
     await expect(page.getByText(/Wir zählen für diesen Channel seit dem/)).toBeVisible();
     await expect(
-      page.getByText(/Im gewählten Zeitraum war der Stream an 4 Tagen live\./),
+      page.getByText(/Im gewählten Zeitraum war der Stream an 4 Tagen mit diesem Set live\./),
     ).toBeVisible();
     await expect(page.getByText(/Nachrichten bekannter Bots zählen seit dem/)).toBeVisible();
   });
