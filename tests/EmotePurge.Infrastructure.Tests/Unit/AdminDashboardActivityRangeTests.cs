@@ -66,4 +66,13 @@ public class AdminDashboardActivityRangeTests
 
         Assert.Throws<ArgumentException>(() => AdminDashboardActivityRanges.GetWindow(AdminDashboardActivityRange.Days30, local));
     }
+
+    [Fact]
+    public void AnUndefinedRange_IsRejected_ByBothToWireAndGetWindow()
+    {
+        var undefined = (AdminDashboardActivityRange)999;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => AdminDashboardActivityRanges.ToWire(undefined));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AdminDashboardActivityRanges.GetWindow(undefined, Utc(2026, 10, 11)));
+    }
 }

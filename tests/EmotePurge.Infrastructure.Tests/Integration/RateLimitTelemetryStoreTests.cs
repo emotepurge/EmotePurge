@@ -423,6 +423,23 @@ public class RateLimitTelemetryStoreTests(RedisFixture fixture)
     }
 
     [Fact]
+    public async Task ReadTrendAsync_SkipsAFieldWhoseValueIsNotANumber_AndStillCountsTheRest()
+    {
+        var clock = NewClock();
+        var store = NewStore(clock);
+        await store.RecordPolicyDecisionAsync(Rejected(NewName("policy"), retryAfterSeconds: 1));
+
+        // A hand-edited or corrupted counter must not poison the whole series.
+        var bucket = $"ratelimit:telemetry:m:{clock.GetUtcNow().ToUnixTimeSeconds() / 60}";
+        await fixture.Connection.GetDatabase().HashSetAsync(bucket, "policy|corrupt|rejected", "not-a-number");
+
+        var trend = await store.ReadTrendAsync();
+
+        Assert.True(trend.TelemetryAvailable);
+        Assert.Equal(1, trend.LocalRejections[^1]);
+    }
+
+    [Fact]
     public async Task ReadTrendAsync_AgainstAnUnreachableRedis_ReportsUnavailable_WithoutThrowing()
     {
         await using var broken = await ConnectionMultiplexer.ConnectAsync(
