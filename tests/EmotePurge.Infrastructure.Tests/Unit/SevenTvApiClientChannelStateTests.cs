@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using EmotePurge.Core.SevenTv;
+using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.SevenTv;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using Xunit;
@@ -338,6 +339,56 @@ public class SevenTvApiClientChannelStateTests
         Assert.Null(result.State!.EmoteSet.RemoteEntryCount);
     }
 
+    // The v3 side of the alias fixture: the same emote listed twice under its two set names, an alias-less
+    // entry (v3 lists it under the default name), and one entry v4 does not list at all.
+    private const string AliasFixtureUserPayload =
+        """{"emote_set":{"id":"SET9","capacity":600,"emotes":[{"id":"01KAMA120V9DC2P1YW9QWFHA16","name":"ome44"},{"id":"01KAMA120V9DC2P1YW9QWFHA16","name":"hob44"},{"id":"01FSNM69NG0000JPZ36BHMFR18","name":"PepeLaugh"},{"id":"01NOTINV4000000000000000000","name":"Lonely"}]},"user":{"id":"USER1","connections":[]}}""";
+
+    [Fact]
+    public async Task SlotReconcileOn_DatesEachEntryOfOneEmoteByItsAlias_AndLeavesUnmatchedUndated()
+    {
+        var client = CreateClient(CreateAliasFixtureHandler(), slotReconcile: true);
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        var emotes = result.State!.EmoteSet.Emotes;
+        Assert.Equal(new DateTime(2025, 3, 2, 10, 15, 30, 123, DateTimeKind.Utc), emotes[0].AddedToSetAt);
+        Assert.Equal(new DateTime(2025, 9, 14, 20, 1, 2, 456, DateTimeKind.Utc), emotes[1].AddedToSetAt);
+        Assert.Null(emotes[3].AddedToSetAt);
+        Assert.Equal(3, result.State.EmoteSet.RemoteEntryCount);
+    }
+
+    [Fact]
+    public async Task SlotReconcileOn_AliasNull_DatesTheEntryThroughTheEmotesDefaultName()
+    {
+        var client = CreateClient(CreateAliasFixtureHandler(), slotReconcile: true);
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        Assert.Equal(new DateTime(2024, 12, 24, 8, 0, 0, 789, DateTimeKind.Utc), result.State!.EmoteSet.Emotes[2].AddedToSetAt);
+    }
+
+    [Fact]
+    public async Task SlotReconcileOff_GivesEveryEntryOfAnEmoteTheDateOfTheLastHit()
+    {
+        var client = CreateClient(CreateAliasFixtureHandler(), slotReconcile: false);
+
+        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
+
+        var emotes = result.State!.EmoteSet.Emotes;
+        var lastHit = new DateTime(2025, 9, 14, 20, 1, 2, 456, DateTimeKind.Utc);
+        Assert.Equal(lastHit, emotes[0].AddedToSetAt);
+        Assert.Equal(lastHit, emotes[1].AddedToSetAt);
+        Assert.Equal(new DateTime(2024, 12, 24, 8, 0, 0, 789, DateTimeKind.Utc), emotes[2].AddedToSetAt);
+    }
+
+    private static RoutingStubHandler CreateAliasFixtureHandler() =>
+        CreateHandler(
+            AliasFixtureUserPayload,
+            v4Response: () => JsonResponse(
+                HttpStatusCode.OK,
+                File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Unit", "TestData", "set-entries-alias.json"))));
+
     private static RoutingStubHandler CreateHandler(
         string userPayload,
         (string PathPrefix, string Payload)? emoteSetRoute = null,
@@ -362,10 +413,12 @@ public class SevenTvApiClientChannelStateTests
         return new RoutingStubHandler(routes);
     }
 
-    private static SevenTvApiClient CreateClient(RoutingStubHandler handler)
+    private static SevenTvApiClient CreateClient(RoutingStubHandler handler, bool slotReconcile = false)
     {
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
-        return new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), new RecordingLogger<SevenTvApiClient>());
+        return new SevenTvApiClient(
+            httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(),
+            new RecordingLogger<SevenTvApiClient>(), new SlotReconcileOptions { Enabled = slotReconcile });
     }
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string payload) =>

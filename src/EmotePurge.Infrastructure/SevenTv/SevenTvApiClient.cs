@@ -4,6 +4,7 @@ using System.Text.Json;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
+using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Telemetry;
 using Microsoft.Extensions.Logging;
 
@@ -14,7 +15,8 @@ public class SevenTvApiClient(
     IRateLimitTelemetry telemetry,
     IForeignUpstreamRequestBudget foreignRequestBudget,
     ISevenTvSearchBudget searchBudget,
-    ILogger<SevenTvApiClient> logger) : ISevenTvApiClient
+    ILogger<SevenTvApiClient> logger,
+    SlotReconcileOptions? slotReconcile = null) : ISevenTvApiClient
 {
     // 7TV's own spelling of the Twitch platform on a Connection object — matched against exactly,
     // never derived, so the five call sites that filter on it cannot drift apart.
@@ -35,9 +37,11 @@ public class SevenTvApiClient(
 
     // v4 schema, not the v3 the BaseAddress points at — the real set-entry added-at only exists
     // there (EmoteSetEmote.addedAt); the v3 payload's timestamp is the emote's upload date. Same
-    // snake_case aliasing trick as above, since v4 names everything in camelCase.
+    // snake_case aliasing trick as above, since v4 names everything in camelCase. `alias` and the emote's
+    // `defaultName` identify the entry within its set for the slot-aware overlay (slot spec D14, E2):
+    // two entries of one emote under different aliases carry their own dates.
     private const string GqlSetEntriesQuery =
-        "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { page_count: pageCount items { added_at: addedAt emote { id } } } } } }";
+        "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { page_count: pageCount items { alias added_at: addedAt emote { id default_name: defaultName } } } } } }";
 
     // Host-absolute so it escapes the /v3/ BaseAddress.
     private const string V4GqlPath = "/v4/gql";
@@ -1128,7 +1132,17 @@ public class SevenTvApiClient(
         // just named, on every sync and also when v3 lists nothing, so it is the cross-check the
         // sync's wipe guard holds a v3 zero against (issue #76).
         var setEntries = await GetSetEntriesAsync(emoteSetDto.Id, cancellationToken);
-        if (setEntries?.AddedAtByEmoteId is { } addedAtByEmoteId)
+        if (setEntries?.AddedAtBySlotKey is { } addedAtBySlotKey)
+        {
+            // Slot reconcile on (E2): the date belongs to the (emote id, name) pair the v3 entry carries, so
+            // two aliases of one emote keep their own dates. No hit leaves the entry undated.
+            emotes = emotes
+                .Select(e => addedAtBySlotKey.TryGetValue((e.Id, e.Name), out var addedAt)
+                    ? e with { AddedToSetAt = addedAt }
+                    : e)
+                .ToList();
+        }
+        else if (setEntries?.AddedAtByEmoteId is { } addedAtByEmoteId)
         {
             emotes = emotes
                 .Select(e => addedAtByEmoteId.TryGetValue(e.Id, out var addedAt)
@@ -1196,7 +1210,9 @@ public class SevenTvApiClient(
         var entryCount = 0;
         try
         {
+            var slotAware = slotReconcile?.Enabled == true;
             var result = new Dictionary<string, DateTime>();
+            var resultBySlotKey = new Dictionary<(string EmoteId, string Name), DateTime>();
             for (var page = 1; page <= MaxSetEntryPages; page++)
             {
                 var payload = new
@@ -1225,9 +1241,24 @@ public class SevenTvApiClient(
                 foreach (var entry in entryPage.Items.Where(entry => entry.Emote is not null))
                 {
                     entryCount++;
-                    if (entry.AddedAt is { } addedAt)
+                    if (entry.AddedAt is not { } addedAt)
                     {
+                        continue;
+                    }
+
+                    if (!slotAware)
+                    {
+                        // Flag off: last hit per emote id wins, exactly as before the slot work.
                         result[entry.Emote!.Id] = addedAt.UtcDateTime;
+                        continue;
+                    }
+
+                    // An alias-less entry is listed under the emote's default name in v3 (E2). Ordinal and
+                    // case-sensitive (the dictionary's default tuple comparer); the first entry of a key wins.
+                    var name = entry.Alias ?? entry.Emote!.DefaultName;
+                    if (name is not null)
+                    {
+                        resultBySlotKey.TryAdd((entry.Emote!.Id, name), addedAt.UtcDateTime);
                     }
                 }
 
@@ -1237,7 +1268,9 @@ public class SevenTvApiClient(
                 }
             }
 
-            return new SetEntriesOverlay(result, entryCount);
+            return slotAware
+                ? new SetEntriesOverlay(null, entryCount, resultBySlotKey)
+                : new SetEntriesOverlay(result, entryCount);
         }
         // JsonException belongs here rather than in the caller's catch: a malformed v4 answer must
         // stay a missing date, not turn the whole channel Unavailable. The caller now treats
@@ -1470,5 +1503,8 @@ public class SevenTvApiClient(
     // What one v4 read of a set's entries yields (GetSetEntriesAsync): the dates for the AddedToSetAt
     // overlay (null when paging failed part-way), and the number of entries with a resolved emote,
     // which becomes RemoteEntryCount (a lower bound in that case).
-    private sealed record SetEntriesOverlay(Dictionary<string, DateTime>? AddedAtByEmoteId, int EntryCount);
+    private sealed record SetEntriesOverlay(
+        Dictionary<string, DateTime>? AddedAtByEmoteId,
+        int EntryCount,
+        Dictionary<(string EmoteId, string Name), DateTime>? AddedAtBySlotKey = null);
 }

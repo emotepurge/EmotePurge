@@ -1,0 +1,33 @@
+{
+  "data": {
+    "emote_sets": {
+      "emote_set": {
+        "emotes": {
+          "page_count": 1,
+          "items": [
+            {
+              "alias": "ome44",
+              "added_at": "2025-03-02T10:15:30.123+00:00",
+              "emote": { "id": "01KAMA120V9DC2P1YW9QWFHA16", "default_name": "hob44" }
+            },
+            {
+              "alias": "hob44",
+              "added_at": "2025-09-14T20:01:02.456+00:00",
+              "emote": { "id": "01KAMA120V9DC2P1YW9QWFHA16", "default_name": "hob44" }
+            },
+            {
+              "alias": null,
+              "added_at": "2024-12-24T08:00:00.789+00:00",
+              "emote": { "id": "01FSNM69NG0000JPZ36BHMFR18", "default_name": "PepeLaugh" }
+            },
+            {
+              "alias": "gone",
+              "added_at": "2025-01-01T00:00:00.000+00:00",
+              "emote": null
+            }
+          ]
+        }
+      }
+    }
+  }
+}
