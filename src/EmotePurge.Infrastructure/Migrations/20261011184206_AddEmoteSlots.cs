@@ -16,9 +16,9 @@ namespace EmotePurge.Infrastructure.Migrations
     /// <para>
     /// Runs <b>by hand, inside the maintenance window</b> together with M2 and M3 (spec 11.2);
     /// production never migrates at startup. Everything runs in one transaction (EF Core's default;
-    /// Npgsql has transactional DDL), and from the first statement on it holds <c>ACCESS
-    /// EXCLUSIVE</c> on <c>UsageStats</c>, so the seed sees the final row set. An abort leaves no
-    /// table, no column and no history entry behind.
+    /// Npgsql has transactional DDL), and from its second statement on (right after
+    /// <c>SET LOCAL</c>) it holds <c>ACCESS EXCLUSIVE</c> on <c>UsageStats</c>, so the seed sees the
+    /// final row set. An abort leaves no table, no column and no history entry behind.
     /// </para>
     /// <para>
     /// The seed is <see cref="EmoteSlotSeedSql.AttachUnslottedUsageRowsSql"/>, not a copy of it: on

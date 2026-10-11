@@ -27,10 +27,62 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
     private const string MigrationName = "AddEmoteSlots";
     private const string UsageUniqueIndex = "IX_UsageStats_EmoteId_EmoteSetId_Date";
 
+    private const string HistoryCountSql =
+        """SELECT count(*)::text AS "Value" FROM "__EFMigrationsHistory" WHERE "MigrationId" LIKE '%\_AddEmoteSlots';""";
+
+    // Per (EmoteId, EmoteSetId): row count and the three counter sums. Slot-agnostic, so it reads the
+    // same before and after M1 and after the collapse.
+    private const string PairSumsSql =
+        """
+        SELECT COALESCE(string_agg(t.line, ';' ORDER BY t.line), '') AS "Value" FROM (
+            SELECT "EmoteId" || '|' || "EmoteSetId" || '|' || count(*) || '|' || sum("UseCount") || '|'
+                   || sum("BotUseCount") || '|' || sum("SharedChatUseCount") AS line
+            FROM "UsageStats" GROUP BY "EmoteId", "EmoteSetId"
+        ) t;
+        """;
+
+    // PairSumsSql as a digest, for the tests with thousands of pairs.
+    private const string PairSumsDigestSql =
+        """
+        SELECT md5(COALESCE(string_agg(t.line, ';' ORDER BY t.line), '')) AS "Value" FROM (
+            SELECT "EmoteId" || '|' || "EmoteSetId" || '|' || count(*) || '|' || sum("UseCount") || '|'
+                   || sum("BotUseCount") || '|' || sum("SharedChatUseCount") AS line
+            FROM "UsageStats" GROUP BY "EmoteId", "EmoteSetId"
+        ) t;
+        """;
+
+    // The same without the row count: the collapse merges rows, it must not change the sums.
+    private const string PairTotalsSql =
+        """
+        SELECT COALESCE(string_agg(t.line, ';' ORDER BY t.line), '') AS "Value" FROM (
+            SELECT "EmoteId" || '|' || "EmoteSetId" || '|' || sum("UseCount") || '|'
+                   || sum("BotUseCount") || '|' || sum("SharedChatUseCount") AS line
+            FROM "UsageStats" GROUP BY "EmoteId", "EmoteSetId"
+        ) t;
+        """;
+
+    // Every Emotes row as text, so any changed column (FirstSeenAt, Name, IsArchived, ...) flips the hash.
+    private const string EmotesDigestSql =
+        """SELECT md5(COALESCE(string_agg(e::text, '|' ORDER BY e."Id"), '')) AS "Value" FROM "Emotes" e;""";
+
+    private const string PairToSlotStructureSql =
+        """
+        SELECT COALESCE(string_agg(t.line, ';' ORDER BY t.line), '') AS "Value" FROM (
+            SELECT DISTINCT u."EmoteId" || '|' || u."EmoteSetId" || '|' || s."Name" || '|' || s."SeedUnsettled" AS line
+            FROM "UsageStats" u JOIN "EmoteSlots" s ON s."Id" = u."SlotId"
+        ) t;
+        """;
+
+    private const string SlottedRowsDigestSql =
+        """
+        SELECT md5(COALESCE(string_agg(u."Id" || ':' || u."SlotId", '|' ORDER BY u."Id"), '')) AS "Value"
+        FROM "UsageStats" u WHERE u."SlotId" IS NOT NULL AND u."Id" <= {0};
+        """;
+
     [Fact]
     public async Task Up_RunsThroughOnAnEmptyDatabase_AndCreatesTheSchema()
     {
-        var (databaseName, previous, current) = await CreateDatabaseAtPreviousMigrationAsync();
+        var (databaseName, _, current) = await CreateDatabaseAtPreviousMigrationAsync();
         await using var db = fixture.CreateDbContext(databaseName);
 
         await MigrateAsync(db, current);
@@ -418,6 +470,7 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
 
         // Simulated M2 state: the unique key is gone and a pair can carry several slots.
         await Exec(db, $"""DROP INDEX "{UsageUniqueIndex}";""");
+        await UseLinguisticNameCollationAsync(db);
         var seed = await OneAsync(db, """SELECT "SlotId" AS "Value" FROM "UsageStats" WHERE "EmoteId" = 'ex' AND "Date" = '2026-09-01';""");
         await Exec(
             db,
@@ -569,6 +622,35 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task SeedSql_BreaksAnAddedAtTieByTheOrdinalName_EvenUnderALinguisticColumnCollation()
+    {
+        var (databaseName, _, current) = await CreateDatabaseAtPreviousMigrationAsync();
+        await using var db = fixture.CreateDbContext(databaseName);
+        await SeedStandardAsync(db);
+        await MigrateAsync(db, current);
+        await UseLinguisticNameCollationAsync(db);
+
+        // Two slots of (X, A) with the same AddedAt, both carrying rows; the unsettled seed sorts after
+        // them (NULL AddedAt). Under "C" 'Bravo' < 'alpha'; under the column collation 'alpha' < 'Bravo'.
+        await Exec(
+            db,
+            """
+            INSERT INTO "EmoteSlots" ("Id", "EmoteId", "Name", "AddedAt", "AddedAtFromRest", "LastSyncedAt")
+            VALUES ('tie-upper', 'ex', 'Bravo', '2026-04-01', true, now()),
+                   ('tie-lower', 'ex', 'alpha', '2026-04-01', true, now());
+            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount", "SlotId")
+            VALUES ('ex', 'SETA', '2026-09-10', 1, 0, 0, 'tie-upper'),
+                   ('ex', 'SETA', '2026-09-11', 1, 0, 0, 'tie-lower');
+            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount")
+            VALUES ('ex', 'SETA', '2026-09-20', 6, 0, 0);
+            """);
+
+        Assert.Equal(1, await db.Database.ExecuteSqlRawAsync(EmoteSlotSeedSql.AttachUnslottedUsageRowsSql));
+
+        Assert.Equal("tie-upper", await OneAsync(db, """SELECT "SlotId" AS "Value" FROM "UsageStats" WHERE "EmoteId" = 'ex' AND "Date" = '2026-09-20';"""));
+    }
+
+    [Fact]
     public async Task CollapseBackfillSnapshotSql_KeepsTheOldestSlotsRow_PerRunAndEmote_AndRestoresThePrimaryKey()
     {
         var (databaseName, previous, current) = await CreateDatabaseAtPreviousMigrationAsync();
@@ -669,58 +751,6 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
         Assert.False(await ColumnExistsAsync(db, "ChatLogBackfillRunEmotes", "SlotId"));
         Assert.Equal("6", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "ChatLogBackfillRunEmotes";"""));
     }
-
-    private const string HistoryCountSql =
-        """SELECT count(*)::text AS "Value" FROM "__EFMigrationsHistory" WHERE "MigrationId" LIKE '%\_AddEmoteSlots';""";
-
-    // Per (EmoteId, EmoteSetId): row count and the three counter sums. Slot-agnostic, so it reads the
-    // same before and after M1 and after the collapse.
-    private const string PairSumsSql =
-        """
-        SELECT COALESCE(string_agg(t.line, ';' ORDER BY t.line), '') AS "Value" FROM (
-            SELECT "EmoteId" || '|' || "EmoteSetId" || '|' || count(*) || '|' || sum("UseCount") || '|'
-                   || sum("BotUseCount") || '|' || sum("SharedChatUseCount") AS line
-            FROM "UsageStats" GROUP BY "EmoteId", "EmoteSetId"
-        ) t;
-        """;
-
-    // PairSumsSql as a digest, for the tests with thousands of pairs.
-    private const string PairSumsDigestSql =
-        """
-        SELECT md5(COALESCE(string_agg(t.line, ';' ORDER BY t.line), '')) AS "Value" FROM (
-            SELECT "EmoteId" || '|' || "EmoteSetId" || '|' || count(*) || '|' || sum("UseCount") || '|'
-                   || sum("BotUseCount") || '|' || sum("SharedChatUseCount") AS line
-            FROM "UsageStats" GROUP BY "EmoteId", "EmoteSetId"
-        ) t;
-        """;
-
-    // The same without the row count: the collapse merges rows, it must not change the sums.
-    private const string PairTotalsSql =
-        """
-        SELECT COALESCE(string_agg(t.line, ';' ORDER BY t.line), '') AS "Value" FROM (
-            SELECT "EmoteId" || '|' || "EmoteSetId" || '|' || sum("UseCount") || '|'
-                   || sum("BotUseCount") || '|' || sum("SharedChatUseCount") AS line
-            FROM "UsageStats" GROUP BY "EmoteId", "EmoteSetId"
-        ) t;
-        """;
-
-    // Every Emotes row as text, so any changed column (FirstSeenAt, Name, IsArchived, ...) flips the hash.
-    private const string EmotesDigestSql =
-        """SELECT md5(COALESCE(string_agg(e::text, '|' ORDER BY e."Id"), '')) AS "Value" FROM "Emotes" e;""";
-
-    private const string PairToSlotStructureSql =
-        """
-        SELECT COALESCE(string_agg(t.line, ';' ORDER BY t.line), '') AS "Value" FROM (
-            SELECT DISTINCT u."EmoteId" || '|' || u."EmoteSetId" || '|' || s."Name" || '|' || s."SeedUnsettled" AS line
-            FROM "UsageStats" u JOIN "EmoteSlots" s ON s."Id" = u."SlotId"
-        ) t;
-        """;
-
-    private const string SlottedRowsDigestSql =
-        """
-        SELECT md5(COALESCE(string_agg(u."Id" || ':' || u."SlotId", '|' ORDER BY u."Id"), '')) AS "Value"
-        FROM "UsageStats" u WHERE u."SlotId" IS NOT NULL AND u."Id" <= {0};
-        """;
 
     private static string SlotCountForEmoteSql(string emoteId) =>
         $"""SELECT count(*)::text AS "Value" FROM "EmoteSlots" WHERE "EmoteId" = '{emoteId}';""";
@@ -855,6 +885,11 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
 
     private static async Task<string> OneAsync(AppDbContext db, string sql, params object[] parameters) =>
         (await QueryAsync(db, sql, parameters)).Single() ?? "";
+
+    // The Testcontainers image (alpine, musl) compares bytewise by default, which would let a missing
+    // COLLATE "C" in the constants pass unnoticed. An ICU collation orders 'alpha' before 'Bravo'.
+    private static async Task UseLinguisticNameCollationAsync(AppDbContext db) =>
+        await Exec(db, """ALTER TABLE "EmoteSlots" ALTER COLUMN "Name" TYPE text COLLATE "und-x-icu";""");
 
     private static async Task Exec(AppDbContext db, string sql) =>
         await db.Database.ExecuteSqlRawAsync(sql);
