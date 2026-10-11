@@ -1128,10 +1128,11 @@ export class UsageStatsPage {
    * **Range-scoped and count-based.** The first/last counted day come from the channel series, whose
    * server-side bounds cover the requested range only (and archived emotes too), so a count outside
    * the range never produces a sentence. A non-active set names its counted span (`countedRange`,
-   * or `countedOn` for a single day); the active set only says when its counts begin if that is
-   * later than the range start (`countedFrom`) — an active set counted since the range start keeps
-   * today's empty caption. While the series is pending or failed no series-derived sentence is
-   * shown; `noCounts` stays totals-based and independent of it.
+   * or `countedOn` for a single day); the active set only says when its counts begin if another set
+   * of the channel counted earlier in the range (`countedFrom`, from `channelFirstCountedDay`) — a
+   * quiet start of the range is no set change and keeps today's empty caption. While the series is
+   * pending or failed no series-derived sentence is shown (checked here, not left to the loader
+   * clearing the signal); `noCounts` stays totals-based and independent of it.
    */
   protected readonly setViewCaptions = computed<CaptionSentence[]>(() => {
     if (this.viewLoading() || this.viewSwitching()) {
@@ -1140,7 +1141,7 @@ export class UsageStatsPage {
     const nonActive = this.isNonActiveView();
     const sentences: CaptionSentence[] = [];
 
-    const series = this.channelSeries();
+    const series = this.seriesPending() || this.seriesFailed() ? null : this.channelSeries();
     const first = series?.firstCountedDay ?? null;
     const last = series?.lastCountedDay ?? null;
     if (series && first && last) {
@@ -1156,7 +1157,7 @@ export class UsageStatsPage {
                 params: { from: this.formatDate(first), to: this.formatDate(last) },
               },
         );
-      } else if (first > series.from) {
+      } else if (series.channelFirstCountedDay && series.channelFirstCountedDay < first) {
         sentences.push({
           key: 'usageStats.setView.facts.countedFrom',
           params: { date: this.formatDate(first) },

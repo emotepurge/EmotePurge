@@ -1399,6 +1399,64 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetChannelSeriesAsync_ChannelFirstCountedDay_SpansEverySet_AndIsRangeScoped()
+    {
+        // protects=ChannelFirstCountedDay is the earliest counted day of ANY set within the range,
+        // equal to FirstCountedDay when only the viewed set counted, and null without counts;
+        // fails_when=it is filtered to the viewed set, leaks counts outside the range, or is non-null when empty;
+        // no_claim=nothing about live days.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_channelfirst", ActiveSetId);
+        var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 6, 20), UseCount = 1 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 2), UseCount = 1 },
+            new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 1 });
+        await db.SaveChangesAsync();
+        var service = new UsageStatQueryService(db);
+        var from = new DateOnly(2026, 7, 1);
+        var to = new DateOnly(2026, 7, 31);
+
+        var active = await service.GetChannelSeriesAsync(channel.ChannelName, from, to);
+        var previous = await service.GetChannelSeriesAsync(channel.ChannelName, from, to, PreviousSetId);
+        var empty = await service.GetChannelSeriesAsync(channel.ChannelName, new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 7));
+
+        Assert.Equal(new DateOnly(2026, 7, 5), active.FirstCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 2), active.ChannelFirstCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 2), previous.FirstCountedDay);
+        Assert.Equal(previous.FirstCountedDay, previous.ChannelFirstCountedDay);
+        Assert.Null(empty.ChannelFirstCountedDay);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_AForeignChannelsRowsUnderTheSameSetId_NeitherQualifyADayNorMoveTheBounds()
+    {
+        // protects=the counted-day helper is scoped to the channel's own emotes;
+        // fails_when=rows of another channel's emote under the same set id qualify a live day or move a bound;
+        // no_claim=nothing about the foreign channel's own series.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "livecounts_own", ActiveSetId);
+        var foreign = await SeedChannelAsync(db, "livecounts_foreign", ActiveSetId);
+        var ownEmote = await SeedEmoteAsync(db, channel.Id, "Own");
+        var foreignEmote = await SeedEmoteAsync(db, foreign.Id, "Foreign");
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = ownEmote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 1 },
+            new UsageStat { EmoteId = foreignEmote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 9 });
+        db.ChannelLiveDays.AddRange(
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
+            new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.SaveChangesAsync();
+
+        var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
+
+        Assert.Equal([4], series.LiveDays);
+        Assert.Equal(new DateOnly(2026, 7, 5), series.FirstCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 5), series.LastCountedDay);
+        Assert.Equal(new DateOnly(2026, 7, 5), series.ChannelFirstCountedDay);
+    }
+
+    [Fact]
     public async Task GetDailySeriesAsync_LiveDaysMatchTheChannelSeries_AndAnUnusedQualifyingDayIsKept()
     {
         // protects=/daily and /series agree on liveDays for the same set, and the per-emote

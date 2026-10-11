@@ -849,6 +849,7 @@ export async function mockUsageChannelSeries(
       // The server's range-scoped bounds; the e2e suite asserts no set-view caption on them.
       firstCountedDay: null,
       lastCountedDay: null,
+      channelFirstCountedDay: null,
       // Both fields, because the endpoint sends both (spec 6.5 step 1: `sevenTvEmoteId` added,
       // `emoteId` kept until follow-up issue 5). The mock mirrors the contract, not the reader: the
       // page no longer reads `emoteId`, so its value here only has to be a string.

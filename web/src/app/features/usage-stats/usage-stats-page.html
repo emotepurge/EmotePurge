@@ -502,7 +502,7 @@
       } @else {
         {{ 'usageStats.trackedSince' | transloco: { date: formatDate(since) } }}
       }
-      <!-- The channel-wide live count, stated once here instead of on every emote. Without a
+      <!-- The live-day count under the viewed set, stated once here instead of on every emote. Without a
            denominator on purpose: a missing ChannelLiveDay row means "no data", never "offline". -->
       @if (liveDaysInRangeKey(); as liveKey) {
         {{ liveKey | transloco: { live: liveDayDates().length, date: liveKnownFromLabel() } }}
@@ -524,8 +524,9 @@
             | transloco: { date: formatDate(setStatus()?.sharedChatSeparatedSince ?? null) }
         }}
       }
-      <!-- A non-active set's view queues its own statements at the end (spec #200, 8.4/8.3): was the
-           set observed in the range, are there counts at all, and is the member list whole. Each is
+      <!-- A non-active set's view queues its own statements at the end (spec #200, 8.4/8.3): what the set
+           counted in the range (the active view adds one only after a real set change), are there
+           counts at all, and is the member list whole. Each is
            a sentence only where it applies — never a banner, never a control (§2.5). -->
       @for (sentence of setViewCaptions(); track sentence.key) {
         {{ sentence.key | transloco: sentence.params }}

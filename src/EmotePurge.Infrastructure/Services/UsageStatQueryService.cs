@@ -252,7 +252,16 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         // Loaded from the database for ALL emotes of the channel, archived included, and never
         // derived from the rows below: those exclude archived emotes for the active set, so
         // archiving an emote would retroactively change historical live days and the bounds.
-        var countedDates = await LoadSetCountedDatesAsync(channel.Id, setId, from, to, cancellationToken);
+        // One query for every set at once: the viewed set's counted days and the channel-wide first
+        // counted day (any set) both fall out of the same (Date, EmoteSetId) pairs in memory.
+        var pairs = await LoadChannelCountedPairsAsync(channel.Id, from, to, cancellationToken);
+        var countedDates = pairs
+            .Where(p => string.Equals(p.EmoteSetId, setId, StringComparison.Ordinal))
+            .Select(p => p.Date)
+            .Distinct()
+            .Order()
+            .ToList();
+        DateOnly? channelFirstCountedDay = pairs.Count > 0 ? pairs.Min(p => p.Date) : null;
         var liveDays = await LoadQualifyingLiveDaysAsync(channel.Id, countedDates, from, to, cancellationToken);
         var liveDayOffsets = liveDays.Select(d => d.DayNumber - from.DayNumber).ToList();
         DateOnly? firstCountedDay = countedDates.Count > 0 ? countedDates[0] : null;
@@ -260,7 +269,7 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
 
         if (emoteIds.Count == 0)
         {
-            return new ChannelUsageSeriesDto(from, to, liveDayOffsets, [], firstCountedDay, lastCountedDay);
+            return new ChannelUsageSeriesDto(from, to, liveDayOffsets, [], firstCountedDay, lastCountedDay, channelFirstCountedDay);
         }
 
         // One scan over the whole channel, then grouped in memory. Deliberately not a GroupBy in
@@ -289,7 +298,7 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
                 g.Select(r => new[] { r.Date.DayNumber - from.DayNumber, r.UseCount }).ToList()))
             .ToList();
 
-        return new ChannelUsageSeriesDto(from, to, liveDayOffsets, entries, firstCountedDay, lastCountedDay);
+        return new ChannelUsageSeriesDto(from, to, liveDayOffsets, entries, firstCountedDay, lastCountedDay, channelFirstCountedDay);
     }
 
     /// <summary>
@@ -316,6 +325,22 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
             .Select(u => u.Date)
             .Distinct()
             .OrderBy(d => d)
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The distinct (day, set) pairs in [from, to] with own usage on any emote of the channel,
+    /// archived ones included. Rows of emotes of other channels are excluded by the emote subquery,
+    /// even when they carry the same set id.
+    /// </summary>
+    private async Task<List<CountedPair>> LoadChannelCountedPairsAsync(
+        string channelId, DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        return await db.UsageStats
+            .Where(u => db.Emotes.Where(e => e.ChannelId == channelId).Select(e => e.Id).Contains(u.EmoteId)
+                && u.Date >= from && u.Date <= to && u.UseCount > 0)
+            .Select(u => new CountedPair(u.Date, u.EmoteSetId))
+            .Distinct()
             .ToListAsync(cancellationToken);
     }
 
@@ -547,4 +572,6 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
 
         return result;
     }
+
+    private sealed record CountedPair(DateOnly Date, string EmoteSetId);
 }

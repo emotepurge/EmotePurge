@@ -155,6 +155,13 @@ export interface ChannelUsageSeries {
    */
   firstCountedDay: string | null;
   lastCountedDay: string | null;
+  /**
+   * Earliest day in the range with a count under ANY set of the channel; `null` when no set has a
+   * count. Only meaningful next to `firstCountedDay`: an earlier value than it means another set
+   * counted first, which is what tells a set change from a quiet start of the range. Absent from
+   * an older Api response taken mid-deploy, which reads as `null`.
+   */
+  channelFirstCountedDay: string | null;
   emotes: EmoteSeriesEntry[];
 }
 
