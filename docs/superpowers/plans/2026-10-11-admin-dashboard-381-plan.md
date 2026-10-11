@@ -15,6 +15,21 @@
 > lauscht (CLAUDE.md „Tests"). Wer Live-Verifikation und E2E in einem Task macht, beendet erst
 > `dotnet run`.
 
+> **Revision 2 (2026-10-11):** acht Befunde des adversarialen Codex-Sol-Reviews (gpt-6.1-sol)
+> eingearbeitet, alle gegen Spec und Code nachgeprüft und **alle innerhalb der Spec** lösbar:
+> (1) Load-`13mo` ist ein **rollendes** Fenster (Spec §5.2 „≈ 395", §3), nicht der Monatserste der
+> Aktivität — Plan v1 hatte das vermischt (406–426 Buckets); jetzt ≤ 398, plus harte 400er-Kappe mit
+> Test. (2) B5 misst Allokation prozessweit und isoliert, Ende-zu-Ende-Latenz über echtes HTTP in B6.
+> (3) B6 erfasst den RSS-High-Water-Mark je Neuaufbau, koordiniert Health-Proben mit kalten Neuaufbauten
+> und beweist per eingeschleusten Verstößen, dass das Gate reißt. (4) Das Chart-Primitiv trägt n
+> Reihen; die Rate-Limit-Reihe hat lokale Ablehnungen plus eine Reihe je ablehnender
+> Provider/Call-Source. (5) Hourly-Workload heißt „je Ausgabe-Bucket (N h)", nicht „je Sample-Stunde".
+> (6) Das Lastmenü erscheint, sobald **irgendeine** Range Daten hat (Spec §10) — leerer Default sondiert
+> `13mo`. (7) Host-Provenienz je Metrik (`CpuValueSource`, `MemoryValueSource`, `LoadAverageValueSource`)
+> mit deterministischer Tie-Regel. (8) DECISIONS-Absätze wandern in die Commits, die den jeweiligen
+> Vertrag einführen (A1 legt den Eintrag an; A2, A3, B1, B2 schreiben ihn fort); der Fehlercode-Commit
+> geht im A3-Routen-Commit auf. Geänderte Stellen sind mit „(R2)" markiert.
+
 **Stand:** 2026-10-11, geplant gegen `origin/main` @ `97c286e7` (Merge von PR #386, Spec).
 **Branch:** `docs/381-dashboard-plan` trägt nur diesen Plan; die Umsetzung läuft auf
 `feat/381-admin-dashboard-a` (Schnitt A) und danach `feat/381-admin-dashboard-b` (Schnitt B, von A
@@ -146,16 +161,16 @@ Abschnitt 10.
 | Task | Titel | Schicht | Abhängigkeit | Modell | Commit-Typ |
 |---|---|---|---|---|---|
 | A0 | Branch, Baseline, Ausgangslage | — | — | `haiku` | kein Commit |
-| A1 | Core-Verträge + `AdminDashboardQueryService` (Aktivität) + Integrationstests | Core, Infrastructure | A0 | `sonnet` | `feat(infrastructure)` |
-| A2 | Rate-Limit-Trendreihe im `RateLimitTelemetryStore` + Redis-Tests | Core, Infrastructure | A0 (parallel zu A1) | `sonnet` | `feat(infrastructure)` |
-| A3 | Api: drei Routen, Fehlercode-Kette, Cache/Single-Flight, Roster-`maxActiveChannels`, Contract-Tests, **DECISIONS (A-Teil)** | Api, Infrastructure, web (Locale) | A1, A2 | `sonnet` | `feat(api)` + `feat` (Fehlercode-Kette) |
+| A1 | Core-Verträge + `AdminDashboardQueryService` (Aktivität) + Integrationstests, **DECISIONS-Eintrag anlegen** (R2) | Core, Infrastructure, docs | A0 | `sonnet` | `feat(infrastructure)` |
+| A2 | Rate-Limit-Trendreihe im `RateLimitTelemetryStore` + Redis-Tests, **DECISIONS-Absatz** (R2) | Core, Infrastructure, docs | A0 (parallel zu A1) | `sonnet` | `feat(infrastructure)` |
+| A3 | Api: drei Routen **inkl. Fehlercode-Kette im selben Commit** (R2), Cache/Single-Flight, Roster-`maxActiveChannels`, Contract-Tests, **DECISIONS-Absätze** | Api, Infrastructure, web (Locale), docs | A1, A2 | `sonnet` | `feat(api)` |
 | A4 | Web-Grundlagen: Modelle, `AdminService`, Chart-Primitiv `shared/charts/`, Sichtbarkeits-Signal, Specs | web/core, web/shared | A3 (Vertrag reicht; parallel zu A3 möglich) | `sonnet` | `feat(web)` |
 | A5 | Web: Aktivitätsverlauf, Rate-Limit-Ausnahmen exception-first, Details-Dialog, 60-s-Poll, i18n | web/features | A4 | `sonnet` | `feat(web)` |
 | A6 | E2E `/admin/monitoring`, Mocks, Audit-Szenarien, Audit-Lauf | web/e2e | A5 | `sonnet` | `test(web)` |
 | A7 | Gates A, Coverage, Live-Verifikation, Doku-Zeile, Codex-Zweitmeinung, PR | alle | A6 | `opus` | `docs`/`chore` |
 | B0 | Branch B, Drift-Check gegen `main` | — | A gemergt | `haiku` | kein Commit |
-| B1 | Load-Query-Service (Roh- und Hourly-Pfad, Bucket-Leiter) + Integrationstests + Strukturtest | Core, Infrastructure | B0 | `opus` | `feat(infrastructure)` |
-| B2 | Api `/dashboard/load`, Load-Cache mit Single-Flight + seriellem Gate, 503/Retry-After, Contract-Tests, **DECISIONS (B-Teil)** | Api, Infrastructure | B1 | `sonnet` | `feat(api)` |
+| B1 | Load-Query-Service (Roh- und Hourly-Pfad, Bucket-Leiter) + Integrationstests + Strukturtest, **DECISIONS-Absätze zu Bucketing, Lückenregel, Host-Zusammenführung** (R2) | Core, Infrastructure, docs | B0 | `opus` | `feat(infrastructure)` |
+| B2 | Api `/dashboard/load`, Load-Cache mit Single-Flight + seriellem Gate, 503/Retry-After, Contract-Tests, **DECISIONS-Absätze zu Route, Budget, Cache** | Api, Infrastructure, docs | B1 | `sonnet` | `feat(api)` |
 | B3 | Web: Lastbereich (11 Small Multiples), Lastmenü, Poll/`visibilitychange`, Veraltet-Markierung, Rate-Limit-Reihe an Last-Achse | web | B2 (Vertrag), A4 | `sonnet` | `feat(web)` |
 | B4 | E2E B, Audit-Szenarien B, Render-Messung bei 400 Buckets | web/e2e | B3 | `sonnet` | `test(web)` |
 | B5 | Response-Performance-Gate (xUnit, opt-in, 24 h bei 1 s) | tests | B2 | `sonnet` | `test(infrastructure)` |
@@ -286,8 +301,13 @@ Neue Utilities (alle mit Spec):
   `formatUnit(value, unit, locale)` (Kerne 2 Dezimalen, Byte → GiB/MiB, Prozent, Tasks, Zähler),
   `summarizeSeries(values)` (min/max/letzter Wert/Anzahl bekannter Punkte für die Textalternative).
 - `web/src/app/shared/charts/line-chart.ts` (`app-line-chart`): inline-SVG-Small-Multiple mit
-  Inputs `series: { id; labelKey; values: (number|null)[]; emphasis?: 'line'|'marks' }[]` (höchstens
-  zwei Linien gleicher Einheit; „Max" als Markierungsreihe), `xStartsUtc: string[]`, `bucketSeconds`,
+  Inputs `series: { id; labelKey; labelParams?; values: (number|null)[]; emphasis?: 'line'|'marks' }[]`
+  — **beliebig viele Reihen gleicher Einheit** (R2): die Lastdiagramme nutzen ein bis zwei Linien plus
+  „Max" als Markierungsreihe, die Rate-Limit-Reihe lokale Ablehnungen **plus eine Linie je ablehnender
+  Provider/Call-Source-Dimension** (bis zu `RateLimitCallSources`-Zahl, heute sechs); ab drei Reihen
+  rendert das Primitiv eine Textlegende (Reihenname + letzter Wert) unter dem Chart, Farben aus einer
+  festen Token-Leiter (`accent-fg`, `fg-muted`, `danger-fg`, `warning-fg`, …), nie Palette —,
+  `xStartsUtc: string[]`, `bucketSeconds`,
   `unit`, `title`/`ariaLabel`, optional `partialLastBucket`. Rendert y-Achse mit 3–4 Ticks und
   sichtbarer Einheit, x-Achse mit UTC-Beschriftung (Datum oder Uhrzeit je Bucketbreite), Lücken als
   Linienbruch, eine `role="img"` + Textalternative aus `summarizeSeries` (Spec §10 Barrierefreiheit).
@@ -318,8 +338,11 @@ Neue Utilities (alle mit Spec):
   `computed()`; je Zeile Anteil `rejected/(accepted+rejected)` in Prozent (bei 0 Entscheidungen
   „keine Requests", keine Division) plus absolute Zähler; Provider mit `rateLimitedLast24Hours > 0`
   ebenso. Leere Liste → `app-empty-state` „Keine Ablehnungen in 24 h". Darunter das 24-h-Chart
-  (feste UTC-Achse, Linien: lokale Ablehnungen; je Provider/Call-Source eine Reihe — nur Provider
-  mit ≥ 1 Ablehnung im Fenster, sonst Hinweiszeile). `telemetryAvailable=false` → `warning`-Banner,
+  (feste UTC-Achse; **Reihen: 1 + n** — lokale Ablehnungen aggregiert plus je eine getrennte Reihe
+  für jede Provider/Call-Source-Dimension mit ≥ 1 Ablehnung im Fenster (R2, Spec §4.2 „Provider
+  bleiben als getrennte Reihen"); ohne ablehnende Provider nur die lokale Reihe plus Hinweiszeile;
+  Spec-Fall in A5: drei Dimensionen → vier Reihen, jede getrennt adressierbar).
+  `telemetryAvailable=false` → `warning`-Banner,
   Konfiguration im Dialog bleibt lesbar. Poll 60 s (ersetzt 30 s; `RATE_LIMITS_POLL_INTERVAL_MS`
   wird zu 60_000 oder entfällt zugunsten `pollWhileVisible`); der manuelle Refresh lädt beide
   Ressourcen.
@@ -368,9 +391,17 @@ Parser, Records aus 4.1 — in B kommen Load-Mitglieder dazu); neu
 6. Parser: `"30d"`,`"90d"`,`"13mo"` → Enum; `"30D"`, `" 30d"`, `"7d"`, `""`, `null` → `null`.
 7. `EXPLAIN`-Protokoll (kein Assert): Seq Scan, kein Join; Ausgabe im Testlog.
 
+**DECISIONS (R2, Regel 3 — im selben Commit wie der Vertrag):** A1 legt den Eintrag
+„`2026-10-xx` — Admin dashboard: activity series, rate-limit trend and server-bucketed load ranges
+(#381)" in `docs/DECISIONS.md` oben an (englisch, `**Betrifft:**`-Zeile) mit den Absätzen, die
+dieser Commit begründet: Aktivitätsvertrag (`30d|90d|13mo`, UTC-Kalendertage einschließlich des
+partiellen Tages, `13mo` ab Monatserstem, `null` = keine Beobachtung, kein Join), und dass das
+Dashboard `UsageStats` nicht liest (Betreiberentscheid 2026-10-11). A2, A3, B1 und B2 schreiben
+**denselben Eintrag** in ihren Commits fort; die `Betrifft`-Zeile wächst mit.
+
 **Schritte:** Vertrag → Implementierung (Gruppierung auf der Tabelle, keine Navigation) → Tests →
-Gates Backend → Commit `feat(infrastructure): add the admin dashboard activity query service`.
-**Abnahme:** Tests 1–7 grün, Suite grün, 0 Warnungen.
+DECISIONS-Eintrag → Gates Backend → Commit `feat(infrastructure): add the admin dashboard activity
+query service` (inkl. DECISIONS). **Abnahme:** Tests 1–7 grün, Suite grün, 0 Warnungen, Eintrag vorhanden.
 
 ### A2 — Rate-Limit-Trendreihe im `RateLimitTelemetryStore` (`sonnet`)
 
@@ -392,7 +423,12 @@ Gates Backend → Commit `feat(infrastructure): add the admin dashboard activity
    `TelemetryAvailable=false`, leere Listen, keine Exception.
 6. `ReadAsync` unverändert (bestehende Tests bleiben).
 
-**Commit:** `feat(infrastructure): add the 24-hour rate-limit trend read path`. **Abnahme:** Tests grün.
+**DECISIONS (R2):** Absatz im A1-Eintrag: Trend aus den bestehenden Redis-Minuten-Buckets ohne neue
+Keys oder Felder, 1.440 Minuten, 0 = keine Ablehnung (anders als SystemLoad-`null`), fail-open wie der
+Snapshot. Läuft A2 parallel zu A1, löst der Orchestrator den Konflikt im Eintrag auf.
+
+**Commit:** `feat(infrastructure): add the 24-hour rate-limit trend read path` (inkl. DECISIONS-Absatz).
+**Abnahme:** Tests grün.
 
 ### A3 — Api: Routen, Fehlercode-Kette, Cache, Roster-Feld, Contract-Tests, DECISIONS (`sonnet`)
 
@@ -421,19 +457,17 @@ dort, wo er heute liegt); neu `tests/EmotePurge.Infrastructure.Tests/Unit/AdminD
    Range-Keys getrennt.
 7. Bestehende `AdminRateLimitsEndpointTests` unverändert grün.
 
-**DECISIONS (Regel 3, Spec §12) — in diesem Commit, englisch, oben einsortiert:** Eintrag
-„`2026-10-xx` — Admin dashboard: activity series, rate-limit trend and server-bucketed load ranges
-(#381)" mit `**Betrifft:**`-Zeile. A3 schreibt die Absätze: A-API-Vertrag (Range-Menge `30d|90d|13mo`,
-UTC-Kalendertage einschließlich des partiellen Tages, `null` = keine Beobachtung), Trend aus
-bestehenden Redis-Minuten-Buckets ohne neue Keys, 60-s-REST-Poll statt Admin-Event
-(`AdminTypes` unverändert), Caches/Single-Flight je Api-Instanz, `UsageStats` wird nicht gelesen
-(Betreiberentscheid 2026-10-11), `maxActiveChannels` im Roster. B2 ergänzt **denselben Eintrag**
-um die B-Absätze. Die Spec-Datei selbst wird nicht umgeschrieben.
+**DECISIONS (R2, Regel 3 — Fortschreibung des A1-Eintrags in diesem Commit):** Absätze zu den
+Routen und ihrem Fehlercode (`invalid_dashboard_range`, 400 bei unbekannter Range, Default statt
+Fehler bei fehlender), 60-s-REST-Poll statt Admin-Event (`AdminTypes` unverändert), Caches/
+Single-Flight je Api-Instanz (60 s/30 s/30 s, Fehler nicht gecacht), `maxActiveChannels` im Roster.
+Die Spec-Datei selbst wird nicht umgeschrieben.
 
-**Commits (getrennt):** `feat: add the invalid_dashboard_range error code with its locale chain`
-(ApiErrorCodes + api-error.ts + de/en), dann `feat(api): add the admin dashboard activity and
-rate-limit trend routes` (Rest inkl. DECISIONS). **Abnahme:** Tests 1–7 grün, `api-error-locales.spec.ts`
-grün, DECISIONS-Eintrag vorhanden, `dotnet format` sauber.
+**Commit (R2, ein Commit):** `feat(api): add the admin dashboard activity and rate-limit trend routes`
+— enthält Routen, Fassade, `ApiErrorCodes` + `api-error.ts` + de/en, Tests **und** DECISIONS. Ein
+getrennter Fehlercode-Commit ohne seine Route wäre keine eigene logische Einheit und hätte seinen
+DECISIONS-Absatz nicht bei sich (Regel 3). **Abnahme:** Tests 1–7 grün, `api-error-locales.spec.ts`
+grün, DECISIONS-Absätze vorhanden, `dotnet format` sauber.
 
 ### A4 — Web-Grundlagen: Modelle, Service, Chart-Primitiv, Sichtbarkeit (`sonnet`)
 
@@ -462,7 +496,9 @@ Range + Kontextwert, Inputs: Aktivität, Roster-Zahlen; Range als `model`), `adm
 Ist-Stand-Beschreibung (*Annahme A-5*; Doku führt nur Ist-Stand, deshalb erst hier).
 
 **Spec-Fälle (Verhalten, Regel 12):** Exception-first-Sortierung (akut vor 24 h, dann absteigend);
-Anteil bei 0 Entscheidungen = Sonderfall „keine Requests"; `telemetryAvailable=false` → Banner,
+Anteil bei 0 Entscheidungen = Sonderfall „keine Requests"; **(R2) Trend-Reihen: lokale Ablehnungen
+plus drei ablehnende Provider/Call-Source-Dimensionen → vier getrennte Reihen mit je eigenem Label,
+eine Dimension ohne Ablehnung im Fenster erscheint nicht;** `telemetryAvailable=false` → Banner,
 Dialog öffnet trotzdem; Range-Wechsel setzt `params` und löst Reload aus; Fehler der Aktivitäts-Resource
 blendet Health nicht aus (Muster „the two resources fail independently" im bestehenden Spec);
 Dialog-Rückgabe/Öffnen über `openAppDialog`.
@@ -528,8 +564,16 @@ PR offen, Codex-Befund vorgelegt.
 Bucket-Leiter (Spec §5.2): feste Zuordnung Range → Breite wie oben; `toUtc = nowUtc`, `fromUtc` =
 `floor((nowUtc − Duration) / BucketSeconds) × BucketSeconds` (UTC-Vielfache), Buckets von `fromUtc`
 bis einschließlich des Buckets, der `toUtc` enthält; damit `1h` → 60–61, `24h` → 288–289, `7d` → 168–169,
-`30d` → 360–361, `90d` → 360–361, `13mo` → ≤ 397; **nie > 400** (Contract-Test). `13mo` beginnt am
-Monatsersten 13 Monate zurück, Tagesbuckets an UTC-Mitternacht.
+`30d` → 360–361, `90d` → 360–361. **(R2) `13mo` ist für die Last ein rollendes Fenster** —
+`Duration` = `nowUtc − nowUtc.AddMonths(−13)` (Kalendermonate, Tagesende-Klemmung wie `DateTime.AddMonths`),
+auf UTC-Mitternacht abgerundet, Tagesbuckets bis einschließlich heute: 2026-10-11 → 396 Buckets,
+Worst Case über 2025–2029 (Monatsende + Schaltjahr, z. B. 2028-03-31) → 398. Das ist die Spec-Angabe
+„≈ 395" (§5.2) und die rollende Aussage „voll ab 2027-11-11" (§3); der Monatserste gilt **nur** für
+die Aktivität (§6). Zusätzlich eine **harte Kappe**: liefert die Mathematik je mehr als 400 Buckets,
+wirft der Service (`InvalidOperationException`, → 500), damit das Budget nie still reißt; Test mit
+Grenzdaten (31.10., 31.01., 29.02.2028, 31.03.2028). Hourly-Zeilen mit `HourUtc < fromUtc` werden
+**gefiltert, nicht angehängt** — ältere Historie (Retention aus oder gescheitert) verlängert die Range
+nicht; das Weglassen führender leerer Buckets kann sie nur verkürzen.
 
 `AdminDashboardLoad` (record, Core):
 
@@ -538,9 +582,9 @@ Monatsersten 13 Monate zurück, Tagesbuckets an UTC-Mitternacht.
 | `Available` | `false`, wenn in der Range keine einzige Beobachtung liegt (dann alle Listen leer, `Buckets` leer, `DataThroughUtc = null`). |
 | `Range`, `SourceKind` (`"raw"|"hourly"`), `BucketSeconds`, `FromUtc`, `ToUtc`, `GeneratedAtUtc`, `DataThroughUtc`, `SamplingIntervalSeconds` | Metadaten; `DataThroughUtc` = jüngstes `SampledAtUtc` bzw. jüngste `HourUtc + 1 h` in der Range. |
 | `BucketStartsUtc: IReadOnlyList<DateTime>` | gemeinsame x-Achse, **ohne führende leere Buckets** vor dem ersten vorhandenen Datum (Spec §3: Rangeanfang auf den ersten vorhandenen Bucket). |
-| `Host` (`AdminDashboardHostSeries`) | `CpuBusyP95`, `CpuBusyMax` (Prozent 0–100, 1 Dezimale), `MemoryUsedP95Bytes`, `MemoryUsedMaxBytes`, `MemoryTotalBytes` (roh: Sample-`MemTotal` des Buckets; hourly: `LastHostMemoryTotalBytes`), `LoadAverage1P95`, `LoadAverage1Max`, `Provenance` (`"A"|"W"|"AW"|null` je Bucket: welche Sources beigetragen haben), `ValueSource` (`"A"|"W"|null`: Source des gezeigten P95), `ApiSampleCount`, `WorkerSampleCount` (je Bucket), `ApiCpuBusyMean`, `WorkerCpuBusyMean`, `ApiMemoryUsedMeanBytes`, `WorkerMemoryUsedMeanBytes`, `ApiLoadAverage1Mean`, `WorkerLoadAverage1Mean` (Tooltip-Werte). Alle Listen gleich lang wie `BucketStartsUtc`, `null` = unbekannt. |
+| `Host` (`AdminDashboardHostSeries`) | `CpuBusyP95`, `CpuBusyMax` (Prozent 0–100, 1 Dezimale), `MemoryUsedP95Bytes`, `MemoryUsedMaxBytes`, `MemoryTotalBytes` (roh: Sample-`MemTotal` des Buckets; hourly: `LastHostMemoryTotalBytes`), `LoadAverage1P95`, `LoadAverage1Max`, `Provenance` (`"A"|"W"|"AW"|null` je Bucket: welche Sources beigetragen haben), **(R2) je Metrik eine Gewinnerquelle:** `CpuValueSource`, `MemoryValueSource`, `LoadAverageValueSource` (`"A"|"W"|null`: Source, deren Stunden-P95 im Bucket gezeigt wird; Hourly-Pfad wählt je Metrik unabhängig, CPU kann aus `Api`, Speicher aus `Worker` kommen). **Tie-Regel (deterministisch):** gleicher P95 → höheres Stundenmax gewinnt; immer noch gleich → `Worker` (die kanonische Workload-Source). Im Rohpfad sind die Beobachtungen vereinigt, dort ist `*ValueSource` die Source des Samples, das den P95-Rang stellt (bei Gleichstand dieselbe Regel). `ApiSampleCount`, `WorkerSampleCount` (je Bucket), `ApiCpuBusyMean`, `WorkerCpuBusyMean`, `ApiMemoryUsedMeanBytes`, `WorkerMemoryUsedMeanBytes`, `ApiLoadAverage1Mean`, `WorkerLoadAverage1Mean` (Tooltip-Werte). Alle Listen gleich lang wie `BucketStartsUtc`, `null` = unbekannt. |
 | `Api`, `Worker` (`AdminDashboardProcessSeries`) | `ProcessCpuP95`, `ProcessCpuMax` (Kerne, 4 Dezimalen), `CgroupCpuP95`, `CgroupCpuMax`, `CgroupCpuQuotaCores` (roh: endliche Quota des Samples; hourly: `LastCpuQuota/Period`), `CgroupCpuQuotaShareP95`, `CgroupCpuQuotaShareMax` (Prozent; **nur roh**, nur Paare mit gleicher endlicher Quota an beiden Enden; hourly immer `null`), `CgroupMemoryP95Bytes`, `CgroupMemoryMaxBytes`, `CgroupMemoryLimitBytes` (roh: endliches `memory.max`; hourly: `LastCgroupMemoryMaxBytes`), `CgroupMemoryShareP95`, `CgroupMemoryShareMax` (Prozent; nur roh, nur bei endlichem Limit), `SampleCount`. |
-| `Worker` zusätzlich (`AdminDashboardWorkloadSeries`) | `ActiveChannelsMax`, `LiveChannelsMax`, `ChatLines`, `EmoteMatches`, `WorkloadUnit` (`"perMinute"` roh: Zähler ÷ tatsächliche Intervallsekunden × 60; `"perSampleHour"` hourly: Summe der Stundenzähler im Bucket, **nicht** durch 60 geteilt), `WorkloadIntervalSeconds` (roh: Summe der gültigen Intervallsekunden je Bucket, Tooltip). |
+| `Worker` zusätzlich (`AdminDashboardWorkloadSeries`) | `ActiveChannelsMax`, `LiveChannelsMax`, `ChatLines`, `EmoteMatches`, `WorkloadUnit` (`"perMinute"` roh: Zähler ÷ tatsächliche Intervallsekunden × 60; **(R2) `"perBucket"` hourly: Summe der gespeicherten Intervallzähler aller Stunden im Ausgabe-Bucket** — bei `7d` eine Stunde, bei `30d` zwei, `90d` sechs, `13mo` 24; der Client beschriftet mit der tatsächlichen Bucketdauer „gespeicherte Intervallzähler je 6 h" (Spec §5.2 „je Ausgabe-Bucket"), **nie** „je Stunde" und nie durch 60 geteilt), `WorkloadIntervalSeconds` (roh: Summe der gültigen Intervallsekunden je Bucket, Tooltip), `WorkloadHoursWithData` (hourly: Zahl der Stundenzeilen mit Workload im Bucket, Tooltip — damit 1.440 in einem Tagesbucket als 24 × 60 lesbar bleibt). |
 | `Swap` | `LastSwapUsedBytes`, `LastSwapTotalBytes`, `ObservedAtUtc` (nur roh, nur wenn `SwapTotal > 0`; Detailwert). |
 
 Rohpfad-Regeln (Spec §5.1/§5.2), vom Service einzuhalten und zu testen: Samples der Range je
@@ -552,7 +596,7 @@ Bucket des **späteren** Samples zuordnen; P95 Nearest Rank **identisch zu `Syst
 zweite Implementierung der Lückenregel); Host-Raten je Source bilden, dann je Bucket die
 **Vereinigung** beider Sources für P95/Max; Gauges (Memory, LoadAvg, Channels) je Bucket aus allen
 Samples. Hourly-Pfad: Zeilen `HourUtc ∈ [fromUtc, toUtc)` beider Sources; je Bucket **höchster
-Stunden-P95** und **höchstes Stundenmax** über Stunden **und** Sources, `ValueSource` = Source dieses
+Stunden-P95** und **höchstes Stundenmax** über Stunden **und** Sources, je Metrik `Cpu|Memory|LoadAverageValueSource` = Source dieses
 P95; Workload = Summe; Channels = höchstes Stundenmax; `MemoryTotalBytes`/Limits = letzter Wert im
 Bucket; keine Quoten. Speicherdisziplin: keine Materialisierung ungebucketeter Rohobjekte über die
 projizierten Zeilen hinaus (streamendes Bucketing über `AsAsyncEnumerable`, Ergebnislisten mit
@@ -585,11 +629,17 @@ Linien); cgroup-CPU Kerne (Api + Worker, Quota als Textzeile je Source); cgroup-
 (roh; in Hourly-Ranges **bleibt das Diagramm stehen** und zeigt den Hinweis „keine Quote in
 Stundenwerten, letztes Limit: …" — *Annahme B-2*); cgroup-Speicher Api; cgroup-Speicher Worker
 (Limit als Textzeile, Anteil nur roh); Channels aktiv/live (zwei Linien); Chatzeilen; Emote-Treffer.
-Achsentitel je Range („P95" ↔ „höchster Stunden-P95" ab `7d`; „/min" ↔ „je Sample-Stunde").
-Lastmenü `1h|24h|7d|30d|90d|13mo` (Default `24h`) nur bei `available=true` **irgendeiner** Range —
-praktisch: erst nach der ersten Antwort mit `available=true`; davor `app-empty-state` „Wartet auf
-erste erfolgreiche Samples und den Hourly-Rollup" bzw. „Für diesen Zeitraum liegen erst N Stunden/Tage
-vor" (aus `dataThroughUtc`/`bucketStartsUtc[0]`). Poll via `pollWhileVisible`: 60 s für `1h`/`24h`,
+Achsentitel je Range („P95" ↔ „höchster Stunden-P95" ab `7d`; „/min" ↔ **„gespeicherte
+Intervallzähler je N h"** mit N aus `bucketSeconds`, R2).
+**Lastmenü (R2, Spec §10 „Messdaten für mindestens einen Bereich"):** sichtbar, sobald irgendeine
+Range `available=true` geliefert hat, gemerkt in einem Signal `historyKnown`. Liefert der Default
+`24h` `available=false`, sondiert die Komponente **einmal je Poll-Zyklus zusätzlich `13mo`** (die
+weiteste Hourly-Range; serverseitig 60 s gecacht, also eine zweite billige Anfrage): ist sie
+`available=true`, wird `historyKnown=true`, das Menü erscheint, und der Empty State des Defaults
+nennt „Für 24 h liegen keine Samples vor, Stundenwerte ab <bucketStartsUtc[0] der Sondierung>".
+Sind beide leer: Empty State „Wartet auf erste erfolgreiche Samples und den Hourly-Rollup", Sondierung
+wiederholt sich mit jedem Poll. Serverseitige Alternative (Feld `earliestObservationUtc` in jeder
+Antwort) bewusst nicht gewählt: sie erweitert den Spec-Vertrag §6. Poll via `pollWhileVisible`: 60 s für `1h`/`24h`,
 300 s ab `7d`; Rückkehr aus dem Hintergrund → sofortiger Reload. Lesefehler/503: letzte Antwort bleibt,
 Abschnitt bekommt Veraltet-Markierung (`app-notice-banner warning` mit Zeitpunkt der letzten
 erfolgreichen Antwort); nächster Erfolg ersetzt alles. Rate-Limit-24-h-Reihe: bei Load-Range ≤ `24h`
@@ -618,8 +668,13 @@ freilegen, ohne Verhalten zu ändern — bestehende `SystemLoadRollupMathTests` 
 
 **Tests (Spec §11 B):**
 1. Leiter: je Range Breite und Bucketzahl (`1h`→60 min/≤ 61, `24h`→5 min/≤ 289, `7d`→1 h/≤ 169,
-   `30d`→2 h/≤ 361, `90d`→6 h/≤ 361, `13mo`→24 h/≤ 397), UTC-Ausrichtung, Breite unabhängig von
-   Kadenz (1 s und 30 s → gleiche Buckets), nie > 400.
+   `30d`→2 h/≤ 361, `90d`→6 h/≤ 361, `13mo`→24 h/≤ 398), UTC-Ausrichtung, Breite unabhängig von
+   Kadenz (1 s und 30 s → gleiche Buckets), nie > 400. **(R2) `13mo`-Grenzdaten:** `nowUtc` =
+   2026-10-11, 2026-10-31, 2027-01-31, 2028-02-29, 2028-03-31 (Schaltjahr + Monatsende) → Bucketzahl
+   je ≤ 398, `fromUtc` = Mitternacht des Tages 13 Kalendermonate zurück (nicht Monatserster); harte
+   Kappe: ein Fake-`nowUtc`/-Leiter, die 401 ergäbe, löst die `InvalidOperationException` aus.
+   **Ältere Historie:** Hourly-Zeilen 14 und 20 Monate alt (Retention aus) liegen vor → Antwort beginnt
+   frühestens bei `fromUtc`, Bucketzahl unverändert.
 2. Vorgänger je `(Source, ProcessInstanceId)`; Instanz, die in der Range beginnt, hat keinen und ihr
    erster Punkt keine Rate (Rate-Listen `null` dort).
 3. Lückenregel = Rollup: ein Testfall rechnet dieselbe Stunde über `SystemLoadRollupMath.Calculate`
@@ -634,14 +689,20 @@ freilegen, ohne Verhalten zu ändern — bestehende `SystemLoadRollupMathTests` 
 6. **Partielle Hostabdeckung roh:** Worker 5 ruhige Minuten, dann aus; Api erfasst danach einen Peak →
    Bucket zeigt Peak, `Provenance = "A"`, `ValueSource = "A"`; Vereinigung ohne Summieren.
 7. **Partielle Hostabdeckung hourly:** Worker-Stunde niedriger P95 (wenige Samples), Api-Stunde Peak →
-   höherer P95 und Max gezeigt, beide `SampleCount` ausgegeben, `ValueSource = "A"`.
+   höherer P95 und Max gezeigt, beide `SampleCount` ausgegeben, `CpuValueSource = "A"`.
+   **(R2) Verschiedene Gewinner je Metrik:** ein Bucket, in dem die Api den höheren CPU-P95, der Worker
+   den höheren Speicher-P95 und beide denselben LoadAvg-P95 bei höherem Worker-Max haben →
+   `CpuValueSource="A"`, `MemoryValueSource="W"`, `LoadAverageValueSource="W"`; voller Gleichstand → `"W"`.
 8. Quota: endlich/`max`, Wechsel innerhalb eines Paars → Kerne ja, Anteil `null`; Memory-Limit
    endlich/`max`; `current = null` vs echter Nullverbrauch; Hourly nie Quote (auch bei Limitwechsel
    in der Stunde).
 9. `ProcessInstanceId`-Wechsel, Zählerreset (negatives Delta), Host-Counterabfall → Paar verworfen.
 10. Workload: 60 Chatzeilen-Intervallzähler in einer Sample-Stunde → hourly `ChatLines = 60` je
     Stundenbucket (nicht 1/min); roh: Zähler ÷ Intervallsekunden × 60; Teilabdeckung wird nicht
-    hochgerechnet; Intervall über Stundengrenze gehört zur Stunde des Samples.
+    hochgerechnet; Intervall über Stundengrenze gehört zur Stunde des Samples. **(R2) Mehrstündige
+    Buckets, beide Metriken:** je 60 pro Stunde über 48 Stunden → `30d` (2 h) liefert 120 je Bucket,
+    `90d` (6 h) 360, `13mo` (24 h) 1.440, `WorkloadUnit = "perBucket"`, `WorkloadHoursWithData` = 2/6/24;
+    fehlt eine Stunde im Bucket, sinkt die Summe und `WorkloadHoursWithData`, nichts wird hochgerechnet.
 11. Raw-/Hourly-Grenze: `24h` liest keine `SystemLoadHourly`, `7d` keine `SystemLoadSamples`
     (per `DbCommandInterceptor` wie `SystemLoadRollupBoundedQueryTests` — SQL-Text prüfen).
 12. `Available=false` bei leerer Range; `DataThroughUtc`; keine führenden leeren Buckets; mehrere
@@ -651,8 +712,15 @@ freilegen, ohne Verhalten zu ändern — bestehende `SystemLoadRollupMathTests` 
     Token-Auflösung, oder einfacher: Quelltext-Scan der Datei auf `UsageStats`/`UsageStat` als
     Testdatei-Asset — eine der beiden Formen, im Test begründet).
 
-**Commit:** `feat(infrastructure): add the admin dashboard load query with server-side bucketing`.
-**Abnahme:** Tests 1–13 grün, bestehende SystemLoad-Tests unverändert grün.
+**DECISIONS (R2, Regel 3 — Fortschreibung im selben Commit):** Absätze zur festen Bucket-Leiter
+und dem 400-Bucket-Budget mit harter Kappe, `13mo` rollend, `7d` aus Hourly trotz siebentägiger
+Rohaufbewahrung, Lückenregel des Rohpfads = Rollup (2,5 × konfiguriertes Intervall) samt den
+benannten Grenzen nach Kadenzwechsel, Host-Zusammenführung (Vereinigung roh, höchster Stunden-P95/-Max
+über Sources hourly, Provenienz je Metrik mit Tie-Regel statt behauptetem vereinigtem P95),
+Workload-Einheiten (`perMinute`/`perBucket`), Null-/Reset-Semantik der Anzeige.
+
+**Commit:** `feat(infrastructure): add the admin dashboard load query with server-side bucketing`
+(inkl. DECISIONS). **Abnahme:** Tests 1–13 grün, bestehende SystemLoad-Tests unverändert grün.
 
 ### B2 — Api `/dashboard/load`, Load-Cache, 503/Retry-After, Contract-Tests, DECISIONS (`sonnet`)
 
@@ -661,9 +729,9 @@ freilegen, ohne Verhalten zu ändern — bestehende `SystemLoadRollupMathTests` 
 `tests/EmotePurge.Api.Tests/AdminDashboardLoadEndpointTests.cs`, `AuthFilterMatrixTests.cs`
 (Route in Matrix), `tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboardReaderTests.cs`
 (erweitern: Single-Flight je Key, serielles Gate über Keys, 5-s-Timeout → Busy, Fehler nicht gecacht),
-`docs/DECISIONS.md` (B-Absätze im A-Eintrag: Bucket-Leiter, 400/256-KiB-Budget, kein Tail/Merge,
-Host-Zusammenführung mit Provenienz, Lückenregel = Rollup mit benannten Grenzen, Single-Flight + ein
-Neuaufbau zur Zeit + 503/Retry-After, `7d` aus Hourly, Null-/Reset-Semantik der Anzeige).
+`docs/DECISIONS.md` (R2: nur die Absätze, die **dieser** Commit begründet — Route und 256-KiB-Budget,
+kein Tail/Merge, Single-Flight je Range-Key + ein Neuaufbau zur Zeit + 503/Retry-After, Cache-TTLs
+30 s/60 s; Bucketing und Host-Regeln stehen seit B1 im Eintrag).
 
 **Contract-Tests:** Default `24h`; alle sechs Ranges → Service mit richtigem Enum und
 `samplingIntervalSeconds` aus Options; `?range=2h` → 400; 401/403; `Available=false` → 200 mit leeren
@@ -678,7 +746,10 @@ DECISIONS). **Abnahme:** Tests grün, Eintrag ergänzt.
 
 **Dateien:** `admin.model.ts`, `admin.service.ts` (+ Spec), neu `admin-load-section.ts` (+ Spec:
 Range-Wechsel ändert Achsentitel/Bucketbreite, nicht Diagrammzahl; Veraltet-Zustand nach Fehler;
-Empty-State-Entscheidung aus `available`/`dataThroughUtc`; Quota-Anteil nur roh; Trend-Reihe nur ≤ 24h),
+Empty-State-Entscheidung aus `available`/`dataThroughUtc`; **(R2) `historyKnown`-Sondierung: leerer
+`24h`-Default + verfügbares `13mo` → Menü sichtbar, Empty-State-Text nennt den Stundenstand; beide
+leer → Wartetext, Sondierung je Poll;** Workload-Label aus `bucketSeconds`; Quota-Anteil nur roh;
+Trend-Reihe nur ≤ 24h),
 `admin-monitoring-page.ts` (Bereich **vor** dem Aktivitätsverlauf; `reload()` lädt auch Last),
 `shared/charts/chart-series.ts` (`sumMinutesIntoBuckets`, Provenienz-Codes → Tooltip-Text, Spec),
 `line-chart.ts` (Cursor-Textzeile nimmt Zusatzzeilen für Provenienz/`SampleCount`), `de.json`/`en.json`
@@ -692,8 +763,10 @@ Empty-State-Entscheidung aus `available`/`dataThroughUtc`; Quota-Anteil nur roh;
 (erweitern), `ui-audit.audit.ts` (Szenarien `admin-monitoring-load-empty`, `admin-monitoring-load-24h`
 mit 289 Buckets, `admin-monitoring-load-13mo` mit 397 Buckets und Lücken).
 
-**E2E-Fälle (Spec §11 B):** Empty State ohne Lastmenü bei `available=false`; zu kurze Historie
-(Datenstand genannt); Range-Wechsel `24h→13mo`: Diagramm- und Serienzahl konstant (11 `role="img"`),
+**E2E-Fälle (Spec §11 B):** Empty State ohne Lastmenü bei `available=false` in `24h` **und** `13mo`;
+**(R2) leere jüngste Samples bei vorhandener Hourly-Historie:** `24h`-Mock `available=false`,
+`13mo`-Mock mit Daten → Menü erscheint, Empty State nennt den Stundenstand, Wechsel auf `7d` zeigt
+Kurven; zu kurze Historie (Datenstand genannt); Range-Wechsel `24h→13mo`: Diagramm- und Serienzahl konstant (11 `role="img"`),
 Achsentitel wechselt, Rate-Limit-Reihe verschwindet; wiederholte 503/500 → letzte Antwort steht,
 Veraltet-Markierung; Erfolg danach → Markierung weg, Werte ersetzt; **Tab-Suspendierung 30 min:**
 `page.clock` + Sichtbarkeits-Override, 30 min `runFor` ohne Request, Rückkehr → ein Request sofort;
@@ -713,13 +786,30 @@ minutenlang seedet), neu `tests/EmotePurge.Infrastructure.Tests/Fixtures/SystemL
 (generiert 24 h × 1 s je Source = 172.800 Zeilen per `COPY`/Batch-Insert mit realistischen Zählern,
 zwei Instanzwechsel, eine 10-min-Lücke).
 
-**Messung (Spec §11 B):** Fassade **uncached** aufrufen (frische Instanz), `Stopwatch` um
-`GetLoadAsync(Hours24)` + `JsonSerializer.Serialize` mit den Api-Optionen; `GC.GetAllocatedBytesForCurrentThread`
-bzw. `GC.GetTotalAllocatedBytes(true)` davor/danach. **Bestanden:** Ende-zu-Ende < 500 ms (warm,
-Median aus 5 Läufen), serialisiert ≤ 256 KiB, Allokation während des Aufbaus ≤ 64 MiB, keine
-Materialisierung ungebucketeter Rohobjekte (Interceptor zählt Zeilen, Allokationsgrenze belegt es
-indirekt). Reißt die 500 ms, wandert das Bucketing laut Spec in SQL (`date_bin` + Fensterfunktion je
-Instanz) — gleicher Vertrag, gleiche Tests; das entscheidet B5, nicht B1. Aufruf:
+**Messung (Spec §11 B, R2 — zwei Hälften, beide müssen stehen):**
+
+*In-Process (dieser Test):* Fassade **uncached** aufrufen (frische Instanz je Iteration), `Stopwatch`
+um `GetLoadAsync(Hours24)` + `JsonSerializer.Serialize` mit den Api-`JsonOptions`;
+**Allokation prozessweit** per `GC.GetTotalAllocatedBytes(precise: true)` davor/danach — nie
+`GetAllocatedBytesForCurrentThread`, weil EF-/Cache-Continuations den Thread wechseln und die Differenz
+dann Allokationen auslässt oder negativ wird. Damit die prozessweite Zahl dem Aufbau zurechenbar ist,
+läuft der Test in einer **eigenen xUnit-Collection mit `DisableParallelization = true`** und misst erst
+nach einem `GC.Collect()`-Warmlauf. **Nachweis je Iteration, dass wirklich 86.400 Zeilen je Source
+gelesen wurden:** ein `DbCommandInterceptor` wickelt den `DbDataReader` und zählt `Read()`-Aufrufe
+(172.800 ± Vorgängerzeilen), zusätzlich steht die Seed-Zeilenzahl per `COUNT(*)` im Testlog; ein
+Lauf mit weniger gelesenen Zeilen ist **ungültig** (Assert), nicht „schnell".
+**Bestanden:** In-Process-Zeit < 400 ms (Median aus 5, warm — Reserve für den HTTP-Anteil), serialisiert
+≤ 256 KiB, prozessweite Allokation während des Aufbaus ≤ 64 MiB (Protokollwert; die bindende
+Speichergrenze ist der RSS-Zuwachs in B6), Zeilenzähler stimmt.
+
+*Ende-zu-Ende HTTP (in B6, derselbe Datensatz):* `curl -w '%{time_total}'` auf
+`/api/admin/dashboard/load?range=24h` gegen den `--cpus=1 --memory=512m`-Container nach Cache-Leerung
+— **Bestanden: < 500 ms uncached** (Median aus ≥ 10 kalten Zyklen) und Antwortgröße ≤ 256 KiB
+(`%{size_download}`). Erst beide Hälften zusammen erfüllen „vollständige API-Abfrage, Bucketing,
+JSON-Serialisierung und Server-Allokationen" aus §11.
+
+Reißt die 400/500 ms, wandert das Bucketing laut Spec in SQL (`date_bin` + Fensterfunktion je Instanz)
+— gleicher Vertrag, gleiche Tests; das entscheidet B5, nicht B1. Aufruf:
 `EMOTEPURGE_PERF_GATES=1 dotnet test tests/EmotePurge.Infrastructure.Tests --filter Category=PerformanceGate`.
 Zusätzlich einmal mit 30-s-Seed (5.760 Zeilen) mitschreiben.
 
@@ -741,19 +831,44 @@ Kein xUnit; ein reproduzierbares Skriptprotokoll, lokal:
       der Worker lokal nicht `connected` wird.
 - [ ] Admin-Cookie für Skripte: einmal im Browser einloggen, `.AspNetCore.Cookies`-Wert in eine
       Umgebungsvariable (nicht ins Repo).
-- [ ] Neues `scripts/dashboard-concurrency-gate.sh`: Cache leeren (Api-Neustart oder 60 s warten),
-      drei parallele `curl` auf `/api/admin/dashboard/load?range=24h`, gleichzeitig vierter Client
-      `GET /api/health` **alle 2,5 s** (24/min < 30/min `PublicHealth`), mindestens 10 kalte Zyklen
-      (Range-Wechsel `24h`/`13mo` oder Neustart) und ≥ 40 Proben; `docker stats`-Sampling des RSS
-      jede 0,5 s während der Aufbauten; Query-Zähler über Postgres `pg_stat_statements` oder
-      Api-Log (eine Debug-Logzeile je echtem Aufbau in der Fassade, Level `Debug`).
+- [ ] Neues `scripts/dashboard-concurrency-gate.sh` (Messung) + `scripts/dashboard-concurrency-gate-eval.mjs`
+      (Auswertung, R2 — getrennt, damit die Auswertung mit eingeschleusten Verstößen geprüft werden kann):
+      - **Zyklus = kalter Neuaufbau, mit der Health-Probe synchronisiert (R2):** der Takt der
+        Health-Proben bleibt **fest 2,5 s** (24/min < 30/min `PublicHealth`); in **jedem** Takt startet
+        das Skript im selben Augenblick wie die Probe die drei parallelen `curl` auf
+        `/api/admin/dashboard/load?range=<R>` mit einem Range-Wechsel je Takt (`24h`, `13mo`, `24h`, …
+        — beide Keys sind nach 60 s TTL wieder kalt; zwischen zwei gleichen Keys liegen ≥ 2 Takte
+        und ein Api-`POST`-freier Cache-Reset ist nicht nötig, weil das Skript nur alle 60 s denselben
+        Key wiederholt; alternativ Api-Neustart je Zyklus, dann Grundlast neu messen). Damit trifft
+        jede Probe nachweislich einen laufenden Aufbau, kein Leerlauf: der Aufbau bestätigt sich über die
+        Debug-Logzeile der Fassade („cold rebuild range=… ms=…", Level `Debug`), und die Auswertung
+        wertet nur Proben, deren Sendezeit in ein geloggtes Aufbauintervall fällt — **mindestens 40 solche
+        Proben und ≥ 10 Zyklen je Key**, sonst ungültig.
+      - **Speicher = Prozess-RSS-High-Water-Mark, nicht `docker stats` (R2):** vor jedem Zyklus
+        `docker exec -u root <api> sh -c 'echo 5 > /proc/1/clear_refs'` (setzt `VmHWM` zurück), nach dem
+        Zyklus `VmHWM` und `VmRSS` aus `/proc/1/status` lesen; Zuwachs = `VmHWM − VmRSS-Grundlast vor dem
+        Zyklus`. Fällt `clear_refs` im Image aus (kein Root, kein `/proc`-Schreibrecht): Fallback
+        `VmRSS`-Sampling alle 50 ms während des Aufbauintervalls, Maximum nehmen — und das im Protokoll
+        als Fallback kennzeichnen. `docker stats` misst cgroup-Speicher samt Page-Cache und wird nur als
+        Zusatzspalte mitgeschrieben.
+      - Query-Zähler: Debug-Logzeile je echtem Aufbau **und** `pg_stat_statements`-Delta der
+        Load-Queries je Zyklus (beide müssen 1 ergeben).
+      - Ende-zu-Ende-Latenz der Load-Antwort je Zyklus (`%{time_total}`, `%{size_download}`) für die
+        HTTP-Hälfte von B5.
 - [ ] **Bestanden, wenn (Spec §11 B):** (a) je Zyklus genau **eine** Load-Abfrage für die drei
-      Requests; (b) RSS-Spitze − Grundlast ≤ 64 MiB; (c) **jede** Health-Probe `200`, p95 der
-      Latenz < 100 ms (nur 200er gezählt; ein 429/503/Timeout = Gate gerissen); (d) `24h` und `13mo`
-      gleichzeitig: der zweite antwortet < 5 s oder mit `503` + `Retry-After`.
-- [ ] Protokoll mit Zahlen (1-s- und 30-s-Seed) als Abschnitt in diesem Plan („B6-Protokoll") —
-      Commit `docs: record the dashboard concurrency gate run` + `chore(scripts): add the dashboard
-      concurrency gate scripts`.
+      Requests (Log und `pg_stat_statements` einig); (b) `VmHWM`-Zuwachs ≤ 64 MiB in **jedem** Zyklus;
+      (c) **jede** Health-Probe `200`, p95 der Latenz der im Aufbauintervall gesendeten Proben < 100 ms
+      (nur 200er gezählt; ein 429/503/Timeout/Verbindungsfehler = Gate gerissen); (d) `24h` und `13mo`
+      gleichzeitig (ein eigener Zyklus mit sechs Clients): der zweite Key antwortet < 5 s oder mit
+      `503` + `Retry-After`; (e) Load-Antwort uncached < 500 ms, ≤ 256 KiB.
+- [ ] **Negativnachweis (R2):** die Auswertung liest CSV-Zeilen (Zeit, Probe-Status, Latenz,
+      Aufbauintervalle, `VmHWM`-Zuwachs, Query-Zähler). Drei präparierte CSVs unter
+      `scripts/fixtures/dashboard-gate/` — Speicherüberschreitung (65 MiB), langsame Health-Antwort
+      (p95 120 ms), eine Nicht-200-Probe — müssen die Auswertung mit **Exit ≠ 0** und benanntem Grund
+      beenden; ein vierter, sauberer CSV mit Exit 0. Das ist Teil des Protokolls, nicht optional.
+- [ ] Protokoll mit Zahlen (1-s- und 30-s-Seed, inkl. Negativnachweis) als Abschnitt in diesem Plan
+      („B6-Protokoll") — Commit `docs: record the dashboard concurrency gate run` +
+      `chore(scripts): add the dashboard concurrency gate scripts`.
 
 ### B7 — Gates B, Coverage, Live-Verifikation, Doku, Codex, PR (`opus`)
 
@@ -825,7 +940,18 @@ Api und Worker mit `SystemLoad__IntervalSeconds=1` laufen lassen (≥ 15 min), d
 - **B-3** Das Response-Performance-Gate ist ein opt-in-xUnit-Test (`EMOTEPURGE_PERF_GATES=1`),
   das Parallelitäts-Gate ein Skriptprotokoll; beides läuft nicht in CI.
 - **B-4** `AdminDashboardLoad.BucketStartsUtc` lässt führende leere Buckets weg (Spec §3
-  „Rangeanfang auf den ersten vorhandenen Bucket"), innere Lücken bleiben als `null`.
+  „Rangeanfang auf den ersten vorhandenen Bucket"), innere Lücken bleiben als `null`; die Range selbst
+  wird dadurch nur kürzer, nie länger (R2).
+- **B-5 (R2)** Tie-Regel der Host-Provenienz je Metrik: gleicher P95 → höheres Max → `Worker`.
+  Spec §5.1 nennt die Gewinnerquelle, aber keine Regel für Gleichstand.
+- **B-6 (R2)** Das Lastmenü wird über eine clientseitige `13mo`-Sondierung bei leerem Default
+  freigeschaltet, nicht über ein neues Antwortfeld; bleibt im Spec-Vertrag §6.
+- **B-7 (R2)** B5 misst in-process (Allokation prozessweit, Zeilenzähler), die HTTP-Hälfte misst B6
+  im Container; `Api.Tests` bleibt container-frei.
+- **B-8 (R2)** B6 misst `VmHWM` über `clear_refs`, mit 50-ms-`VmRSS`-Sampling als gekennzeichnetem
+  Fallback; `docker stats` nur als Zusatzspalte.
+- **B-9 (R2)** Die harte 400-Bucket-Kappe im Service ist ein Programmierfehler-Schutz (500), kein
+  Nutzerfehler — sie darf bei korrekter Leiter nie auslösen.
 
 ## 10. Spec/Code-Widersprüche (gefunden beim Planen)
 
@@ -845,6 +971,11 @@ Api und Worker mit `SystemLoad__IntervalSeconds=1` laufen lassen (≥ 15 min), d
    `SystemLoadHourlies` — nur für Implementer relevant.
 6. `docker-compose.prod.yml`/`docker-compose.yml` haben **keinen** `healthcheck`-Block am `api`-Service
    (der Container-HEALTHCHECK liegt im Image); das B6-Gate prüft deshalb `GET /api/health` direkt.
+7. **(R2, spec-intern, kein Widerspruch zum Code)** `13mo` ist in der Spec zweimal verschieden
+   definiert: Aktivität ab Monatserstem (§6), Last rollend ≈ 395 Tage (§5.2, §3). Plan v1 hatte beides
+   fälschlich auf den Monatsersten gezogen; der Plan folgt jetzt beiden Definitionen getrennt. Die
+   Fenster stimmen damit am Anfang um bis zu 30 Tage nicht überein, obwohl §4.1 die Ranges „zum
+   Vergleich" gleich benennt — Darstellungsfrage, kein Vertragsbruch; nur zur Kenntnis.
 
 ## 11. Offene Punkte für den Betreiber
 
