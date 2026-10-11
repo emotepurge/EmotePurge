@@ -377,7 +377,9 @@
           "PublicHealth": "Public health check",
           "ForeignEmoteLookup": "Foreign channel preview (7TV)",
           "TrackedEmoteSetPreview": "Tracked-channel set preview (7TV)",
-          "SevenTvLeaderboard": "7TV leaderboard"
+          "SevenTvLeaderboard": "7TV leaderboard",
+          "PublicLegal": "Public legal pages",
+          "Contact": "Contact form"
         }
       },
       "lastRejection": {
@@ -401,6 +403,7 @@
         "misses24h": "Misses (24 h)",
         "names": {
           "foreign-emote-set": "Foreign channel emote sets",
+          "foreign-emote-set-by-set-id": "Foreign emote sets by set ID",
           "moderated-channels": "Moderated channels",
           "seventv-grants": "7TV editor grants",
           "subscriber-check": "Subscriber check"
@@ -427,7 +430,8 @@
           "twitch-auth": "Auth client (OAuth/refresh)",
           "seventv-rest": "7TV REST client",
           "seventv-foreign-preview": "7TV foreign-preview client",
-          "seventv-leaderboard": "7TV leaderboard client"
+          "seventv-leaderboard": "7TV leaderboard client",
+          "seventv-emote-set-list": "7TV set-list client"
         }
       },
       "hints": {
