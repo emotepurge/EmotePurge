@@ -93,6 +93,40 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
     }
 
     [Fact]
+    public async Task Rollup_ClosesAnHourExactlyAtTheGraceBoundary()
+    {
+        var hourStartUtc = NowUtc.AddHours(12);
+        var hourEndUtc = hourStartUtc.AddHours(1);
+        await using var db = CreateDbContext();
+        db.SystemLoadSamples.Add(Sample(hourStartUtc.AddMinutes(30), Guid.NewGuid(), 0));
+        await db.SaveChangesAsync();
+        var service = new SystemLoadRollupService(db);
+        var grace = TimeSpan.FromMinutes(5);
+
+        var beforeBoundary = await service.RecomputeClosableHoursAsync(hourEndUtc + grace - TimeSpan.FromSeconds(1), grace, 30);
+        var atBoundary = await service.RecomputeClosableHoursAsync(hourEndUtc + grace, grace, 30);
+        var afterBoundary = await service.RecomputeClosableHoursAsync(hourEndUtc + grace + TimeSpan.FromSeconds(1), grace, 30);
+
+        Assert.Equal(0, beforeBoundary);
+        Assert.Equal(1, atBoundary);
+        Assert.Equal(1, afterBoundary);
+    }
+
+    [Fact]
+    public async Task ApiWorkloadRemainsUnknownInTheHourlyRow()
+    {
+        await using var db = CreateDbContext();
+        db.SystemLoadSamples.Add(Sample(NowUtc.AddHours(-2).AddMinutes(10), Guid.NewGuid(), 0));
+        await db.SaveChangesAsync();
+
+        await new SystemLoadRollupService(db).RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
+
+        var hourly = await db.SystemLoadHourlies.SingleAsync();
+        Assert.Null(hourly.ChatLines);
+        Assert.Null(hourly.EmoteMatches);
+    }
+
+    [Fact]
     public async Task Rollup_CatchesUpMissingHoursAcrossAnOutage()
     {
         await using var db = CreateDbContext();
