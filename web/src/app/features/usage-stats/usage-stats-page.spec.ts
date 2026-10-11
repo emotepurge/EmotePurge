@@ -7601,6 +7601,15 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
       expect(component['rangeStartsBeforeTracking']()).toBe(true);
     });
 
+    it('does not warn while the custom start date is cleared', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' } });
+
+      // A custom range, so the "all time" early return does not mask the comparison.
+      pickRange('2026-10-08');
+      component['from'].set('');
+      expect(component['rangeStartsBeforeTracking']()).toBe(false);
+    });
+
     it('lets the live start govern after a rejoin gap', async () => {
       await mount({ trackedSince: '2026-10-20T00:00:00Z' });
 
