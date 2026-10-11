@@ -170,7 +170,11 @@ export async function mockAdminRoster(page: Page, overrides: MockAdminRoster = {
     fulfillJson(route, 200, {
       snapshotAvailable: overrides.snapshotAvailable ?? true,
       trackedChannelCount: tracked,
-      ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 20 },
+      ceilings: {
+        twitchConcurrentChannelLimit: 100,
+        twitchJoinBudgetChannels: 20,
+        maxActiveChannels: 80,
+      },
       generatedAtUtc: '2026-08-01T12:00:00Z',
       ageSeconds: overrides.ageSeconds ?? 12,
       workerInstanceId: 'a1b2c3d4',

@@ -9,7 +9,9 @@ import {
   AdminHealth,
   AdminRoster,
   AdminUser,
+  AdminDashboardActivity,
   RateLimitTelemetrySnapshot,
+  RateLimitTelemetryTrend,
 } from './admin.model';
 import { AdminService } from './admin.service';
 import { AuditLogEntry } from '../audit/audit.model';
@@ -128,7 +130,11 @@ describe('AdminService', () => {
     req.flush({
       snapshotAvailable: true,
       trackedChannelCount: 3,
-      ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 20 },
+      ceilings: {
+        twitchConcurrentChannelLimit: 100,
+        twitchJoinBudgetChannels: 20,
+        maxActiveChannels: 80,
+      },
       generatedAtUtc: '2026-08-01T12:00:00Z',
       ageSeconds: 12,
       bootRecoveryCompleted: true,
@@ -154,7 +160,11 @@ describe('AdminService', () => {
     httpMock.expectOne('/api/admin/roster').flush({
       snapshotAvailable: false,
       trackedChannelCount: 3,
-      ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 20 },
+      ceilings: {
+        twitchConcurrentChannelLimit: 100,
+        twitchJoinBudgetChannels: 20,
+        maxActiveChannels: 80,
+      },
     });
 
     expect(result?.snapshotAvailable).toBe(false);
@@ -593,5 +603,47 @@ describe('AdminService', () => {
     });
 
     expect(result?.items[0].detail).toEqual({ kind: 'emoteCount', count: 12, text: null });
+  });
+
+  it('getDashboardActivity GETs /api/admin/dashboard/activity with the range as query', () => {
+    let result: AdminDashboardActivity | undefined;
+    service.getDashboardActivity('13mo').subscribe((r) => (result = r));
+
+    const req = httpMock.expectOne((r) => r.url === '/api/admin/dashboard/activity');
+    expect(req.request.method).toBe('GET');
+    expect(req.request.params.get('range')).toBe('13mo');
+    req.flush({
+      range: '13mo',
+      fromDate: '2025-09-01',
+      toDate: '2026-10-11',
+      todayIsPartial: true,
+      generatedAtUtc: '2026-10-11T08:00:00Z',
+      days: [
+        { date: '2026-10-10', liveChannels: null },
+        { date: '2026-10-11', liveChannels: 12 },
+      ],
+    } satisfies AdminDashboardActivity);
+
+    expect(result?.days[0].liveChannels).toBeNull();
+    expect(result?.todayIsPartial).toBe(true);
+  });
+
+  it('getRateLimitTrend GETs /api/admin/rate-limits/trend and passes a degraded answer through', () => {
+    let result: RateLimitTelemetryTrend | undefined;
+    service.getRateLimitTrend().subscribe((r) => (result = r));
+
+    const req = httpMock.expectOne('/api/admin/rate-limits/trend');
+    expect(req.request.method).toBe('GET');
+    req.flush({
+      telemetryAvailable: false,
+      fromUtc: '2026-10-10T08:00:00Z',
+      toUtc: '2026-10-11T08:00:00Z',
+      minuteStartsUtc: [],
+      localRejections: [],
+      providers: [],
+    } satisfies RateLimitTelemetryTrend);
+
+    expect(result?.telemetryAvailable).toBe(false);
+    expect(result?.minuteStartsUtc).toEqual([]);
   });
 });

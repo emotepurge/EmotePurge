@@ -601,6 +601,22 @@
         "noMatchesHint": "Filter anpassen oder zurücksetzen, um wieder Einträge zu sehen.",
         "reset": "Filter zurücksetzen"
       }
+    },
+    "dashboard": {
+      "chart": {
+        "noData": "keine Daten",
+        "incomplete": "Der letzte Wert ist noch unvollständig und kann sich ändern.",
+        "incompleteShort": "unvollständig",
+        "cursorHint": "{{ title }} – mit den Pfeiltasten Werte ablesen",
+        "summary": "{{ label }}: Minimum {{ min }}, Maximum {{ max }}, zuletzt {{ last }}, {{ known }} von {{ total }} Werten bekannt.",
+        "unit": {
+          "cores": "Einheit: Kerne",
+          "bytes": "Einheit: Byte (MiB/GiB)",
+          "percent": "Einheit: Prozent",
+          "tasks": "Einheit: Tasks im Mittel",
+          "count": "Einheit: Anzahl"
+        }
+      }
     }
   },
   "audit": {

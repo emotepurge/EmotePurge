@@ -601,6 +601,22 @@
         "noMatchesHint": "Adjust or reset the filters to see entries again.",
         "reset": "Reset filters"
       }
+    },
+    "dashboard": {
+      "chart": {
+        "noData": "no data",
+        "incomplete": "The last value is still incomplete and may change.",
+        "incompleteShort": "incomplete",
+        "cursorHint": "{{ title }} – read values with the arrow keys",
+        "summary": "{{ label }}: minimum {{ min }}, maximum {{ max }}, latest {{ last }}, {{ known }} of {{ total }} values known.",
+        "unit": {
+          "cores": "Unit: cores",
+          "bytes": "Unit: bytes (MiB/GiB)",
+          "percent": "Unit: percent",
+          "tasks": "Unit: tasks on average",
+          "count": "Unit: count"
+        }
+      }
     }
   },
   "audit": {

@@ -128,6 +128,8 @@ export interface RosterChannel {
 export interface RosterCeilings {
   twitchConcurrentChannelLimit: number;
   twitchJoinBudgetChannels: number;
+  /** Our own admission cap (`Channels:MaxActiveChannels`); global admins may exceed it. */
+  maxActiveChannels: number;
 }
 
 /**
@@ -300,4 +302,35 @@ export interface RateLimitTelemetrySnapshot {
   lastLocalRejection: RateLimitLastRejection | null;
   caches: RateLimitCacheCounters[];
   providers: RateLimitProviderCounters[];
+}
+
+/** Ranges the activity series supports (GET /api/admin/dashboard/activity). */
+export type AdminDashboardActivityRange = '30d' | '90d' | '13mo';
+
+/**
+ * GET /api/admin/dashboard/activity — one point per UTC calendar day. `liveChannels` is null for a
+ * day nobody observed: unknown, not zero, so the chart breaks the line there. The last day is the
+ * running UTC day and only partial while `todayIsPartial` is true.
+ */
+export interface AdminDashboardActivity {
+  range: AdminDashboardActivityRange;
+  fromDate: string;
+  toDate: string;
+  todayIsPartial: boolean;
+  generatedAtUtc: string;
+  days: { date: string; liveChannels: number | null }[];
+}
+
+/**
+ * GET /api/admin/rate-limits/trend — the last 24 hours in UTC minute buckets, column-oriented: one
+ * shared bucket list and one equally long value list per series. When `telemetryAvailable` is false
+ * the lists are empty (counter store unreachable), not zero-filled.
+ */
+export interface RateLimitTelemetryTrend {
+  telemetryAvailable: boolean;
+  fromUtc: string;
+  toUtc: string;
+  minuteStartsUtc: string[];
+  localRejections: number[];
+  providers: { providerName: string; callSource: string; rateLimited: number[] }[];
 }
