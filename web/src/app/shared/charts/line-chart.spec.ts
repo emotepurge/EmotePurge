@@ -16,6 +16,8 @@ const EN = {
         cursorHint: '{{ title }} - arrows',
         summary:
           '{{ label }}: min {{ min }}, max {{ max }}, last {{ last }}, {{ known }}/{{ total }}',
+        utc: 'times in UTC',
+        unitWord: { cores: 'cores', tasks: 'tasks' },
         unit: { count: 'Unit: count', cores: 'Unit: cores' },
       },
     },
@@ -196,5 +198,66 @@ describe('LineChart', () => {
     press(root, 'ArrowLeft');
 
     expect(liveLine(root).textContent?.trim()).toBe('');
+  });
+
+  it('shows count axes without duplicate labels for an all-zero series', () => {
+    const root = render([series('a', [0, 0, 0, 0])]);
+    const labels = Array.from(root.querySelectorAll('svg[role="img"] text'))
+      .map((node) => node.textContent?.trim() ?? '')
+      .filter((text) => /^\d+$/.test(text));
+
+    expect(labels).toEqual(['0', '1']);
+  });
+
+  it('states that the axis times are UTC', () => {
+    const root = render([series('a', [1, 2, 3, 4])]);
+
+    expect(root.textContent).toContain('times in UTC');
+  });
+
+  it('respects the tone input and keeps series distinguishable by more than colour', () => {
+    const root = render([
+      series('a', [1, 2, 3, 4]),
+      { ...series('b', [4, 3, 2, 1]), tone: 'danger' },
+      series('c', [2, 2, 2, 2]),
+    ]);
+    const groups = Array.from(root.querySelectorAll('g[data-tone]'));
+    const dashes = groups.map((g) => g.querySelector('path')?.getAttribute('stroke-dasharray'));
+
+    expect(groups.map((g) => g.getAttribute('data-tone'))).toEqual([
+      'neutral',
+      'danger',
+      'neutral',
+    ]);
+    expect(new Set(dashes).size).toBe(3);
+  });
+
+  it('holds the cursor inside the buckets when the data shrinks', () => {
+    const root = render([series('a', [1, 5, 3, 2])]);
+    press(root, 'End');
+
+    fixture.componentRef.setInput('series', [series('a', [1, 5])]);
+    fixture.componentRef.setInput('xStartsUtc', STARTS.slice(0, 2));
+    fixture.detectChanges();
+
+    expect(liveLine(root).textContent).toContain('Alpha: 5');
+    expect(liveLine(root).textContent).not.toContain('no data');
+  });
+
+  it('ignores non-finite values when scaling instead of losing the axis', () => {
+    const root = render([series('a', [1, NaN, 3, 4])]);
+
+    expect(root.querySelectorAll('svg[role="img"] text').length).toBeGreaterThan(2);
+    expect(root.querySelector('svg[role="img"] path')?.getAttribute('d')).not.toContain('NaN');
+  });
+
+  it('draws the incomplete last point of a marks series only as the hollow ring', () => {
+    const marks: LineChartSeries = { ...series('a', [1, 5, 3, 2]), emphasis: 'marks' };
+    const root = render([marks], { partialLastBucket: true });
+    const circles = root.querySelectorAll('svg[role="img"] circle');
+
+    // three filled marks for the complete buckets plus one hollow ring for the incomplete one
+    expect(circles).toHaveLength(4);
+    expect(root.querySelectorAll('svg[role="img"] circle[fill="none"]')).toHaveLength(1);
   });
 });

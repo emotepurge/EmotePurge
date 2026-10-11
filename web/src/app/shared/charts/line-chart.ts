@@ -14,6 +14,8 @@ import {
   yAt,
 } from './chart-series';
 
+export type SeriesTone = 'neutral' | 'accent' | 'danger';
+
 export interface LineChartSeries {
   id: string;
   /** Transloco key of the series name; the chart translates it. */
@@ -23,12 +25,15 @@ export interface LineChartSeries {
   values: readonly (number | null)[];
   /** `line` (default) connects known neighbours; `marks` draws separate points only. */
   emphasis?: 'line' | 'marks';
+  /** Defaults to `neutral`. `danger` is opt-in for real rejections or data errors only. */
+  tone?: SeriesTone;
 }
 
 interface RenderedSeries {
   id: string;
   label: string;
   colorClass: string;
+  tone: SeriesTone;
   dash: string | null;
   marks: boolean;
   path: string;
@@ -44,19 +49,38 @@ const VIEW_HEIGHT = 210;
 const PLOT = { x: 56, y: 8, width: 576, height: 176 };
 
 /**
- * Series colours come from semantic tokens only, never the raw palette. Neutral first: capacity
- * curves stay neutral and colour is reserved for real rejections and data errors (spec section 10),
- * so callers who need danger or warning order their series accordingly. Series beyond the first
- * also differ by dash pattern, so no meaning rides on hue alone (WCAG 1.4.1).
+ * Colour carries meaning, not identity (spec section 10): capacity curves are neutral, colour marks
+ * only real errors or real limit rejections. A series is therefore `neutral` unless the caller opts
+ * it into `accent` or `danger`, and series are told apart by a dash pattern that follows their
+ * position, so up to eight series stay distinguishable without any hue and no meaning rides on
+ * colour alone (WCAG 1.4.1). Only semantic tokens, never the raw palette.
  */
-const SERIES_STYLES: readonly { colorClass: string; dash: string | null }[] = [
-  { colorClass: 'text-accent-fg', dash: null },
-  { colorClass: 'text-fg-muted', dash: '6 3' },
-  { colorClass: 'text-danger-fg', dash: null },
-  { colorClass: 'text-warning-fg', dash: '6 3' },
-  { colorClass: 'text-info-fg', dash: '2 3' },
-  { colorClass: 'text-success-fg', dash: '8 3 2 3' },
+const TONE_CLASS: Record<SeriesTone, string> = {
+  neutral: 'text-fg',
+  accent: 'text-accent-fg',
+  danger: 'text-danger-fg',
+};
+
+const DASH_PATTERNS: readonly (string | null)[] = [
+  null,
+  '6 3',
+  '2 3',
+  '8 3 2 3',
+  '12 4',
+  '1 4',
+  '12 3 2 3 2 3',
+  '4 2',
 ];
+
+function styleOf(
+  series: LineChartSeries,
+  position: number,
+): { colorClass: string; dash: string | null } {
+  return {
+    colorClass: TONE_CLASS[series.tone ?? 'neutral'],
+    dash: DASH_PATTERNS[position % DASH_PATTERNS.length],
+  };
+}
 
 /** From this many series on, a text legend (name and last value) is rendered under the chart. */
 const LEGEND_FROM_SERIES = 3;
@@ -133,7 +157,7 @@ let nextChartId = 0;
           }
           <g [attr.transform]="'translate(' + plot.x + ' ' + plot.y + ')'">
             @for (item of rendered(); track item.id) {
-              <g [class]="item.colorClass">
+              <g [class]="item.colorClass" [attr.data-tone]="item.tone">
                 @if (!item.marks) {
                   <path
                     [attr.d]="item.path"
@@ -253,7 +277,7 @@ export class LineChart {
   protected readonly plot = PLOT;
   protected readonly descriptionId = `app-line-chart-description-${nextChartId++}`;
 
-  private readonly cursorIndex = signal<number | null>(null);
+  private readonly rawCursor = signal<number | null>(null);
   private readonly activeLang = toSignal(this.transloco.langChanges$, {
     initialValue: this.transloco.getActiveLang(),
   });
@@ -263,12 +287,26 @@ export class LineChart {
     return Math.max(0, ...lengths);
   });
 
+  /** The cursor, held inside the current buckets: inputs may shrink while a cursor is set. */
+  private readonly cursorIndex = computed(() => {
+    const raw = this.rawCursor();
+    const count = this.bucketCount();
+    return raw === null || count === 0 ? null : Math.min(raw, count - 1);
+  });
+
   private readonly yDomain = computed(() => {
-    const known = this.series().flatMap((s) => s.values.filter((v): v is number => v !== null));
+    const known = this.series().flatMap((s) =>
+      s.values.filter((v): v is number => v !== null && Number.isFinite(v)),
+    );
     if (known.length === 0) {
       return { ticks: [0, 1], min: 0, max: 1 };
     }
-    const ticks = niceTicks(Math.min(0, ...known), Math.max(...known), 4);
+    const ticks = niceTicks(
+      Math.min(0, ...known),
+      Math.max(...known),
+      4,
+      this.unit() === 'count' ? 1 : 0,
+    );
     return { ticks, min: ticks[0], max: ticks[ticks.length - 1] };
   });
 
@@ -278,7 +316,7 @@ export class LineChart {
     return ticks.map((value) => ({
       value,
       y: yAt(value, min, max, PLOT.height),
-      label: formatUnit(value, this.unit(), locale),
+      label: this.format(value, locale),
     }));
   });
 
@@ -308,7 +346,7 @@ export class LineChart {
     const partial = this.partialLastBucket();
 
     return this.series().map((series, position) => {
-      const style = SERIES_STYLES[position % SERIES_STYLES.length];
+      const style = styleOf(series, position);
       const values = series.values;
       const complete = partial ? [...values.slice(0, -1), null] : values;
       const partialTail = partial
@@ -322,6 +360,7 @@ export class LineChart {
         id: series.id,
         label,
         colorClass: style.colorClass,
+        tone: series.tone ?? 'neutral',
         dash: style.dash,
         marks: series.emphasis === 'marks',
         path: toLinePath(complete, geometry),
@@ -333,7 +372,10 @@ export class LineChart {
             ? toLinePath(partialTail, geometry)
             : '',
         points: values.flatMap((value, index) =>
-          value === null
+          value === null ||
+          value === undefined ||
+          !Number.isFinite(value) ||
+          (partial && index === values.length - 1)
             ? []
             : [
                 {
@@ -342,15 +384,15 @@ export class LineChart {
                 },
               ],
         ),
-        lastText: summary.last === null ? noData : formatUnit(summary.last, this.unit(), locale),
+        lastText: summary.last === null ? noData : this.format(summary.last, locale),
         alternative:
           summary.known === 0
             ? `${label}: ${noData}`
             : this.transloco.translate('admin.dashboard.chart.summary', {
                 label,
-                min: formatUnit(summary.min as number, this.unit(), locale),
-                max: formatUnit(summary.max as number, this.unit(), locale),
-                last: formatUnit(summary.last as number, this.unit(), locale),
+                min: this.format(summary.min as number, locale),
+                max: this.format(summary.max as number, locale),
+                last: this.format(summary.last as number, locale),
                 known: summary.known,
                 total: values.length,
               }),
@@ -373,7 +415,7 @@ export class LineChart {
       return [
         {
           id: series.id,
-          colorClass: SERIES_STYLES[position % SERIES_STYLES.length].colorClass,
+          colorClass: styleOf(series, position).colorClass,
           x: xAt(series.values.length - 1, count, PLOT.width),
           y: yAt(value, min, max, PLOT.height),
         },
@@ -385,7 +427,7 @@ export class LineChart {
 
   protected readonly unitCaption = computed(() => {
     this.activeLang();
-    return this.transloco.translate(`admin.dashboard.chart.unit.${this.unit()}`);
+    return `${this.transloco.translate(`admin.dashboard.chart.unit.${this.unit()}`)} · ${this.transloco.translate('admin.dashboard.chart.utc')}`;
   });
 
   protected readonly groupLabel = computed(() => {
@@ -417,7 +459,7 @@ export class LineChart {
           : [
               {
                 id: series.id,
-                colorClass: SERIES_STYLES[position % SERIES_STYLES.length].colorClass,
+                colorClass: styleOf(series, position).colorClass,
                 y: yAt(value, min, max, PLOT.height),
               },
             ];
@@ -439,7 +481,7 @@ export class LineChart {
       .map((series) => {
         const value = series.values[index];
         const label = this.transloco.translate(series.labelKey, series.labelParams ?? {});
-        return `${label}: ${value === null || value === undefined ? noData : formatUnit(value, this.unit(), locale)}`;
+        return `${label}: ${value === null || value === undefined ? noData : this.format(value, locale)}`;
       })
       .join('; ');
     const incomplete =
@@ -478,7 +520,7 @@ export class LineChart {
     }
 
     event.preventDefault();
-    this.cursorIndex.set(next);
+    this.rawCursor.set(next);
   }
 
   protected onPointerMove(event: PointerEvent): void {
@@ -491,18 +533,27 @@ export class LineChart {
     // Map the pointer into viewBox units, then into the plot area; outside it clamps to the ends.
     const viewX = ((event.clientX - rect.left) / rect.width) * VIEW_WIDTH;
     const fraction = Math.min(1, Math.max(0, (viewX - PLOT.x) / PLOT.width));
-    this.cursorIndex.set(count === 1 ? 0 : Math.round(fraction * (count - 1)));
+    this.rawCursor.set(count === 1 ? 0 : Math.round(fraction * (count - 1)));
   }
 
   protected onPointerLeave(event: PointerEvent): void {
     // Keyboard focus keeps its cursor; only a pointer-set cursor goes with the pointer.
     if (!(event.currentTarget as HTMLElement).matches(':focus')) {
-      this.cursorIndex.set(null);
+      this.rawCursor.set(null);
     }
   }
 
   protected clearCursor(): void {
-    this.cursorIndex.set(null);
+    this.rawCursor.set(null);
+  }
+
+  private format(value: number, locale: string): string {
+    const unit = this.unit();
+    const word =
+      unit === 'cores' || unit === 'tasks'
+        ? this.transloco.translate(`admin.dashboard.chart.unitWord.${unit}`)
+        : '';
+    return formatUnit(value, unit, locale, word);
   }
 
   private locale(): string {

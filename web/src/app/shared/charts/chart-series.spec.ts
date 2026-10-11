@@ -62,6 +62,23 @@ describe('niceTicks', () => {
     expect(niceTicks(0, 0, 4)).toEqual([0, 0.5, 1]);
   });
 
+  it('keeps whole-number scales free of fractional ticks with a minimum step', () => {
+    for (const [min, max] of [
+      [0, 0],
+      [0, 1],
+    ]) {
+      const ticks = niceTicks(min, max, 4, 1);
+      const labels = ticks.map((tick) => formatUnit(tick, 'count', 'en'));
+
+      expect(ticks).toEqual([0, 1]);
+      expect(new Set(labels).size).toBe(labels.length);
+    }
+  });
+
+  it('terminates at magnitudes where adding the step no longer changes the value', () => {
+    expect(niceTicks(1e16, 1e16 + 2, 4).length).toBeLessThanOrEqual(50);
+  });
+
   it('returns nothing for non-finite input', () => {
     expect(niceTicks(NaN, 1, 4)).toEqual([]);
   });
@@ -76,16 +93,16 @@ describe('formatUnit', () => {
 
   it('shows percent with one decimal and cores with two', () => {
     expect(formatUnit(12.34, 'percent', 'en')).toBe('12.3 %');
-    expect(formatUnit(0.5, 'cores', 'en')).toBe('0.50 cores');
+    expect(formatUnit(0.5, 'cores', 'en', 'cores')).toBe('0.50 cores');
   });
 
   it('uses the locale for separators and the German word for cores', () => {
-    expect(formatUnit(1.5, 'cores', 'de')).toBe('1,50 Kerne');
+    expect(formatUnit(1.5, 'cores', 'de', 'Kerne')).toBe('1,50 Kerne');
   });
 
   it('shows whole tasks without decimals and fractional ones with two', () => {
-    expect(formatUnit(3, 'tasks', 'en')).toBe('3 Tasks');
-    expect(formatUnit(0.456, 'tasks', 'en')).toBe('0.46 Tasks');
+    expect(formatUnit(3, 'tasks', 'en', 'Tasks')).toBe('3 Tasks');
+    expect(formatUnit(0.456, 'tasks', 'en', 'Tasks')).toBe('0.46 Tasks');
   });
 
   it('rounds counts to whole numbers', () => {

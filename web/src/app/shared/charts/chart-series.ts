@@ -27,6 +27,7 @@ export interface SeriesSummary {
   known: number;
 }
 
+const MAX_TICKS = 50;
 const BYTES_PER_MIB = 1024 ** 2;
 const BYTES_PER_GIB = 1024 ** 3;
 
@@ -81,10 +82,11 @@ export function toLinePath(values: readonly (number | null)[], geometry: LineGeo
 /**
  * Round tick values for the axis [min, max]: a 1/2/5 × 10^n step, ticks starting at the multiple of
  * the step at or below `min` and ending at or above `max`, so the data always lies inside the first
- * and last tick. `count` is the wanted number of ticks, not a guarantee. Degenerate input (a flat or
+ * and last tick. `count` is the wanted number of ticks, not a guarantee; `minStep` stops a scale
+ * of whole things (counts) from getting fractional ticks that would round to duplicates. Degenerate input (a flat or
  * inverted range) yields a small range around the value rather than a single tick.
  */
-export function niceTicks(min: number, max: number, count: number): number[] {
+export function niceTicks(min: number, max: number, count: number, minStep = 0): number[] {
   if (!Number.isFinite(min) || !Number.isFinite(max)) {
     return [];
   }
@@ -103,11 +105,12 @@ export function niceTicks(min: number, max: number, count: number): number[] {
   const magnitude = 10 ** Math.floor(Math.log10(rawStep));
   const fraction = rawStep / magnitude;
   const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
-  const step = niceFraction * magnitude;
+  const step = Math.max(niceFraction * magnitude, minStep);
 
   const first = Math.floor(min / step + 1e-9) * step;
   const ticks: number[] = [];
-  for (let value = first; ; value += step) {
+  // Capped: at huge magnitudes `value += step` stops changing the value and would never reach max.
+  for (let i = 0, value = first; i < MAX_TICKS; i++, value += step) {
     ticks.push(roundTo(value, step));
     if (value >= max - step * 1e-9) {
       break;
@@ -119,10 +122,10 @@ export function niceTicks(min: number, max: number, count: number): number[] {
 /**
  * A value with its unit, readable on an axis and in the reading line. Cores keep two decimals,
  * percent one (a value of 12.5 means 12.5 %), bytes switch between MiB and GiB at 1 GiB, tasks and
- * counts are shown with the precision their magnitude needs. `locale` only picks separators and the
- * German "Kerne"; the numbers never change.
+ * counts are shown with the precision their magnitude needs. `locale` only picks separators;
+ * `unitWord` is the translated word for cores and tasks, which have no symbol.
  */
-export function formatUnit(value: number, unit: ChartUnit, locale: string): string {
+export function formatUnit(value: number, unit: ChartUnit, locale: string, unitWord = ''): string {
   const number = (digits: number) =>
     new Intl.NumberFormat(locale, {
       minimumFractionDigits: digits,
@@ -131,7 +134,7 @@ export function formatUnit(value: number, unit: ChartUnit, locale: string): stri
 
   switch (unit) {
     case 'cores':
-      return `${number(2)} ${locale.startsWith('de') ? 'Kerne' : 'cores'}`;
+      return `${number(2)} ${unitWord}`.trim();
     case 'percent':
       return `${number(1)} %`;
     case 'bytes':
@@ -139,7 +142,7 @@ export function formatUnit(value: number, unit: ChartUnit, locale: string): stri
         ? `${new Intl.NumberFormat(locale, { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(value / BYTES_PER_GIB)} GiB`
         : `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1, minimumFractionDigits: 1 }).format(value / BYTES_PER_MIB)} MiB`;
     case 'tasks':
-      return `${number(Number.isInteger(value) ? 0 : 2)} Tasks`;
+      return `${number(Number.isInteger(value) ? 0 : 2)} ${unitWord}`.trim();
     case 'count':
       return new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value);
   }

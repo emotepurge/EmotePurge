@@ -615,6 +615,11 @@
           "percent": "Unit: percent",
           "tasks": "Unit: tasks on average",
           "count": "Unit: count"
+        },
+        "utc": "times in UTC",
+        "unitWord": {
+          "cores": "cores",
+          "tasks": "tasks"
         }
       }
     }

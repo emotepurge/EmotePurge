@@ -615,6 +615,11 @@
           "percent": "Einheit: Prozent",
           "tasks": "Einheit: Tasks im Mittel",
           "count": "Einheit: Anzahl"
+        },
+        "utc": "Zeiten in UTC",
+        "unitWord": {
+          "cores": "Kerne",
+          "tasks": "Tasks"
         }
       }
     }
