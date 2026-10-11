@@ -16,8 +16,17 @@ public class SystemLoadOptionsTests
         Assert.Equal(5, options.RollupGraceMinutes);
     }
 
+    [Fact]
+    public void ValidateAcceptsTheMaximumSamplingInterval()
+    {
+        var options = new SystemLoadOptions { IntervalSeconds = SystemLoadOptions.MaximumIntervalSeconds };
+
+        options.Validate();
+    }
+
     [Theory]
     [InlineData(0, 5)]
+    [InlineData(3601, 5)]
     [InlineData(30, -1)]
     public void ValidateRejectsAnInvalidIntervalOrGracePeriod(int intervalSeconds, int graceMinutes)
     {

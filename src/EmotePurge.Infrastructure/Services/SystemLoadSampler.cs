@@ -20,6 +20,8 @@ public sealed class SystemLoadSampler(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        options.Validate();
+
         if (!options.Enabled)
         {
             logger.LogInformation("System-load sampling is disabled by SystemLoad:Enabled.");

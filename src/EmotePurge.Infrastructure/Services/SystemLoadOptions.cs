@@ -4,6 +4,7 @@ namespace EmotePurge.Infrastructure.Services;
 public sealed class SystemLoadOptions
 {
     public const string SectionName = "SystemLoad";
+    public const int MaximumIntervalSeconds = 3_600;
 
     public bool Enabled { get; set; } = true;
     public int IntervalSeconds { get; set; } = 30;
@@ -11,9 +12,10 @@ public sealed class SystemLoadOptions
 
     public void Validate()
     {
-        if (IntervalSeconds <= 0)
+        if (IntervalSeconds is <= 0 or > MaximumIntervalSeconds)
         {
-            throw new InvalidOperationException($"Invalid system-load configuration: '{SectionName}:IntervalSeconds' must be greater than 0.");
+            throw new InvalidOperationException(
+                $"Invalid system-load configuration: '{SectionName}:IntervalSeconds' must be between 1 and {MaximumIntervalSeconds}.");
         }
 
         if (RollupGraceMinutes < 0)
