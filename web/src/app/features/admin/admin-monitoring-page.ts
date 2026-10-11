@@ -268,6 +268,7 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
                   [series]="trendSeries()"
                   [xStartsUtc]="trendData.minuteStartsUtc"
                   [bucketSeconds]="60"
+                  legendStat="sum"
                   unit="count"
                   [title]="'admin.dashboard.rateLimits.trend.title' | transloco"
                 />

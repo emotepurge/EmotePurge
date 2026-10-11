@@ -603,6 +603,11 @@
     },
     "dashboard": {
       "chart": {
+        "noRange": "No data in this range",
+        "legend": {
+          "sum": "total {{ value }}",
+          "max": "max {{ value }}"
+        },
         "noData": "no data",
         "incomplete": "The last value is still incomplete and may change.",
         "incompleteShort": "incomplete",

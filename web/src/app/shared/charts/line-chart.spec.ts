@@ -11,6 +11,8 @@ const EN = {
     dashboard: {
       chart: {
         noData: 'no data',
+        noRange: 'No data in this range',
+        legend: { sum: 'total {{ value }}', max: 'max {{ value }}' },
         incomplete: 'The last value is still incomplete.',
         incompleteShort: 'incomplete',
         cursorHint: '{{ title }} - arrows',
@@ -54,12 +56,18 @@ describe('LineChart', () => {
 
   function render(
     seriesList: LineChartSeries[],
-    extra: { partialLastBucket?: boolean; starts?: string[] } = {},
+    extra: {
+      partialLastBucket?: boolean;
+      starts?: string[];
+      legendStat?: 'last' | 'sum' | 'max';
+      bucketSeconds?: number;
+    } = {},
   ): HTMLElement {
     fixture = TestBed.createComponent(LineChart);
     fixture.componentRef.setInput('series', seriesList);
     fixture.componentRef.setInput('xStartsUtc', extra.starts ?? STARTS);
-    fixture.componentRef.setInput('bucketSeconds', 3600);
+    fixture.componentRef.setInput('bucketSeconds', extra.bucketSeconds ?? 3600);
+    fixture.componentRef.setInput('legendStat', extra.legendStat ?? 'last');
     fixture.componentRef.setInput('unit', 'count');
     fixture.componentRef.setInput('title', 'Live channels');
     fixture.componentRef.setInput('partialLastBucket', extra.partialLastBucket ?? false);
@@ -259,5 +267,58 @@ describe('LineChart', () => {
     // three filled marks for the complete buckets plus one hollow ring for the incomplete one
     expect(circles).toHaveLength(4);
     expect(root.querySelectorAll('svg[role="img"] circle[fill="none"]')).toHaveLength(1);
+  });
+
+  it('shows the total or the maximum in the legend when asked, even for fewer than three series', () => {
+    const sum = render([series('a', [1, 5, 3, 2])], { legendStat: 'sum' });
+    expect(sum.querySelector('[data-testid="chart-legend"]')?.textContent).toContain(
+      'Alpha: total 11',
+    );
+
+    const max = render([series('a', [1, 5, 3, 2])], { legendStat: 'max' });
+    expect(max.querySelector('[data-testid="chart-legend"]')?.textContent).toContain(
+      'Alpha: max 5',
+    );
+  });
+
+  it('labels the end of the window, not the last bucket start, for sub-day buckets', () => {
+    const starts = ['2026-10-11T10:00:00Z', '2026-10-11T10:01:00Z', '2026-10-11T10:02:00Z'];
+    const root = render([series('a', [1, 2, 3])], { starts, bucketSeconds: 60 });
+    const labels = Array.from(root.querySelectorAll('svg[role="img"] text'))
+      .map((node) => node.textContent?.trim() ?? '')
+      .filter((text) => /:/.test(text));
+
+    expect(labels).toHaveLength(3);
+    expect(labels[0]).toMatch(/10:00/);
+    expect(labels[2]).toMatch(/10:03/);
+  });
+
+  it('labels day buckets with their own days', () => {
+    const starts = ['2026-10-09T00:00:00Z', '2026-10-10T00:00:00Z', '2026-10-11T00:00:00Z'];
+    const root = render([series('a', [1, 2, 3])], { starts, bucketSeconds: 86_400 });
+
+    expect(root.querySelector('svg[role="img"]')?.textContent).toContain('11');
+    expect(root.querySelector('svg[role="img"]')?.textContent).not.toContain('12');
+  });
+
+  it('says visibly that a range without any known value has no data', () => {
+    const root = render([series('a', [null, null, null, null])]);
+
+    expect(root.querySelector('[data-testid="chart-no-data"]')?.textContent).toContain(
+      'No data in this range',
+    );
+    expect(root.querySelectorAll('svg[role="img"] text').length).toBeGreaterThan(2);
+  });
+
+  it('does not show the no-data hint while values are known', () => {
+    const root = render([series('a', [null, 2, null, null])]);
+
+    expect(root.querySelector('[data-testid="chart-no-data"]')).toBeNull();
+  });
+
+  it('renders at the fallback width when no ResizeObserver exists', () => {
+    const root = render([series('a', [1, 2, 3, 4])]);
+
+    expect(root.querySelector('svg[role="img"]')?.getAttribute('viewBox')).toBe('0 0 640 176');
   });
 });
