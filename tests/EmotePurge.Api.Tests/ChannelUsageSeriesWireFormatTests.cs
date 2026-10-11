@@ -37,7 +37,7 @@ public class ChannelUsageSeriesWireFormatTests
         var json = JsonSerializer.Serialize(dto, Options);
 
         Assert.Equal(
-            """{"from":"2026-07-01","to":"2026-07-07","liveDays":[0,6],"emotes":[{"sevenTvEmoteId":"01JB8QK3X0000000000000000","emoteId":"emote-1","days":[[0,3],[4,8]]}]}""",
+            """{"from":"2026-07-01","to":"2026-07-07","liveDays":[0,6],"emotes":[{"sevenTvEmoteId":"01JB8QK3X0000000000000000","emoteId":"emote-1","days":[[0,3],[4,8]]}],"firstCountedDay":null,"lastCountedDay":null}""",
             json);
     }
 
@@ -50,6 +50,20 @@ public class ChannelUsageSeriesWireFormatTests
 
         var json = JsonSerializer.Serialize(dto, Options);
 
-        Assert.Equal("""{"from":"2026-07-01","to":"2026-07-07","liveDays":[],"emotes":[]}""", json);
+        Assert.Equal("""{"from":"2026-07-01","to":"2026-07-07","liveDays":[],"emotes":[],"firstCountedDay":null,"lastCountedDay":null}""", json);
+    }
+
+    [Fact]
+    public void CountedDayBounds_SerializeAsIsoDates()
+    {
+        // protects=the camelCase names and ISO form of the two bounds the frontend reads;
+        // fails_when=a property is renamed or the date format changes;
+        // no_claim=none beyond protects.
+        var dto = new ChannelUsageSeriesDto(
+            new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7), [], [], new DateOnly(2026, 7, 2), new DateOnly(2026, 7, 5));
+
+        var json = JsonSerializer.Serialize(dto, Options);
+
+        Assert.Contains(""""firstCountedDay":"2026-07-02","lastCountedDay":"2026-07-05"""", json);
     }
 }
