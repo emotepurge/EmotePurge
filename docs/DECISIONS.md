@@ -15,6 +15,10 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 **Betrifft:** `web/src/app/shared/datetime/date-range-menu.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts` ·
 `src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs` · `src/EmotePurge.Core/Services/IUsageStatQueryService.cs`
 
+This also supersedes the paragraph "The caption states two independent facts" of the 2026-09-21
+entry (the observation-based `notObserved` / `countedSince` facts; replaced by the count-based ones
+below).
+
 This supersedes the preset sentence of the 2026-09-21 entry "A row of the set view is identified by
 its 7TV id ..." (the date preset that followed the viewed set's youngest observation interval). The
 `'set-observed'` preset ("beobachtet") is gone; "Seit Beginn" is the only whole-history preset.
@@ -31,7 +35,7 @@ look like a dead emote. That is now solved on the server, for every consumer at 
 sidecar chart, drilldown, chart bands): `/usage-stats/series` and `/usage-stats/daily` return a
 `ChannelLiveDay` (`LiveMinutes > 0`) only if the viewed set has at least one row with `UseCount > 0`
 on that date. The rule is set-wide and counts every emote of the channel, archived ones included,
-via one shared query (`LoadSetCountedDatesAsync`) that is deliberately not derived from the rows the
+via one query per endpoint (`LoadChannelCountedPairsAsync` for `/series`, `LoadSetCountedDatesAsync` for `/daily`, same predicate) that is deliberately not derived from the rows the
 channel series has already loaded; those exclude archived emotes for the active set, so archiving
 an emote would otherwise change historical live days and make `/series` disagree with `/daily`.
 `/daily` uses the same set as the emote's own counts (every set under `setScope = all`), and its
@@ -48,6 +52,17 @@ series-derived sentence is shown while the series is pending or failed. The fact
 the curve: like `channelSeries` they update on a range or set change, not on live usage events. In
 practice only the active set gains counts live, so `countedFrom` can be stale only until the next
 range or set change after a set's very first count; this is accepted.
+
+Two refinements by the operator the same day. **`countedFrom` only on a real set change:** the
+active set first said "counted from the <day>" whenever its first counted day lay after the range
+start, which a long-active set triggered merely because nobody chatted on the first days of the
+range (offline). `ChannelUsageSeriesDto` therefore also carries `ChannelFirstCountedDay` (JSON
+`channelFirstCountedDay`), the earliest day in the range with counts under any set of the channel,
+loaded together with the viewed set's days in one `(Date, EmoteSetId)` query. The active view shows
+`countedFrom` only if that day is earlier than the viewed set's first counted day, i.e. another set
+counted before it. **The live-day caption says "with this set":** the live-day count now covers only
+live days with counts under the viewed set, so the sentence ("... war der Stream an N Tagen mit
+diesem Set live") no longer claims a channel-wide count.
 
 ### 2026-10-11 — System-load sampling is process and host telemetry with hourly rollups (#380)
 
