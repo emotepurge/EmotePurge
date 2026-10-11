@@ -223,6 +223,84 @@ public class RateLimitTelemetryStore(
         }
     }
 
+    public async Task<RateLimitTelemetryTrend> ReadTrendAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var db = connectionMultiplexer.GetDatabase();
+            var now = timeProvider.GetUtcNow();
+
+            // Newest first, as BucketKeys lays them out; the series are built oldest first.
+            var newestFirst = await ReadBucketsAsync(db, BucketKeys(now, CoarseBucketPrefix, CoarseBucketSeconds, CoarseBucketsPerWindow));
+
+            var newest = now.ToUnixTimeSeconds() / CoarseBucketSeconds;
+            var minuteStarts = new List<DateTime>(CoarseBucketsPerWindow);
+            var rejections = new List<long>(CoarseBucketsPerWindow);
+            var providerSeries = new SortedDictionary<string, long[]>(StringComparer.Ordinal);
+            var providerSeen = new HashSet<string>(StringComparer.Ordinal);
+
+            for (var index = 0; index < CoarseBucketsPerWindow; index++)
+            {
+                var age = CoarseBucketsPerWindow - 1 - index;
+                var bucket = newestFirst[age];
+                minuteStarts.Add(DateTimeOffset.FromUnixTimeSeconds((newest - age) * CoarseBucketSeconds).UtcDateTime);
+
+                long rejected = 0;
+                foreach (var entry in bucket)
+                {
+                    var parts = entry.Name.ToString().Split(DimensionSeparator);
+                    if (!entry.Value.TryParse(out long value))
+                    {
+                        continue;
+                    }
+
+                    if (parts is ["policy", _, "rejected"])
+                    {
+                        rejected += value;
+                    }
+                    else if (parts is ["provider", var provider, var source, var counter] && counter is "requests" or "rate-limited")
+                    {
+                        var dimension = $"{provider}{DimensionSeparator}{source}";
+                        providerSeen.Add(dimension);
+                        if (counter == "rate-limited")
+                        {
+                            if (!providerSeries.TryGetValue(dimension, out var series))
+                            {
+                                series = new long[CoarseBucketsPerWindow];
+                                providerSeries[dimension] = series;
+                            }
+
+                            series[index] += value;
+                        }
+                    }
+                }
+
+                rejections.Add(rejected);
+            }
+
+            var providers = providerSeen
+                .OrderBy(dimension => dimension, StringComparer.Ordinal)
+                .Select(dimension =>
+                {
+                    var parts = dimension.Split(DimensionSeparator);
+                    return new RateLimitProviderTrend(
+                        parts[0],
+                        parts[1],
+                        providerSeries.TryGetValue(dimension, out var series) ? series : new long[CoarseBucketsPerWindow]);
+                })
+                .ToList();
+
+            return new RateLimitTelemetryTrend(true, minuteStarts[0], minuteStarts[^1], minuteStarts, rejections, providers);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Rate-Limit-Telemetrie konnte nicht gelesen werden; die Trendreihe wird als nicht verfügbar gemeldet.");
+            return RateLimitTelemetryTrend.Unavailable;
+        }
+    }
+
     private async Task<IReadOnlyList<RateLimitProviderCounters>> BuildProviderCountersAsync(
         IDatabase db,
         IReadOnlyDictionary<string, long> minute,
@@ -277,6 +355,18 @@ public class RateLimitTelemetryStore(
             db.HashIncrementAsync(coarse, field),
             db.KeyExpireAsync(coarse, CoarseBucketTtl),
         ];
+    }
+
+    private static async Task<HashEntry[][]> ReadBucketsAsync(IDatabase db, IReadOnlyList<RedisKey> keys)
+    {
+        // Same pipelined burst as SumBucketsAsync, but each bucket stays separate for the trend.
+        var reads = new Task<HashEntry[]>[keys.Count];
+        for (var i = 0; i < keys.Count; i++)
+        {
+            reads[i] = db.HashGetAllAsync(keys[i]);
+        }
+
+        return await Task.WhenAll(reads);
     }
 
     private static async Task<IReadOnlyDictionary<string, long>> SumBucketsAsync(IDatabase db, IReadOnlyList<RedisKey> keys)

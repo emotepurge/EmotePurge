@@ -16,7 +16,10 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Services/AdminDashboardQueryService.cs` ·
 `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/AdminDashboardQueryServiceTests.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure}Tests.cs`
+`tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure}Tests.cs` ·
+`src/EmotePurge.Core/Services/IRateLimitTelemetryReader.cs` ·
+`src/EmotePurge.Infrastructure/Redis/RateLimitTelemetryStore.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/RateLimitTelemetryStoreTests.cs`
 
 The activity series counts, per UTC calendar day, the `ChannelLiveDays` rows with `LiveMinutes > 0`.
 The accepted ranges are `30d`, `90d` and `13mo` (ordinal, exact; anything else is rejected). The
@@ -33,6 +36,15 @@ The dashboard does not read `UsageStats` (operator decision 2026-10-11): the slo
 table, and monthly workload comes from the system-load rollups instead. A container-free structure test
 (`AdminDashboardQueryServiceStructureTests`) fails the build if `AdminDashboardQueryService` mentions
 `UsageStat` or `UsageStats`.
+
+The 24-hour rate-limit trend is read from the existing one-minute Redis buckets
+(`ratelimit:telemetry:m:*`); there are no new keys or fields.
+`IRateLimitTelemetryReader.ReadTrendAsync` returns 1,440 minutes including the current, still running
+one, using the same pipelined, non-awaited `HashGetAllAsync` burst as the snapshot, only per bucket
+instead of summed. A missing bucket is `0`, meaning no rejection, because every event creates its
+bucket; this deliberately differs from the system-load series, where a gap is `null` (not measured).
+Like the snapshot, the read is fail-open: an unreachable Redis yields
+`RateLimitTelemetryTrend.Unavailable` with empty lists, never an exception.
 
 ### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)
 

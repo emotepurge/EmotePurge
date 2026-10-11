@@ -336,6 +336,107 @@ public class RateLimitTelemetryStoreTests(RedisFixture fixture)
         Assert.Equal(2, counters.RejectedLast24Hours);
     }
 
+    [Fact]
+    public async Task ReadTrendAsync_PlacesARejectionInItsMinuteBucket_AndReturns1440AscendingMinutes()
+    {
+        var clock = NewClock();
+        var store = NewStore(clock);
+        var policy = NewName("policy");
+
+        await store.RecordPolicyDecisionAsync(Rejected(policy, retryAfterSeconds: 1));
+        clock.Advance(TimeSpan.FromSeconds(61));
+        await store.RecordPolicyDecisionAsync(Rejected(policy, retryAfterSeconds: 1));
+        await store.RecordPolicyDecisionAsync(Rejected(policy, retryAfterSeconds: 1));
+
+        var trend = await store.ReadTrendAsync();
+
+        Assert.True(trend.TelemetryAvailable);
+        Assert.Equal(1440, trend.MinuteStartsUtc.Count);
+        Assert.Equal(1440, trend.LocalRejections.Count);
+        Assert.Equal(trend.MinuteStartsUtc.OrderBy(m => m), trend.MinuteStartsUtc);
+        Assert.Equal(trend.ToUtc, trend.MinuteStartsUtc[^1]);
+        Assert.Equal(trend.ToUtc.AddMinutes(-1439), trend.FromUtc);
+        Assert.Equal(clock.GetUtcNow().UtcDateTime.AddSeconds(-clock.GetUtcNow().Second), trend.ToUtc);
+        Assert.Equal(2, trend.LocalRejections[^1]);
+        Assert.Equal(1, trend.LocalRejections[^2]);
+    }
+
+    [Fact]
+    public async Task ReadTrendAsync_SumsRejectionsOfAllPolicies_AndIgnoresAcceptedDecisions()
+    {
+        var clock = NewClock();
+        var store = NewStore(clock);
+
+        await store.RecordPolicyDecisionAsync(Rejected(NewName("policy"), retryAfterSeconds: 1));
+        await store.RecordPolicyDecisionAsync(Rejected(NewName("policy"), retryAfterSeconds: 1));
+        await store.RecordPolicyDecisionAsync(Accepted(NewName("policy")));
+
+        var trend = await store.ReadTrendAsync();
+
+        Assert.Equal(2, trend.LocalRejections[^1]);
+        Assert.Equal(2, trend.LocalRejections.Sum());
+    }
+
+    [Fact]
+    public async Task ReadTrendAsync_CountsOnlyRealProviderRateLimits_AndKeepsADimensionThatOnlyHadRequests()
+    {
+        var clock = NewClock();
+        var store = NewStore(clock);
+        var provider = NewName("prov");
+
+        await store.RecordProviderResponseAsync(new ProviderResponseObservation(
+            provider, RateLimitCallSources.TwitchHelix, StatusCode: 429, RetryAfterSeconds: 5));
+        await store.RecordProviderResponseAsync(new ProviderResponseObservation(
+            provider, RateLimitCallSources.TwitchAuth, StatusCode: 500));
+        await store.RecordPolicyDecisionAsync(Rejected(NewName("policy"), retryAfterSeconds: 1));
+
+        var trend = await store.ReadTrendAsync();
+
+        var helix = Assert.Single(trend.Providers, p => p.ProviderName == provider && p.CallSource == RateLimitCallSources.TwitchHelix);
+        Assert.Equal(1440, helix.RateLimited.Count);
+        Assert.Equal(1, helix.RateLimited[^1]);
+        var auth = Assert.Single(trend.Providers, p => p.ProviderName == provider && p.CallSource == RateLimitCallSources.TwitchAuth);
+        Assert.Equal(0, auth.RateLimited.Sum());
+        Assert.Equal(2, trend.Providers.Count);
+
+        // A local rejection is not a provider signal and creates no provider dimension.
+        Assert.Equal(1, trend.LocalRejections[^1]);
+    }
+
+    [Fact]
+    public async Task ReadTrendAsync_CutsTheWindowAt24Hours_EvenThoughTheKeyStillExists()
+    {
+        var clock = NewClock();
+        var store = NewStore(clock);
+        await store.RecordPolicyDecisionAsync(Rejected(NewName("policy"), retryAfterSeconds: 1));
+        clock.Advance(TimeSpan.FromHours(24) + TimeSpan.FromMinutes(1));
+
+        Assert.Equal(0, (await store.ReadTrendAsync()).LocalRejections.Sum());
+
+        // One minute younger, the event is still the oldest point of the window.
+        var clock2 = NewClock();
+        var store2 = NewStore(clock2);
+        await store2.RecordPolicyDecisionAsync(Rejected(NewName("policy"), retryAfterSeconds: 1));
+        clock2.Advance(TimeSpan.FromMinutes(1439));
+
+        Assert.Equal(1, (await store2.ReadTrendAsync()).LocalRejections[0]);
+    }
+
+    [Fact]
+    public async Task ReadTrendAsync_AgainstAnUnreachableRedis_ReportsUnavailable_WithoutThrowing()
+    {
+        await using var broken = await ConnectionMultiplexer.ConnectAsync(
+            "127.0.0.1:1,abortConnect=false,connectTimeout=100,syncTimeout=100,asyncTimeout=100,connectRetry=0");
+        var store = new RateLimitTelemetryStore(broken, NewClock(), NullLogger<RateLimitTelemetryStore>.Instance);
+
+        var trend = await store.ReadTrendAsync();
+
+        Assert.False(trend.TelemetryAvailable);
+        Assert.Empty(trend.MinuteStartsUtc);
+        Assert.Empty(trend.LocalRejections);
+        Assert.Empty(trend.Providers);
+    }
+
     private static RateLimitPolicyDecision Accepted(string policy) =>
         new(policy, Accepted: true, "GET", "/api/channels/{name}/emotes", "user:1");
 

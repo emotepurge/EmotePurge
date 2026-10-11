@@ -15,7 +15,47 @@ public interface IRateLimitTelemetryReader
     /// endpoint can still answer 200 with its effective configuration.
     /// </summary>
     Task<RateLimitTelemetrySnapshot> ReadAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The last 24 hours as one value per minute, for the admin activity chart. Same fail-open contract
+    /// as <see cref="ReadAsync"/>: never throws, and answers <see cref="RateLimitTelemetryTrend.Unavailable"/>
+    /// when the counter store is unreachable.
+    /// </summary>
+    Task<RateLimitTelemetryTrend> ReadTrendAsync(CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Rate-limit rejections per minute over the last 24 hours, read from the existing minute buckets.
+/// </summary>
+/// <remarks>
+/// A minute without a bucket is <c>0</c>, not unknown: every event creates its bucket, so no bucket
+/// means no rejection. That is deliberately unlike the system-load series, where a gap means "not measured".
+/// </remarks>
+/// <param name="TelemetryAvailable"><c>false</c> when the counters could not be read; all lists are then empty.</param>
+/// <param name="FromUtc">Start of the oldest minute: <see cref="ToUtc"/> minus 1,439 minutes.</param>
+/// <param name="ToUtc">Start of the current (still running) minute, UTC.</param>
+/// <param name="MinuteStartsUtc">1,440 minute starts, ascending, the last being <see cref="ToUtc"/>.</param>
+/// <param name="LocalRejections">Per minute, the sum of all local policy rejections; index-aligned with <see cref="MinuteStartsUtc"/>.</param>
+/// <param name="Providers">
+/// One entry per provider and call source that had a request or a real 429 anywhere in the window.
+/// </param>
+public record RateLimitTelemetryTrend(
+    bool TelemetryAvailable,
+    DateTime FromUtc,
+    DateTime ToUtc,
+    IReadOnlyList<DateTime> MinuteStartsUtc,
+    IReadOnlyList<long> LocalRejections,
+    IReadOnlyList<RateLimitProviderTrend> Providers)
+{
+    /// <summary>The one answer given when the counter store cannot be reached — empty, never an error.</summary>
+    public static RateLimitTelemetryTrend Unavailable { get; } = new(false, default, default, [], [], []);
+}
+
+/// <summary>Real provider 429s per minute for one provider and call source, index-aligned with the trend's minutes.</summary>
+public record RateLimitProviderTrend(
+    string ProviderName,
+    string CallSource,
+    IReadOnlyList<long> RateLimited);
 
 /// <summary>
 /// Everything the counter store knows, at one instant.
