@@ -39,18 +39,28 @@ Ausgeschlossen: Docker-Socket, Prometheus/Grafana/cAdvisor o. Ä.
    abstürzen lassen: jeder Durchlauf in try/catch, DB-Fehler → gedrosselte Warnung und weiter,
    kein Retry-Stau, Start nicht vor dem Host-Start verzögern. Kein `AppDbContext` im Sampler selbst,
    sondern über einen Service (Regel 4 sinngemäß).
-5. **Verdichtung.** Läuft nur im Worker, unabhängig von `Retention:Enforce` (sie löscht nichts).
-   Verdichtet je Quelle jede **abgeschlossene** Stunde, für die es Rohwerte, aber noch keine
-   Stundenzeile gibt — holt also nach einem Ausfall alle Stunden innerhalb des Roh-Fensters nach.
-   Idempotent (Upsert auf `(Quelle, Stunde)`).
+5. **Verdichtung.** Läuft nur im Worker, unabhängig von `Retention:Enforce` (sie löscht nichts),
+   auch direkt beim Start (Nachholen), danach stündlich. Eine Stunde gilt als **abschließbar**, wenn
+   ihr Ende mindestens eine Karenz (Default 5 min, konfigurierbar) zurückliegt — so landen
+   verspätete Inserts (Sample 12:59:59, Commit 13:00:01) noch in ihrer Stunde. Jeder Durchlauf
+   rechnet alle abschließbaren Stunden neu, deren Ende innerhalb der letzten 3 h liegt, plus jede
+   abschließbare Stunde im Roh-Fenster, für die noch keine Stundenzeile existiert (Nachholen nach
+   Ausfall). Idempotent per Upsert auf `(Quelle, Stunde)`. Schlägt die Verdichtung fehl: Warnung,
+   nächster Durchlauf versucht es erneut — die Rohzeilen bleiben dank Baustein 6 erhalten.
 6. **Aufbewahrung.** Zwei neue Regeln in `RetentionPolicy`, durchgesetzt vom bestehenden
    `DataRetentionWorker`, gleiche Enforce-/Trockenlauf-Semantik wie die übrigen Regeln.
+   **Rohzeilen werden nur gelöscht, wenn sie älter als 7 Tage sind _und_ für ihre `(Quelle, Stunde)`
+   bereits eine Stundenzeile existiert.** Damit ist die Reihenfolge zwischen Verdichtung und Löschung
+   kein Wettlauf mehr: eine nicht verdichtete Stunde bleibt liegen, bis die Verdichtung sie erwischt.
+   Damit sie nicht ewig liegen bleibt, wenn die Verdichtung dauerhaft scheitert, loggt die Löschung
+   Rohzeilen jenseits von 7 Tagen ohne Stundenzeile als Warnung (Zählwert), löscht sie aber nicht.
 
 ## Datenvertrag
 
 **Rohzeile** (Name nach Bestandskonvention, z. B. `SystemLoadSample`): Zeitpunkt (UTC), Quelle,
-Prozess-ID oder Start-Zeitpunkt des Prozesses (um Neustarts zu erkennen), Intervalllänge bzw.
-Zeitpunkt des Vorgänger-Samples, alle Rohwerte aus Baustein 1 und 2, die Arbeitsmenge aus
+**Prozess-Lebenszeit-Kennung: eine beim Start erzeugte GUID, nicht null** (die PID taugt nicht —
+beide Container starten `dotnet` als PID 1), Zeitpunkt des Vorgänger-Samples desselben Prozesses
+(oder null beim ersten Sample), alle Rohwerte aus Baustein 1 und 2, die Arbeitsmenge aus
 Baustein 3. Alles außer Zeitpunkt/Quelle nullable. Index auf `(Quelle, Zeitpunkt)`.
 
 **Gespeichert werden Rohwerte, normalisiert wird erst in der Anzeige.** Für die Stundenwerte heißt
@@ -60,6 +70,22 @@ Verdichtung bildet deshalb je Sample-Paar die Rate (genutzte CPU-Sekunden pro Wa
 Host-Busy-Anteil) und verdichtet diese. Normalisierung auf das Quota (`cpu.max`) bleibt Sache der
 Anzeige; das Quota wird mitgeführt (letzter Wert der Stunde genügt).
 
+Regeln für die Paare:
+
+- Ein Paar besteht aus einem Sample und seinem unmittelbaren Vorgänger **derselben Quelle und
+  derselben Prozess-Kennung**. Wechselt die Kennung, gibt es kein Paar — unabhängig vom Vorzeichen
+  des Deltas (ein frischer Prozess kann schon mehr CPU-Zeit haben als der alte zuletzt).
+  Prozess-Zähler (Prozess-CPU-Zeit) brauchen dieselbe Kennung; Host-Zähler (`/proc/stat`) und
+  cgroup-Zähler überleben einen Prozess-Neustart, werden aber trotzdem bei negativem Delta verworfen
+  (Host- oder Container-Neustart).
+- Das Paar und das Arbeitsmengen-Intervall gehören **der Stunde des späteren Samples**. Der
+  Vorgänger wird über die Stundengrenze hinweg gesucht — ein Paar 12:59:45/13:00:15 zählt für 13 Uhr.
+- Paare, deren Abstand mehr als 2,5 Intervalle beträgt, sind Lücken und werden verworfen.
+- **Mittelwerte sind zeitgewichtet:** CPU-Mittel = Summe der gültigen CPU-Deltas / Summe der
+  zugehörigen Wanddauern; Host-Busy-Mittel = Summe der Busy-Deltas / Summe der Gesamt-Deltas.
+  Max und p95 werden über die Raten der einzelnen gültigen Paare gebildet. Raten sind nur `null`,
+  wenn die Stunde kein einziges gültiges Paar hat; Gauges werden trotzdem verdichtet.
+
 **Stundenzeile** (z. B. `SystemLoadHourly`): Stunde (UTC, Beginn), Quelle, Sample-Zahl; für jede
 Last-Größe (Prozess-CPU-Rate, cgroup-CPU-Rate, Host-CPU-Busy-Anteil, `memory.current`,
 Host-Speicher belegt, loadavg 1) **Mittel, Max, p95**; die Grenzwerte (`cpu.max`, `memory.max`,
@@ -68,9 +94,13 @@ Max/Mittel für aktive und live Kanäle. Eindeutigkeit `(Quelle, Stunde)`.
 
 ## Grenzfälle, die abgedeckt sein müssen
 
-- Prozess-Neustart oder Zählerrücksprung: negatives Delta → Paar verwerfen, nicht als 0 werten.
-- Lücke (Worker lag 10 min still): Paare über mehr als ~2 Intervalle nicht als ein Sample werten.
-- Stunde mit nur einem Sample oder ohne gültiges Paar: Raten `null`, Gauges trotzdem verdichten.
+- Prozess-Neustart: Kennungswechsel → kein Paar; Zählerrücksprung bei Host/cgroup → Paar verwerfen.
+- Lücke (Worker lag 10 min still): kein Paar über die Lücke (s. Paar-Regeln).
+- Stunde mit nur einem Sample: zählt über das stundenübergreifende Paar, `null` nur ohne gültiges Paar.
+- Verspäteter Insert nach der ersten Verdichtung einer Stunde: wird beim nächsten Durchlauf
+  (Neuberechnung der letzten 3 h) eingerechnet.
+- Löschung vor Verdichtung: unmöglich per Vertrag (Baustein 6); Test, der Nachholen und Löschung
+  in beiden Reihenfolgen laufen lässt.
 - Api-Zeilen: Worker-Spalten `null`, Summen dürfen daraus nicht `0` machen, wo „unbekannt" gemeint ist.
 - `max`/unbegrenzt in `cpu.max`/`memory.max` → `null` (oder eigener Marker), nicht `long.MaxValue`.
 - Uhr: alles UTC, Stundengrenze per Zeitstempel, nicht per Sample-Zähler.
@@ -81,9 +111,11 @@ Max/Mittel für aktive und live Kanäle. Eindeutigkeit `(Quelle, Stunde)`.
 
 - Parser: reine Unit-Tests in `tests/EmotePurge.Infrastructure.Tests/Unit/` mit echten
   Beispieldateien aus cgroup v2 und `/proc` (inkl. `max`, fehlender Datei, Müll).
-- Raten-/Verdichtungslogik, soweit rein: Unit-Tests (Neustart, Lücke, Einzel-Sample, p95).
+- Raten-/Verdichtungslogik, soweit rein: Unit-Tests (Kennungswechsel mit positivem Delta, Lücke,
+  Paar über die Stundengrenze, ungleiche Intervalle → zeitgewichtetes Mittel, p95).
 - Verdichtung + Aufbewahrung gegen Postgres: Integrationstests (Testcontainers) — Upsert-Idempotenz,
-  Nachholen nach Lücke, Löschung nach 7 Tagen bzw. 13 Monaten, Trockenlauf löscht nichts.
+  Nachholen nach Lücke, verspäteter Insert nach erster Verdichtung, Rohzeilen ohne Stundenzeile
+  bleiben trotz Alter liegen, Löschung nach 7 Tagen bzw. 13 Monaten, Trockenlauf löscht nichts.
 - Sampler-Robustheit: ein Durchlauf mit werfender Quelle/DB lässt den Dienst weiterlaufen.
 - Arbeitsmengen-Zähler im Worker: container-frei in `tests/EmotePurge.Worker.Tests`, falls sie dort leben.
 
