@@ -1247,9 +1247,11 @@ export class UsageStatsPage {
       return false;
     }
 
-    const trackingStart = Date.parse(trackedSince);
-    const rangeStart = Date.parse(`${this.from()}T00:00:00Z`);
-    return !Number.isNaN(trackingStart) && !Number.isNaN(rangeStart) && rangeStart < trackingStart;
+    // Day against day: `from()` is an ISO day (UTC, see toIsoDate), while the counting start can be
+    // a precise timestamp. A range that starts ON the counting start's day loses nothing, so
+    // comparing it with the timestamp would warn falsely for every start later than 00:00Z.
+    const trackingStartDay = trackedSince.slice(0, 10);
+    return this.from() < trackingStartDay;
   });
   protected readonly isLoading = signal(false);
   protected readonly skeletonCells = Array.from({ length: 48 }, (_, i) => i);

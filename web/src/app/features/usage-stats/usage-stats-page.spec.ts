@@ -7590,6 +7590,17 @@ describe('UsageStatsPage — imported coverage: caption wording, scope and count
       ).toBe('unknown');
     });
 
+    it('does not warn when the range starts on the day counting began, later that day', async () => {
+      await mount({ coverage: { ...NOTHING_IMPORTED, emoteSetId: 'set-a' } });
+
+      expect(component['coverageStart']()).toBe('2026-10-08T09:30:00Z');
+      pickRange('2026-10-08');
+      expect(component['rangeStartsBeforeTracking']()).toBe(false);
+
+      pickRange('2026-10-07');
+      expect(component['rangeStartsBeforeTracking']()).toBe(true);
+    });
+
     it('lets the live start govern after a rejoin gap', async () => {
       await mount({ trackedSince: '2026-10-20T00:00:00Z' });
 
