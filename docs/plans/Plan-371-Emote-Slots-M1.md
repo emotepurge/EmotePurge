@@ -358,7 +358,7 @@ wenn Speicherdruck sichtbar wird (`/proc/pressure/memory`), sonst ist die Reihen
   aktiven Sets, nicht über `IsArchived`. Seeds tragen `LastSyncedAt` = Migrationsstempel.
 - **Kind 3 (M2), bindend:** Zwischen M1 und M2 schreiben die unveränderten Writer `UsageStats`-Zeilen mit `SlotId NULL` — lokal immer,
   auf Prod nach einem abgebrochenen Fenster, in dem die alten Images auf M1 weiterlaufen (§11.2 Schritt 4). **M2-`Up` fährt vor
-  `SET NOT NULL` die Konstante `EmoteSlotSeedSql.AttachUnslottedUsageRowsSql`** (E17) statt abzubrechen: bestehende Paare hängen an den
+  `SET NOT NULL` die Konstante `EmoteSlotSeedSql.AttachUnslottedUsageRowsSql`** (E17) statt abzubrechen — **Reihenfolge: `lock_timeout` + `LOCK TABLE "UsageStats" IN ACCESS EXCLUSIVE MODE` zuerst, dann Konstante, dann Prüfung, dann `ALTER`** (Schiedsspruch Fable 2026-10-11: die Statements laufen unter READ COMMITTED, ein Flush zwischen ihnen erzeugte sonst einen zweiten Seed; Gurt für M2s Prüfung: höchstens ein `SeedUnsettled`-Slot je Paar): bestehende Paare hängen an den
   Slot, der ihre Zeilen trägt (nach Kind 2 der gesettelte Seed), neue Paare bekommen einen neuen unsettled Seed, den der nächste
   Abgleich settelt; danach die eigene Abbruchprüfung (keine `NULL`, kein fremdes `EmoteId`). Fixture in Kind 3: M1 → Zeilen des alten
   Writers (Raw-Insert ohne `SlotId`) → Settle durch Kind-2-Code → M2-`Up` grün, Summen je Paar unverändert, bestehende Paare und neue

@@ -10,9 +10,12 @@ namespace EmotePurge.Infrastructure.Migrations;
 /// Three consumers run the identical text: <c>AddEmoteSlots</c> Up (M1, on the fresh column every
 /// row is NULL and every pair gets a new seed), the M2 Up of child 3 (before <c>SET NOT NULL</c>,
 /// for rows the unchanged writers wrote with a NULL slot after M1) and the repair step in
-/// docs/Operations.md (child 9) for rows old images wrote after an aborted window. The caller keeps
-/// the writers out while it runs: M1 locks <c>UsageStats</c>, M2's ALTER does, and the repair runs
-/// with worker and api stopped.
+/// docs/Operations.md (child 9) for rows old images wrote after an aborted window. The caller holds
+/// ACCESS EXCLUSIVE on <c>UsageStats</c> (with a <c>lock_timeout</c>) for the whole run, or has
+/// every writer stopped: the statements run under READ COMMITTED, so a row inserted between them
+/// would get a second seed for a pair that already has a slot. M1 takes the lock first thing; M2
+/// must take it before the constant, because its ALTER only locks afterwards; the repair runs in
+/// one transaction with worker and api stopped.
 /// </para>
 /// <para>
 /// A pair whose rows already sit on a slot attaches its NULL rows there — after child 2 that is the
