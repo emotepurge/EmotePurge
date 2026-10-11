@@ -332,6 +332,69 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
         Assert.Empty(idsFirst.Intersect(idsSecond));
     }
 
+    // Regression (live round trip on a dev-DB copy, 120k rows, 4.3k pairs): the second Up after a
+    // Down ran into EF's 30-second command timeout. The fresh SlotId column has no statistics, so the
+    // planner guessed 0.5% of the rows for "SlotId IS NULL" and joined the seed's UPDATE to the
+    // INSERT's output through a nested loop with a join filter — quadratic in rows × pairs. The cost
+    // grows with that product, so fewer rows and more pairs than the dev database reproduce it with
+    // less data: on 32,000 rows and 8,000 pairs the old text timed out already on the first Up.
+    [Fact]
+    public async Task UpDownUp_WithThousandsOfPairs_StaysWithinTheCommandTimeout_AndKeepsPairSums()
+    {
+        var (databaseName, previous, current) = await CreateDatabaseAtPreviousMigrationAsync();
+        await using var db = fixture.CreateDbContext(databaseName);
+        await SeedThousandsOfPairsAsync(db);
+        var pairSumsBefore = await OneAsync(db, PairSumsDigestSql);
+
+        await MigrateAsync(db, current);
+        await MigrateAsync(db, previous);
+        await MigrateAsync(db, current);
+
+        Assert.Equal("0", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "UsageStats" WHERE "SlotId" IS NULL;"""));
+        Assert.Equal("8000", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "EmoteSlots";"""));
+        Assert.Equal(
+            "8000",
+            await OneAsync(db, """SELECT count(DISTINCT ("EmoteId", "EmoteSetId", "SlotId"))::text AS "Value" FROM "UsageStats";"""));
+        Assert.Equal(pairSumsBefore, await OneAsync(db, PairSumsDigestSql));
+        Assert.Equal("32000", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "UsageStats";"""));
+    }
+
+    // The state of M2's run and of the repair step: statistics taken after M1 say no row is NULL,
+    // then the unchanged writers add NULL rows — for existing pairs (the first statement's input) and
+    // for a new set (the second's). With "SlotId IS NULL" estimated at one row, the first statement
+    // re-ran its pair subquery for every NULL row (seen on the dev-DB copy); without the constant's own
+    // ANALYZE this case timed out.
+    [Fact]
+    public async Task SeedSql_WithThousandsOfPairs_AndStatisticsThatPredateTheNullRows_StaysWithinTheCommandTimeout()
+    {
+        var (databaseName, _, current) = await CreateDatabaseAtPreviousMigrationAsync();
+        await using var db = fixture.CreateDbContext(databaseName);
+        await SeedThousandsOfPairsAsync(db);
+        await MigrateAsync(db, current);
+        await Exec(db, """ANALYZE "UsageStats";""");
+        await Exec(
+            db,
+            """
+            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount")
+            SELECT 'e' || i, s.set_id, date '2026-09-01' + d, (i + d) % 9 + 1, 0, 0
+            FROM generate_series(1, 6000) i
+            JOIN (VALUES ('SETA', 1), ('SETB', 3), ('SETC', 2)) s(set_id, every) ON i % s.every = 0
+            CROSS JOIN generate_series(0, 3) d;
+            """);
+        var pairSumsBefore = await OneAsync(db, PairSumsDigestSql);
+
+        var attached = await db.Database.ExecuteSqlRawAsync(EmoteSlotSeedSql.AttachUnslottedUsageRowsSql);
+
+        // 8,000 old pairs and 3,000 SETC pairs, four new days each.
+        Assert.Equal(44000, attached);
+        Assert.Equal("0", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "UsageStats" WHERE "SlotId" IS NULL;"""));
+        Assert.Equal("11000", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "EmoteSlots";"""));
+        Assert.Equal(
+            "11000",
+            await OneAsync(db, """SELECT count(DISTINCT ("EmoteId", "EmoteSetId", "SlotId"))::text AS "Value" FROM "UsageStats";"""));
+        Assert.Equal(pairSumsBefore, await OneAsync(db, PairSumsDigestSql));
+    }
+
     [Fact]
     public async Task CollapseUsageStatsSql_SumsOntoTheOldestSlot_RestoresUniqueness_AndIsIdempotent()
     {
@@ -621,6 +684,16 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
         ) t;
         """;
 
+    // PairSumsSql as a digest, for the tests with thousands of pairs.
+    private const string PairSumsDigestSql =
+        """
+        SELECT md5(COALESCE(string_agg(t.line, ';' ORDER BY t.line), '')) AS "Value" FROM (
+            SELECT "EmoteId" || '|' || "EmoteSetId" || '|' || count(*) || '|' || sum("UseCount") || '|'
+                   || sum("BotUseCount") || '|' || sum("SharedChatUseCount") AS line
+            FROM "UsageStats" GROUP BY "EmoteId", "EmoteSetId"
+        ) t;
+        """;
+
     // The same without the row count: the collapse merges rows, it must not change the sums.
     private const string PairTotalsSql =
         """
@@ -687,6 +760,27 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
             VALUES ('c1', 'Ballot', 0, false, false, now(), now());
             INSERT INTO "VoteSessionEmotes" ("VoteSessionId", "EmoteId")
             SELECT "Id", 'ex' FROM "VoteSessions";
+            """);
+
+    // Written as the old images wrote it: 6,000 emotes (every tenth archived), each in set A and every
+    // third also in set B, four days each — 8,000 pairs, 32,000 rows. ANALYZE as on a live database,
+    // where the old columns have statistics and only the new one has none.
+    private static async Task SeedThousandsOfPairsAsync(AppDbContext db) =>
+        await Exec(
+            db,
+            """
+            INSERT INTO "Channels" ("Id", "TwitchChannelId", "ChannelName", "ActiveEmoteSetId", "IsBotActive", "CreatedAt", "TrackingResumedAt")
+            VALUES ('c1', '1', 'chan', 'SETA', true, now(), NULL);
+            INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "ArchivedAt", "FirstSeenAt", "LastSyncedAt")
+            SELECT 'e' || i, '7' || i, 'c1', 'Emote' || i, '', i % 10 = 0,
+                   CASE WHEN i % 10 = 0 THEN timestamptz '2026-09-01' END, NULL, now()
+            FROM generate_series(1, 6000) i;
+            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount", "Source")
+            SELECT 'e' || i, s.set_id, date '2026-08-01' + d, (i * 7 + d) % 50 + 1, d % 3, (i + d) % 2, 0
+            FROM generate_series(1, 6000) i
+            JOIN (VALUES ('SETA', 1), ('SETB', 3)) s(set_id, every) ON i % s.every = 0
+            CROSS JOIN generate_series(0, 3) d;
+            ANALYZE;
             """);
 
     private async Task<(string DatabaseName, string Previous, string Current)> CreateDatabaseAtPreviousMigrationAsync()
