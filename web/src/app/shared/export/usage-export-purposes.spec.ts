@@ -150,6 +150,19 @@ describe('buildUsageExportPurposeDownload — emote-list', () => {
     ]);
   });
 
+  it('keeps one emote-list entry for two slot cards of the same 7TV id (D25)', () => {
+    const rows = [
+      usageRow({ sevenTvEmoteId: '01ABC', emoteName: 'ome44', slotId: 'slot-ome' }),
+      usageRow({ sevenTvEmoteId: '01ABC', emoteName: 'hob44', slotId: 'slot-hob' }),
+    ];
+    const download = buildUsageExportPurposeDownload('emote-list', scope({ rows }));
+
+    const parsed = JSON.parse(download?.content ?? '{}');
+    expect(parsed.rows).toEqual([
+      { sevenTvEmoteId: '01ABC', name: 'ome44', imageUrl: 'https://cdn.7tv.app/x' },
+    ]);
+  });
+
   it('returns null — the unreachable case — when no set id was captured', () => {
     const download = buildUsageExportPurposeDownload('emote-list', scope({ emoteSetId: null }));
     expect(download).toBeNull();

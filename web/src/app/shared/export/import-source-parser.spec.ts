@@ -110,6 +110,28 @@ describe('parseImportSource', () => {
     expect(result.source.origin.kind === 'file' && result.source.origin.envelopeKind).toBe('usage');
   });
 
+  it('dedupes a usage file with two slot-card rows of one 7TV id to one entry, first row wins (D25)', () => {
+    const result = parseImportSource(
+      envelope({
+        kind: 'usage',
+        meta: { rowCount: 2, scope: 'visible' },
+        rows: [
+          { sevenTvEmoteId: '7tv-1', emoteName: 'ome44', slotId: 'slot-ome', totalUseCount: 30 },
+          { sevenTvEmoteId: '7tv-1', emoteName: 'hob44', slotId: 'slot-hob', totalUseCount: 12 },
+        ],
+      }),
+      'usage.json',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.source.rows).toEqual([
+      { sevenTvEmoteId: '7tv-1', name: 'ome44', imageUrl: null },
+    ]);
+    expect(result.source.duplicatesCollapsed).toBe(1);
+    expect(result.source.discardedRows).toBe(0);
+  });
+
   it('names a voting export instead of calling it "not importable"', () => {
     const result = parseImportSource(envelope({ kind: 'voting' }), 'vote.json');
     expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.votingExport' });
