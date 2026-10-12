@@ -84,7 +84,6 @@ teardown() {
   exit "$status"
 }
 EVALUATED=0
-trap teardown EXIT
 
 wait_for() {
   local what="$1" seconds="$2"
@@ -103,15 +102,25 @@ PG_PASSWORD="$(openssl rand -hex 16)"
 REDIS_PASSWORD="$(openssl rand -hex 16)"
 export POSTGRES_DB=emotepurge POSTGRES_USER=emotepurge POSTGRES_PASSWORD="$PG_PASSWORD"
 
+# The network is the mutex between runs under one PREFIX: refuse before the trap exists, so a second
+# run can never tear down the first one's containers. Stale containers left without a network
+# (a crashed earlier run) are removed here, so a new run heals them.
+if docker network inspect "$NETWORK" > /dev/null 2>&1; then
+  echo "network $NETWORK exists: PREFIX '$PREFIX' in use by another run? (remove it only if that run is gone)" >&2
+  exit 75
+fi
+docker rm -f -v "$API" "$PG" "$REDIS" > /dev/null 2>&1 || true
 docker network create "$NETWORK" > /dev/null
+trap teardown EXIT
 docker run -d --rm --name "$PG" --network "$NETWORK" -p "127.0.0.1:$PG_HOST_PORT:5432" \
   -e POSTGRES_DB -e POSTGRES_USER -e POSTGRES_PASSWORD \
   postgres:16-alpine -c shared_preload_libraries=pg_stat_statements > /dev/null
 docker run -d --rm --name "$REDIS" --network "$NETWORK" -e REDIS_PASSWORD redis:7.2-alpine \
   sh -c 'printf "requirepass %s\n" "$REDIS_PASSWORD" > /tmp/redis.conf && exec redis-server /tmp/redis.conf --maxmemory 256mb --maxmemory-policy allkeys-lru' > /dev/null
 wait_for "Postgres" 60 docker exec "$PG" pg_isready -U emotepurge -d emotepurge
-# pg_isready answers during the init restart too; a real query proves the final server is up.
-wait_for "Postgres queries" 60 docker exec "$PG" psql -U emotepurge -d emotepurge -Atc 'SELECT 1'
+# pg_isready and a socket query both succeed against the entrypoint's bootstrap server (socket only,
+# listen_addresses=''); a query over TCP only succeeds once the final server is up.
+wait_for "Postgres queries" 60 docker exec "$PG" sh -c 'PGPASSWORD=$POSTGRES_PASSWORD psql -h 127.0.0.1 -U emotepurge -d emotepurge -Atc "SELECT 1"'
 docker exec "$PG" psql -U emotepurge -d emotepurge -qc 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'
 
 echo "Migrating ..." >&2
