@@ -221,11 +221,11 @@ longer ranges (their source changes at most hourly). Each key is single-flight: 
 one range share the running rebuild instead of waiting for a turn. Across all ranges only one rebuild
 runs at a time (one `SemaphoreSlim` in the facade), because a cold `24h` read is the memory-heavy one
 and six ranges rebuilding together would stack that peak. A reader that cannot get the turn within 5 s
-starts no rebuild and receives `Busy`; a rebuild that holds the turn is cancelled after 30 s (on the injected
-`TimeProvider`), so a stalled read frees the gate and is not cached instead of holding it until the driver's
-command timeout; the route turns that into `503` with `Retry-After: 5` and no
-body, since neither the spec nor the error catalogue names a code for it and the client keeps its last
-answer. A failed or busy outcome is never cached, and the gate is released in every case. Every real
+starts no rebuild and receives `Busy`, and only that outcome becomes `503` with `Retry-After: 5` and no
+body; since neither the spec nor the error catalogue names a code for it and the client keeps its last
+answer. A rebuild that holds the turn is cancelled after 30 s (on the injected `TimeProvider`; the deadline
+bounds the whole streaming read, whereas Npgsql's 30-s command timeout applies per network wait): it answers
+`500 unexpected_error`, is not cached and frees the gate. A failed or busy outcome is never cached, and the gate is released in every case. Every real
 rebuild writes two Debug lines (`Load dashboard cold rebuild started/finished range=... ms=...`), cache
 hits and joined waiters write none, so a measuring script can reconstruct the rebuild intervals from the
 log alone.
@@ -243,7 +243,7 @@ eleven charts share one plot origin through `minPlotLeft` (`SHARED_PLOT_LEFT`) w
 capped at 40 % of the width. Small values stay readable: core axis labels follow the tick step, and
 per-minute workload is a `rate` unit with up to two decimals while hourly sums stay integers. The host
 RAM share (R-5) is derived on the client from the raw used/total pair of one bucket, raw ranges only. The
-bucket counts include the running bucket (61, 289, 169, 361, 361): the numbers in spec sections 5.2 and
+bucket counts include the running bucket (61, 289, 169, 361, 361; `13mo` has at most 398, about 396, depending on month lengths): the numbers in spec sections 5.2 and
 11 are one short by design.
 
 ### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)

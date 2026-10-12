@@ -59,8 +59,8 @@ interface RenderedSeries {
  */
 const FALLBACK_WIDTH = 640;
 const VIEW_HEIGHT = 176;
-/** One plot origin for charts stacked on one time axis: room for the widest usual y label ("1,60 Kerne"). */
-export const SHARED_PLOT_LEFT = 92;
+/** One plot origin for charts stacked on one time axis: room for the widest usual y label: "0,0015 Kerne" is 12 characters, about 89 px at 12 px x 0.62, plus gap and padding = 100. */
+export const SHARED_PLOT_LEFT = 100;
 const PLOT_LEFT = 60;
 const PLOT_RIGHT = 8;
 const PLOT_TOP = 8;
