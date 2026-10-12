@@ -27,6 +27,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
 
         // Usage must no longer influence the score — give the doomed emote plenty of it.
         db.UsageStats.Add(new UsageStat { EmoteId = doomed.Id, Date = DateOnly.FromDateTime(DateTime.UtcNow), UseCount = 100 });
+        await db.AssignUsageSlotsAsync();
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = doomed.Id, UserId = voterA.Id, Type = VoteType.Delete });
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = doomed.Id, UserId = voterB.Id, Type = VoteType.Delete });
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = contested.Id, UserId = voterA.Id, Type = VoteType.Keep });
@@ -56,6 +57,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var emote = await SeedEmoteAsync(db, channel.Id, "Emote");
         var session = await SeedActiveSessionAsync(db, channel.Id);
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = DateOnly.FromDateTime(DateTime.UtcNow), UseCount = 5 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
@@ -299,6 +301,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         db.UsageStats.Add(new UsageStat { EmoteId = member.Id, EmoteSetId = "main-set", Date = today, UseCount = 40 });
         db.UsageStats.Add(new UsageStat { EmoteId = member.Id, EmoteSetId = "halloween-2", Date = today, UseCount = 7 });
+        await db.AssignUsageSlotsAsync();
         var session = await SeedActiveSetSessionAsync(db, channel.Id, "halloween-2");
         await SeedSetBallotAsync(db, session.Id, member.Id, "TwoSets", member.ImageUrl);
         await db.SaveChangesAsync();
@@ -319,6 +322,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "old-set", Date = today, UseCount = 13 });
+        await db.AssignUsageSlotsAsync();
         var session = await SeedActiveSessionAsync(db, channel.Id);
         await SeedBallotAsync(db, session.Id, emote.Id);
         await db.SaveChangesAsync();
@@ -338,6 +342,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "set-a", Date = today, UseCount = 5 });
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "set-b", Date = today, UseCount = 8 });
+        await db.AssignUsageSlotsAsync();
         var session = await SeedActiveSessionAsync(db, channel.Id);
         await SeedBallotAsync(db, session.Id, emote.Id);
         await db.SaveChangesAsync();
@@ -356,6 +361,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "some-set", Date = today, UseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         var session = await SeedActiveSessionAsync(db, channel.Id);
         await SeedBallotAsync(db, session.Id, emote.Id);
         await db.SaveChangesAsync();
@@ -375,6 +381,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "set-x", Date = today, UseCount = 3 });
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = "set-y", Date = today.AddDays(-1), UseCount = 50 });
+        await db.AssignUsageSlotsAsync();
         var session = await SeedActiveSessionAsync(db, channel.Id);
         await SeedBallotAsync(db, session.Id, emote.Id);
         await db.SaveChangesAsync();
@@ -426,6 +433,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
             Date = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-30)),
             UseCount = 12,
         });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));

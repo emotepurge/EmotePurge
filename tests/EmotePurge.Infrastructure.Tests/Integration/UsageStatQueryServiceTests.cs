@@ -40,6 +40,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 1), UseCount = 5 },
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 2), UseCount = 7 },
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 10), UseCount = 100 }); // outside range
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -73,6 +74,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "totalstest3");
         var archived = await SeedEmoteAsync(db, channel.Id, "GoneEmote", isArchived: true);
         db.UsageStats.Add(new UsageStat { EmoteId = archived.Id, Date = new DateOnly(2026, 7, 1), UseCount = 42 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -115,6 +117,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "contexttest_lastused");
         var emote = await SeedEmoteAsync(db, channel.Id, "Faded");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 5, 4), UseCount = 900 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -140,6 +143,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 7), UseCount = 4 },     // last previous-window day
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 8), UseCount = 20 },    // first range day
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 14), UseCount = 5 });   // last range day
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -163,6 +167,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 1), UseCount = 5 },
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 15), UseCount = 0, BotUseCount = 3 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -180,6 +185,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "contexttest_botonly2");
         var emote = await SeedEmoteAsync(db, channel.Id, "OnlyBot");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 10), UseCount = 0, BotUseCount = 7 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -212,17 +218,20 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = sharedThenHuman.Id, Date = olderHumanDay, UseCount = 5 },
             new UsageStat { EmoteId = sharedThenHuman.Id, Date = youngerSharedDay, UseCount = 0, BotUseCount = 0, SharedChatUseCount = 3 });
+        await db.AssignUsageSlotsAsync();
 
         // A mixed row: only the own half of the day counts.
         var mixed = await SeedEmoteAsync(db, channel.Id, "MixedHumanAndShared");
         var mixedDay = new DateOnly(2026, 7, 12);
         db.UsageStats.Add(new UsageStat { EmoteId = mixed.Id, Date = mixedDay, UseCount = 2, SharedChatUseCount = 3 });
+        await db.AssignUsageSlotsAsync();
 
         // An emote with exclusively shared-only rows (no own usage, ever) counts as never used and
         // drops out of the channel series entirely, the same way a bot-only emote does.
         var sharedOnly = await SeedEmoteAsync(db, channel.Id, "ExclusivelySharedChat");
         db.UsageStats.Add(new UsageStat { EmoteId = sharedOnly.Id, Date = new DateOnly(2026, 7, 14), UseCount = 0, SharedChatUseCount = 4 });
 
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -271,6 +280,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = sharedThenHuman.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 1), UseCount = 5 },
             new UsageStat { EmoteId = sharedThenHuman.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 15), UseCount = 0, BotUseCount = 0, SharedChatUseCount = 3 },
             new UsageStat { EmoteId = mixed.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 12), UseCount = 2, SharedChatUseCount = 3 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -383,6 +393,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = onBallot.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 9 },
             new UsageStat { EmoteId = offBallot.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 99 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -450,6 +461,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 5), UseCount = 8 },
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 7), UseCount = 2 },   // last range day
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 8), UseCount = 60 }); // after range
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -474,6 +486,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 5, 1), UseCount = 1 },
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 8, 1), UseCount = 1 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -498,6 +511,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 1), UseCount = 3 },
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 5), UseCount = 0, BotUseCount = 9 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -519,6 +533,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 2), UseCount = 0, BotUseCount = 4 },
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 6), UseCount = 0, BotUseCount = 1 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -589,6 +604,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "dailytest6");
         var archived = await SeedEmoteAsync(db, channel.Id, "GoneButReal", isArchived: true);
         db.UsageStats.Add(new UsageStat { EmoteId = archived.Id, Date = new DateOnly(2026, 7, 2), UseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -619,6 +635,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 1), LiveMinutes = 5 },    // first range day
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 7), LiveMinutes = 300 },  // last range day
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 8), LiveMinutes = 60 });  // after range
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -674,6 +691,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = first.Id, Date = new DateOnly(2026, 7, 5), UseCount = 8 },   // offset 4
             new UsageStat { EmoteId = first.Id, Date = new DateOnly(2026, 7, 8), UseCount = 99 },  // after range
             new UsageStat { EmoteId = second.Id, Date = new DateOnly(2026, 7, 7), UseCount = 2 }); // offset 6
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -704,6 +722,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = used.Id, Date = new DateOnly(2026, 7, 3), UseCount = 1 },
             new UsageStat { EmoteId = outOfRange.Id, Date = new DateOnly(2026, 8, 3), UseCount = 500 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -723,6 +742,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = human.Id, Date = new DateOnly(2026, 7, 3), UseCount = 2 },
             new UsageStat { EmoteId = botOnly.Id, Date = new DateOnly(2026, 7, 4), UseCount = 0, BotUseCount = 5 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -741,6 +761,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 2), UseCount = 4 },                    // offset 1
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 5), UseCount = 0, BotUseCount = 8 });  // offset 4, bot-only
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -762,6 +783,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = archived.Id, Date = new DateOnly(2026, 7, 2), UseCount = 4 },
             new UsageStat { EmoteId = foreign.Id, Date = new DateOnly(2026, 7, 2), UseCount = 7 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -791,6 +813,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 7), LiveMinutes = 300 },  // offset 6
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 8), LiveMinutes = 60 },   // after
             new ChannelLiveDay { ChannelId = other.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -840,6 +863,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emoteOne.Id, Date = new DateOnly(2026, 8, 1), UseCount = 10 },
             new UsageStat { EmoteId = emoteTwo.Id, Date = new DateOnly(2026, 8, 15), UseCount = 3, BotUseCount = 2 },
             new UsageStat { EmoteId = emoteOne.Id, Date = new DateOnly(2026, 8, 20), UseCount = 1, BotUseCount = 1 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -855,6 +879,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "bottest2");
         var emote = await SeedEmoteAsync(db, channel.Id, "One");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 8, 1), UseCount = 10, BotUseCount = 0 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -872,6 +897,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "bottest3");
         var archived = await SeedEmoteAsync(db, channel.Id, "GoneEmote", isArchived: true);
         db.UsageStats.Add(new UsageStat { EmoteId = archived.Id, Date = new DateOnly(2026, 8, 5), UseCount = 0, BotUseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -888,6 +914,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var otherChannel = await SeedChannelAsync(db, "bottest4_other");
         var otherEmote = await SeedEmoteAsync(db, otherChannel.Id, "Foreign");
         db.UsageStats.Add(new UsageStat { EmoteId = otherEmote.Id, Date = new DateOnly(2026, 8, 1), UseCount = 0, BotUseCount = 9 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -910,6 +937,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             // The normal case this query has to find: no own usage at all on that day, only mirrored.
             new UsageStat { EmoteId = emoteTwo.Id, Date = new DateOnly(2026, 8, 15), UseCount = 0, BotUseCount = 0, SharedChatUseCount = 2 },
             new UsageStat { EmoteId = emoteOne.Id, Date = new DateOnly(2026, 8, 20), UseCount = 1, SharedChatUseCount = 1 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -927,6 +955,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "sharedtest2");
         var emote = await SeedEmoteAsync(db, channel.Id, "One");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 8, 1), UseCount = 10, BotUseCount = 4, SharedChatUseCount = 0 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -944,6 +973,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "sharedtest3");
         var archived = await SeedEmoteAsync(db, channel.Id, "GoneEmote", isArchived: true);
         db.UsageStats.Add(new UsageStat { EmoteId = archived.Id, Date = new DateOnly(2026, 8, 5), UseCount = 0, SharedChatUseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -960,6 +990,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var otherChannel = await SeedChannelAsync(db, "sharedtest4_other");
         var otherEmote = await SeedEmoteAsync(db, otherChannel.Id, "Foreign");
         db.UsageStats.Add(new UsageStat { EmoteId = otherEmote.Id, Date = new DateOnly(2026, 8, 1), UseCount = 0, SharedChatUseCount = 9 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1057,6 +1088,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 7), UseCount = 5 },      // last range day
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 8), UseCount = 9 },      // after range
             new UsageStat { EmoteId = notRequested.Id, Date = new DateOnly(2026, 7, 2), UseCount = 100 }); // not on the id list
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1078,6 +1110,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "rowstest2");
         var emote = await SeedEmoteAsync(db, channel.Id, "BotOnly");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 3), UseCount = 0, BotUseCount = 3 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1098,6 +1131,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "rowstest-sharedonly");
         var emote = await SeedEmoteAsync(db, channel.Id, "SharedOnly");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 3), UseCount = 0, BotUseCount = 0, SharedChatUseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1132,6 +1166,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 2), UseCount = 1 },  // day before
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 3), UseCount = 4 },  // the window
             new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 7, 4), UseCount = 1 }); // day after
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1154,6 +1189,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = first.Id, Date = new DateOnly(2026, 7, 3), UseCount = 1 },
             new UsageStat { EmoteId = first.Id, Date = new DateOnly(2026, 7, 1), UseCount = 1 },
             new UsageStat { EmoteId = second.Id, Date = new DateOnly(2026, 7, 2), UseCount = 1 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1187,6 +1223,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1211,6 +1248,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1233,6 +1271,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1258,6 +1297,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1284,6 +1324,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 2), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 4), LiveMinutes = 60 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(channel.ChannelName, from, new DateOnly(2026, 7, 7));
@@ -1301,6 +1342,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "livecounts_nolive", ActiveSetId);
         var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 3 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(
@@ -1325,6 +1367,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.ChannelLiveDays.AddRange(
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
         var service = new UsageStatQueryService(db);
         var from = new DateOnly(2026, 7, 1);
@@ -1354,6 +1397,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.ChannelLiveDays.AddRange(
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 2), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
         var from = new DateOnly(2026, 7, 1);
         var to = new DateOnly(2026, 7, 7);
@@ -1386,6 +1430,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 1 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 6), UseCount = 1 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 8, 1), UseCount = 1 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
         var service = new UsageStatQueryService(db);
 
@@ -1412,6 +1457,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 6, 20), UseCount = 1 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 2), UseCount = 1 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 1 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
         var service = new UsageStatQueryService(db);
         var from = new DateOnly(2026, 7, 1);
@@ -1445,6 +1491,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.ChannelLiveDays.AddRange(
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(
@@ -1475,6 +1522,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 2), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 4), LiveMinutes = 60 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
         var service = new UsageStatQueryService(db);
         var from = new DateOnly(2026, 7, 1);
@@ -1504,6 +1552,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.ChannelLiveDays.AddRange(
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var daily = await new UsageStatQueryService(db).GetDailySeriesAsync(
@@ -1529,6 +1578,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 4), LiveMinutes = 60 },
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var daily = await new UsageStatQueryService(db).GetDailySeriesAsync(
@@ -1547,6 +1597,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 9 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 2 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1566,6 +1617,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 9 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 2 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 6, 3), UseCount = 100 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1582,6 +1634,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "allsets_zero", ActiveSetId);
         var emote = await SeedEmoteAsync(db, channel.Id, "Stare");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 6, 3), UseCount = 5 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1619,6 +1672,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 6 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 7 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1648,6 +1702,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, EmoteSetId = PreviousSetId, Date = switchDay, UseCount = 4, BotUseCount = 1, SharedChatUseCount = 2 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = switchDay, UseCount = 3, BotUseCount = 0, SharedChatUseCount = 5 },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 4), UseCount = 6 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1679,6 +1734,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = stillHere.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 2), UseCount = 3 },
             new UsageStat { EmoteId = goneFrom7Tv.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 4), UseCount = 5 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1710,6 +1766,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = predecessor.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 11 },
             new UsageStat { EmoteId = predecessor.Id, EmoteSetId = OlderSetId, Date = new DateOnly(2026, 6, 3), UseCount = 2 },
             new UsageStat { EmoteId = unrelated.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1732,6 +1789,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var twin = await SeedEmoteAsync(db, channel.Id, "Stare");
         db.UsageStats.Add(
             new UsageStat { EmoteId = twin.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 11 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1756,6 +1814,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.UsageStats.AddRange(
             new UsageStat { EmoteId = archivedWithHistory.Id, EmoteSetId = PreviousSetId, Date = new DateOnly(2026, 7, 3), UseCount = 6 },
             new UsageStat { EmoteId = currentWithoutHistory.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 3), UseCount = 8 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1800,6 +1859,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
                 Source = UsageStatSource.ChatLogArchive
             },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = live, UseCount = 3 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);
@@ -1851,6 +1911,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
                 Source = UsageStatSource.ChatLogArchive
             },
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = liveDay, UseCount = 1, BotUseCount = 2, SharedChatUseCount = 3 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var service = new UsageStatQueryService(db);

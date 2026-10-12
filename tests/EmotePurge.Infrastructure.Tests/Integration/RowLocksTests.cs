@@ -93,8 +93,15 @@ public class RowLocksTests(PostgresFixture fixture)
         await using var lockTransaction = await locker.Database.BeginTransactionAsync();
         await locker.LockEmotesByIdsAsync([emotes[0]], CancellationToken.None);
 
+        // The slot comes from its own context: the probes below must hold only the lock under test.
+        string slotId;
+        await using (var slotDb = fixture.CreateDbContext())
+        {
+            slotId = await slotDb.SeedUsageSlotAsync(emotes[0]);
+        }
+
         await using var writer = fixture.CreateTaggedDbContext("rowlocks-keyshare-writer");
-        writer.UsageStats.Add(new UsageStat { EmoteId = emotes[0], EmoteSetId = "SETKS", Date = new DateOnly(2026, 10, 1), UseCount = 3 });
+        writer.UsageStats.Add(new UsageStat { EmoteId = emotes[0], SlotId = slotId, EmoteSetId = "SETKS", Date = new DateOnly(2026, 10, 1), UseCount = 3 });
         await writer.SaveChangesAsync().WaitAsync(TimeSpan.FromSeconds(10));
         await lockTransaction.RollbackAsync();
 
@@ -105,7 +112,7 @@ public class RowLocksTests(PostgresFixture fixture)
         await strong.Database.ExecuteSqlRawAsync($"""SELECT 1 FROM "Emotes" WHERE "Id" = '{emotes[0]}' FOR UPDATE""");
 #pragma warning restore EF1002
         await using var blocked = fixture.CreateTaggedDbContext("rowlocks-keyshare-blocked");
-        blocked.UsageStats.Add(new UsageStat { EmoteId = emotes[0], EmoteSetId = "SETKS", Date = new DateOnly(2026, 10, 2), UseCount = 1 });
+        blocked.UsageStats.Add(new UsageStat { EmoteId = emotes[0], SlotId = slotId, EmoteSetId = "SETKS", Date = new DateOnly(2026, 10, 2), UseCount = 1 });
         var insert = blocked.SaveChangesAsync();
         await fixture.WaitUntilBlockedOnLockAsync("rowlocks-keyshare-blocked", insert);
         await strongTransaction.RollbackAsync();

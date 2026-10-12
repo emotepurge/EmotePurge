@@ -46,6 +46,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
             ObservedFromUtc = DateTime.UtcNow.AddDays(-3),
         });
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = Today, UseCount = 7, EmoteSetId = OldSetId });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var tracker = new EmptySetConfirmationTracker(new EmptySetConfirmationOptions { EmptySetConfirmations = confirmations }, _clock);

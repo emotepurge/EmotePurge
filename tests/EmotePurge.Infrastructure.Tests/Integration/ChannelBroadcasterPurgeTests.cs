@@ -586,6 +586,7 @@ public class ChannelBroadcasterPurgeTests(PostgresFixture fixture)
         });
         var tag = new EmoteTag { ChannelId = channel.Id, Name = "Funny", NormalizedName = "funny", CreatedAtUtc = DateTime.UtcNow };
         db.EmoteTags.Add(tag);
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         db.VoteSessionEmotes.Add(new VoteSessionEmote { VoteSessionId = session.Id, EmoteId = emote.Id });

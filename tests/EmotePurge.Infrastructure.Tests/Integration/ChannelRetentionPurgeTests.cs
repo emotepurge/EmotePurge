@@ -480,6 +480,7 @@ public class ChannelRetentionPurgeTests(PostgresFixture fixture)
         db.ChannelLiveDays.Add(new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 1, 15), LiveMinutes = 60 });
         var session = new VoteSession { ChannelId = channel.Id, Title = "Retention", IsActive = false, EndedAt = DateTime.UtcNow.AddDays(-200) };
         db.VoteSessions.Add(session);
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         db.VoteSessionEmotes.Add(new VoteSessionEmote { VoteSessionId = session.Id, EmoteId = emote.Id });

@@ -777,6 +777,7 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
             db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2025, 1, day), UseCount = day });
         }
 
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
         return emote.Id;
     }

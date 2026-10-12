@@ -3,6 +3,7 @@ using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
+using EmotePurge.Infrastructure.Tests.Fixtures;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -41,6 +42,7 @@ public partial class ChatLogBackfillServiceTests
                 Imported(e2, SetC, new DateOnly(2026, 6, 12), 5),           // next block: kept
                 Imported(foreignEmote, SetC, new DateOnly(2026, 6, 4), 7),  // another channel: kept
                 new UsageStat { EmoteId = e1.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 11 }); // live
+            await db.AssignUsageSlotsAsync();
             await db.SaveChangesAsync();
         }
 
@@ -137,6 +139,7 @@ public partial class ChatLogBackfillServiceTests
         await using (var db = CreateDbContext())
         {
             db.UsageStats.Add(Imported(e1, SetC, new DateOnly(2026, 6, 2), 9));
+            await db.AssignUsageSlotsAsync();
             await db.SaveChangesAsync();
         }
 
@@ -165,6 +168,7 @@ public partial class ChatLogBackfillServiceTests
             db.UsageStats.AddRange(
                 new UsageStat { EmoteId = e1.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 3), UseCount = 1 },
                 Imported(e1, SetC, new DateOnly(2026, 6, 2), 9));
+            await db.AssignUsageSlotsAsync();
             await db.SaveChangesAsync();
         }
 
