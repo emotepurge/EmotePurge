@@ -13,8 +13,9 @@ using static EmotePurge.Infrastructure.Tests.Integration.SlotSyncKit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
-// Emote slots plan 376, child 6 (section 4, 5.5): the set-centric reports with entries and the
-// arbitration on B3 (the origin of an entry is the channel its slot id belongs to). The flag is on unless a case says otherwise; every
+// Emote slots plan 376, child 6 (section 4, 5.5): the set-centric reports with entries, the B1 slot
+// archive of a report without entries and the arbitration on B3 (the origin of an
+// entry is the channel its slot id belongs to). The flag is on unless a case says otherwise; every
 // case runs its report, sync and reads on fresh contexts, like the api and the worker do. Set and
 // emote ids are alphanumeric and unique per case: the observation upsert drops anything else, and a
 // report hits every channel of the shared database that has its set active.
@@ -214,7 +215,79 @@ public partial class EmoteServiceTests
         await AssertResumedOnTheSameSlotAsync(channel, set, x, s1.Id, expectedUses: 2);
     }
 
-    // ---------------------------------------------------------------- R3 a: the flag off
+    // ---------------------------------------------------------------- B1: ids without an entry
+
+    // B1: a report without entries archives the active own slots with the emote, so a quick legacy
+    // undo followed by REST [A(t9)] — with no REST run in between that missed the emote — resumes the
+    // same slot per D7 instead of creating S2 and hiding S1's history. With the flag off the report
+    // writes no slot (plan 372 2.0).
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task WithoutEntries_B1_DeleteArchivesTheActiveSlots_SoAnUndoAndRestResumeTheSameSlot(bool on)
+    {
+        var set = NewSet();
+        var x = NewSevenTvId();
+        var channel = await SeedOnAsync($"slotrpt_b1{(on ? "on" : "off")}", set);
+        var s1 = await SeedSingleSlotEmoteAsync(channel, x, "aaa", T1, usage: [3, 4]);
+        var seed = await SeedSeedOfAsync(channel, x);
+        string seedBefore;
+        await using (var check = fixture.CreateDbContext())
+        {
+            seedBefore = Columns(await SlotAsync(check, seed.Id));
+        }
+
+        var deleted = await DeleteAsync(set, [x], entries: null, on: on);
+
+        Assert.Equal((1, 1), (Assert.Single(deleted.Channels).Count, Assert.Single(deleted.Channels).NewlyChangedCount));
+        await using (var check = fixture.CreateDbContext())
+        {
+            Assert.True((await EmoteAsync(check, channel, x)).IsArchived);
+            var slot = await SlotAsync(check, s1.Id);
+            Assert.Equal(on, slot.IsArchived);
+            Assert.Equal(on, slot.ArchivedAt is not null);
+            // E7: an unsettled seed stays as it is.
+            Assert.Equal(seedBefore, Columns(await SlotAsync(check, seed.Id)));
+            Assert.Equal(1, await LeaveRowsAsync(check, channel, set));
+        }
+
+        if (!on)
+        {
+            return;
+        }
+
+        await RestoreAsync(set, [x], entries: null);
+        await using (var check = fixture.CreateDbContext())
+        {
+            Assert.False((await EmoteAsync(check, channel, x)).IsArchived);
+            Assert.True((await SlotAsync(check, s1.Id)).IsArchived);
+        }
+
+        await SyncOnSetAsync(channel, set, Live(x, "aaa", T9));
+        await AssertResumedOnTheSameSlotAsync(channel, set, x, s1.Id, expectedUses: 7);
+    }
+
+    // R3 b: one report may carry both. An id with an entry but no slot id is skipped — no fall-back to
+    // the emote level — while an id without an entry runs the id-level semantics plus B1.
+    [Fact]
+    public async Task Entries_MixedReport_AnEntryWithoutSlotIdIsSkipped_AnIdWithoutEntryRunsTheIdLevelPath()
+    {
+        var set = NewSet();
+        var x = NewSevenTvId();
+        var y = NewSevenTvId();
+        var (channel, xRow, _, _) = await SeedTwoSlotEmoteAsync("slotrpt_mixed", set, x);
+        var ySlot = await SeedSingleSlotEmoteAsync(channel, y, "yyy", T1);
+
+        var result = await DeleteAsync(set, [x, y], [Entry(x, "hob44", slotId: null, addedAt: null)]);
+
+        Assert.Equal((2, 1), (Assert.Single(result.Channels).Count, Assert.Single(result.Channels).NewlyChangedCount));
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await EmoteAsync(verify, channel, x)).IsArchived);
+        Assert.All(await SlotsAsync(verify, xRow.Id), s => Assert.False(s.IsArchived));
+        Assert.True((await EmoteAsync(verify, channel, y)).IsArchived);
+        Assert.True((await SlotAsync(verify, ySlot.Id)).IsArchived);
+        Assert.Equal([y], (await LeaveRowListAsync(verify, channel, set)).Select(o => o.SevenTvEmoteId));
+    }
 
     // R3 a: with the flag off, entries are ignored — the report runs at the emote level and writes no
     // slot, and its audit entry is the one from before (no entryCount).

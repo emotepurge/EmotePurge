@@ -108,7 +108,7 @@ public interface IEmoteService
     // to when that channel is a hit (generation checked against AddedAt, stale = no-op), the slot with
     // the same authoritative date (and, on a tie, the alias) in every other hit channel; the emote row
     // is archived with a leave only when its last active slot goes. An id without an entry keeps the
-    // id-level semantics above. An entry whose SlotId belongs to another 7TV emote refuses the whole report before any
+    // id-level semantics above and in addition archives the emote's active own slots (B1). An entry whose SlotId belongs to another 7TV emote refuses the whole report before any
     // write (Rejection set). expectedChannelName only decides UnresolvedChannel and the paper entry,
     // never which slot an entry means.
     Task<SyncDeletedInSetResultDto> MarkDeletedInSetAsync(

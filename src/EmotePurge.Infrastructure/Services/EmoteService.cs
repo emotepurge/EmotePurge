@@ -662,11 +662,16 @@ public class EmoteService(
         return locked.ToHashSet(StringComparer.Ordinal);
     }
 
-    // An id without an entry: the id-level semantics of the flag-off path — a delete archives the emote
-    // row and is a leave for every found row, a restore un-archives the emote row only.
+    // An id without an entry (plan 376 4.2a): the id-level semantics of the flag-off path — a delete
+    // archives the emote row and is a leave for every found row, a restore un-archives the emote row
+    // only — plus B1: a delete also archives every active own slot of the emote in the same
+    // transaction, under the emote lock (unsettled seeds stay as they are, E7). Otherwise a quick undo
+    // leaves S1(A, t1) active and authoritative, the next REST with A(t9) creates S2 and archives S1,
+    // and the history drops out of the active view; archived, S1 is what D7 resumes on t9.
     private static EmoteApplication ApplyWithoutEntry(Emote emote, bool archive, DateTime now)
     {
         var emoteChanged = false;
+        var slotChanged = false;
         if (emote.IsArchived != archive)
         {
             if (archive)
@@ -681,7 +686,16 @@ public class EmoteService(
             emoteChanged = true;
         }
 
-        return new EmoteApplication(emoteChanged, ResolvedEntries: 0, Leave: archive);
+        if (archive)
+        {
+            foreach (var slot in emote.Slots.Where(IsActiveOwnSlot))
+            {
+                ArchiveSlot(slot, now);
+                slotChanged = true;
+            }
+        }
+
+        return new EmoteApplication(emoteChanged || slotChanged, ResolvedEntries: 0, Leave: archive);
     }
 
     // An id with entries in one hit channel (plan 376 4.2). Entries without a slot id are skipped
