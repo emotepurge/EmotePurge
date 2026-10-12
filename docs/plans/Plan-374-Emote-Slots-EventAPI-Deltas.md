@@ -285,6 +285,12 @@ Emote aktiv, keine Leave, D13 leitet neu ab (AK 19). Mehrere Pulls einer Id (E6)
 `mixed-change-kinds` (E6). Information-Level:
 im Einschaltfenster von #379 (Seeds vor dem ersten Tick) sind solche Zeilen erwartbar.
 
+**Nachtrag (Orchestrator 12.10., aus T2):** `duplicate-active-name` — ein gepushter oder benannt gezogener Name, den im Ausgangsstand
+**zwei oder mehr** aktive eigene Slots tragen, ist mehrdeutig, statt deterministisch einen davon zu archivieren: der Zustand widerspricht
+7TVs Eindeutigkeit der Aliase je Set, ist also veraltet oder inkonsistent, und REST entscheidet (Prinzip wie R1, R4, E12). Umbenennung und
+namenloser Pull treffen ihn bereits über `rename-with-siblings` bzw. `nameless-pull-with-siblings`; geprüft wird vor R1, damit der Code
+nicht von der Draht-Reihenfolge abhängt.
+
 ## 5. Grenzfälle
 
 | Fall | Verhalten | Nachweis |
