@@ -675,7 +675,9 @@
         "trendUnavailable": "Trend currently unavailable — the counter store could not be read.",
         "trend": {
           "title": "Rejections per minute, last 24 hours",
-          "noProviderRejections": "No provider answered with HTTP 429 in the last 24 hours."
+          "noProviderRejections": "No provider answered with HTTP 429 in the last 24 hours.",
+          "titleBucketed": "Rejections per {{ minutes }} min, last 24 hours, on the load axis",
+          "hiddenForRange": "Rejection time series hidden: it follows the load range only up to 24 hours. The summary above stays."
         },
         "help": {
           "share": "The share is a policy's rate of rejected decisions across all partitions – not the fill level of a single bucket. No rejection does not mean nobody was close to the limit."
@@ -683,6 +685,97 @@
         "details": {
           "open": "Details",
           "title": "Rate-limit details"
+        }
+      },
+      "load": {
+        "title": "Load and work",
+        "dataThrough": "Data through {{ at }}",
+        "stale": "The latest read failed, so these values are out of date. Last successful answer: {{ at }}.",
+        "shownRange": "Still showing: {{ range }}",
+        "range": {
+          "label": "Load range",
+          "1h": "1 hour",
+          "24h": "24 hours",
+          "7d": "7 days",
+          "30d": "30 days",
+          "90d": "90 days",
+          "13mo": "13 months"
+        },
+        "stat": {
+          "raw": "P95",
+          "hourly": "highest hourly P95"
+        },
+        "series": {
+          "p95": {
+            "raw": "P95",
+            "hourly": "Highest hourly P95"
+          },
+          "max": {
+            "raw": "Maximum",
+            "hourly": "Highest hourly maximum"
+          },
+          "api": "Api",
+          "worker": "Worker",
+          "activeChannels": "Active channels",
+          "liveChannels": "Live channels",
+          "chatLines": "Chat lines",
+          "emoteMatches": "Emote matches"
+        },
+        "source": {
+          "api": "Api",
+          "worker": "Worker"
+        },
+        "charts": {
+          "hostCpu": "Host CPU busy ({{ stat }})",
+          "hostMemory": "Host RAM in use ({{ stat }})",
+          "hostLoad": "Host load average, 1 minute ({{ stat }})",
+          "processCpu": "Process CPU, Api and Worker ({{ stat }})",
+          "cgroupCpu": "Container CPU (cgroup), Api and Worker ({{ stat }})",
+          "cgroupCpuShare": "Container CPU as share of its quota ({{ stat }})",
+          "cgroupMemory": "Container memory (cgroup), {{ source }} ({{ stat }})",
+          "channels": "Channels: active and live (highest value)",
+          "chatLines": {
+            "perMinute": "Chat lines per minute",
+            "perBucket": "Chat lines: stored interval counters per {{ hours }} h"
+          },
+          "emoteMatches": {
+            "perMinute": "Emote matches per minute",
+            "perBucket": "Emote matches: stored interval counters per {{ hours }} h"
+          }
+        },
+        "note": {
+          "memoryTotal": "Total host RAM, last measured: {{ total }}",
+          "memoryTotalNone": "Total host RAM: not available",
+          "memoryShareHost": "Share of total RAM at the latest value: {{ percent }}",
+          "memoryLimit": "{{ limit }} memory limit, last measured",
+          "memoryLimitNone": "No finite memory limit measured; the share is not shown.",
+          "memoryShare": "Share of the limit at the latest value: {{ percent }}",
+          "cpuQuota": "{{ source }}: CPU quota {{ cores }}",
+          "cpuQuotaNone": "{{ source }}: no finite CPU quota known",
+          "quotaShareHourly": "No quota share in hourly values: the table keeps only the last limit of an hour. Last known limit:"
+        },
+        "detail": {
+          "sources": "sources: {{ list }}",
+          "valueFrom": "value from {{ source }}",
+          "samples": "samples: {{ list }}",
+          "means": "means: {{ list }}",
+          "intervalSeconds": "{{ seconds }} s of intervals",
+          "hoursWithData": "{{ hours }} hours with data"
+        },
+        "empty": {
+          "waitingTitle": "Waiting for the first samples",
+          "waitingDescription": "Waiting for the first successful samples and the hourly rollup.",
+          "rangeTitle": "No samples in this range",
+          "sinceTitle": "No samples in this range",
+          "sinceDescription": "There are no samples for {{ range }}; hourly values exist from {{ since }}."
+        },
+        "coverage": {
+          "hours": "This range holds only {{ count }} hours so far, from {{ since }}.",
+          "days": "This range holds only {{ count }} days so far, from {{ since }}."
+        },
+        "help": {
+          "sharedHost": "Api and Worker measure the same host. Host curves combine both; the reading line names the contributing sources and the one the shown value comes from.",
+          "hourly": "Hourly ranges show stored hourly statistics: per bucket the highest hourly P95 and maximum, not a recomputed percentile. Container values come without a quota share; workload shows summed interval counters, not rates."
         }
       }
     }

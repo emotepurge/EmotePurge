@@ -10,6 +10,7 @@ import {
   AdminRoster,
   AdminUser,
   AdminDashboardActivity,
+  AdminDashboardLoad,
   RateLimitTelemetrySnapshot,
   RateLimitTelemetryTrend,
 } from './admin.model';
@@ -626,6 +627,33 @@ describe('AdminService', () => {
 
     expect(result?.days[0].liveChannels).toBeNull();
     expect(result?.todayIsPartial).toBe(true);
+  });
+
+  it('getDashboardLoad GETs /api/admin/dashboard/load with the range as query', () => {
+    let result: AdminDashboardLoad | undefined;
+    service.getDashboardLoad('7d').subscribe((r) => (result = r));
+
+    const req = httpMock.expectOne((r) => r.url === '/api/admin/dashboard/load');
+    expect(req.request.method).toBe('GET');
+    expect(req.request.params.get('range')).toBe('7d');
+    req.flush({ available: false, range: '7d', bucketStartsUtc: [] });
+
+    expect(result?.available).toBe(false);
+  });
+
+  it('getDashboardLoad passes a busy 503 on as an error so callers keep their last answer', () => {
+    let status: number | undefined;
+    service.getDashboardLoad('24h').subscribe({ error: (e) => (status = e.status) });
+
+    httpMock
+      .expectOne((r) => r.url === '/api/admin/dashboard/load')
+      .flush(null, {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Retry-After': '5' },
+      });
+
+    expect(status).toBe(503);
   });
 
   it('getRateLimitTrend GETs /api/admin/rate-limits/trend and passes a degraded answer through', () => {

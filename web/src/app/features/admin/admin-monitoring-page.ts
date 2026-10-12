@@ -22,6 +22,7 @@ import { liveEvents } from '../../core/live/live-reload';
 import { pollWhileVisible } from '../../core/live/poll-while-visible';
 import { pageVisible } from '../../core/page-visibility/page-visibility';
 import { LiveStatus, LiveUpdateService } from '../../core/live/live-update.service';
+import { sumMinutesIntoBuckets } from '../../shared/charts/chart-series';
 import { LineChart, LineChartSeries } from '../../shared/charts/line-chart';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
@@ -31,6 +32,7 @@ import { SkeletonSections } from '../../shared/ui/skeleton-sections';
 import { StatusBadge } from '../../shared/ui/status-badge';
 import { UtilizationTone, utilizationTone } from '../../shared/ui/utilization-tone';
 import { AdminActivitySection } from './admin-activity-section';
+import { AdminLoadSection, TrendAxis } from './admin-load-section';
 import { openRateLimitDetailsDialog } from './admin-rate-limit-details-dialog';
 import { policyExceptions, providerExceptions, trendSeriesSpecs } from './admin-rate-limit-view';
 import { AdminRosterCard } from './admin-roster-card';
@@ -83,6 +85,7 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
   selector: 'app-admin-monitoring-page',
   imports: [
     AdminActivitySection,
+    AdminLoadSection,
     AdminRosterCard,
     Button,
     EmptyState,
@@ -119,6 +122,9 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
           </button>
         </div>
       </header>
+
+      <!-- Load and work first (spec section 10): it owns its own range, probe and polling. -->
+      <app-admin-load-section />
 
       <app-admin-activity-section
         [errorKey]="activityErrorMessage()"
@@ -275,16 +281,20 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
           }
           <!-- The newest bucket is the running minute by construction (RateLimitTelemetryStore). -->
           @if (trend(); as trendData) {
-            @if (trendSeries().length) {
+            @if (trendAxis().kind === 'hidden') {
+              <p class="text-xs text-fg-muted" data-testid="admin-trend-hidden">
+                {{ 'admin.dashboard.rateLimits.trend.hiddenForRange' | transloco }}
+              </p>
+            } @else if (trendSeries().length) {
               <div class="flex flex-col gap-2">
                 <app-line-chart
                   [series]="trendSeries()"
-                  [xStartsUtc]="trendData.minuteStartsUtc"
-                  [bucketSeconds]="60"
+                  [xStartsUtc]="trendXStarts()"
+                  [bucketSeconds]="trendBucketSeconds()"
                   legendStat="sum"
                   unit="count"
                   [partialLastBucket]="true"
-                  [title]="'admin.dashboard.rateLimits.trend.title' | transloco"
+                  [title]="trendTitleKey() | transloco: trendTitleParams()"
                 />
                 @if (trendSeries().length === 1) {
                   <p class="text-xs text-fg-muted">
@@ -509,6 +519,7 @@ export class AdminMonitoringPage {
   // card an admin comes here for (which channels is the worker actually in?) reachable by nothing
   // but the 60 s worker.roster push.
   private readonly rosterCard = viewChild(AdminRosterCard);
+  private readonly loadSection = viewChild(AdminLoadSection);
 
   // No defaultValue: "no snapshot yet" and "an all-zero snapshot" must not look alike, so the
   // template branches on undefined instead of rendering a fabricated empty one.
@@ -644,6 +655,31 @@ export class AdminMonitoringPage {
   protected readonly policyRows = computed(() => policyExceptions(this.rateLimits()));
   protected readonly providerRows = computed(() => providerExceptions(this.rateLimits()));
 
+  /** The load section's axis: the trend shares it up to 24 h, has its own minutes otherwise or hides. */
+  protected readonly trendAxis = computed<TrendAxis>(
+    () => this.loadSection()?.trendAxis() ?? { kind: 'own' },
+  );
+
+  protected readonly trendXStarts = computed(() => {
+    const axis = this.trendAxis();
+    return axis.kind === 'load' ? axis.startsUtc : (this.trend()?.minuteStartsUtc ?? []);
+  });
+
+  protected readonly trendBucketSeconds = computed(() => {
+    const axis = this.trendAxis();
+    return axis.kind === 'load' ? axis.bucketSeconds : 60;
+  });
+
+  protected readonly trendTitleKey = computed(() =>
+    this.trendAxis().kind === 'load'
+      ? 'admin.dashboard.rateLimits.trend.titleBucketed'
+      : 'admin.dashboard.rateLimits.trend.title',
+  );
+
+  protected readonly trendTitleParams = computed(() => ({
+    minutes: this.trendBucketSeconds() / 60,
+  }));
+
   /**
    * Local rejections plus one series per rejecting provider dimension. All are real rejections, so
    * all carry the danger tone; the dash pattern and the legend tell them apart.
@@ -651,12 +687,19 @@ export class AdminMonitoringPage {
   protected readonly trendSeries = computed<LineChartSeries[]>(() => {
     // Re-evaluates on a language switch: the provider names are translated here, not in the chart.
     this.languageService.lang();
-    return trendSeriesSpecs(this.trend()).map((spec) =>
+    const axis = this.trendAxis();
+    const trend = this.trend();
+    // On the load axis the minute counts are summed into the load buckets, so both share one x axis.
+    const valuesOf = (minutes: number[]): (number | null)[] =>
+      axis.kind === 'load' && trend
+        ? sumMinutesIntoBuckets(trend.minuteStartsUtc, minutes, axis.startsUtc, axis.bucketSeconds)
+        : minutes;
+    return trendSeriesSpecs(trend).map((spec) =>
       spec.kind === 'local'
         ? {
             id: spec.id,
             labelKey: 'admin.dashboard.rateLimits.series.local',
-            values: spec.values,
+            values: valuesOf(spec.values),
             tone: 'danger',
           }
         : {
@@ -670,7 +713,7 @@ export class AdminMonitoringPage {
                 `admin.rateLimits.providers.callSources.${spec.callSource}`,
               ),
             },
-            values: spec.values,
+            values: valuesOf(spec.values),
             tone: 'danger',
           },
     );
@@ -781,6 +824,7 @@ export class AdminMonitoringPage {
   protected reload(): void {
     this.healthResource.reload();
     this.rosterCard()?.reload();
+    this.loadSection()?.reload();
     this.reloadDashboard();
   }
 

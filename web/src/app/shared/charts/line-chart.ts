@@ -325,6 +325,11 @@ export class LineChart {
   readonly legendStat = input<LegendStat>('last');
   /** Small markers on each known bucket of a line series; the partial bucket keeps its hollow ring. */
   readonly pointMarkers = input<PointMarkers>('never');
+  /**
+   * Extra reading text per bucket (sources, sample counts), appended to the cursor line and so
+   * spoken by the live region. Optional; `null` or a missing entry adds nothing.
+   */
+  readonly bucketDetails = input<readonly (string | null)[]>([]);
 
   private readonly transloco = inject(TranslocoService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -611,7 +616,8 @@ export class LineChart {
       this.partialLastBucket() && index === this.bucketCount() - 1
         ? ` (${this.transloco.translate('admin.dashboard.chart.incompleteShort')})`
         : '';
-    return `${time}${incomplete} — ${values}`;
+    const detail = this.bucketDetails()[index];
+    return `${time}${incomplete} — ${values}${detail ? ` · ${detail}` : ''}`;
   });
 
   constructor() {

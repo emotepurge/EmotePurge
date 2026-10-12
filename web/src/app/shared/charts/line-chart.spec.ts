@@ -134,6 +134,22 @@ describe('LineChart', () => {
     expect(liveLine(root).textContent).toContain('Alpha: 2');
   });
 
+  it('appends the per-bucket detail text to the cursor line and tolerates missing entries', () => {
+    const root = render([series('a', [1, 5, 3, 2])]);
+    fixture.componentRef.setInput('bucketDetails', ['sources: Api', null]);
+    fixture.detectChanges();
+
+    press(root, 'Home');
+    expect(liveLine(root).textContent).toContain('Alpha: 1 · sources: Api');
+
+    press(root, 'ArrowRight');
+    expect(liveLine(root).textContent).toContain('Alpha: 5');
+    expect(liveLine(root).textContent).not.toContain('·');
+
+    press(root, 'End');
+    expect(liveLine(root).textContent).not.toContain('·');
+  });
+
   it('names an unknown value as such instead of reading it as zero', () => {
     const root = render([series('a', [1, null, 3, 4])]);
 

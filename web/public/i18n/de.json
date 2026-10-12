@@ -675,7 +675,9 @@
         "trendUnavailable": "Trend gerade nicht verfügbar — der Zähler-Store konnte nicht gelesen werden.",
         "trend": {
           "title": "Ablehnungen pro Minute, letzte 24 Stunden",
-          "noProviderRejections": "Kein Provider hat in den letzten 24 Stunden mit HTTP 429 geantwortet."
+          "noProviderRejections": "Kein Provider hat in den letzten 24 Stunden mit HTTP 429 geantwortet.",
+          "titleBucketed": "Abweisungen je {{ minutes }} min, letzte 24 Stunden, auf der Lastachse",
+          "hiddenForRange": "Abweisungs-Zeitreihe ausgeblendet: Sie folgt dem Lastzeitraum nur bis 24 Stunden. Die Zusammenfassung oben bleibt."
         },
         "help": {
           "share": "Der Anteil ist die Quote abgewiesener Entscheidungen einer Policy über alle Partitionen – kein Füllstand eines einzelnen Buckets. Keine Ablehnung heißt nicht, dass niemand nahe am Limit war."
@@ -683,6 +685,97 @@
         "details": {
           "open": "Details",
           "title": "Rate-Limit-Details"
+        }
+      },
+      "load": {
+        "title": "Last und Arbeit",
+        "dataThrough": "Datenstand {{ at }}",
+        "stale": "Der letzte Abruf ist fehlgeschlagen, die Werte sind veraltet. Letzte erfolgreiche Antwort: {{ at }}.",
+        "shownRange": "Noch angezeigt: {{ range }}",
+        "range": {
+          "label": "Lastzeitraum",
+          "1h": "1 Stunde",
+          "24h": "24 Stunden",
+          "7d": "7 Tage",
+          "30d": "30 Tage",
+          "90d": "90 Tage",
+          "13mo": "13 Monate"
+        },
+        "stat": {
+          "raw": "P95",
+          "hourly": "höchster Stunden-P95"
+        },
+        "series": {
+          "p95": {
+            "raw": "P95",
+            "hourly": "Höchster Stunden-P95"
+          },
+          "max": {
+            "raw": "Maximum",
+            "hourly": "Höchstes Stundenmaximum"
+          },
+          "api": "Api",
+          "worker": "Worker",
+          "activeChannels": "Aktive Channels",
+          "liveChannels": "Live-Channels",
+          "chatLines": "Chatzeilen",
+          "emoteMatches": "Emote-Treffer"
+        },
+        "source": {
+          "api": "Api",
+          "worker": "Worker"
+        },
+        "charts": {
+          "hostCpu": "Host-CPU belegt ({{ stat }})",
+          "hostMemory": "Host-RAM belegt ({{ stat }})",
+          "hostLoad": "Host-Load-Average, 1 Minute ({{ stat }})",
+          "processCpu": "Prozess-CPU, Api und Worker ({{ stat }})",
+          "cgroupCpu": "Container-CPU (cgroup), Api und Worker ({{ stat }})",
+          "cgroupCpuShare": "Container-CPU als Anteil an der Quota ({{ stat }})",
+          "cgroupMemory": "Container-Speicher (cgroup), {{ source }} ({{ stat }})",
+          "channels": "Channels: aktiv und live (Höchstwert)",
+          "chatLines": {
+            "perMinute": "Chatzeilen pro Minute",
+            "perBucket": "Chatzeilen: gespeicherte Intervallzähler je {{ hours }} h"
+          },
+          "emoteMatches": {
+            "perMinute": "Emote-Treffer pro Minute",
+            "perBucket": "Emote-Treffer: gespeicherte Intervallzähler je {{ hours }} h"
+          }
+        },
+        "note": {
+          "memoryTotal": "Gesamt-RAM des Hosts, zuletzt gemessen: {{ total }}",
+          "memoryTotalNone": "Gesamt-RAM des Hosts: nicht verfügbar",
+          "memoryShareHost": "Anteil am Gesamt-RAM beim letzten Wert: {{ percent }}",
+          "memoryLimit": "Speicherlimit, zuletzt gemessen: {{ limit }}",
+          "memoryLimitNone": "Kein endliches Speicherlimit gemessen; der Anteil wird nicht gezeigt.",
+          "memoryShare": "Anteil am Limit beim letzten Wert: {{ percent }}",
+          "cpuQuota": "{{ source }}: CPU-Quota {{ cores }}",
+          "cpuQuotaNone": "{{ source }}: keine endliche CPU-Quota bekannt",
+          "quotaShareHourly": "Keine Quota in Stundenwerten: Die Tabelle hält nur das letzte Limit einer Stunde. Letztes bekanntes Limit:"
+        },
+        "detail": {
+          "sources": "Quellen: {{ list }}",
+          "valueFrom": "Wert aus {{ source }}",
+          "samples": "Samples: {{ list }}",
+          "means": "Mittelwerte: {{ list }}",
+          "intervalSeconds": "{{ seconds }} s Intervalle",
+          "hoursWithData": "{{ hours }} Stunden mit Daten"
+        },
+        "empty": {
+          "waitingTitle": "Wartet auf erste Samples",
+          "waitingDescription": "Wartet auf erste erfolgreiche Samples und den Hourly-Rollup.",
+          "rangeTitle": "Keine Samples in diesem Zeitraum",
+          "sinceTitle": "Keine Samples in diesem Zeitraum",
+          "sinceDescription": "Für {{ range }} liegen keine Samples vor; Stundenwerte gibt es ab {{ since }}."
+        },
+        "coverage": {
+          "hours": "Dieser Zeitraum umfasst bisher nur {{ count }} Stunden, ab {{ since }}.",
+          "days": "Dieser Zeitraum umfasst bisher nur {{ count }} Tage, ab {{ since }}."
+        },
+        "help": {
+          "sharedHost": "Api und Worker messen denselben Host. Die Hostkurven fassen beide zusammen; die Lesezeile nennt die beitragenden Quellen und die, aus der der gezeigte Wert stammt.",
+          "hourly": "Stundenbereiche zeigen gespeicherte Stundenstatistik: je Bucket den höchsten Stunden-P95 und das höchste Stundenmaximum, kein neu berechnetes Perzentil. Container-Werte kommen ohne Quota-Anteil; die Arbeit sind aufsummierte Intervallzähler, keine Raten."
         }
       }
     }

@@ -203,6 +203,58 @@ export function formatAxisTime(iso: string, bucketSeconds: number, locale: strin
   return new Intl.DateTimeFormat(locale, options).format(date);
 }
 
+/** The processes a host provenance code (`A`, `W`, `AW`) names, in a fixed order; unknown codes name none. */
+export function provenanceSources(code: string | null): ('api' | 'worker')[] {
+  switch (code) {
+    case 'A':
+      return ['api'];
+    case 'W':
+      return ['worker'];
+    case 'AW':
+      return ['api', 'worker'];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Sums a minute series into coarser buckets laid out as `bucketStartsUtc[0] + i * bucketSeconds`.
+ * A bucket that starts before the first minute or after the end of the last one is `null`:
+ * unknown, never a fabricated 0. The bucket the minutes end in (the running one) keeps its partial
+ * sum. Minutes outside every bucket are ignored.
+ */
+export function sumMinutesIntoBuckets(
+  minuteStartsUtc: readonly string[],
+  values: readonly number[],
+  bucketStartsUtc: readonly string[],
+  bucketSeconds: number,
+): (number | null)[] {
+  if (bucketStartsUtc.length === 0 || minuteStartsUtc.length === 0 || bucketSeconds <= 0) {
+    return bucketStartsUtc.map(() => null);
+  }
+  const first = Date.parse(bucketStartsUtc[0]);
+  const bucketMs = bucketSeconds * 1000;
+  const minutes = minuteStartsUtc.map((iso) => Date.parse(iso));
+  const coveredFrom = Math.min(...minutes);
+  const coveredTo = Math.max(...minutes) + 60_000;
+  if (!Number.isFinite(first) || !Number.isFinite(coveredFrom)) {
+    return bucketStartsUtc.map(() => null);
+  }
+
+  const sums = bucketStartsUtc.map(() => 0);
+  minutes.forEach((minute, position) => {
+    const index = Math.floor((minute - first) / bucketMs);
+    if (index >= 0 && index < sums.length) {
+      sums[index] += values[position] ?? 0;
+    }
+  });
+
+  return sums.map((sum, index) => {
+    const start = first + index * bucketMs;
+    return start >= coveredFrom && start < coveredTo ? sum : null;
+  });
+}
+
 function round(value: number): number {
   return Math.round(value * 100) / 100;
 }

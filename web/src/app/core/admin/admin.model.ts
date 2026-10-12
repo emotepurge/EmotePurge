@@ -321,6 +321,99 @@ export interface AdminDashboardActivity {
   days: { date: string; liveChannels: number | null }[];
 }
 
+/** Ranges the load history supports (GET /api/admin/dashboard/load); `1h` and `24h` read raw samples. */
+export type AdminDashboardLoadRange = '1h' | '24h' | '7d' | '30d' | '90d' | '13mo';
+
+/** Which source a bucket value comes from: raw samples or the hourly rollup. */
+export type AdminDashboardLoadSource = 'raw' | 'hourly';
+
+/** Which of the two processes contributed to / produced a host value (`A` = Api, `W` = Worker). */
+export type AdminDashboardLoadProvenance = 'A' | 'W' | 'AW';
+
+/**
+ * Host series, column-oriented: every list is as long as `bucketStartsUtc`, `null` = unknown. Both
+ * processes measure the same host; `provenance` and the `*ValueSource` columns say who contributed
+ * and whose hourly P95 is shown (`A` / `W`).
+ */
+export interface AdminDashboardHostSeries {
+  cpuBusyP95: (number | null)[];
+  cpuBusyMax: (number | null)[];
+  memoryUsedP95Bytes: (number | null)[];
+  memoryUsedMaxBytes: (number | null)[];
+  memoryTotalBytes: (number | null)[];
+  loadAverage1P95: (number | null)[];
+  loadAverage1Max: (number | null)[];
+  provenance: (AdminDashboardLoadProvenance | null)[];
+  cpuValueSource: ('A' | 'W' | null)[];
+  memoryValueSource: ('A' | 'W' | null)[];
+  loadAverageValueSource: ('A' | 'W' | null)[];
+  apiSampleCount: (number | null)[];
+  workerSampleCount: (number | null)[];
+  apiCpuBusyMean: (number | null)[];
+  workerCpuBusyMean: (number | null)[];
+  apiMemoryUsedMeanBytes: (number | null)[];
+  workerMemoryUsedMeanBytes: (number | null)[];
+  apiLoadAverage1Mean: (number | null)[];
+  workerLoadAverage1Mean: (number | null)[];
+}
+
+/**
+ * Per-process series (Api or Worker). Quota shares exist only for raw ranges; in hourly ranges the
+ * limit columns carry the last limit of the hour and the share columns are all `null`.
+ */
+export interface AdminDashboardProcessSeries {
+  processCpuP95: (number | null)[];
+  processCpuMax: (number | null)[];
+  cgroupCpuP95: (number | null)[];
+  cgroupCpuMax: (number | null)[];
+  cgroupCpuQuotaCores: (number | null)[];
+  cgroupCpuQuotaShareP95: (number | null)[];
+  cgroupCpuQuotaShareMax: (number | null)[];
+  cgroupMemoryP95Bytes: (number | null)[];
+  cgroupMemoryMaxBytes: (number | null)[];
+  cgroupMemoryLimitBytes: (number | null)[];
+  cgroupMemoryShareP95: (number | null)[];
+  cgroupMemoryShareMax: (number | null)[];
+  sampleCount: (number | null)[];
+}
+
+/**
+ * Worker-only workload. `perMinute` (raw): counts divided by the real interval seconds. `perBucket`
+ * (hourly): the stored interval counters summed over the hours of one output bucket.
+ */
+export interface AdminDashboardWorkloadSeries {
+  workloadUnit: 'perMinute' | 'perBucket';
+  activeChannelsMax: (number | null)[];
+  liveChannelsMax: (number | null)[];
+  chatLines: (number | null)[];
+  emoteMatches: (number | null)[];
+  workloadIntervalSeconds: (number | null)[];
+  workloadHoursWithData: (number | null)[];
+}
+
+/**
+ * GET /api/admin/dashboard/load — the complete, server-bucketed range. `available` is false when
+ * the range holds no observation at all (every list empty, `dataThroughUtc` null). Leading empty
+ * buckets are omitted, so `bucketStartsUtc[0]` may lie after `fromUtc`.
+ */
+export interface AdminDashboardLoad {
+  available: boolean;
+  range: AdminDashboardLoadRange;
+  sourceKind: AdminDashboardLoadSource;
+  bucketSeconds: number;
+  fromUtc: string;
+  toUtc: string;
+  generatedAtUtc: string;
+  dataThroughUtc: string | null;
+  samplingIntervalSeconds: number;
+  bucketStartsUtc: string[];
+  host: AdminDashboardHostSeries;
+  api: AdminDashboardProcessSeries;
+  worker: AdminDashboardProcessSeries;
+  workload: AdminDashboardWorkloadSeries;
+  swap: { lastSwapUsedBytes: number; lastSwapTotalBytes: number; observedAtUtc: string } | null;
+}
+
 /**
  * GET /api/admin/rate-limits/trend — the last 24 hours in UTC minute buckets, column-oriented: one
  * shared bucket list and one equally long value list per series. When `telemetryAvailable` is false
