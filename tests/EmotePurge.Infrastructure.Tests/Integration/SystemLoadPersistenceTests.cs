@@ -156,6 +156,119 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         Assert.Equal([NowUtc.AddHours(-14), NowUtc.AddHours(-12)], hours);
     }
 
+    // protects: an hour 30 days back with samples and no row gets its row in a single run, while recent hours
+    //   that are already rolled up stay untouched; the backfill has no lower time bound.
+    // fails_when: a lower bound or a retention-style cutoff strands the old hour, or the recent hour is recomputed.
+    // no_claim: cost of the candidate query; two synthetic hours and one source.
+    [Fact]
+    public async Task Rollup_CreatesAStrandedHourThirtyDaysBack()
+    {
+        var identity = Guid.NewGuid();
+        var oldHourUtc = FloorHour(NowUtc.AddDays(-30));
+        var recentHourUtc = FloorHour(NowUtc.AddHours(-5));
+        await using var db = CreateDbContext();
+        db.SystemLoadSamples.AddRange(
+            Sample(oldHourUtc.AddMinutes(10), identity, 0),
+            Sample(oldHourUtc.AddMinutes(40), identity, 1_000),
+            Sample(recentHourUtc.AddMinutes(10), identity, 0),
+            Sample(recentHourUtc.AddMinutes(40), identity, 1_000));
+        db.SystemLoadHourlies.Add(new SystemLoadHourly { Source = SystemLoadSource.Api, HourUtc = recentHourUtc, SampleCount = 2 });
+        await db.SaveChangesAsync();
+
+        var written = await new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance)
+            .RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
+
+        Assert.Equal(1, written);
+        var rows = await db.SystemLoadHourlies.AsNoTracking().OrderBy(hourly => hourly.HourUtc).ToListAsync();
+        Assert.Equal([oldHourUtc, recentHourUtc], rows.Select(static hourly => hourly.HourUtc));
+        Assert.Equal(2, rows[0].SampleCount);
+    }
+
+    // protects: a backlog larger than one batch is rolled up completely, and the first hour of a later batch
+    //   still pairs with its predecessor sample from the earlier batch; every row equals an unbatched calculation.
+    // fails_when: a batch loses its predecessor, a batch is skipped, or batching changes any column.
+    // no_claim: memory behaviour; one source, one instance, 60 s synthetic samples, expectation from SystemLoadRollupMath.
+    [Fact]
+    public async Task Rollup_CatchUpAcrossBatchBoundaries_KeepsThePredecessorPair()
+    {
+        var identity = Guid.NewGuid();
+        var firstHourUtc = FloorHour(NowUtc.AddHours(-100));
+        const int hourCount = 60;
+        var samples = CpuSamples(
+            SystemLoadSource.Worker, identity, firstHourUtc, firstHourUtc.AddHours(hourCount), TimeSpan.FromSeconds(60));
+        await using var db = CreateDbContext();
+        db.SystemLoadSamples.AddRange(samples);
+        await db.SaveChangesAsync();
+
+        var written = await new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance)
+            .RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
+
+        Assert.Equal(hourCount, written);
+        var rows = await ReadHourliesAsync(db);
+        Assert.Equal(hourCount, rows.Count);
+        var firstOfSecondBatch = firstHourUtc.AddHours(24);
+        Assert.NotNull(rows[firstOfSecondBatch].ProcessCpuRateMean);
+        Assert.NotNull(rows[firstOfSecondBatch].HostCpuBusyMean);
+        for (var offset = 0; offset < hourCount; offset++)
+        {
+            var hourUtc = firstHourUtc.AddHours(offset);
+            var window = samples
+                .Where(sample => sample.SampledAtUtc < hourUtc.AddHours(1))
+                .OrderBy(static sample => sample.SampledAtUtc)
+                .Where(sample => sample.SampledAtUtc >= hourUtc.AddMinutes(-1))
+                .ToArray();
+            var expected = SystemLoadRollupMath.Calculate(window, SystemLoadSource.Worker, hourUtc, 30);
+            Assert.Equal(Describe(expected), Describe(rows[hourUtc]));
+        }
+    }
+
+    // protects: the backfill set is exactly the (source, hour) pairs with samples before the close boundary and no
+    //   row: several instances, an hour with one source only, a row for one source only, a sample at the boundary.
+    // fails_when: a pair is missed or added, a boundary sample opens its hour, or an existing row is recomputed.
+    // no_claim: the cost of the candidate query; synthetic samples far outside the dirty window.
+    [Fact]
+    public async Task Rollup_BackfillsExactlyTheHoursWithSamplesAndNoRow()
+    {
+        var dayUtc = new DateTime(2026, 10, 5, 0, 0, 0, DateTimeKind.Utc);
+        var closeEndUtc = new DateTime(2026, 10, 10, 23, 0, 0, DateTimeKind.Utc);
+        var instanceA = Guid.NewGuid();
+        var instanceB = Guid.NewGuid();
+        var worker = Guid.NewGuid();
+        await using var db = CreateDbContext();
+        db.SystemLoadSamples.AddRange(
+            Sample(dayUtc.AddHours(1).AddMinutes(5), instanceA, 0),
+            Sample(dayUtc.AddHours(1).AddMinutes(35), instanceA, 10),
+            Sample(dayUtc.AddHours(2).AddMinutes(5), instanceA, 20),
+            Sample(dayUtc.AddHours(2).AddMinutes(7), instanceB, 0),
+            Sample(closeEndUtc, instanceA, 30),
+            Sample(dayUtc.AddHours(2).AddMinutes(9), worker, 0, source: SystemLoadSource.Worker),
+            Sample(dayUtc.AddHours(3).AddMinutes(9), worker, 5, source: SystemLoadSource.Worker));
+        db.SystemLoadHourlies.Add(new SystemLoadHourly
+        {
+            Source = SystemLoadSource.Api,
+            HourUtc = dayUtc.AddHours(2),
+            SampleCount = 99,
+        });
+        await db.SaveChangesAsync();
+
+        var written = await new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance)
+            .RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
+
+        Assert.Equal(3, written);
+        var rows = (await db.SystemLoadHourlies.AsNoTracking().ToListAsync())
+            .OrderBy(static hourly => hourly.HourUtc).ThenBy(static hourly => hourly.Source)
+            .Select(static hourly => (hourly.Source, hourly.HourUtc, hourly.SampleCount))
+            .ToArray();
+        Assert.Equal(
+            [
+                (SystemLoadSource.Api, dayUtc.AddHours(1), 2),
+                (SystemLoadSource.Api, dayUtc.AddHours(2), 99),
+                (SystemLoadSource.Worker, dayUtc.AddHours(2), 1),
+                (SystemLoadSource.Worker, dayUtc.AddHours(3), 1),
+            ],
+            rows);
+    }
+
     [Fact]
     public async Task Rollup_RecomputesARecentHourAfterALateInsert()
     {
@@ -480,14 +593,19 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
 
     private AppDbContext CreateDbContext() => fixture.CreateDbContext(DatabaseName);
 
-    private static SystemLoadSample Sample(DateTime atUtc, Guid identity, long processTicks, double? load = null) => new()
-    {
-        SampledAtUtc = atUtc,
-        Source = SystemLoadSource.Api,
-        ProcessInstanceId = identity,
-        ProcessCpuTimeTicks = processTicks,
-        HostLoadAverage1 = load,
-    };
+    private static SystemLoadSample Sample(
+        DateTime atUtc,
+        Guid identity,
+        long processTicks,
+        double? load = null,
+        SystemLoadSource source = SystemLoadSource.Api) => new()
+        {
+            SampledAtUtc = atUtc,
+            Source = source,
+            ProcessInstanceId = identity,
+            ProcessCpuTimeTicks = processTicks,
+            HostLoadAverage1 = load,
+        };
 
     private static SystemLoadHourly Hourly(DateTime hourUtc) => new()
     {
