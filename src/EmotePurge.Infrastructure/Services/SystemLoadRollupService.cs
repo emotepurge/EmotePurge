@@ -223,7 +223,7 @@ public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadR
                     FROM candidate_hours AS candidate
                     WHERE candidate."Source" = predecessor."Source"
                       AND candidate."HourUtc" = date_trunc('hour', predecessor."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
-                ORDER BY "Source", "SampledAtUtc"
+                ORDER BY "Source", "SampledAtUtc", "Id"
                 """)
             .AsNoTracking()
             .ToListAsync(cancellationToken);

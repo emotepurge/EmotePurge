@@ -115,7 +115,7 @@ public class SystemLoadRollupBatchingTests
             .GroupBy(static sample => sample.ProcessInstanceId)
             .SelectMany(processSamples =>
             {
-                var ordered = processSamples.OrderBy(static sample => sample.SampledAtUtc).ToArray();
+                var ordered = processSamples.OrderBy(static sample => sample.SampledAtUtc).ThenBy(static sample => sample.Id).ToArray();
                 var firstHourSample = Array.FindIndex(ordered, sample => sample.SampledAtUtc >= hourUtc);
                 if (firstHourSample < 0 || ordered[firstHourSample].SampledAtUtc >= hourEndUtc)
                 {
@@ -132,6 +132,7 @@ public class SystemLoadRollupBatchingTests
                 return ordered[firstIncluded..endExclusive];
             })
             .OrderBy(static sample => sample.SampledAtUtc)
+            .ThenBy(static sample => sample.Id)
             .ToArray();
     }
 }

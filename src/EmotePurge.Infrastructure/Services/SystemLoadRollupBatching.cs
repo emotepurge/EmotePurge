@@ -52,7 +52,7 @@ public sealed class SystemLoadSampleIndex
     {
         _groups = sourceSamples
             .GroupBy(static sample => sample.ProcessInstanceId)
-            .Select(static group => group.OrderBy(static sample => sample.SampledAtUtc).ToArray())
+            .Select(static group => group.OrderBy(static sample => sample.SampledAtUtc).ThenBy(static sample => sample.Id).ToArray())
             .ToArray();
         _times = _groups
             .Select(static group => group.Select(static sample => sample.SampledAtUtc).ToArray())
@@ -80,7 +80,7 @@ public sealed class SystemLoadSampleIndex
             result.AddRange(_groups[group][Math.Max(0, first - 1)..endExclusive]);
         }
 
-        return result.OrderBy(static sample => sample.SampledAtUtc).ToArray();
+        return result.OrderBy(static sample => sample.SampledAtUtc).ThenBy(static sample => sample.Id).ToArray();
     }
 
     private static int LowerBound(DateTime[] sorted, DateTime value)
