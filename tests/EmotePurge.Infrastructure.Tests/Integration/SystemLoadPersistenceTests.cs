@@ -256,7 +256,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         if (sessionTimeZone is not null)
         {
             await db.Database.OpenConnectionAsync();
-            await db.Database.ExecuteSqlRawAsync($"SET TIME ZONE '{sessionTimeZone}'");
+            await db.Database.ExecuteSqlAsync($"SELECT set_config('TimeZone', {sessionTimeZone}, false)");
             var active = await db.Database.SqlQueryRaw<string>("SELECT current_setting('TimeZone') AS \"Value\"").ToListAsync();
             Assert.Equal([sessionTimeZone], active);
         }
