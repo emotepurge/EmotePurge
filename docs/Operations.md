@@ -1024,12 +1024,12 @@ no longer exists, so every flush fails. The flag above is independent of M2 and 
      --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
    ```
 
-   Expect exactly `…_SwitchUsageStatsToSlotKey` as `(Pending)`. More than that means the database is
+   Expect exactly `20261012111509_SwitchUsageStatsToSlotKey` as `(Pending)`. More than that means the database is
    behind by more than this release: review those migrations first.
 6. Apply it, naming the target:
 
    ```sh
-   dotnet ef database update <timestamp>_SwitchUsageStatsToSlotKey --project src/EmotePurge.Infrastructure \
+   dotnet ef database update 20261012111509_SwitchUsageStatsToSlotKey --project src/EmotePurge.Infrastructure \
      --startup-project src/EmotePurge.Api \
      --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
    ```
@@ -1037,17 +1037,21 @@ no longer exists, so every flush fails. The flag above is independent of M2 and 
    `Command Timeout=600` because the attach and the index rebuild run as single statements over the
    whole table. The migration takes `ACCESS EXCLUSIVE` on `UsageStats` with a 5-second
    `lock_timeout`; a lock timeout means a session is still open (step 1).
-7. `migrations list` again: nothing pending. Bring **both new images up together**.
+7. `migrations list` again: nothing pending. Note the time (`SELECT now();`), then bring **both new
+   images up together**.
 8. Check within five minutes: no flush errors in the worker log, `usage.flushed` events, today's row
    count grows (`SELECT count(*) FROM "UsageStats" WHERE "Date" = current_date;`), and only a few new
-   seeds (`SELECT count(*) FROM "EmoteSlots" WHERE "SeedUnsettled" AND "LastSyncedAt" > '<window start>';`
-   — one per (emote, set) counted for the first time).
+   seeds (`SELECT count(*) FROM "EmoteSlots" WHERE "SeedUnsettled" AND "LastSyncedAt" > '<time from step 7>';`
+   — one per (emote, set) counted for the first time). Take the time after `database update`, not
+   the window start: M2's attach step also creates seeds, stamped with the migration's time, for the
+   pairs first counted between `AddEmoteSlots` and M2 (the rows without a slot from step 4), and those
+   are expected however many there are.
 
 **Rollback** while the flag is off: with the flag off at most one slot per (emote, set) carries rows,
 so M2's `Down` is lossless. Stop worker and api, back up, then
 
 ```sh
-dotnet ef database update <timestamp>_AddEmoteSlots --project src/EmotePurge.Infrastructure \
+dotnet ef database update 20261011184206_AddEmoteSlots --project src/EmotePurge.Infrastructure \
   --startup-project src/EmotePurge.Api \
   --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
 ```
