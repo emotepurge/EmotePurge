@@ -242,6 +242,17 @@ describe('LineChart', () => {
     expect(legend).toContain('Beta: 1');
   });
 
+  it('keys a marks series with a marker in the legend and a line series with a line', () => {
+    const marks: LineChartSeries = { ...series('b', [4, 3, 2, 1]), emphasis: 'marks' };
+    const root = render([series('a', [1, 2, 3, 4]), marks]);
+    const entries = root.querySelectorAll('[data-testid="chart-legend"] li');
+
+    expect(entries[0].querySelector('[data-testid="legend-line"]')).not.toBeNull();
+    expect(entries[0].querySelector('[data-testid="legend-marker"]')).toBeNull();
+    expect(entries[1].querySelector('[data-testid="legend-marker"]')).not.toBeNull();
+    expect(entries[1].querySelector('[data-testid="legend-line"]')).toBeNull();
+  });
+
   it('says in the text alternative and at the cursor that the last bucket is incomplete', () => {
     const root = render([series('a', [1, 5, 3, 2])], { partialLastBucket: true });
     const alternative = root.querySelector('[data-testid="chart-alternative"]')?.textContent;

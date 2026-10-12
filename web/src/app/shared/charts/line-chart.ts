@@ -299,15 +299,20 @@ let nextChartId = 0;
                 viewBox="0 0 16 8"
                 aria-hidden="true"
               >
-                <line
-                  x1="0"
-                  y1="4"
-                  x2="16"
-                  y2="4"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  [attr.stroke-dasharray]="item.dash"
-                />
+                @if (item.marks) {
+                  <circle cx="8" cy="4" r="2.5" fill="currentColor" data-testid="legend-marker" />
+                } @else {
+                  <line
+                    x1="0"
+                    y1="4"
+                    x2="16"
+                    y2="4"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    [attr.stroke-dasharray]="item.dash"
+                    data-testid="legend-line"
+                  />
+                }
               </svg>
               <span>{{ item.label }}: {{ item.statText }}</span>
             </li>
