@@ -5481,6 +5481,20 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       component['inspect'](card(keyA));
       expect(component['inspected']()?.emoteName).toBe('PumpA');
     });
+
+    it('puts an emote on a set-session ballot once when both its slot cards are marked (plan 377, 2.5)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [slotRow('x', 'slot-ome', 'ome44', 30), slotRow('x', 'slot-hob', 'hob44', 10)],
+        members: memberList([member('7tv-x', 'ome44'), member('7tv-x', 'hob44')]),
+      });
+      for (const key of ['slot-ome', 'slot-hob']) {
+        component['selection'].onRowClick(card(key), { shiftKey: false } as MouseEvent);
+      }
+
+      expect(component['voteBallotSevenTvEmoteIds']()).toEqual(['7tv-x']);
+      expect(component['voteBallotSize']()).toBe(1);
+    });
   });
 });
 
@@ -6965,6 +6979,27 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['tagUnassignCount']()).toBe(1);
   });
 
+  it('assigns and removes an emote once when both its slot cards are marked (plan 377, 2.5)', async () => {
+    await open({
+      tags: [tag(4, 'Stronghold')],
+      totals: [
+        slotRow('a', 'slot-a1', 'PeepoA'),
+        slotRow('a', 'slot-a2', 'PeepoAlias'),
+        emote('b', 'PeepoB'),
+      ],
+    });
+    for (const row of component['emotes']()) {
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+    openSpy.mockReturnValue({ closed: of(undefined) });
+
+    component['assignTags']();
+    expect(openSpy.mock.calls[0][1].data.sevenTvEmoteIds).toEqual(['7tv-a', '7tv-b']);
+
+    await chooseTag(4, ['7tv-a']);
+    expect(component['tagUnassignCount']()).toBe(1);
+  });
+
   it('after "Tag zuweisen…": hands the dialog the marked ids, acknowledges for 4 s, reloads the tags and keeps the selection', async () => {
     await open({ tags: [tag(4, 'Stronghold')] });
     mark('7tv-a', '7tv-b');
@@ -8427,5 +8462,85 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(resumed?.slotKey).toBe('slot-ome');
     expect(resumed?.totalUseCount).toBe(45);
     expect(component['isUnderObservation'](resumed!)).toBe(true);
+  });
+
+  // --- 7TV ids, once each (plan 377, 2.5/2.6) ----------------------------------------------------
+
+  it('puts an emote on a null-session ballot once when both its slot cards are marked, and counts it once', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+
+    expect(component['voteBallotEmoteIds']()).toEqual(['x']);
+    expect(component['voteBallotSize']()).toBe(1);
+  });
+
+  it('captures an emote once for the copy flow, so the dialog counts what the run copies (A6)', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+
+    expect(component['importShortcutSelectionCount']()).toBe(1);
+    expect(component['importableSelection']().map((row) => [row.sevenTvEmoteId, row.name])).toEqual(
+      [['7tv-x', 'ome44']],
+    );
+    expect(component['importableVisible']().map((row) => row.sevenTvEmoteId)).toEqual([
+      '7tv-x',
+      '7tv-y',
+    ]);
+  });
+
+  it('hands the delete run one entry per 7TV id, naming both slots when only one card is marked', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-hob');
+
+    expect(component['selectedForDelete']()).toEqual([
+      {
+        emoteId: 'x',
+        sevenTvEmoteId: '7tv-x',
+        name: 'hob44',
+        aliases: ['hob44', 'ome44'],
+        hidden: false,
+      },
+    ]);
+  });
+
+  it('projects both slots of the emote as freed when one of its two cards is marked', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+
+    expect(component['pendingRemovalSlots']()).toBe(2);
+    expect(component['projectedSlots']()).toEqual({ projected: 8, capacity: 600 });
+  });
+
+  it('frees two slots, not four, and drops both cards when a run with both aliases deletes the emote (A8)', () => {
+    mount([ome(), hob(), other()]);
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: 'set-a',
+      channelName: 'a',
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: ['7tv-x'],
+        items: [
+          {
+            key: '7tv-x',
+            emoteId: 'x',
+            sevenTvEmoteId: '7tv-x',
+            name: 'ome44',
+            aliases: ['ome44', 'hob44'],
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+
+    component['onDeleted'](['7tv-x']);
+
+    expect(component['emotes']().map((row) => row.slotKey)).toEqual(['7tv-y']);
+    expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
   });
 });

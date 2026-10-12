@@ -336,6 +336,26 @@ function seriesJoinKey(item: { slotId: string | null; sevenTvEmoteId: string }):
   return item.slotId ?? item.sevenTvEmoteId;
 }
 
+/** The 7TV ids of `emotes`, each once, in first-appearance order — what every per-emote write
+ *  (tags, ballots) sends when two slot cards of one emote are marked (plan 377, 2.5). */
+function selectedSevenTvIds(emotes: readonly EmoteUsageTotal[]): string[] {
+  return [...new Set(emotes.map((emote) => emote.sevenTvEmoteId))];
+}
+
+/** `emotes` grouped by 7TV id, groups in first-appearance order, cards in their given order. */
+function groupBySevenTvId(emotes: readonly EmoteUsageTotal[]): Map<string, EmoteUsageTotal[]> {
+  const groups = new Map<string, EmoteUsageTotal[]>();
+  for (const emote of emotes) {
+    const group = groups.get(emote.sevenTvEmoteId);
+    if (group) {
+      group.push(emote);
+    } else {
+      groups.set(emote.sevenTvEmoteId, [emote]);
+    }
+  }
+  return groups;
+}
+
 function sortableLastUsed(lastUsedDate: string | null): number {
   if (!lastUsedDate) {
     return NEVER_USED_SORT_VALUE;
@@ -1652,10 +1672,8 @@ export class UsageStatsPage {
     if (keys === null || this.usageFilter.tagId() === null) {
       return [];
     }
-    return this.selection
-      .selectedItems()
-      .map((emote) => emote.sevenTvEmoteId)
-      .filter((id) => keys.has(id));
+    // Distinct: a tag holds an emote per 7TV id (D3), two slot cards of it are one entry.
+    return selectedSevenTvIds(this.selection.selectedItems()).filter((id) => keys.has(id));
   });
 
   /** The removal button's count; at 0 it is disabled. */
@@ -2017,36 +2035,54 @@ export class UsageStatsPage {
   // id and the protocol writes `emoteId: null` for it. A #74 duplicate cell is one row with both
   // aliases — one `REMOVE` takes both entries (Sonde 5, branch A), and the protocol keeps both names
   // so the restore can re-add each.
-  protected readonly selectedForDelete = computed<DeletableEmote[]>(() =>
-    this.selection.selectedItems().flatMap((emote) =>
-      emote.membership === 'live'
-        ? [
-            {
-              emoteId: emote.emoteId ?? undefined,
-              sevenTvEmoteId: emote.sevenTvEmoteId,
-              name: emote.emoteName,
-              aliases: emote.aliases,
-              // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl
-              // überlebt Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the
-              // dock's own hiddenSelectedCount is built from, so the two numbers can never disagree.
-              hidden: !this.selection.isVisible(emote),
-            },
-          ]
-        : [],
-    ),
-  );
+  //
+  // One entry per 7TV id, not per card (plan 377, 2.6 — the transition until #378 deletes per
+  // slot): a `REMOVE` without an alias takes every entry of the id, so marking one of two slot
+  // cards deletes both, and the protocol must name both for the restore. `aliases` is therefore the
+  // union over every `'live'` card of the id in `emotes()`, marked or not — their own names and the
+  // siblings they report. `name` is the first marked card's, `emoteId` the first Guid of the id, and
+  // the entry counts as hidden only when every marked card of the id is. With the flag off there is
+  // one card per id, and this is exactly the per-row mapping it always was.
+  protected readonly selectedForDelete = computed<DeletableEmote[]>(() => {
+    const liveById = groupBySevenTvId(this.emotes().filter((emote) => emote.membership === 'live'));
+    const markedById = groupBySevenTvId(
+      this.selection.selectedItems().filter((emote) => emote.membership === 'live'),
+    );
+    return [...markedById].map(([sevenTvEmoteId, marked]) => {
+      const cards = [...marked, ...(liveById.get(sevenTvEmoteId) ?? [])];
+      return {
+        emoteId: cards.find((emote) => emote.emoteId !== null)?.emoteId ?? undefined,
+        sevenTvEmoteId,
+        name: marked[0].emoteName,
+        aliases: [...new Set(cards.flatMap((emote) => [...emote.aliases, ...emote.siblingNames]))],
+        // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
+        // Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the dock's own
+        // hiddenSelectedCount is built from, so the two numbers can never disagree.
+        hidden: marked.every((emote) => !this.selection.isVisible(emote)),
+      };
+    });
+  });
 
   /**
    * How many slots of the shown set deleting the marked rows would free (spec 8.2, AK 58): a #74
    * duplicate cell is one row but two set entries, and one `REMOVE` takes both (Sonde 5, branch A).
    * `'left'` rows occupy no slot of the set any more and free none. In the active set's view every
    * `slotCount` is 1, so this is the selection size, exactly as before.
+   *
+   * Summed per marked 7TV id over **every** `'live'` card of that id (plan 377, 2.6): the run
+   * deletes per id until #378, so marking one of two slot cards frees both slots. With one card per
+   * id (the flag off) this is the same sum as before.
    */
-  protected readonly pendingRemovalSlots = computed(() =>
-    this.selection
-      .selectedItems()
-      .reduce((sum, emote) => sum + (emote.membership === 'live' ? emote.slotCount : 0), 0),
-  );
+  protected readonly pendingRemovalSlots = computed(() => {
+    const markedIds = new Set(
+      this.selection
+        .selectedItems()
+        .flatMap((emote) => (emote.membership === 'live' ? [emote.sevenTvEmoteId] : [])),
+    );
+    return this.emotes()
+      .filter((emote) => emote.membership === 'live' && markedIds.has(emote.sevenTvEmoteId))
+      .reduce((sum, emote) => sum + emote.slotCount, 0);
+  });
 
   /**
    * Capacity and occupied slots of the shown set, for the slot bar and the dock's projection. The
@@ -2077,12 +2113,17 @@ export class UsageStatsPage {
    * Every row of the active set's view has a Guid, so nothing is ever dropped here — this is only
    * ever read for that view (`openCreateVoteSession`), never for a non-active one, which builds a
    * SET-session ballot from `voteBallotSevenTvEmoteIds` instead (spec 6.9, K6).
+   *
+   * Distinct (plan 377, 2.5): two slot cards of one emote share its Guid, and a ballot holds an
+   * emote once — the server dedupes as well, but the button and the dialog count what is sent.
    */
-  private readonly voteBallotEmoteIds = computed(() =>
-    this.selection
-      .selectedItems()
-      .flatMap((emote) => (emote.emoteId !== null ? [emote.emoteId] : [])),
-  );
+  private readonly voteBallotEmoteIds = computed(() => [
+    ...new Set(
+      this.selection
+        .selectedItems()
+        .flatMap((emote) => (emote.emoteId !== null ? [emote.emoteId] : [])),
+    ),
+  ]);
 
   /**
    * The ballot a SET-session created from the selection would carry: 7TV emote ids, the same live
@@ -2096,12 +2137,16 @@ export class UsageStatsPage {
    * against the *live* membership (spec section 9 step 2) — one stale id in the request would fail
    * the entire create with 400 `emote_ids_invalid`, silently dropping every other selected emote
    * along with it.
+   *
+   * Distinct, for the same reason as `voteBallotEmoteIds` (plan 377, 2.5).
    */
-  private readonly voteBallotSevenTvEmoteIds = computed(() =>
-    this.selection
-      .selectedItems()
-      .flatMap((emote) => (emote.membership === 'live' ? [emote.sevenTvEmoteId] : [])),
-  );
+  private readonly voteBallotSevenTvEmoteIds = computed(() => [
+    ...new Set(
+      this.selection
+        .selectedItems()
+        .flatMap((emote) => (emote.membership === 'live' ? [emote.sevenTvEmoteId] : [])),
+    ),
+  ]);
 
   /**
    * The size of the ballot `openCreateVoteSession` would actually send for the view shown right
@@ -2295,19 +2340,29 @@ export class UsageStatsPage {
    * drops `left` rows; this stays as defense in depth, because copying one would put an emote into
    * the target that the source set no longer holds. Same rule as `selectedForDelete` and
    * `voteBallotSevenTvEmoteIds`; the dialog's counts and the copied rows read this one source.
+   *
+   * Deduplicated per 7TV id **before** the capture (plan 377, 2.5, A6): two slot cards of one emote
+   * are one emote to copy, and the dialog has to count what the run will copy — the run's own
+   * dedupe (`startImportFromChoice`) only comes after the dialog. The first card's name wins.
    */
-  private readonly importableSelection = computed(() =>
-    this.selection
-      .selectedItems()
-      .filter((emote) => emote.membership === 'live')
-      .map(toImportRow),
+  private readonly importableSelection = computed(
+    () =>
+      dedupeImportRows(
+        this.selection
+          .selectedItems()
+          .filter((emote) => emote.membership === 'live')
+          .map(toImportRow),
+      ).rows,
   );
 
   /** `importableSelection`'s counterpart for the "visible" scope (the grid as filtered). */
-  private readonly importableVisible = computed(() =>
-    this.atlasOrder()
-      .filter((emote) => emote.membership === 'live')
-      .map(toImportRow),
+  private readonly importableVisible = computed(
+    () =>
+      dedupeImportRows(
+        this.atlasOrder()
+          .filter((emote) => emote.membership === 'live')
+          .map(toImportRow),
+      ).rows,
   );
 
   /** Wording for the dock's hidden-by-filter secondary line (Konzept "Auswahl überlebt Suche und
@@ -3079,16 +3134,27 @@ export class UsageStatsPage {
     // E20), so the run's row is asked first: the panel read the set's live entries before the run
     // (`readLiveAliasesFromActiveSet`) and recorded every alias the `REMOVE` took. Summed over the
     // rows on screen before they are dropped.
+    //
+    // Per 7TV id, not per card (plan 377, 2.6, A8): two slot cards of one id are two entries that
+    // the run's one row already counts with its two aliases — taking the larger of the two numbers
+    // per card would free four. With one card per id (the flag off) this is the sum it always was.
     const runAliasCounts = new Map(
       run.result.items.map((item) => [item.sevenTvEmoteId, item.aliases?.length ?? 0]),
     );
-    const freedSlots = this.emotes()
-      .filter((emote) => emote.membership === 'live' && deleted.has(emote.sevenTvEmoteId))
-      .reduce(
-        (sum, emote) =>
-          sum + Math.max(emote.slotCount, runAliasCounts.get(emote.sevenTvEmoteId) ?? 0),
-        0,
-      );
+    const cardSlotsById = new Map<string, number>();
+    for (const emote of this.emotes()) {
+      if (emote.membership === 'live' && deleted.has(emote.sevenTvEmoteId)) {
+        cardSlotsById.set(
+          emote.sevenTvEmoteId,
+          (cardSlotsById.get(emote.sevenTvEmoteId) ?? 0) + emote.slotCount,
+        );
+      }
+    }
+    const freedSlots = [...cardSlotsById].reduce(
+      (sum, [sevenTvEmoteId, cardSlots]) =>
+        sum + Math.max(cardSlots, runAliasCounts.get(sevenTvEmoteId) ?? 0),
+      0,
+    );
     this.totalsRows.update((items) => items.filter((item) => !deleted.has(item.sevenTvEmoteId)));
     // Freed slots are shown right away rather than waiting for the channel.synced round trip the
     // bookkeeping call triggers — the emptied bar is the feedback the delete was run for. The
@@ -3163,7 +3229,8 @@ export class UsageStatsPage {
       return;
     }
     const channelName = this.channelName();
-    const sevenTvEmoteIds = this.selection.selectedItems().map((emote) => emote.sevenTvEmoteId);
+    // Distinct (plan 377, 2.5): a tag is per 7TV id (D3), two slot cards of one emote are one id.
+    const sevenTvEmoteIds = selectedSevenTvIds(this.selection.selectedItems());
     const shown = this.shownSetId();
     // Only for a non-active set: the active-set body stays exactly as before.
     const emoteSetId = shown !== null && shown !== this.activeEmoteSetId() ? shown : undefined;
