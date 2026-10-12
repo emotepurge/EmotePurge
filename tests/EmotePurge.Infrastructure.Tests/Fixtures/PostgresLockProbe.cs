@@ -103,4 +103,17 @@ public static class PostgresLockProbe
             await Task.Delay(20);
         }
     }
+
+    /// <summary>
+    /// The statement the backend tagged <paramref name="applicationName"/> is waiting in, for a test
+    /// that must prove <i>which</i> lock a contender waits at, not only that it waits. Call it after
+    /// <see cref="WaitUntilBlockedOnLockAsync"/>.
+    /// </summary>
+    public static async Task<string> WaitingQueryAsync(this PostgresFixture fixture, string applicationName)
+    {
+        await using var probe = fixture.CreateDbContext();
+        return await probe.Database
+            .SqlQuery<string>($"""SELECT query AS "Value" FROM pg_stat_activity WHERE application_name = {applicationName} AND wait_event_type = 'Lock'""")
+            .SingleAsync();
+    }
 }

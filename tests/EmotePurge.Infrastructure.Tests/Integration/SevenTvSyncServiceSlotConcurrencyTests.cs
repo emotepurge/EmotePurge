@@ -15,7 +15,8 @@ using static EmotePurge.Infrastructure.Tests.Integration.SlotSyncKit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
-// Real PostgreSQL interleavings around the slot-aware sync (plan #372, 6.5 (1)–(4), (7), (8), (10)).
+// Real PostgreSQL interleavings around the slot-aware sync (plan #372, 6.5 (1)–(4), (7), (8), (10)),
+// plus the EventAPI delta's lock order and recovery (Z8) and the shared tick context (review P2-2).
 // Every ordering is forced, never hoped for: a contender either holds a row lock before the sync
 // starts, or a command interceptor runs the contender inside the sync's own flow right after a given
 // statement, and PostgresLockProbe waits on pg_stat_activity until a backend really waits on a lock.
@@ -25,6 +26,9 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
 {
     private const string EmoteLockMarker = "FOR NO KEY UPDATE OF e";
+    private const string ChannelLock = "FROM \"Channels\" WHERE \"Id\" = ANY(";
+    private const string EmoteIdLock = "FROM \"Emotes\" WHERE \"Id\" = ANY(";
+    private const string LeaveUpsert = "INSERT INTO \"EmoteSetLeaveObservations\"";
     private const string RestartLine = "restarting the save";
     private const string DeadlockLine = "deadlock victim";
     private static readonly AuditActor Actor = new("tw_slot_admin", "slot_admin");
@@ -397,6 +401,82 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         Assert.Empty(await setup.EmoteSlots.Where(s => s.Emote.ChannelId == a.Id).ToListAsync());
         var betaSlot = Assert.Single(await SlotsAsync(setup, (await EmoteAsync(setup, b, "b1")).Id));
         Assert.Equal(("Beta", T2), (betaSlot.Name, betaSlot.AddedAt));
+    }
+
+    // Z8, the EventAPI delta's statements by flag: on, the channel row, then the emote rows of the
+    // dispatch, then the leave upsert, then the save; off, exactly the statements of before (no row
+    // lock, the leave upsert first, a transaction only because something is pulled).
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DeltaLockStatements_FollowTheFlag(bool slotsEnabled)
+    {
+        await using var setup = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(setup, $"slot_c_delta_order_{slotsEnabled}".ToLowerInvariant());
+        await SeedEmoteAsync(setup, channel, "x", "Xenon", firstSeenAt: T1);
+        await SeedEmoteAsync(setup, channel, "y", "Yak", firstSeenAt: T1);
+        var hook = new CommandHook(_ => false, _ => Task.CompletedTask);
+        await using var db = fixture.CreateDbContext([hook]);
+
+        var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled)
+            .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], ["x"]));
+
+        Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
+        Assert.True((await EmoteAsync(setup, channel, "x")).IsArchived);
+        Assert.False((await EmoteAsync(setup, channel, "z")).IsArchived);
+        var channelLock = hook.IndexOf(t => t.Contains(ChannelLock, StringComparison.Ordinal));
+        var emoteLock = hook.IndexOf(t => t.Contains(EmoteIdLock, StringComparison.Ordinal));
+        var leave = hook.IndexOf(t => t.Contains(LeaveUpsert, StringComparison.Ordinal));
+        var update = hook.IndexOf(t => t.Contains("UPDATE \"Emotes\"", StringComparison.Ordinal));
+        if (!slotsEnabled)
+        {
+            Assert.Equal(0, hook.Count(t => t.Contains("FOR NO KEY UPDATE", StringComparison.Ordinal)));
+            Assert.True(leave >= 0 && leave < update);
+            return;
+        }
+
+        Assert.Equal(2, hook.Count(t => t.Contains("FOR NO KEY UPDATE", StringComparison.Ordinal)));
+        Assert.True(channelLock >= 0 && channelLock < emoteLock && emoteLock < leave && leave < update);
+    }
+
+    // Z8 recovery, both flag states: a dispatch chosen as a deadlock victim runs once more on a cleared
+    // tracker and a re-read row and applies exactly once; a second deadlock propagates and writes
+    // nothing. Injected — the cycle itself is aligned with the flag on (EmoteServiceInSetConcurrencyTests
+    // 5b) and only reachable in the switch-over window.
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task DeltaDeadlockVictim_RetriesOnce_ASecondOnePropagates(bool slotsEnabled, bool twice)
+    {
+        await using var setup = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(setup, $"slot_c_delta_dl_{slotsEnabled}_{twice}".ToLowerInvariant());
+        await SeedEmoteAsync(setup, channel, "x", "Xenon", firstSeenAt: T1);
+        await SeedEmoteAsync(setup, channel, "y", "Yak", firstSeenAt: T1);
+        var hook = new SaveHook((_, call) => call == 1 || twice
+            ? throw new PostgresException("deadlock detected", "ERROR", "ERROR", PostgresErrorCodes.DeadlockDetected)
+            : Task.CompletedTask);
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        await using var db = fixture.CreateDbContext([hook]);
+        var service = CreateService(db, ApiReturning(channel, SetA), slotsEnabled, logger: logger);
+        var delta = new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], ["x"]);
+
+        if (twice)
+        {
+            var thrown = await Assert.ThrowsAnyAsync<Exception>(() => service.ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, delta));
+            Assert.Equal(PostgresErrorCodes.DeadlockDetected, FindPostgresException(thrown).SqlState);
+        }
+        else
+        {
+            Assert.Equal(SevenTvDeltaOutcome.Applied, (await service.ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, delta)).Outcome);
+        }
+
+        Assert.Single(Lines(logger, DeadlockLine));
+        Assert.Equal(2, hook.Calls);
+        Assert.Equal(twice, !(await EmoteAsync(setup, channel, "x")).IsArchived);
+        Assert.Equal(twice ? 0 : 1, await setup.Emotes.CountAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "z"));
+        Assert.Equal(twice ? 0 : 1, await setup.EmoteSetLeaveObservations.CountAsync(o => o.ChannelId == channel.Id));
     }
 
     // (10) E28: renamed while the 7TV call is in flight, with a warm cache under the old login that

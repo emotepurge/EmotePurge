@@ -16,7 +16,8 @@ using static EmotePurge.Infrastructure.Tests.Integration.SlotSyncKit;
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
 // Real PostgreSQL interleavings around the legacy set-centric report EmoteService.MarkInSetAsync (plan
-// #372, 2.9 and 6.5 (5), (6), (8) report half, (9)). With the flag on the report locks the affected
+// #372, 2.9 and 6.5 (5), (6), (8) report half, (9)), and of the EventAPI dispatch against the report
+// and the sync (Z8). With the flag on the report locks the affected
 // channel rows, then the emote rows, then upserts the leave rows (E25); in both flag states a deadlock
 // victim, and with the flag on a report that finds an affected channel deleted at its channel lock,
 // runs the whole transaction once more (E27). Every ordering is forced: a command interceptor runs the
@@ -70,7 +71,7 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
                 {
                     sync = StartSync(syncDb, channel, set, slotsEnabled: true, syncLogger);
                     await fixture.WaitUntilBlockedOnLockAsync(syncTag, sync);
-                    waitingQuery = await WaitingQueryAsync(syncTag);
+                    waitingQuery = await fixture.WaitingQueryAsync(syncTag);
                 });
             reportDb = fixture.CreateTaggedDbContext(reportTag, [hook]);
             report = StartReport(reportDb, set, slotsEnabled: true, reportLogger);
@@ -89,7 +90,7 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
 
                     report = StartReport(reportDb, set, slotsEnabled: true, reportLogger);
                     await fixture.WaitUntilBlockedOnLockAsync(reportTag, report);
-                    waitingQuery = await WaitingQueryAsync(reportTag);
+                    waitingQuery = await fixture.WaitingQueryAsync(reportTag);
                 });
             syncDb = fixture.CreateTaggedDbContext(syncTag, [hook]);
             sync = StartSync(syncDb, channel, set, slotsEnabled: true, syncLogger);
@@ -109,6 +110,103 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
         Assert.Empty(ReportLines(reportLogger, DeadlockLine));
         Assert.Empty(Lines(syncLogger, DeadlockLine));
         await AssertSerialEndStateAsync(setup, channel, set, newcomerSlots: 1);
+    }
+
+    // (5b) Z8 aligned, everything with the flag on: an EventAPI dispatch that pulls the reported emote
+    // (the mass delete's own REMOVE) and pushes a newcomer, against the report and against the sync.
+    // The dispatch takes the channel row first like the other two, so whichever side comes first, the
+    // second waits at its channel lock and both finish without 40P01 or a retry. Before, the dispatch
+    // inserted its leave row first and then waited for the emote row the report or sync held, while
+    // that side's own leave upsert waited for the dispatch's fresh leave row.
+    [Theory]
+    [InlineData("report", true)]
+    [InlineData("report", false)]
+    [InlineData("sync", true)]
+    [InlineData("sync", false)]
+    public async Task DeltaPull_AgainstReportOrSync_BothOn_TheSecondWaitsAtTheChannelLock_NoDeadlock(string contender, bool deltaFirst)
+    {
+        var tag = $"zeight{contender[0]}{(deltaFirst ? "d" : "c")}";
+        var set = SetOf(tag);
+        await using var setup = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(setup, $"inset_{tag}", set);
+        await SeedActiveEmoteAsync(setup, channel, Reported);
+
+        var deltaTag = $"inset_{tag}_delta";
+        var otherTag = $"inset_{tag}_{contender}";
+        var deltaLogger = new RecordingLogger<SevenTvSyncService>();
+        var syncLogger = new RecordingLogger<SevenTvSyncService>();
+        var reportLogger = new RecordingLogger<EmoteService>();
+        Task<SevenTvDeltaResult>? delta = null;
+        Task? other = null;
+        var waitingQuery = string.Empty;
+        Task StartOther(AppDbContext db) => contender == "report"
+            ? StartReport(db, set, slotsEnabled: true, reportLogger)
+            : StartSync(db, channel, set, slotsEnabled: true, syncLogger);
+
+        AppDbContext deltaDb;
+        AppDbContext otherDb;
+        if (deltaFirst)
+        {
+            // Held right after its emote lock (the statement the report's lock shares).
+            otherDb = fixture.CreateTaggedDbContext(otherTag);
+            var hook = new CommandHook(
+                text => text.Contains(ReportEmoteLock, StringComparison.Ordinal),
+                async occurrence =>
+                {
+                    if (occurrence != 1)
+                    {
+                        return;
+                    }
+
+                    other = StartOther(otherDb);
+                    await fixture.WaitUntilBlockedOnLockAsync(otherTag, other);
+                    waitingQuery = await fixture.WaitingQueryAsync(otherTag);
+                });
+            deltaDb = fixture.CreateTaggedDbContext(deltaTag, [hook]);
+            delta = StartDelta(deltaDb, channel, set, deltaLogger);
+        }
+        else
+        {
+            deltaDb = fixture.CreateTaggedDbContext(deltaTag);
+            var marker = contender == "report" ? ReportEmoteLock : SyncEmoteLock;
+            var hook = new CommandHook(
+                text => text.Contains(marker, StringComparison.Ordinal),
+                async occurrence =>
+                {
+                    if (occurrence != 1)
+                    {
+                        return;
+                    }
+
+                    delta = StartDelta(deltaDb, channel, set, deltaLogger);
+                    await fixture.WaitUntilBlockedOnLockAsync(deltaTag, delta);
+                    waitingQuery = await fixture.WaitingQueryAsync(deltaTag);
+                });
+            otherDb = fixture.CreateTaggedDbContext(otherTag, [hook]);
+            other = StartOther(otherDb);
+        }
+
+        await using (deltaDb)
+        await using (otherDb)
+        {
+            await SettleAsync(() => deltaFirst ? delta : other, () => deltaFirst ? other : delta);
+            var applied = await delta!.WaitAsync(TimeSpan.FromSeconds(30));
+            await other!.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.Contains(ChannelLock, waitingQuery, StringComparison.Ordinal);
+            Assert.Contains(applied.Outcome, new[] { SevenTvDeltaOutcome.Applied, SevenTvDeltaOutcome.NoChange });
+        }
+
+        Assert.Empty(Lines(deltaLogger, DeadlockLine));
+        Assert.Empty(Lines(syncLogger, DeadlockLine));
+        Assert.Empty(ReportLines(reportLogger, DeadlockLine));
+        Assert.True((await EmoteAsync(setup, channel, Reported)).IsArchived);
+        Assert.False((await EmoteAsync(setup, channel, Newcomer)).IsArchived);
+        Assert.Equal(1, await LeaveRowsAsync(setup, channel, set));
+        if (contender == "report")
+        {
+            Assert.Equal([channel.ChannelName], await AuditChannelsAsync(setup, set));
+        }
     }
 
     // (6) Z2, the switch-over window — four real deadlocks. Window A: sync on, report off; window B:
@@ -164,7 +262,7 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
 
                     sync = StartSync(syncDb, channel, set, slotsEnabled: true, syncLogger);
                     await fixture.WaitUntilBlockedOnLockAsync(syncTag, sync);
-                    Assert.Contains(LeaveUpsert, await WaitingQueryAsync(syncTag), StringComparison.Ordinal);
+                    Assert.Contains(LeaveUpsert, await fixture.WaitingQueryAsync(syncTag), StringComparison.Ordinal);
                 });
             reportDb = fixture.CreateTaggedDbContext(reportTag, [hook], options: $"-c deadlock_timeout={reportTimeout}");
             report = StartReport(reportDb, set, slotsEnabled: false, reportLogger);
@@ -184,7 +282,7 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
 
                     report = StartReport(reportDb, set, slotsEnabled: true, reportLogger);
                     await fixture.WaitUntilBlockedOnLockAsync(reportTag, report);
-                    Assert.Contains(LeaveUpsert, await WaitingQueryAsync(reportTag), StringComparison.Ordinal);
+                    Assert.Contains(LeaveUpsert, await fixture.WaitingQueryAsync(reportTag), StringComparison.Ordinal);
                 });
             syncDb = fixture.CreateTaggedDbContext(syncTag, [hook], options: $"-c deadlock_timeout={syncTimeout}");
             sync = StartSync(syncDb, channel, set, slotsEnabled: false, syncLogger);
@@ -242,7 +340,7 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
                 {
                     purge = CreateChannelService(purgeDb, publisher).PurgeAsync(k2.ChannelName, Actor);
                     await fixture.WaitUntilBlockedOnLockAsync(purgeTag, purge);
-                    purgeWaitedOn = await WaitingQueryAsync(purgeTag);
+                    purgeWaitedOn = await fixture.WaitingQueryAsync(purgeTag);
                 });
             await using var reportDb = fixture.CreateTaggedDbContext(reportTag, [hook]);
             var report = StartReport(reportDb, set, slotsEnabled: true, reportLogger);
@@ -265,7 +363,7 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
             await using var reportDb = fixture.CreateTaggedDbContext(reportTag);
             var report = StartReport(reportDb, set, slotsEnabled: true, reportLogger);
             await fixture.WaitUntilBlockedOnLockAsync(reportTag, report);
-            Assert.Contains(ChannelLock, await WaitingQueryAsync(reportTag), StringComparison.Ordinal);
+            Assert.Contains(ChannelLock, await fixture.WaitingQueryAsync(reportTag), StringComparison.Ordinal);
             if (variant == "purgefirst")
             {
                 await purgeTx.CommitAsync();
@@ -423,15 +521,6 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
         Assert.Equal(delete ? [0, 1, 2, 3] : [0, 1, -1, 2], order);
     }
 
-    // The query text of the backend tagged applicationName while it waits on a lock.
-    private async Task<string> WaitingQueryAsync(string applicationName)
-    {
-        await using var probe = fixture.CreateDbContext();
-        return await probe.Database
-            .SqlQuery<string>($"""SELECT query AS "Value" FROM pg_stat_activity WHERE application_name = {applicationName} AND wait_event_type = 'Lock'""")
-            .SingleAsync();
-    }
-
     // Lets every side finish, whatever happened to the others, before the test leaves the scope of
     // their contexts: disposing a context under a running command would hang a failing test instead of
     // failing it. A side is read lazily, because the second one is started inside the first one's hook.
@@ -460,6 +549,13 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
         AppDbContext db, Channel channel, string set, bool slotsEnabled, RecordingLogger<SevenTvSyncService> logger) =>
         CreateService(db, ApiReturning(channel, set, Live(Newcomer, "Newcomer", T1)), slotsEnabled, logger: logger)
             .SyncChannelAsync(channel.ChannelName);
+
+    // The EventAPI dispatch of the mass delete: REMOVE of the reported emote, plus a push so the
+    // dispatch is no implausible wipe of the one-emote set.
+    private static Task<SevenTvDeltaResult> StartDelta(
+        AppDbContext db, Channel channel, string set, RecordingLogger<SevenTvSyncService> logger) =>
+        CreateService(db, ApiReturning(channel, set), slotsEnabled: true, logger: logger)
+            .ApplyEmoteSetUpdateAsync(channel.ChannelName, set, new SevenTvEmoteSetDelta([Live(Newcomer, "Newcomer", null)], [], [Reported]));
 
     private static EmoteService CreateReportService(AppDbContext db, bool slotsEnabled, RecordingLogger<EmoteService> logger) =>
         new(

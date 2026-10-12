@@ -292,6 +292,57 @@ public class SevenTvSyncService(
             return SevenTvDeltaResult.WithoutChannel(SevenTvDeltaOutcome.ChannelUnknown);
         }
 
+        // One retry of the whole attempt when Postgres picks this dispatch as a deadlock victim (plan
+        // #372 cycle Z8, both flag states). With the flag on the attempt takes the slot work's lock
+        // order and meets the sync and the in-set report at the channel row; the retry covers the
+        // switch-over window, in which a worker with the flag off (leave rows first) and an api with
+        // the flag on (channel, emote, then leave rows) can still meet in a cycle. Before the slot
+        // work no writer of this path took another order, so with the flag off everywhere the retry
+        // never fires. It is result-neutral: the victim's transaction has rolled back as a whole, and
+        // the retry starts on a cleared change tracker and a re-read row, as a fresh dispatch would. A
+        // second failure propagates as before.
+        var retried = false;
+        while (true)
+        {
+            try
+            {
+                return await ApplyDeltaAttemptAsync(channel, normalized, emoteSetId, delta, cancellationToken);
+            }
+            catch (Exception ex) when (!retried && DatabaseErrors.IsDeadlock(ex))
+            {
+                retried = true;
+                logger.LogWarning(
+                    "ApplyEmoteSetUpdateAsync: the dispatch for {Channel} ({ChannelId}) was chosen as a deadlock victim — retrying once.",
+                    normalized, channel.Id);
+            }
+
+            db.ChangeTracker.Clear();
+            var reloaded = await db.Channels.SingleOrDefaultAsync(c => c.Id == channel.Id, cancellationToken);
+            if (reloaded is null)
+            {
+                // The same answer as the row gate's for a row that is gone (purged or merged away).
+                logger.LogInformation(
+                    "ApplyEmoteSetUpdateAsync: the row of {Channel} ({ChannelId}) is gone after the deadlock (purged or merged meanwhile) — dispatch dropped.",
+                    normalized, channel.Id);
+                return SevenTvDeltaResult.WithoutChannel(SevenTvDeltaOutcome.ChannelUnknown);
+            }
+
+            channel = reloaded;
+        }
+    }
+
+    /// <summary>
+    /// One attempt of <see cref="ApplyEmoteSetUpdateAsync"/> past both gates, on a row that has just
+    /// been read: the objection gates, the set check, the plausibility guard and the write. Run once
+    /// more on a deadlock (see the caller), so everything in it is idempotent.
+    /// </summary>
+    private async Task<SevenTvDeltaResult> ApplyDeltaAttemptAsync(
+        Channel channel,
+        string normalized,
+        string emoteSetId,
+        SevenTvEmoteSetDelta delta,
+        CancellationToken cancellationToken)
+    {
         // Same objection gate as the full sync. ChannelUnknown rather than a new outcome: the
         // EventAPI client answers it by dropping the subscription, which is exactly what a blocked
         // channel needs, and it reports no login back.
@@ -318,6 +369,25 @@ public class SevenTvSyncService(
                 "7TV-Dispatch für Set {SetId} ignoriert — {Channel} hat inzwischen Set {ActiveSetId} aktiv.",
                 emoteSetId, normalized, channel.ActiveEmoteSetId);
             return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.SetNotActive, currentName);
+        }
+
+        // Flag on (plan #372 cycle Z8): the slot work's lock order, the one the sync (E23) and the
+        // in-set report (E25) take — the channel row first, then the emote rows this dispatch can
+        // write (sorted), then the leave rows, then the save, all in one transaction. A sync or a
+        // report that comes first holds the channel row, so the dispatch waits there instead of
+        // holding a fresh leave row the other side needs while waiting for an emote row the other side
+        // holds. The rows are read behind the locks. Flag off: no row lock, and a transaction only
+        // when something is pulled, exactly as before the slot work.
+        await using var lockTransaction = slotReconcileEnabled
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        if (lockTransaction is not null && !await LockDeltaRowsAsync(channel.Id, delta, cancellationToken))
+        {
+            // A purge or merge committed after the row gate's re-read: the row gate's answer.
+            logger.LogInformation(
+                "ApplyEmoteSetUpdateAsync: the row of {Channel} ({ChannelId}) was gone at its row lock (purged or merged meanwhile) — dispatch dropped.",
+                normalized, channel.Id);
+            return SevenTvDeltaResult.WithoutChannel(SevenTvDeltaOutcome.ChannelUnknown);
         }
 
         var existing = await db.Emotes
@@ -390,14 +460,20 @@ public class SevenTvSyncService(
         // stages no change, so this runs before the NoChange guard, and the outcome stays NoChange (no
         // match-cache refresh, no live event). One explicit transaction per call that pulled anything, so
         // the observation and the archive commit together: the raw upsert does not join SaveChangesAsync's
-        // implicit one. A dispatch without pulls has nothing to record and keeps the implicit transaction.
-        // Observation rows first, then the emote rows — the same order as the set-centric delete report
-        // in the Api, and the sync takes no tag table, so no lock cycle (spec 5.5 rule 6). A channel
-        // purged meanwhile fails the upsert with 23503 and propagates, like the save's FK failure always has.
-        await using var transaction = delta.PulledIds.Count > 0
+        // implicit one. A dispatch without pulls has nothing to record and keeps the implicit transaction
+        // (flag off; with the flag on the lock transaction above carries every dispatch).
+        // Flag off: observation rows first, then the emote rows — the order of the sync and the
+        // set-centric delete report with the flag off, and the sync takes no tag table, so no lock cycle
+        // among them (spec 5.5 rule 6). A channel purged meanwhile fails the upsert with 23503 and
+        // propagates, like the save's FK failure always has. Flag on: the channel and emote rows are
+        // already held (see above), so the observation rows come third, as in the sync and the report;
+        // a dispatch that met a writer of the other order anyway (Z8 in the switch-over window) is
+        // retried by the caller.
+        await using var pullTransaction = lockTransaction is null && delta.PulledIds.Count > 0
             ? await db.Database.BeginTransactionAsync(cancellationToken)
             : null;
-        if (transaction is not null)
+        var transaction = lockTransaction ?? pullTransaction;
+        if (delta.PulledIds.Count > 0)
         {
             await EmoteSetLeaveObservations.RecordAsync(
                 db, channel.Id, emoteSetId, delta.PulledIds, DateTime.UtcNow, cancellationToken);
@@ -417,6 +493,34 @@ public class SevenTvSyncService(
             "7TV-Dispatch auf {Channel} angewendet: {Pushed} hinzugefügt, {Updated} aktualisiert, {Pulled} entfernt.",
             normalized, delta.Pushed.Count, delta.Updated.Count, delta.PulledIds.Count);
         return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.Applied, currentName);
+    }
+
+    /// <summary>
+    /// The locks of a dispatch with the flag on (Z8): the channel row through the pure channel entry,
+    /// then the existing emote rows of the channel whose 7TV ids the dispatch pushes, updates or pulls,
+    /// in one sorted statement. A pushed id without a row becomes an insert and needs no lock. Returns
+    /// false when the channel row is gone.
+    /// </summary>
+    private async Task<bool> LockDeltaRowsAsync(string channelId, SevenTvEmoteSetDelta delta, CancellationToken cancellationToken)
+    {
+        var lockedChannels = await db.LockChannelsByIdsAsync([channelId], cancellationToken);
+        if (lockedChannels.Count == 0)
+        {
+            return false;
+        }
+
+        var sevenTvIds = delta.Pushed.Select(e => e.Id)
+            .Concat(delta.Updated.Select(e => e.Id))
+            .Concat(delta.PulledIds)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var emoteIds = await db.Emotes
+            .AsNoTracking()
+            .Where(e => e.ChannelId == channelId && sevenTvIds.Contains(e.SevenTvEmoteId))
+            .Select(e => e.Id)
+            .ToListAsync(cancellationToken);
+        await db.LockEmotesByIdsAsync(emoteIds, cancellationToken);
+        return true;
     }
 
     /// <summary>
