@@ -29,7 +29,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `tests/EmotePurge.Infrastructure.Tests/Unit/{AdminDashboardReaderTests,LiveEventTests}.cs` ·
 `web/src/app/shared/charts/{line-chart,chart-series}.ts` ·
 `web/src/app/core/live/poll-while-visible.ts` · `web/src/app/core/page-visibility/page-visibility.ts` ·
-`web/src/app/features/admin/{admin-monitoring-page,admin-activity-section,admin-rate-limit-details-dialog}.ts` ·
+`web/src/app/features/admin/{admin-monitoring-page,admin-activity-section,admin-rate-limit-details-dialog,admin-load-section,admin-load-charts}.ts` ·
+`web/src/app/core/admin/{admin.model,admin.service}.ts` · `web/e2e/` (admin-monitoring spec, audit files) · `scripts/` (load gate) ·
 `docs/UI-Designsprache.md` (2.6)
 
 The activity series counts, per UTC calendar day, the `ChannelLiveDays` rows with `LiveMinutes > 0`.
@@ -45,8 +46,8 @@ back it reaches; the ranges are display windows, not a statement about retention
 
 The dashboard does not read `UsageStats` (operator decision 2026-10-11): the slot epic reshapes that
 table, and monthly workload comes from the system-load rollups instead. A container-free structure test
-(`AdminDashboardQueryServiceStructureTests`) fails the build if `AdminDashboardQueryService` or
-`AdminDashboardLoadBucketing` mentions `UsageStat` or `UsageStats`. It scans the source files rather
+(`AdminDashboardQueryServiceStructureTests`) fails the build if any `AdminDashboard*.cs` file in
+`Infrastructure/Services` mentions `UsageStat` or `UsageStats`, so a newly split-out file is covered without a list. It scans the source files rather
 than the IL: an IL walk would have to follow the compiler-generated async state machines and closures
 and would still miss the table name inside a raw SQL string.
 
@@ -77,8 +78,8 @@ stream in `LiveEventTests`), so the dashboard adds no stream traffic and no new 
 of the activity query and both telemetry reads, and `GET /api/admin/rate-limits` now goes through it
 with a byte-identical response. The caches are per Api instance, with single-flight: 60 s per range
 for the activity series, 30 s for the rate-limit snapshot and 30 s for the trend. Concurrent readers
-share one fill, which runs without any caller's token (`CancellationToken.None`), so one navigating browser cannot
-cancel it for the others. Expiry is counted from the end of the fill, and a failed fill is expired at once and therefore
+share one fill, which runs without any caller's token, so one navigating browser cannot
+cancel it for the others (the load rebuild has a 30-second deadline of its own instead). Expiry is counted from the end of the fill, and a failed fill is expired at once and therefore
 never cached; the next request retries. The clock is the injected `TimeProvider`, and the same value is
 the `nowUtc` passed to the query service. There is no cross-instance sharing or invalidation: with
 more than one Api replica each holds its own copy for at most one TTL.
@@ -122,8 +123,8 @@ included although raw samples are kept for seven days: at 1-second cadence the s
 failed its budget (spec section 7, B1). A test pins this per range on the SQL text.
 
 The raw path pairs samples exactly like the rollup: same source and `ProcessInstanceId`, positive gap of
-at most 2.5 x the configured `SystemLoad:IntervalSeconds` (the value the rollup worker passes), monotonic
-counter; the rate of a pair counts in the bucket of its later sample. The helpers for that rule (gap,
+at most 2.5 x the configured `SystemLoad:IntervalSeconds` (the raw path uses the Api's value, the
+rollup the Worker's; both containers must be recreated after a change), monotonic counter; the rate of a pair counts in the bucket of its later sample. The helpers for that rule (gap,
 counter delta, rate, host jiffy delta, host memory used, nearest-rank P95 index) are now `internal` in
 `SystemLoadRollupMath` and used by both paths, so there is one implementation of the gap rule. The read
 starts one maximum pair gap (`SystemLoadRollupMath.MaximumPairGap`, 2.5 intervals) before the window
@@ -220,12 +221,30 @@ longer ranges (their source changes at most hourly). Each key is single-flight: 
 one range share the running rebuild instead of waiting for a turn. Across all ranges only one rebuild
 runs at a time (one `SemaphoreSlim` in the facade), because a cold `24h` read is the memory-heavy one
 and six ranges rebuilding together would stack that peak. A reader that cannot get the turn within 5 s
-starts no rebuild and receives `Busy`; the route turns that into `503` with `Retry-After: 5` and no
+starts no rebuild and receives `Busy`; a rebuild that holds the turn is cancelled after 30 s (on the injected
+`TimeProvider`), so a stalled read frees the gate and is not cached instead of holding it until the driver's
+command timeout; the route turns that into `503` with `Retry-After: 5` and no
 body, since neither the spec nor the error catalogue names a code for it and the client keeps its last
 answer. A failed or busy outcome is never cached, and the gate is released in every case. Every real
 rebuild writes two Debug lines (`Load dashboard cold rebuild started/finished range=... ms=...`), cache
 hits and joined waiters write none, so a measuring script can reconstruct the rebuild intervals from the
 log alone.
+
+Load range, web side (cut B). One 60-second tick drives the section: the 1-hour and 24-hour ranges
+act on every tick, 7 days and longer on every fifth (5 minutes), and nothing runs while the page is
+hidden; on return the section reloads once immediately. A `503` or any other error keeps the last
+complete answer on screen and marks it stale with the UTC time of the last success; the next success
+replaces it entirely (no tail, no merge). While the selected range holds no measurement the section
+sends one extra `13mo` read as a history probe and stops once a range is positive. The rate-limit trend
+shares the load buckets only up to 24 hours and is hidden beyond (its source is 24 hours of minutes),
+otherwise it keeps its own minute axis. From two series on the chart legend is shown, so the dash
+patterns that tell same-tone series apart are keyed (UI-Designsprache 2.6, a convention change). The
+eleven charts share one plot origin through `minPlotLeft` (`SHARED_PLOT_LEFT`) with the left margin
+capped at 40 % of the width. Small values stay readable: core axis labels follow the tick step, and
+per-minute workload is a `rate` unit with up to two decimals while hourly sums stay integers. The host
+RAM share (R-5) is derived on the client from the raw used/total pair of one bucket, raw ranges only. The
+bucket counts include the running bucket (61, 289, 169, 361, 361): the numbers in spec sections 5.2 and
+11 are one short by design.
 
 ### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)
 

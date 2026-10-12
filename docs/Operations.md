@@ -301,8 +301,11 @@ further apart than 2.5 times the **currently configured** `SystemLoad:IntervalSe
   they now exceed 2.5 s. Going from 1 s to 30 s drops nothing, because 1-second pairs stay below
   75 s. Hours already rolled up under the old interval are not recomputed.
 - A cadence of 1 second is a stress setting: it multiplies the raw rows read for a 24-hour chart
-  (172,800 instead of 5,760 per source at the default), so keep it for short experiments.
+  (86,400 instead of 2,880 rows per source over 24 hours at the default; 172,800 instead of 5,760 across both sources), so keep it for short experiments.
 - Memory, channel and workload series do not depend on pairs and are unaffected.
+- The two paths read different containers' settings: the raw ranges apply the **Api's** configured
+  `SystemLoad:IntervalSeconds`, the hourly rollup the **Worker's**. After changing it, recreate both
+  containers; otherwise the raw and the hourly ranges apply different gap rules and diverge.
 
 ## Excluding a chatter (GDPR objection)
 
