@@ -342,6 +342,44 @@ function selectedSevenTvIds(emotes: readonly EmoteUsageTotal[]): string[] {
   return [...new Set(emotes.map((emote) => emote.sevenTvEmoteId))];
 }
 
+/** A card that stands for one set entry next to its siblings: a slot card, or a live member keyed
+ *  per entry in a slot response (plan 377, 2.3) — never an emote-mode row or a grouped member. */
+function isPerEntryCard(emote: EmoteUsageTotal): boolean {
+  return emote.slotId !== null || emote.slotKey.startsWith('live:');
+}
+
+/**
+ * The names the delete confirmation lists for one 7TV id shown as slot cards (plan 377, 2.6, F3):
+ * the first marked card's name, then the names of every `'live'` card of the id in D2 order (add
+ * date ascending, unknown last, then name ordinal), then any further alias the run records — so the
+ * confirmation names every entry the run's one `REMOVE` takes. Ordinal distinct.
+ */
+function confirmationNamesFor(
+  markedName: string,
+  cards: readonly EmoteUsageTotal[],
+  aliases: readonly string[],
+): string[] {
+  const instantOf = (iso: string | null): number | null => {
+    const ms = iso ? Date.parse(iso) : Number.NaN;
+    return Number.isNaN(ms) ? null : ms;
+  };
+  const byD2 = cards
+    .flatMap((emote) =>
+      emote.aliases.map((name) => ({ name, instant: instantOf(emote.firstSeenAt) })),
+    )
+    .sort((a, b) => {
+      if (a.instant !== b.instant) {
+        if (a.instant === null) {
+          return 1;
+        }
+        return b.instant === null ? -1 : a.instant - b.instant;
+      }
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    })
+    .map((entry) => entry.name);
+  return [...new Set([markedName, ...byD2, ...aliases])];
+}
+
 /** `emotes` grouped by 7TV id, groups in first-appearance order, cards in their given order. */
 function groupBySevenTvId(emotes: readonly EmoteUsageTotal[]): Map<string, EmoteUsageTotal[]> {
   const groups = new Map<string, EmoteUsageTotal[]>();
@@ -2049,15 +2087,26 @@ export class UsageStatsPage {
       this.selection.selectedItems().filter((emote) => emote.membership === 'live'),
     );
     return [...markedById].map(([sevenTvEmoteId, marked]) => {
-      const cards = [...marked, ...(liveById.get(sevenTvEmoteId) ?? [])];
+      const idCards = liveById.get(sevenTvEmoteId) ?? marked;
+      const cards = [...marked, ...idCards];
+      const aliases = [
+        ...new Set(cards.flatMap((emote) => [...emote.aliases, ...emote.siblingNames])),
+      ];
       return {
         emoteId: cards.find((emote) => emote.emoteId !== null)?.emoteId ?? undefined,
         sevenTvEmoteId,
         name: marked[0].emoteName,
-        aliases: [...new Set(cards.flatMap((emote) => [...emote.aliases, ...emote.siblingNames]))],
+        aliases,
+        // Every name the run takes, for the confirmation (plan 377, 2.6, F3) — only for an id
+        // shown as slot cards, so with the flag off the confirmation lists exactly what it did,
+        // and an emote-mode duplicate cell (`×2`) still names only its own name there.
+        ...(idCards.some(isPerEntryCard)
+          ? { confirmationNames: confirmationNamesFor(marked[0].emoteName, idCards, aliases) }
+          : {}),
         // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
         // Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the dock's own
-        // hiddenSelectedCount is built from, so the two numbers can never disagree.
+        // hiddenSelectedCount is built from, so the two numbers can never disagree. An unmarked
+        // sibling that the filter hides does not make the entry hidden.
         hidden: marked.every((emote) => !this.selection.isVisible(emote)),
       };
     });

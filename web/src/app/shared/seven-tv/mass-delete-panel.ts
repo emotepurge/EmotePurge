@@ -49,12 +49,27 @@ export interface DeletableEmote {
    *  non-active) `setId()` rather than only the active one (#227, fixing the #200 K6 known
    *  limitation this comment used to describe as open). */
   aliases?: readonly string[];
+  /**
+   * The names the delete confirmation lists for this entry — omitted means `[name]`, which is what
+   * every host passed before (plan 377, 2.6, operator decision F3). The usage page sets it only for
+   * a 7TV id it shows as slot cards: until #378 the run deletes per id, so one marked card takes
+   * every other name of the emote with it, marked or not, visible or filtered out, and the last
+   * screen before the irreversible write must name each one. The names land in the list the entry
+   * falls into by `hidden`. As soon as one entry carries this field, the visible list is shown
+   * without its 50-name cap, so a co-deleted alias can never hide behind "n more".
+   */
+  confirmationNames?: readonly string[];
   /** Whether the host page's current filter hides this emote right now (`!selection.isVisible`).
    *  Required, not optional (Konzept "Auswahl überlebt Suche und Filter" 2.1, Codex befund 3b):
    *  this panel has no filter/visibility knowledge of its own and must never silently assume
    *  "everything is visible" — the delete-confirm dialog's hidden-by-filter block depends on every
    *  host page actually supplying it. */
   hidden: boolean;
+}
+
+/** What the delete confirmation lists for one entry — see `DeletableEmote.confirmationNames`. */
+function confirmationNamesOf(emote: DeletableEmote): string[] {
+  return emote.confirmationNames ? [...emote.confirmationNames] : [emote.name];
 }
 
 /**
@@ -306,15 +321,23 @@ export class MassDeletePanel {
   // block, because a filtered-out delete target must stay identifiable by name right up to the
   // irreversible action rather than collapsing into "n weitere". Owned here and handed to the
   // delete flow as they are (`DeleteFlowRequest`), so the dialog renders these very signals.
+  // Each entry contributes its `confirmationNames` (plan 377, F3), flat and in entry order; an
+  // entry without them contributes its one `name`, exactly as before.
   private readonly visibleSelectedEmoteNames = computed(() =>
     this.selectedEmotes()
       .filter((emote) => !emote.hidden)
-      .map((emote) => emote.name),
+      .flatMap(confirmationNamesOf),
   );
   private readonly hiddenSelectedEmoteNames = computed(() =>
     this.selectedEmotes()
       .filter((emote) => emote.hidden)
-      .map((emote) => emote.name),
+      .flatMap(confirmationNamesOf),
+  );
+  /** Whether the visible list goes to the confirmation without its 50-name cap — exactly when an
+   *  entry names co-deleted aliases (plan 377, 2.6, Codex Sol R2-2): those are not all on screen,
+   *  so the reason the cap was harmless for the visible names no longer holds. */
+  private readonly visibleSelectedEmoteNamesUncapped = computed(() =>
+    this.selectedEmotes().some((emote) => emote.confirmationNames !== undefined),
   );
 
   /** What stopped the last confirmed delete right before it started (the delete flow's start-time
@@ -381,6 +404,7 @@ export class MassDeletePanel {
     selectedEmotes: this.selectedEmotes,
     visibleEmoteNames: this.visibleSelectedEmoteNames,
     hiddenEmoteNames: this.hiddenSelectedEmoteNames,
+    visibleEmoteNamesUncapped: this.visibleSelectedEmoteNamesUncapped,
     hostLockReasonKey: this.deleteLockReasonKey,
     liveAliasRead: this.liveAliasRead,
     notice: this.abortNotice,

@@ -7,7 +7,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { Button } from '../ui/button';
 import { openAppDialog } from '../ui/dialog';
 import { DialogShell } from '../ui/dialog-shell';
-import { NamePreviewList } from '../ui/name-preview-list';
+import { NamePreviewList, PREVIEW_CAP } from '../ui/name-preview-list';
 import { NoticeBanner } from '../ui/notice-banner';
 
 /** Live view onto the host panel's state: the warning check finishes while the dialog is open,
@@ -23,6 +23,10 @@ export interface DeleteConfirmDialogData {
   /** The visible names — same capped preview as before (Konzept "Auswahl überlebt Suche und
    *  Filter" 2.1: they are on screen already, so the 50-name cap costs nothing here). */
   emotes: Signal<string[]>;
+  /** `true` lifts the 50-name cap from the visible list (plan 377, 2.6, Codex Sol R2-2): set by the
+   *  panel while an entry names co-deleted aliases, which are not all on screen, so the reason the
+   *  cap was harmless no longer holds. Omitted or `false` keeps the cap. Live like the lists. */
+  emotesUncapped?: Signal<boolean>;
   /** Names the host page's current filter hides right now. Shown in their own, uncapped block —
    *  this is the safety-relevant half: every target the user cannot currently see must still be
    *  identifiable by name right before the irreversible run. */
@@ -61,7 +65,8 @@ export interface DeleteConfirmDialogData {
       <!-- Names the set right under the title (spec 8.8) — a duplicate cell (#74, two aliases,
            one REMOVE) is still exactly one entry in data.emotes() (mass-delete-panel.ts builds
            one DeletableEmote per cell), so it reads as one deletion here too, in no group of its
-           own (8.9 is gone). -->
+           own (8.9 is gone). Only an entry that carries confirmation names (slot cards, plan 377
+           F3) lists each name the run takes, and the title counts those names. -->
       <p class="text-sm text-fg-secondary">
         {{ 'massDelete.confirmSetLine' | transloco: { setName: data.setName } }}
       </p>
@@ -70,7 +75,7 @@ export interface DeleteConfirmDialogData {
           {{ 'massDelete.confirmSetNotActive' | transloco }}
         </p>
       }
-      <app-name-preview-list [names]="data.emotes()" />
+      <app-name-preview-list [names]="data.emotes()" [cap]="visibleCap()" />
 
       <!-- Uncapped on purpose (Konzept "Auswahl überlebt Suche und Filter" 2.1): the 50-name cap
            above is fine because those names are on screen already, but a target the current
@@ -179,6 +184,11 @@ export class DeleteConfirmDialog {
 
   protected readonly titleKey = computed(() =>
     pluralKey(this.totalCount(), 'massDelete.confirmTitle'),
+  );
+
+  /** The visible list's cap: the list's own default, or none while `emotesUncapped` holds. */
+  protected readonly visibleCap = computed(() =>
+    this.data.emotesUncapped?.() ? null : PREVIEW_CAP,
   );
 
   protected readonly hiddenByFilterKey = computed(() =>

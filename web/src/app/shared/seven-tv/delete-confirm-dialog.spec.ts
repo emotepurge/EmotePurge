@@ -79,6 +79,8 @@ interface RenderOptions {
   hiddenEmotes?: string[];
   setName?: string;
   isActiveSet?: boolean;
+  /** Omitted leaves `emotesUncapped` out of the data, the way every host passed it before. */
+  emotesUncapped?: boolean;
 }
 
 interface Harness {
@@ -153,6 +155,9 @@ describe('DeleteConfirmDialog', () => {
       warningLoading,
       setName: options.setName ?? 'Main Set',
       isActiveSet: options.isActiveSet ?? true,
+      ...(options.emotesUncapped === undefined
+        ? {}
+        : { emotesUncapped: signal(options.emotesUncapped) }),
     };
 
     const fixture = TestBed.createComponent(DeleteConfirmDialog);
@@ -384,6 +389,32 @@ describe('DeleteConfirmDialog', () => {
 
       // render()'s default visible fixture is ['Kappa', 'PogU'] (2) + 2 hidden = 4.
       expect(dialog.text()).toContain('4 Emotes von 7TV löschen?');
+    });
+  });
+
+  // Plan 377, 2.6 (Codex Sol R2-2): co-deleted aliases of a slot card sit in the visible list but
+  // are not all on screen, so the panel lifts that list's cap while such an entry is selected.
+  describe('the visible list without its cap (plan 377, R2-2)', () => {
+    const SIXTY = Array.from({ length: 60 }, (_, index) => `Name${index}`);
+
+    function visibleListItems(dialog: Harness): string[] {
+      const list = dialog.fixture.nativeElement.querySelector('ul') as HTMLUListElement;
+      return Array.from(list.querySelectorAll('li')).map((item) => item.textContent?.trim() ?? '');
+    }
+
+    it('lists every visible name and no "and n more" row when the data lifts the cap', () => {
+      const dialog = render({ emotes: SIXTY, emotesUncapped: true });
+
+      expect(visibleListItems(dialog)).toEqual(SIXTY);
+    });
+
+    it('keeps the 50-name cap when the data does not lift it', () => {
+      const dialog = render({ emotes: SIXTY, emotesUncapped: false });
+
+      const items = visibleListItems(dialog);
+      expect(items).toHaveLength(51);
+      expect(items.slice(0, 50)).toEqual(SIXTY.slice(0, 50));
+      expect(items).not.toContain('Name50');
     });
   });
 

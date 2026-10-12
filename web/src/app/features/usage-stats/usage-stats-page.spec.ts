@@ -5495,6 +5495,23 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(component['voteBallotSevenTvEmoteIds']()).toEqual(['7tv-x']);
       expect(component['voteBallotSize']()).toBe(1);
     });
+
+    it('gives an emote-mode duplicate cell (×2) no confirmation names, so its confirmation reads as before (F3 flag-off guard)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('d', 'Dupe', 5)],
+        members: memberList([
+          member('7tv-d', 'Dupe'),
+          member('7tv-d', 'DupeAlias'),
+          member('7tv-e', 'Echo'),
+        ]),
+      });
+      component['selection'].onRowClick(card('7tv-d'), { shiftKey: false } as MouseEvent);
+
+      const [entry] = component['selectedForDelete']();
+      expect(entry.aliases).toEqual(['Dupe', 'DupeAlias']);
+      expect('confirmationNames' in entry).toBe(false);
+    });
   });
 });
 
@@ -8500,9 +8517,32 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
         sevenTvEmoteId: '7tv-x',
         name: 'hob44',
         aliases: ['hob44', 'ome44'],
+        confirmationNames: ['hob44', 'ome44'],
         hidden: false,
       },
     ]);
+  });
+
+  it('names the unmarked sibling a filter hides in the confirmation, marked card first, and keeps the entry visible (F3, S3)', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-hob');
+    // Hides 'ome44' (and 'Other'); the marked 'hob44' stays on screen.
+    component['usageFilter'].setNameFilter('hob44');
+
+    const [entry] = component['selectedForDelete']();
+    expect(entry.hidden).toBe(false);
+    // Marked first, although 'ome44' entered the set earlier (D2 order would put it first).
+    expect(entry.confirmationNames).toEqual(['hob44', 'ome44']);
+  });
+
+  it('marks the entry hidden only when its marked card is the one the filter hides', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-hob');
+    component['usageFilter'].setNameFilter('ome44');
+
+    const [entry] = component['selectedForDelete']();
+    expect(entry.hidden).toBe(true);
+    expect(entry.confirmationNames).toEqual(['hob44', 'ome44']);
   });
 
   it('projects both slots of the emote as freed when one of its two cards is marked', () => {
