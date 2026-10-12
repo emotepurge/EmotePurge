@@ -985,9 +985,13 @@ umgestoßen werden; Punkt 1 in Abschnitt 10 ist additiv und ändert keinen beste
 ## B6-Protokoll (Parallelitäts-Gate unter Prod-Grenzen, 2026-10-12)
 
 **Ergebnis: bestanden, für beide Seeds (1 s und 30 s), alle Kriterien (a)–(e).** Branch
-`feat/381-admin-dashboard-b`, Api-Image aus `b4fbc721`. Gemessen mit den Skripten aus `a2c2bfc5`;
-nach dem Review mit dem korrigierten Auswerter aus `48ce7539` neu ausgewertet (Abschnitt
-„Nachauswertung“), die Zahlen unten sind die der Nachauswertung.
+`feat/381-admin-dashboard-b`. Herkunft der Zahlen:
+
+- **1-s-Seed:** Lauf vom Vormittag (Api-Image aus `b4fbc721`, Skripte `a2c2bfc5`), nach dem Review mit
+  dem korrigierten Auswerter neu ausgewertet (Abschnitt „Nachauswertung“). Nicht neu gemessen.
+- **30-s-Seed:** Neulauf am Nachmittag über den Wrapper auf `0a9bd4ba` (Api-Image aus diesem Stand,
+  also inklusive des Neuaufbau-Deadlines aus `5fbe857d`), mit exakter Request-Zeitmessung
+  (`timing=curl_end`), 8 ms Proben-Offset und 480 Haupttakten.
 
 ### Aufbau
 
@@ -996,7 +1000,8 @@ nach dem Review mit dem korrigierten Auswerter aus `48ce7539` neu ausgewertet (A
   der Dev-Stack (`emotepurge-dev-*`) lief unberührt weiter. Migrationen per `dotnet ef database update`
   gegen die Wegwerf-DB, Image per `docker build -f src/EmotePurge.Api/Dockerfile` unter eigenem Tag.
   Seit `48ce7539` erledigt `scripts/dashboard-concurrency-gate-env.sh` Aufbau, Lauf, Auswertung und
-  Abbau (Trap) in einem Aufruf; der Messlauf unten lief noch mit denselben Schritten von Hand.
+  Abbau (Trap) in einem Aufruf; der 1-s-Lauf lief noch mit denselben Schritten von Hand, der finale
+  30-s-Lauf über den Wrapper.
 - **Api-Container** mit `--cpus=1 --memory=512m` (im Container geprüft: `cpu.max = 100000 100000`,
   `memory.max = 536870912`), `127.0.0.1:18080`, Produktions-Logging unverändert (EF-Kommandos auf
   Information wie in Prod) plus `Logging__LogLevel__EmotePurge.Infrastructure.Services.AdminDashboardReader=Debug`
@@ -1020,14 +1025,15 @@ nach dem Review mit dem korrigierten Auswerter aus `48ce7539` neu ausgewertet (A
   `Users`-Zeile für die Sitzungsprüfung in `OnValidatePrincipal` und `Auth__AdminTwitchUserIds` auf
   dieselbe ID. Ein Browser-Login ist **keine** Alternative: der registrierte Twitch-OAuth-Redirect zeigt
   auf `localhost:5151`, nicht auf den Gate-Container.
-- **Lauf** `scripts/dashboard-concurrency-gate.sh`, Standardwerte: 384 Haupttakte à 2,5 s (16 min,
-  Range-Wechsel `24h`/`13mo` je Takt, je Takt drei parallele `curl`), danach dreimal 26 Takte nur Probe
-  (65 s, beide Keys werden kalt) und ein Doppeltakt mit 3 × `24h` + 3 × `13mo` im selben Augenblick;
-  465 Health-Proben, 19,3 min. Die Probe geht `PROBE_OFFSET_MS` nach den Load-Requests raus, **je Seed
-  verschieden: 1 s → 50 ms, 30 s → 20 ms** (der Aufbau beginnt erst ~12 ms nach dem Senden, nach
-  Request-Parsing und Sitzungsprüfung; ein warmer 30-s-`24h`-Aufbau dauert nur 11–54 ms; bei Offset 0
-  läge die Sendezeit vor jedem Aufbauintervall und keine Probe zählte). Speicher und
-  `pg_stat_statements` je Takt bei +2,0 s. Auswertung `scripts/dashboard-concurrency-gate-eval.mjs`.
+- **Lauf** `scripts/dashboard-concurrency-gate.sh`: Haupttakte à 2,5 s (Range-Wechsel `24h`/`13mo` je
+  Takt, je Takt drei parallele `curl`), danach dreimal 26 Takte nur Probe (65 s, beide Keys werden kalt)
+  und ein Doppeltakt mit 3 × `24h` + 3 × `13mo` im selben Augenblick. **Je Seed verschieden:**
+  1 s → 384 Haupttakte, 50 ms Proben-Offset (465 Proben, 19,3 min); 30 s → 480 Haupttakte, 8 ms Offset
+  (561 Proben, 23,3 min). Der Offset muss die Probe in einen laufenden Aufbau legen: beim 1-s-Seed
+  dauert ein `24h`-Aufbau ≥ 266 ms, beim 30-s-Seed nur 10–55 ms ab Ankunft der Requests — ein erster
+  exakt gemessener 30-s-Lauf mit 20 ms und 384 Takten traf nur 27 von 40 nötigen Aufbauten (ungültig),
+  deshalb die 30-s-Vorgaben des Wrappers. Speicher und `pg_stat_statements` je Takt bei +2,0 s.
+  Auswertung `scripts/dashboard-concurrency-gate-eval.mjs`.
 - **Speicher über `clear_refs`, kein Fallback nötig**: `docker exec -u root … echo 5 > /proc/1/clear_refs`
   funktionierte im Image (PID 1 = `dotnet EmotePurge.Api.dll`). Zuwachs je Takt = `VmHWM` seit dem
   letzten Reset − `VmRSS` beim Reset. Zusatzspalte: cgroup `memory.current` (die Zahl hinter
@@ -1035,22 +1041,23 @@ nach dem Review mit dem korrigierten Auswerter aus `48ce7539` neu ausgewertet (A
 
 ### Zahlen
 
-| Kriterium | 1-s-Seed (171.600 Zeilen) | 30-s-Seed (5.720 Zeilen) |
+| Kriterium | 1-s-Seed (171.600 Zeilen; Lauf vormittags, neu ausgewertet) | 30-s-Seed (5.720 Zeilen; Neulauf auf `0a9bd4ba`) |
 |---|---|---|
-| Vollständigkeit (je Takt 1 Probe, 1 Speicher-, 1 Query-Zeile, 3 Load-Zeilen je Range) | 465 Takte, 0 Lücken | 465 Takte, 0 Lücken |
-| Gültigkeit: kalte Zyklen je Key (Hauptphase) | `24h` 28, `13mo` 15 | `24h` 28, `13mo` 15 |
-| Gültigkeit: Proben im Aufbauintervall (≥ 40) | 45 (31 in `24h`-, 14 in `13mo`-Aufbauten) | 43 (29 / 14) |
-| (a) Aufbauten je Zyklus / Log ↔ `pg_stat_statements` | je Zyklus genau 1; 49 Aufbauten = 49 Load-Queries, 0 Abweichungen in 465 Fenstern; alle 1.170 Load-Antworten 200 | je Zyklus genau 1; 49 = 49, 0 Abweichungen; 1.170 × 200 |
-| (b) `VmHWM`-Zuwachs, Maximum über alle 465 Takte | **6,1 MiB** (Median in Aufbautakten 0,0 MiB; erster Aufbau nach Start 4,3 MiB) | **9,5 MiB** (Median 0,0; erster 0,8 MiB) |
-| (b) negative Zuwächse (als 0 gezählt, s. u.) | 75, kleinster −0,6 MiB | 86, kleinster −1,1 MiB |
-| (b) Zusatz: `VmHWM` absolut / cgroup `memory.current` max. | 216,4 MiB / 128,1 MiB | 222,4 MiB / 134,9 MiB |
-| (c) Health-Proben `200` | 465 / 465 | 465 / 465 |
-| (c) p95 der Proben im Aufbau | **3,8 ms** (max. 23,8 ms) | **3,2 ms** (max. 4,5 ms) |
-| (d) Doppeltakt: je Key ein Aufbau, Reihenfolge, Gate-Wartezeit des zweiten Keys | seriell (`24h` zuerst, je 3 Requests bedient, alle 200); `13mo` wartete 337 / 339 / 278 ms, Antworten 200 in 431–524 ms, 0 × 503 | seriell; Wartezeit 32 / 28 / 31 ms, Antworten 200 in 184–210 ms, 0 × 503 |
-| (e) `24h` uncached Ende-zu-Ende (`time_total`, n = Requests) — **gated** | **Median 300,7 ms**, p95 888,7 ms, max. 1.352,7 ms (n = 84) | Median 19,9 ms, p95 44,6 ms, max. 76,1 ms (n = 83) |
-| (e) `13mo` uncached — nur berichtet | Median 172,7 ms, max. 275,1 ms (n = 43) | Median 175,5 ms, max. 352,9 ms (n = 45) |
-| (e) Antwortgröße max. | `24h` 97.739 B, `13mo` 140.003 B (≤ 262.144) | `24h` 95.960 B, `13mo` 138.495 B |
-| Zusatz: Aufbauzeit laut Log (Median / erster) | `24h` 298 / 1.323 ms; `13mo` 169 / 237 ms | `24h` 16 / 54 ms; `13mo` 170 / 328 ms |
+| Vollständigkeit (je Takt 1 Probe, 1 Speicher-, 1 Query-Zeile, 3 Load-Zeilen je Range) | 465 Takte, 0 Lücken | 561 Takte, 0 Lücken |
+| Zuordnung Request → Aufbau | Legacy-Heuristik (Sendezeit vor `curl`-Start) | exakt (`timing=curl_end`) |
+| Gültigkeit: kalte Zyklen je Key (Hauptphase) | `24h` 28, `13mo` 15 | `24h` 35, `13mo` 19 |
+| Gültigkeit: Proben im Aufbauintervall (≥ 40) | 45 (31 in `24h`-, 14 in `13mo`-Aufbauten) | **56** (36 / 20) |
+| (a) Aufbauten je Zyklus / Log ↔ `pg_stat_statements` | je Zyklus genau 1; 49 Aufbauten = 49 Load-Queries, 0 Abweichungen in 465 Fenstern; alle 1.170 Load-Antworten 200 | je Zyklus genau 1, jeder bediente alle 3 Requests; 60 = 60, 0 Abweichungen in 561 Fenstern; alle 1.458 Load-Antworten 200 |
+| (b) `VmHWM`-Zuwachs, Maximum über alle Takte | **6,1 MiB** (Median in Aufbautakten 0,0 MiB; erster Aufbau nach Start 4,3 MiB) | **10,1 MiB** (Median 0,0; erster 2,7 MiB) |
+| (b) negative Zuwächse (als 0 gezählt, s. u.) | 75, kleinster −0,6 MiB | 108, kleinster −0,8 MiB |
+| (b) Zusatz: `VmHWM` absolut / cgroup `memory.current` max. | 216,4 MiB / 128,1 MiB | 225,1 MiB / 137,3 MiB |
+| (c) Health-Proben `200` | 465 / 465 | 561 / 561 |
+| (c) p95 der Proben im Aufbau | **3,8 ms** (max. 23,8 ms) | **2,3 ms** (max. 36,2 ms) |
+| (d) Doppeltakt: je Key ein Aufbau, Reihenfolge, Gate-Wartezeit des zweiten Keys | seriell (`24h` zuerst, je 3 Requests bedient, alle 200); `13mo` wartete 337 / 339 / 278 ms, Antworten 200 in 431–524 ms, 0 × 503 | seriell, je 3 bedient, alle 200; Wartezeit des zweiten Keys 26 / 167 / 20 ms, Antworten 200 in 179–197 ms, 0 × 503 |
+| (e) `24h` uncached Ende-zu-Ende (`time_total`, n = Requests) — **gated** | **Median 300,7 ms**, p95 888,7 ms, max. 1.352,7 ms (n = 84) | **Median 20,9 ms**, p95 47,2 ms, max. 63,7 ms (n = 105) |
+| (e) `13mo` uncached — nur berichtet | Median 172,7 ms, max. 275,1 ms (n = 43) | Median 172,6 ms, max. 325,3 ms (n = 57) |
+| (e) Antwortgröße max. | `24h` 97.739 B, `13mo` 140.003 B (≤ 262.144) | `24h` 95.982 B, `13mo` 138.471 B |
+| Zusatz: Aufbauzeit laut Log (Median / erster) | `24h` 298 / 1.323 ms; `13mo` 169 / 237 ms | `24h` 17 / 44 ms; `13mo` 167 / 302 ms |
 
 Lesart:
 
@@ -1062,8 +1069,9 @@ Lesart:
   Takt 77 (`13mo`) startete der dritte `curl` rund 160 ms nach den beiden anderen — Prozessstart unter
   Last auf der Devbox, nicht im Api-Container —, kam damit erst nach dem TTL-Ablauf an und löste den
   Aufbau aus; die beiden ersten bekamen noch den gültigen Cache-Wert (14 / 23 ms). Eine Query für den
-  Takt, kein Doppelaufbau. Im 30-s-Lauf dasselbe einmal mit zwei zu eins. (Erste Fassung des Protokolls:
-  „TTL lief zwischen den Ankünften ab“ — die Ursache der späten Ankunft war der Spawn-Verzug, s. u.)
+  Takt, kein Doppelaufbau. (Erste Fassung des Protokolls: „TTL lief zwischen den Ankünften ab“ — die
+  Ursache der späten Ankunft war der Spawn-Verzug, s. u.) Im finalen 30-s-Lauf bediente jeder der 54
+  Aufbauten alle drei Requests.
 - **(e) gated nur `24h`**, und zwar den **Median**, wie B5. Die Ausreißer sind die ersten beiden
   `24h`-Aufbauten nach Containerstart (1.323 und 882 ms, Tiered-JIT-Aufwärmphase unter einer CPU);
   danach lagen alle `24h`-Aufbauten bei 266–441 ms. Ein Admin, der direkt nach einem Deploy die Seite
@@ -1076,8 +1084,8 @@ Lesart:
   Takte, höchstens −1,1 MiB) sind echt und kein Messfehler des Skripts: die RSS-Zähler des Kernels sind
   per-CPU-Näherungen, `VmHWM` kann später ein paar hundert KiB unter dem direkt nach dem Reset gelesenen
   `VmRSS` liegen. Der Auswerter zählt sie als 0 und erklärt alles unter −4 MiB zur kaputten Messung.
-- **30 s ist erwartungsgemäß Formsache**; die Gültigkeitsgrenzen ließen sich dort nur mit 20 ms
-  Proben-Offset erreichen.
+- **30 s ist erwartungsgemäß Formsache** bei den Schwellen; schwierig ist dort nur die Gültigkeit
+  (Proben im Aufbau), weil die Aufbauten so kurz sind — s. Lauf-Absatz oben.
 
 ### Nachauswertung nach dem Review (Auswerter `48ce7539`)
 
@@ -1096,12 +1104,15 @@ gesendet, Aufbau spätestens 200 ms nach dem notierten Ende begonnen, `time_tota
 Neue Läufe notieren `end_ms` nach `curl` und rechnen `start = end − time_total` (`timing=curl_end`); dort
 gilt die strenge Regel „in Flug, als der Aufbau endete“.
 
-Ergebnis: beide Läufe weiter **bestanden**, 0 Vollständigkeitslücken. Einzige Zahlenänderung: im 30-s-Lauf
-wird ein `24h`-Aufbau (Takt 194, 13 ms) jetzt zugeordnet, den die erste Auswertung still übersprungen hatte
-— `24h`-Zyklen 27 → 28, uncached n 80 → 83, Median unverändert 19,9 ms. Bekannte Unschärfe der Alt-CSVs:
-die Proben-Sendezeiten liegen ebenfalls um den Spawn-Verzug zu früh; beim 1-s-Seed (Aufbauten ≥ 266 ms bei
-50 ms Offset) ändert das an „Probe im Aufbau“ nichts, beim 30-s-Seed (Aufbauten 11–54 ms) kann die Zahl 43
-um einige Proben zu hoch sein.
+Ergebnis: beide Alt-Läufe weiter **bestanden**, 0 Vollständigkeitslücken; im alten 30-s-Lauf wurde ein
+`24h`-Aufbau (13 ms) zusätzlich zugeordnet, den die erste Auswertung still übersprungen hatte. Bekannte
+Unschärfe der Alt-CSVs: die Proben-Sendezeiten liegen ebenfalls um den Spawn-Verzug zu früh. Beim
+1-s-Seed (Aufbauten ≥ 266 ms bei 50 ms Offset) ändert das an „Probe im Aufbau“ nichts — die 1-s-Zahlen
+oben bleiben deshalb die neu ausgewerteten des Vormittagslaufs. Beim 30-s-Seed war die Vermutung richtig:
+die Legacy-Zahl 43 war zu hoch. Ein Neulauf mit exakter Zeitmessung und den alten Vorgaben (20 ms, 384
+Takte) traf nur **27** Proben im Aufbau → ungültig (Exit 2), alle Schwellen sonst eingehalten. Mit 8 ms
+und 480 Takten kamen 54 (Lauf auf einem Arbeitsstand kurz vor `5fbe857d`) und im finalen Lauf auf
+`0a9bd4ba` **56** Proben — das sind die 30-s-Zahlen der Tabelle; der alte 30-s-Lauf ist damit ersetzt.
 
 ### Negativnachweis
 
@@ -1119,6 +1130,9 @@ um einige Proben zu hoch sein.
 | `memory-negative.csv` | 2 | `broken memory snapshot at tick 12: increment -50.0 MiB is below the -4 MiB counter jitter` |
 | `missing-probe-row.csv` | 2 | `incomplete measurement: tick 30: 0 probe rows` |
 | `missing-second-key-rows.csv` | 2 | `incomplete measurement: tick 50: 0 of 3 13mo load rows` |
+| `memory-jitter-1mib.csv` (−1 MiB in einem Takt) | 0 | `GATE PASSED` — innerhalb der −4-MiB-Zählerschwankung, als 0 gezählt |
+| `memory-jitter-5mib.csv` (−5 MiB) | 2 | `broken memory snapshot at tick 12: increment -5.0 MiB is below the -4 MiB counter jitter` |
+| `load-missing-size.csv` (200 ohne Größe) | 2 | `broken load row at tick 8: 24h answered 200 with size ''` |
 
 Exit 2 = Lauf ungültig (unvollständig, kaputte Messung, zu wenige Zyklen oder Proben im Aufbau) und
 geht vor Exit 1; 64 = Eingabefehler. Das Messskript selbst bricht mit Exit 4 ab, wenn ein Speicher- oder
@@ -1131,12 +1145,14 @@ gefunden werden; gemessene Zeilen bleiben in beiden Fällen erhalten (geprüft g
 CADENCE=1  GATE_ADMIN_COOKIE_FILE=<datei> DP_KEYRING_DIR=<schlüsselring> ADMIN_TWITCH_USER_ID=<id> \
   scripts/dashboard-concurrency-gate-env.sh      # PROBE_OFFSET_MS default 50
 CADENCE=30 GATE_ADMIN_COOKIE_FILE=<datei> DP_KEYRING_DIR=<schlüsselring> ADMIN_TWITCH_USER_ID=<id> \
-  scripts/dashboard-concurrency-gate-env.sh      # PROBE_OFFSET_MS default 20
+  scripts/dashboard-concurrency-gate-env.sh      # PROBE_OFFSET_MS default 8, MAIN_TICKS default 480
 ```
 
 Der Wrapper baut Netz, Postgres, Redis und Api-Image unter eigenem Präfix auf, migriert, seedet, legt die
 `Users`-Zeile an, startet die Api mit `--cpus=1 --memory=512m`, misst, wertet aus und entfernt beim
 Verlassen (auch bei Abbruch) Container, anonyme Volumes, Netz und Image. Passwörter und Cookie stehen in
 keiner Kommandozeile. Das Cookie-Ticket muss vorher mit demselben Schlüsselring gemintet werden (Kopf des
-Wrappers). Die CSV landet unter `${TMPDIR:-/tmp}`. **Stand:** der Wrapper ist syntaktisch geprüft, aber
-noch nicht live gelaufen (die Box war während der Korrektur mit den B7-Gates belegt).
+Wrappers). Die CSV landet unter `${TMPDIR:-/tmp}`. **Live geprüft:** ein 1-s-Smoke-Lauf (24 Haupttakte, ein
+Doppeltakt; Migration über die Umgebungsvariable, Seed, Cookie-Auth, Messung, Auswertung — Exit 2 wie
+erwartet, weil 24 Takte zu wenige Zyklen liefern) und drei volle 30-s-Läufe; nach jedem Lauf waren keine
+Container, Netze, Volumes oder Images mit dem Präfix übrig; den Dev-Stack fasst der Wrapper nicht an.
