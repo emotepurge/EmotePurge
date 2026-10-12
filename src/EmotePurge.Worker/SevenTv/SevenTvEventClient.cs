@@ -387,21 +387,33 @@ public class SevenTvEventClient(
         // key the registry actually holds.
         var currentName = result.ChannelName ?? channelName;
 
-        switch (result.Outcome)
+        if (!Enum.IsDefined(result.Outcome))
         {
-            case SevenTvDeltaOutcome.Applied:
+            logger.LogWarning(
+                "Unknown 7TV delta outcome {Outcome} for {Channel}; falling back to a REST resync.",
+                result.Outcome, currentName);
+        }
+
+        switch (SevenTvDeltaReactionPolicy.Decide(result.Outcome))
+        {
+            case SevenTvDeltaReaction.PublishSynced:
                 // The one outcome that persisted a write — everything else changed nothing and
                 // must stay silent (open pages would refetch for nothing).
                 await redisPublisher.PublishChannelSyncedAsync(logger, currentName, ct);
                 break;
 
-            case SevenTvDeltaOutcome.SetNotActive:
-            case SevenTvDeltaOutcome.ImplausibleSkipped:
+            case SevenTvDeltaReaction.ResyncAdoptResult:
                 // Outside the gate by design — see the interface remark on ApplyEmoteSetUpdateAsync.
+                if (result.Outcome == SevenTvDeltaOutcome.AmbiguousDelta)
+                {
+                    logger.LogInformation(
+                        "7TV delta for {Channel} is ambiguous per slot; running a REST resync.", currentName);
+                }
+
                 await ResyncChannelAsync(currentName, adoptResult: true, ct);
                 break;
 
-            case SevenTvDeltaOutcome.ChannelUnknown:
+            case SevenTvDeltaReaction.RemoveSubscription:
                 registry.TryRemove(channelName);
                 RequestSync();
                 break;
