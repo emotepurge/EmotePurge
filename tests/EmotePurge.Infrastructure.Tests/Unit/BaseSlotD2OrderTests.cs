@@ -4,8 +4,9 @@ using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Unit;
 
-// The D2 order of the base slot rule (plan #373 E5): AddedAt ascending with null last, then Name
-// ordinal, then Id ordinal — in memory, so the database collation never decides it.
+// The D2 order of the base slot rule (plan #373 E5): AddedAt ascending with null last, then Name,
+// then Id, both in UTF-8 byte order like COLLATE "C" in the seed SQL — in memory, so the database
+// collation never decides it.
 public class BaseSlotD2OrderTests
 {
     private static readonly DateTime Early = new(2026, 3, 1, 10, 0, 0, DateTimeKind.Utc);
@@ -56,6 +57,41 @@ public class BaseSlotD2OrderTests
         Assert.Equal("s-early", candidates.Min(BaseSlotRule.D2Order)!.SlotId);
         Assert.Equal("s-early", candidates.Reverse().Min(BaseSlotRule.D2Order)!.SlotId);
     }
+
+    [Fact]
+    public void ANameTie_FollowsUtf8ByteOrder_NotUtf16CodeUnits()
+    {
+        // U+FF5E (fullwidth tilde, UTF-8 EF BD 9E) against U+1F600 (UTF-8 F0 9F 98 80, UTF-16 the
+        // surrogate pair D83D DE00): COLLATE "C" puts the tilde first, UTF-16 ordinal the emoji.
+        const string tilde = "\uFF5E";
+        const string emoji = "\U0001F600";
+        BaseSlotCandidate withEmoji = new("s-emoji", emoji, Early);
+        BaseSlotCandidate withTilde = new("s-tilde", tilde, Early);
+
+        Assert.Equal(["s-tilde", "s-emoji"], Sorted(withEmoji, withTilde));
+        Assert.True(string.CompareOrdinal(emoji, tilde) < 0);
+        Assert.True(BaseSlotRule.Utf8Order.Compare(tilde, emoji) < 0);
+        Assert.Equal(
+            Math.Sign(CompareBytes(System.Text.Encoding.UTF8.GetBytes(tilde), System.Text.Encoding.UTF8.GetBytes(emoji))),
+            Math.Sign(BaseSlotRule.Utf8Order.Compare(tilde, emoji)));
+    }
+
+    [Theory]
+    [InlineData("abc", "abd")]
+    [InlineData("ab", "abc")]
+    [InlineData("Zebra", "apple")]
+    [InlineData("a\U0001F600", "a\uFFFF")]
+    [InlineData("\u00E9", "\uE000")]
+    [InlineData("same", "same")]
+    public void Utf8Order_AgreesWithAByteComparisonOfTheUtf8Encoding(string x, string y)
+    {
+        var expected = Math.Sign(CompareBytes(System.Text.Encoding.UTF8.GetBytes(x), System.Text.Encoding.UTF8.GetBytes(y)));
+
+        Assert.Equal(expected, Math.Sign(BaseSlotRule.Utf8Order.Compare(x, y)));
+        Assert.Equal(-expected, Math.Sign(BaseSlotRule.Utf8Order.Compare(y, x)));
+    }
+
+    private static int CompareBytes(byte[] x, byte[] y) => x.AsSpan().SequenceCompareTo(y);
 
     private static string[] Sorted(params BaseSlotCandidate[] candidates) =>
         [.. candidates.Order(BaseSlotRule.D2Order).Select(c => c.SlotId)];

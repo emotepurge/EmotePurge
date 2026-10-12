@@ -20,7 +20,8 @@ namespace EmotePurge.Infrastructure.Services;
 /// <c>IsArchived</c> and <c>ArchivedAt</c> 1:1 from the emote, <c>AddedAt</c> null,
 /// <c>AddedAtFromRest</c> false, <c>SeedUnsettled</c> true, <c>LastSyncedAt</c> the caller's now.
 /// "Oldest" is the D2 order (<see cref="D2Order"/>): <c>AddedAt</c> ascending with null last, then
-/// <c>Name</c>, then <c>Id</c>, both ordinal — decided in memory, never by an <c>ORDER BY "Name"</c>
+/// <c>Name</c>, then <c>Id</c>, both in UTF-8 byte order (<see cref="Utf8Order"/>, what
+/// <c>COLLATE "C"</c> does in the seed SQL) — decided in memory, never by an <c>ORDER BY "Name"</c>
 /// in SQL, whose result would follow the column collation (the Alpine/ICU trap). The existence of
 /// rows is checked per slot candidate through the slot index <c>(SlotId, EmoteSetId, Date)</c>, never
 /// by scanning all rows of the pair: the map reads this every resync tick for every channel.
@@ -51,10 +52,20 @@ internal static class BaseSlotRule
 {
     /// <summary>
     /// The D2 order of the slots of one emote: <c>AddedAt</c> ascending with null last, then
-    /// <c>Name</c> ordinal, then <c>Id</c> ordinal. The first element is the base slot. The same order
-    /// as <c>EmoteSlotSeedSql</c> and <c>EmoteSlotRollbackSql</c> (there with <c>COLLATE "C"</c>).
+    /// <c>Name</c>, then <c>Id</c>, both in <see cref="Utf8Order"/>. The first element is the base
+    /// slot. The same order as <c>EmoteSlotSeedSql</c> and <c>EmoteSlotRollbackSql</c> (there with
+    /// <c>COLLATE "C"</c>).
     /// </summary>
     public static readonly IComparer<BaseSlotCandidate> D2Order = Comparer<BaseSlotCandidate>.Create(CompareD2);
+
+    /// <summary>
+    /// Strings in UTF-8 byte order, the order of Postgres' <c>COLLATE "C"</c> on a UTF-8 database.
+    /// <see cref="StringComparer.Ordinal"/> is not that order: it compares UTF-16 code units, so a
+    /// supplementary character (a surrogate pair, 0xD800–0xDBFF first) sorts before U+E000–U+FFFF,
+    /// while its UTF-8 form (0xF0 lead byte) sorts after them. Comparing Unicode scalar values is
+    /// UTF-8 byte order; lone surrogates, which Postgres cannot store, fall back to ordinal.
+    /// </summary>
+    public static readonly IComparer<string> Utf8Order = Comparer<string>.Create(CompareUtf8);
 
     // (a): every slot of E that carries at least one row of X. EXISTS probes the slot index
     // (SlotId, EmoteSetId, Date) once per candidate; the candidates come from the slots' EmoteId index.
@@ -250,8 +261,41 @@ internal static class BaseSlotRule
             return byDate;
         }
 
-        var byName = StringComparer.Ordinal.Compare(x.Name, y.Name);
-        return byName != 0 ? byName : StringComparer.Ordinal.Compare(x.SlotId, y.SlotId);
+        var byName = CompareUtf8(x.Name, y.Name);
+        return byName != 0 ? byName : CompareUtf8(x.SlotId, y.SlotId);
+    }
+
+    private static int CompareUtf8(string? x, string? y)
+    {
+        if (ReferenceEquals(x, y))
+        {
+            return 0;
+        }
+
+        if (x is null || y is null)
+        {
+            return x is null ? -1 : 1;
+        }
+
+        var a = x.EnumerateRunes();
+        var b = y.EnumerateRunes();
+        while (true)
+        {
+            var hasA = a.MoveNext();
+            var hasB = b.MoveNext();
+            if (!hasA || !hasB)
+            {
+                // A prefix sorts first; two strings equal rune by rune differ at most in lone
+                // surrogates (both read as U+FFFD), which ordinal keeps apart.
+                return hasA == hasB ? string.CompareOrdinal(x, y) : (hasA ? 1 : -1);
+            }
+
+            var byScalar = a.Current.Value.CompareTo(b.Current.Value);
+            if (byScalar != 0)
+            {
+                return byScalar;
+            }
+        }
     }
 
     private static void RequireTransaction(AppDbContext db)

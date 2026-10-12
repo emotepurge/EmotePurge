@@ -9,7 +9,7 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // The Name tie of the D2 order (plan #373 E5, 6.4). The Testcontainers image (alpine, musl) compares
 // bytewise by default, which would let an ORDER BY "Name" without COLLATE "C" pass unnoticed; so
 // EmoteSlots.Name lives on an ICU collation in a database of its own, where 'alpha' sorts before
-// 'Bravo'. The rule decides ordinally ('Bravo' first) whatever the column says.
+// 'Bravo'. The rule decides in UTF-8 byte order ('Bravo' first) whatever the column says.
 [Collection("Postgres")]
 public class BaseSlotRuleOrdinalOrderTests(PostgresFixture fixture)
 {
