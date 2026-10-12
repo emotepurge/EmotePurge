@@ -13,7 +13,7 @@ using Xunit;
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
 [Collection("Postgres")]
-public class EmoteServiceTests(PostgresFixture fixture)
+public partial class EmoteServiceTests(PostgresFixture fixture)
 {
     private const string OwnerSevenTvUserId = "owner-seven-tv-id";
     private const string OwnerTwitchLogin = "setowner";

@@ -9,6 +9,7 @@ using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
 
@@ -2831,6 +2832,52 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
                 await beforeLock();
             }
         }
+    }
+
+    // ---- Set-centric reports with slot entries (emote slots plan 376, 5.5) ------------------------
+
+    // AK 41: deleting one alias of an emote that keeps another active slot is no leave, so the tag's
+    // placement of the emote keeps holding.
+    [Fact]
+    public async Task SlotReport_PartialDelete_LeavesThePlacementHolding()
+    {
+        var set = NewSlotReportSet();
+        var x = NewSevenTvId();
+        Channel channel;
+        EmoteSlot hob44;
+        await using (var db = fixture.CreateDbContext())
+        {
+            channel = await SlotSyncKit.SeedChannelAsync(db, "tagslotpartial", set);
+            var emote = await SlotSyncKit.SeedEmoteAsync(db, channel, x, "ome44", firstSeenAt: SlotSyncKit.T1);
+            await SlotSyncKit.SeedSlotAsync(db, emote, "ome44", SlotSyncKit.T1);
+            hob44 = await SlotSyncKit.SeedSlotAsync(db, emote, "hob44", SlotSyncKit.T2);
+        }
+
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        await SeedEntryAsync(tag.Id, x, "ome44", T0);
+        await SeedPlayInAsync(tag.Id, set, T0, x);
+
+        await ReportSlotDeleteAsync(set, new SyncInSetEntryDto(x, "hob44", hob44.Id, SlotSyncKit.T2));
+
+        Assert.True(await PlacedByThisTagAsync(channel, tag.Id));
+    }
+
+    private static string NewSlotReportSet() => "01TAGRPT" + Guid.NewGuid().ToString("N")[..18].ToUpperInvariant();
+
+    private async Task ReportSlotDeleteAsync(string set, SyncInSetEntryDto entry)
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new EmoteService(
+            db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db),
+            new SlotReconcileOptions { Enabled = true });
+        var result = await service.MarkDeletedInSetAsync(set, "owner-7tv", "owner", "owner-tw-none", [entry.SevenTvEmoteId], null, Actor, [entry]);
+        Assert.Null(result.Rejection);
+    }
+
+    private async Task<bool> PlacedByThisTagAsync(Channel channel, long tagId)
+    {
+        await using var db = fixture.CreateDbContext();
+        return Assert.Single((await CreateService(db).ListEntriesAsync(channel.ChannelName, tagId, null)).Entries).PlacedByThisTag;
     }
 
     // ---- Helpers ---------------------------------------------------------------------------------

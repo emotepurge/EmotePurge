@@ -309,7 +309,7 @@ public static class SevenTvEndpoints
             // Stage 5.
             var result = await emoteService.MarkDeletedInSetAsync(
                 emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, ladder.OwnerTwitchUserId!, request.SevenTvEmoteIds!,
-                ladder.ExpectedChannelName, ladder.Actor!, ct);
+                ladder.ExpectedChannelName, ladder.Actor!, cancellationToken: ct);
             var resyncTriggered = await PublishAndResyncAfterSyncInSetAsync(
                 result.Channels, result.UnresolvedChannel, ladder.Actor!, redisPublisher, resyncCooldown, channelService, logger);
 
@@ -341,7 +341,7 @@ public static class SevenTvEndpoints
             // Stage 5.
             var result = await emoteService.MarkRestoredInSetAsync(
                 emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, ladder.OwnerTwitchUserId!, request.SevenTvEmoteIds!,
-                ladder.ExpectedChannelName, ladder.Actor!, ct);
+                ladder.ExpectedChannelName, ladder.Actor!, cancellationToken: ct);
             var resyncTriggered = await PublishAndResyncAfterSyncInSetAsync(
                 result.Channels, result.UnresolvedChannel, ladder.Actor!, redisPublisher, resyncCooldown, channelService, logger);
 
