@@ -717,6 +717,39 @@ public class EmoteSlotReconcilePlannerTests
 
     private static DateTime Day(int day) => new DateTime(2026, 8, 1, 9, 30, 15, 123, DateTimeKind.Utc).AddDays(day);
 
+    // ---- Derive (D13), reachable on its own since plan #376 so report code shares the rule ----
+
+    [Fact]
+    public void Derive_PicksSmallestDateThenNameThenIdAndIgnoresArchived()
+    {
+        var slots = new[]
+        {
+            new SlotState("s0", "Archived", Day(1), true, true, Now, false),
+            new SlotState("s2", "Zed", Day(3), true, false, null, false),
+            new SlotState("s3", "Alpha", Day(3), true, false, null, false),
+            new SlotState("s1", "Late", null, false, false, null, false)
+        };
+
+        var derived = EmoteSlotReconcilePlanner.Derive(slots);
+
+        Assert.Equal(new EmoteNameDerivation("Alpha", Day(3)), derived);
+    }
+
+    [Fact]
+    public void Derive_UndatedSlotComesLastButYieldsNullDateWhenAlone()
+    {
+        var derived = EmoteSlotReconcilePlanner.Derive([new SlotState("s1", "Only", null, false, false, null, false)]);
+
+        Assert.Equal(new EmoteNameDerivation("Only", null), derived);
+    }
+
+    [Fact]
+    public void Derive_WithoutActiveSlot_ReturnsNull()
+    {
+        Assert.Null(EmoteSlotReconcilePlanner.Derive([new SlotState("s1", "Gone", Day(1), true, true, Now, false)]));
+        Assert.Null(EmoteSlotReconcilePlanner.Derive([]));
+    }
+
     private static SlotLiveEntry Live(string name, DateTime? addedAt = null) => new(name, addedAt);
 
     private static SlotState Active(string id, string name, DateTime addedAt) => new(id, name, addedAt, true, false, null, false);
