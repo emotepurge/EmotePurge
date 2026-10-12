@@ -212,7 +212,7 @@ public class SevenTvSyncService(
             return null;
         }
 
-        (channel, var inventoryChanged) = saved.Value;
+        (channel, var inventoryChanged, var slotSummary) = saved.Value;
         if (storesFreshTwitchId)
         {
             resolutionBackoff.RecordSuccess(channel.Id);
@@ -225,6 +225,14 @@ public class SevenTvSyncService(
             .Where(c => c.Id == channel.Id)
             .Select(c => new { c.ChannelName, c.IsBotActive })
             .FirstOrDefaultAsync(cancellationToken);
+        if (slotSummary is { } summary)
+        {
+            // After the commit, so a retried save logs once (E19), and under the login the row carries
+            // now: the tracked instance keeps the login it was loaded with when a rename committed while
+            // the 7TV call was in flight (E28 deliberately does not reload it).
+            LogSlotSummary(current?.ChannelName ?? channel.ChannelName, summary);
+        }
+
         if (current is null || !current.IsBotActive)
         {
             await RemoveOldNameCacheEntryAsync(cacheIdentity, cancellationToken);
@@ -430,7 +438,7 @@ public class SevenTvSyncService(
     /// </list>
     /// Every cache cleanup on the way reads <paramref name="cacheIdentity"/> (E28).
     /// </summary>
-    private async Task<(Channel Channel, bool InventoryChanged)?> SaveSyncAsync(
+    private async Task<(Channel Channel, bool InventoryChanged, SlotReconcileSummary? SlotSummary)?> SaveSyncAsync(
         Channel channel,
         ChannelCacheIdentity cacheIdentity,
         string normalized,
@@ -446,7 +454,8 @@ public class SevenTvSyncService(
             {
                 try
                 {
-                    return (channel, await ApplyAndSaveAsync(channel, twitchUserId, emoteSet, cancellationToken));
+                    var (inventoryChanged, slotSummary) = await ApplyAndSaveAsync(channel, twitchUserId, emoteSet, cancellationToken);
+                    return (channel, inventoryChanged, slotSummary);
                 }
                 catch (LockCoverageMissException) when (coverageRestarts < MaxLockCoverageRestarts)
                 {
@@ -522,9 +531,10 @@ public class SevenTvSyncService(
     /// channel row, reconciles the emote rows and saves it all in one call. Split out so every
     /// recovery in <see cref="SaveSyncAsync"/> can run the exact same sequence again — the
     /// observation call included, because the row it may have staged is tracked only and a cleared
-    /// change tracker would otherwise drop it. Returns true when the visible inventory changed.
+    /// change tracker would otherwise drop it. Returns whether the visible inventory changed and, with
+    /// the flag on, the slot summary the caller logs once the save is through (E19).
     /// </summary>
-    private async Task<bool> ApplyAndSaveAsync(
+    private async Task<(bool InventoryChanged, SlotReconcileSummary? SlotSummary)> ApplyAndSaveAsync(
         Channel channel, string twitchUserId, SevenTvEmoteSet emoteSet, CancellationToken cancellationToken)
     {
         // The observation log's own decision, independent of SyncChannelAsync's ActiveEmoteSetId check:
@@ -602,13 +612,7 @@ public class SevenTvSyncService(
 
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-
-        if (slotSummary is { } summary)
-        {
-            LogSlotSummary(channel.ChannelName, summary);
-        }
-
-        return inventoryChanged;
+        return (inventoryChanged, slotSummary);
     }
 
     /// <summary>

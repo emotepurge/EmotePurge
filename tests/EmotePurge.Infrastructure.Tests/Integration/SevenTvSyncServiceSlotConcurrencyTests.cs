@@ -340,7 +340,8 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
     }
 
     // (10) E28: renamed while the 7TV call is in flight, with a warm cache under the old login that
-    // nobody's LEAVE cleans up — the sync removes it and caches under the new login only.
+    // nobody's LEAVE cleans up — the sync removes it and caches under the new login only. The slot
+    // summary (flag on) names the new login too (review P3-6).
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -351,7 +352,8 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var newName = $"slot_if_new_{slotsEnabled}".ToLowerInvariant();
         await SeedEmoteAsync(db, channel, "a", "Alpha", firstSeenAt: T1);
         var cache = new EmoteMatchCache();
-        var (service, entered, release) = CreateBlockedService(db, cache, channel, slotsEnabled);
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        var (service, entered, release) = CreateBlockedService(db, cache, channel, slotsEnabled, logger);
 
         var sync = service.SyncChannelAsync(channel.ChannelName);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -363,6 +365,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         Assert.Equal(newName, result!.ChannelName);
         Assert.Contains("Alpha", cache.GetChannelSnapshot(newName).NameToEmoteId.Keys);
         Assert.DoesNotContain(channel.ChannelName, cache.GetCachedChannelNames());
+        Assert.Equal(slotsEnabled ? [$"{newName}: slot reconcile created 1"] : [], Lines(logger, "slot reconcile created").Select(l => l[..l.IndexOf(" and", StringComparison.Ordinal)]));
     }
 
     // (10) The other in-flight writers of SevenTvSyncServiceInFlightWriterTests, over both flag states.
