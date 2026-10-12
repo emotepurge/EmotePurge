@@ -299,7 +299,10 @@ further apart than 2.5 times the **currently configured** `SystemLoad:IntervalSe
   ranges (1 hour, 24 hours) can show fewer CPU pairs, or none, for samples taken under the old
   cadence for up to 24 hours; for example, going from 30 s to 1 s drops 30-second pairs because
   they now exceed 2.5 s. Going from 1 s to 30 s drops nothing, because 1-second pairs stay below
-  75 s. Hours already rolled up under the old interval are not recomputed.
+  75 s. The Worker's rollup recomputes the three most recent hours on every run (at Worker start and
+  hourly) with its current interval, so after such a change the restart rollup permanently erases
+  host and process CPU for those hours (their 30-second pairs exceed 2.5 s). Older hours keep the
+  values computed under the old interval.
 - A cadence of 1 second is a stress setting: it multiplies the raw rows read for a 24-hour chart
   (86,400 instead of 2,880 rows per source over 24 hours at the default; 172,800 instead of 5,760 across both sources), so keep it for short experiments.
 - Memory, channel and workload series do not depend on pairs and are unaffected.
