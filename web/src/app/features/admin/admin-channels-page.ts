@@ -1,6 +1,14 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  computed,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -146,6 +154,7 @@ const LIVE_AGE_TICK_MS = 30_000;
           [ariaLabel]="'admin.channels.filter.stateLabel' | transloco"
         />
         <input
+          #searchInput
           type="search"
           class="app-input-sm w-48"
           [value]="search()"
@@ -177,7 +186,12 @@ const LIVE_AGE_TICK_MS = 30_000;
              above, with a different way out. -->
         <app-empty-state
           [title]="'admin.channels.filter.noMatches' | transloco"
-          [description]="'admin.channels.filter.noMatchesHint' | transloco"
+          [description]="
+            (liveStatusUnknownForFilter()
+              ? 'admin.channels.filter.noMatchesLiveUnknown'
+              : 'admin.channels.filter.noMatchesHint'
+            ) | transloco
+          "
         >
           <button type="button" appButton="outline" (click)="resetFilters()">
             {{ 'admin.channels.filter.reset' | transloco }}
@@ -259,7 +273,9 @@ const LIVE_AGE_TICK_MS = 30_000;
                   }
                   <div class="relative z-10 flex flex-wrap items-center gap-2">
                     <!-- Straight to the channel's own workspace; the row itself stays the admin
-                         drilldown. Quiet text-weight on purpose: it is a shortcut, not an action. -->
+                         drilldown. Same weight as the sibling buttons: the button directive has no
+                         quieter non-destructive variant, and a bare text link would miss the
+                         touch-target floor. -->
                     <a
                       appButton="neutral"
                       [routerLink]="['/channels', channel.channelName, 'usage-stats']"
@@ -404,6 +420,8 @@ export class AdminChannelsPage {
   // Filter and search live in the URL (?state=live&q=hand): reload, deep link and the back button
   // from a drilldown all return to the same slice. SSE reloads only replace the resource value, so
   // they keep whatever is selected.
+  private readonly searchInput = viewChild<ElementRef<HTMLInputElement>>('searchInput');
+
   private readonly query = listQueryState({ state: 'all', q: '' });
 
   protected readonly stateFilter = computed<ChannelStateFilter>(() =>
@@ -414,11 +432,30 @@ export class AdminChannelsPage {
   // Counts cover the whole fleet and ignore the search, so the segments stay stable while typing.
   private readonly counts = computed(() => countChannelStates(this.channels()));
 
+  /** True once a real list is on screen. The resource has a default value, so hasValue() alone is
+   *  already true on the first frame (see showSkeleton); and after a failed load there is no list
+   *  to count. Counts then stay off entirely instead of claiming "0". A reload keeps the previous
+   *  value and therefore keeps the counts. */
+  private readonly hasListData = computed(
+    () => this.channelsResource.hasValue() && this.channelsResource.status() !== 'loading',
+  );
+
+  /** The Live/Offline filter is selected but the data cannot say yet who is live — the empty result
+   *  is then not "nobody matches" but "not known". */
+  protected readonly liveStatusUnknownForFilter = computed(() => {
+    const state = this.stateFilter();
+    return (state === 'live' || state === 'offline') && this.counts()[state] === null;
+  });
+
   protected readonly stateOptions = computed<SegmentedControlOption[]>(() => {
     const counts = this.counts();
+    const withCounts = this.hasListData();
     this.languageService.lang();
     return CHANNEL_STATES.map((state) => {
       const count = counts[state];
+      if (!withCounts) {
+        return { value: state, labelKey: `admin.channels.filter.state.${state}` };
+      }
       return count === null
         ? {
             value: state,
@@ -519,6 +556,9 @@ export class AdminChannelsPage {
 
   protected resetFilters(): void {
     this.query.setParams({ state: 'all', q: '' });
+    // Both reset buttons remove themselves once the filter is cleared, which would drop focus to
+    // <body>; the search field is always mounted and is where the reader continues.
+    this.searchInput()?.nativeElement.focus();
   }
 
   protected reload(): void {

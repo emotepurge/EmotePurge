@@ -220,4 +220,61 @@ describe('AdminChannelsPage filter and search', () => {
     expect(hrefs).toContain('/channels/alpha/usage-stats');
     expect(hrefs).toContain('/admin/channels/alpha');
   });
+  it('moves focus to the search field when reset removes its own button', async () => {
+    await open('/admin/channels?state=live&q=zzz');
+
+    const reset = Array.from(root().querySelectorAll<HTMLButtonElement>('button')).filter(
+      (b) => b.textContent?.trim() === 'admin.channels.filter.reset',
+    );
+    reset[0].click();
+    await tick();
+
+    expect(document.activeElement).toBe(searchBox());
+  });
+
+  it('says the live status is unknown, not that nothing matches, when Live is empty for lack of data', async () => {
+    await open('/admin/channels?state=live', [channel('alpha', true, 'unknown')]);
+
+    expect(rowNames()).toEqual([]);
+    expect(root().textContent).toContain('admin.channels.filter.noMatchesLiveUnknown');
+    expect(root().textContent).not.toContain('admin.channels.filter.noMatchesHint');
+  });
+
+  it('shows no counts while the first load is in flight', async () => {
+    await harness.navigateByUrl('/admin/channels', AdminChannelsPage);
+    harness.detectChanges();
+
+    expect(radio('all').textContent).not.toMatch(/\d/);
+    expect(radio('live').textContent).not.toContain('admin.channels.filter.countUnknown');
+
+    flushList(FLEET);
+    await tick();
+    expect(radio('all').textContent).toContain('5');
+  });
+
+  it('shows no counts after a failed load, and keeps them while a reload is pending', async () => {
+    await harness.navigateByUrl('/admin/channels', AdminChannelsPage);
+    harness.detectChanges();
+    httpMock
+      .expectOne('/api/admin/channels')
+      .flush({}, { status: 500, statusText: 'Server Error' });
+    await tick();
+    expect(radio('all').textContent).not.toMatch(/\d/);
+
+    const refresh = Array.from(root().querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.textContent?.trim() === 'admin.channels.refresh',
+    )!;
+    refresh.click();
+    harness.detectChanges();
+    flushList(FLEET);
+    await tick();
+    expect(radio('all').textContent).toContain('5');
+
+    // A reload in flight keeps the previous value, and with it the counts.
+    refresh.click();
+    harness.detectChanges();
+    expect(radio('all').textContent).toContain('5');
+    flushList(FLEET);
+    await tick();
+  });
 });

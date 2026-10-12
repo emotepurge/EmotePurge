@@ -488,6 +488,7 @@
         "reset": "Reset",
         "noMatches": "No channel matches the search and filter.",
         "noMatchesHint": "Loosen the search or the status filter to see channels again.",
+        "noMatchesLiveUnknown": "The live status is not known yet, so there is no telling who is live or offline.",
         "countUnknown": "unknown, no live status yet",
         "state": {
           "all": "All",

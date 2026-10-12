@@ -488,6 +488,7 @@
         "reset": "Zurücksetzen",
         "noMatches": "Kein Channel passt zu Suche und Filter.",
         "noMatchesHint": "Suche oder Statusfilter lockern, um wieder Channels zu sehen.",
+        "noMatchesLiveUnknown": "Der Live-Status ist noch nicht bekannt, deshalb lässt sich nicht sagen, wer live oder offline ist.",
         "countUnknown": "unbekannt, noch kein Live-Stand",
         "state": {
           "all": "Alle",
