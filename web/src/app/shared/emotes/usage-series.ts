@@ -50,6 +50,80 @@ export function fillOffsetSeries(
   return points;
 }
 
+/** A `/totals` row as {@link seriesDrift} reads it; `totalUseCount: null` is a row without counts. */
+export interface SeriesDriftRow {
+  readonly sevenTvEmoteId: string;
+  readonly slotId: string | null;
+  readonly totalUseCount: number | null;
+}
+
+/** A `/series` entry as {@link seriesDrift} reads it. */
+export interface SeriesDriftEntry {
+  readonly sevenTvEmoteId: string;
+  readonly slotId: string | null;
+}
+
+/** What a held `/series` answer cannot speak for any more — both lists sorted, each value once. */
+export interface SeriesDrift {
+  /** 7TV ids whose rows and series entries are in different modes (slot vs emote). */
+  readonly mismatchedIds: readonly string[];
+  /** Slots with uses in the rows but no entry in the series, outside the ids above. */
+  readonly staleSlotIds: readonly string[];
+}
+
+/**
+ * Where the rows on screen and the series held for the same (channel, set, range) disagree in a way
+ * a zero-filled curve would misstate (plan 377, 2.11). Two cases:
+ *
+ * - **Mode mismatch:** an id has slot rows while the series still has its emote-mode entry, or the
+ *   other way round — an emote settled between the two answers, so the join by
+ *   `slotId ?? sevenTvEmoteId` finds nothing for it.
+ * - **Stale slot (R2-3):** a slot row with a count above zero and no entry for its slot. Rows and
+ *   series count the same days of the same set, so a positive count without an entry is a time gap
+ *   between the two reads (a settle between the endpoint's view and day queries), never "unused".
+ *
+ * Deliberately not drift: a slot row with count 0 and no entry, and an emote-mode row without an
+ * entry — both still read "absent = unused" as before; and a row without counts, which draws no
+ * curve at all. With every row in emote mode (slot flag off) both lists are therefore always empty.
+ */
+export function seriesDrift(
+  rows: readonly SeriesDriftRow[],
+  entries: readonly SeriesDriftEntry[],
+): SeriesDrift {
+  const emoteEntryIds = new Set<string>();
+  const slotEntryIds = new Set<string>();
+  const slotEntries = new Set<string>();
+  for (const entry of entries) {
+    if (entry.slotId === null) {
+      emoteEntryIds.add(entry.sevenTvEmoteId);
+    } else {
+      slotEntryIds.add(entry.sevenTvEmoteId);
+      slotEntries.add(entry.slotId);
+    }
+  }
+
+  const mismatched = new Set<string>();
+  for (const row of rows) {
+    const otherMode = row.slotId === null ? slotEntryIds : emoteEntryIds;
+    if (row.totalUseCount !== null && otherMode.has(row.sevenTvEmoteId)) {
+      mismatched.add(row.sevenTvEmoteId);
+    }
+  }
+  const stale = new Set<string>();
+  for (const row of rows) {
+    if (
+      row.slotId !== null &&
+      row.totalUseCount !== null &&
+      row.totalUseCount > 0 &&
+      !slotEntries.has(row.slotId) &&
+      !mismatched.has(row.sevenTvEmoteId)
+    ) {
+      stale.add(row.slotId);
+    }
+  }
+  return { mismatchedIds: [...mismatched].sort(), staleSlotIds: [...stale].sort() };
+}
+
 /**
  * ISO dates for day offsets counted from `from` — the batch endpoint carries its live days that
  * way, while `liveBands` speaks dates like the rest of this file. Converted once per response

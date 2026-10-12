@@ -124,15 +124,19 @@ export class UsageStatService {
    * a permit from the same 40/min bucket plus two uncached 7TV lookups in the endpoint's access
    * filter. Cached like the per-emote series, so re-inspecting is free and the range menu — or the
    * set dropdown — is the only thing that ever triggers a new one.
+   *
+   * `options.refresh` bypasses the cache and replaces its entry — for the page's one bounded refetch
+   * when the rows on screen have moved to slots, or past the held series (plan 377, 2.11).
    */
   getChannelSeries(
     channelName: string,
     from: string,
     to: string,
     emoteSetId: string | null,
+    options: { refresh?: boolean } = {},
   ): Observable<ChannelUsageSeries> {
     const key = `${channelName}|${emoteSetId ?? ''}|${from}|${to}`;
-    let series$ = this.channelSeriesCache.get(key);
+    let series$ = options.refresh ? undefined : this.channelSeriesCache.get(key);
     if (!series$) {
       series$ = this.http
         .get<ChannelUsageSeries>(`/api/channels/${channelName}/usage-stats/series`, {
@@ -140,7 +144,15 @@ export class UsageStatService {
         })
         .pipe(shareReplay({ bufferSize: 1, refCount: false }));
       this.channelSeriesCache.set(key, series$);
-      series$.subscribe({ error: () => this.channelSeriesCache.delete(key) });
+      const cached = series$;
+      // Only its own entry: a refresh may have replaced it by the time this one fails.
+      series$.subscribe({
+        error: () => {
+          if (this.channelSeriesCache.get(key) === cached) {
+            this.channelSeriesCache.delete(key);
+          }
+        },
+      });
     }
     return series$;
   }

@@ -115,6 +115,7 @@ import {
   liveDaysFrom,
   NO_LIVE_INFO_KEY,
   offsetsToDates,
+  seriesDrift,
   seriesPeak,
 } from '../../shared/emotes/usage-series';
 import {
@@ -274,6 +275,14 @@ const SYNC_PROBE_DELAYS_MS = [2000, 8000, 30000];
 // reason keeps up for as long as it stays open.
 const SYNC_FAILURE_RECHECK_INTERVAL_MS = 60000;
 
+// Minimum spacing between two of the series refetches a drift triggers (plan 377, 2.11). With the
+// slot flag on, a slot used for the first time after the series loaded reads as stale too, and the
+// usage flush that reports it comes every 30 s — without a floor, a busy channel would spend a permit
+// of the 40/min InteractiveRead bucket on every flush. 60 s to match the backend's periodic resync,
+// the same floor as the recheck above: slots settle in its REST reconcile, so asking more often
+// than it runs can hardly see a fresher answer.
+const SERIES_REFETCH_MIN_INTERVAL_MS = 60000;
+
 // Buckets in the distribution strip. Around a hundred is what fits across the content width at one
 // readable bar plus gutter — enough to show where the curve's knee sits, few enough that each bar
 // stays a bar rather than a hairline.
@@ -334,6 +343,18 @@ function byName(a: EmoteUsageTotal, b: EmoteUsageTotal): number {
  */
 function seriesJoinKey(item: { slotId: string | null; sevenTvEmoteId: string }): string {
   return item.slotId ?? item.sevenTvEmoteId;
+}
+
+/** The (channel, set, range) a `/totals` or `/series` request was made for, as sent. */
+interface SeriesScope {
+  readonly channelName: string;
+  readonly emoteSetId: string | null;
+  readonly from: string;
+  readonly to: string;
+}
+
+function seriesScopeKey(scope: SeriesScope | null): string | null {
+  return scope && `${scope.channelName}|${scope.emoteSetId ?? ''}|${scope.from}|${scope.to}`;
 }
 
 /** The 7TV ids of `emotes`, each once, in first-appearance order — what every per-emote write
@@ -1817,12 +1838,55 @@ export class UsageStatsPage {
    * response covers the whole set — so the refetch would cost the most and show the least. The
    * curve therefore states the range as of the last range change, exactly like the drilldown
    * dialog's own cached series has always done.
+   *
+   * Two exceptions, both only possible with the slot flag on (plan 377, 2.11): an emote whose rows
+   * moved to slots (or back) since the series loaded, and a slot row with uses the series has no
+   * entry for. Either would draw a flat line under a positive count, so the series is fetched once
+   * more past the cache — see `refetchDriftedSeries`. With the flag off neither can occur.
    */
   private readonly channelSeries = signal<ChannelUsageSeries | null>(null);
   protected readonly seriesFailed = signal(false);
   protected readonly seriesPending = computed(
     () => this.channelSeries() === null && !this.seriesFailed(),
   );
+  /** The request `channelSeries` answers, written with it. */
+  private readonly seriesScope = signal<SeriesScope | null>(null);
+
+  /**
+   * Where the rows on screen and the held series disagree (`seriesDrift`) — `null` unless both
+   * describe the same (channel, set, range): rows of a new range against the old range's series are
+   * not a drift, just a reload still under way.
+   */
+  private readonly heldSeriesDrift = computed(() => {
+    const series = this.channelSeries();
+    const scope = seriesScopeKey(this.seriesScope());
+    if (!series || scope === null || scope !== seriesScopeKey(this.totalsScope())) {
+      return null;
+    }
+    return seriesDrift(this.totalsRows(), series.emotes);
+  });
+
+  /** The ids and slots of `heldSeriesDrift` as lookups for the cards. */
+  private readonly driftedSeriesKeys = computed(() => {
+    const drift = this.heldSeriesDrift();
+    return {
+      ids: new Set(drift?.mismatchedIds ?? []),
+      slots: new Set(drift?.staleSlotIds ?? []),
+    };
+  });
+
+  /** Whether the bounded series refetch is in flight or a `load()` series request is — the latest
+   *  one only, see `latestSeries`. A plain field: nothing reads it reactively. */
+  private seriesInFlight = false;
+
+  /** The drift signatures already refetched for, since the last `load()`. */
+  private readonly seriesRefetchSignatures = new Set<string>();
+
+  /** When the last drift refetch went out (`Date.now()`), for `SERIES_REFETCH_MIN_INTERVAL_MS`. */
+  private lastSeriesRefetchAt: number | null = null;
+
+  /** The deferred re-check for a drift that arose inside the minimum spacing. */
+  private seriesRefetchTimer: ReturnType<typeof setTimeout> | null = null;
 
   // "Last asked wins" for the two range-dependent readouts. Both are fired from an effect and from
   // event handlers, so two can be in flight at once — a range change on top of an unfinished load,
@@ -1912,6 +1976,10 @@ export class UsageStatsPage {
     null,
   );
 
+  /** The request the rows in `totalsRows` answer, as sent — written with them, and compared with
+   *  `seriesScope` before the two are checked against each other (`heldSeriesDrift`). */
+  private readonly totalsScope = signal<SeriesScope | null>(null);
+
   /** The channel for which an active-set request is in flight or has already answered, success or
    *  failure. A plain field, not a signal: writing it must never itself retrigger load()'s effect —
    *  only reading channelName()/from()/to()/rangeResolved() should. A signal here would double-fire
@@ -1996,8 +2064,9 @@ export class UsageStatsPage {
     const series = this.channelSeries();
     const emote = this.inspected();
     // A row without counts under the shown set has no curve either: zero-filling it would draw a
-    // flat baseline, i.e. claim "counted, never used" — the one statement E17 rules out.
-    if (!series || !emote || emote.totalUseCount === null) {
+    // flat baseline, i.e. claim "counted, never used" — the one statement E17 rules out. The same
+    // for a row the held series cannot speak for (plan 377, 2.11): it shows as loading instead.
+    if (!series || !emote || emote.totalUseCount === null || this.isCurveDrifted(emote)) {
       return [];
     }
     // An emote absent from the response had no usage in the range — the same statement its absent
@@ -2007,6 +2076,12 @@ export class UsageStatsPage {
       series.from,
       series.to,
     );
+  });
+
+  /** The sidecar's curve skeleton: the series is loading, or cannot yet speak for this row. */
+  protected readonly inspectedCurvePending = computed(() => {
+    const emote = this.inspected();
+    return this.seriesPending() || (emote !== null && this.isCurveDrifted(emote));
   });
 
   /**
@@ -2762,6 +2837,9 @@ export class UsageStatsPage {
 
     this.destroyRef.onDestroy(() => {
       this.syncPoll?.unsubscribe();
+      if (this.seriesRefetchTimer !== null) {
+        clearTimeout(this.seriesRefetchTimer);
+      }
       this.resetSelectionPrunedFeedback();
       this.resetTagFeedback();
       // Leaving the page must give the reservation back immediately — otherwise a switch to a
@@ -3873,13 +3951,97 @@ export class UsageStatsPage {
   ): void {
     this.channelSeries.set(null);
     this.seriesFailed.set(false);
+    // load() is the only caller: a fresh series may refetch for any drift again (plan 377, 2.11).
+    this.seriesRefetchSignatures.clear();
+    const scope: SeriesScope = { channelName, emoteSetId, from, to };
+    this.seriesInFlight = true;
     this.usageStatService
       .getChannelSeries(channelName, from, to, emoteSetId)
       .pipe(this.latestSeries)
       .subscribe({
-        next: (series) => this.channelSeries.set(series),
-        error: () => this.seriesFailed.set(true),
+        next: (series) => this.adoptSeries(series, scope),
+        error: () => {
+          this.seriesInFlight = false;
+          this.seriesFailed.set(true);
+        },
       });
+  }
+
+  private adoptSeries(series: ChannelUsageSeries, scope: SeriesScope): void {
+    this.seriesInFlight = false;
+    this.channelSeries.set(series);
+    this.seriesScope.set(scope);
+    this.refetchDriftedSeries();
+  }
+
+  /**
+   * The one refetch a drift between rows and series may cause (plan 377, 2.11) — an emote that
+   * settled into slots after the series loaded, or a slot with uses the series has no entry for.
+   * Runs whenever either side lands, and from its own timer.
+   *
+   * Bounded three ways: at most once per signature (scope plus the drifted ids and slots) until the
+   * next `load()`; never while a series request is in flight, whose answer is checked instead; and
+   * at least `SERIES_REFETCH_MIN_INTERVAL_MS` after the previous refetch — a drift arising inside
+   * that spacing is checked again when it has passed. A drift that outlives its refetch (the two
+   * answers still offset) keeps its rows loading until a new signature or `load()`. A failed
+   * refetch leaves the held series in place and is not retried for the same signature.
+   */
+  private refetchDriftedSeries(): void {
+    const drift = this.heldSeriesDrift();
+    const scope = this.seriesScope();
+    if (
+      !drift ||
+      !scope ||
+      this.seriesInFlight ||
+      (drift.mismatchedIds.length === 0 && drift.staleSlotIds.length === 0)
+    ) {
+      return;
+    }
+    const signature = [
+      seriesScopeKey(scope),
+      drift.mismatchedIds.join(','),
+      drift.staleSlotIds.join(','),
+    ].join('#');
+    if (this.seriesRefetchSignatures.has(signature)) {
+      return;
+    }
+    const wait =
+      this.lastSeriesRefetchAt === null
+        ? 0
+        : this.lastSeriesRefetchAt + SERIES_REFETCH_MIN_INTERVAL_MS - Date.now();
+    if (wait > 0) {
+      this.seriesRefetchTimer ??= setTimeout(() => {
+        this.seriesRefetchTimer = null;
+        this.refetchDriftedSeries();
+      }, wait);
+      return;
+    }
+    this.seriesRefetchSignatures.add(signature);
+    this.lastSeriesRefetchAt = Date.now();
+    this.seriesInFlight = true;
+    this.usageStatService
+      .getChannelSeries(scope.channelName, scope.from, scope.to, scope.emoteSetId, {
+        refresh: true,
+      })
+      .pipe(this.latestSeries)
+      .subscribe({
+        next: (series) => this.adoptSeries(series, scope),
+        error: () => {
+          this.seriesInFlight = false;
+        },
+      });
+  }
+
+  /** Whether the held series cannot speak for this card's curve (`heldSeriesDrift`). */
+  private isCurveDrifted(emote: EmoteUsageTotal): boolean {
+    if (emote.totalUseCount === null) {
+      return false;
+    }
+    const drifted = this.driftedSeriesKeys();
+    return (
+      drifted.ids.has(emote.sevenTvEmoteId) ||
+      (emote.slotId !== null && drifted.slots.has(emote.slotId))
+    );
   }
 
   // A transient inline status rather than a toast — there is no toast service (see
@@ -4154,6 +4316,7 @@ export class UsageStatsPage {
           // shows the previous channel's emotes (see totalsChannel's declaration).
           this.totalsChannel.set(channelName);
           this.totalsRange.set({ from, to });
+          this.totalsScope.set({ channelName, emoteSetId, from, to });
           // The rows on screen are now the answer to the latest request — an error left by an
           // earlier one (a failed set switch that a later reload recovered from) no longer describes
           // them, and would otherwise keep `setSwitchFailed` and the banner up over good rows.
@@ -4185,6 +4348,7 @@ export class UsageStatsPage {
             this.selection.clear();
           }
           this.endLoadingFor(loadAtRequest);
+          this.refetchDriftedSeries();
         },
         // 401 is not handled here — apiAuthInterceptor resets the session and redirects for every
         // /api/ call in the app.

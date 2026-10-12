@@ -214,4 +214,26 @@ describe('UsageStatService', () => {
       )
       .flush({ from: '2026-07-01', to: '2026-07-28', liveDays: [], emotes: [] });
   });
+  it('getChannelSeries with refresh asks again despite the cache and replaces the entry (plan 377, 2.11)', () => {
+    const url = '/api/channels/sensitron/usage-stats/series';
+    const stale = { from: '2026-07-01', to: '2026-07-28', liveDays: [], emotes: [] };
+    const fresh = { ...stale, liveDays: [3] };
+    service.getChannelSeries('sensitron', '2026-07-01', '2026-07-28', 'set-a').subscribe();
+    httpMock.expectOne((r) => r.url === url).flush(stale);
+
+    let refreshed: unknown;
+    service
+      .getChannelSeries('sensitron', '2026-07-01', '2026-07-28', 'set-a', { refresh: true })
+      .subscribe((series) => (refreshed = series));
+    httpMock.expectOne((r) => r.url === url && r.params.get('emoteSetId') === 'set-a').flush(fresh);
+    expect(refreshed).toEqual(fresh);
+
+    // The next plain read is served the refreshed answer, without a request.
+    let cached: unknown;
+    service
+      .getChannelSeries('sensitron', '2026-07-01', '2026-07-28', 'set-a')
+      .subscribe((series) => (cached = series));
+    httpMock.expectNone(url);
+    expect(cached).toEqual(fresh);
+  });
 });

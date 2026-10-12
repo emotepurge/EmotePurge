@@ -8583,4 +8583,142 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(component['emotes']().map((row) => row.slotKey)).toEqual(['7tv-y']);
     expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
   });
+
+  // --- series drift: settle and stale slots (plan 377, 2.11, T3b) -------------------------------
+
+  describe('series drift (plan 377, 2.11)', () => {
+    const SERIES_URL = '/api/channels/a/usage-stats/series';
+    const takeSeriesRequests = () => httpMock.match((req) => req.url === SERIES_URL);
+    const seriesBody = (emotes: EmoteSeriesEntry[]) => ({
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes,
+    });
+    const firstDays = () =>
+      component['inspectedPoints']()
+        .slice(0, 3)
+        .map((point) => point.useCount);
+
+    it('settles over live events without a manual refresh: no flat curve, one refetch past the cache, then a curve per slot (S4)', () => {
+      mount([emote('x', 'ome44', 40), other()], [seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]);
+
+      // The emote settles; the next usage flush brings its slot rows, the held series is still keyed
+      // by the 7TV id.
+      silentReload([ome(30), hob(10), other()]);
+      component['inspect'](card('slot-ome'));
+
+      expect(component['inspectedPoints']()).toEqual([]);
+      expect(component['inspectedCurvePending']()).toBe(true);
+      const [refetch, ...more] = takeSeriesRequests();
+      expect(more).toHaveLength(0);
+      // Same channel, set and range as the cached answer — only a bypass reaches the wire.
+      expect(refetch.request.params.get('from')).toBe('2026-01-01');
+
+      refetch.flush(
+        seriesBody([
+          seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 5]]),
+          seriesEntry('7tv-x', 'slot-hob', 'hob44', [[1, 7]]),
+        ]),
+      );
+
+      expect(component['inspectedCurvePending']()).toBe(false);
+      expect(firstDays()).toEqual([5, 0, 0]);
+      component['inspect'](card('slot-hob'));
+      expect(firstDays()).toEqual([0, 7, 0]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('asks only once for a mismatch that outlives the refetch, and keeps showing it as loading', () => {
+      mount([emote('x', 'ome44', 40)], [seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]);
+      silentReload([ome(30), hob(10)]);
+      // The answers are offset: the refetch still reads the emote before its settle.
+      takeSeriesRequests()[0].flush(seriesBody([seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]));
+
+      expect(takeSeriesRequests()).toHaveLength(0);
+      silentReload([ome(31), hob(10)]);
+      vi.advanceTimersByTime(120_000);
+      expect(takeSeriesRequests()).toHaveLength(0);
+      component['inspect'](card('slot-hob'));
+      expect(component['inspectedPoints']()).toEqual([]);
+      expect(component['inspectedCurvePending']()).toBe(true);
+    });
+
+    it('asks once more when a further emote settles', () => {
+      mount(
+        [emote('x', 'ome44', 40), other()],
+        [
+          seriesEntry('7tv-x', null, 'ome44', [[0, 40]]),
+          seriesEntry('7tv-y', null, 'Other', [[0, 20]]),
+        ],
+      );
+      silentReload([ome(30), hob(10), other()]);
+      takeSeriesRequests()[0].flush(
+        seriesBody([
+          seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 30]]),
+          seriesEntry('7tv-x', 'slot-hob', 'hob44', [[0, 10]]),
+          seriesEntry('7tv-y', null, 'Other', [[0, 20]]),
+        ]),
+      );
+      vi.advanceTimersByTime(60_000);
+
+      silentReload([ome(30), hob(10), slotRow('y', 'slot-y', 'Other', 20)]);
+
+      expect(takeSeriesRequests()).toHaveLength(1);
+    });
+
+    it('keeps the flat curve and asks nothing for a slot without uses next to a sibling with uses', () => {
+      mount([ome(30), hob(0)], [seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 30]])]);
+
+      component['inspect'](card('slot-hob'));
+
+      expect(component['inspectedCurvePending']()).toBe(false);
+      expect(firstDays()).toEqual([0, 0, 0]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('never asks again on emote-mode totals, the slot flag being off (flag-off guard)', () => {
+      mount([emote('x', 'Ome', 40), other()], [seriesEntry('7tv-y', null, 'Other', [[0, 20]])]);
+
+      silentReload([emote('x', 'Ome', 45), emote('y', 'Other', 25), emote('z', 'Fresh', 3)]);
+      vi.advanceTimersByTime(120_000);
+      silentReload([emote('x', 'Ome', 46), emote('y', 'Other', 25), emote('z', 'Fresh', 4)]);
+      vi.advanceTimersByTime(120_000);
+
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('keeps the flat curve and asks nothing for an emote-mode row with uses but no entry', () => {
+      mount([emote('x', 'Ome', 40), other()], [seriesEntry('7tv-y', null, 'Other', [[0, 20]])]);
+
+      component['inspect'](card('7tv-x'));
+
+      expect(component['inspectedCurvePending']()).toBe(false);
+      expect(firstDays()).toEqual([0, 0, 0]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('reads a slot row with uses but no entry as stale: no flat curve, one refetch, a second stale state only after 60 s (R2-3)', () => {
+      // The series answered between the endpoint's view and day reads: the emote is missing.
+      mount([other()], [seriesEntry('7tv-y', null, 'Other', [[0, 20]])]);
+
+      silentReload([other(), ome(30)]);
+      component['inspect'](card('slot-ome'));
+
+      expect(component['inspectedPoints']()).toEqual([]);
+      expect(component['inspectedCurvePending']()).toBe(true);
+      const requests = takeSeriesRequests();
+      expect(requests).toHaveLength(1);
+      // Still offset: the refetch does not know the slot either.
+      requests[0].flush(seriesBody([seriesEntry('7tv-y', null, 'Other', [[0, 20]])]));
+      expect(takeSeriesRequests()).toHaveLength(0);
+
+      // A second stale slot within 60 s of the refetch: nothing yet…
+      silentReload([other(), ome(31), hob(4)]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+      // …and exactly one once the minimum spacing has passed.
+      vi.advanceTimersByTime(60_000);
+      expect(takeSeriesRequests()).toHaveLength(1);
+    });
+  });
 });

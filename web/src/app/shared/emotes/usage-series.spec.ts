@@ -8,6 +8,7 @@ import {
   liveDayCoverage,
   liveDaysFrom,
   offsetsToDates,
+  seriesDrift,
   seriesPeak,
   toPolylinePoints,
 } from './usage-series';
@@ -443,5 +444,73 @@ describe('liveDaysFrom', () => {
 
   it('drops the days before the boundary and keeps the boundary day', () => {
     expect(liveDaysFrom(live, '2026-10-08')).toEqual(['2026-10-08', '2026-10-09']);
+  });
+});
+
+describe('seriesDrift (plan 377, 2.11)', () => {
+  const slot = (sevenTvEmoteId: string, slotId: string, totalUseCount: number | null = 5) => ({
+    sevenTvEmoteId,
+    slotId,
+    totalUseCount,
+  });
+  const emoteRow = (sevenTvEmoteId: string, totalUseCount: number | null = 5) => ({
+    sevenTvEmoteId,
+    slotId: null,
+    totalUseCount,
+  });
+  const entry = (sevenTvEmoteId: string, slotId: string | null = null) => ({
+    sevenTvEmoteId,
+    slotId,
+  });
+
+  it('flags an id whose rows are slots while the series still holds its emote-mode entry, once and sorted', () => {
+    const drift = seriesDrift(
+      [slot('7tv-z', 'slot-z'), slot('7tv-x', 'slot-ome'), slot('7tv-x', 'slot-hob', 0)],
+      [entry('7tv-x'), entry('7tv-z')],
+    );
+
+    expect(drift).toEqual({ mismatchedIds: ['7tv-x', '7tv-z'], staleSlotIds: [] });
+  });
+
+  it('flags an id whose row is in emote mode while the series holds slot entries for it', () => {
+    const drift = seriesDrift([emoteRow('7tv-x')], [entry('7tv-x', 'slot-ome')]);
+
+    expect(drift).toEqual({ mismatchedIds: ['7tv-x'], staleSlotIds: [] });
+  });
+
+  it('reads a slot row without an entry next to its slot entries as no mismatch', () => {
+    const drift = seriesDrift(
+      [slot('7tv-x', 'slot-ome'), slot('7tv-x', 'slot-hob', 0)],
+      [entry('7tv-x', 'slot-ome')],
+    );
+
+    expect(drift).toEqual({ mismatchedIds: [], staleSlotIds: [] });
+  });
+
+  it('never takes a row without counts (Klasse 3) into either list', () => {
+    const drift = seriesDrift(
+      [emoteRow('7tv-x', null), slot('7tv-y', 'slot-y', null)],
+      [entry('7tv-x', 'slot-ome'), entry('7tv-y')],
+    );
+
+    expect(drift).toEqual({ mismatchedIds: [], staleSlotIds: [] });
+  });
+
+  it('reads a slot row with uses but no entry as stale, and the same row with no uses as unused (R2-3)', () => {
+    expect(seriesDrift([slot('7tv-x', 'slot-hob', 3), slot('7tv-x', 'slot-ome', 4)], [])).toEqual({
+      mismatchedIds: [],
+      staleSlotIds: ['slot-hob', 'slot-ome'],
+    });
+    expect(seriesDrift([slot('7tv-x', 'slot-hob', 0)], [])).toEqual({
+      mismatchedIds: [],
+      staleSlotIds: [],
+    });
+  });
+
+  it('never reads an emote-mode row without an entry as stale, whatever its count', () => {
+    expect(seriesDrift([emoteRow('7tv-x', 40)], [entry('7tv-y')])).toEqual({
+      mismatchedIds: [],
+      staleSlotIds: [],
+    });
   });
 });
