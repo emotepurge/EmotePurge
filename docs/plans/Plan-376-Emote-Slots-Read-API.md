@@ -385,7 +385,7 @@ Leave-Beobachtung für B2 wird nach der Kanalsperre gelesen; jeder andere Leave-
 Kanalsperre zuerst, die Einmal-Prüfung ist damit rennfrei.
 **Flag aus:** Ablauf Zeile für Zeile wie heute (Lesen vor der Transaktion, Leave → Emote), `entries` nach der Formprüfung ignoriert.
 
-### 4.3 Bekannte Grenzen (nur Flag an)
+### 4.4 Bekannte Grenzen (nur Flag an)
 
 - **Getrennte Lesevorgänge.** `/totals` und `/series` lesen Snapshot, Aggregate und Namenszwillinge in getrennten READ-COMMITTED-Anweisungen. Committet ein Settle oder eine REST-Umbindung (verschiebt `UsageStats.SlotId`) dazwischen, kann eine Antwort ein Emote im Emote-Modus mit 0 und `lastUsed = null` zeigen; die nächste Antwort ist richtig. Bei Flag aus verschiebt niemand Zeilen. **Entscheidung vor dem Einschalten (#379):** read-only REPEATABLE READ für diese Leser oder die Grenze akzeptieren.
 - **Fan-out ohne Slot im Zielkanal.** Ein Fan-out in einen Kanal, der für das Emote nur einen Seed hat oder im E14-Zustand ist (Emote aktiv, alle eigenen Slots archiviert), findet dort nichts. Der Resync archiviert später, schreibt aber innerhalb des 30-min-`TagLeaveCredibilityWindow` keine Leave, wenn `LastEnteredSetAtUtc` frisch ist. Gleiche Klasse wie B2, durch R3 b („REST gleicht ab“) gedeckt.
