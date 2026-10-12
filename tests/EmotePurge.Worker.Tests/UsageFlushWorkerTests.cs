@@ -158,7 +158,7 @@ public class UsageFlushWorkerTests
 
         Assert.Equal(3, _batches.Count);
         Assert.Equal(0, _counter.PendingEmoteCount);
-        Assert.Contains(logger.Errors, m => m.Contains("1 counter keys with 2 counted uses dropped"));
+        Assert.Contains(logger.At(LogLevel.Error), m => m.Contains("1 counter keys with 2 counted uses dropped"));
     }
 
     [Fact]
@@ -180,7 +180,64 @@ public class UsageFlushWorkerTests
 
         Assert.Single(_batches);
         Assert.Equal(0, _counter.PendingEmoteCount);
-        Assert.Contains(logger.Errors, m => m.Contains("dropped"));
+        Assert.Contains(logger.At(LogLevel.Error), m => m.Contains("dropped"));
+    }
+
+    [Fact]
+    public async Task TheFinalFlush_DoesNotRetry_WhenChatKeepsCountingDuringACleanAttempt()
+    {
+        // Worker, which owns the Twitch client, stops after this service: messages keep arriving while
+        // the final flush runs. A clean attempt must not be mistaken for a failed one.
+        var logger = new CapturingLogger();
+        var worker = CreateWorker(logger);
+        _counter.Increment("slot-1", Set, UsageCategory.Human);
+        _flush.FlushAsync(Arg.Any<IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                Record(call);
+                _counter.Increment("slot-2", Set, UsageCategory.Human);
+                return Written();
+            });
+
+        await worker.StopAsync(CancellationToken.None);
+
+        // The attempt plus one plain flush of what arrived during it — no retry loop.
+        Assert.Equal(2, _batches.Count);
+        Assert.Equal(new UsageCounterKey("slot-1", Set), Assert.Single(_batches[0]).Key);
+        Assert.Equal(new UsageCounterKey("slot-2", Set), Assert.Single(_batches[1]).Key);
+        Assert.Equal(0, _counter.PendingEmoteCount);
+        Assert.Empty(logger.At(LogLevel.Error));
+        Assert.Empty(logger.At(LogLevel.Warning));
+        Assert.Contains(logger.At(LogLevel.Information), m => m.Contains("1 counter keys with 1 counted uses that arrived during shutdown"));
+    }
+
+    [Fact]
+    public async Task TheFinalFlush_DropsFreshCountsWithAWarning_WhenTheirPlainFlushFails()
+    {
+        var logger = new CapturingLogger();
+        var worker = CreateWorker(logger);
+        _counter.Increment("slot-1", Set, UsageCategory.Human);
+        var calls = 0;
+        _flush.FlushAsync(Arg.Any<IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                Record(call);
+                if (++calls > 1)
+                {
+                    return Task.FromException<UsageFlushResult>(new InvalidOperationException("lock timeout"));
+                }
+
+                _counter.Increment("slot-2", Set, UsageCategory.Human);
+                return Task.FromResult(Written());
+            });
+
+        await worker.StopAsync(CancellationToken.None);
+
+        // No retry for the plain flush, and no "gave up" error: the failed attempts were not exhausted.
+        Assert.Equal(2, _batches.Count);
+        Assert.Equal(0, _counter.PendingEmoteCount);
+        Assert.Empty(logger.At(LogLevel.Error));
+        Assert.Contains(logger.At(LogLevel.Warning), m => m.Contains("1 counter keys with 1 counted uses dropped"));
     }
 
     private UsageFlushWorker CreateWorker(ILogger<UsageFlushWorker>? logger = null)
@@ -219,7 +276,9 @@ public class UsageFlushWorkerTests
 
     private sealed class CapturingLogger : ILogger<UsageFlushWorker>
     {
-        public List<string> Errors { get; } = [];
+        private readonly List<(LogLevel Level, string Message)> _entries = [];
+
+        public IEnumerable<string> At(LogLevel level) => _entries.Where(e => e.Level == level).Select(e => e.Message);
 
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => null;
@@ -228,10 +287,7 @@ public class UsageFlushWorkerTests
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
-            if (logLevel == LogLevel.Error)
-            {
-                Errors.Add(formatter(state, exception));
-            }
+            _entries.Add((logLevel, formatter(state, exception)));
         }
     }
 }
