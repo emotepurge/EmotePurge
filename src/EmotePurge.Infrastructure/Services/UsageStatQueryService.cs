@@ -109,20 +109,16 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
         var emotesById = allChannelEmotes.ToDictionary(e => e.Id, StringComparer.Ordinal);
 
         // The base order is the emote list as the database returned it, the rows of one emote in the order of
-        // their slots; the sort by total is stable on top of it. With the flag off that is one row per emote
-        // in exactly the order the pre-slot code sorted — ties included, which no contract promises but a
-        // prod reading should not shuffle for nothing (R1).
+        // their slots; the sort by total breaks its ties by that base order, in one sort. With the flag off
+        // that is one row per emote in exactly the order the pre-slot code sorted — ties included, which no
+        // contract promises but a prod reading should not shuffle for nothing (R1).
         var emotePosition = allChannelEmotes
             .Select((e, index) => (e.Id, index))
             .ToDictionary(p => p.Id, p => p.index, StringComparer.Ordinal);
 
         return view.Rows
-            .Select((row, index) => (Row: row, Index: index))
-            .OrderBy(r => emotePosition[r.Row.EmoteId])
-            .ThenBy(r => r.Index)
-            .Select(r =>
+            .Select((row, index) =>
             {
-                var row = r.Row;
                 var emote = emotesById[row.EmoteId];
 
                 // An emote-mode row folds the aggregates of all its slots (the emote's whole count under the
@@ -143,7 +139,7 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
                     }
                 }
 
-                return new EmoteUsageContextDto(
+                var dto = new EmoteUsageContextDto(
                     row.EmoteId,
                     row.SlotId,
                     row.Name,
@@ -155,10 +151,14 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
                     row.FirstSeenAt,
                     row.FirstSeenAtFromRest,
                     row.IsArchived,
-                    nameTwinSetIds[r.Index],
+                    nameTwinSetIds[index],
                     row.SiblingNames);
+                return (Dto: dto, Position: emotePosition[row.EmoteId], Index: index);
             })
-            .OrderByDescending(t => t.TotalUseCount)
+            .OrderByDescending(r => r.Dto.TotalUseCount)
+            .ThenBy(r => r.Position)
+            .ThenBy(r => r.Index)
+            .Select(r => r.Dto)
             .ToList();
     }
 
@@ -375,19 +375,37 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
             return new ChannelUsageSeriesDto(from, to, liveDayOffsets, [], firstCountedDay, lastCountedDay, channelFirstCountedDay);
         }
 
-        // One scan over the slots the rows carry, then partitioned in memory. Deliberately not a GroupBy in
-        // SQL: per slot and day the slot index already makes a row unique, so there is nothing to push down
-        // for a slot-mode row, and an emote-mode row's per-day sum over its slots is the same partitioning
-        // done one level up. Value and predicate run over UseCount alone: a row whose only days carry no own
-        // usage — bot-only or shared-only — drops out of Emotes entirely, the same way a row with no days at
-        // all does. Rule 10 again (a scalar slot-id list, UsageStats alone), and reading UseCount alone is
-        // what the unique slot index (SlotId, EmoteSetId, Date) INCLUDE (UseCount) serves as an index-only
-        // scan.
+        // One scan over the slots the rows carry, ordered by (SlotId, Date) in SQL and partitioned in memory.
+        // Deliberately not a GroupBy in SQL: per slot and day the slot index already makes a row unique, so
+        // there is nothing to push down for a slot-mode row, and an emote-mode row's per-day sum over its slots
+        // is the same partitioning done one level up. Value and predicate run over UseCount alone: a row whose
+        // only days carry no own usage — bot-only or shared-only — drops out of Emotes entirely, the same way a
+        // row with no days at all does. Rule 10 again (a scalar slot-id list, UsageStats alone), and reading
+        // UseCount alone is what the unique slot index (SlotId, EmoteSetId, Date) INCLUDE (UseCount) serves as
+        // an index-only scan.
         var days = await db.UsageStats
             .Where(u => aggregateSlotIds.Contains(u.SlotId) && u.EmoteSetId == setId && u.Date >= from && u.Date <= to && u.UseCount > 0)
+            .OrderBy(u => u.SlotId).ThenBy(u => u.Date)
             .Select(u => new { u.SlotId, u.Date, u.UseCount })
             .ToListAsync(cancellationToken);
-        var daysBySlot = days.ToLookup(d => d.SlotId, StringComparer.Ordinal);
+
+        // Per slot, its days as wire pairs [day offset, count], ascending by date and unique per date (the slot
+        // index again) — already the finished entry of a row that carries this one slot.
+        var pairsBySlot = new Dictionary<string, List<int[]>>(StringComparer.Ordinal);
+        List<int[]>? current = null;
+        string? currentSlotId = null;
+        foreach (var day in days)
+        {
+            if (!string.Equals(day.SlotId, currentSlotId, StringComparison.Ordinal))
+            {
+                currentSlotId = day.SlotId;
+                current = [];
+                pairsBySlot[currentSlotId] = current;
+            }
+
+            current!.Add([day.Date.DayNumber - from.DayNumber, day.UseCount]);
+        }
+
         var sevenTvEmoteIdByEmoteId = emotes.ToDictionary(e => e.Id, e => e.SevenTvEmoteId, StringComparer.Ordinal);
 
         // Named by the 7TV id from #200 on, with the guid carried along for one transition (spec 6.5, step 1)
@@ -398,13 +416,8 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
         var entries = new List<EmoteSeriesEntryDto>();
         foreach (var row in view.Rows)
         {
-            var rowDays = row.AggregateSlotIds
-                .SelectMany(slotId => daysBySlot[slotId])
-                .GroupBy(d => d.Date)
-                .OrderBy(day => day.Key)
-                .Select(day => new[] { day.Key.DayNumber - from.DayNumber, day.Sum(d => d.UseCount) })
-                .ToList();
-            if (rowDays.Count > 0)
+            var rowDays = RowSeriesDays(row.AggregateSlotIds, pairsBySlot);
+            if (rowDays is not null)
             {
                 entries.Add(new EmoteSeriesEntryDto(sevenTvEmoteIdByEmoteId[row.EmoteId], row.EmoteId, row.SlotId, row.Name, rowDays));
             }
@@ -740,6 +753,52 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// The <c>/series</c> days of one row: the per-day sum over <paramref name="slotIds"/>, ascending by day,
+    /// or <c>null</c> when none of the slots has a day. A row with only one slot that has days — every
+    /// slot-mode row and most emote-mode rows — takes that slot's list as it is; only a row whose days spread
+    /// over several slots is summed per day.
+    /// </summary>
+    private static List<int[]>? RowSeriesDays(IReadOnlyList<string> slotIds, Dictionary<string, List<int[]>> pairsBySlot)
+    {
+        List<int[]>? single = null;
+        SortedDictionary<int, int>? summed = null;
+        foreach (var slotId in slotIds)
+        {
+            if (!pairsBySlot.TryGetValue(slotId, out var pairs))
+            {
+                continue;
+            }
+
+            if (single is null && summed is null)
+            {
+                single = pairs;
+                continue;
+            }
+
+            if (summed is null)
+            {
+                summed = [];
+                AddTo(summed, single!);
+                single = null;
+            }
+
+            AddTo(summed, pairs);
+        }
+
+        return summed is null
+            ? single
+            : summed.Select(day => new[] { day.Key, day.Value }).ToList();
+
+        static void AddTo(SortedDictionary<int, int> sums, List<int[]> pairs)
+        {
+            foreach (var pair in pairs)
+            {
+                sums[pair[0]] = sums.GetValueOrDefault(pair[0]) + pair[1];
+            }
+        }
     }
 
     /// <summary>The distinct slots whose aggregates some row of the view carries.</summary>
