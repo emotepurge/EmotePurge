@@ -582,3 +582,9 @@ Offen:
    auf dem `main`-Stand (7.4), die unveränderten Delta-Tests und den Byte-Vergleich.
 8. **Live-Lauf ohne Seed-Fall:** AK 20 „Delta auf unsettled Seed" ist nur integriert getestet; im Einschaltfenster von #379 ist es der
    häufigste Grund.
+
+9. **Veralteter Push-No-op (Review 13.10., Orchestrator, bewusst nicht behoben):** Emote X hat lokal und auf 7TV die Slots A(t1) und
+   B(t2). 7TV benennt A→C um; nach R4 ist das mehrdeutig, und weil der REST-Stand veraltet ist, bleibt lokal A(t1). Fügt der Nutzer X
+   danach unter A neu hinzu (t3), trifft der Push (X, A) den aktiven lokalen Slot A(t1) und ist ein No-op; Chat-„A“ zählt bis zum
+   nächsten aktuellen REST auf t1. Kein Fix im Delta: die Zählung hängt am lokalen Slotzustand, den das Delta in keinem Zweig ändert
+   (weder No-op noch mehrdeutig); die Ursache ist der veraltete REST nach R4.
