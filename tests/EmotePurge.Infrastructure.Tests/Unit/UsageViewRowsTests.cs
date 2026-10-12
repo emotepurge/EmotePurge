@@ -301,6 +301,101 @@ public class UsageViewRowsTests
         Assert.DoesNotContain(rows, r => r.SlotId == "s-ghost");
     }
 
+    // F6 (plan #377 2.12): a slot row says whether another own slot of the emote carries the same authoritative
+    // date, computed over the emote's whole slot list and not over the rows that happen to be shown.
+    [Fact]
+    public void FirstSeenAtShared_IsFalse_WhenTheAuthoritativeDateIsUnique()
+    {
+        var rows = Build(
+            [Active],
+            [Slot("s-a", "a", T1, fromRest: true), Slot("s-b", "b", T2, fromRest: true)],
+            rowsInSet: ["s-a", "s-b"]);
+
+        Assert.All(rows, r => Assert.False(r.FirstSeenAtShared));
+    }
+
+    [Fact]
+    public void FirstSeenAtShared_IsTrueOnBothRows_WhenTwoSlotsWithRowsShareTheirDate()
+    {
+        var rows = Build(
+            [Active],
+            [Slot("s-a", "a", T1, fromRest: true), Slot("s-b", "b", T1, fromRest: true)],
+            rowsInSet: ["s-a", "s-b"],
+            isActiveView: false);
+
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.True(r.FirstSeenAtShared));
+    }
+
+    [Fact]
+    public void FirstSeenAtShared_IsTrue_WhenTheTwinHasNoRowsInTheViewedNonActiveSet()
+    {
+        var rows = Build(
+            [Active],
+            [Slot("s-a", "a", T1, fromRest: true), Slot("s-b", "b", T1, fromRest: true)],
+            rowsInSet: ["s-a"],
+            isActiveView: false);
+
+        var row = Assert.Single(rows);
+        Assert.Equal("s-a", row.SlotId);
+        Assert.True(row.FirstSeenAtShared);
+    }
+
+    [Fact]
+    public void FirstSeenAtShared_CountsAnArchivedTwin_ButNeitherASeedNorAProvisionalDate()
+    {
+        var archivedTwin = Build(
+            [Active],
+            [Slot("s-a", "a", T1, fromRest: true), Slot("s-b", "b", T1, fromRest: true, archived: true)],
+            rowsInSet: ["s-a"]);
+        var seedTwin = Build(
+            [Active],
+            [Slot("s-a", "a", T1, fromRest: true), Slot("s-seed", "stale", T1, fromRest: true, seed: true)],
+            rowsInSet: ["s-a"]);
+        var provisionalTwin = Build(
+            [Active],
+            [Slot("s-a", "a", T1, fromRest: true), Slot("s-b", "b", T1, fromRest: false)],
+            rowsInSet: ["s-a"],
+            isActiveView: false);
+
+        Assert.True(Assert.Single(archivedTwin).FirstSeenAtShared);
+        Assert.False(Assert.Single(seedTwin).FirstSeenAtShared);
+        Assert.False(Assert.Single(provisionalTwin).FirstSeenAtShared);
+    }
+
+    [Fact]
+    public void FirstSeenAtShared_IsFalse_ForEmoteModeProvisionalAndFlagOffRows()
+    {
+        var emoteMode = Build(
+            [Active],
+            [Slot("s-seed", "stale", null, seed: true), Slot("s-a", "a", T1, fromRest: true), Slot("s-b", "b", T1, fromRest: true)],
+            rowsInSet: ["s-seed"],
+            seedsOfSet: ["s-seed"]);
+        var provisional = Build(
+            [Active],
+            [Slot("s-a", "a", T1, fromRest: false), Slot("s-b", "b", T1, fromRest: false)],
+            rowsInSet: ["s-a", "s-b"]);
+        var flagOff = Build(
+            [Active],
+            [Slot("s-a", "a", T1, fromRest: true), Slot("s-b", "b", T1, fromRest: true)],
+            rowsInSet: ["s-a", "s-b"],
+            flag: false);
+
+        Assert.Null(Assert.Single(emoteMode).SlotId);
+        Assert.All(emoteMode.Concat(provisional).Concat(flagOff), r => Assert.False(r.FirstSeenAtShared));
+    }
+
+    [Fact]
+    public void FirstSeenAtShared_InTheActiveView_FollowsTheSameRule()
+    {
+        var rows = Build(
+            [Active],
+            [Slot("s-a", "a", T1, fromRest: true), Slot("s-b", "b", T1, fromRest: true), Slot("s-c", "c", T2, fromRest: true)],
+            rowsInSet: []);
+
+        Assert.Equal([true, true, false], rows.Select(r => r.FirstSeenAtShared));
+    }
+
     private static IReadOnlyList<UsageViewRow> Build(
         UsageViewEmote[] emotes,
         UsageViewSlot[] slots,

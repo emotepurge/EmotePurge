@@ -8,8 +8,9 @@ namespace EmotePurge.Api.Tests;
 /// The wire shape of one <c>/usage-stats/totals</c> row (<see cref="EmoteUsageContextDto"/>), pinned for the
 /// emote-mode row — the only kind production serves while <c>SevenTv:SlotReconcile:Enabled</c> is off
 /// (plan #376 R1). The fields the frontend reads before slots keep their names, values and relative order;
-/// the three fields of the slot read API are added with their off values: <c>slotId</c> present and
-/// <c>null</c>, <c>firstSeenAtFromRest</c> <c>false</c>, <c>siblingNames</c> an empty array.
+/// the fields of the slot read API are added with their off values: <c>slotId</c> present and
+/// <c>null</c>, <c>firstSeenAtFromRest</c> <c>false</c>, <c>siblingNames</c> an empty array, and last
+/// <c>firstSeenAtShared</c> <c>false</c> (plan #377 2.12).
 /// </summary>
 public class EmoteUsageContextWireFormatTests
 {
@@ -37,12 +38,13 @@ public class EmoteUsageContextWireFormatTests
             false,
             false,
             ["01PREVIOUSSET00000000000000"],
-            []);
+            [],
+            false);
 
         var json = JsonSerializer.Serialize(dto, Options);
 
         Assert.Equal(
-            """{"emoteId":"emote-1","slotId":null,"emoteName":"PogChamp","sevenTvEmoteId":"01JB8QK3X0000000000000000","imageUrl":"https://cdn.7tv.app/emote/example/2x.webp","totalUseCount":12,"lastUsedDate":"2026-07-02","previousWindowUseCount":3,"firstSeenAt":"2026-06-01T08:00:00Z","firstSeenAtFromRest":false,"isArchived":false,"nameTwinEmoteSetIds":["01PREVIOUSSET00000000000000"],"siblingNames":[]}""",
+            """{"emoteId":"emote-1","slotId":null,"emoteName":"PogChamp","sevenTvEmoteId":"01JB8QK3X0000000000000000","imageUrl":"https://cdn.7tv.app/emote/example/2x.webp","totalUseCount":12,"lastUsedDate":"2026-07-02","previousWindowUseCount":3,"firstSeenAt":"2026-06-01T08:00:00Z","firstSeenAtFromRest":false,"isArchived":false,"nameTwinEmoteSetIds":["01PREVIOUSSET00000000000000"],"siblingNames":[],"firstSeenAtShared":false}""",
             json);
     }
 }

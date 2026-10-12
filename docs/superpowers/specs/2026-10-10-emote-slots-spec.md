@@ -184,8 +184,17 @@ EmoteUsageContextDto(
   DateTime? FirstSeenAt /* Slot.AddedAt bzw. Emote.FirstSeenAt */, bool FirstSeenAtFromRest /* Emote-Modus: false */,
   bool IsArchived /* Slot oder Emote archiviert; Emote-Modus: Emote.IsArchived */,
   IReadOnlyList<string> NameTwinEmoteSetIds /* je Slot-Name; Emote-Modus: über Emote.Name */,
-  IReadOnlyList<string> SiblingNames /* andere Zeilen desselben Emotes in dieser Antwort, D2-Ordnung; Emote-Modus: leer */)
+  IReadOnlyList<string> SiblingNames /* andere Zeilen desselben Emotes in dieser Antwort, D2-Ordnung; Emote-Modus: leer */,
+  bool FirstSeenAtShared /* Kind 7, Betreiber 2026-10-12: nur /totals; siehe unten */)
 ```
+
+**`FirstSeenAtShared` (Kind 7, Betreiber 2026-10-12, F6).** `true` genau dann, wenn die Zeile eine Slot-Modus-Zeile mit
+`FirstSeenAtFromRest = true` ist und mindestens ein **anderer eigener** Slot desselben Emotes (kein unsettled Seed, aktiv oder
+archiviert, mit oder ohne Zeilen in irgendeinem Set) `AddedAtFromRest = true` und denselben gespeicherten `AddedAt` trägt
+(Vergleich wie `BindByDate`). Berechnet über den vollständigen Slot-Bestand des Emotes, nicht über die gezeigten Zeilen — ein
+gleichzeitiger Zwilling ohne Zeilen im angesehenen nicht aktiven Set bleibt so sichtbar. Emote-Modus, provisorische oder
+undatierte Zeilen: immer `false`. Gilt in der aktiven und der nicht aktiven Ansicht nach derselben Regel; `/series` sendet das
+Feld nicht.
 
 **Modus je Emote im angefragten Set X.** Flag `SevenTv:SlotReconcile:Enabled` aus: **jedes** Emote im Emote-Modus — die
 Antwort ist die von vor den Slots, nur um die neuen Felder mit ihren Aus-Werten ergänzt (`SlotId` `null`,
