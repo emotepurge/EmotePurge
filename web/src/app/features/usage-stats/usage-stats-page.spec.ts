@@ -8722,3 +8722,203 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     });
   });
 });
+
+/**
+ * Plan 377 (emote slots, child 7), T4: the card markers. Real template, because the point is what a
+ * reader of the page is told: a slot card says "also in the set as <siblings>" (`+n`), an
+ * emote-mode duplicate says "n slots in the set" (`×n`), and no row says both (F1, 2.7).
+ */
+describe('UsageStatsPage — slot card markers (plan 377, T4)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  const IMAGE = 'https://cdn.7tv.app/emote/x/1x.webp';
+
+  function member(sevenTvEmoteId: string, name: string): ForeignEmoteRow {
+    return {
+      sevenTvEmoteId,
+      name,
+      defaultName: name,
+      imageUrl: IMAGE,
+      topAllTime: null,
+      trending: null,
+    };
+  }
+
+  function memberList(emotes: ForeignEmoteRow[]): ForeignEmoteSetResponse {
+    return {
+      channelName: 'a',
+      sevenTvUserId: null,
+      emoteSetId: 'set-b',
+      emoteSetName: 'Halloween',
+      capacity: 1000,
+      totalCount: emotes.length,
+      truncated: false,
+      emotes,
+    };
+  }
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  async function openView(
+    totals: EmoteUsageTotalDto[],
+    members: ForeignEmoteRow[] = [],
+  ): Promise<void> {
+    await TestBed.inject(Router).navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({
+          id: 'set-a',
+          isActive: true,
+          observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+        }),
+        emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+      ]),
+    );
+    await settle();
+    flushByPath(
+      httpMock,
+      '/api/channels/a/usage-stats/totals',
+      totals.map((row) => ({ ...row, imageUrl: IMAGE })),
+    );
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    httpMock
+      .match((request) => LIVE_LIST_URL.test(request.url))
+      .forEach((request) => request.flush(memberList(members)));
+    await settle();
+  }
+
+  function inspectCard(slotKey: string): void {
+    const row = component['emotes']().find((candidate) => candidate.slotKey === slotKey);
+    component['inspect'](row!);
+    fixture.detectChanges();
+  }
+
+  const pageText = () => (fixture.nativeElement as HTMLElement).textContent ?? '';
+
+  it('names the sibling slots in the inspector of a slot card, and not the emote-mode sentence', async () => {
+    // protects=a slot card tells its reader the emote also stands under another name;
+    // fails_when=the inspector shows the slots sentence, or neither sentence, for a slot card;
+    // no_claim=the wording (keys stand in for it).
+    await openView(
+      [slotRow('x', 'slot-ome', 'ome44', 30), slotRow('x', 'slot-hob', 'hob44', 10)],
+      [member('7tv-x', 'ome44'), member('7tv-x', 'hob44'), member('7tv-x', 'ome45')],
+    );
+    inspectCard('slot-ome');
+
+    const text = pageText();
+    expect(text).toContain('usageStats.setView.alsoAs');
+    expect(text).not.toContain('usageStats.setView.slots');
+  });
+
+  it('gives an emote-mode duplicate the slots sentence and never the also-as sentence (flag-off guard)', async () => {
+    await openView(
+      [emote('d', 'Dupe', 5)],
+      [member('7tv-d', 'Dupe'), member('7tv-d', 'DupeAlias')],
+    );
+    inspectCard('7tv-d');
+
+    const text = pageText();
+    expect(text).toContain('usageStats.setView.slots');
+    expect(text).not.toContain('usageStats.setView.alsoAs');
+  });
+
+  it('puts the also-as sentence into the accessible name of a slot card only, and the slots sentence into a duplicate only, each at most once', async () => {
+    await openView(
+      [
+        slotRow('x', 'slot-ome', 'ome44', 30),
+        slotRow('x', 'slot-hob', 'hob44', 10),
+        emote('d', 'Dupe', 5),
+        emote('y', 'Plain', 3),
+      ],
+      [
+        member('7tv-x', 'ome44'),
+        member('7tv-x', 'hob44'),
+        member('7tv-d', 'Dupe'),
+        member('7tv-d', 'DupeAlias'),
+        member('7tv-y', 'Plain'),
+      ],
+    );
+
+    const labels = Array.from(
+      (fixture.nativeElement as HTMLElement).querySelectorAll('button[data-atlas-index]'),
+    ).map((cell) => cell.getAttribute('aria-label') ?? '');
+    const alsoAs = labels.filter((label) => label.includes('usageStats.setView.alsoAs'));
+    const slots = labels.filter((label) => label.includes('usageStats.setView.slots'));
+
+    expect(alsoAs).toHaveLength(2);
+    expect(slots).toHaveLength(1);
+    expect(slots[0]).toContain('Dupe');
+    expect(labels.filter((label) => label.includes('alsoAs') && label.includes('slots'))).toEqual(
+      [],
+    );
+  });
+
+  it('hides the +n glyph from screen readers, since the cell label already says it', async () => {
+    await openView(
+      [
+        slotRow('x', 'slot-ome', 'ome44', 30),
+        slotRow('x', 'slot-hob', 'hob44', 20),
+        slotRow('x', 'slot-ome5', 'ome45', 10),
+      ],
+      [member('7tv-x', 'ome44'), member('7tv-x', 'hob44'), member('7tv-x', 'ome45')],
+    );
+
+    const glyph = Array.from(
+      (fixture.nativeElement as HTMLElement).querySelectorAll(
+        'button[data-atlas-index] span[title]',
+      ),
+    ).find((node) => node.textContent?.trim() === '+2');
+    expect(glyph).toBeDefined();
+    expect(glyph!.closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(glyph!.getAttribute('title')).toBe('usageStats.setView.alsoAs');
+  });
+});

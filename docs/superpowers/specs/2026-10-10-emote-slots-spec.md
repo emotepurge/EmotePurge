@@ -394,7 +394,7 @@ mit Flag aus ist jede Zeile im Emote-Modus, und auch mit Flag an bleibt er für 
 | Bänder, `deadCount`, `totalUses`, Pareto, `emoteCountKey` | je Zeile = je Slot (D1); Wortlaut „Emotes" bleibt |
 | Tag-Filter / `assignTags` / `tagUnassignIds` | Filter unverändert (ID); Zuweisung distinct IDs |
 | Vote-Erstellung | distinct `emoteId`/`sevenTvEmoteId`, `voteBallotSize` = distinct |
-| Karte (D23) | `aria-label` + `alsoAs`; Scrim `+{{n}}`; Inspector/Sidecar `alsoAs`; `setView.slots` entfällt |
+| Karte (D23) | `aria-label` + `alsoAs`; Scrim `+{{n}}`; Inspector/Sidecar `alsoAs`; `setView.slots` entfällt nicht (*Kind 7, Betreiber 2026-10-12*): Emote-Modus-Zeilen mit `slotCount > 1` behalten `×n` und „n Plätze im Set“ an allen vier Stellen, `+n`/`alsoAs` gilt nur für Slot-Zeilen mit `siblingNames`; beide Marker schließen sich je Zeile aus (Regeln in §9.1) |
 | „Neu"/„Im Set seit"/Trend | lesen das Slot-Datum (keine Codeänderung außer DTO); `hideObserved` je Slot |
 | Drilldown | `slotId`; Cache `channel|scope|slot:<id>|…` bzw. `emote:<id>`; 7TV-Link je Emote |
 | Suche | unverändert — findet je Slot |

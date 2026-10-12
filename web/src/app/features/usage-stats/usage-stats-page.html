@@ -426,6 +426,10 @@
                 | transloco: { count: emote.slotCount, aliases: emote.aliases.join(', ') }
             }}
           </span>
+        } @else if (emote.siblingNames.length > 0) {
+          <span>{{
+            'usageStats.setView.alsoAs' | transloco: { names: emote.siblingNames.join(', ') }
+          }}</span>
         }
         @if (emote.nameTwinEmoteSetIds.length > 0) {
           <span>{{
@@ -832,7 +836,11 @@
                             ('usageStats.setView.slots'
                               | transloco
                                 : { count: emote.slotCount, aliases: emote.aliases.join(', ') })
-                          : '') +
+                          : emote.siblingNames.length > 0
+                            ? ' · ' +
+                              ('usageStats.setView.alsoAs'
+                                | transloco: { names: emote.siblingNames.join(', ') })
+                            : '') +
                         (emote.nameTwinEmoteSetIds.length > 0
                           ? ' · ' +
                             ('usageStats.setView.nameTwin'
@@ -861,7 +869,11 @@
                        label and the inspector already say them in words; the title is the pointer
                        user's tooltip (spec 8.2 — slot count with both aliases for a #74 duplicate;
                        the name-twin mark naming the other set, E24). -->
-                      @if (emote.slotCount > 1 || emote.nameTwinEmoteSetIds.length > 0) {
+                      @if (
+                        emote.slotCount > 1 ||
+                        emote.siblingNames.length > 0 ||
+                        emote.nameTwinEmoteSetIds.length > 0
+                      ) {
                         <span
                           class="absolute right-0 bottom-0 flex gap-0.5 px-1 font-mono text-[9px] leading-[1.4] font-medium"
                           [style.background-color]="'var(--ep-sprite-scrim)'"
@@ -885,6 +897,14 @@
                                     : { count: emote.slotCount, aliases: emote.aliases.join(', ') }
                               "
                               >×{{ emote.slotCount }}</span
+                            >
+                          } @else if (emote.siblingNames.length > 0) {
+                            <span
+                              [title]="
+                                'usageStats.setView.alsoAs'
+                                  | transloco: { names: emote.siblingNames.join(', ') }
+                              "
+                              >+{{ emote.siblingNames.length }}</span
                             >
                           }
                         </span>
@@ -1107,6 +1127,12 @@
               {{
                 'usageStats.setView.slots'
                   | transloco: { count: emote.slotCount, aliases: emote.aliases.join(', ') }
+              }}
+            </p>
+          } @else if (emote.siblingNames.length > 0) {
+            <p class="text-xs text-fg-muted">
+              {{
+                'usageStats.setView.alsoAs' | transloco: { names: emote.siblingNames.join(', ') }
               }}
             </p>
           }
