@@ -106,17 +106,44 @@ describe('LineChart', () => {
     expect(d.match(/M/g)).toHaveLength(2);
   });
 
-  it('widens the left margin so long y labels are not cut off at the edge', () => {
+  describe('plot margin', () => {
     const plotX = (root: HTMLElement) =>
       Number(
         /translate\((\d+(?:\.\d+)?)/.exec(
           root.querySelector('svg[role="img"] > g')?.getAttribute('transform') ?? '',
         )?.[1],
       );
-    const small = plotX(render([series('a', [1, 5, 3, 2])]));
-    const large = plotX(render([series('a', [1_500_000_000, 5, 3, 2])]));
 
-    expect(large).toBeGreaterThan(small);
+    it('widens for long y labels', () => {
+      const small = plotX(render([series('a', [1, 5, 3, 2])]));
+      const large = plotX(render([series('a', [1_500_000_000, 5, 3, 2])]));
+
+      expect(large).toBeGreaterThan(small);
+    });
+
+    it('lets stacked charts share one origin through minPlotLeft', () => {
+      const origin = (values: number[]) => {
+        render([series('a', values)]);
+        fixture.componentRef.setInput('minPlotLeft', 100);
+        fixture.detectChanges();
+        return plotX(fixture.nativeElement as HTMLElement);
+      };
+
+      expect(origin([1, 5, 3, 2])).toBe(100);
+      expect(origin([1_500, 5, 3, 2])).toBe(100);
+    });
+
+    it('keeps the plot inside the viewBox when a long label meets a narrow chart', () => {
+      const root = render([series('a', [1e12, 5, 3, 2])]);
+      fixture.componentRef.setInput('minPlotLeft', 400);
+      fixture.detectChanges();
+      const svg = root.querySelector('svg[role="img"]') as SVGElement;
+      const viewWidth = Number(svg.getAttribute('viewBox')?.split(' ')[2]);
+      const x = plotX(root);
+
+      expect(x).toBeLessThanOrEqual(viewWidth * 0.4);
+      expect(viewWidth - x).toBeGreaterThanOrEqual(40);
+    });
   });
 
   it('starts without a cursor and an empty live line', () => {

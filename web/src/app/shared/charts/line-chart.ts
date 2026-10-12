@@ -67,6 +67,8 @@ const TICK_FONT_SIZE = 12;
 /** Average glyph width of a tick label in em (digits and units, a little generous). */
 const LABEL_CHAR_EM = 0.62;
 const Y_LABEL_GAP = 6;
+/** The y-label margin never takes more than this share of the chart width. */
+const PLOT_LEFT_MAX_SHARE = 0.4;
 
 /** Which number a legend entry shows: the latest value, the total or the maximum of the window. */
 export type LegendStat = 'last' | 'sum' | 'max';
@@ -170,6 +172,8 @@ let nextChartId = 0;
               class="fill-fg-muted"
               [attr.font-size]="fontSize"
               text-anchor="end"
+              [attr.textLength]="tick.fitLength"
+              lengthAdjust="spacingAndGlyphs"
               [attr.x]="plot().x - 6"
               [attr.y]="plot().y + tick.y + 4"
             >
@@ -333,6 +337,12 @@ export class LineChart {
    * spoken by the live region. Optional; `null` or a missing entry adds nothing.
    */
   readonly bucketDetails = input<readonly (string | null)[]>([]);
+  /**
+   * Smallest left margin of the plot in SVG units. Charts stacked on one time axis pass the same
+   * number so their plots start at one x, whatever their own labels need; the chart still grows
+   * past it for a wider label (up to a share of its width).
+   */
+  readonly minPlotLeft = input(0);
 
   private readonly transloco = inject(TranslocoService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -342,15 +352,12 @@ export class LineChart {
   protected readonly fontSize = TICK_FONT_SIZE;
   protected readonly width = signal(FALLBACK_WIDTH);
   protected readonly plot = computed(() => {
-    // The left margin grows with the widest y label: unit-carrying labels ("1,60 Kerne",
-    // "953,7 MiB") overflow the fixed 60 units and were clipped at the SVG edge.
-    const labelWidth = Math.max(
-      0,
-      ...this.yDomain().ticks.map(
-        (value) => this.format(value, this.locale()).length * TICK_FONT_SIZE * LABEL_CHAR_EM,
-      ),
-    );
-    const left = Math.max(PLOT_LEFT, Math.ceil(labelWidth) + Y_LABEL_GAP + 4);
+    // The margin follows the widest y label (unit-carrying labels such as "1,60 Kerne" overflowed a
+    // fixed 60 units), is raised to the caller's shared minimum and is capped so the plot keeps
+    // its room on a narrow chart; a label that still does not fit is squeezed in `yTicks`.
+    const needed = Math.ceil(this.widestYLabel()) + Y_LABEL_GAP + 4;
+    const cap = Math.floor(this.width() * PLOT_LEFT_MAX_SHARE);
+    const left = Math.min(Math.max(PLOT_LEFT, this.minPlotLeft(), needed), Math.max(cap, 0));
     return {
       x: left,
       y: PLOT_TOP,
@@ -359,6 +366,15 @@ export class LineChart {
     };
   });
   protected readonly descriptionId = `app-line-chart-description-${nextChartId++}`;
+
+  private readonly widestYLabel = computed(() =>
+    Math.max(
+      0,
+      ...this.yDomain().ticks.map((value) =>
+        this.estimateLabelWidth(this.format(value, this.locale())),
+      ),
+    ),
+  );
 
   private readonly rawCursor = signal<number | null>(null);
 
@@ -397,11 +413,17 @@ export class LineChart {
   protected readonly yTicks = computed(() => {
     const { ticks, min, max } = this.yDomain();
     const locale = this.locale();
-    return ticks.map((value) => ({
-      value,
-      y: yAt(value, min, max, PLOT_HEIGHT),
-      label: this.format(value, locale),
-    }));
+    const room = this.plot().x - Y_LABEL_GAP - 2;
+    return ticks.map((value) => {
+      const label = this.format(value, locale);
+      return {
+        value,
+        y: yAt(value, min, max, PLOT_HEIGHT),
+        label,
+        // Only a label wider than its margin is squeezed (never stretched).
+        fitLength: this.estimateLabelWidth(label) > room ? Math.max(room, 0) : null,
+      };
+    });
   });
 
   protected readonly xTicks = computed(() => {
@@ -734,6 +756,10 @@ export class LineChart {
       });
     }
     return this.format(summary.last as number, locale);
+  }
+
+  private estimateLabelWidth(label: string): number {
+    return label.length * TICK_FONT_SIZE * LABEL_CHAR_EM;
   }
 
   private format(value: number, locale: string): string {

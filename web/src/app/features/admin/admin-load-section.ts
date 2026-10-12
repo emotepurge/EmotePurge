@@ -33,6 +33,8 @@ const PROBE_RANGE: AdminDashboardLoadRange = '13mo';
 const POLL_TICK_MS = 60_000;
 const LONG_RANGE_INTERVAL_MS = 300_000;
 const TICK_TOLERANCE_MS = 5_000;
+/** One plot origin for all eleven stacked charts: room for the widest usual y label ("1,60 Kerne"). */
+const SHARED_PLOT_LEFT = 92;
 const HOUR_SECONDS = 3_600;
 const DAY_SECONDS = 86_400;
 
@@ -127,6 +129,7 @@ function pollIntervalMs(range: AdminDashboardLoadRange): number {
                   [unit]="chart.unit"
                   [partialLastBucket]="true"
                   [bucketDetails]="chart.details"
+                  [minPlotLeft]="PLOT_LEFT_SHARED"
                   [title]="chart.titleKey | transloco: chart.titleParams"
                 />
                 @for (note of chart.notes; track $index) {
@@ -158,6 +161,7 @@ export class AdminLoadSection {
   private readonly transloco = inject(TranslocoService);
 
   protected readonly rangeOptions = RANGE_OPTIONS;
+  protected readonly PLOT_LEFT_SHARED = SHARED_PLOT_LEFT;
   protected readonly range = signal<AdminDashboardLoadRange>(DEFAULT_RANGE);
 
   private readonly resource = rxResource({
