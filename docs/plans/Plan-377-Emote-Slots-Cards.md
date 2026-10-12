@@ -1,8 +1,8 @@
 # Plan #377 — Emote-Slots, Kind 7: Frontend-Modell und Nutzungsseite, zwei Karten je Emote
 
 Erstellt am 2026-10-12 im Worktree `EmotePurge-slots` (Branch `feat/377-slot-cards`, Basis `origin/main` @ `4b754279`, #376 gemergt).
-**Status: Revision 1 (12.10.) — Betreiberentscheidungen F1–F5 eingearbeitet, adversariales Review (Codex Sol, vier Befunde)
-übernommen; keine offenen Rückfragen.** Quelle und einzige
+**Status: Revision 2 (12.10.) — Betreiberentscheidungen F1–F5 eingearbeitet, zwei adversariale Review-Runden (Codex Sol) übernommen;
+eine offene Frage (F6, Abschnitt 0), die eine Backend-Option enthält.** Quelle und einzige
 Vertragsquelle: [die Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md) (§3 D1, D2, D3, D7, D21–D23, D25; §5.1–5.3, 5.5 in der
 Kind-6-Fassung; §9.1, 9.2, 9.4; §13 AK 34, 35, 46 UI-Hälfte; §15; §16 Kind 7), Issue #377 mit dem Übergabekommentar aus #376 (bindend),
 [Plan-376](Plan-376-Emote-Slots-Read-API.md) §0 (R1, R2), §2, §10. Formatvorlage: Plan-376.
@@ -25,6 +25,15 @@ Abweichung Spec ↔ Code ↔ Übergabe (Abschnitt 1.3).
 | **2.6:** `DeletableEmote` + optionale Bestätigungsnamen; das Panel listet sie im Bestätigungsdialog; Flag aus bitgleich | Sol S3, F3 |
 | **Neu 2.11:** Serien-Abgleich bei Moduswechsel — Modus-Fehlpaarung wird erkannt, die Kurve gilt dann als „lädt", `/series` wird je Fehlpaarungs-Signatur höchstens einmal am Cache vorbei neu geholt | Sol S4 |
 | Tests in 4.1–4.4 erweitert, neuer Task T3b, T3 um das Panel erweitert, Aufwand neu (rund 4,0 statt 3,4 Tage) | Folge |
+
+### Revision 2 (12.10.) — was sich geändert hat
+
+| Änderung | beantwortet |
+|---|---|
+| **2.4 Schritt 2:** Vorbehalt F6 — die Totals einer nicht aktiven Ansicht sind nicht der ganze Slot-Bestand; die namensunabhängige Einzelbindung ist ohne Beleg nicht sicher. Offene Frage mit Optionen, der Plan beschreibt bis zur Antwort Variante (b) | Sol R2-1 |
+| **2.6:** sobald eine Zeile Bestätigungsnamen trägt, zeigt der Bestätigungsdialog die sichtbare Namensliste ohne die 50er-Grenze; ohne das Feld bleibt sie | Sol R2-2 |
+| **2.11:** zweite Veraltungsregel — eine Slot-Zeile mit positiver Zahl im Bereich ohne Serien-Eintrag ist veraltet, nicht „nicht benutzt"; begrenzte Neuabfrage mit Mindestabstand | Sol R2-3 |
+| Tests, T3/T3b-Zuschnitt, Aufwand (rund 4,2 Tage) | Folge |
 
 ## 0. Entscheidungen (Betreiber 2026-10-12)
 
@@ -63,13 +72,38 @@ Serien-Mocks mit `emoteId: emote-of-<7tv-id>` passen weiter (A2).
 2026-10-12: ja; bestätigte Abweichung von Spec §9.4 („`firstSeenAtFromRest` Default `true`").** Das Backend liefert im Emote-Modus immer
 `false` (§5.1). Damit ist die ganze bestehende E2E-Suite der Nachweis „Flag aus = heute"; Slot-Fälle setzen ihre Felder ausdrücklich.
 
+**F6 — offen: Wie bindet die nicht aktive Ansicht eine datierte Slot-Zeile, deren Zeitpunkt live genau ein Eintrag mit anderem Namen
+trägt?** Befund Sol R2-1, am Code bestätigt: `UsageViewRows.cs` (Z. 75–82) gibt in der nicht aktiven Ansicht nur Slots **mit** Zeilen im Set
+aus; ein gleichzeitiges Geschwister ohne Zeilen fehlt in `/totals`. Eigene Slots A(t, 100) und B(t, ohne Zeilen), live nur B(t): das Frontend
+sieht die Gruppe 1:1 und zeigt B mit A's 100 — `EmoteSlotReconcilePlanner.BindByDate` sähe beide Slots und bände B richtig. Aus den DTOs lässt
+sich der fehlende Zeuge nicht zurückgewinnen; der Fall ist für das Frontend von einer echten Umbenennung A(t) → B(t) nicht zu unterscheiden.
+Optionen:
+- **(a) Frontend, konservativ:** im Zeitpunkt-Abgleich immer nur gleichnamig binden. Kein Falsch-Zuordnen mehr. **Preis bei Umbenennung:** die
+  gezählte Slot-Zeile ist `'left'` und wird ausgeblendet, der umbenannte Live-Eintrag steht als Klasse 3 „keine Zählungen unter diesem Set"
+  in der Endgruppe, ohne Drilldown. **Dauer der Lücke:** der REST-Abgleich läuft nur für das **aktive** Set (Spec §6.2, Eingabe = aktives
+  `EmoteSetId`); die Slot-Namen eines nicht aktiven Sets gleicht erst der erste Abgleich nach seiner Aktivierung an (oder eine Backfill-Enqueue
+  dieses Sets, D28). Für ein Saison-Set also Wochen bis Monate — und genau „gezählt, aber als ungezählt gezeigt" ist der Schaden, den #365
+  beheben soll (Untererfassung schiebt Richtung Löschen). Die aktive Ansicht ist nicht betroffen (dort kein Join, 2.4).
+- **(b) Frontend, wie Revision 1:** Einzel ↔ Einzel bindet namensunabhängig. Umbenennung richtig; Falsch-Zuordnung nur, wenn zwei Einträge
+  desselben Emotes **millisekundengenau** dasselbe `added_at` tragen und das Geschwister im Set keine Zeilen hat. Laut Spec §2.4 nie
+  beobachtet (Sonde S1: ms-weit auseinander), aber über ungeprüfte Massenpfade (Origin-Set-Merge, aus dem die Duplikate laut DECISIONS
+  2026-08-04 stammen) nicht ausgeschlossen. Folge im Fehlerfall: eine Karte zeigt fremde Zahlen (zu viele, also Richtung Behalten).
+- **(c) Backend-Beleg (Änderung am Lesevertrag aus #376):** `/totals`-Zeilen im Slot-Modus bekommen additiv ein Kennzeichen „ein anderer
+  eigener Slot desselben Emotes teilt diesen Zeitpunkt", berechnet in `UsageViewRows` über **alle** eigenen Slots vor dem Ansichtsfilter. Das
+  Frontend bindet namensunabhängig nur ohne dieses Kennzeichen, sonst nur gleichnamig. Richtig in beiden Fällen; kostet einen kleinen,
+  additiven Backend-Commit (DTO-Feld, `UsageViewRows`, Unit- und Query-Tests, Wire-Format-Test) — in #377 („Backend nicht berührt" fiele) oder
+  als eigenes kleines Issue vor T1.
+**Empfehlung des Planers: (c);** ist eine Backend-Änderung in diesem Kind nicht gewollt, **(b) vor (a)** — (a) tauscht einen theoretischen
+Fehler gegen einen wahrscheinlichen, dauerhaften und genau den, den die Spec verhindern soll. Der Plan beschreibt bis zur Antwort (b); (a)
+ändert nur 2.4 Schritt 2 und zwei Tests in 4.1, (c) zusätzlich 2.1 und einen Backend-Task vor T1.
+
 Zur Kenntnis: **(a)** Klasse-3-Einträge behalten `firstSeenAt: null` wie heute (kein „Neu" aus dem Live-Datum); **(b)** Bandüberschriften und
 „x von y Emotes" zählen Karten, nicht Emotes (D1, §19); **(c)** im Slot-Modus können „N markiert" (Karten) und „Löschen (M)"/„Zur Abstimmung
 stellen (M)" (eindeutige 7TV-Ids) auseinanderlaufen — gewollt, weil Löschlauf und Ballot je Id arbeiten (D3, F3).
 
 ## 0a. Adversariales Review (Codex Sol, 12.10.) — Protokoll
 
-Alle vier Befunde am Code nachgeprüft und angenommen.
+**Runde 1 (Revision 1):** alle vier Befunde am Code nachgeprüft und angenommen.
 
 | # | Befund (Sol) | Prüfung am Code | Einarbeitung |
 |---|---|---|---|
@@ -77,6 +111,15 @@ Alle vier Befunde am Code nachgeprüft und angenommen.
 | S2 [high] | Zeitpunkt-Abgleich löst Gleichstand nur auf der Live-Seite; S_A(A,t,100) und S_B(B,t,3) gegen live B(t) zeigt B mit 100 | stimmt: `EmoteSlotReconcilePlanner.BindByDate` bindet namensunabhängig nur bei `indexes.Count == 1 && slotsAtDate.Count == 1`, sonst nur gleichnamig | 2.4 Schritt 2 neu; Tests 4.1 |
 | S3 [high] | die Aliase des Lauf-Eintrags erreichen die Bestätigung nicht | stimmt: `visibleSelectedEmoteNames`/`hiddenSelectedEmoteNames` lesen nur `emote.name` (`mass-delete-panel.ts`, Z. 309–318) | F3, 2.6; Tests 4.2, 4.3 |
 | S4 [medium] | nach dem Settle bleiben Batch-Serien unter alten Schlüsseln, die Kurve wird flach | stimmt: Live-Reloads (`usage.flushed`, `refreshSetStatus({reloadRowsAfter})`) rufen nur `loadTotals`; `loadChannelSeries` läuft nur aus `load()`; `getChannelSeries` cacht je (Kanal, Set, Bereich) ohne Ablauf; `inspectedPoints` füllt einen fehlenden Eintrag mit Nullen | neu 2.11; Task T3b; Tests 4.2, 4.3 |
+
+**Runde 2 (gezielte Nachprüfung von 23bba3cf):** S1 gelöst, bei Flag aus keine Regression im Dauerbetrieb; drei neue Befunde, am Code
+nachgeprüft, alle zutreffend.
+
+| # | Befund (Sol) | Prüfung am Code | Einarbeitung |
+|---|---|---|---|
+| R2-1 [high] | Gefilterte Totals verdecken den Zeitpunkt-Gleichstand: A(t,100), B(t, ohne Zeilen), live B(t) → B mit 100 | stimmt: `UsageViewRows.cs` Z. 75–82 zeigt in der nicht aktiven Ansicht nur Slots mit Zeilen in X; `BindByDate` sieht alle eigenen Slots | **nicht im Frontend lösbar ohne Preis** → F6 (offen), Plan bis dahin Variante (b), Tests für (a)/(c) vorbereitet in 4.1 |
+| R2-2 [high] | Die 50er-Grenze der sichtbaren Bestätigungsliste versteckt mitgelöschte Aliase | stimmt: `delete-confirm-dialog.ts` Z. 73 rendert `app-name-preview-list` ohne `cap`, Vorgabe `PREVIEW_CAP = 50` (`name-preview-list.ts` Z. 10); nur die Hidden-Liste ist unbegrenzt | 2.6: Opt-in ohne Grenze, sobald eine Zeile Bestätigungsnamen trägt; Tests 4.3; T3 |
+| R2-3 [medium] | Ein fehlender Serien-Eintrag kann vom Settle kommen statt von null Nutzung | stimmt: `GetChannelSeriesAsync` liest die Ansicht (`UsageStatQueryService.cs` Z. 300) und die Tage (Z. 315–319) in getrennten Anweisungen; ein Settle dazwischen lässt das Emote ganz weg — Plan-376 4.4 nennt diese Grenze | 2.11 zweite Regel; Tests 4.2, 4.3; T3b |
 
 ## 1. Umfang
 
@@ -215,6 +258,9 @@ ISO-Zeitpunkt ist nie leer; die Gleichstandsform hat stets einen Namensteil, die
    - sonst (mehrere auf einer oder beiden Seiten) → nur gleichnamige Paare innerhalb der Gruppe binden; der Rest geht in Schritt 3.
    Die Reihenfolge der DTOs ist damit ohne Einfluss. Gegenbeispiel aus dem Review: S_A(A, t, 100) und S_B(B, t, 3) gegen live nur B(t) →
    Gruppe 2:1 → S_B bindet B über den Namen, S_A ist `'left'`; nie „B mit 100".
+   **Vorbehalt F6 (offen, R2-1):** die Slot-Zeilen der nicht aktiven Ansicht sind nicht der ganze Slot-Bestand — ein gleichzeitiges Geschwister
+   ohne Zeilen im Set fehlt, die Gruppe sieht dann 1:1 aus. Diese Fassung beschreibt Variante (b) (Einzel ↔ Einzel namensunabhängig). Bei (a)
+   entfällt der erste Spiegelpunkt (immer nur gleichnamig); bei (c) gilt er nur für Zeilen ohne das Gleichstands-Kennzeichen aus dem Backend.
 3. **Übrige Slot-Zeilen** (provisorisch oder in Schritt 2 ohne Treffer): binden den noch freien Live-Eintrag derselben Id mit gleichem
    Namen — provisorische Zeilen jeden, datierte nur einen **undatierten** Eintrag (Spiegel von §6.2 Schritt 5 [E]: fehlt der Vorschau ein
    Datum, darf eine gezählte Karte nicht als „nicht mehr im Set" verschwinden).
@@ -261,7 +307,14 @@ to one cell" als einzige Form).
   dann die übrigen in D2-Ordnung (`firstSeenAt` aufsteigend, `null` zuletzt, dann Name ordinal), ordinal distinct. Die Namen stehen in der
   Liste, in die die Zeile über `hidden` fällt; ein ausgeblendetes, nicht markiertes Geschwister macht die Zeile nicht „ausgeblendet". Mit Flag
   aus bleibt die Bestätigung bitgleich — auch die Duplikat-Zelle (`×2`) einer nicht aktiven Ansicht nennt weiter nur ihren einen Namen, wie
-  heute; das Protokoll trägt ihre Aliase unverändert über `aliases`. Der Vote-Detail-Lösch-Weg setzt das Feld nicht (D3, dort ohnehin eine
+  heute; das Protokoll trägt ihre Aliase unverändert über `aliases`.
+- **Keine Grenze in der Bestätigung, sobald Bestätigungsnamen im Spiel sind (R2-2).** `DeleteConfirmDialog` zeigt die sichtbare Liste über
+  `app-name-preview-list` mit der Vorgabe `PREVIEW_CAP = 50`; ein mitgelöschtes Geschwister könnte dort als „und 1 weiteres" verschwinden.
+  Vertrag: das Panel gibt an den Bestätigungsweg ein zusätzliches Kennzeichen „sichtbare Liste ungekürzt" weiter, gesetzt genau dann, wenn
+  mindestens eine Zeile der Auswahl Bestätigungsnamen trägt; der Dialog übergibt dann der sichtbaren Liste „keine Grenze" (die Komponente
+  kennt das schon: `null` zeigt alle, wie die Hidden-Liste). Ohne das Kennzeichen bleibt die 50er-Grenze — Flag aus bitgleich. Betroffen:
+  `mass-delete-panel.ts`, das Daten-Interface des Dialogs (`delete-confirm-dialog.ts`) und der Durchreicher in `delete-flow.ts`. Der
+  Vote-Detail-Lösch-Weg setzt das Feld nicht (D3, dort ohnehin eine
   Zeile je Id).
 - **`pendingRemovalSlots`:** Summe über die eindeutigen markierten `'live'`-Ids der Summe von `slotCount` **aller** `'live'`-Zeilen dieser Id.
   Mit Flag aus (eine Zeile je Id) gleich der heutigen Zahl.
@@ -313,19 +366,30 @@ beantworteten Erst-Requests passieren (Totals nach, Serie vor dem Settle oder um
 **Vertrag:**
 - **Fehlpaarung je 7TV-Id** (rein, aus den gerade gezeigten Totals-Zeilen und der gehaltenen Serie): die Id hat in den Totals Slot-Zeilen,
   die Serie aber einen Eintrag mit `slotId null` für sie — oder umgekehrt eine Emote-Modus-Zeile in den Totals und Slot-Einträge in der Serie.
-  **Keine** Fehlpaarung ist: eine Slot-Zeile ohne Serien-Eintrag, wenn die Serie für diese Id gar keinen oder nur Slot-Einträge hat (der
-  Slot hatte im Bereich keine Nutzung — heutige Bedeutung „fehlt = nicht benutzt"). Klasse 3 nimmt nie teil.
-- **Anzeige:** eine Zeile mit Fehlpaarung bekommt keine Kurve und keine Live-Tage-Abdeckung; der Sidecar zeigt für sie den bestehenden
+  Klasse 3 nimmt nie teil.
+- **Veralteter Slot-Eintrag (R2-3):** eine **Slot-Modus**-Zeile (`slotId` gesetzt) mit `totalUseCount > 0`, für deren `slotId` die Serie
+  keinen Eintrag hat, obwohl beide denselben (Kanal, Set, Bereich) beschreiben. Grund: Totals und Serie zählen dieselbe Größe (Tage mit
+  `UseCount > 0` im Bereich, nur das angefragte Set), eine positive Zahl ohne Eintrag ist also ein Zeitversatz — etwa ein Settle zwischen
+  Ansichts- und Tagesabfrage von `GetChannelSeriesAsync` (Plan-376 4.4) — und nie „nicht benutzt". **Keine** Veraltung ist: eine Slot-Zeile mit
+  `totalUseCount` 0 ohne Eintrag (die heutige Bedeutung „fehlt = nicht benutzt", Null-Kurve bleibt); eine Emote-Modus-Zeile ohne Eintrag
+  (heutiges Verhalten: eine nach dem Serien-Laden erstmals benutzte Emote zeichnet weiter Nullen — so ist die bewusst nicht nachgeladene
+  Serie heute gebaut, und mit Flag aus darf kein Request dazukommen).
+- **Anzeige:** eine Zeile mit Fehlpaarung oder veraltetem Slot-Eintrag bekommt keine Kurve und keine Live-Tage-Abdeckung; der Sidecar zeigt für sie den bestehenden
   Lade-Zustand der Kurve (wie `seriesPending`), nie Nullen. Zahlen der Karte bleiben (sie kommen aus den Totals, Bestand).
-- **Neu holen:** ist die Menge der fehlgepaarten Ids nicht leer, holt die Seite `/series` für denselben (Kanal, Set, Bereich) **am Cache
+- **Neu holen:** ist die Menge der fehlgepaarten Ids oder der veralteten Slot-Zeilen nicht leer, holt die Seite `/series` für denselben (Kanal, Set, Bereich) **am Cache
   vorbei** neu und ersetzt den Cache-Eintrag (neue Option „refresh" an `getChannelSeries`, analog `loadCachedEmoteSetPreview`), über dieselbe
-  „last asked wins"-Kette (`latestSeries`). **Begrenzung:** höchstens **ein** solcher Abruf je Fehlpaarungs-Signatur (Kanal, Set, Bereich,
-  sortierte Menge der fehlgepaarten Ids); bleibt dieselbe Signatur danach bestehen (Antworten zeitlich versetzt), kein weiterer Abruf — die
+  „last asked wins"-Kette (`latestSeries`). **Begrenzung:** höchstens **ein** solcher Abruf je Signatur (Kanal, Set, Bereich,
+  sortierte Menge der fehlgepaarten Ids und der veralteten `slotId`s), und zwischen zwei solchen Abrufen mindestens 60 s (Konstante mit
+  Begründung wie `SYNC_FAILURE_RECHECK_INTERVAL_MS`: mit Flag an werden auch erstmals benutzte Slots als veraltet erkannt, das darf den
+  40/min-Bucket nicht mit jedem 30-s-Flush belasten; eine Signatur, die im Abstand entsteht, wird nach Ablauf einmal bedient); bleibt dieselbe Signatur danach bestehen (Antworten zeitlich versetzt), kein weiterer Abruf — die
   Zeilen zeigen „lädt" bis zur nächsten neuen Signatur oder bis `load()` (Bereich, Set, „Aktualisieren"). Eine **neue** Signatur (weitere Emotes
   settlen) darf wieder einmal abrufen. Während ein Serien-Request ohnehin läuft, wird nicht zusätzlich abgerufen; ausgewertet wird erst seine
   Antwort. `load()` setzt die gemerkte Signatur zurück.
-- **Flag aus:** Totals und Serie sind beide vollständig im Emote-Modus → nie eine Fehlpaarung → kein zusätzlicher Request, Verhalten
+- **Flag aus:** Totals und Serie sind beide vollständig im Emote-Modus, es gibt keine Slot-Zeilen → weder Fehlpaarung noch Veraltung → kein
+  zusätzlicher Request, Verhalten
   bitgleich (Wächter: bestehende Fälle, die die Zahl der `/series`-Requests prüfen, bleiben unverändert grün).
+- **Mit Flag an** ändert sich die Doku an `channelSeries` („deliberately NOT refetched on live usage events"): sie bleibt wahr für den
+  Normalfall, nennt aber die beiden Ausnahmen dieses Abschnitts.
 - Wo die Prüfung liegt [E]: als reine Hilfsfunktion neben `fillOffsetSeries` in `shared/emotes/usage-series.ts` (eigener Spec, Regel 12),
   die Seite hält Signatur und Abruf.
 
@@ -357,13 +421,16 @@ Baseline von `4b754279`, Diff leer.
 Regel 12: Verhalten, nicht Vorlage — Zustände, `computed()`-Ergebnisse, Ausgaben, Sperrentscheidungen, Accessibility-Semantik (Rolle,
 zugänglicher Name, `aria-*`); keine CSS-Klassen, keine Snapshots, Übersetzungswortlaut nur zur Identifikation.
 
-### 4.1 `merge-set-view.spec.ts` (8 bestehende unverändert, +14)
+### 4.1 `merge-set-view.spec.ts` (8 bestehende unverändert, +15)
 
 Slot-Modus aktiv: `slotKey = slotId`, `siblingNames` aus dem DTO · nicht aktiv, datierter Join über den Zeitpunkt bei abweichender
 Zeichenkettenform (`…56.780Z` gegen `…56.78Z`) · Gleichstand zweier Einträge mit gleichem Zeitpunkt bindet über den Namen · **S2:** zwei
 Slot-Zeilen S_A(A, t, 100) und S_B(B, t, 3), live nur B(t) → S_B gebunden mit 3, S_A `'left'`; dasselbe mit umgekehrter DTO-Reihenfolge
 gleiches Ergebnis; Gleichstand auf beiden Seiten mit umbenannten Mitgliedern (Slots A(t), B(t), live C(t), D(t)) → keine Bindung, beide
-Zeilen `'left'`, beide Einträge Klasse 3; Einzel ↔ Einzel mit anderem Namen (Slot A(t), live C(t)) → gebunden, Name C · provisorische
+Zeilen `'left'`, beide Einträge Klasse 3; Einzel ↔ Einzel mit anderem Namen (Slot A(t), live C(t)) → gebunden, Name C (Variante (b); bei (a)
+ungebunden, bei (c) gebunden nur ohne Gleichstands-Kennzeichen) · **R2-1:** gleichzeitiges Geschwister ohne Zeilen im Set (Totals nur A(t, 100),
+live nur B(t)) → Erwartung je F6-Variante: (b) gebunden als B mit 100 und als bekannte Grenze im Testnamen benannt; (a) A `'left'`, B Klasse 3;
+(c) mit Kennzeichen A `'left'`, B Klasse 3 · provisorische
 Zeile bindet über den Namen · datierte Zeile ohne Datumstreffer, Eintrag undatiert mit gleichem Namen → gebunden; Eintrag datiert mit anderem
 Zeitpunkt → Zeile `'left'`, Eintrag Klasse 3 · Klasse 3 je Eintrag mit `live:<id>#<addedAt>`, undatiert `live:<id>##<name>`,
 `siblingNames` aus der Live-Liste in D2-Ordnung · **S1:** zwei nicht gezählte Einträge derselben Id mit gleichem Zeitpunkt und verschiedenen
@@ -389,16 +456,24 @@ Klasse-3-Karten im Gleichstand werden unabhängig markiert und inspiziert · **S
 Serie im Emote-Modus geladen, ein `usage.flushed`-Reload liefert Slot-Zeilen derselben Id → die Slot-Karte zeigt keine Null-Kurve, genau ein
 zusätzlicher `/series`-Request am Cache vorbei, danach Kurven je Slot; dieselbe Fehlpaarung nach der Antwort (versetzte Antworten) → kein
 weiterer Request; eine weitere Id settelt → wieder genau einer; Slot ohne Nutzung neben einem Geschwister mit Nutzung → Null-Kurve wie heute,
-kein Request; Flag-aus-Totals → nie ein zusätzlicher Request.
+kein Request; Flag-aus-Totals → nie ein zusätzlicher Request · **R2-3:** Serie geladen, in der das Emote ganz fehlt (Settle zwischen
+Ansichts- und Tagesabfrage), danach Totals mit einer Slot-Zeile mit Zahl > 0 → keine Null-Kurve, genau ein Abruf am Cache vorbei; eine
+zweite veraltete Signatur innerhalb von 60 s → noch kein Abruf, nach Ablauf genau einer (`page.clock`/Fake-Timer); Emote-Modus-Zeile mit
+Zahl > 0 ohne Eintrag → Null-Kurve wie heute, kein Request.
 
 ### 4.3 Übrige Vitest-Dateien
 
 - `usage-stat.service.spec.ts` +3: Slot-Ziel sendet nur `slotId`; Slot- und Emote-Serie gleicher Id werden getrennt gecacht;
   `getChannelSeries` mit „refresh" fragt trotz Cache neu und ersetzt den Eintrag (T3b).
-- `usage-series.spec.ts` +4 (T3b): Fehlpaarungs-Hilfe — Slot-Zeilen gegen Emote-Modus-Eintrag, umgekehrt, Slot ohne Eintrag neben Slot-
-  Einträgen ist keine Fehlpaarung, Klasse 3 nie.
-- `mass-delete-panel.spec.ts` +2 (T3, F3): eine Zeile mit Bestätigungsnamen (markierte Karte plus nicht markiertes, ausgeblendetes
-  Geschwister) → der Bestätigungsdialog bekommt beide Namen in der sichtbaren Liste; Zeile ohne das Feld → genau `[name]` wie heute.
+- `usage-series.spec.ts` +6 (T3b): Fehlpaarungs-Hilfe — Slot-Zeilen gegen Emote-Modus-Eintrag, umgekehrt, Slot ohne Eintrag neben Slot-
+  Einträgen ist keine Fehlpaarung, Klasse 3 nie; Veraltung — Slot-Zeile mit Zahl > 0 ohne Eintrag ist veraltet, mit Zahl 0 nicht, Emote-
+  Modus-Zeile ohne Eintrag nie.
+- `mass-delete-panel.spec.ts` +3 (T3, F3): eine Zeile mit Bestätigungsnamen (markierte Karte plus nicht markiertes, ausgeblendetes
+  Geschwister) → der Bestätigungsdialog bekommt beide Namen in der sichtbaren Liste und das Kennzeichen „ungekürzt"; Zeile ohne das Feld →
+  genau `[name]` wie heute, Kennzeichen aus; **R2-2:** 49 gewöhnliche sichtbare Zeilen plus eine Slot-Zeile, deren ausgefiltertes Geschwister
+  Name 51 wird → alle 51 Namen erreichen den Dialog ungekürzt.
+- `delete-confirm-dialog.spec.ts` +2 (T3, R2-2): mit „ungekürzt" erscheinen alle Namen der sichtbaren Liste, kein „und n weitere"; ohne
+  das Kennzeichen bleibt die 50er-Grenze (bestehende Fälle unverändert).
 - `emote-drilldown-dialog.spec.ts` +2: mit `slotId` fragt der Dialog die Slot-Serie, ohne die Emote-Serie.
 - `emote-usage-filter.spec.ts` +1: Namenssuche trifft über `emoteNames`; ohne das Feld nur `emoteName`.
 - `vote-session-detail-page.spec.ts` +1: Ergebniszeile mit `emoteNames [ome44, hob44]` → zugänglicher Name/Inspector nennt „ome44 / hob44",
@@ -442,7 +517,8 @@ vorher prüfen. Browser über ein Node-Playwright-Skript mit `web/node_modules` 
    Markieren einer Duplikat-Zelle die Dock-Zahlen. **Diff leer.**
 3. **Phase B, Flag an** (Worker und Api neu mit `SevenTv__SlotReconcile__Enabled=true`). **Vor** dem ersten Tick die Seite des Testkanals
    öffnen und offen lassen: nach `channel.synced` (Settle) erscheinen die Slot-Karten ohne „Aktualisieren", der Sidecar der Slot-Karte zeigt
-   eine echte Kurve (keine Nulllinie), das Netzwerkprotokoll zeigt genau einen zusätzlichen `/series`-Request (S4). Nach dem Tick: Testkanal zeigt zwei Zellen mit `+1`
+   eine echte Kurve (keine Nulllinie), das Netzwerkprotokoll zeigt genau einen zusätzlichen `/series`-Request (S4); die R2-3-Verschränkung ist
+   live nicht verlässlich herstellbar → Test. Nach dem Tick: Testkanal zeigt zwei Zellen mit `+1`
    (AK 34), Suche `hob44`, Drilldown fragt `slotId` (Netzwerkprotokoll), nicht aktives Set mit Klasse 3 je Eintrag, keine NG0955 in der
    Konsole; Set-Session über die Seite aus beiden Karten anlegen → eine Ballot-Zeile „ome44 / hob44" (AK 33/35); Export beider Karten → zwei
    Zeilen, Re-Import-Vorschau eine (AK 35). Eine Slot-Karte markieren, ihr Geschwister per Suche ausblenden, „Löschen" öffnen → der
@@ -460,7 +536,7 @@ und T4. **Rebase-Konflikt erwartet:** #374 (Kind 4) schreibt parallel einen eige
 behalten, Reihenfolge nach Kindnummer (Child 4 vor Child 6 vor Child 7), Inhalt nicht mischen. Inhalt: F1–F5 als Betreiberentscheidungen (F3 in der
 erweiterten Fassung); die Schlüsselregel 2.3 samt Klasse-3-Formen und Kollisionsargument (S1); die Join-Regel 2.4 (Zeitpunkt in ms, Gruppen
 auf beiden Seiten wie `BindByDate` (S2), undatierte Fallback-Bindung, Modus der Antwort); der Übergang 2.6 bis #378 mit den
-Bestätigungsnamen (S3); der Serien-Abgleich 2.11 (S4); die Abweichungen A1, A2, A4, A5, A9, A11. `Betrifft:` ergänzt um `merge-set-view.ts`, `usage-stat.model.ts`,
+Bestätigungsnamen (S3); der Serien-Abgleich 2.11 (S4, R2-3); die ungekürzte Bestätigungsliste (R2-2); die Antwort auf F6 samt Begründung; die Abweichungen A1, A2, A4, A5, A9, A11. `Betrifft:` ergänzt um `merge-set-view.ts`, `usage-stat.model.ts`,
 `usage-stat.service.ts`, `usage-stats-page.ts`/`.html`, `emote-drilldown-dialog.ts`, `emote-usage-filter.ts`, `vote-session-detail-page.*`,
 `foreign-emote-set.model.ts`, `vote-session.model.ts`, `usage-series.ts`, `mass-delete-panel.ts`, `e2e/support/mocks.ts`.
 
@@ -482,10 +558,11 @@ und sind zwingend sequenziell.
 
 | # | Aufgabe | Modell | Aufwand | Hängt ab von | Input | Fertig, wenn / Commit |
 |---|---|---|---|---|---|---|
-| T1 | **Modell und `mergeSetView`:** Wire-Felder (2.1), Zeilenmodell (2.2), Schlüssel (2.3), Join-Regeln (2.4), Datei-Doku; Fixture-Helfer der bestehenden Specs um Aus-Werte ergänzen; 4.1 | **opus** | 0,75 T | — | 0 (F1, F2, F4), 1.3, 2.1–2.4, 3, 4.1; `merge-set-view.ts`, `usage-stat.model.ts`, `foreign-emote-set.model.ts` | 8 bestehende + 14 neue Fälle grün (darunter S1-Schlüssel und S2-Gleichstände beidseitig), Seite kompiliert unverändert (schlüsselt noch je Id); `feat(web): key usage rows by slot and join set views per entry` **plus DECISIONS-Teil** (2.3, 2.4, F1, F2, F4) und Spec §9.1/D22 |
+| T0 | **nur bei F6 = (c):** Backend-Kennzeichen „Zeitpunkt mit anderem eigenem Slot geteilt" an `/totals` (Slot-Modus), `UsageViewRows`, DTO, Unit-/Query-/Wire-Format-Tests; Gate `dotnet test EmotePurge.slnx`, `dotnet format`; Inhalt erst nach der Entscheidung ausplanen | sonnet | ~0,3 T | F6 | F6 (c) | entfällt bei (a)/(b) |
+| T1 | **Modell und `mergeSetView`:** Wire-Felder (2.1), Zeilenmodell (2.2), Schlüssel (2.3), Join-Regeln (2.4), Datei-Doku; Fixture-Helfer der bestehenden Specs um Aus-Werte ergänzen; 4.1 | **opus** | 0,75 T | — | 0 (F1, F2, F4), 1.3, 2.1–2.4, 3, 4.1; `merge-set-view.ts`, `usage-stat.model.ts`, `foreign-emote-set.model.ts` | 8 bestehende + 15 neue Fälle grün (darunter S1-Schlüssel und S2-Gleichstände beidseitig), Seite kompiliert unverändert (schlüsselt noch je Id); `feat(web): key usage rows by slot and join set views per entry` **plus DECISIONS-Teil** (2.3, 2.4, F1, F2, F4) und Spec §9.1/D22 |
 | T2 | **Tagesserie und Drilldown** (2.9), 4.3 erste zwei Punkte | sonnet | 0,25 T | T1 | 2.9; `usage-stat.service.ts`, `emote-drilldown-dialog.ts`, Aufrufer auf beiden Seiten | Specs grün; `feat(web): ask the daily series per slot for slot cards` |
-| T3 | **Seite je Slot:** Schlüssel und Ableitungen (2.5), Dedupes, Übergang Löschlauf (2.6) **samt Bestätigungsnamen im `MassDeletePanel`** (F3, S3), Drilldown-Übergabe; 4.2 ohne den `aria-label`- und den S4-Fall; `mass-delete-panel.spec.ts` +2 (4.3) | **opus** | 1,0 T | T1, T2 | 2.5, 2.6, 3, 4.2, 4.3, F3; `mass-delete-panel.ts`, `delete-confirm-dialog.ts` (nur lesen) | Seiten-Spec und `mass-delete-panel.spec.ts` grün, darunter der Fall „eine Karte markiert, Geschwister nicht markiert und ausgefiltert → beide Namen in der Bestätigung"; bestehende Panel-, Dialog- und Flow-Specs (`delete-confirm-dialog.spec.ts`, `delete-flow.spec.ts`) unverändert grün (Flag-aus-Wächter); drei Commits: `feat(web): key the usage atlas by slot`, `feat(web): dedupe 7TV ids for tags, ballots, copy and the per-id delete run`, `feat(web): name every co-deleted alias in the delete confirmation` **plus DECISIONS-Teil** (2.6, A8, F3) |
-| T3b | **Serien-Abgleich bei Moduswechsel** (2.11): Fehlpaarungs-Hilfe in `usage-series.ts`, „refresh"-Option an `getChannelSeries`, Signatur und einmaliger Abruf in der Seite, Lade-Zustand statt Null-Kurve; S4-Fälle aus 4.2 und 4.3 | **opus** | 0,4 T | T3 | 2.11, S4; `usage-stats-page.ts` (`loadChannelSeries`, `latestSeries`, `inspectedPoints`, Live-Reload-Abo), `usage-stat.service.ts`, `usage-series.ts` | Specs grün; bestehende Fälle, die `/series`-Requests zählen, unverändert; `fix(web): refetch the channel series once when its rows switch to slots` **plus DECISIONS-Teil** (S4) |
+| T3 | **Seite je Slot:** Schlüssel und Ableitungen (2.5), Dedupes, Übergang Löschlauf (2.6) **samt Bestätigungsnamen im `MassDeletePanel` und ungekürzter Bestätigungsliste** (F3, S3, R2-2), Drilldown-Übergabe; 4.2 ohne den `aria-label`-, S4- und R2-3-Fall; `mass-delete-panel.spec.ts` +3 und `delete-confirm-dialog.spec.ts` +2 (4.3) | **opus** | 1,1 T | T1, T2 | 2.5, 2.6, 3, 4.2, 4.3, F3; `mass-delete-panel.ts`, `delete-confirm-dialog.ts`, `delete-flow.ts` | Seiten-Spec und `mass-delete-panel.spec.ts` grün, darunter der Fall „eine Karte markiert, Geschwister nicht markiert und ausgefiltert → beide Namen in der Bestätigung" und der R2-2-Fall jenseits der 50-Namen-Grenze; bestehende Panel-, Dialog- und Flow-Specs (`delete-confirm-dialog.spec.ts`, `delete-flow.spec.ts`) unverändert grün (Flag-aus-Wächter); drei Commits: `feat(web): key the usage atlas by slot`, `feat(web): dedupe 7TV ids for tags, ballots, copy and the per-id delete run`, `feat(web): name every co-deleted alias in the delete confirmation` **plus DECISIONS-Teil** (2.6, A8, F3) |
+| T3b | **Serien-Abgleich bei Moduswechsel und Veraltung** (2.11): Fehlpaarungs- und Veraltungs-Hilfe in `usage-series.ts`, „refresh"-Option an `getChannelSeries`, Signatur, Mindestabstand und Abruf in der Seite, Lade-Zustand statt Null-Kurve; S4- und R2-3-Fälle aus 4.2 und 4.3 | **opus** | 0,5 T | T3 | 2.11, S4; `usage-stats-page.ts` (`loadChannelSeries`, `latestSeries`, `inspectedPoints`, Live-Reload-Abo), `usage-stat.service.ts`, `usage-series.ts` | Specs grün; bestehende Fälle, die `/series`-Requests zählen, unverändert; `fix(web): refetch the channel series once when its rows switch to slots or outrun it` **plus DECISIONS-Teil** (S4, R2-3) |
 | T4 | **Karten-Marker und i18n** (2.7): Zelle, `aria-label`, Inspector-Zeile, Sidecar; `alsoAs` in beiden Locales; `aria-label`-Fall aus 4.2 | sonnet | 0,25 T | T3 | 2.7, F1; Designsprache §2.5; `usage-stats-page.html` | Spec grün; `alsoAs` in beiden Locales vorhanden (es gibt keinen allgemeinen Paritäts-Spec, nur den für Fehlercodes — per Hand prüfen); `feat(web): name an emote's other slots on its cards` **plus DECISIONS-Teil** (F1-Marker) und Spec §9.2 |
 | T5 | **Vote-Detail und Filter** (2.8), 4.3 Punkte 3–4 | sonnet | 0,25 T | T1 (nur Modell) | 2.8; `vote-session-detail-page.*`, `emote-usage-filter.ts`, `vote-session.model.ts` | Specs grün; `feat(web): show every alias on a ballot row and find it by any of them` |
 | T6 | **Export-Nachweise** (2.10), 4.3 letzter Punkt — keine Produktivänderung erwartet; braucht es doch eine, Abbruch und Meldung | haiku | 0,1 T | T3 | 2.10, A6 | `test(web): pin one export row per slot card and the id dedupe on re-import` |
@@ -493,7 +570,7 @@ und sind zwingend sequenziell.
 | T8 | **Gates, Coverage, Review, PR** | **opus** (Review); Codex Sol | 0,25 T | T7 | Branch, 1.3, 3, 6, 9 | alle drei Web-Gates plus `npm --prefix web run e2e` grün; erst committen, dann `node scripts/coverage-local.mjs --frontend-only` ≥ 80 % (Schwachstelle erwartbar `usage-stats-page.ts`, dateigenaue Näherung, s. Memory „coverage-local.mjs: Grenzen"); `dotnet test` entfällt (kein Backend), Nachweis „Backend unberührt" per `git diff --stat origin/main -- src tests` leer; `/codex:review --model gpt-6.1-sol --scope branch --base origin/main` aus dem Worktree, Befund unverändert vorgelegt; Widerspruch Opus ↔ Sol → Fable nur über die strittigen Findings; PR mit AK-Tabelle (34, 35, 46 UI-Hälfte), Abweichungen 1.3, Prod-Hinweis „unsichtbar mit Flag aus"; Kommentar auf #378 mit Abschnitt 8 |
 | T9 | **Live-Verifikation** (Abschnitt 5) | sonnet | 0,5 T + Betreiberzeit | T8 vor dem Merge | 5; Port-Abstimmung durch den Orchestrator | Protokoll 5.0–5.5, Phase-A-Diff leer, Set wiederhergestellt, Abbau erledigt |
 
-Die adversariale Sol-Prüfung dieses Plans ist erfolgt (Abschnitt 0a); alle vier Befunde sind eingearbeitet.
+Die adversariale Sol-Prüfung dieses Plans ist in zwei Runden erfolgt (Abschnitt 0a). **T1 startet erst nach der Antwort auf F6.**
 
 ## 8. Hinweise an die folgenden Kinder (im PR-Text wiederholen)
 
@@ -510,8 +587,9 @@ Die adversariale Sol-Prüfung dieses Plans ist erfolgt (Abschnitt 0a); alle vier
 
 ## 9. Aufwand
 
-Rund **4,0 Tage** (T1 0,75 · T2 0,25 · T3 1,0 · T3b 0,4 · T4 0,25 · T5 0,25 · T6 0,1 · T7 0,5 · T8 0,25 · T9 0,5 — gerundet) gegenüber 3 aus
-Spec §17 und 3,4 im Entwurf. Mehraufwand: der Emote-Modus, den die Spec nicht kannte (Schlüssel, Join, Marker-Doppelregel), die
-Übergangsrechnung des Löschlaufs je Id (A8), aus dem Review die Bestätigungsnamen im Panel (S3, +0,25), der Serien-Abgleich (S4, +0,4),
+Rund **4,2 Tage** (T1 0,75 · T2 0,25 · T3 1,1 · T3b 0,5 · T4 0,25 · T5 0,25 · T6 0,1 · T7 0,5 · T8 0,25 · T9 0,5 — gerundet), bei F6 = (c)
+zuzüglich T0 mit rund 0,3 Tagen; gegenüber 3 aus Spec §17, 3,4 im Entwurf und 4,0 in Revision 1. Mehraufwand: der Emote-Modus, den die Spec nicht kannte (Schlüssel, Join, Marker-Doppelregel), die
+Übergangsrechnung des Löschlaufs je Id (A8), aus dem Review die Bestätigungsnamen im Panel (S3, +0,25) samt ungekürzter Liste (R2-2, +0,1),
+der Serien-Abgleich (S4, +0,4) samt Veraltungsregel (R2-3, +0,1),
 die beidseitigen Gleichstände und Klasse-3-Schlüssel in T1 (S1, S2, ohne eigenen Aufwandsposten), und die Baseline-Diff-Prüfung der
 Live-Phase A.
