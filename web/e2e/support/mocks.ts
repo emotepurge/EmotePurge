@@ -1246,6 +1246,12 @@ export interface MockEmoteUsage {
   lastUsedDate?: string | null;
   previousWindowUseCount?: number;
   firstSeenAt?: string | null;
+  // Emote slots (#365): the defaults describe the flag-off world, where no row carries a slot, so
+  // no spec grows a slot marker it did not ask for.
+  slotId?: string | null;
+  firstSeenAtFromRest?: boolean;
+  siblingNames?: string[];
+  firstSeenAtShared?: boolean;
 }
 
 /** GET /api/channels/{channelName}/usage-stats/totals — the usage-stats page's actual data. */
@@ -1266,6 +1272,10 @@ export async function mockUsageTotals(
         lastUsedDate: emote.lastUsedDate ?? null,
         previousWindowUseCount: emote.previousWindowUseCount ?? 0,
         firstSeenAt: emote.firstSeenAt ?? null,
+        slotId: emote.slotId ?? null,
+        firstSeenAtFromRest: emote.firstSeenAtFromRest ?? false,
+        siblingNames: emote.siblingNames ?? [],
+        firstSeenAtShared: emote.firstSeenAtShared ?? false,
         // The two fields `/totals` gained with spec #200 (6.5, K1) — part of the contract the page
         // reads, so the mock sends them like the endpoint does: the active set never returns an
         // archived row, and a name twin is the exception.
@@ -1309,11 +1319,20 @@ export async function mockUsageDaily(
  * that speaks a friendlier dialect than the server is a mock that cannot catch a decoding bug.
  * Emotes absent from the map get no entry at all, which is how the server says "no usage".
  */
+export interface MockSlotSeries {
+  slotId: string;
+  sevenTvEmoteId: string;
+  name: string;
+  days: [number, number][];
+}
+
 export async function mockUsageChannelSeries(
   page: Page,
   channelName: string,
   days: Record<string, [number, number][]>,
   liveDays: number[] = [],
+  // Slot-mode entries (#365), one per slot; none by default, which is the flag-off answer.
+  slotSeries: MockSlotSeries[] = [],
 ): Promise<void> {
   await page.route(`**/api/channels/${channelName}/usage-stats/series**`, (route) => {
     const url = new URL(route.request().url());
@@ -1328,11 +1347,22 @@ export async function mockUsageChannelSeries(
       // Both fields, because the endpoint sends both (spec 6.5 step 1: `sevenTvEmoteId` added,
       // `emoteId` kept until follow-up issue 5). The mock mirrors the contract, not the reader: the
       // page no longer reads `emoteId`, so its value here only has to be a string.
-      emotes: Object.entries(days).map(([sevenTvEmoteId, entries]) => ({
-        sevenTvEmoteId,
-        emoteId: `emote-of-${sevenTvEmoteId}`,
-        days: entries,
-      })),
+      emotes: [
+        ...Object.entries(days).map(([sevenTvEmoteId, entries]) => ({
+          sevenTvEmoteId,
+          emoteId: `emote-of-${sevenTvEmoteId}`,
+          slotId: null,
+          name: sevenTvEmoteId,
+          days: entries,
+        })),
+        ...slotSeries.map((slot) => ({
+          sevenTvEmoteId: slot.sevenTvEmoteId,
+          emoteId: `emote-of-${slot.sevenTvEmoteId}`,
+          slotId: slot.slotId,
+          name: slot.name,
+          days: slot.days,
+        })),
+      ],
     });
   });
 }
@@ -1629,7 +1659,7 @@ export interface MockForeignEmoteSetPreview {
   capacity?: number | null;
   totalCount?: number;
   truncated?: boolean;
-  emotes?: { sevenTvEmoteId: string; name: string }[];
+  emotes?: { sevenTvEmoteId: string; name: string; addedAt?: string | null }[];
 }
 
 /**
@@ -1688,6 +1718,7 @@ function fulfillEmoteSetPreview(route: Route, response: MockForeignEmoteSetPrevi
       sevenTvEmoteId: emote.sevenTvEmoteId,
       name: emote.name,
       defaultName: emote.name,
+      addedAt: emote.addedAt ?? null,
       imageUrl: `https://cdn.7tv.app/emote/${emote.sevenTvEmoteId}/2x.webp`,
       topAllTime: null,
       trending: null,
@@ -2364,6 +2395,8 @@ export interface MockVoteSessionEmote {
   // (all of them null-session ballots) keeps behaving exactly as before this field existed.
   eligible?: boolean;
   myVote?: 1 | 2 | null;
+  // Every name the emote stands under in the set (#365); omitted = just `emoteName`.
+  emoteNames?: string[];
 }
 
 /** GET /api/channels/{channelName}/vote-sessions/{sessionId}/results — the detail page's data. */
@@ -2387,6 +2420,7 @@ export async function mockVoteSessionResults(
       emotes: emotes.map((emote) => ({
         emoteId: emote.emoteId,
         emoteName: emote.emoteName,
+        emoteNames: emote.emoteNames ?? [emote.emoteName],
         sevenTvEmoteId: emote.sevenTvEmoteId ?? `7tv-${emote.emoteId}`,
         imageUrl: emote.imageUrl ?? 'https://cdn.7tv.app/emote/1/1x.webp',
         // `?? default` would swallow an explicit null, and null is not "unset" here — it is the
