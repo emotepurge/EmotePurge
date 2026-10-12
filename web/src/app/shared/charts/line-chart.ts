@@ -112,7 +112,7 @@ function styleOf(
 }
 
 /** From this many series on (or with a non-default `legendStat`), a text legend stands under the plot. */
-const LEGEND_FROM_SERIES = 3;
+const LEGEND_FROM_SERIES = 2;
 
 let nextChartId = 0;
 

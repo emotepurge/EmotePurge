@@ -205,17 +205,13 @@ describe('LineChart', () => {
     expect(liveLine(root).textContent).toContain('Alpha: 2');
   });
 
-  it('renders a text legend with name and last value only from three series on', () => {
-    const two = render([series('a', [1, 2, 3, 4]), series('b', [4, 3, 2, 1])]);
-    expect(two.querySelector('[data-testid="chart-legend"]')).toBeNull();
+  it('renders a text legend naming every series with its last value from two series on', () => {
+    const one = render([series('a', [1, 2, 3, 4])]);
+    expect(one.querySelector('[data-testid="chart-legend"]')).toBeNull();
 
-    const three = render([
-      series('a', [1, 2, 3, 4]),
-      series('b', [4, 3, 2, 1]),
-      series('c', [7, 7, 7, 9]),
-    ]);
-    const legend = three.querySelector('[data-testid="chart-legend"]')?.textContent ?? '';
-    expect(legend).toContain('Gamma: 9');
+    const two = render([series('a', [1, 2, 3, 4]), series('b', [4, 3, 2, 1])]);
+    const legend = two.querySelector('[data-testid="chart-legend"]')?.textContent ?? '';
+    expect(legend).toContain('Alpha: 4');
     expect(legend).toContain('Beta: 1');
   });
 
@@ -300,7 +296,7 @@ describe('LineChart', () => {
     expect(root.querySelectorAll('svg[role="img"] circle[fill="none"]')).toHaveLength(1);
   });
 
-  it('shows the total or the maximum in the legend when asked, even for fewer than three series', () => {
+  it('shows the total or the maximum in the legend when asked, even for a single series', () => {
     const sum = render([series('a', [1, 5, 3, 2])], { legendStat: 'sum' });
     expect(sum.querySelector('[data-testid="chart-legend"]')?.textContent).toContain(
       'Alpha: total 11',

@@ -200,7 +200,9 @@ test.describe('admin monitoring dashboard', () => {
     await expect(policies.last()).toContainText('50 von 5.050 Entscheidungen abgewiesen');
 
     // A provider dimension without a single 429 (seventv-leaderboard) is left out: 1 + 2 series.
-    await expect(page.getByTestId('chart-legend').getByRole('listitem')).toHaveCount(3);
+    await expect(
+      page.getByTestId('admin-rate-limits').getByTestId('chart-legend').getByRole('listitem'),
+    ).toHaveCount(3);
   });
 
   test('the 60 s poll refreshes the numbers without any live event', async ({ page }) => {
