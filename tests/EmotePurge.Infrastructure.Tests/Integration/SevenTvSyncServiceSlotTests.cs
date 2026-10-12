@@ -583,6 +583,46 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         Assert.True(result!.HasChanges);
     }
 
+    // 6.7 tracker — flag on: a collision through a second alias is reported although Emote.Name differs.
+    [Fact]
+    public async Task Tracker_On_CollisionThroughASecondAlias_LogsTheWarning()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slot_tracker_on");
+        var logger = new RecordingLogger<SevenTvSyncService>();
+
+        await SyncAsync(db, channel, true, SetA, logger, Live("a", "One", T1), Live("a", "Shared", T2), Live("b", "Shared", T3));
+
+        var line = Assert.Single(Lines(logger, "shared by more than one emote"));
+        Assert.Contains("Shared", line);
+    }
+
+    // Two aliases of one emote are no collision.
+    [Fact]
+    public async Task Tracker_On_TwoAliasesOfOneEmote_LogsNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slot_tracker_alias");
+        var logger = new RecordingLogger<SevenTvSyncService>();
+
+        await SyncAsync(db, channel, true, SetA, logger, Live("a", "One", T1), Live("a", "Two", T2));
+
+        Assert.Empty(Lines(logger, "shared by more than one emote"));
+    }
+
+    // Flag off: the tracker reads Emote.Name as before.
+    [Fact]
+    public async Task Tracker_Off_TwoEmotesWithTheSameName_LogsTheWarning()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slot_tracker_off");
+        var logger = new RecordingLogger<SevenTvSyncService>();
+
+        await SyncAsync(db, channel, false, SetA, logger, Live("a", "Same", T1), Live("b", "Same", T2));
+
+        Assert.Single(Lines(logger, "shared by more than one emote"));
+    }
+
     private static async Task<bool> LeaveRecordedAsync(AppDbContext db, Channel channel, string sevenTvId) =>
         await db.EmoteSetLeaveObservations.AsNoTracking()
             .AnyAsync(o => o.ChannelId == channel.Id && o.SevenTvEmoteId == sevenTvId && o.SevenTvEmoteSetId == SetA);

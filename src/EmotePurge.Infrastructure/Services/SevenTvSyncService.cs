@@ -990,22 +990,36 @@ public class SevenTvSyncService(
         // whatever Postgres returns). Logged only when the collision set changes: this method
         // runs on every resync tick, and a static collision would spam the log otherwise. The
         // full current state is served by EmoteSetStatusService's DuplicateNames field instead.
-        var (emoteNameToId, duplicateNames) = EmoteNameMatching.Coalesce(
+        var (emoteNameToId, emoteWideDuplicates) = EmoteNameMatching.Coalesce(
             activeEmotes.Select(e => new KeyValuePair<string, string>(e.Name, e.Id)));
+
+        // Flag on (plan 372 E15): the tracker reads names off the slots (an emote renamed in 7TV keeps
+        // its old slot, and two aliases of one emote are no collision), while the match map above stays
+        // keyed by Emote.Name until child 3 (D19). Distinct (name, emote) pairs, so that the coalescing
+        // only reports names claimed by more than one emote.
+        var duplicateNames = emoteWideDuplicates;
+        if (slotReconcileEnabled)
+        {
+            var entries = await db.ForChannel(channel.Id).ToListAsync(cancellationToken);
+            duplicateNames = EmoteNameMatching.Coalesce(
+                entries
+                    .Select(x => new KeyValuePair<string, string>(x.Name, x.EmoteId))
+                    .Distinct()).AmbiguousNames;
+        }
 
         if (duplicateNameTracker.Update(channelName, duplicateNames))
         {
             if (duplicateNames.Count > 0)
             {
                 logger.LogWarning(
-                    "{Count} doppelte aktive Emote-Namen in Channel {Channel}: {Names} — Chat-Matching zählt je Name nur auf die zuerst geladene Emote-Id.",
+                    "{Count} active emote names in channel {Channel} are shared by more than one emote: {Names} — chat matching counts each name for one emote id only.",
                     duplicateNames.Count, channelName,
                     string.Join(", ", duplicateNames.Order(StringComparer.Ordinal)));
             }
             else
             {
                 logger.LogInformation(
-                    "Namenskollisionen in Channel {Channel} aufgelöst — alle aktiven Emote-Namen sind wieder eindeutig.",
+                    "Name collisions in channel {Channel} resolved — all active emote names are unique again.",
                     channelName);
             }
         }

@@ -5,8 +5,14 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EmotePurge.Infrastructure.Services;
 
-public class EmoteSetStatusService(AppDbContext db, IUsageStatQueryService usageStatQueryService) : IEmoteSetStatusService
+public class EmoteSetStatusService(
+    AppDbContext db,
+    IUsageStatQueryService usageStatQueryService,
+    SlotReconcileOptions? slotReconcile = null) : IEmoteSetStatusService
 {
+    // Null (the unit-test constructor) is off, like the flag's default.
+    private readonly bool slotsEnabled = slotReconcile?.Enabled ?? false;
+
     public async Task<EmoteSetStatusDto?> GetAsync(string channelName, CancellationToken cancellationToken = default)
     {
         var channel = await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
@@ -33,10 +39,14 @@ public class EmoteSetStatusService(AppDbContext db, IUsageStatQueryService usage
         }
         else
         {
-            occupiedSlots = await db.Emotes.CountAsync(e => e.ChannelId == channel.Id && !e.IsArchived, cancellationToken);
+            occupiedSlots = slotsEnabled
+                ? await db.ForChannel(channel.Id).CountAsync(cancellationToken)
+                : await db.Emotes.CountAsync(e => e.ChannelId == channel.Id && !e.IsArchived, cancellationToken);
             botsExcludedSince = await usageStatQueryService.GetEarliestBotUsageDateAsync(channel.Id, cancellationToken);
             sharedChatSeparatedSince = await usageStatQueryService.GetEarliestSharedChatUsageDateAsync(channel.Id, cancellationToken);
-            duplicateNames = await FindDuplicateNamesAsync(channel.Id, cancellationToken);
+            duplicateNames = slotsEnabled
+                ? await FindDuplicateNamesBySlotAsync(channel.Id, cancellationToken)
+                : await FindDuplicateNamesAsync(channel.Id, cancellationToken);
         }
 
         return new EmoteSetStatusDto(
@@ -49,6 +59,50 @@ public class EmoteSetStatusService(AppDbContext db, IUsageStatQueryService usage
             botsExcludedSince,
             sharedChatSeparatedSince,
             duplicateNames);
+    }
+
+    // Slot-aware twin of FindDuplicateNamesAsync (flag on, D15/D27, E14): a name collides when it is
+    // listed by more than one distinct emote, counting each emote's active own slots and — for an emote
+    // without one — its virtual slot under Emote.Name. Two slots of one emote are never a duplicate,
+    // and the reported rows are the emotes involved, so the DTO keeps its shape. Same two-step shape
+    // and the same re-check after the second read as above; the entries are a union, so the count is
+    // over distinct emote ids rather than rows.
+    private async Task<IReadOnlyList<DuplicateEmoteNameDto>> FindDuplicateNamesBySlotAsync(string channelId, CancellationToken cancellationToken)
+    {
+        var collidingNames = await db.ForChannel(channelId)
+            .GroupBy(x => x.Name)
+            .Where(g => g.Select(x => x.EmoteId).Distinct().Count() > 1)
+            .Select(g => g.Key)
+            .ToListAsync(cancellationToken);
+
+        if (collidingNames.Count == 0)
+        {
+            return [];
+        }
+
+        var entries = await db.ForChannel(channelId)
+            .Where(x => collidingNames.Contains(x.Name))
+            .ToListAsync(cancellationToken);
+
+        var emoteIds = entries.Select(x => x.EmoteId).Distinct().ToList();
+        var emotes = (await db.Emotes
+                .Where(e => emoteIds.Contains(e.Id))
+                .Select(e => new { e.Id, e.SevenTvEmoteId, e.ImageUrl })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(e => e.Id, StringComparer.Ordinal);
+
+        return entries
+            .GroupBy(x => x.Name, StringComparer.Ordinal)
+            .Select(g => (Name: g.Key, EmoteIds: g.Select(x => x.EmoteId).Distinct(StringComparer.Ordinal).Where(emotes.ContainsKey).ToList()))
+            .Where(g => g.EmoteIds.Count > 1)
+            .OrderBy(g => g.Name, StringComparer.Ordinal)
+            .Select(g => new DuplicateEmoteNameDto(
+                g.Name,
+                g.EmoteIds.Select(id => emotes[id])
+                    .OrderBy(e => e.SevenTvEmoteId, StringComparer.Ordinal)
+                    .Select(e => new DuplicateEmoteDto(e.Id, e.SevenTvEmoteId, e.ImageUrl))
+                    .ToList()))
+            .ToList();
     }
 
     // Two queries rather than one: the collision scan itself runs entirely in SQL (GROUP BY ...
