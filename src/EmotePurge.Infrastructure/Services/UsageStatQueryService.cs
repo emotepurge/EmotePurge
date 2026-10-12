@@ -246,77 +246,6 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
             cancellationToken);
     }
 
-    private async Task<EmoteUsageSeriesDto> BuildDailySeriesAsync(
-        IQueryable<UsageStat> rows,
-        string emoteId,
-        string name,
-        string? slotId,
-        string channelId,
-        string? activeEmoteSetId,
-        DateOnly from,
-        DateOnly to,
-        EmoteSetScope setScope,
-        CancellationToken cancellationToken)
-    {
-        // AllSets drops the set predicate from both queries below: a null-session's row is
-        // set-agnostic, so the drilldown opened from it has to be too.
-        var allSets = setScope.IsAllSets;
-        var setId = setScope.SetId ?? activeEmoteSetId;
-
-        // Sparse on purpose (only days with usage). Value and predicate both run over UseCount
-        // alone, same reasoning as GetUsageContextAsync — a bot-only and a shared-only day are
-        // equally absent from this series, because neither is a day this channel used the emote.
-        // The set filter is what makes the drilldown agree with the row it was opened from: the
-        // grid's total is one set's counts, so the days behind it have to be the same set's.
-        // Grouped by day: the same day can carry one row per set and, since M2 (slot plan #373), one
-        // per slot of the emote, and the DTO promises one entry per day. Single-table GroupBy, so
-        // rule 10 is untouched.
-        var days = await rows
-            .Where(u => (allSets || u.EmoteSetId == setId) && u.Date >= from && u.Date <= to && u.UseCount > 0)
-            .GroupBy(u => u.Date)
-            .Select(g => new { Date = g.Key, UseCount = g.Sum(u => u.UseCount) })
-            .OrderBy(d => d.Date)
-            .ToListAsync(cancellationToken);
-        var dailyUsage = days.Select(d => new EmoteDailyUsageDto(d.Date, d.UseCount)).ToList();
-
-        // First/last use ever, unbounded in time — same reasoning as LastUsedDate in
-        // GetUsageContextAsync, including the UseCount > 0 predicate against rows with no own
-        // usage. Bounded by the set, though, and deliberately so: "first used" next to a set's
-        // numbers must mean first used under that set (under AllSets: first used in the channel). Single-table GroupBy, so rule 10 is not
-        // even touched.
-        var bounds = await rows
-            .Where(u => (allSets || u.EmoteSetId == setId) && u.UseCount > 0)
-            .GroupBy(u => u.EmoteId)
-            .Select(g => new
-            {
-                First = g.Min(u => (DateOnly?)u.Date),
-                Last = g.Max(u => (DateOnly?)u.Date)
-            })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        // Range-bounded unlike the bounds above: the consumer overlays these on exactly the
-        // rendered window. LiveMinutes > 0 is defensive — the poll never writes a zero row.
-        // Served by the covering index (ChannelId, Date) INCLUDE (LiveMinutes).
-        // Narrowed to the days the viewed set has counts on (the same set predicate as the emote's
-        // own days above, none under AllSets): the live-day rule, shared with the channel series.
-        // The denominator stays set-wide — it is NOT the emote's own days, or every emote would
-        // read "used on all live days".
-        var countedDates = await LoadSetCountedDatesAsync(channelId, allSets ? null : setId, from, to, cancellationToken);
-        var liveDays = await LoadQualifyingLiveDaysAsync(channelId, countedDates, from, to, cancellationToken);
-
-        return new EmoteUsageSeriesDto(
-            emoteId,
-            name,
-            from,
-            to,
-            dailyUsage.Sum(d => d.UseCount),
-            bounds?.First,
-            bounds?.Last,
-            dailyUsage,
-            liveDays,
-            slotId);
-    }
-
     public async Task<ChannelUsageSeriesDto> GetChannelSeriesAsync(
         string channelName, DateOnly from, DateOnly to, string? emoteSetId = null, CancellationToken cancellationToken = default)
     {
@@ -633,6 +562,77 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
                 g.Sum(u => u.BotUseCount),
                 g.Sum(u => u.SharedChatUseCount)))
             .ToListAsync(cancellationToken);
+    }
+
+    private async Task<EmoteUsageSeriesDto> BuildDailySeriesAsync(
+        IQueryable<UsageStat> rows,
+        string emoteId,
+        string name,
+        string? slotId,
+        string channelId,
+        string? activeEmoteSetId,
+        DateOnly from,
+        DateOnly to,
+        EmoteSetScope setScope,
+        CancellationToken cancellationToken)
+    {
+        // AllSets drops the set predicate from both queries below: a null-session's row is
+        // set-agnostic, so the drilldown opened from it has to be too.
+        var allSets = setScope.IsAllSets;
+        var setId = setScope.SetId ?? activeEmoteSetId;
+
+        // Sparse on purpose (only days with usage). Value and predicate both run over UseCount
+        // alone, same reasoning as GetUsageContextAsync — a bot-only and a shared-only day are
+        // equally absent from this series, because neither is a day this channel used the emote.
+        // The set filter is what makes the drilldown agree with the row it was opened from: the
+        // grid's total is one set's counts, so the days behind it have to be the same set's.
+        // Grouped by day: the same day can carry one row per set and, since M2 (slot plan #373), one
+        // per slot of the emote, and the DTO promises one entry per day. Single-table GroupBy, so
+        // rule 10 is untouched.
+        var days = await rows
+            .Where(u => (allSets || u.EmoteSetId == setId) && u.Date >= from && u.Date <= to && u.UseCount > 0)
+            .GroupBy(u => u.Date)
+            .Select(g => new { Date = g.Key, UseCount = g.Sum(u => u.UseCount) })
+            .OrderBy(d => d.Date)
+            .ToListAsync(cancellationToken);
+        var dailyUsage = days.Select(d => new EmoteDailyUsageDto(d.Date, d.UseCount)).ToList();
+
+        // First/last use ever, unbounded in time — same reasoning as LastUsedDate in
+        // GetUsageContextAsync, including the UseCount > 0 predicate against rows with no own
+        // usage. Bounded by the set, though, and deliberately so: "first used" next to a set's
+        // numbers must mean first used under that set (under AllSets: first used in the channel). Single-table GroupBy, so rule 10 is not
+        // even touched.
+        var bounds = await rows
+            .Where(u => (allSets || u.EmoteSetId == setId) && u.UseCount > 0)
+            .GroupBy(u => u.EmoteId)
+            .Select(g => new
+            {
+                First = g.Min(u => (DateOnly?)u.Date),
+                Last = g.Max(u => (DateOnly?)u.Date)
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // Range-bounded unlike the bounds above: the consumer overlays these on exactly the
+        // rendered window. LiveMinutes > 0 is defensive — the poll never writes a zero row.
+        // Served by the covering index (ChannelId, Date) INCLUDE (LiveMinutes).
+        // Narrowed to the days the viewed set has counts on (the same set predicate as the emote's
+        // own days above, none under AllSets): the live-day rule, shared with the channel series.
+        // The denominator stays set-wide — it is NOT the emote's own days, or every emote would
+        // read "used on all live days".
+        var countedDates = await LoadSetCountedDatesAsync(channelId, allSets ? null : setId, from, to, cancellationToken);
+        var liveDays = await LoadQualifyingLiveDaysAsync(channelId, countedDates, from, to, cancellationToken);
+
+        return new EmoteUsageSeriesDto(
+            emoteId,
+            name,
+            from,
+            to,
+            dailyUsage.Sum(d => d.UseCount),
+            bounds?.First,
+            bounds?.Last,
+            dailyUsage,
+            liveDays,
+            slotId);
     }
 
     /// <summary>
