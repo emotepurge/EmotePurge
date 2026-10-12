@@ -3,10 +3,15 @@ using EmotePurge.Core.Entities;
 namespace EmotePurge.Infrastructure.Services;
 
 /// <summary>Builds one hourly value from raw observations using the #380 pair rules.</summary>
+/// <remarks>
+/// The pair, rate and P95 helpers are internal so the admin dashboard's raw read path
+/// (<see cref="AdminDashboardLoadBucketing"/>) applies exactly the same gap rule and nearest-rank P95
+/// instead of a second implementation (#381).
+/// </remarks>
 public static class SystemLoadRollupMath
 {
-    private const double ProcessorTicksPerSecond = TimeSpan.TicksPerSecond;
-    private const double MicrosecondsPerSecond = 1_000_000d;
+    internal const double ProcessorTicksPerSecond = TimeSpan.TicksPerSecond;
+    internal const double MicrosecondsPerSecond = 1_000_000d;
 
     public static SystemLoadHourly Calculate(
         IReadOnlyCollection<SystemLoadSample> samples,
@@ -73,6 +78,52 @@ public static class SystemLoadRollupMath
         };
     }
 
+    /// <summary>The #380 gap rule: a pair counts only with a positive gap of at most 2.5 configured intervals.</summary>
+    internal static bool IsPairWithinGap(TimeSpan elapsed, int samplingIntervalSeconds) =>
+        elapsed > TimeSpan.Zero && elapsed <= TimeSpan.FromSeconds(samplingIntervalSeconds * 2.5d);
+
+    /// <summary>Difference of a cumulative counter; null when either end is unknown or the counter fell.</summary>
+    internal static long? Delta(long? current, long? previous) =>
+        current is not null && previous is not null && current.Value >= previous.Value
+            ? current.Value - previous.Value
+            : null;
+
+    /// <summary>Counter units per wall second (CPU cores for ticks or microseconds).</summary>
+    internal static double? RateFromDelta(long? delta, double unitsPerSecond, TimeSpan elapsed) =>
+        delta is >= 0 ? delta.Value / unitsPerSecond / elapsed.TotalSeconds : null;
+
+    /// <summary>Host busy/total jiffy deltas of one pair; false when the pair is not usable.</summary>
+    internal static bool TryGetHostCpuDelta(
+        long? currentBusy,
+        long? previousBusy,
+        long? currentTotal,
+        long? previousTotal,
+        out long busyDelta,
+        out long totalDelta)
+    {
+        var total = Delta(currentTotal, previousTotal);
+        var busy = Delta(currentBusy, previousBusy);
+        if (total is > 0 && busy is >= 0 && busy <= total)
+        {
+            busyDelta = busy.Value;
+            totalDelta = total.Value;
+            return true;
+        }
+
+        busyDelta = 0;
+        totalDelta = 0;
+        return false;
+    }
+
+    /// <summary>Host memory in use (MemTotal - MemAvailable); null when unknown or inconsistent.</summary>
+    internal static long? HostMemoryUsed(long? totalBytes, long? availableBytes) =>
+        totalBytes is >= 0 && availableBytes is >= 0 && totalBytes >= availableBytes
+            ? totalBytes - availableBytes
+            : null;
+
+    /// <summary>Zero-based nearest-rank index of the 95th percentile in an ascending list of <paramref name="count"/> values.</summary>
+    internal static int Percentile95Index(int count) => (int)Math.Ceiling(count * 0.95d) - 1;
+
     private static List<SamplePair> GetPairs(
         IReadOnlyList<SystemLoadSample> samples,
         SystemLoadSource source,
@@ -81,7 +132,6 @@ public static class SystemLoadRollupMath
         int samplingIntervalSeconds)
     {
         var pairs = new List<SamplePair>();
-        var maxGap = TimeSpan.FromSeconds(samplingIntervalSeconds * 2.5d);
         foreach (var processSamples in samples.GroupBy(static sample => sample.ProcessInstanceId))
         {
             var orderedProcessSamples = processSamples.OrderBy(static sample => sample.SampledAtUtc).ToArray();
@@ -98,7 +148,7 @@ public static class SystemLoadRollupMath
                 }
 
                 var elapsed = current.SampledAtUtc - previous.SampledAtUtc;
-                if (elapsed <= TimeSpan.Zero || elapsed > maxGap)
+                if (!IsPairWithinGap(elapsed, samplingIntervalSeconds))
                 {
                     continue;
                 }
@@ -118,12 +168,10 @@ public static class SystemLoadRollupMath
         var rates = new List<WeightedRate>();
         foreach (var pair in pairs)
         {
-            var delta = getDelta(pair);
-            if (delta is >= 0)
+            var rate = RateFromDelta(getDelta(pair), unitsPerSecond, pair.Elapsed);
+            if (rate.HasValue)
             {
-                rates.Add(new WeightedRate(
-                    delta.Value / unitsPerSecond / pair.Elapsed.TotalSeconds,
-                    pair.Elapsed.TotalSeconds));
+                rates.Add(new WeightedRate(rate.Value, pair.Elapsed.TotalSeconds));
             }
         }
 
@@ -135,21 +183,20 @@ public static class SystemLoadRollupMath
         var rates = new List<HostRate>();
         foreach (var pair in pairs)
         {
-            var totalDelta = Delta(pair.Current.HostCpuTotalJiffies, pair.Previous.HostCpuTotalJiffies);
-            var busyDelta = Delta(pair.Current.HostCpuBusyJiffies, pair.Previous.HostCpuBusyJiffies);
-            if (totalDelta is > 0 && busyDelta is >= 0 && busyDelta <= totalDelta)
+            if (TryGetHostCpuDelta(
+                pair.Current.HostCpuBusyJiffies,
+                pair.Previous.HostCpuBusyJiffies,
+                pair.Current.HostCpuTotalJiffies,
+                pair.Previous.HostCpuTotalJiffies,
+                out var busyDelta,
+                out var totalDelta))
             {
-                rates.Add(new HostRate(busyDelta.Value, totalDelta.Value));
+                rates.Add(new HostRate(busyDelta, totalDelta));
             }
         }
 
         return rates;
     }
-
-    private static long? Delta(long? current, long? previous) =>
-        current is not null && previous is not null && current.Value >= previous.Value
-            ? current.Value - previous.Value
-            : null;
 
     private static double? WeightedRateMean(IReadOnlyCollection<WeightedRate> rates)
     {
@@ -181,11 +228,7 @@ public static class SystemLoadRollupMath
     }
 
     private static List<long?> GetHostMemoryUsed(IEnumerable<SystemLoadSample> samples) => samples
-        .Select(static sample => sample.HostMemoryTotalBytes is >= 0
-            && sample.HostMemoryAvailableBytes is >= 0
-            && sample.HostMemoryTotalBytes >= sample.HostMemoryAvailableBytes
-                ? sample.HostMemoryTotalBytes - sample.HostMemoryAvailableBytes
-                : null)
+        .Select(static sample => HostMemoryUsed(sample.HostMemoryTotalBytes, sample.HostMemoryAvailableBytes))
         .ToList();
 
     private static long? SumNullable(IEnumerable<long?> values)
@@ -221,19 +264,19 @@ public static class SystemLoadRollupMath
     private static double? Percentile95(IEnumerable<double> values)
     {
         var sorted = values.Order().ToArray();
-        return sorted.Length == 0 ? null : sorted[(int)Math.Ceiling(sorted.Length * 0.95d) - 1];
+        return sorted.Length == 0 ? null : sorted[Percentile95Index(sorted.Length)];
     }
 
     private static long? Percentile95(IEnumerable<long?> values)
     {
         var sorted = values.Where(static value => value.HasValue).Select(static value => value!.Value).Order().ToArray();
-        return sorted.Length == 0 ? null : sorted[(int)Math.Ceiling(sorted.Length * 0.95d) - 1];
+        return sorted.Length == 0 ? null : sorted[Percentile95Index(sorted.Length)];
     }
 
     private static double? Percentile95(IEnumerable<double?> values)
     {
         var sorted = values.Where(static value => value.HasValue).Select(static value => value!.Value).Order().ToArray();
-        return sorted.Length == 0 ? null : sorted[(int)Math.Ceiling(sorted.Length * 0.95d) - 1];
+        return sorted.Length == 0 ? null : sorted[Percentile95Index(sorted.Length)];
     }
 
     private static DateTime FloorToHour(DateTime timestampUtc) =>

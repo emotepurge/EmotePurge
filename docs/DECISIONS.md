@@ -14,9 +14,10 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `src/EmotePurge.Core/Services/IAdminDashboardQueryService.cs` ·
 `src/EmotePurge.Infrastructure/Services/AdminDashboardQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/{AdminDashboardLoadBucketing,SystemLoadRollupMath}.cs` ·
 `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/AdminDashboardQueryServiceTests.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure}Tests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/{AdminDashboardQueryService,AdminDashboardLoadQuery}Tests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure,LoadBucketing}Tests.cs` ·
 `src/EmotePurge.Core/Services/IRateLimitTelemetryReader.cs` ·
 `src/EmotePurge.Infrastructure/Redis/RateLimitTelemetryStore.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/RateLimitTelemetryStoreTests.cs` ·
@@ -44,8 +45,10 @@ back it reaches; the ranges are display windows, not a statement about retention
 
 The dashboard does not read `UsageStats` (operator decision 2026-10-11): the slot epic reshapes that
 table, and monthly workload comes from the system-load rollups instead. A container-free structure test
-(`AdminDashboardQueryServiceStructureTests`) fails the build if `AdminDashboardQueryService` mentions
-`UsageStat` or `UsageStats`.
+(`AdminDashboardQueryServiceStructureTests`) fails the build if `AdminDashboardQueryService` or
+`AdminDashboardLoadBucketing` mentions `UsageStat` or `UsageStats`. It scans the source files rather
+than the IL: an IL walk would have to follow the compiler-generated async state machines and closures
+and would still miss the table name inside a raw SQL string.
 
 The 24-hour rate-limit trend is read from the existing one-minute Redis buckets
 (`ratelimit:telemetry:m:*`); there are no new keys or fields.
@@ -97,6 +100,78 @@ details dialog; the page itself shows exceptions only (spec section 4.2). Each i
 (activity, rate limits, worker health) renders its own error banner inside itself. In practice a
 quiet day and a poller outage both read as a gap: the poller credits minutes only to channels it saw
 live and never writes zero-minute `ChannelLiveDays` rows, so `0` is reachable only in principle.
+
+Load range, query side (cut B). `IAdminDashboardQueryService.GetLoadAsync(range, nowUtc,
+samplingIntervalSeconds)` returns one complete, server-bucketed `AdminDashboardLoad`; there is no tail
+read and no client merge. The bucket width is a function of the range alone, never of the sampling
+cadence: `1h` 1 min, `24h` 5 min, `7d` 1 h, `30d` 2 h, `90d` 6 h, `13mo` 24 h (UTC days). `toUtc` is
+`nowUtc`, `fromUtc` is `nowUtc - duration` floored to a UTC multiple of the width, and the buckets run
+up to and including the one that holds `nowUtc` (61, 289, 169, 361, 361 buckets). `13mo` is a rolling
+window for the load: 13 calendar months back via `DateTime.AddMonths` (month-end clamping), floored to
+UTC midnight, so it is 396 buckets on 2026-10-11 and at most 398 (2028-03-31, leap year plus month end);
+the first-of-month start belongs to the activity series only. The budget is 400 buckets, and it is
+enforced, not assumed: a window of more than 400 buckets throws `InvalidOperationException` (a 500),
+because it can only come from a broken ladder. Leading buckets before the first observation are left
+out of `BucketStartsUtc`; inner and trailing gaps stay as `null`. `FromUtc`/`ToUtc` remain the requested
+window. Hourly rows before `fromUtc` (retention off or failed) are filtered, never appended, so older
+history can shorten a range but never widen it. `Available` is false when the window holds no
+observation at all.
+
+`1h` and `24h` read `SystemLoadSamples`, every longer range reads `SystemLoadHourly` only, `7d`
+included although raw samples are kept for seven days: at 1-second cadence the seven-day raw scan
+failed its budget (spec section 7, B1). A test pins this per range on the SQL text.
+
+The raw path pairs samples exactly like the rollup: same source and `ProcessInstanceId`, positive gap of
+at most 2.5 x the configured `SystemLoad:IntervalSeconds` (the value the rollup worker passes), monotonic
+counter; the rate of a pair counts in the bucket of its later sample. The helpers for that rule (gap,
+counter delta, rate, host jiffy delta, host memory used, nearest-rank P95 index) are now `internal` in
+`SystemLoadRollupMath` and used by both paths, so there is one implementation of the gap rule. The query
+loads the window's samples of both sources plus one predecessor per `(Source, ProcessInstanceId)` group
+that occurs in the window (backward `LIMIT 1` scan, the rollup's `LATERAL` pattern); an instance that
+starts inside the window has no predecessor and its first point no rate. With the same rule, the raw and
+the hourly path compute every hour that both compute now identically (a test reads one hour as a single
+raw bucket and compares it with `SystemLoadRollupMath.Calculate` at 1, 30, 60 and 3,600 s). Two known
+limits remain, both properties of the rollup on `main`: an hour that was rolled up under an earlier
+interval and lies outside the rollup's three-hour recompute window keeps its old values, so after a
+30 s -> 1 s change `24h` shows such an hour without CPU pairs while `7d` shows its 30-s rates (bounded to
+the 24 hours after the change); and missing hours that the rollup back-fills only after a cadence change
+are computed with the new interval against the old gaps and lose their CPU pairs in both paths. Persisting
+the cadence was declined by the operator; this is a #380 follow-up, not dashboard logic.
+
+Host metrics are merged without ever summing the sources. Raw: per-source pairs first, then P95 and max
+over the union of both sources' valid rates (CPU) or observations (memory used, load average) per
+bucket. Hourly: per bucket the highest stored hourly P95 and the highest stored hourly max over every
+(source, hour) in the bucket; a cross-source P95 cannot be rebuilt from two per-source P95 values and is
+not claimed. Each host metric names its own winning source (`CpuValueSource`, `MemoryValueSource`,
+`LoadAverageValueSource`, so CPU can come from the Api while memory comes from the Worker), next to
+`Provenance` (`A`/`W`/`AW`: which sources contributed) and both sample counts. Tie rule, the same in both
+paths: equal P95 -> the higher max of that source (hourly: of that hour row) wins; still equal -> `W`,
+the canonical workload source. Per-source means in the tooltip are jiffy-weighted for CPU like the
+rollup's mean (raw) or the hourly means weighted by `SampleCount` (hourly; exact for one hour per bucket).
+
+Workload is Worker-only, and so are the channel series (`ActiveChannelsMax`, `LiveChannelsMax`): the
+spec names the Worker as canonical, so Api rows never feed them. Raw ranges report `perMinute`: the
+stored interval counters of the samples in a bucket divided by the sum of their actual interval seconds
+(`SampledAtUtc - PreviousSampledAtUtc`), times 60; the counter belongs to the bucket of its sample, and the
+first sample of an instance (no known interval) does not enter the rate. Hourly ranges report
+`perBucket`: the sum of the stored counters of every hour in the bucket (one hour at `7d`, two at `30d`,
+six at `90d`, 24 at `13mo`), never divided by 60 and never extrapolated; `WorkloadHoursWithData` says how
+many hours contributed, so 1,440 in a day bucket reads as 24 x 60, and a missing hour lowers both.
+
+Null and reset semantics of the display: `null` is unknown, never zero; a real zero (for example
+`CgroupMemoryCurrentBytes = 0`) stays zero. A `ProcessInstanceId` change, a falling counter (process
+restart, host reboot) or a gap above the rule drops the pair and leaves a gap. Quota and memory shares
+exist only in raw ranges and only against a finite limit: the CPU share only for pairs with the same
+finite quota at both ends (a change inside the pair keeps the cores and drops the share), the memory
+share only for samples with a finite `memory.max`. Hourly ranges never compute a share, not even when the
+limit is constant; they show the last stored limit of the bucket. Values are rounded on the server:
+percent to one decimal, cores to four, load average to two, bytes as integers.
+
+The raw rows (chart columns only, `Source` projected to a bool) are streamed with `AsAsyncEnumerable`
+in time order into a pure accumulator (`AdminDashboardLoadBucketing`) that holds only the current
+bucket's values and writes into column arrays pre-sized to the bucket count; no unbucketed list of
+samples is ever built. Whether this in-memory variant carries the 24-hour 1-second case is decided by
+the B performance gate; the response contract would not change if the bucketing moved into SQL.
 
 ### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)
 
