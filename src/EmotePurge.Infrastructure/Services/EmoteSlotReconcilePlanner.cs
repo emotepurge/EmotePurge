@@ -118,7 +118,7 @@ internal static class EmoteSlotReconcilePlanner
             slot.ArchivedAt = now;
         }
 
-        var derivation = Derive(own.Concat(created));
+        var derivation = Derive(own.Concat(created).Select(s => s.ToState()));
 
         var changed = InventoryChanged(existing.Concat(created), emoteName, emoteWasActive, virtualSlotVisible)
             || (derivation is not null && !string.Equals(derivation.Name, emoteName, StringComparison.Ordinal));
@@ -349,7 +349,7 @@ internal static class EmoteSlotReconcilePlanner
     /// <c>Emote.FirstSeenAt</c> — the latter also when it is <c>null</c>: a replacement never inherits
     /// the departed slot's date. Without an active own slot nothing is derived.
     /// </summary>
-    private static EmoteNameDerivation? Derive(IEnumerable<WorkingSlot> resultingOwn)
+    internal static EmoteNameDerivation? Derive(IEnumerable<SlotState> resultingOwn)
     {
         var first = resultingOwn
             .Where(s => !s.IsArchived)

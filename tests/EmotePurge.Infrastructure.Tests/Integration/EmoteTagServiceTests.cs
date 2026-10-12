@@ -9,6 +9,7 @@ using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
 
@@ -2644,6 +2645,27 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.Equal("FirstAlias", (await verify.EmoteTagEntries.SingleAsync(e => e.TagId == tag.Id)).Alias);
     }
 
+    [Fact]
+    public async Task AddFromANonActiveSet_AnEmoteUnderTwoAliases_StoresTheAliasOfTheOldestEntry()
+    {
+        // Spec D29, plan #376 R5: the live list may carry the same emote id twice; the snapshot takes the
+        // oldest entry (D2 order), not the one 7TV happens to list first.
+        var channel = await SeedChannelAsync("tagforeignoldest");
+        var tag = await SeedTagAsync(channel.Id, "Game");
+        var source = new ForeignSource(OtherSetId,
+        [
+            new ForeignEmoteRow("EM1", "hob44", "hob44", "https://img/newer", null, null, new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc)),
+            new ForeignEmoteRow("EM1", "ome44", "ome44", "https://img/older", null, null, new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc))
+        ]);
+
+        var result = await source.AddAsync(fixture.CreateDbContext, "tagforeignoldest", tag.Id, ["EM1"]);
+
+        Assert.Equal((EmoteTagAddEntriesStatus.Ok, 1), (result.Status, result.AddedCount));
+        await using var verify = fixture.CreateDbContext();
+        var entry = await verify.EmoteTagEntries.SingleAsync(e => e.TagId == tag.Id);
+        Assert.Equal("ome44", entry.Alias);
+    }
+
     [Theory]
     [InlineData(TrackedEmoteSetMembership.NotMember, EmoteTagAddEntriesStatus.EmoteSetNotFound)]
     [InlineData(TrackedEmoteSetMembership.SevenTvUnavailable, EmoteTagAddEntriesStatus.SevenTvUnavailable)]
@@ -2810,6 +2832,97 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
                 await beforeLock();
             }
         }
+    }
+
+    // ---- Set-centric reports with slot entries (emote slots plan 376, 5.5) ------------------------
+
+    // AK 41: deleting one alias of an emote that keeps another active slot is no leave, so the tag's
+    // placement of the emote keeps holding.
+    [Fact]
+    public async Task SlotReport_PartialDelete_LeavesThePlacementHolding()
+    {
+        var set = NewSlotReportSet();
+        var x = NewSevenTvId();
+        Channel channel;
+        EmoteSlot hob44;
+        await using (var db = fixture.CreateDbContext())
+        {
+            channel = await SlotSyncKit.SeedChannelAsync(db, "tagslotpartial", set);
+            var emote = await SlotSyncKit.SeedEmoteAsync(db, channel, x, "ome44", firstSeenAt: SlotSyncKit.T1);
+            await SlotSyncKit.SeedSlotAsync(db, emote, "ome44", SlotSyncKit.T1);
+            hob44 = await SlotSyncKit.SeedSlotAsync(db, emote, "hob44", SlotSyncKit.T2);
+        }
+
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        await SeedEntryAsync(tag.Id, x, "ome44", T0);
+        await SeedPlayInAsync(tag.Id, set, T0, x);
+
+        await ReportSlotDeleteAsync(set, new SyncInSetEntryDto(x, "hob44", hob44.Id, SlotSyncKit.T2));
+
+        Assert.True(await PlacedByThisTagAsync(channel, tag.Id));
+    }
+
+    // B2: REST archived the emote's last slot inside the 30-minute credibility window without a leave,
+    // so the placement still held; the delete report that follows records the leave and ends it — and
+    // a return of the emote before the window is over does not bring the placement back.
+    [Fact]
+    public async Task SlotReport_TheOnceLeaveAfterRest_EndsThePlacement_AlsoWhenTheEmoteReturnsInsideTheWindow()
+    {
+        var set = NewSlotReportSet();
+        var x = NewSevenTvId();
+        Channel channel;
+        EmoteSlot slot;
+        await using (var db = fixture.CreateDbContext())
+        {
+            channel = await SlotSyncKit.SeedChannelAsync(db, "tagslotonceleave", set);
+            var emote = await SlotSyncKit.SeedEmoteAsync(db, channel, x, "aaa", firstSeenAt: SlotSyncKit.T1);
+            emote.LastEnteredSetAtUtc = DateTime.UtcNow.AddMinutes(-5);
+            await db.SaveChangesAsync();
+            slot = await SlotSyncKit.SeedSlotAsync(db, emote, "aaa", SlotSyncKit.T1);
+        }
+
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        await SeedEntryAsync(tag.Id, x, "aaa", T0);
+        await SeedPlayInAsync(tag.Id, set, T0, x);
+        var filler = SlotSyncKit.Live(NewSevenTvId(), "filler", SlotSyncKit.T0);
+
+        await SyncSlotsOnAsync(channel, set, filler);
+        Assert.True(await PlacedByThisTagAsync(channel, tag.Id));
+
+        await ReportSlotDeleteAsync(set, new SyncInSetEntryDto(x, "aaa", slot.Id, SlotSyncKit.T1));
+        Assert.False(await PlacedByThisTagAsync(channel, tag.Id));
+
+        await SyncSlotsOnAsync(channel, set, filler, SlotSyncKit.Live(x, "aaa", SlotSyncKit.T1));
+        await using (var verify = fixture.CreateDbContext())
+        {
+            Assert.False((await SlotSyncKit.EmoteAsync(verify, channel, x)).IsArchived);
+        }
+
+        Assert.False(await PlacedByThisTagAsync(channel, tag.Id));
+    }
+
+    private static string NewSlotReportSet() => "01TAGRPT" + Guid.NewGuid().ToString("N")[..18].ToUpperInvariant();
+
+    private async Task ReportSlotDeleteAsync(string set, SyncInSetEntryDto entry)
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new EmoteService(
+            db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db),
+            new SlotReconcileOptions { Enabled = true });
+        var result = await service.MarkDeletedInSetAsync(set, "owner-7tv", "owner", "owner-tw-none", [entry.SevenTvEmoteId], null, Actor, [entry]);
+        Assert.Null(result.Rejection);
+    }
+
+    private async Task SyncSlotsOnAsync(Channel channel, string set, params SevenTvEmote[] live)
+    {
+        await using var db = fixture.CreateDbContext();
+        Assert.NotNull(await SlotSyncKit.SyncAsync(db, channel, slotsEnabled: true, set, logger: null, live));
+    }
+
+    private async Task<bool> PlacedByThisTagAsync(Channel channel, long tagId)
+    {
+        await using var db = fixture.CreateDbContext();
+        return Assert.Single((await CreateService(db).ListEntriesAsync(channel.ChannelName, tagId, null)).Entries).PlacedByThisTag;
     }
 
     // ---- Helpers ---------------------------------------------------------------------------------

@@ -446,10 +446,11 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
         await SeedActiveEmoteAsync(setup, k1, Reported);
         await SeedActiveEmoteAsync(setup, k2, Reported);
 
-        // The rows read is the last read before the transaction: deleting K2 right after it makes the
-        // channel lock of that attempt miss K2. The save is reached only by an attempt that passed it.
+        // The hit read is the last read before the channel lock (plan 376 R6: rows are read behind the
+        // locks now): deleting K2 right after it makes the channel lock of that attempt miss K2. The save
+        // is reached only by an attempt that passed it.
         var rowsRead = new CommandHook(
-            text => text.Contains("FROM \"Emotes\"", StringComparison.Ordinal) && text.Contains("\"SevenTvEmoteId\" = ANY", StringComparison.Ordinal),
+            text => text.Contains("FROM \"Channels\"", StringComparison.Ordinal) && text.Contains("WHERE c.\"IsBotActive\" AND", StringComparison.Ordinal),
             async occurrence =>
             {
                 if (occurrence == (vanishedFirst ? 1 : 2))
@@ -522,6 +523,207 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
 
         Assert.Equal(2, locks);
         Assert.Equal(delete ? [0, 1, 2, 3] : [0, 1, -1, 2], order);
+    }
+
+    // Plan 376 5.5: a report with entries (flag on) against the flag-on sync of the same emote, in both
+    // start orders. The emote has two slots; the report deletes hob, 7TV lists only ome. Whichever side
+    // comes first, the second waits at its channel lock, neither is a deadlock victim, and the end state
+    // is the serial one: hob archived, ome and the emote active, no leave (the last slot stayed).
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task EntriesReportAndSync_BothOn_TheSecondWaitsAtTheChannelLock_NoDeadlock(bool reportFirst)
+    {
+        var tag = reportFirst ? "slotsrf" : "slotssf";
+        var set = SetOf(tag);
+        await using var setup = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(setup, $"inset_{tag}", set);
+        var emote = await SeedEmoteAsync(setup, channel, Reported, "ome", firstSeenAt: T1);
+        var ome = await SeedSlotAsync(setup, emote, "ome", T1);
+        var hob = await SeedSlotAsync(setup, emote, "hob", T2);
+
+        var reportTag = $"inset_{tag}_report";
+        var syncTag = $"inset_{tag}_sync";
+        var reportLogger = new RecordingLogger<EmoteService>();
+        var syncLogger = new RecordingLogger<SevenTvSyncService>();
+        Task<SyncDeletedInSetResultDto>? report = null;
+        Task<SevenTvSyncResult?>? sync = null;
+        var waitingQuery = string.Empty;
+        Task<SyncDeletedInSetResultDto> StartEntriesReport(AppDbContext db) =>
+            CreateReportService(db, slotsEnabled: true, reportLogger).MarkDeletedInSetAsync(
+                set, "owner-7tv", "owner", "owner-tw-none", [Reported], null, Actor, [new SyncInSetEntryDto(Reported, "hob", hob.Id, T2)]);
+        Task<SevenTvSyncResult?> StartOmeOnlySync(AppDbContext db) =>
+            CreateService(db, ApiReturning(channel, set, Live(Reported, "ome", T1), Live(Newcomer, "Newcomer", T1)), slotsEnabled: true, logger: syncLogger)
+                .SyncChannelAsync(channel.ChannelName);
+
+        AppDbContext reportDb;
+        AppDbContext syncDb;
+        if (reportFirst)
+        {
+            syncDb = fixture.CreateTaggedDbContext(syncTag);
+            var hook = new CommandHook(
+                text => text.Contains(ReportEmoteLock, StringComparison.Ordinal),
+                async _ =>
+                {
+                    sync = StartOmeOnlySync(syncDb);
+                    await fixture.WaitUntilBlockedOnLockAsync(syncTag, sync);
+                    waitingQuery = await fixture.WaitingQueryAsync(syncTag);
+                });
+            reportDb = fixture.CreateTaggedDbContext(reportTag, [hook]);
+            report = StartEntriesReport(reportDb);
+        }
+        else
+        {
+            reportDb = fixture.CreateTaggedDbContext(reportTag);
+            var hook = new CommandHook(
+                text => text.Contains(SyncEmoteLock, StringComparison.Ordinal),
+                async occurrence =>
+                {
+                    if (occurrence != 1)
+                    {
+                        return;
+                    }
+
+                    report = StartEntriesReport(reportDb);
+                    await fixture.WaitUntilBlockedOnLockAsync(reportTag, report);
+                    waitingQuery = await fixture.WaitingQueryAsync(reportTag);
+                });
+            syncDb = fixture.CreateTaggedDbContext(syncTag, [hook]);
+            sync = StartOmeOnlySync(syncDb);
+        }
+
+        await using (reportDb)
+        await using (syncDb)
+        {
+            await SettleAsync(() => reportFirst ? report : sync, () => reportFirst ? sync : report);
+            var reported = await report!.WaitAsync(TimeSpan.FromSeconds(30));
+            Assert.NotNull(await sync!.WaitAsync(TimeSpan.FromSeconds(30)));
+
+            Assert.Contains(ChannelLock, waitingQuery, StringComparison.Ordinal);
+            Assert.Null(reported.Rejection);
+            Assert.Equal((1, reportFirst ? 1 : 0), (Assert.Single(reported.Channels).Count, Assert.Single(reported.Channels).NewlyChangedCount));
+        }
+
+        Assert.Empty(ReportLines(reportLogger, DeadlockLine));
+        Assert.Empty(Lines(syncLogger, DeadlockLine));
+        Assert.True((await SlotAsync(setup, hob.Id)).IsArchived);
+        Assert.False((await SlotAsync(setup, ome.Id)).IsArchived);
+        Assert.False((await EmoteAsync(setup, channel, Reported)).IsArchived);
+        Assert.False((await EmoteAsync(setup, channel, Newcomer)).IsArchived);
+        Assert.Equal(0, await LeaveRowsAsync(setup, channel, set));
+    }
+
+    // Plan 376 5.5, Z6 with entries: the report with a slot entry of K2 (its origin) against the admin
+    // purge of K2. Report first: the purge's DELETE waits at K2's channel row, both channels are written
+    // (K2 as origin, K1 by date), then K2 goes. Purge first: the report waits at its channel lock, finds
+    // K2 gone, retries once — now K2's slot id is unknown, so the entry fans out to K1 by date.
+    [Theory]
+    [InlineData("reportfirst")]
+    [InlineData("purgefirst")]
+    public async Task EntriesReportAndAdminPurge_FlagOn_NeverDeadlock(string variant)
+    {
+        var tag = $"slotszsix{variant[0]}";
+        var set = SetOf(tag);
+        var stem = Guid.NewGuid().ToString();
+        await using var setup = fixture.CreateDbContext();
+        var k1 = await SeedChannelAsync(setup, $"inset_{tag}_a", set, id: "f" + stem[1..]);
+        var k2 = await SeedChannelAsync(setup, $"inset_{tag}_b", set, id: "0" + stem[1..]);
+        var k1Slot = await SeedSlotAsync(setup, await SeedEmoteAsync(setup, k1, Reported, "aaa", firstSeenAt: T1), "aaa", T1);
+        var k2Slot = await SeedSlotAsync(setup, await SeedEmoteAsync(setup, k2, Reported, "aaa", firstSeenAt: T1), "aaa", T1);
+        IReadOnlyList<SyncInSetEntryDto> entries = [new SyncInSetEntryDto(Reported, "aaa", k2Slot.Id, T1)];
+
+        var publisher = Substitute.For<IRedisPublisher>();
+        var reportLogger = new RecordingLogger<EmoteService>();
+        const string reportTag = "inset_slotszsix_report";
+        const string purgeTag = "inset_slotszsix_purge";
+        SyncDeletedInSetResultDto reported;
+        if (variant == "reportfirst")
+        {
+            await using var purgeDb = fixture.CreateTaggedDbContext(purgeTag);
+            Task<bool>? purge = null;
+            var purgeWaitedOn = string.Empty;
+            var hook = new CommandHook(
+                text => text.Contains(ReportEmoteLock, StringComparison.Ordinal),
+                async _ =>
+                {
+                    purge = CreateChannelService(purgeDb, publisher).PurgeAsync(k2.ChannelName, Actor);
+                    await fixture.WaitUntilBlockedOnLockAsync(purgeTag, purge);
+                    purgeWaitedOn = await fixture.WaitingQueryAsync(purgeTag);
+                });
+            await using var reportDb = fixture.CreateTaggedDbContext(reportTag, [hook]);
+            var report = CreateReportService(reportDb, slotsEnabled: true, reportLogger)
+                .MarkDeletedInSetAsync(set, "owner-7tv", "owner", "owner-tw-none", [Reported], null, Actor, entries);
+            await SettleAsync(() => report, () => purge);
+            reported = await report.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.True(await purge!.WaitAsync(TimeSpan.FromSeconds(30)));
+            Assert.Contains("DELETE FROM \"Channels\"", purgeWaitedOn, StringComparison.Ordinal);
+            Assert.Equal([(k1.ChannelName, 1), (k2.ChannelName, 1)], reported.Channels.Select(c => (c.ChannelName, c.NewlyChangedCount)));
+            Assert.Empty(ReportLines(reportLogger, VanishedLine));
+        }
+        else
+        {
+            await using var purgeDb = fixture.CreateDbContext();
+            await using var purgeTx = await purgeDb.Database.BeginTransactionAsync();
+            Assert.True(await CreateChannelService(purgeDb, publisher).PurgeAsync(k2.ChannelName, Actor));
+
+            await using var reportDb = fixture.CreateTaggedDbContext(reportTag);
+            var report = CreateReportService(reportDb, slotsEnabled: true, reportLogger)
+                .MarkDeletedInSetAsync(set, "owner-7tv", "owner", "owner-tw-none", [Reported], null, Actor, entries);
+            await fixture.WaitUntilBlockedOnLockAsync(reportTag, report);
+            Assert.Contains(ChannelLock, await fixture.WaitingQueryAsync(reportTag), StringComparison.Ordinal);
+            await purgeTx.CommitAsync();
+            reported = await report.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.Single(ReportLines(reportLogger, VanishedLine));
+            Assert.Equal([(k1.ChannelName, 1)], reported.Channels.Select(c => (c.ChannelName, c.NewlyChangedCount)));
+        }
+
+        Assert.Null(reported.Rejection);
+        Assert.Empty(ReportLines(reportLogger, DeadlockLine));
+        Assert.True((await SlotAsync(setup, k1Slot.Id)).IsArchived);
+        Assert.True((await EmoteAsync(setup, k1, Reported)).IsArchived);
+        Assert.Equal(1, await LeaveRowsAsync(setup, k1, set));
+        await AssertPurgedAsync(setup, k2);
+    }
+
+    // Plan 376 R6: the report reads its hits again behind the channel lock. A channel switched to another
+    // set, or deactivated, between the unlocked hit read and the lock is no hit any more — nothing of it
+    // is written, and the report ends as a paper entry. Before child 6 such a channel was still written.
+    [Theory]
+    [InlineData("switched")]
+    [InlineData("deactivated")]
+    public async Task ChannelChangedBetweenHitReadAndLock_IsNoHit_AndNothingIsWritten(string change)
+    {
+        var tag = $"slotsrsix{change[0]}";
+        var set = SetOf(tag);
+        await using var setup = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(setup, $"inset_{tag}", set);
+        var slot = await SeedSlotAsync(setup, await SeedEmoteAsync(setup, channel, Reported, "aaa", firstSeenAt: T1), "aaa", T1);
+        var hitRead = new CommandHook(
+            text => text.Contains("FROM \"Channels\"", StringComparison.Ordinal) && text.Contains("WHERE c.\"IsBotActive\" AND", StringComparison.Ordinal),
+            async occurrence =>
+            {
+                if (occurrence != 1)
+                {
+                    return;
+                }
+
+                await using var other = fixture.CreateDbContext();
+                await (change == "switched"
+                    ? other.Channels.Where(c => c.Id == channel.Id).ExecuteUpdateAsync(c => c.SetProperty(x => x.ActiveEmoteSetId, SetOf(tag + "x")))
+                    : other.Channels.Where(c => c.Id == channel.Id).ExecuteUpdateAsync(c => c.SetProperty(x => x.IsBotActive, false)));
+            });
+        await using var reportDb = fixture.CreateDbContext([hitRead]);
+
+        var result = await CreateReportService(reportDb, slotsEnabled: true, new RecordingLogger<EmoteService>())
+            .MarkDeletedInSetAsync(set, "owner-7tv", "owner", "owner-tw-none", [Reported], null, Actor);
+
+        Assert.Empty(result.Channels);
+        Assert.False((await EmoteAsync(setup, channel, Reported)).IsArchived);
+        Assert.False((await SlotAsync(setup, slot.Id)).IsArchived);
+        Assert.Equal(0, await LeaveRowsAsync(setup, channel, set));
+        Assert.Equal([null], await AuditChannelsAsync(setup, set));
     }
 
     // Lets every side finish, whatever happened to the others, before the test leaves the scope of

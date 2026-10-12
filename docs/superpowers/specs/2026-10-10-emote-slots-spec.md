@@ -111,7 +111,7 @@ Betreiber-Entscheidungen (D0–D4, D7) und Orchestrator-Vorgaben (O1–O6) sind 
 | **D29** | Tag-Alias-Snapshot (K6) = ältester Eintrag; `CurrentName` = `Emote.Name`. | D3. |
 | **D30** | `GET /api/channels/{c}/emotes` bleibt eine Zeile je Emote. | Import-Vergleich je ID. |
 | **D31** | **Rollback über `Down` im Fenster** mit Guards (M2: > 1 Zeile je `(EmoteId, EmoteSetId, Date)`; M3: > 1 Snapshot-Zeile je `(RunId, EmoteId)`); Kollaps-SQL geht voraus (12.2). | Präzedenz 2026-09-20, D40 Backfill. |
-| **D32** (R3/R4/R5) | **Berichte je Slot mit Lebenszyklus-Identität.** sync-deleted und sync-restored tragen { sevenTvEmoteId, slotId, alias, addedAt }; addedAt ist das autoritative Datum der gemeldeten Entry-Generation. Im Ursprungskanal validiert der Server Eigentümer und Generation. Ein Datums-Konflikt ist ein veralteter Bericht und ein erfolgreicher No-op; eine fremde slotId im Ursprungskanal bleibt 400. Delete archiviert nur bei exakter Generation. Restore reaktiviert nur die passende archivierte Generation und setzt AddedAt einmalig provisorisch. Ist der Slot bereits aktiv oder hat sich seine Generation geändert, antwortet Restore erfolgreich ohne Mutation oder Datums-Reset. Entries-Berichte sperren die owning Emote-Zeile mit SELECT FOR UPDATE wie REST und Enqueue. Bei Shared-Set-Fan-out wird SlotId nur im Ursprungskanal geprüft; andere Kanäle lösen über (SevenTvEmoteId, AddedAt) genau einen lokalen Slot auf, sonst warten sie auf REST. Wiederholungen sind No-ops; ohne Entries bleibt das Altverhalten. Restore-Retries senden dieselbe slotId und das ursprüngliche AddedAt. | Schließt verspätete Delete-Berichte, REST-vor-Report und verlorene Restore-Antworten; die Historie bleibt auf D7s Slot. AK 41–42, 52, 54–55. |
+| **D32** (R3/R4/R5) | **Berichte je Slot mit Lebenszyklus-Identität.** sync-deleted und sync-restored tragen { sevenTvEmoteId, slotId, alias, addedAt }; addedAt ist das autoritative Datum der gemeldeten Entry-Generation. Im Ursprungskanal validiert der Server Eigentümer und Generation. Ein Datums-Konflikt ist ein veralteter Bericht und ein erfolgreicher No-op; eine fremde slotId im Ursprungskanal bleibt 400. Delete archiviert nur bei exakter Generation. Restore reaktiviert nur die passende archivierte Generation und setzt AddedAt einmalig provisorisch. Ist der Slot bereits aktiv oder hat sich seine Generation geändert, antwortet Restore erfolgreich ohne Mutation oder Datums-Reset. Entries-Berichte sperren die owning Emote-Zeile mit SELECT FOR UPDATE wie REST und Enqueue. Bei Shared-Set-Fan-out wird SlotId nur im Ursprungskanal geprüft; andere Kanäle lösen über (SevenTvEmoteId, AddedAt) genau einen lokalen Slot auf, sonst warten sie auf REST. Wiederholungen sind No-ops; ohne Entries bleibt das Altverhalten. Restore-Retries senden dieselbe slotId und das ursprüngliche AddedAt. *Kind 6 (#376), Betreiber 2026-10-12: Ursprung, Ablehnungsgrund, Sperrmodus und Pfad ohne Entries sind in 5.7 neu gefasst (Schiedsspruch B3, Plan-372 E1, B1, B2).* | Schließt verspätete Delete-Berichte, REST-vor-Report und verlorene Restore-Antworten; die Historie bleibt auf D7s Slot. AK 41–42, 52, 54–55. |
 | **D33** (R3, neu; R5 präzisiert) | **Einziges akzeptiertes destruktives Restrisiko der alias-adressierten Löschung:** 7TV kennt keinen Selektor über added_at (2.4). Bei Emotes mit mindestens zwei Live-Einträgen erfolgt ein frischer Read unmittelbar vor jedem REMOVE; bei einem Eintrag wird die Liste weiterhin höchstens 5 s wiederverwendet. Zwischen dem letzten Read und dem Request kann ein zweiter Editor einen anderen Eintrag desselben Emotes auf den gesendeten Alias umbenennen; dann entfernt 7TV den falschen Eintrag. Folge: ein nicht markierter Eintrag ist entfernt. **Erkennung und Reparatur:** die bestehende Nachlese des Laufs prüft alle gelöschten Zeilen: fehlt ein nicht gemeldeter Eintrag (id, addedAt) in der Live-Liste, meldet der Dock usageStats.delete.unexpectedRemoval mit Alias und Restore-Angebot (die Historie liegt auf dem archivierten Slot; die Wiederaufnahme ist ein neuer Eintrag, D4). | Ein Request-Umlauf bleibt ohne 7TV-Selektor unvermeidbar. R5 entfernt die kumulative Veraltung über mehrere Schritte; D33 bleibt das einzige akzeptierte destruktive Restrisiko (Abschnitt 14). |
 
 ## 4. Datenmodell
@@ -171,19 +171,41 @@ Invariante (ab M2): eine Zelle `(SlotId, EmoteSetId, Date)` ist live **oder** im
 
 ### 5.1 `GET /api/channels/{c}/usage-stats/totals?from&to[&emoteSetId]`
 
-Eine Zeile **je Slot**:
+*Geändert in Kind 6 (#376), Betreiber 2026-10-12 (Plan-376 R1, R2): Emote-Modus statt eigener Seed-Zeilen, `SlotId` nullable,
+Verzweigung am Flag. Bestätigte Abweichung vom ursprünglichen Text, Begründung in DECISIONS (#365, Absatz „Child 6").*
+
+Eine Zeile **je Slot** (Slot-Modus) oder **je Emote** (Emote-Modus):
 
 ```
 EmoteUsageContextDto(
-  string EmoteId, string SlotId, string EmoteName /* Slot-Name */, string SevenTvEmoteId, string ImageUrl,
+  string EmoteId, string? SlotId /* null = Emote-Modus */, string EmoteName /* Slot-Name bzw. Emote.Name */,
+  string SevenTvEmoteId, string ImageUrl,
   int TotalUseCount, DateOnly? LastUsedDate, int PreviousWindowUseCount,
-  DateTime? FirstSeenAt /* Slot.AddedAt */, bool FirstSeenAtFromRest,
-  bool IsArchived /* Slot oder Emote archiviert */,
-  IReadOnlyList<string> NameTwinEmoteSetIds /* je Slot-Name */,
-  IReadOnlyList<string> SiblingNames /* andere aktive Slots desselben Emotes in dieser Ansicht, nach AddedAt */)
+  DateTime? FirstSeenAt /* Slot.AddedAt bzw. Emote.FirstSeenAt */, bool FirstSeenAtFromRest /* Emote-Modus: false */,
+  bool IsArchived /* Slot oder Emote archiviert; Emote-Modus: Emote.IsArchived */,
+  IReadOnlyList<string> NameTwinEmoteSetIds /* je Slot-Name; Emote-Modus: über Emote.Name */,
+  IReadOnlyList<string> SiblingNames /* andere Zeilen desselben Emotes in dieser Antwort, D2-Ordnung; Emote-Modus: leer */)
 ```
 
-Aktive Ansicht: jeder aktive Slot jedes aktiven Emotes, mit 0 aufgefüllt (unsettled Seeds sichtbar, nur nicht zählend). Eine D7-Wiederaufnahme erscheint auf derselben Karte mit deren bisherigen Zählungen; das neue REST-Datum setzt nur „Neu"/„Im Set seit" zurück. Nicht-aktive Ansicht: jeder Slot mit ≥ 1 `UsageStat` unter dem Set (archivierte eingeschlossen, E23). Aggregation `GroupBy(u => u.SlotId)` nach Slot-ID-Liste (Regel 10). Für beide Ansichten zählt nur das angefragte `EmoteSetId`.
+**Modus je Emote im angefragten Set X.** Flag `SevenTv:SlotReconcile:Enabled` aus: **jedes** Emote im Emote-Modus — die
+Antwort ist die von vor den Slots, nur um die neuen Felder mit ihren Aus-Werten ergänzt (`SlotId` `null`,
+`FirstSeenAtFromRest` `false`, `SiblingNames` leer). Flag an: Emote-Modus, wenn das Emote einen unsettled Seed mit Zeilen
+unter X hat (dieselbe Seed-Abfrage wie Settle und Map-Ausschluss, E7) oder — nur in der aktiven Ansicht — keinen aktiven
+eigenen Slot (E14, virtueller Slot); sonst Slot-Modus. Ein Seed zählt nicht, sein `AddedAt` ist `null`, sein Name kann
+veraltet sein — deshalb erscheint er nie als eigene Zeile.
+
+**Zeilen.** Emote-Modus: genau eine Zeile, Zahlen = Summe über alle Zeilen des Emotes unter X. Slot-Modus, aktive
+Ansicht: eine Zeile je aktivem eigenem Slot, mit 0 aufgefüllt; archivierte eigene Slots erscheinen nicht — eine
+D7-Wiederaufnahme erscheint auf derselben Karte mit deren bisherigen Zählungen, das neue REST-Datum setzt nur „Neu"/„Im Set
+seit" zurück. Slot-Modus, nicht-aktive Ansicht: eine Zeile je eigenem Slot mit ≥ 1 `UsageStat` unter X (archivierte
+eingeschlossen, E23). Basismenge wie bisher: aktive Ansicht = nicht archivierte Emotes, nicht-aktive = Emotes mit ≥ 1
+Zeile unter X.
+
+**Invariante:** `SlotId` gesetzt ⇔ die Zeile zeigt genau die Zahlen dieses einen Slots (dieselben wie `/daily?slotId=`);
+je `SlotId` höchstens eine Zeile, je Emote im Emote-Modus genau eine. Sortierung nach `TotalUseCount` absteigend, keine
+Zusage bei Gleichstand. Aggregation `GroupBy(u => u.SlotId)` nach Slot-ID-Liste über den Slot-Index (Regel 10); der
+Emote-Modus faltet die Slot-Aggregate im Speicher. Für beide Ansichten zählt nur das angefragte `EmoteSetId`. AK 28 gilt
+für den Slot-Modus wörtlich.
 
 ### 5.2 `GET …/usage-stats/daily?slotId=|emoteId=&from&to[&emoteSetId|setScope=all]`
 
@@ -191,7 +213,7 @@ Aktive Ansicht: jeder aktive Slot jedes aktiven Emotes, mit 0 aufgefüllt (unset
 
 ### 5.3 `GET …/usage-stats/series?from&to[&emoteSetId]`
 
-Eine Entry **je Slot**: `EmoteSeriesEntryDto(string SevenTvEmoteId, string EmoteId, string SlotId, string Name, IReadOnlyList<int[]> Days)` — additiv, Kodierung bytegleich. Der Client joint über `SlotId`.
+Eine Entry **je Zeile von 5.1** (mit ≥ 1 Tag eigener Nutzung im Bereich): `EmoteSeriesEntryDto(string SevenTvEmoteId, string EmoteId, string? SlotId, string Name, IReadOnlyList<int[]> Days)` — additiv, Kodierung bytegleich. Im Emote-Modus (Kind 6, 5.1) ist `SlotId` `null` und jeder Tag die Summe über die Slots des Emotes. Der Client joint über `SlotId`, bei `null` über `EmoteId`.
 
 ### 5.4 `GET /api/channels/{c}/emotes/active-set`
 
@@ -207,15 +229,27 @@ Eine Entry **je Slot**: `EmoteSeriesEntryDto(string SevenTvEmoteId, string Emote
 
 ### 5.7 Set-zentrische Berichte (D32, R5)
 
-`SyncInSetRequest(IReadOnlyList<string>? SevenTvEmoteIds, string? ExpectedChannelName, string? TargetOwnerTwitchId = null, IReadOnlyList<SyncInSetEntry>? Entries = null), SyncInSetEntry(string SevenTvEmoteId, string Alias, string? SlotId, DateTimeOffset? AddedAt)`. Bei gesetzter SlotId ist AddedAt erforderlich und enthält das autoritative Datum der gemeldeten Generation.
+*Geändert in Kind 6 (#376), Betreiber 2026-10-12 (Plan-376 R3, R4, R6, Sol-Befunde B1–B3, Fable-Schiedsspruch zu B3):
+Ursprung über den Kanal der `SlotId` statt über `ExpectedChannelName`, einziger inhaltlicher Ablehnungsgrund eine `SlotId` eines
+anderen Emotes, Entscheidung je ID am Flag, Sperre-dann-Lesen, Slot-Archivierung ohne Eintrag (B1), einmalige Leave nach REST (B2),
+vorhandene Fehlercodes. Bestätigte Abweichungen vom ursprünglichen Text, Begründung in DECISIONS (#365, Absatz „Child 6").*
 
-Der Api-Endpoint validiert den Bericht und delegiert an `IEmoteService` in Core/Services; `EmoteService` in Infrastructure/Services führt die Änderung aus. Der Handler verwendet weder `AppDbContext` noch `IConnectionMultiplexer` direkt.
+`SyncInSetRequest(IReadOnlyList<string>? SevenTvEmoteIds, string? ExpectedChannelName, string? TargetOwnerTwitchId = null, IReadOnlyList<SyncInSetEntry>? Entries = null), SyncInSetEntry(string SevenTvEmoteId, string? Alias, string? SlotId, DateTimeOffset? AddedAt)`. `AddedAt` ist das `firstSeenAt` der `/totals`-Zeile, aus der die `SlotId` stammt (das autoritative Datum der gemeldeten Generation), wörtlich gesendet und serverseitig in UTC auf die Mikrosekunde verglichen. `Alias` dient nur dem Gleichstand im Fan-out und darf fehlen.
 
-- **Ursprungskanal und Shared-Set-Fan-out:** Der bereits über ExpectedChannelName/TargetOwnerTwitchId validierte Kanal ist der Ursprung. SlotId wird nur dort auf Zugehörigkeit zum Emote geprüft. Für jeden weiteren Treffer-Kanal des aktiven Shared-Sets wird genau ein lokaler Slot über (SevenTvEmoteId, AddedAt) aufgelöst; fehlt ein eindeutiger Treffer, wird dort nichts geschrieben und der nächste REST-Abgleich übernimmt. Eine für den Ursprung gültige SlotId ist in Geschwister-Kanälen kein Fehler.
-- **sync-deleted mit Entries:** Je Ursprungskanal und Eintrag Slot-Eigentümer und AddedAt prüfen. Fremde SlotId im Ursprung → 400 invalid_request; bei eigener SlotId mit abweichendem aktuellem AddedAt veralteten Bericht erfolgreich ignorieren. Bei exakter Generation Slot archivieren (ArchivedAt = now). Ein bereits archivierter Slot ist ein No-op. Emote archivieren und Leave nur, wenn diese Mutation seinen letzten aktiven Slot entfernt; stale oder wiederholte Berichte erzeugen keine Leave.
-- **sync-restored mit Entries:** Slot-Eigentümer und Generation prüfen. Fremde SlotId im Ursprung → 400; bei abweichender Generation oder bereits aktivem Slot erfolgreich ohne Änderung antworten. Nur eine passende archivierte Generation wird reaktiviert (ArchivedAt = null, AddedAt = UtcNow, AddedAtFromRest = false); UsageStats bleiben gebunden. Emote un-archivieren (LastEnteredSetAtUtc, IsPlaceholder = false wie heute). Der nächste REST-Abgleich autorisiert das neue Datum (6.2). So setzen verlorene Antwort-Retries und ein vorangegangener D7-REST-Abgleich kein Datum zurück.
-- **Ohne `Entries`:** `sync-deleted` wie heute (`EmoteService.cs:268-297`); `sync-restored` un-archiviert nur die `Emote`-Zeile, legt keinen Slot an (Invariante 4.1, Umkehr) — der nächste Abgleich legt die Einträge datiert an. Audit-Details tragen `entryCount`.
-SevenTvEmoteIds enthält die distinct IDs der Entries; SlotId fehlt → Eintrag wie bisher ignorieren, gesetzte SlotId ohne AddedAt → 400. Ein stale no-op antwortet 2xx. sync-imported unverändert.
+Der Api-Endpoint validiert die Form und delegiert an `IEmoteService` in Core/Services (Einträge als `SyncInSetEntryDto` mit UTC-`AddedAt`); `EmoteService` in Infrastructure/Services führt die Änderung aus. Der Handler verwendet weder `AppDbContext` noch `IConnectionMultiplexer` direkt.
+
+- **Formprüfung (Endpoint, vor der Eigentümerprüfung, beide Flag-Zustände):** jeder Eintrag hat eine nicht leere `SevenTvEmoteId`, die in `SevenTvEmoteIds` steht; eine gesetzte `SlotId` verlangt `AddedAt`. Verstoß → `400 invalid_request_body` (den in der früheren Fassung genannten Code `invalid_request` gibt es nicht).
+- **Flag `SevenTv:SlotReconcile:Enabled` aus:** `Entries` werden nach der Formprüfung ignoriert; der Bericht läuft Zeile für Zeile wie vor den Slots (Emote-Ebene, Leave für jede gefundene Zeile, keine Slot-Schreibung, Audit unverändert).
+- **Flag an — Entscheidung je ID:** Hat eine ID mindestens einen Eintrag, gilt für sie nur die Slot-Semantik unten; Einträge ohne `SlotId` werden übersprungen, ohne Rückfall auf die Emote-Ebene (ein Rückfall archivierte sonst ein Mehr-Slot-Emote ganz und schriebe eine falsche Leave). IDs ohne Eintrag laufen die Emote-Semantik plus die Slot-Regel unter „Ohne Eintrag". Ein Bericht darf beides mischen.
+- **Sperre-dann-Lesen (Flag an, beide Pfade):** Treffer-Kandidaten ungesperrt lesen; in der Transaktion die Kanalzeilen aller Kandidaten in einem Statement sortiert sperren (`FOR NO KEY UPDATE`, Plan-372 E1, statt `SELECT FOR UPDATE`); fehlt einer, Ganz-Wiederholung; Kanäle unter der Sperre neu lesen — ein inzwischen deaktivierter oder auf ein anderes Set gewechselter Kanal ist kein Treffer; dann die Emote-Zeilen der Treffer sperren und mit ihren Slots lesen; Leave-Beobachtungen, dann Speichern. Reihenfolge Kanal → Emote → Leave wie Sync, Delta und Purge.
+- **Ursprung (Schiedsspruch B3):** Nach der Sperre werden alle gemeldeten `SlotId`s in einer Abfrage auf Kanal und `SevenTvEmoteId` ihres Emotes aufgelöst, vor jeder Mutation. Gehört eine `SlotId` zu einer anderen `SevenTvEmoteId` als ihr Eintrag → der ganze Bericht wird abgelehnt (`400 emote_ids_invalid`, kein Live-Event, kein Resync, nichts geschrieben, kein Audit). Eine unbekannte `SlotId` (Zeile weg: Purge, Selbstbereinigung, Retention) ist kein Fehler; der Eintrag hat dann keinen Ursprung. Ist der Kanal der `SlotId` ein Trefferkanal, ist er der Ursprung des Eintrags; ist er keiner (gesperrt, geblockt, anderes aktives Set, nicht getrackt), wird er nicht angefasst. `ExpectedChannelName` steuert nur die Unresolved-Meldung und die Resync-Kandidaten — die Berechtigung hängt allein an der 7TV-Eigentümerprüfung, und der Fan-out schrieb schon immer in jeden Trefferkanal des Sets.
+- **Slot-Auflösung je Trefferkanal:** Im Ursprung ist es der Slot der `SlotId`; weicht sein `AddedAt` von `AddedAt` ab (Seed, provisorisch neu datiert, per D7 umgeschlüsselt), ist der Bericht dort veraltet und ein erfolgreicher No-op. In jedem anderen Trefferkanal (und in allen, wenn der Eintrag keinen Ursprung hat) genau der eine eigene autoritative Slot mit demselben Datum, bei mehreren zusätzlich mit `Name == Alias`; sonst wird dort nichts geschrieben und der nächste REST-Abgleich gleicht ab. Eine für den Ursprung gültige `SlotId` ist in Geschwister-Kanälen kein Fehler.
+- **sync-deleted mit Entries:** Ein aktiver Slot wird archiviert (`ArchivedAt = now`). Das Emote wird nur archiviert, und nur dann gibt es eine Leave, wenn dieser Bericht seinen letzten aktiven eigenen Slot entfernt; danach bestimmt D13 Name und Datum aus dem ältesten verbliebenen aktiven Slot. Ein schon archivierter Slot ist ein No-op — **außer (B2):** das Emote hat keinen aktiven eigenen Slot mehr, ist archiviert und kein nie aktiver Platzhalter, und seit `LastEnteredSetAtUtc` gibt es keine Leave-Beobachtung für (Kanal, Emote, Set) → genau einmal eine Leave (REST hat den letzten Slot im 30-Minuten-Glaubwürdigkeitsfenster ohne Leave archiviert; der Bericht ist die bestätigte Abgangsmeldung). Ein Retry findet die Beobachtung, schreibt keine zweite und verschiebt ihren Zeitstempel nicht. **Bekannte Grenze:** Hat REST den Slot vor dem Bericht per D7 wiederaufgenommen, ist der Bericht veraltet (AK 52) und schreibt keine Leave. Aktive eigene Slots unter einem archivierten Emote (Delta-Pull vor dem Tick) zählen nicht als aktiv.
+- **sync-restored mit Entries:** Nur eine passende archivierte Generation wird reaktiviert (`ArchivedAt = null`, `AddedAt = UtcNow`, `AddedAtFromRest = false`); `UsageStats` bleiben gebunden. Das Emote wird un-archiviert (`LastEnteredSetAtUtc`, `IsPlaceholder = false` wie bisher), danach D13. Ein bereits aktiver Slot oder eine andere Generation → erfolgreicher No-op ohne Datums-Reset. Der nächste REST-Abgleich autorisiert das neue Datum auf derselben `SlotId` (6.2). So setzen verlorene Antwort-Retries und ein vorangegangener D7-REST-Abgleich kein Datum zurück.
+- **Ohne Eintrag (Flag an, B1):** `sync-deleted` archiviert das Emote und schreibt die Leave wie bisher und archiviert zusätzlich in derselben Transaktion unter der Emote-Sperre alle aktiven eigenen Slots des Emotes (`ArchivedAt = now`; unsettled Seeds bleiben unberührt). Sonst bliebe S1(A, t1) nach Löschen und schnellem Rückgängig aktiv-autoritativ, der nächste REST mit A(t9) legte S2 an und archivierte S1 — die Historie verschwände aus der aktiven Ansicht; archiviert setzt D7 beim nächsten REST denselben Slot auf t9 fort. `sync-restored` un-archiviert nur die `Emote`-Zeile und legt keinen Slot an oder reaktiviert einen (Invariante 4.1, Umkehr) — D7 im nächsten Abgleich.
+- **Antwort und Audit:** Antwortform unverändert; `archivedCount`/`restoredCount` je Trefferkanal = gemeldete IDs mit `Emote`-Zeile dort. `channel.synced` folgt den IDs, deren Emote oder Slot sich tatsächlich geändert hat. Mit Entries (Flag an) tragen Kanal-Audit-Einträge zusätzlich `entryCount` (in diesem Kanal aufgelöste Einträge), Papier-Einträge `entryCount` = Zahl der Einträge; ohne Entries bytegleich wie bisher.
+
+Ein veralteter oder wiederholter Bericht antwortet 2xx, und der Resync läuft. sync-imported unverändert.
 
 ### 5.8 Unverändert
 
@@ -462,7 +496,7 @@ Ein von der Enqueue gesettelter Seed ist kein `CreatedSlot` und bleibt (AK 39).
 40. **Nachprüfung (D33):** gemockte Live-Liste nach dem Lauf ohne den Eintrag `(X, t2)`, den der Lauf nicht gemeldet hat → Dock zeigt `unexpectedRemoval` mit Alias und Restore-Angebot; mit vollständiger Liste nichts.
 
 **Berichte**
-41. **Teil-Löschung (R1 Befund 5):** sync-deleted mit entries: [{ X, slotId(hob44), hob44, addedAt: t1 }] → nur dieser Slot im Ursprung archiviert, Emote aktiv, keine Leave, Holds aller Platzierungen unverändert; derselbe Bericht erneut → erfolgreicher No-op; ein zwischenzeitlich auf t3 per D7 wiederaufgenommener Slot empfängt einen verspäteten Bericht mit t1 als No-op ohne Leave (AK 52); ein fremder slotId im Ursprung → 400; danach entries für ome44 → Emote archiviert, Leave einmal. Ohne entries → heutiges Verhalten.
+41. **Teil-Löschung (R1 Befund 5):** sync-deleted mit entries: [{ X, slotId(hob44), hob44, addedAt: t1 }] → nur dieser Slot im Ursprung archiviert, Emote aktiv, keine Leave, Holds aller Platzierungen unverändert; derselbe Bericht erneut → erfolgreicher No-op; ein zwischenzeitlich auf t3 per D7 wiederaufgenommener Slot empfängt einen verspäteten Bericht mit t1 als No-op ohne Leave (AK 52); eine `slotId` eines anderen Emotes → 400 `emote_ids_invalid`, nichts geschrieben (Kind 6, Schiedsspruch B3; eine unbekannte `slotId` ist kein Fehler, sondern läuft per Fan-out); danach entries für ome44 → Emote archiviert, Leave einmal. Ohne entries → heutiges Verhalten.
 42. **Restore (R4/D7):** sync-restored mit entries: [{ X, slotId: S1, alias: A, addedAt: t1 }] → genau die passende archivierte Generation von S1 wird reaktiviert, ArchivedAt = null, Nutzung bleibt; AddedAt wird einmal provisorisch neu gesetzt. REST [A(t9)] autorisiert t9 auf derselben SlotId. Ohne entries → nur Emote un-archiviert, nächster Abgleich legt neue Slots datiert an. Restore-Lauf sendet je doneKey slotId und das ursprüngliche AddedAt; Retry- und REST-vor-Report-Verhalten siehe AK 55.
 
 **Betrieb**

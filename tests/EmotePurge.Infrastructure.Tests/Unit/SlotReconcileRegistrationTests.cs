@@ -13,7 +13,7 @@ namespace EmotePurge.Infrastructure.Tests.Unit;
 /// <summary>
 /// Plan #372 review P3-3: every service that reads <see cref="SlotReconcileOptions"/> takes it as an
 /// optional constructor parameter, so a registration that stopped handing it over would not fail —
-/// the service would silently run with the flag off. This resolves the four readers the way api and
+/// the service would silently run with the flag off. This resolves the readers the way api and
 /// worker do (both call <c>AddEmotePurgeInfrastructure</c>) and reads the value each one holds.
 /// </summary>
 /// <remarks>
@@ -36,6 +36,8 @@ public class SlotReconcileRegistrationTests
         Assert.Equal(expected, FlagOf(services.GetRequiredService<IEmoteService>(), "slotReconcileEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<IEmoteSetStatusService>(), "slotsEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<ISevenTvApiClient>(), "slotReconcileEnabled"));
+        Assert.Equal(expected, FlagOf(services.GetRequiredService<IUsageStatQueryService>(), "slotReconcileEnabled"));
+        Assert.Equal(expected, FlagOf(services.GetRequiredService<IVoteSessionQueryService>(), "slotReconcileEnabled"));
     }
 
     // The services keep the flag in a private field read once at construction (E26); reading it is

@@ -25,9 +25,11 @@ public record VoteSessionSummaryDto(
 // KeepVotes/DeleteVotes/Score are null together on a running secret-ballot session for everyone but
 // a manager — same "null = withheld, not zero" convention as TotalUseCount. MyVote is never
 // withheld: a voter must always see their own ballot.
+// EmoteNames: every alias of the emote the ballot shows, never empty, [0] == EmoteName (plan #376 2.7).
 public record VoteSessionResultDto(
     string EmoteId, string EmoteName, string SevenTvEmoteId, string ImageUrl, int? TotalUseCount,
-    int? KeepVotes, int? DeleteVotes, int? Score, bool IsArchived, bool Eligible, VoteType? MyVote);
+    int? KeepVotes, int? DeleteVotes, int? Score, bool IsArchived, bool Eligible, VoteType? MyVote,
+    IReadOnlyList<string> EmoteNames);
 
 // VoterCount = distinct voters across the whole session, so thin results can be labeled as such.
 // It stays visible on a secret ballot: turnout says nothing about which way the votes went.

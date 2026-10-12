@@ -5,9 +5,13 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EmotePurge.Infrastructure.Services;
 
-public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
+public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotReconcile = null) : IUsageStatQueryService
 {
     private const string FromMustPrecedeToMessage = "'from' must be less than or equal to 'to'.";
+
+    // Null (the unit-test constructor) is off, like the flag's default. It decides nothing but the mode of
+    // each usage-grid row (plan #376 R1): off, every row is in emote mode — the reading from before slots.
+    private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
 
     public async Task<IReadOnlyList<EmoteUsageDto>> GetUsageStatsAsync(string channelName, CancellationToken cancellationToken = default)
     {
@@ -50,87 +54,111 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         var setId = emoteSetId ?? channel.ActiveEmoteSetId;
         var isActiveSet = string.Equals(setId, channel.ActiveEmoteSetId, StringComparison.Ordinal);
 
-        // GroupBy+Sum fails to translate when the filtered source still carries the
-        // Emote/Channel navigation joins from the Where clause (EF Core/Npgsql limitation:
-        // falls back to client-eval "g.AsQueryable().Sum(...)" and throws). Resolving the
-        // channel's emote IDs into a plain list first keeps the grouped query scoped to a
-        // single table, which translates cleanly.
-        // Every row of the channel, archived ones included — the base set is narrowed below rather
-        // than here, because the two views need different halves of this list: the active set's
-        // view excludes archived emotes (they are gone from 7TV and must not reappear as delete
-        // candidates just because they still carry history), while a non-active set's view is a
-        // historical one and keeps them (spec E16/E23). The name-twin lookup needs the whole list
-        // either way — an emote's twin under another set is usually precisely an archived row.
-        var allChannelEmotes = await db.Emotes
-            .Where(e => e.ChannelId == channel.Id)
-            .Select(e => new { e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.FirstSeenAt, e.IsArchived })
-            .ToListAsync(cancellationToken);
-
+        // Every emote of the channel, archived ones included — the base set is narrowed by the row
+        // formation rather than here, because the two views need different halves of this list: the active
+        // set's view excludes archived emotes (they are gone from 7TV and must not reappear as delete
+        // candidates just because they still carry history), while a non-active set's view is a historical
+        // one and keeps them (spec E16/E23). The name-twin lookup needs the whole list either way — an
+        // emote's twin under another set is usually precisely an archived row.
+        var allChannelEmotes = await LoadChannelEmotesAsync(channel.Id, cancellationToken);
         if (allChannelEmotes.Count == 0)
         {
             return [];
         }
 
-        var emoteIds = allChannelEmotes.Select(e => e.Id).ToList();
+        var view = await LoadUsageViewAsync(channel.Id, setId, isActiveSet, allChannelEmotes, cancellationToken);
 
         // Both range bounds are inclusive, so the window is one day longer than the difference —
         // and the preceding window has to be exactly as long for the two sums to be comparable.
         var windowLength = to.DayNumber - from.DayNumber + 1;
         var previousFrom = from.AddDays(-windowLength);
 
-        // One pass, three aggregates, all three over UseCount alone — the channel's own human
-        // usage, which is what this grid judges deletion candidates by. Both side columns are
-        // outside that: a bot-only row (UseCount = 0, BotUseCount > 0) and a shared-only row
-        // (UseCount = 0, SharedChatUseCount > 0, usage mirrored in from another channel's shared
-        // chat) read the same way here, namely as no use at all. Reading UseCount alone, and
-        // filtering on the set id rather than on anything outside the row, is what keeps the
-        // covering index (EmoteId, EmoteSetId, Date) INCLUDE (UseCount) serving this as an
-        // index-only scan — the reason the index was widened by exactly the new key column and
-        // nothing else (docs/DECISIONS.md 2026-09-06 Task 4; #200 spec 4.1).
-        // LastUsedDate is deliberately unbounded in time: the max is the emote's last use ever, and
-        // clipping it to the range would make it a restatement of the total. The two sums need no
-        // date-independent predicate — a row without own usage contributes 0 to a sum on its own.
-        // LastUsedDate does need one: a row's mere existence is no proof of use once the flush can
-        // write UseCount = 0 rows, so neither a bot-only nor a shared-only day may read as
-        // "last used".
-        var aggregates = await db.UsageStats
-            .Where(u => emoteIds.Contains(u.EmoteId) && u.EmoteSetId == setId)
-            .GroupBy(u => u.EmoteId)
-            .Select(g => new
-            {
-                EmoteId = g.Key,
-                TotalUseCount = g.Sum(u => u.Date >= from && u.Date <= to ? u.UseCount : 0),
-                PreviousWindowUseCount = g.Sum(u => u.Date >= previousFrom && u.Date < from ? u.UseCount : 0),
-                LastUsedDate = g.Max(u => u.UseCount > 0 ? (DateOnly?)u.Date : null)
-            })
-            .ToDictionaryAsync(g => g.EmoteId, cancellationToken);
+        // One pass, three aggregates per slot (plan #376 2.2), all three over UseCount alone — the channel's
+        // own human usage, which is what this grid judges deletion candidates by. Both side columns are
+        // outside that: a bot-only row (UseCount = 0, BotUseCount > 0) and a shared-only row (UseCount = 0,
+        // SharedChatUseCount > 0, usage mirrored in from another channel's shared chat) read the same way
+        // here, namely as no use at all. Rule 10: the slot ids go down as a plain scalar list and the
+        // grouped query stays on UsageStats alone; reading UseCount alone and filtering on the set id rather
+        // than on anything outside the row is what keeps the unique slot index (SlotId, EmoteSetId, Date)
+        // INCLUDE (UseCount) serving this as an index-only scan. Only the slots some row carries are asked
+        // for. LastUsedDate is deliberately unbounded in time: the max is the last use ever, and clipping it
+        // to the range would make it a restatement of the total. The two sums need no date-independent
+        // predicate — a row without own usage contributes 0 to a sum on its own. LastUsedDate does need one:
+        // a row's mere existence is no proof of use once the flush can write UseCount = 0 rows, so neither a
+        // bot-only nor a shared-only day may read as "last used".
+        var aggregateSlotIds = AggregateSlotIdsOf(view.Rows);
+        var aggregates = aggregateSlotIds.Count == 0
+            ? new Dictionary<string, SlotAggregate>(StringComparer.Ordinal)
+            : await db.UsageStats
+                .Where(u => aggregateSlotIds.Contains(u.SlotId) && u.EmoteSetId == setId)
+                .GroupBy(u => u.SlotId)
+                .Select(g => new
+                {
+                    SlotId = g.Key,
+                    TotalUseCount = g.Sum(u => u.Date >= from && u.Date <= to ? u.UseCount : 0),
+                    PreviousWindowUseCount = g.Sum(u => u.Date >= previousFrom && u.Date < from ? u.UseCount : 0),
+                    LastUsedDate = g.Max(u => u.UseCount > 0 ? (DateOnly?)u.Date : null)
+                })
+                .ToDictionaryAsync(
+                    g => g.SlotId,
+                    g => new SlotAggregate(g.TotalUseCount, g.PreviousWindowUseCount, g.LastUsedDate),
+                    StringComparer.Ordinal,
+                    cancellationToken);
 
-        var nameTwinSetIds = await LoadNameTwinSetIdsAsync(allChannelEmotes.Select(e => (e.Id, e.Name, e.SevenTvEmoteId)), setId, cancellationToken);
+        var nameTwinSetIds = await LoadNameTwinSetIdsAsync(allChannelEmotes, view, setId, cancellationToken);
+        var emotesById = allChannelEmotes.ToDictionary(e => e.Id, StringComparer.Ordinal);
 
-        // Active set: zero-filled for every unarchived emote (not just ones with a UsageStat row
-        // already) — an unused-but-active emote must still be findable/selectable in a usage-stats
-        // UI. Non-active set: no zero-filling at all, because "every row of the channel" would be a
-        // list of a thousand zeroes for a set that held forty. The aggregate dictionary is exactly
-        // the "has at least one count under this set" test spec E16 asks for — it is keyed by the
-        // set-filtered query above and carries no date predicate of its own.
-        return allChannelEmotes
-            .Where(e => isActiveSet ? !e.IsArchived : aggregates.ContainsKey(e.Id))
-            .Select(e =>
+        // The base order is the emote list as the database returned it, the rows of one emote in the order of
+        // their slots; the sort by total breaks its ties by that base order, in one sort. With the flag off
+        // that is one row per emote in exactly the order the pre-slot code sorted — ties included, which no
+        // contract promises but a prod reading should not shuffle for nothing (R1).
+        var emotePosition = allChannelEmotes
+            .Select((e, index) => (e.Id, index))
+            .ToDictionary(p => p.Id, p => p.index, StringComparer.Ordinal);
+
+        return view.Rows
+            .Select((row, index) =>
             {
-                var aggregate = aggregates.GetValueOrDefault(e.Id);
-                return new EmoteUsageContextDto(
-                    e.Id,
-                    e.Name,
-                    e.SevenTvEmoteId,
-                    e.ImageUrl,
-                    aggregate?.TotalUseCount ?? 0,
-                    aggregate?.LastUsedDate,
-                    aggregate?.PreviousWindowUseCount ?? 0,
-                    e.FirstSeenAt,
-                    e.IsArchived,
-                    nameTwinSetIds.TryGetValue(e.Id, out var twins) ? twins : []);
+                var emote = emotesById[row.EmoteId];
+
+                // An emote-mode row folds the aggregates of all its slots (the emote's whole count under the
+                // set, the pre-slot number); a slot-mode row carries exactly its one slot (R2 invariant).
+                var total = 0;
+                var previous = 0;
+                DateOnly? lastUsed = null;
+                foreach (var slotId in row.AggregateSlotIds)
+                {
+                    if (aggregates.TryGetValue(slotId, out var aggregate))
+                    {
+                        total += aggregate.TotalUseCount;
+                        previous += aggregate.PreviousWindowUseCount;
+                        if (aggregate.LastUsedDate is { } used && (lastUsed is null || used > lastUsed))
+                        {
+                            lastUsed = used;
+                        }
+                    }
+                }
+
+                var dto = new EmoteUsageContextDto(
+                    row.EmoteId,
+                    row.SlotId,
+                    row.Name,
+                    emote.SevenTvEmoteId,
+                    emote.ImageUrl,
+                    total,
+                    lastUsed,
+                    previous,
+                    row.FirstSeenAt,
+                    row.FirstSeenAtFromRest,
+                    row.IsArchived,
+                    nameTwinSetIds[index],
+                    row.SiblingNames);
+                return (Dto: dto, Position: emotePosition[row.EmoteId], Index: index);
             })
-            .OrderByDescending(t => t.TotalUseCount)
+            .OrderByDescending(r => r.Dto.TotalUseCount)
+            .ThenBy(r => r.Position)
+            .ThenBy(r => r.Index)
+            .Select(r => r.Dto)
             .ToList();
     }
 
@@ -160,62 +188,62 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
             return null;
         }
 
-        // AllSets drops the set predicate from both queries below: a null-session's row is
-        // set-agnostic, so the drilldown opened from it has to be too.
-        var allSets = setScope.IsAllSets;
-        var setId = setScope.SetId ?? emote.ActiveEmoteSetId;
-
-        // Sparse on purpose (only days with usage). Value and predicate both run over UseCount
-        // alone, same reasoning as GetUsageContextAsync — a bot-only and a shared-only day are
-        // equally absent from this series, because neither is a day this channel used the emote.
-        // The set filter is what makes the drilldown agree with the row it was opened from: the
-        // grid's total is one set's counts, so the days behind it have to be the same set's.
-        // Grouped by day: the same day can carry one row per set and, since M2 (slot plan #373), one
-        // per slot of the emote, and the DTO promises one entry per day. Single-table GroupBy, so
-        // rule 10 is untouched.
-        var days = await db.UsageStats
-            .Where(u => u.EmoteId == emote.Id && (allSets || u.EmoteSetId == setId) && u.Date >= from && u.Date <= to && u.UseCount > 0)
-            .GroupBy(u => u.Date)
-            .Select(g => new { Date = g.Key, UseCount = g.Sum(u => u.UseCount) })
-            .OrderBy(d => d.Date)
-            .ToListAsync(cancellationToken);
-        var dailyUsage = days.Select(d => new EmoteDailyUsageDto(d.Date, d.UseCount)).ToList();
-
-        // First/last use ever, unbounded in time — same reasoning as LastUsedDate in
-        // GetUsageContextAsync, including the UseCount > 0 predicate against rows with no own
-        // usage. Bounded by the set, though, and deliberately so: "first used" next to a set's
-        // numbers must mean first used under that set (under AllSets: first used in the channel). Single-table GroupBy, so rule 10 is not
-        // even touched.
-        var bounds = await db.UsageStats
-            .Where(u => u.EmoteId == emote.Id && (allSets || u.EmoteSetId == setId) && u.UseCount > 0)
-            .GroupBy(u => u.EmoteId)
-            .Select(g => new
-            {
-                First = g.Min(u => (DateOnly?)u.Date),
-                Last = g.Max(u => (DateOnly?)u.Date)
-            })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        // Range-bounded unlike the bounds above: the consumer overlays these on exactly the
-        // rendered window. LiveMinutes > 0 is defensive — the poll never writes a zero row.
-        // Served by the covering index (ChannelId, Date) INCLUDE (LiveMinutes).
-        // Narrowed to the days the viewed set has counts on (the same set predicate as the emote's
-        // own days above, none under AllSets): the live-day rule, shared with the channel series.
-        // The denominator stays set-wide — it is NOT the emote's own days, or every emote would
-        // read "used on all live days".
-        var countedDates = await LoadSetCountedDatesAsync(emote.ChannelId, allSets ? null : setId, from, to, cancellationToken);
-        var liveDays = await LoadQualifyingLiveDaysAsync(emote.ChannelId, countedDates, from, to, cancellationToken);
-
-        return new EmoteUsageSeriesDto(
+        return await BuildDailySeriesAsync(
+            db.UsageStats.Where(u => u.EmoteId == emote.Id),
             emote.Id,
             emote.Name,
+            slotId: null,
+            emote.ChannelId,
+            emote.ActiveEmoteSetId,
             from,
             to,
-            dailyUsage.Sum(d => d.UseCount),
-            bounds?.First,
-            bounds?.Last,
-            dailyUsage,
-            liveDays);
+            setScope,
+            cancellationToken);
+    }
+
+    public async Task<EmoteUsageSeriesDto?> GetDailySlotSeriesAsync(
+        string channelName, string slotId, DateOnly from, DateOnly to, EmoteSetScope setScope = default, CancellationToken cancellationToken = default)
+    {
+        if (from > to)
+        {
+            throw new ArgumentException(FromMustPrecedeToMessage, nameof(from));
+        }
+
+        var normalized = ChannelName.Normalize(channelName);
+
+        // Plan 376 2.5: slot -> emote -> channel, resolved against the channel of the route exactly like the
+        // emote lookup above, so a slot id of another channel is as unknown as a made-up one. Archived slots and
+        // unsettled seeds are allowed (ballot and history cases). A seed shows the emote's name (R2: its own name
+        // can be stale); a settled slot shows its own.
+        var slot = await db.EmoteSlots
+            .Where(s => s.Id == slotId && s.Emote.Channel.ChannelName == normalized)
+            .Select(s => new
+            {
+                s.Id,
+                s.EmoteId,
+                SlotName = s.Name,
+                s.SeedUnsettled,
+                EmoteName = s.Emote.Name,
+                s.Emote.ChannelId,
+                s.Emote.Channel.ActiveEmoteSetId
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (slot is null)
+        {
+            return null;
+        }
+
+        return await BuildDailySeriesAsync(
+            db.UsageStats.Where(u => u.SlotId == slot.Id),
+            slot.EmoteId,
+            slot.SeedUnsettled ? slot.EmoteName : slot.SlotName,
+            slot.Id,
+            slot.ChannelId,
+            slot.ActiveEmoteSetId,
+            from,
+            to,
+            setScope,
+            cancellationToken);
     }
 
     public async Task<ChannelUsageSeriesDto> GetChannelSeriesAsync(
@@ -240,17 +268,11 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         var setId = emoteSetId ?? channel.ActiveEmoteSetId;
         var isActiveSet = string.Equals(setId, channel.ActiveEmoteSetId, StringComparison.Ordinal);
 
-        // Same base set as GetUsageContextAsync, and for the same reasons: the active set's sheet
-        // excludes archived emotes because it is a deletion grid, a non-active set's sheet keeps
-        // them because it is a historical view. Both Id and SevenTvEmoteId are projected here so
-        // the entries below can be named by the 7TV id without a second query or a join — the id
-        // list is the only place that mapping exists, and it is already in memory.
-        var emotes = await db.Emotes
-            .Where(e => e.ChannelId == channel.Id && (!isActiveSet || !e.IsArchived))
-            .Select(e => new { e.Id, e.SevenTvEmoteId })
-            .ToListAsync(cancellationToken);
-        var emoteIds = emotes.Select(e => e.Id).ToList();
-        var sevenTvEmoteIdByEmoteId = emotes.ToDictionary(e => e.Id, e => e.SevenTvEmoteId, StringComparer.Ordinal);
+        // The same rows as GetUsageContextAsync (plan #376 2.4), built from the same snapshot by the same row
+        // formation, so a card and its curve can never disagree: the active set's sheet excludes archived
+        // emotes because it is a deletion grid, a non-active set's sheet keeps them because it is a
+        // historical view.
+        var emotes = await LoadChannelEmotesAsync(channel.Id, cancellationToken);
 
         // Loaded from the database for ALL emotes of the channel, archived included, and never
         // derived from the rows below: those exclude archived emotes for the active set, so
@@ -270,41 +292,65 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         DateOnly? firstCountedDay = countedDates.Count > 0 ? countedDates[0] : null;
         DateOnly? lastCountedDay = countedDates.Count > 0 ? countedDates[^1] : null;
 
-        if (emoteIds.Count == 0)
+        if (emotes.Count == 0)
         {
             return new ChannelUsageSeriesDto(from, to, liveDayOffsets, [], firstCountedDay, lastCountedDay, channelFirstCountedDay);
         }
 
-        // One scan over the whole channel, then grouped in memory. Deliberately not a GroupBy in
-        // SQL: the grouping here is pure partitioning with no aggregate to push down, so the
-        // database would do the same work and hand back the same number of rows either way — and
-        // rule 10 makes a navigation-joined GroupBy the fragile shape to reach for. Ordering by
-        // (EmoteId, Date) is what lets the in-memory GroupBy below emit each emote's days already
-        // ascending. Value and predicate run over UseCount alone: an emote whose only rows carry no
-        // own usage — bot-only or shared-only — drops out of Emotes entirely, the same way an emote
-        // with no rows at all does. Reading UseCount alone is what the covering index
-        // (EmoteId, EmoteSetId, Date) INCLUDE (UseCount) serves as an index-only scan; see the
-        // index note on GetUsageContextAsync.
-        var rows = await db.UsageStats
-            .Where(u => emoteIds.Contains(u.EmoteId) && u.EmoteSetId == setId && u.Date >= from && u.Date <= to && u.UseCount > 0)
-            .OrderBy(u => u.EmoteId).ThenBy(u => u.Date)
-            .Select(u => new { u.EmoteId, u.Date, u.UseCount })
+        var view = await LoadUsageViewAsync(channel.Id, setId, isActiveSet, emotes, cancellationToken);
+        var aggregateSlotIds = AggregateSlotIdsOf(view.Rows);
+        if (aggregateSlotIds.Count == 0)
+        {
+            return new ChannelUsageSeriesDto(from, to, liveDayOffsets, [], firstCountedDay, lastCountedDay, channelFirstCountedDay);
+        }
+
+        // One scan over the slots the rows carry, ordered by (SlotId, Date) in SQL and partitioned in memory.
+        // Deliberately not a GroupBy in SQL: per slot and day the slot index already makes a row unique, so
+        // there is nothing to push down for a slot-mode row, and an emote-mode row's per-day sum over its slots
+        // is the same partitioning done one level up. Value and predicate run over UseCount alone: a row whose
+        // only days carry no own usage — bot-only or shared-only — drops out of Emotes entirely, the same way a
+        // row with no days at all does. Rule 10 again (a scalar slot-id list, UsageStats alone), and reading
+        // UseCount alone is what the unique slot index (SlotId, EmoteSetId, Date) INCLUDE (UseCount) serves as
+        // an index-only scan.
+        var days = await db.UsageStats
+            .Where(u => aggregateSlotIds.Contains(u.SlotId) && u.EmoteSetId == setId && u.Date >= from && u.Date <= to && u.UseCount > 0)
+            .OrderBy(u => u.SlotId).ThenBy(u => u.Date)
+            .Select(u => new { u.SlotId, u.Date, u.UseCount })
             .ToListAsync(cancellationToken);
 
-        // Named by the 7TV id from #200 on, with the guid carried along for one transition (spec
-        // 6.5, step 1) — an entry only exists where a row exists, so the guid is never empty here.
-        // Days are summed per emote: since M2 (slot plan #373) two slots of one emote can each have a
-        // row on the same day, and this series stays one point per emote and day until the slot read
-        // path of child 6. The rows arrive ordered by (EmoteId, Date), and GroupBy keeps that order.
-        var entries = rows
-            .GroupBy(r => r.EmoteId)
-            .Select(g => new EmoteSeriesEntryDto(
-                sevenTvEmoteIdByEmoteId[g.Key],
-                g.Key,
-                g.GroupBy(r => r.Date)
-                    .Select(day => new[] { day.Key.DayNumber - from.DayNumber, day.Sum(r => r.UseCount) })
-                    .ToList()))
-            .ToList();
+        // Per slot, its days as wire pairs [day offset, count], ascending by date and unique per date (the slot
+        // index again) — already the finished entry of a row that carries this one slot.
+        var pairsBySlot = new Dictionary<string, List<int[]>>(StringComparer.Ordinal);
+        List<int[]>? current = null;
+        string? currentSlotId = null;
+        foreach (var day in days)
+        {
+            if (!string.Equals(day.SlotId, currentSlotId, StringComparison.Ordinal))
+            {
+                currentSlotId = day.SlotId;
+                current = [];
+                pairsBySlot[currentSlotId] = current;
+            }
+
+            current!.Add([day.Date.DayNumber - from.DayNumber, day.UseCount]);
+        }
+
+        var sevenTvEmoteIdByEmoteId = emotes.ToDictionary(e => e.Id, e => e.SevenTvEmoteId, StringComparer.Ordinal);
+
+        // Named by the 7TV id from #200 on, with the guid carried along for one transition (spec 6.5, step 1)
+        // — an entry only exists where a row exists, so the guid is never empty here. One entry per grid row in
+        // the row formation's order (by EmoteId, within one emote by slot); a slot-mode entry is the days of
+        // its one slot, an emote-mode entry sums each day over the emote's slots, as the series did per emote
+        // between M2 (#373) and this child. A row without a day of own usage in the range has no entry.
+        var entries = new List<EmoteSeriesEntryDto>();
+        foreach (var row in view.Rows)
+        {
+            var rowDays = RowSeriesDays(row.AggregateSlotIds, pairsBySlot);
+            if (rowDays is not null)
+            {
+                entries.Add(new EmoteSeriesEntryDto(sevenTvEmoteIdByEmoteId[row.EmoteId], row.EmoteId, row.SlotId, row.Name, rowDays));
+            }
+        }
 
         return new ChannelUsageSeriesDto(from, to, liveDayOffsets, entries, firstCountedDay, lastCountedDay, channelFirstCountedDay);
     }
@@ -518,27 +564,164 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
             .ToListAsync(cancellationToken);
     }
 
+    private async Task<EmoteUsageSeriesDto> BuildDailySeriesAsync(
+        IQueryable<UsageStat> rows,
+        string emoteId,
+        string name,
+        string? slotId,
+        string channelId,
+        string? activeEmoteSetId,
+        DateOnly from,
+        DateOnly to,
+        EmoteSetScope setScope,
+        CancellationToken cancellationToken)
+    {
+        // AllSets drops the set predicate from both queries below: a null-session's row is
+        // set-agnostic, so the drilldown opened from it has to be too.
+        var allSets = setScope.IsAllSets;
+        var setId = setScope.SetId ?? activeEmoteSetId;
+
+        // Sparse on purpose (only days with usage). Value and predicate both run over UseCount
+        // alone, same reasoning as GetUsageContextAsync — a bot-only and a shared-only day are
+        // equally absent from this series, because neither is a day this channel used the emote.
+        // The set filter is what makes the drilldown agree with the row it was opened from: the
+        // grid's total is one set's counts, so the days behind it have to be the same set's.
+        // Grouped by day: the same day can carry one row per set and, since M2 (slot plan #373), one
+        // per slot of the emote, and the DTO promises one entry per day. Single-table GroupBy, so
+        // rule 10 is untouched.
+        var days = await rows
+            .Where(u => (allSets || u.EmoteSetId == setId) && u.Date >= from && u.Date <= to && u.UseCount > 0)
+            .GroupBy(u => u.Date)
+            .Select(g => new { Date = g.Key, UseCount = g.Sum(u => u.UseCount) })
+            .OrderBy(d => d.Date)
+            .ToListAsync(cancellationToken);
+        var dailyUsage = days.Select(d => new EmoteDailyUsageDto(d.Date, d.UseCount)).ToList();
+
+        // First/last use ever, unbounded in time — same reasoning as LastUsedDate in
+        // GetUsageContextAsync, including the UseCount > 0 predicate against rows with no own
+        // usage. Bounded by the set, though, and deliberately so: "first used" next to a set's
+        // numbers must mean first used under that set (under AllSets: first used in the channel). Single-table GroupBy, so rule 10 is not
+        // even touched.
+        var bounds = await rows
+            .Where(u => (allSets || u.EmoteSetId == setId) && u.UseCount > 0)
+            .GroupBy(u => u.EmoteId)
+            .Select(g => new
+            {
+                First = g.Min(u => (DateOnly?)u.Date),
+                Last = g.Max(u => (DateOnly?)u.Date)
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // Range-bounded unlike the bounds above: the consumer overlays these on exactly the
+        // rendered window. LiveMinutes > 0 is defensive — the poll never writes a zero row.
+        // Served by the covering index (ChannelId, Date) INCLUDE (LiveMinutes).
+        // Narrowed to the days the viewed set has counts on (the same set predicate as the emote's
+        // own days above, none under AllSets): the live-day rule, shared with the channel series.
+        // The denominator stays set-wide — it is NOT the emote's own days, or every emote would
+        // read "used on all live days".
+        var countedDates = await LoadSetCountedDatesAsync(channelId, allSets ? null : setId, from, to, cancellationToken);
+        var liveDays = await LoadQualifyingLiveDaysAsync(channelId, countedDates, from, to, cancellationToken);
+
+        return new EmoteUsageSeriesDto(
+            emoteId,
+            name,
+            from,
+            to,
+            dailyUsage.Sum(d => d.UseCount),
+            bounds?.First,
+            bounds?.Last,
+            dailyUsage,
+            liveDays,
+            slotId);
+    }
+
     /// <summary>
-    /// For each emote of the channel that shares its name with a different 7TV emote of the same
-    /// channel: the set ids under which one of those namesakes was actually counted, minus the set
-    /// being looked at. Returns nothing for emotes with a unique name, so callers treat a missing
-    /// key as "no twins" (spec E24).
+    /// Every emote of the channel, archived ones included, in the order the database returns them — the
+    /// input both grid readers hand to the row formation and the base order of the totals' sort.
     /// </summary>
-    private async Task<Dictionary<string, IReadOnlyList<string>>> LoadNameTwinSetIdsAsync(
-        IEnumerable<(string Id, string Name, string SevenTvEmoteId)> channelEmotes,
+    private async Task<List<ChannelEmote>> LoadChannelEmotesAsync(string channelId, CancellationToken cancellationToken)
+    {
+        return await db.Emotes
+            .Where(e => e.ChannelId == channelId)
+            .Select(e => new ChannelEmote(e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.FirstSeenAt, e.IsArchived))
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The rows of the usage grid for one channel and one requested set (plan #376 2.2/2.3): loads the
+    /// snapshot <see cref="UsageViewRows.Build"/> reads — every slot of the channel's emotes with whether it
+    /// carries a row under the set, and the seeds of the set, both from one query
+    /// (<see cref="UsageViewSlotSnapshot.LoadAsync"/>) — and forms the rows. <c>/totals</c> and
+    /// <c>/series</c> both come through here, so they read the same snapshot shape.
+    /// </summary>
+    private async Task<UsageView> LoadUsageViewAsync(
+        string channelId, string emoteSetId, bool isActiveSet, List<ChannelEmote> emotes, CancellationToken cancellationToken)
+    {
+        var snapshot = await UsageViewSlotSnapshot.LoadAsync(db, channelId, emoteSetId, cancellationToken);
+
+        var rows = UsageViewRows.Build(
+            emotes.ConvertAll(e => new UsageViewEmote(e.Id, e.Name, e.FirstSeenAt, e.IsArchived)),
+            snapshot.Slots,
+            snapshot.SeedIdsOfSet,
+            snapshot.SlotIdsWithRowsInSet,
+            isActiveSet,
+            slotReconcileEnabled);
+        return new UsageView(rows, snapshot.Slots);
+    }
+
+    /// <summary>
+    /// For each row of the view, aligned by index: the set ids under which a namesake of the row — a
+    /// different 7TV emote of the same channel bearing the row's name — was actually counted, minus the set
+    /// being looked at; ascending ordinal, empty for a unique name (spec E24). An emote-mode row compares
+    /// <c>Emote.Name</c> with the other emotes' <c>Emote.Name</c>, the pre-slot rule; a slot-mode row
+    /// compares its slot name with the other emotes' <c>Emote.Name</c> and their own slot names (plan #376
+    /// 2.6). Two slots of one emote are never twins.
+    /// </summary>
+    private async Task<IReadOnlyList<string>[]> LoadNameTwinSetIdsAsync(
+        List<ChannelEmote> channelEmotes,
+        UsageView view,
         string emoteSetId,
         CancellationToken cancellationToken)
     {
         // Ordinal throughout, because that is how chat matching decides what a message meant
         // (EmoteNameMatching) — a twin found by a looser comparison would point at a set whose
         // counts a chat message could never have landed in.
-        var twinGroups = channelEmotes
+        var emoteIdsByEmoteName = channelEmotes
             .GroupBy(e => e.Name, StringComparer.Ordinal)
-            .Where(g => g.Select(e => e.SevenTvEmoteId).Distinct(StringComparer.Ordinal).Count() > 1)
-            .ToList();
+            .ToDictionary(g => g.Key, g => g.Select(e => e.Id).ToList(), StringComparer.Ordinal);
 
-        var result = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
-        if (twinGroups.Count == 0)
+        // Own slots only (plan 2.1: not an unsettled seed), archived ones included: a seed's name may be stale
+        // and is no name the emote is known by.
+        var emoteIdsBySlotName = view.Slots
+            .Where(s => !s.SeedUnsettled)
+            .GroupBy(s => s.Name, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(s => s.EmoteId).ToList(), StringComparer.Ordinal);
+        var sevenTvEmoteIdByEmoteId = channelEmotes.ToDictionary(e => e.Id, e => e.SevenTvEmoteId, StringComparer.Ordinal);
+
+        var twinEmoteIdsByRow = new List<string>[view.Rows.Count];
+        for (var index = 0; index < view.Rows.Count; index++)
+        {
+            var row = view.Rows[index];
+            var ownSevenTvEmoteId = sevenTvEmoteIdByEmoteId[row.EmoteId];
+            IEnumerable<string> bearers = emoteIdsByEmoteName.GetValueOrDefault(row.Name) ?? [];
+            if (row.SlotId is not null && emoteIdsBySlotName.TryGetValue(row.Name, out var slotBearers))
+            {
+                bearers = bearers.Concat(slotBearers);
+            }
+
+            // A slot of an emote outside the snapshot's emote list (an insert between the two reads) is no
+            // twin anyone can be pointed at; it is skipped, not looked up.
+            twinEmoteIdsByRow[index] = bearers
+                .Where(id => sevenTvEmoteIdByEmoteId.TryGetValue(id, out var sevenTvEmoteId)
+                             && !string.Equals(sevenTvEmoteId, ownSevenTvEmoteId, StringComparison.Ordinal))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        }
+
+        var result = new IReadOnlyList<string>[view.Rows.Count];
+        Array.Fill(result, []);
+        var twinEmoteIds = twinEmoteIdsByRow.SelectMany(ids => ids).Distinct(StringComparer.Ordinal).ToList();
+        if (twinEmoteIds.Count == 0)
         {
             return result;
         }
@@ -547,8 +730,8 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         // as a plain scalar list, so the distinct pass runs over UsageStats alone and is served by
         // the (EmoteId, EmoteSetId, Date) index. Deliberately unbounded by date — the question is
         // "was this name ever counted somewhere else", and a range would turn a missing hint into a
-        // statement about the range rather than about the history.
-        var twinEmoteIds = twinGroups.SelectMany(g => g).Select(e => e.Id).ToList();
+        // statement about the range rather than about the history. A twin is the other emote as a
+        // whole, so every set any of its slots was counted under counts.
         var countedSets = await db.UsageStats
             .Where(u => twinEmoteIds.Contains(u.EmoteId))
             .Select(u => new { u.EmoteId, u.EmoteSetId })
@@ -559,27 +742,74 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
             .GroupBy(p => p.EmoteId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Select(p => p.EmoteSetId).ToList(), StringComparer.Ordinal);
 
-        foreach (var group in twinGroups)
+        for (var index = 0; index < view.Rows.Count; index++)
         {
-            foreach (var emote in group)
-            {
-                var twins = group
-                    .Where(other => !string.Equals(other.SevenTvEmoteId, emote.SevenTvEmoteId, StringComparison.Ordinal))
-                    .SelectMany(other => setIdsByEmoteId.TryGetValue(other.Id, out var sets) ? sets : Enumerable.Empty<string>())
-                    .Where(id => !string.Equals(id, emoteSetId, StringComparison.Ordinal))
-                    .Distinct(StringComparer.Ordinal)
-                    .OrderBy(id => id, StringComparer.Ordinal)
-                    .ToList();
-
-                if (twins.Count > 0)
-                {
-                    result[emote.Id] = twins;
-                }
-            }
+            result[index] = twinEmoteIdsByRow[index]
+                .SelectMany(id => setIdsByEmoteId.TryGetValue(id, out var sets) ? sets : Enumerable.Empty<string>())
+                .Where(id => !string.Equals(id, emoteSetId, StringComparison.Ordinal))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToList();
         }
 
         return result;
     }
 
+    /// <summary>
+    /// The <c>/series</c> days of one row: the per-day sum over <paramref name="slotIds"/>, ascending by day,
+    /// or <c>null</c> when none of the slots has a day. A row with only one slot that has days — every
+    /// slot-mode row and most emote-mode rows — takes that slot's list as it is; only a row whose days spread
+    /// over several slots is summed per day.
+    /// </summary>
+    private static List<int[]>? RowSeriesDays(IReadOnlyList<string> slotIds, Dictionary<string, List<int[]>> pairsBySlot)
+    {
+        List<int[]>? single = null;
+        SortedDictionary<int, int>? summed = null;
+        foreach (var slotId in slotIds)
+        {
+            if (!pairsBySlot.TryGetValue(slotId, out var pairs))
+            {
+                continue;
+            }
+
+            if (single is null && summed is null)
+            {
+                single = pairs;
+                continue;
+            }
+
+            if (summed is null)
+            {
+                summed = [];
+                AddTo(summed, single!);
+                single = null;
+            }
+
+            AddTo(summed, pairs);
+        }
+
+        return summed is null
+            ? single
+            : summed.Select(day => new[] { day.Key, day.Value }).ToList();
+
+        static void AddTo(SortedDictionary<int, int> sums, List<int[]> pairs)
+        {
+            foreach (var pair in pairs)
+            {
+                sums[pair[0]] = sums.GetValueOrDefault(pair[0]) + pair[1];
+            }
+        }
+    }
+
+    /// <summary>The distinct slots whose aggregates some row of the view carries.</summary>
+    private static List<string> AggregateSlotIdsOf(IReadOnlyList<UsageViewRow> rows) =>
+        rows.SelectMany(r => r.AggregateSlotIds).Distinct(StringComparer.Ordinal).ToList();
+
     private sealed record CountedPair(DateOnly Date, string EmoteSetId);
+
+    private sealed record ChannelEmote(string Id, string Name, string SevenTvEmoteId, string ImageUrl, DateTime? FirstSeenAt, bool IsArchived);
+
+    private sealed record UsageView(IReadOnlyList<UsageViewRow> Rows, IReadOnlyList<UsageViewSlot> Slots);
+
+    private sealed record SlotAggregate(int TotalUseCount, int PreviousWindowUseCount, DateOnly? LastUsedDate);
 }

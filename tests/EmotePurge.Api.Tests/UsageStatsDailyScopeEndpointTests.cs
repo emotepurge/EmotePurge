@@ -16,7 +16,8 @@ namespace EmotePurge.Api.Tests;
 public class UsageStatsDailyScopeEndpointTests : IClassFixture<ApiFactory>
 {
     private const string Channel = "handofblood";
-    private const string Daily = $"/api/channels/{Channel}/usage-stats/daily?emoteId=e1&from=2026-08-01&to=2026-08-02";
+    private const string DailyBase = $"/api/channels/{Channel}/usage-stats/daily?from=2026-08-01&to=2026-08-02";
+    private const string Daily = $"{DailyBase}&emoteId=e1";
 
     private readonly ApiFactory _factory;
 
@@ -50,14 +51,83 @@ public class UsageStatsDailyScopeEndpointTests : IClassFixture<ApiFactory>
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<EmoteSetScope>(), Arg.Any<CancellationToken>());
     }
 
-    private async Task<HttpResponseMessage> SendAsync(string query)
+    // Plan 376 2.5 / AK 30: the drilldown addresses a slot or an emote, and the slot wins when both come.
+    [Fact]
+    public async Task OnlySlotId_AsksTheSlotMethod_WithTheRoutesChannelAndTheScope()
+    {
+        var response = await SendRawAsync($"{DailyBase}&slotId=s1&setScope=all");
+
+        Assert.NotEqual(HttpStatusCode.BadRequest, response.StatusCode);
+        await _factory.UsageStats.Received(1).GetDailySlotSeriesAsync(
+            Channel, "s1", new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 2), EmoteSetScope.AllSets, Arg.Any<CancellationToken>());
+        await _factory.UsageStats.DidNotReceive().GetDailySeriesAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<EmoteSetScope>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task OnlyEmoteId_AsksTheEmoteMethod()
+    {
+        await SendRawAsync($"{DailyBase}&emoteId=e1");
+
+        await _factory.UsageStats.Received(1).GetDailySeriesAsync(
+            Channel, "e1", new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 2), Arg.Any<EmoteSetScope>(), Arg.Any<CancellationToken>());
+        await _factory.UsageStats.DidNotReceive().GetDailySlotSeriesAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<EmoteSetScope>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task BothIds_AskTheSlotMethod()
+    {
+        await SendRawAsync($"{DailyBase}&slotId=s1&emoteId=e1");
+
+        await _factory.UsageStats.Received(1).GetDailySlotSeriesAsync(
+            Channel, "s1", new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 2), Arg.Any<EmoteSetScope>(), Arg.Any<CancellationToken>());
+        await _factory.UsageStats.DidNotReceive().GetDailySeriesAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<EmoteSetScope>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("&emoteId=")]
+    [InlineData("&slotId=%20&emoteId=%20")]
+    public async Task NeitherId_Answers400EmoteIdEmpty_WithoutAskingTheService(string ids)
+    {
+        var response = await SendRawAsync(DailyBase + ids);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(ApiErrorCodes.EmoteIdEmpty, body.RootElement.GetProperty("errorCode").GetString());
+        await _factory.UsageStats.DidNotReceive().GetDailySlotSeriesAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<EmoteSetScope>(), Arg.Any<CancellationToken>());
+        await _factory.UsageStats.DidNotReceive().GetDailySeriesAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<EmoteSetScope>(), Arg.Any<CancellationToken>());
+    }
+
+    // A slot id the service cannot resolve inside the route's channel (unknown, or another channel's) is the
+    // same bare 404 as an unknown emote id: the channel is bound by the route, never by the slot.
+    [Fact]
+    public async Task ASlotTheServiceDoesNotResolveInTheChannel_Answers404()
+    {
+        _factory.UsageStats.GetDailySlotSeriesAsync(Channel, "foreign", Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<EmoteSetScope>(), Arg.Any<CancellationToken>())
+            .Returns((EmoteUsageSeriesDto?)null);
+
+        var response = await SendRawAsync($"{DailyBase}&slotId=foreign");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    private Task<HttpResponseMessage> SendRawAsync(string pathAndQuery) => SendToAsync(pathAndQuery);
+
+    private async Task<HttpResponseMessage> SendAsync(string query) => await SendToAsync(Daily + query);
+
+    private async Task<HttpResponseMessage> SendToAsync(string pathAndQuery)
     {
         var client = _factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false
         });
 
-        var request = new HttpRequestMessage(HttpMethod.Get, Daily + query);
+        var request = new HttpRequestMessage(HttpMethod.Get, pathAndQuery);
         request.Headers.Add(TestAuthHandler.UserIdHeader, Guid.NewGuid().ToString("N"));
         request.Headers.Add(TestAuthHandler.LoginHeader, "someuser");
         return await client.SendAsync(request);

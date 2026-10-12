@@ -35,10 +35,34 @@ public static class UnresolvedChannelReasons
 
 // ReportedCount = the reported 7TV ids after ordinal deduplication. Channels empty and
 // UnresolvedChannel null together mean "paper only": no tracked channel has this set active.
-public record SyncDeletedInSetResultDto(int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel);
+// Rejection is null for every report that was carried out (stale and repeated ones included); when it
+// is set, nothing was written — no row, no slot, no leave observation, no audit entry — Channels is
+// empty and UnresolvedChannel null, and the endpoint answers with a 400 instead of publishing or
+// resyncing (emote slots plan 376, arbitration on B3).
+public record SyncDeletedInSetResultDto(
+    int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel,
+    SyncInSetRejection? Rejection = null);
 
 // Mirror of SyncDeletedInSetResultDto for the restore direction.
-public record SyncRestoredInSetResultDto(int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel);
+public record SyncRestoredInSetResultDto(
+    int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel,
+    SyncInSetRejection? Rejection = null);
+
+// One entry of a set-centric report (emote slots spec 5.7, D32; plan 376 4.1): which slot of which 7TV
+// emote the browser deleted or restored. SlotId is the slot id the browser read from /usage-stats/totals,
+// AddedAt (UTC) the firstSeenAt of that same row — the authoritative date of the reported generation,
+// compared to the microsecond. Alias only breaks a tie in another channel of a shared set (two slots of
+// the emote with the same date there). An entry without SlotId is skipped; the endpoint guarantees that
+// a SlotId comes with an AddedAt and that SevenTvEmoteId is one of the reported ids.
+public record SyncInSetEntryDto(string SevenTvEmoteId, string? Alias, string? SlotId, DateTime? AddedAt);
+
+// The one content reason a set-centric report is refused (plan 376, arbitration on B3, point 2): an
+// entry's SlotId names a slot of another 7TV emote than the entry. An unknown SlotId is no reason —
+// the entry then simply has no origin channel.
+public enum SyncInSetRejection
+{
+    SlotOfAnotherEmote,
+}
 
 public interface IEmoteService
 {
@@ -76,17 +100,34 @@ public interface IEmoteService
     // targetIsActiveSetOfChannel: false, or — without such a channel — no channel and the owner
     // identity in the details (addendum N3). Rows and audit entries are saved together, in one
     // SaveChangesAsync.
+    //
+    // entries (emote slots spec 5.7, D32; plan 376 section 4). With SevenTv:SlotReconcile:Enabled off
+    // they are ignored and everything above holds unchanged (R3 a). With it on, the hit channels are
+    // locked before anything is read (R6), and the decision is taken per reported 7TV id (R3 b): an id
+    // with at least one entry is handled per slot — the entry's slot in the channel its SlotId belongs
+    // to when that channel is a hit (generation checked against AddedAt, stale = no-op), the slot with
+    // the same authoritative date (and, on a tie, the alias) in every other hit channel; the emote row
+    // is archived with a leave only when its last active slot goes, and a slot REST archived already
+    // gets its leave once when none was observed since the emote entered the set (B2). An id without
+    // an entry keeps the id-level semantics above and in addition archives the emote's active own slots
+    // (B1). An entry whose SlotId belongs to another 7TV emote refuses the whole report before any
+    // write (Rejection set). expectedChannelName only decides UnresolvedChannel and the paper entry,
+    // never which slot an entry means.
     Task<SyncDeletedInSetResultDto> MarkDeletedInSetAsync(
         string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, string ownerTwitchUserId,
         IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor,
-        CancellationToken cancellationToken = default);
+        IReadOnlyList<SyncInSetEntryDto>? entries = null, CancellationToken cancellationToken = default);
 
     // Mirror of MarkDeletedInSetAsync, in the restore direction: un-archives (IsArchived = false,
-    // ArchivedAt = null) only the rows that are still archived, and audits emotes.syncRestored.
+    // ArchivedAt = null) only the rows that are still archived, and audits emotes.syncRestored. With
+    // entries and the flag on, the matching archived generation of a slot is reactivated once with a
+    // provisional date (AddedAt = now, not from REST) for the next REST reconcile to authorize; an
+    // already active slot or another generation is a no-op. Without an entry only the emote row is
+    // un-archived, no slot is created or reactivated.
     Task<SyncRestoredInSetResultDto> MarkRestoredInSetAsync(
         string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, string ownerTwitchUserId,
         IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor,
-        CancellationToken cancellationToken = default);
+        IReadOnlyList<SyncInSetEntryDto>? entries = null, CancellationToken cancellationToken = default);
 
     // Unlike MarkDeletedAsync/MarkRestoredAsync, this touches no Emote row at all: an import never
     // creates or un-archives anything here, the target channel's own resync does that afterwards

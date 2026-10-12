@@ -1195,7 +1195,7 @@ public class SevenTvSyncService(
     /// except for every emote that still has an unsettled seed of the active set, which is left out
     /// with all of its slots, settled ones included, until a dated reconcile settles it (a deferred
     /// settle keeps it out, spec §14 (c)). "Seed of the active set" is the settle's own population
-    /// (<see cref="ActiveSetSeeds"/>), so map and settle can never disagree. No virtual entries: an
+    /// (<see cref="SetSeeds.SeedsOfSet"/>), so map and settle can never disagree. No virtual entries: an
     /// active emote without an active own slot has no slot id and counts from the next reconcile on.
     /// The collision report reads exactly this input, as distinct (name, emote) pairs, so two aliases
     /// of one emote are no collision. An information line names the number of left-out emotes when it
@@ -1204,7 +1204,7 @@ public class SevenTvSyncService(
     private async Task<(Dictionary<string, string> NameToSlotKey, IReadOnlySet<string> DuplicateNames)> BuildSlotMatchMapAsync(
         Channel channel, string channelName, CancellationToken cancellationToken)
     {
-        var activeSetSeeds = ActiveSetSeeds(channel.Id, channel.ActiveEmoteSetId);
+        var activeSetSeeds = db.SeedsOfSet(channel.Id, channel.ActiveEmoteSetId);
         var entries = await db.EmoteSlots
             .Where(s => !s.IsArchived && !s.SeedUnsettled
                         && s.Emote.ChannelId == channel.Id && !s.Emote.IsArchived
@@ -1494,23 +1494,11 @@ public class SevenTvSyncService(
     private async Task<IReadOnlySet<string>> LoadActiveSetSeedIdsAsync(
         string channelId, string activeEmoteSetId, CancellationToken cancellationToken)
     {
-        var ids = await ActiveSetSeeds(channelId, activeEmoteSetId)
+        var ids = await db.SeedsOfSet(channelId, activeEmoteSetId)
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
         return ids.ToHashSet(StringComparer.Ordinal);
     }
-
-    /// <summary>
-    /// The channel's unsettled seeds that carry usage rows of <paramref name="activeEmoteSetId"/> —
-    /// the settle's population (<see cref="LoadActiveSetSeedIdsAsync"/>) and the flag-on match map's
-    /// exclusion (plan #373, E7) in one query, so the two cannot drift apart. Derived from
-    /// <c>UsageStats</c>, never from <c>IsArchived</c> (the archive state of a seed is copied 1:1 from
-    /// its emote by M1 and says nothing about its set).
-    /// </summary>
-    private IQueryable<EmoteSlot> ActiveSetSeeds(string channelId, string activeEmoteSetId) =>
-        db.EmoteSlots.Where(s => s.SeedUnsettled
-                                 && s.Emote.ChannelId == channelId
-                                 && db.UsageStats.Any(u => u.SlotId == s.Id && u.EmoteSetId == activeEmoteSetId));
 
     /// <summary>
     /// Step 1 of spec §6.2 with the flag on: find, create or un-archive the emote row, image from the

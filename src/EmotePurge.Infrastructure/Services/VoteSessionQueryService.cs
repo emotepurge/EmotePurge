@@ -5,8 +5,16 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EmotePurge.Infrastructure.Services;
 
-public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usageStatQueryService) : IVoteSessionQueryService
+public class VoteSessionQueryService(
+    AppDbContext db,
+    IUsageStatQueryService usageStatQueryService,
+    SlotReconcileOptions? slotReconcile = null) : IVoteSessionQueryService
 {
+    // Read once at construction; null (the unit-test constructor) is off, like the flag's default. It only
+    // decides the extra aliases of a null-session row (plan #376 R1); a set-session's frozen aliases are
+    // data, not a mode, and are read either way.
+    private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
+
     public async Task<IReadOnlyList<VoteSessionSummaryDto>> ListSessionsAsync(string channelName, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
@@ -88,7 +96,7 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
         var candidateEmotes = subsetEmoteIds.Count == 0
             ? await db.Emotes
                 .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
-                .Select(e => new CandidateEmote(e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.IsArchived))
+                .Select(e => new CandidateEmote(e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.IsArchived, null))
                 .ToListAsync(cancellationToken)
             : await db.VoteSessionEmotes
                 .Where(se => se.VoteSessionId == sessionId)
@@ -97,8 +105,10 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
                     se.NameAtCreation ?? se.Emote.Name,
                     se.Emote.SevenTvEmoteId,
                     se.ImageUrlAtCreation ?? se.Emote.ImageUrl,
-                    se.Emote.IsArchived))
+                    se.Emote.IsArchived,
+                    se.NamesAtCreation))
                 .ToListAsync(cancellationToken);
+        var extraAliases = await LoadSlotAliasesAsync(candidateEmotes, isSetSession, cancellationToken);
 
         var myVotesByEmoteId = viewerTwitchUserId is null
             ? new Dictionary<string, VoteType>()
@@ -142,7 +152,7 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
             .CountAsync(cancellationToken);
 
         var rows = candidateEmotes.Select(e =>
-            BuildResultRow(e, isSetSession, includeTallies, includeRawUsage, voteTallies, myVotesByEmoteId, usageByEmoteId));
+            BuildResultRow(e, isSetSession, extraAliases, includeTallies, includeRawUsage, voteTallies, myVotesByEmoteId, usageByEmoteId));
 
         // With the tallies withheld, the score ordering is the leak: the position of a row would spell
         // out its ranking just as precisely as the numbers did. Name order carries no such signal — and
@@ -195,6 +205,7 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
     private static VoteSessionResultDto BuildResultRow(
         CandidateEmote emote,
         bool isSetSession,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> slotAliases,
         bool includeTallies,
         bool includeRawUsage,
         IReadOnlyDictionary<string, VoteTallyRow> voteTallies,
@@ -228,11 +239,65 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
 
         return new VoteSessionResultDto(
             emote.Id, emote.Name, emote.SevenTvEmoteId, emote.ImageUrl, useCount, keep, delete, keep - delete,
-            emote.IsArchived, eligible, myVote);
+            emote.IsArchived, eligible, myVote, ListAliases(emote, slotAliases));
+    }
+
+    /// <summary>
+    /// <c>emoteNames</c> (plan #376 2.7, spec D26): never empty, first element is the row's <c>emoteName</c>.
+    /// A set-session row lists its frozen aliases (<c>NamesAtCreation</c>); a row frozen before the column
+    /// existed has only <c>NameAtCreation</c>, which is <c>emote.Name</c> already. A null-session row lists
+    /// the live emote name first, then the aliases of its active slots (flag on, empty otherwise).
+    /// </summary>
+    private static IReadOnlyList<string> ListAliases(CandidateEmote emote, IReadOnlyDictionary<string, IReadOnlyList<string>> slotAliases)
+    {
+        if (emote.NamesAtCreation is { Length: > 0 } frozen && string.Equals(frozen[0], emote.Name, StringComparison.Ordinal))
+        {
+            return frozen;
+        }
+
+        var names = new List<string> { emote.Name };
+        if (slotAliases.TryGetValue(emote.Id, out var extra))
+        {
+            names.AddRange(extra.Where(n => !string.Equals(n, emote.Name, StringComparison.Ordinal)));
+        }
+
+        return names;
+    }
+
+    /// <summary>
+    /// The names of the active own slots of the ballot's emotes in D2 order, one query for all of them
+    /// (null-session rows with the flag on only; seeds do not count, E7). Empty otherwise: a set-session
+    /// carries its aliases frozen, and with the flag off slots are not maintained (R1).
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> LoadSlotAliasesAsync(
+        IReadOnlyList<CandidateEmote> candidates, bool isSetSession, CancellationToken cancellationToken)
+    {
+        if (!slotReconcileEnabled || isSetSession || candidates.Count == 0)
+        {
+            return new Dictionary<string, IReadOnlyList<string>>();
+        }
+
+        var ids = candidates.Select(c => c.Id).ToList();
+        var slots = await db.EmoteSlots
+            .AsNoTracking()
+            .Where(s => ids.Contains(s.EmoteId) && !s.IsArchived && !s.SeedUnsettled)
+            .Select(s => new { s.Id, s.EmoteId, s.Name, s.AddedAt })
+            .ToListAsync(cancellationToken);
+
+        return slots
+            .GroupBy(s => s.EmoteId, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<string>)g
+                    .OrderBy(s => new BaseSlotCandidate(s.Id, s.Name, s.AddedAt), BaseSlotRule.D2Order)
+                    .Select(s => s.Name)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList(),
+                StringComparer.Ordinal);
     }
 
     /// <summary>A candidate ballot row, projected by name instead of an anonymous type so <see cref="BuildResultRow"/> can take it as a parameter.</summary>
-    private sealed record CandidateEmote(string Id, string Name, string SevenTvEmoteId, string ImageUrl, bool IsArchived);
+    private sealed record CandidateEmote(string Id, string Name, string SevenTvEmoteId, string ImageUrl, bool IsArchived, string[]? NamesAtCreation);
 
     /// <summary>One emote's Keep/Delete tally, projected by name for the same reason as <see cref="CandidateEmote"/>.</summary>
     private sealed record VoteTallyRow(string EmoteId, int Keep, int Delete);
