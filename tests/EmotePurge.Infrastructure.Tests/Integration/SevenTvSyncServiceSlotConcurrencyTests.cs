@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-using System.Data.Common;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
@@ -9,7 +7,6 @@ using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using NSubstitute;
@@ -513,51 +510,5 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
     private sealed class TransactionHolder
     {
         public Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? Transaction { get; set; }
-    }
-
-    /// <summary>
-    /// Records every command text and runs <paramref name="afterMatch"/> right after each execution of a
-    /// matching command (1-based occurrence) — inside the sync's own flow, so a contender acts at
-    /// exactly that point.
-    /// </summary>
-    private sealed class CommandHook(Func<string, bool> match, Func<int, Task> afterMatch) : DbCommandInterceptor
-    {
-        private readonly ConcurrentQueue<string> _commands = new();
-        private int _matches;
-
-        public int Count(Func<string, bool> predicate) => _commands.Count(predicate);
-
-        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
-            DbCommand command, CommandExecutedEventData eventData, DbDataReader result, CancellationToken cancellationToken = default)
-        {
-            _commands.Enqueue(command.CommandText);
-            if (match(command.CommandText))
-            {
-                await afterMatch(Interlocked.Increment(ref _matches));
-            }
-
-            return result;
-        }
-
-        public override ValueTask<int> NonQueryExecutedAsync(
-            DbCommand command, CommandExecutedEventData eventData, int result, CancellationToken cancellationToken = default)
-        {
-            _commands.Enqueue(command.CommandText);
-            return ValueTask.FromResult(result);
-        }
-    }
-
-    /// <summary>Runs <paramref name="beforeSave"/> at the start of every SaveChanges (1-based call number).</summary>
-    private sealed class SaveHook(Func<DbContext, int, Task> beforeSave) : SaveChangesInterceptor
-    {
-        public int Calls { get; private set; }
-
-        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
-            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
-        {
-            Calls++;
-            await beforeSave(eventData.Context!, Calls);
-            return result;
-        }
     }
 }
