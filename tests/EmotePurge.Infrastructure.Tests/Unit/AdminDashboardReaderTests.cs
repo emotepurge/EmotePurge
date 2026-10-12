@@ -224,21 +224,32 @@ public class AdminDashboardReaderTests
         StubLoad(async r =>
         {
             maxRunning = Math.Max(maxRunning, Interlocked.Increment(ref running));
-            await release.Task;
+            if (r == AdminDashboardLoadRange.Hours24)
+            {
+                await release.Task;
+            }
+
             Interlocked.Decrement(ref running);
             return Load(r);
         });
         var reader = NewReader();
 
         var a = reader.GetLoadAsync(AdminDashboardLoadRange.Hours24);
-        var b = reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
         await WaitUntilAsync(() => running == 1);
-        await Task.Delay(50); // the second range must not start while the first one holds the gate
-        Assert.Equal(1, running);
+        var b = reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
+
+        // Positive proof, driven by the fake clock only: the second range ends as Busy (it sat at the
+        // gate until its 5 s expired) and its query was never called while the first rebuild held it.
+        var busy = await AdvanceUntilCompletedAsync(b);
+        Assert.True(busy.Busy);
+        await _query.DidNotReceive().GetLoadAsync(
+            AdminDashboardLoadRange.Days7, Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
 
         release.SetResult();
         Assert.False((await a).Busy);
-        Assert.False((await b).Busy);
+        Assert.False((await reader.GetLoadAsync(AdminDashboardLoadRange.Days7)).Busy);
+        await _query.Received(1).GetLoadAsync(
+            AdminDashboardLoadRange.Days7, Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
         Assert.Equal(1, maxRunning);
     }
 
@@ -256,10 +267,8 @@ public class AdminDashboardReaderTests
         var holder = reader.GetLoadAsync(AdminDashboardLoadRange.Hours24);
         await WaitUntilAsync(() => _query.ReceivedCalls().Any());
         var waiting = reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
-        await Task.Delay(50);
-        _time.Advance(TimeSpan.FromSeconds(5));
 
-        var busy = await waiting;
+        var busy = await AdvanceUntilCompletedAsync(waiting);
 
         Assert.True(busy.Busy);
         Assert.Null(busy.Load);
@@ -273,6 +282,20 @@ public class AdminDashboardReaderTests
         var retry = await reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
         Assert.False(retry.Busy);
         Assert.NotNull(retry.Load);
+    }
+
+    [Fact]
+    public async Task Load_ALoggerThatThrowsDoesNotLeaveTheGateTaken()
+    {
+        StubLoad(r => Task.FromResult(Load(r)));
+        _log.ThrowOnDebug = true;
+        var reader = NewReader();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reader.GetLoadAsync(AdminDashboardLoadRange.Days7));
+        _log.ThrowOnDebug = false;
+        var read = await reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
+
+        Assert.False(read.Busy);
     }
 
     [Fact]
@@ -302,7 +325,22 @@ public class AdminDashboardReaderTests
 
         Assert.Equal(2, _log.Debug.Count);
         Assert.Equal("Load dashboard cold rebuild started range=7d", _log.Debug[0]);
-        Assert.Matches(@"^Load dashboard cold rebuild finished range=7d ms=\d+$", _log.Debug[1]);
+        Assert.Matches(@"^Load dashboard cold rebuild finished range=7d ms=\d+ outcome=ok$", _log.Debug[1]);
+    }
+
+    // A waiter's timeout timer only exists once its fill reached the gate, so a single Advance can come
+    // too early; advance repeatedly (each step well past the timeout) until the task settles, with an
+    // overall real-time bound so a regression fails instead of hanging.
+    private async Task<T> AdvanceUntilCompletedAsync<T>(Task<T> task)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!task.IsCompleted)
+        {
+            _time.Advance(AdminDashboardReader.RebuildWaitTimeout);
+            await Task.Delay(1, cts.Token);
+        }
+
+        return await task;
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
@@ -318,6 +356,8 @@ public class AdminDashboardReaderTests
     {
         public List<string> Debug { get; } = [];
 
+        public bool ThrowOnDebug { get; set; }
+
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => null;
 
@@ -327,6 +367,11 @@ public class AdminDashboardReaderTests
         {
             if (logLevel == LogLevel.Debug)
             {
+                if (ThrowOnDebug)
+                {
+                    throw new InvalidOperationException("log sink down");
+                }
+
                 lock (Debug)
                 {
                     Debug.Add(formatter(state, exception));

@@ -14,6 +14,7 @@ public sealed class AdminDashboardReader : IAdminDashboardReader
     public static readonly TimeSpan ShortLoadTtl = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan LongLoadTtl = TimeSpan.FromSeconds(60);
     public static readonly TimeSpan RebuildWaitTimeout = TimeSpan.FromSeconds(5);
+    public const int BusyRetryAfterSeconds = 5;
 
     private const string SingleKey = "";
 
@@ -79,7 +80,7 @@ public sealed class AdminDashboardReader : IAdminDashboardReader
         catch (RebuildBusyException)
         {
             // Raised inside the single-flight fill, so it is never cached and joined waiters see it too.
-            return AdminDashboardLoadRead.BusyFor((int)RebuildWaitTimeout.TotalSeconds);
+            return AdminDashboardLoadRead.BusyFor(BusyRetryAfterSeconds);
         }
     }
 
@@ -103,24 +104,39 @@ public sealed class AdminDashboardReader : IAdminDashboardReader
             }
         }
 
-        var wire = AdminDashboardLoadRanges.ToWire(range);
-        var started = _time.GetTimestamp();
-        _logger.LogDebug("Load dashboard cold rebuild started range={Range}", wire);
+        // The try opens right after the acquire: nothing between WaitAsync and the release may throw
+        // past the finally, or the gate would stay taken and every later read would answer Busy.
+        var wire = "?";
+        var started = 0L;
+        var outcome = "failed";
         try
         {
+            wire = AdminDashboardLoadRanges.ToWire(range);
+            started = _time.GetTimestamp();
+            _logger.LogDebug("Load dashboard cold rebuild started range={Range}", wire);
+
             // The query service is scoped (AppDbContext); the fill outlives the request that started it.
             await using var scope = _scopeFactory.CreateAsyncScope();
             var query = scope.ServiceProvider.GetRequiredService<IAdminDashboardQueryService>();
-            return await query.GetLoadAsync(
+            var load = await query.GetLoadAsync(
                 range, _time.GetUtcNow().UtcDateTime, _loadOptions.IntervalSeconds, CancellationToken.None);
+            outcome = "ok";
+            return load;
         }
         finally
         {
-            _logger.LogDebug(
-                "Load dashboard cold rebuild finished range={Range} ms={ElapsedMs}",
-                wire,
-                (long)_time.GetElapsedTime(started).TotalMilliseconds);
-            _rebuildGate.Release();
+            try
+            {
+                _logger.LogDebug(
+                    "Load dashboard cold rebuild finished range={Range} ms={ElapsedMs} outcome={Outcome}",
+                    wire,
+                    (long)_time.GetElapsedTime(started).TotalMilliseconds,
+                    outcome);
+            }
+            finally
+            {
+                _rebuildGate.Release();
+            }
         }
     }
 
